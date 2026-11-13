@@ -1,0 +1,378 @@
+[
+  {
+    "task_id": "needle-temp-01",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: At what temperature (in degrees Celsius) does 15CuO/CeO2-GU reach 100% NO conversion? Answer with only the number.",
+    "expect": {
+      "needle": "275"
+    }
+  },
+  {
+    "task_id": "needle-conv-im-02",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: What is the NO conversion percentage of the 15CuO/CeO2-IM catalyst at that temperature? Answer with only the number.",
+    "expect": {
+      "needle": "50"
+    }
+  },
+  {
+    "task_id": "needle-size-03",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: What is the approximate size of the ultra-fine nanoparticles? Include the unit.",
+    "expect": {
+      "needle": "10 nm",
+      "aliases": [
+        "10nm"
+      ]
+    }
+  },
+  {
+    "task_id": "needle-method-04",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: Which preparation solvent/method was used for the superior CuO/CeO2-GU catalyst?",
+    "expect": {
+      "needle": "deep eutectic solvent",
+      "aliases": [
+        "DES"
+      ]
+    }
+  },
+  {
+    "task_id": "needle-site-05",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: What is the name of the interface active site emphasized for this CuO/CeO2 catalyst?",
+    "expect": {
+      "needle": "Cu-O-Ce"
+    }
+  },
+  {
+    "task_id": "needle-plant-batch-06",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). For internal tracking, the batch identifier for this synthesis run is BX-7731. The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: What is the internal batch identifier for this synthesis run?",
+    "expect": {
+      "needle": "BX-7731"
+    }
+  },
+  {
+    "task_id": "needle-plant-date-07",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. The long-term catalyst stability test concluded on 2027-03-08 without measurable deactivation. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: On what date did the long-term catalyst stability test conclude?",
+    "expect": {
+      "needle": "2027-03-08"
+    }
+  },
+  {
+    "task_id": "needle-plant-label-08",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an excerpt from a scientific paper. Read it and answer the question at the end with ONLY the requested value, nothing else.\n\n--- EXCERPT ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. The blank control reference sample in this study was designated RS-CeO2-Q9 throughout. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END EXCERPT ---\n\nQuestion: What designation was given to the blank control reference sample?",
+    "expect": {
+      "needle": "RS-CeO2-Q9"
+    }
+  },
+  {
+    "task_id": "tool-ref-mohan-01",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"first_author\" (surname), \"year\" (4 digits), \"volume\"\n\n--- SOURCE ---\nMohan, S., Dinesha, P., Kumar, S., 2020. NOx reduction behaviour in copper zeolite catalysts for ammonia SCR systems: a review. Chem. Eng. J. 384, 123253.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "first_author": "Mohan",
+        "year": "2020",
+        "volume": "384"
+      }
+    }
+  },
+  {
+    "task_id": "tool-ref-wang-02",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"first_author\" (surname), \"year\" (4 digits), \"volume\"\n\n--- SOURCE ---\nWang, Y.W., Tang, X.L., Yi, H.H., Li, Z.G., Ren, X.N., Gao, F.Y., Yao, Y., Cheng, H.D., Yu, Q.J., 2025. A progressive review on NOx purification from diesel vehicle exhaust. Sep. Purif. Technol. 354, 129111.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "first_author": "Wang",
+        "year": "2025",
+        "volume": "354"
+      }
+    }
+  },
+  {
+    "task_id": "tool-ref-liu-03",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"first_author\" (surname), \"year\" (4 digits), \"volume\"\n\n--- SOURCE ---\nLiu, G., Gao, P.X., 2011. A review of NOx storage/reduction catalysts: mechanism, materials and degradation studies. Cat. Sci. Technol. 1 (4), 552-568.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "first_author": "Liu",
+        "year": "2011",
+        "volume": "1"
+      }
+    }
+  },
+  {
+    "task_id": "tool-abstract-perf-04",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"best_catalyst\", \"no_conversion_pct\" (number only), \"temperature_c\" (number only)\n\n--- SOURCE ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "best_catalyst": "15CuO/CeO2-GU",
+        "no_conversion_pct": "100",
+        "temperature_c": "275"
+      }
+    }
+  },
+  {
+    "task_id": "tool-abstract-compare-05",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"des_conversion\" (number), \"impregnation_conversion\" (number)\n\n--- SOURCE ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "des_conversion": "100",
+        "impregnation_conversion": "50"
+      }
+    }
+  },
+  {
+    "task_id": "tool-intro-oxidant-06",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"oxidant\" (the oxidant used by NO oxidation technology), \"needs_reducing_agent\" (yes or no)\n\n--- SOURCE ---\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "oxidant": "O2",
+        "needs_reducing_agent": "no"
+      }
+    }
+  },
+  {
+    "task_id": "tool-abstract-support-07",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"support_material\" (the oxide support), \"interface_site\"\n\n--- SOURCE ---\nRapid and efficient construction of mesoporous CuO/CeO2 catalyst with abundant Cu-O-Ce interface sites for NO oxidation. Interface asymmetric dual-atom sites (M-O-N) are generally recognized as active sites for supported oxide catalysts in catalytic oxidation reactions. However, the rapid and efficient construction of catalysts rich in interface asymmetric dual-atom active sites remains a challenge in catalyst design and precise synthesis. In this work, a mesoporous CuO/CeO2-GU catalyst with abundant interface Cu-O-Ce sites was prepared via a one-pot method using deep eutectic solvent (DES). The 15CuO/CeO2-GU exhibited significantly superior NO catalytic oxidation performance compared to the 15CuO/CeO2-IM prepared by the traditional impregnation method. The NO conversion of 15CuO/CeO2-GU (100%) is twice that of 15CuO/CeO2-IM (50%) at 275 degC. Meanwhile, it outperformed the 1Pt/Al2O3 catalyst under the same conditions. The excellent NO oxidation performance is attributed to the catalyst being composed of ultra-fine nanoparticles (~10 nm) stacked together, which improves the dispersion of Cu on CeO2 and creates strong interaction between Cu and CeO2.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "support_material": "CeO2",
+        "interface_site": "Cu-O-Ce"
+      }
+    }
+  },
+  {
+    "task_id": "tool-intro-zeolite-08",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the requested fields from the source text below and return ONLY a single JSON object as the very last thing in your reply — no prose, no code fences, no units or % signs inside values, each value a plain string.\n\nReturn exactly these keys: \"low_temp_product\" (what zeolites oxidize NO into at low temperature), \"temp_threshold_c\" (the low-temperature threshold number in degC)\n\n--- SOURCE ---\n1. Introduction. Nitrogen oxides (NOx), as major precursors of PM2.5 and ozone which are the primary urban pollutants, continue to threaten the ecological environment and human health. Among the existing NOx abatement technologies, various methods have been developed, including selective catalytic reduction (SCR), selective non-catalytic reduction (SNCR), NOx storage and reduction (NSR) and others. Among them, NO oxidation technology has attracted significant attention due to its utilization of O2 in the air as the oxidant without the need for additional reducing agents such as ammonia (NH3), and its ability to achieve nitrogen resource recovery. The core of NO oxidation technology lies in a high efficiency catalyst. Currently, commonly used NO oxidation catalysts include noble metal, zeolite and transition metal oxide catalysts. The widespread application of noble metal catalysts is limited by the scarcity and high cost of noble metals. Zeolite catalysts often utilize the confinement effect of pores to catalytically oxidize NO to NO2 at low temperatures (< 100 degC), but their NO oxidation activity decreases significantly with increasing temperature. In contrast, transition metal oxide catalysts have received extensive attention due to their low cost and good low-medium temperature activity. Among transition metal oxide catalysts, TiO2-based, MnO2-based and CeO2-based catalysts are widely used in catalytic oxidation reactions. CeO2 is commonly used as a catalyst support for oxidation/reduction reactions due to its surface oxygen species with strong mobility and excellent oxygen storage and release capacity. A large number of studies have shown that the micro-interface structure M-O-Ce sites in ceria-based supported catalysts can activate lattice oxygen, generating a large number of oxygen vacancies and surface active oxygen species, thus often serving as the main active sites in oxidation/reduction reactions. For example, Chen et al. found that the Cu-O-Ce sites formed by copper substituting lattice oxygen in CeO2 in the Cu/MgO-CeO2 catalyst prepared by the citric acid sol-gel method are the active centers for the CO-SCR reaction. Lu et al. similarly discovered that Fe atoms in the FexOy-CuO-CeO2 catalyst synthesized with a solvent-free combustion synthesis method can enter the CeO2 lattice to form a Fe-O-Ce structure. Lu et al. reported that the Cu-O-Ce interface formed in the CuO-CeO2 catalyst prepared by the hydrothermal method promotes electron transfer between Cu and Ce, resulting in high oxygen mobility and excellent catalytic oxidation ability for toluene. Cui et al. also prepared MnOx-CeO2 catalysts by co-precipitation, impregnation and mechanical mixing and found that the presence of Mn-O-Ce sites increases the content of Mn3+ and active oxygen species, facilitating the oxidation of NO to NO2.\n--- END SOURCE ---",
+    "expect": {
+      "answer": {
+        "low_temp_product": "NO2",
+        "temp_threshold_c": "100"
+      }
+    }
+  },
+  {
+    "task_id": "reason-pipes",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "A tank has an inlet pipe that fills it in 6 minutes and a drain that empties a full tank in 9 minutes. Starting empty, both are opened at once. How many minutes until the tank is full? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {
+      "answer": "18"
+    }
+  },
+  {
+    "task_id": "reason-ages",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Sam is currently twice as old as Kim. In 4 years, Sam will be 1.5 times as old as Kim is then. How old is Kim now? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {
+      "answer": "4"
+    }
+  },
+  {
+    "task_id": "reason-seq",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Consider the sequence 2, 6, 12, 20, 30, ... What is the next term? Show brief working, then end your reply with a line 'ANSWER: <number>'.",
+    "expect": {
+      "answer": "42"
+    }
+  },
+  {
+    "task_id": "reason-boxes",
+    "axis": "reasoning-convergence",
+    "scorer": "exact",
+    "prompt": "Three boxes A, B, C. Exactly one contains a prize. The sign on A reads 'the prize is here'. The sign on B reads 'the prize is not here'. The sign on C reads 'the prize is not in A'. Exactly one of the three signs is true. Which box holds the prize? Show brief working, then end your reply with a line 'ANSWER: <A, B, or C>'.",
+    "expect": {
+      "answer": "B"
+    }
+  },
+  {
+    "task_id": "needle-argon",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the lab protocol below, then answer the question at the end with only the value.\n\n--- PROTOCOL ---\nBefore each run, verify the balance is tared and the fume hood sash is at the marked line. Weigh out the catalyst to the nearest milligram and log the lot number. The reaction vessel must be purged with argon for 12 minutes before heating begins; do not shorten this step even if the line pressure reads nominal. Set the hotplate ramp to 5 degrees per minute and hold the setpoint for two hours. Quench with chilled methanol only after the vessel is below 40 degrees. Record the final mass and photograph the crucible. Dispose of solvent waste in the yellow bin.\n--- END PROTOCOL ---\n\nQuestion: For how long must the reaction vessel be purged with argon before heating?",
+    "expect": {
+      "needle": "12 minutes",
+      "aliases": [
+        "12 min",
+        "12"
+      ]
+    }
+  },
+  {
+    "task_id": "needle-budget",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the meeting notes below, then answer the question at the end with only the value.\n\n--- NOTES ---\nAttendance was light because of the holiday. Priya walked through the roadmap and noted the design review slips to next sprint. Finance flagged that all Q3 travel must be booked against budget code FR-2291 or it will be rejected by the portal. Marcus took the action to update the vendor list. The demo environment will be frozen on Thursday. We agreed to revisit hiring in the next all-hands. Coffee machine on floor 3 is still broken.\n--- END NOTES ---\n\nQuestion: Which budget code must Q3 travel be booked against?",
+    "expect": {
+      "needle": "FR-2291"
+    }
+  },
+  {
+    "task_id": "needle-gate",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the itinerary below, then answer the question at the end with only the value.\n\n--- ITINERARY ---\nDepart Friday on the 07:40 express to the airport; allow time for the long security queue in terminal 2. The first leg lands at 11:05 with a ninety-minute layover. The connecting flight to Lisbon departs from gate B14 — note that this terminal renumbered its gates last year, so ignore older signage. Dinner is booked near the hotel for 20:00 local time. The return is open-jaw from Porto on Tuesday. Keep all boarding passes for the expense report.\n--- END ITINERARY ---\n\nQuestion: From which gate does the connecting flight to Lisbon depart?",
+    "expect": {
+      "needle": "B14"
+    }
+  },
+  {
+    "task_id": "tool-order",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this order line and return ONLY a JSON object with keys \"sku\", \"qty\", and \"status\". Order: 3 units of SKU BOLT-88 were shipped on Tuesday.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {
+      "answer": {
+        "sku": "BOLT-88",
+        "qty": "3",
+        "status": "shipped"
+      }
+    }
+  },
+  {
+    "task_id": "tool-log",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Parse this log line and return ONLY a JSON object with keys \"level\", \"service\", and \"code\". Log line: [ERROR] auth-service returned status 503 during token refresh.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {
+      "answer": {
+        "level": "ERROR",
+        "service": "auth-service",
+        "code": "503"
+      }
+    }
+  },
+  {
+    "task_id": "tool-person",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this sentence and return ONLY a JSON object with keys \"name\", \"role\", and \"city\". Sentence: Dr. Elena Ruiz, the lead radiologist, relocated to Denver last spring.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {
+      "answer": {
+        "name": "Elena Ruiz",
+        "role": "lead radiologist",
+        "city": "Denver"
+      }
+    }
+  },
+  {
+    "task_id": "sum-battery",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key quantitative findings and not adding anything not stated.\n\nPASSAGE: In a recent cell test, replacing the graphite anode with a silicon composite raised measured capacity by 40 percent versus the graphite baseline. The improvement held across the tested range, though the silicon cells showed faster fade, retaining useful capacity for about 500 cycles before dropping below the threshold. The team did not evaluate any lithium-sulfur chemistry in this study.",
+    "expect": {
+      "keypoints": [
+        "silicon",
+        "40",
+        "500"
+      ],
+      "forbid": [
+        "lithium-sulfur"
+      ]
+    }
+  },
+  {
+    "task_id": "sum-policy",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key facts and not adding anything not stated.\n\nPASSAGE: The council approved a carbon levy that takes effect in 2027, adding roughly 12 percent to wholesale fuel costs in the first year. Revenue is earmarked for transit rather than general funds. Officials stressed the measure is a levy, not a subsidy, and that rebates for low-income households were deferred to a later vote.",
+    "expect": {
+      "keypoints": [
+        "carbon",
+        "2027",
+        "12"
+      ],
+      "forbid": [
+        "subsidy"
+      ]
+    }
+  },
+  {
+    "task_id": "sum-merger",
+    "axis": "summarize-extract",
+    "scorer": "keypoints",
+    "prompt": "Summarize the following passage in one or two sentences, keeping the key facts and not adding anything not stated.\n\nPASSAGE: The two firms confirmed a merger that consolidates their engineering teams in Toronto, bringing about 300 employees under one roof by the end of the year. Management said no layoffs are planned as part of the integration, and that the combined group will keep both product lines running in parallel.",
+    "expect": {
+      "keypoints": [
+        "merger",
+        "Toronto",
+        "300"
+      ],
+      "forbid": [
+        "layoffs are planned",
+        "job cuts"
+      ]
+    }
+  },
+  {
+    "task_id": "needle-widget-01",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "You are given an internal parts memo. Read it and answer the question at the end with only the value.\n\n--- MEMO ---\nThe fabrication line runs three shifts. Bin A holds fasteners; bin B holds gaskets. Note for records: the calibration widget code is WX-4417. Bin C holds spare belts. The night supervisor signs off at 06:00. Coolant is topped up weekly. The loading dock closes at 18:00.\n--- END MEMO ---\n\nQuestion: What is the calibration widget code?",
+    "expect": {
+      "needle": "WX-4417"
+    }
+  },
+  {
+    "task_id": "needle-date-01",
+    "axis": "long-context-recall",
+    "scorer": "needle",
+    "prompt": "Read the project log and answer with only the requested value.\n\n--- LOG ---\nSprint 12 began on a Monday. The team closed 14 tickets. The staging deploy was scheduled for the following week. Important: the production cutover is locked for 2026-09-14. Retro was moved to Friday. Two engineers are on leave next month.\n--- END LOG ---\n\nQuestion: On what date is the production cutover locked?",
+    "expect": {
+      "needle": "2026-09-14"
+    }
+  },
+  {
+    "task_id": "tool-extract-01",
+    "axis": "tool-structured",
+    "scorer": "tool_json",
+    "tools_needed": false,
+    "prompt": "Extract the fields from this order line and return ONLY a JSON object with keys \"sku\", \"qty\", and \"status\". Order: 3 units of SKU BOLT-88 were shipped.\n\nReturn only the JSON object as the last thing in your reply.",
+    "expect": {
+      "answer": {
+        "sku": "BOLT-88",
+        "qty": "3",
+        "status": "shipped"
+      }
+    }
+  }
+]

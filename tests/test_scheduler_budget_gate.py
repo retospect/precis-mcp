@@ -168,6 +168,8 @@ def test_exactly_the_llm_cadences_are_marked_spending():
     spending = {c.name for c in scheduler.CADENCES if c.spends}
     # gripe_parked (gr543711): a ``text`` until bills the cheapest tier —
     # the whole 48 h wake pass is deferrable under a budget freeze.
+    # llm_tier_regression (gr595546): the weekly gold-set pass bills a routed
+    # model call per task per rung — deferrable a week under a freeze.
     assert spending == {
         "dream_agent",
         "structural",
@@ -176,6 +178,7 @@ def test_exactly_the_llm_cadences_are_marked_spending():
         "gripe_parked",
         "idea_feed",
         "quest_traps",
+        "llm_tier_regression",
     }
 
 

@@ -61,6 +61,14 @@ was invisible for 4 days):
   KV-cache use over threshold, retractions ticking, or host swap-in
   rising on a serving box, read from the ``serving_*`` columns the
   heartbeat pass scrapes into ``host_heartbeat_log``.
+* ``llm-tier-regression`` — gr595546: a ladder offering's weekly gold-set
+  pass rate dropped against the last recorded run — errored tasks count
+  against the rate (td663780), so a partial outage can't hide behind a
+  shrinking denominator — or a previously-scored offering came back
+  void (nothing scored: all-errors or all-skipped). Model/wire/provider
+  drift, including a provider silently swapping the model behind an id.
+  Reads ``app_settings['llm_tier_regression:last']`` written by the
+  weekly ``llm_tier_regression`` scheduler cadence.
 * ``settings-env-shadowed`` — info-only (db-resident-settings.md slice 4):
   a host still has a registered setting's env var set locally (self-
   reported via ``host_heartbeat.meta.settings_env_present``) after a DB
@@ -1327,11 +1335,112 @@ def _probe_local_serving_pressure(store: Store) -> list[ConditionFinding]:
     return findings
 
 
+def _probe_llm_tier_regression(store: Store) -> list[ConditionFinding]:
+    """gr595546: a ladder offering's weekly gold-set pass rate dropped
+    against the last recorded run — model, wire or provider drift (a
+    provider silently swapping the model behind an id reads the same).
+
+    Reads ``app_settings['llm_tier_regression:last']`` written by the
+    weekly ``llm_tier_regression`` cadence: ``offerings`` holds the
+    current run, ``history[-1]`` the previous — the probe compares them,
+    so the one row is the whole signal and the comparison survives a
+    probe running between weekly fires. The recorded rate is passed over
+    *attempted* tasks — errored tasks count against it (td663780), so a
+    partial outage (some tasks erroring, the rest still passing) reads
+    as the drop it is rather than re-normalising to 100%. A ``None``
+    rate is a void run (nothing scored — every task errored or skipped):
+    scored→void fires as "went dark" (a broken provider/transport path
+    is a regression signal), void→void stays quiet (a consistently dark
+    lane is not news), void→scored is the recovery that lets the
+    per-instance key auto-close. New rungs have no baseline — no
+    finding; a removed rung's key just stops firing. Drop floor:
+    ``PRECIS_COND_TIER_REGRESSION_DROP`` (0.05 — "a few points" on the
+    0..1 rate).
+    """
+    import json
+
+    from precis.workers.tier_regression import LAST_SCORE_KEY
+
+    drop = _env_f("PRECIS_COND_TIER_REGRESSION_DROP", 0.05)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (LAST_SCORE_KEY,)
+        ).fetchone()
+    if not row:
+        return []
+    try:
+        doc = json.loads(str(row[0]))
+    except ValueError:
+        return []
+    if not isinstance(doc, dict):
+        return []
+    history = doc.get("history")
+    prev = history[-1] if isinstance(history, list) and history else None
+    if not isinstance(prev, dict):
+        return []  # first recorded run — nothing to regress against
+    prev_offerings = prev.get("offerings")
+    cur_offerings = doc.get("offerings")
+    if not isinstance(prev_offerings, dict) or not isinstance(cur_offerings, dict):
+        return []
+
+    findings: list[ConditionFinding] = []
+    for key in sorted(cur_offerings):
+        cur = cur_offerings.get(key)
+        old = prev_offerings.get(key)
+        if not isinstance(cur, dict) or not isinstance(old, dict):
+            continue
+        old_rate = old.get("rate")
+        cur_rate = cur.get("rate")
+        model, rung_name, tier_name = (
+            cur.get("model"),
+            cur.get("rung", "?"),
+            cur.get("tier", "?"),
+        )
+        fkey = f"llm-tier-regression:{key}"
+        errors = cur.get("errors") or 0
+        attempted = cur.get("attempted")
+        if not isinstance(attempted, int):
+            attempted = (cur.get("scored") or 0) + errors
+        if isinstance(cur_rate, int | float) and isinstance(old_rate, int | float):
+            if old_rate - cur_rate > drop:
+                err_note = f", {errors} errored" if errors else ""
+                findings.append(
+                    ConditionFinding(
+                        key=fkey,
+                        detail=(
+                            f"{tier_name}/{rung_name} ({model}): pass rate "
+                            f"{old_rate:.0%} → {cur_rate:.0%} on the weekly "
+                            f"gold set ({cur.get('passed', '?')}/"
+                            f"{attempted} passed{err_note}) — model, "
+                            "wire or provider drift"
+                        ),
+                    )
+                )
+        elif cur_rate is None and isinstance(old_rate, int | float):
+            why = (
+                f"every task errored ({errors} errors)"
+                if errors
+                else "no task was scored"
+            )
+            findings.append(
+                ConditionFinding(
+                    key=fkey,
+                    detail=(
+                        f"{tier_name}/{rung_name} ({model}): {why} this "
+                        f"run (was {old_rate:.0%} last run) — offering "
+                        "went dark"
+                    ),
+                )
+            )
+    return findings
+
+
 CONDITIONS: tuple[Condition, ...] = (
     Condition("limiter-bypassed", "warn", _probe_limiter_bypassed),
     Condition("limiter-cap-full", "warn", _probe_limiter_host_cap),
     Condition("limiter-refusing", "warn", _probe_limiter_refusing),
     Condition("local-serving-pressure", "warn", _probe_local_serving_pressure),
+    Condition("llm-tier-regression", "warn", _probe_llm_tier_regression),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),

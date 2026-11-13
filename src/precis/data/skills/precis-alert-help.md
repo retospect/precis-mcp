@@ -211,8 +211,16 @@ rule any producer can emit, grouped by source. The families:
 | `review:empty:<reviewer>` · `review:tool-starved:<reviewer>` | LLM reviewer pass | silent-empty / tool-starved pass (config or credential failure shape) |
 | `disk_check` · `quota_check:auth` · `budget` · `budget:quota` | per-host passes, the LLM breaker | disk under threshold, expired OAuth, spend cap / quota window hit |
 | `local-first:escalation` (`{op}`) | local-first stats, after a helper call | more than 40% of an op's helper calls escalated to the paid model in 24h; one per op per UTC day; consider switching the op's set off |
+
+## Producers — cadences and pass alerts
+
+The scheduled passes and one-off sweeps raise into the same router:
+
+| source family | raised by | what |
+|---|---|---|
 | `memory_recall` (`recall-dropped`) | weekly `memory_recall` cadence | k=5 recall on the packaged P4 question set regressed on the questions shared with the last recorded score (set edits shift leg totals without being drops), or median index + fisheye+1hop estimated tokens rose >25% (`app_settings['memory_recall:last']`, prior runs in `history`; `precis memory index --set --curve` shows k=3/5/8/12 recall versus tokens, estimated by chars/4) |
 | `quest_traps` (`score-dropped`) | weekly `quest_traps` cadence | the planted-trap quest fixture regressed: the frontier confirmed a planted untrusted row (stale-engine measure, swapped endpoint or absurd barrier), or fewer ticks filed an ask (`needs`/`reruns`) instead of proposing on the planted rows than the last recorded run (`app_settings['quest_traps:last']`, prior runs in `history`; the doc's `quest_id` names the dormant sandbox quest — its logbook carries each tick's reasoning) |
+| `llm_tier_regression` · `watchdog:condition` (`llm-tier-regression:<tier>/<rung>`) | `health_digest` conditions probe, over `app_settings['llm_tier_regression:last']` written by the weekly `llm_tier_regression` cadence | a ladder offering's weekly gold-set pass rate (passed over attempted — errored tasks count) dropped more than `PRECIS_COND_TIER_REGRESSION_DROP` (default 0.05) against the last recorded run (`history[-1]` — prior runs in `history`), or a previously-scored offering came back void ("went dark": every task errored or unscored; void→void stays quiet, recovery auto-closes). Model, wire or provider drift — a silent model-id swap reads as a drop |
 | `secret_check` (`failed:<name>`) | weekly `secret_check` cadence | the credential probe in `precis.secret_status` rejected a configured key — alert carries the name, HTTP status and key URL, never the value |
 | `plan_dispatch` (`plan-moot:<root>`) | `plan_dispatch` tick | a plan closed itself as moot — its open nodes were set to `won't-do`; the detail says why, reopen the root if the call was wrong |
 | `run_slice` (`lane-host-refusal:{lane}`) | `run_slice` launch preflight | a lane refused for a host reason (missing binary, dead login, failed trust seed); the lane backs off 30 minutes with no attempt, the detail carries the refusal's next step, and a successful launch on that lane resolves the alert |

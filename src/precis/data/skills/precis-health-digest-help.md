@@ -140,7 +140,12 @@ Derived groups name their check after the thing they watch:
   blind until then); `local-serving-pressure` →
   `local-serving-pressure:<host>` (a serving host's KV usage sustained
   over threshold, retractions, or rising host swap-in — read from
-  `host_heartbeat_log`'s `serving_*` columns).
+  `host_heartbeat_log`'s `serving_*` columns); `llm-tier-regression` →
+  `llm-tier-regression:<tier>/<rung>` (a ladder offering's weekly
+  gold-set pass rate dropped past `PRECIS_COND_TIER_REGRESSION_DROP`
+  against the last recorded run, or a scored offering went dark — read
+  from `app_settings['llm_tier_regression:last']`, written by the weekly
+  `llm_tier_regression` cadence).
 
 ## Where does the doctor read these? — `doctor_tick`
 

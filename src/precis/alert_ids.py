@@ -399,6 +399,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per probe",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "llm-tier-regression:{tier}/{rung}",
+        "A ladder offering's weekly gold-set pass rate (passed over "
+        "attempted — errors count) dropped against the last recorded "
+        "run, or a previously-scored offering came back void — model, "
+        "wire or provider drift (a silent model-id swap reads the same).",
+        budget="per probe",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",

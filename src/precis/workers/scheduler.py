@@ -928,6 +928,28 @@ def _run_quest_traps(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_llm_tier_regression(store: Store, batch_size: int) -> None:
+    """One weekly tier-ladder regression (``precis.workers.tier_regression``,
+    gr595546), fired from the weekly host-agnostic ``llm_tier_regression``
+    cadence — any live worker can win it, except the ``eligible`` gate
+    (:func:`_llm_tier_regression_eligible`) keeps a host that cannot
+    dispatch every ladder rung from claiming a fire it could only fail
+    (drop-no-fire; a capable host reaches LAN-served local offerings too).
+    ``batch_size`` is unused —
+    the pass scores the whole fixed set through every ladder rung each
+    fire. See workers/tier_regression.py; spends=True: each task bills a
+    routed model call."""
+    from precis.workers.tier_regression import run_tier_regression_pass
+
+    result = run_tier_regression_pass(store)
+    log.info(
+        "scheduler: llm_tier_regression inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_memory_recall_harvest(store: Store, batch_size: int) -> None:
     """Propose trace-backed pairs only when the service_config gate is lit."""
     from precis.workers.memory_recall_harvest import run_memory_recall_harvest_pass
@@ -1130,6 +1152,69 @@ def _quest_traps_eligible() -> bool:
     it skips instead and a capable host still gets the fire (drop-no-fire,
     gr518089 — the same probe the other spends=True cadences share)."""
     return _claude_agent_lane()
+
+
+#: How long a computed ``llm_tier_regression`` eligibility verdict is
+#: reused. The probes it walks are TTL-cached reads, not network calls —
+#: ``live_config`` settings 15s; the ``served_by`` sets, ``get_secret``,
+#: ``codex login status`` and the container capability probe 60s — but a
+#: profile-gated rung costs an uncached ``service_config`` SELECT and the
+#: tick is 5s, so the verdict itself is memoized. Eligibility moves on
+#: deploy/credential timescales; a stale verdict costs at most one claim
+#: window on a real change.
+_LLM_TIER_REGRESSION_GATE_TTL_S = 30.0
+_llm_tier_regression_gate: tuple[float, bool] | None = None
+
+
+def _llm_tier_regression_eligible(_now: float | None = None) -> bool:
+    """gr595546/td663780: whether THIS host can dispatch **every rung** the
+    weekly regression pins — the actual transports the run needs, not the
+    claude-agent lane. ``_claude_agent_lane`` accepts the container rescue,
+    but the container carries ``claude_agent`` transports only: a
+    container-only host would claim the fire, error every ``claude_p``
+    completion rung (the router's ``_claude_rung_unavailable`` rescue does
+    not apply to it), and record a fabricated dark week — errored tasks
+    now count against the rate. So: each cloud rung must clear the
+    router's own :func:`~precis.utils.llm.router._rung_unavailable`
+    (binary + credential + endpoint, incl. the container carve-out for
+    ``claude_agent``); each non-cloud rung needs a reachable ``served_by``
+    slot for its model (:func:`~precis.utils.llm.local_serving.served_locally`)
+    — the exact requirement ``pinned_dispatch(..., 'local')`` has at
+    dispatch. A host missing any skips the claim so a capable host still
+    gets the fire (drop-no-fire); fleet-wide incapacity surfaces through
+    the seeded lease's cadence-staleness check, never as a scored run.
+    The verdict is memoized for :data:`_LLM_TIER_REGRESSION_GATE_TTL_S`
+    (see above); ``_now`` is the test seam."""
+    global _llm_tier_regression_gate
+    now = _now if _now is not None else time.monotonic()
+    if (
+        _llm_tier_regression_gate is not None
+        and now - _llm_tier_regression_gate[0] < _LLM_TIER_REGRESSION_GATE_TTL_S
+    ):
+        return _llm_tier_regression_gate[1]
+    ok = _llm_tier_regression_probe()
+    _llm_tier_regression_gate = (now, ok)
+    return ok
+
+
+def _llm_tier_regression_probe() -> bool:
+    """The uncached walk behind :func:`_llm_tier_regression_eligible`."""
+    from precis.llm_eval.regression import ladder_rungs
+    from precis.utils.llm import local_serving
+    from precis.utils.llm.router import (
+        _rung_is_cloud,
+        _rung_unavailable,
+        resolve_model,
+    )
+
+    for tier, rung in ladder_rungs():
+        model = rung.model or resolve_model(tier)
+        if _rung_is_cloud(rung):
+            if _rung_unavailable(rung, model) is not None:
+                return False
+        elif not local_serving.served_locally(model):
+            return False
+    return True
 
 
 def _dream_resolve_interval(store: Store) -> int:
@@ -1587,6 +1672,25 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=7 * 24 * 3600 + 41 * 60,
         run=_run_quest_traps,
         eligible=_quest_traps_eligible,
+        spends=True,
+    ),
+    # gr595546: the weekly tier-ladder regression — run the packaged
+    # ~30-task gold set through every rung of every tier's resolved chain
+    # (local and cloud offerings alike, pinned one rung at a time), record
+    # each offering's pass rate in app_settings, and let the
+    # `llm-tier-regression` condition row fire on a week-over-week drop —
+    # model, wire or provider drift, including a silent model-id swap.
+    # Host-agnostic, off the exact week (+67m, clear of the other weekly
+    # fires). `eligible` gates on the rungs the run will actually pin —
+    # a host that cannot dispatch one (e.g. a container-only lane against
+    # claude_p rungs, or no reachable served_by slot for a local rung)
+    # skips the claim so a capable host still gets the fire.
+    # spends=True: every task bills a routed model call.
+    Cadence(
+        name="llm_tier_regression",
+        interval_s=7 * 24 * 3600 + 67 * 60,
+        run=_run_llm_tier_regression,
+        eligible=_llm_tier_regression_eligible,
         spends=True,
     ),
     # The /secrets stored-status refresher: mints one `secret_status`
