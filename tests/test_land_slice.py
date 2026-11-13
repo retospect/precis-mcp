@@ -594,6 +594,16 @@ def test_with_handle_merges_and_caps() -> None:
     assert land_slice.with_handle("fix(x): y (gr7, td42)", 42) == (
         "fix(x): y (gr7, td42)"
     )
+    # a partial ``refs grN`` joins the list too (gr659980)
+    assert land_slice.with_handle("feat(x): y (td1, refs gr2)", 42) == (
+        "feat(x): y (td1, refs gr2, td42)"
+    )
+    assert land_slice.with_handle("feat(x): y (refs gr2)", 42) == (
+        "feat(x): y (refs gr2, td42)"
+    )
+    assert land_slice.with_handle("feat(x): y (td42, refs gr2)", 42) == (
+        "feat(x): y (td42, refs gr2)"
+    )
     # The cap is ship's hard limit of 120 CHARACTERS — a subject that fits
     # lands whole, handles appended (gr574383: this one is 95 characters
     # and used to be shortened to 72 bytes, cut inside "not").

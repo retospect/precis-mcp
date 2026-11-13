@@ -275,9 +275,12 @@ SUBJECT_CAP = 120
 _DEFAULT_WALL_S = 3600
 _TAIL_CAP = 2000
 
-#: ``scripts/lib/land_notify.py``'s trailing handle list.
+#: ``scripts/lib/land_notify.py``'s trailing handle list, including its
+#: partial ``refs grN`` form (gr659980: a list holding one was not seen,
+#: so a second `` (tdN)`` list was appended and land-notify read only that).
 _HANDLE = r"(?:gr|td)\d+"
-_HANDLES_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
+_ITEM = rf"(?:{_HANDLE}|refs\s+gr\d+)"
+_HANDLES_RE = re.compile(rf"\(({_ITEM}(?:[,\s]+{_ITEM})*)\)\s*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_RE = re.compile(r"SHIP_STATUS:\s*(\S+)")
 #: Ship's ``shipped — landed on main:`` report line, or the release
