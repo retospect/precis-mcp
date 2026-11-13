@@ -29,17 +29,18 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover — we pin >=3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
-from precis.handlers._python_provenance import note_external
+from precis.handlers._python_provenance import (
+    _find_pyproject,
+    note_external,
+)
 from precis.python_index import RepoIndex
 
 log = logging.getLogger(__name__)
 
 
-# Walk this many parent directories from the configured root looking
-# for `pyproject.toml`. Covers `src/<pkg>/`-layout repos where the
-# alias points at the package directory but the project metadata
-# lives one or two levels up.
-_PYPROJECT_SEARCH_DEPTH = 4
+# `_find_pyproject` / `_PYPROJECT_SEARCH_DEPTH` live in
+# `_python_provenance` (shared with the pin check); imported names keep
+# `entries_mod._find_pyproject` reachable for tests.
 
 
 # ---------------------------------------------------------------------------
@@ -114,20 +115,6 @@ def find_entries(idx: RepoIndex) -> EntriesReport:
         console_scripts=tuple(scripts),
         main_guards=tuple(guards),
     )
-
-
-def _find_pyproject(start: Path) -> Path | None:
-    """Walk up at most `_PYPROJECT_SEARCH_DEPTH` levels looking for
-    `pyproject.toml`. Returns the first match or None."""
-    cur = start.resolve()
-    for _ in range(_PYPROJECT_SEARCH_DEPTH):
-        candidate = cur / "pyproject.toml"
-        if candidate.is_file():
-            return candidate
-        if cur == cur.parent:
-            return None
-        cur = cur.parent
-    return None
 
 
 def _load_console_scripts(pyproject: Path, idx: RepoIndex):
