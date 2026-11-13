@@ -138,9 +138,6 @@ _EXEMPT: dict[str, str] = {
     "handlers/paper.py::_render_tags_only_search": (
         "paper list rows — refs carry no stored byte length"
     ),
-    "handlers/paper.py::_render_read_state_search": (
-        "paper list rows — refs carry no stored byte length"
-    ),
     "handlers/patent.py::_render_list": "patent registry rows — meta fields only",
     "handlers/machine.py::search": (
         "fleet census rows — meta facts plus the live heartbeat overlay; "
