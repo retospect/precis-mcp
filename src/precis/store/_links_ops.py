@@ -1381,11 +1381,15 @@ class LinksMixin:
             ins_meta = dict(meta or {})
             if asserted_sha is not None:
                 ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
+            strip_judgment = ""
             if relation == "considered":
                 # The verdict edge pins both endpoint revisions it was
                 # judged against (gr662069) — staleness is then a lazy
                 # read, never a write back onto the edge.
-                from precis.store._consideration_ops import stamp_considered
+                from precis.store._consideration_ops import (
+                    CONSIDER_JUDGMENT_KEYS,
+                    stamp_considered,
+                )
 
                 ins_meta = stamp_considered(
                     c,
@@ -1395,6 +1399,15 @@ class LinksMixin:
                     dst_chunk_id=dst_chunk_id,
                     meta=ins_meta,
                 )
+                # A re-judgment REPLACEs the judgment block: the conflict
+                # path below strips the previous judgment's keys before
+                # overlaying the new meta, so an optional key (passages,
+                # actor/model/run/prompt) the new judgment omits is gone,
+                # never silently retained from the earlier run.
+                strip_judgment = "".join(
+                    f" - '{key}'" for key in sorted(CONSIDER_JUDGMENT_KEYS)
+                )
+            kept_meta = f"(links.meta{strip_judgment})"
 
             extra_params: tuple[Any, ...] = ()
             if asserted_sha is not None and not preserve_fingerprint:
@@ -1409,7 +1422,7 @@ class LinksMixin:
                 )
                 conflict_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
                 meta_clause = (
-                    ", meta = links.meta || %s || CASE WHEN "
+                    f", meta = {kept_meta} || %s || CASE WHEN "
                     f"links.meta ? '{ASSERTED_FINGERPRINT_META}' AND "
                     f"links.meta->>'{ASSERTED_FINGERPRINT_META}' "
                     "IS DISTINCT FROM %s THEN "
@@ -1427,13 +1440,13 @@ class LinksMixin:
                 # ``considered`` always merges on conflict: one edge per
                 # (scope, source) pair carries the LATEST verdict block;
                 # the per-judgment history lives in `considerations`.
-                meta_clause = ", meta = links.meta || EXCLUDED.meta"
+                meta_clause = f", meta = {kept_meta} || EXCLUDED.meta"
                 if preserve_fingerprint:
                     # ``EXCLUDED.meta`` carries the fresh stamp for the
                     # INSERT path; the merge must not let it move a
                     # stored fingerprint either.
                     meta_clause = (
-                        ", meta = links.meta || (EXCLUDED.meta - "
+                        f", meta = {kept_meta} || (EXCLUDED.meta - "
                         f"'{ASSERTED_FINGERPRINT_META}')"
                     )
             else:

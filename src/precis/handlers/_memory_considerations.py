@@ -6,7 +6,9 @@ verdicts, the stale ``REOPEN`` queue (a material scope/source change since
 judgment; reconsider by re-judging through ``rel='considered'`` or
 withdrawing the edge), and ``depth='none'`` acquisition markers — followed
 by the append-only judgment history (every run's verdict; the edge keeps
-only the latest).
+only the latest). The history pages: ``args={'limit': N, 'offset': M}``
+windows it, and every row shows its recorded evidence — passages, prompt
+and the revision pins it was judged against.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from precis.store import Store
 from precis.store.types import Ref
 from precis.utils import handle_registry
 
-_HISTORY_SHOWN = 10
+_HISTORY_PAGE_DEFAULT = 10
+_HISTORY_PAGE_MAX = 100
 
 
 def _handle(kind: str, ref_id: int) -> str:
@@ -50,9 +53,41 @@ def _verdict_line(v: Any, titles: dict[int, str]) -> str:
     return f"{head}\n  {checked} at {v.depth or '?'} depth{depth_note}{n}\n  {v.reason}"
 
 
-def render_considerations(store: Store, ref: Ref) -> Response:
+def _history_row(j: dict[str, Any]) -> str:
+    """One judgment-history row with its recorded evidence: provenance,
+    passages, prompt and the revision pins (gr662069 review — the audit
+    trail is only auditable if the view can read it back)."""
+    src_handle = _handle(j["source_kind"], j["source_ref_id"])
+    provenance = ", ".join(f"{k}={j[k]}" for k in ("actor", "model", "run") if j.get(k))
+    stamp = j["checked_at"].isoformat() if j.get("checked_at") else "?"
+    lines = [
+        f"- {stamp} {j['verdict']} · {src_handle} "
+        f"[{j['reading_depth']}]"
+        + (f" ({provenance})" if provenance else "")
+        + f"\n  {j['reason']}"
+    ]
+    pins = []
+    if j.get("scope_sha") or j.get("source_sha"):
+        pins.append(f"scope_sha={j.get('scope_sha')} source_sha={j.get('source_sha')}")
+    passages = j.get("passages") or []
+    if passages:
+        pins.append(f"passages={passages}")
+    if j.get("prompt"):
+        pins.append(f"prompt={j['prompt']!r}")
+    if pins:
+        lines.append("  " + " · ".join(pins))
+    return "\n".join(lines)
+
+
+def render_considerations(
+    store: Store,
+    ref: Ref,
+    *,
+    history_limit: int = _HISTORY_PAGE_DEFAULT,
+    history_offset: int = 0,
+) -> Response:
     """The scope ledger: current verdicts, the reconsider queue, the
-    needs-text cohort, then the judgment history."""
+    needs-text cohort, then the judgment history (one page)."""
     verdicts = store.scoped_considerations(ref.id)
     handle = _handle("memory", ref.id)
     titles = _titles(store, sorted({v.dst_ref_id for v in verdicts}))
@@ -101,24 +136,25 @@ def render_considerations(store: Store, ref: Ref) -> Response:
                 "judgment:\n" + "\n".join(lines)
             )
 
-    history = store.consideration_history(scope_ref_id=ref.id, limit=_HISTORY_SHOWN)
-    if history:
-        rows = []
-        for j in history:
-            src_handle = _handle(j["source_kind"], j["source_ref_id"])
-            provenance = ", ".join(
-                f"{k}={j[k]}" for k in ("actor", "model", "run") if j.get(k)
-            )
-            stamp = j["checked_at"].isoformat() if j.get("checked_at") else "?"
-            rows.append(
-                f"- {stamp} {j['verdict']} · {src_handle} "
-                f"[{j['reading_depth']}]"
-                + (f" ({provenance})" if provenance else "")
-                + f"\n  {j['reason']}"
+    total = store.consideration_history_count(scope_ref_id=ref.id)
+    if total:
+        limit = max(1, min(int(history_limit), _HISTORY_PAGE_MAX))
+        offset = max(0, int(history_offset))
+        history = store.consideration_history(
+            scope_ref_id=ref.id, limit=limit, offset=offset
+        )
+        first = offset + 1
+        last = offset + len(history)
+        window = f"{first}–{last} of {total}"
+        if total > len(history):
+            window += (
+                f" — page with get(kind='memory', id={handle}, "
+                "view='considerations', args={'limit': <n>, 'offset': <m>})"
             )
         sections.append(
-            f"\nJudgment history (latest {len(history)} — every judgment "
-            "is kept; the edge shows only the newest):\n" + "\n".join(rows)
+            f"\nJudgment history ({window} — every judgment is kept; "
+            "the edge shows only the newest):\n"
+            + "\n".join(_history_row(j) for j in history)
         )
 
     return Response(body="\n".join(sections))

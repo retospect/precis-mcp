@@ -76,8 +76,11 @@ CONSIDERED_STAMPED_KEYS: frozenset[str] = frozenset(
 )
 
 #: The meta keys that make up the judgment itself; anything else on the
-#: edge meta passes through as caller context.
-_CONSIDER_JUDGMENT_KEYS: frozenset[str] = frozenset(
+#: edge meta passes through as caller context. A re-judgment REPLACEs
+#: these keys on the edge (the conflict path strips the old block before
+#: overlaying the new one) — an omitted optional key is gone, never
+#: silently retained from the previous judgment (gr662069 review).
+CONSIDER_JUDGMENT_KEYS: frozenset[str] = frozenset(
     {
         "verdict",
         "reason",
@@ -343,10 +346,12 @@ class ConsiderationMixin:
         scope_ref_id: int | None = None,
         source_ref_id: int | None = None,
         limit: int = 50,
+        offset: int = 0,
         conn: Connection | None = None,
     ) -> list[dict[str, Any]]:
         """The auditable judgment log, newest first. ``None`` filters
-        widen to the whole ledger (bounded by ``limit``)."""
+        widen to the whole ledger (bounded by ``limit``; ``offset`` pages
+        into it)."""
         clauses = ["TRUE"]
         params: list[Any] = []
         if scope_ref_id is not None:
@@ -362,13 +367,43 @@ class ConsiderationMixin:
             "JOIN refs dr ON dr.ref_id = j.source_ref_id "
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY j.recorded_at DESC, j.consideration_id DESC "
-            "LIMIT %s"
+            "LIMIT %s OFFSET %s"
         )
-        params.append(int(limit))
+        params.extend((int(limit), int(offset)))
 
         def _do(c: Connection) -> list[dict[str, Any]]:
             with c.cursor(row_factory=dict_row) as cur:
                 return list(cur.execute(sql, params).fetchall())
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def consideration_history_count(
+        self,
+        *,
+        scope_ref_id: int | None = None,
+        source_ref_id: int | None = None,
+        conn: Connection | None = None,
+    ) -> int:
+        """The unwindowed size of :meth:`consideration_history`'s result
+        — the inspect view pages against this total."""
+
+        def _do(c: Connection) -> int:
+            clauses = ["TRUE"]
+            params: list[Any] = []
+            if scope_ref_id is not None:
+                clauses.append("scope_ref_id = %s")
+                params.append(scope_ref_id)
+            if source_ref_id is not None:
+                clauses.append("source_ref_id = %s")
+                params.append(source_ref_id)
+            row = c.execute(
+                f"SELECT count(*) FROM considerations WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
 
         if conn is not None:
             return _do(conn)

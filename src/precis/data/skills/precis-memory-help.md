@@ -577,6 +577,62 @@ Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`).
 Relation vocabulary (`cites`, `disputes`, `contradicts`, `supports`,
 `derived-from`, …) lives in `precis-relations`.
 
+## Record a considered verdict on a source
+## Mark a checked source as not a match for this question
+
+`rel='considered'` is the durable "checked, does not fit for this
+question, at <UTC>, because <reason>" record (spec me626852). The scope
+is the memory (or quest) holding the question; the target is the judged
+source:
+
+```python
+link(
+    kind="memory",
+    id=73,
+    target="pa<id>",
+    rel="considered",
+    meta={
+        "verdict": "not-useful",   # useful | not-useful | uncertain
+        "reason": "lithium-only; the question is sodium",
+        "depth": "abstract",       # none|metadata|abstract|partial|fulltext|passages
+        "passages": ["pc<id>"],    # optional evidence pins
+        "model": "…", "run": "…",  # optional provenance
+    },
+)
+```
+
+Rules that bite:
+
+- `reason` is required and must be a real sentence — the verdict IS its
+  "not a match because …". `depth='none'` means the text was never
+  acquired: it pairs only with `verdict='uncertain'` and never excludes
+  the source anywhere.
+- Re-judging the same pair replaces the edge's verdict block (omitted
+  `passages`/`model`/`run` are dropped, not inherited) and appends one
+  history row per judgment — two runs never collapse.
+- A material edit to the scope or the source makes the verdict stale:
+  it stops excluding and shows up in the reopen queue. History is never
+  cleared by an edit.
+
+Inspect the ledger — current verdicts, the reopen queue, and the
+append-only judgment history (page it with `args={'limit': 20,
+'offset': 20}`; each row shows its passages, prompt and revision pins):
+
+```python
+get(kind="memory", id=73, view="considerations")
+```
+
+A novelty search for the same scope consumes the valid `not-useful`
+verdicts across every leg and reports what it excluded:
+
+```python
+search(kind="paper", q="…", args={"novel_for": "me73"})
+```
+
+One paper can be `not-useful` for one scope and `useful` for another —
+exclusions are always scoped. Cheap triage never writes a verdict: only
+an explicit `rel='considered'` call records one.
+
 ## Name another ref in the text — it auto-links
 ## Cite a paper / patent / memory inline so the connection is traceable
 

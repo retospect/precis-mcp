@@ -98,6 +98,7 @@ from precis.utils.link_tag_ops import (
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
     link_reason_suffix,
+    merge_link_reason,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -3816,6 +3817,8 @@ class NumericRefHandler(Handler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from an existing numeric ref.
@@ -3826,10 +3829,26 @@ class NumericRefHandler(Handler):
         link to the target at that selector. ``id=[...]`` (kinds with
         ``batch_ids``) fans one target/rel across every source id in
         one transaction — see :meth:`_link_batch`.
+
+        ``meta=`` (edge metadata, add-only) lands on the link row — a
+        machine writer's admission annotation reaches the gate at
+        ``store.add_link`` through it (gr504789), and a consideration
+        verdict (``rel='considered'``, gr662069) is required there:
+        ``{'verdict': 'useful|not-useful|uncertain', 'reason': …,
+        'depth': …}``. ``reason=`` is the kwarg spelling of
+        ``meta={'reason': …}`` (:func:`merge_link_reason`, gr626896);
+        like ``meta=`` it stays single-id only.
         """
+        if meta is not None or reason is not None:
+            if isinstance(id, list):
+                raise BadInput(
+                    "link meta=/reason= require a single id",
+                    next="link each edge separately with its own meta",
+                )
+            meta = merge_link_reason(meta, reason, mode=mode)
         if isinstance(id, list):
             return self._link_batch(id, target=target, mode=mode, rel=rel)
-        return self._link(id=id, target=target, mode=mode, rel=rel)
+        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
 
     def _link_batch(
         self, ids: list[Any], *, target: str | None, mode: str, rel: str | None
@@ -3941,9 +3960,11 @@ class NumericRefHandler(Handler):
         meta: dict[str, Any] | None = None,
     ) -> Response:
         """Body of :meth:`link`. ``meta`` (edge metadata, add-only) is
-        reachable only from a subclass whose ``link`` declares ``meta=``
-        and passes it here — the base ``link`` never does, so every other
-        kind refuses a stray ``meta=`` at the dispatch strictness gate."""
+        declared on :meth:`link` itself since gr662069 — a subclass whose
+        ``link`` declares ``meta=`` and forwards it here keeps its own
+        shape (selection records, machine-edge annotations); kinds that
+        don't inherit the base's acceptance at the dispatch strictness
+        gate."""
         target = require_link_target(self.kind, target)
         validate_link_mode(mode)
         ref_id = self._coerce_id(id)

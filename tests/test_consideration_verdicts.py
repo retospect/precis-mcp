@@ -310,3 +310,162 @@ def test_get_view_considerations(runtime_with_store: PrecisRuntime) -> None:
     assert "not-useful" in out and "out of scope" in out
     assert "abstract" in out  # an abstract-only verdict shows as such
     assert "Judgment history" in out
+
+
+# ── review td662210: replace-on-rejudgment, chunk survival, quest door ──
+
+
+def test_rejudgment_replaces_omitted_judgment_fields(store: Store) -> None:
+    """A re-judgment replaces the verdict block: optional keys the new
+    judgment omits (passages, actor/model/run/prompt) are gone from the
+    edge — never silently retained from the previous judgment — while the
+    history keeps each run's own provenance."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r1", title="R1", text=f"{_Q} r1.")
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="not-useful",
+        reason="first run: out",
+        passages=["pc-quote"],
+        actor="a-1",
+        model="m-1",
+        run="run-1",
+        prompt="p-1",
+    )
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: on-axis after all",
+    )
+    meta = store.links_for(scope, relation="considered", direction="out")[0].meta
+    assert meta["verdict"] == "useful"
+    assert meta["reason"] == "second run: on-axis after all"
+    for omitted in ("passages", "actor", "model", "run", "prompt"):
+        assert omitted not in meta, f"{omitted} retained from the old judgment"
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    by_verdict = {j["verdict"]: j for j in hist}
+    assert by_verdict["not-useful"]["model"] == "m-1"
+    assert by_verdict["not-useful"]["passages"] == ["pc-quote"]
+    assert by_verdict["not-useful"]["prompt"] == "p-1"
+    assert by_verdict["useful"]["model"] is None
+
+
+def test_chunk_replacement_preserves_judgment_history(store: Store) -> None:
+    """A chunk-grounded verdict survives the routine re-ingest chunk
+    replacement (DELETE + INSERT): the edge cascades with its chunk, but
+    the judgment row — the auditable record — stays."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r2", title="R2", text=f"{_Q} r2.")
+    chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "passage-level mismatch",
+        },
+    )
+    assert len(_history(store, scope)) == 1
+    # Re-ingest replaces body chunks: old chunk row deleted, new one inserted.
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
+    # The edge died with its chunk (links FK cascade — pre-existing), but
+    # the judgment history is preserved independently of the live chunk.
+    assert store.scoped_considerations(scope) == []
+    hist = _history(store, scope)
+    assert len(hist) == 1
+    assert hist[0]["source_chunk_id"] == chunk_id
+    assert hist[0]["reason"] == "passage-level mismatch"
+
+
+def test_quest_link_records_considered_verdict(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The general question/quest write surface: ``link(kind='quest',
+    ..., rel='considered', meta=…)`` carries the verdict block — the base
+    numeric-ref link accepts edge meta, so a quest scope needs no special
+    door (gr662069 review)."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    src = _mk_paper(store, slug="cv-r3", title="R3", text=f"{_Q} r3.")
+    out, is_error = rt.dispatch_with_status(
+        "link",
+        {
+            "kind": "quest",
+            "id": quest.id,
+            "target": f"pa{src}",
+            "rel": "considered",
+            "meta": {
+                "verdict": "not-useful",
+                "reason": "off the quest's axis",
+                "depth": "abstract",
+            },
+        },
+    )
+    assert not is_error, out
+    edge = store.links_for(quest.id, relation="considered", direction="out")
+    assert len(edge) == 1
+    assert edge[0].meta["verdict"] == "not-useful"
+    assert edge[0].meta["judgments"] == 1
+    found = store.consideration_exclusions(quest.id)
+    assert src in found.excluded
+
+
+def test_considerations_view_pages_and_shows_evidence(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The inspect route: the judgment history pages (limit/offset with a
+    window against the total) and each row shows its recorded evidence —
+    passages, prompt and the revision pins it was judged against."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r4", title="R4", text=f"{_Q} r4.")
+    for n in range(3):
+        _judge(
+            store,
+            scope,
+            src,
+            verdict="not-useful",
+            reason=f"run {n}: out",
+            passages=[f"pc-quote-{n}"],
+            prompt=f"prompt-{n}",
+        )
+    out, is_error = rt.dispatch_with_status(
+        "get",
+        {
+            "kind": "memory",
+            "id": f"me{scope}",
+            "view": "considerations",
+            "__extras__": {"limit": 2, "offset": 0},
+        },
+    )
+    assert not is_error, out
+    assert "1–2 of 3" in out
+    assert "prompt-2" in out and "pc-quote-2" in out  # newest first
+    assert "prompt-0" not in out
+    assert "scope_sha=" in out and "source_sha=" in out
+    out2, is_error = rt.dispatch_with_status(
+        "get",
+        {
+            "kind": "memory",
+            "id": f"me{scope}",
+            "view": "considerations",
+            "__extras__": {"limit": 2, "offset": 2},
+        },
+    )
+    assert not is_error, out2
+    assert "3–3 of 3" in out2
+    assert "prompt-0" in out2 and "prompt-2" not in out2

@@ -28,6 +28,13 @@
 -- `link_id` is a plain id, no FK: the edge may be removed while the
 -- judgment that wrote it must stay auditable.
 --
+-- `scope_chunk_id` / `source_chunk_id` are plain ids, no FK either, for
+-- the same reason one level down: body chunks are append-only and a
+-- re-ingest replaces them (DELETE + INSERT), so an ON DELETE CASCADE here
+-- would let a routine chunk replacement delete judgment history. The
+-- write door resolves the chunk at judgment time; `scope_sha` /
+-- `source_sha` keep the content evidence after the live chunk is gone.
+--
 -- Forward-only (ADR 0005). Idempotent (`ON CONFLICT DO NOTHING`,
 -- `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
 
@@ -47,9 +54,9 @@ CREATE TABLE IF NOT EXISTS considerations (
     consideration_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     link_id bigint,
     scope_ref_id bigint NOT NULL REFERENCES refs(ref_id) ON DELETE CASCADE,
-    scope_chunk_id bigint REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    scope_chunk_id bigint,
     source_ref_id bigint NOT NULL REFERENCES refs(ref_id) ON DELETE CASCADE,
-    source_chunk_id bigint REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    source_chunk_id bigint,
     verdict text NOT NULL
         CHECK (verdict IN ('useful', 'not-useful', 'uncertain')),
     reason text NOT NULL CHECK (btrim(reason) <> ''),
@@ -76,6 +83,15 @@ CREATE INDEX IF NOT EXISTS considerations_source_idx
     ON considerations (source_ref_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS considerations_link_idx
     ON considerations (link_id) WHERE link_id IS NOT NULL;
+-- The chunk pins are plain columns (no FK — see the header), indexed for
+-- history lookups by chunk; set_by is an FK to actors and needs its
+-- covering index for parent DELETE/UPDATE scans.
+CREATE INDEX IF NOT EXISTS considerations_scope_chunk_idx
+    ON considerations (scope_chunk_id) WHERE scope_chunk_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS considerations_source_chunk_idx
+    ON considerations (source_chunk_id) WHERE source_chunk_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS considerations_set_by_idx
+    ON considerations (set_by);
 
 COMMIT;
 
