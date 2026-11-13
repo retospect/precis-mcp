@@ -358,6 +358,8 @@ class FindingHandler(NumericRefHandler):
         where the claim came from) INSTEAD of ``cited_in=``. Mints
         ``STATUS:acquiring`` plus one ``DREAM:acquire`` paper stub per
         descriptor; the chase worker grounds it once a stub lands a PDF.
+        Spelling the provenance as ``link=<handle>, rel='provenance'``
+        (or ``'derived-from'``) folds into ``provenance=`` (gr661901).
         See :func:`precis.handlers._finding_acquire.put_acquiring`.
 
         **Hub mode** — pass ``supporters=`` instead of

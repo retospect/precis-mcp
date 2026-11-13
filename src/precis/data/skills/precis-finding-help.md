@@ -216,7 +216,10 @@ stub is auto-claimed by `fetch_oa`, a title+url one waits on the hand-
 download queue. `provenance=` is a ref/chunk handle — required, and
 distinct from `cited_in=`: it's where *this claim* came from (a
 research note, a lit-hunt todo, the chunk that cited the not-yet-held
-paper), not a pointer into a paper the corpus already holds.
+paper), not a pointer into a paper the corpus already holds. Spelling it
+as `link=` + `rel='provenance'` (or `'derived-from'`) folds into
+`provenance=`; a `link=` with any other `rel=` mints an extra edge and
+does not fill it.
 
 The chase worker polls the linked stub(s); once one lands a PDF with
 chunks, it grounds the finding — best-matching passage via embedding

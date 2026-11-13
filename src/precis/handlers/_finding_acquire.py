@@ -128,6 +128,19 @@ def put_acquiring(
     ack for a pub_id collision — the caller's
     ``FindingHandler._collision_response``.
     """
+    # Near-miss fold (gr661901): agents kept spelling the provenance as
+    # the mint-time extra link — ``link=<handle>`` with ``rel='provenance'``
+    # (not a registered relation at all — it dies on the links FK) or
+    # ``rel='derived-from'`` (the exact edge ``provenance=`` writes). Fold
+    # the spelling into ``provenance=`` rather than bounce the call on the
+    # missing-kwarg report below; a ``link=`` carrying any other rel stays
+    # the extra link.
+    if link is not None and rel in ("provenance", _DERIVED_FROM):
+        if not provenance or not str(provenance).strip():
+            provenance, link = link, None
+        elif rel == "provenance":
+            rel = _DERIVED_FROM
+
     missing: list[str] = []
     if not title or not title.strip():
         missing.append("title=<short claim title>")
@@ -148,7 +161,8 @@ def put_acquiring(
                 "put(kind='finding', title='<short claim title>', "
                 "body='<claim text + setup>', "
                 "wants=[{'doi':'10.1234/xyz'}], provenance='pc42')  "
-                "— provenance is the ref/chunk handle where this claim "
+                "— provenance is a top-level arg, not the mint-time "
+                "link=/rel= edge: the ref/chunk handle where this claim "
                 "came from (a research note, the lit-hunt todo, or the "
                 "citing chunk); each wants= entry is {'doi':…}, "
                 "{'arxiv':…}, or {'title':…,'url':…}"
