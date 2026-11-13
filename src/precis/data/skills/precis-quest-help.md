@@ -444,22 +444,40 @@ put(kind="todo", text="…", parent_id=<strand td>)            # refine under a 
 tag(kind="todo", id=<td>, add=["STATUS:won't-do"])           # rule it out
 ```
 
-An *idea* is an `open` direction; a try that ran its course marks
-`done`; a never-again marks `won't-do`. Record the *why* as a
-`hypothesis` / `dead-end` logbook entry — that also feeds the
-`open-hypothesis` gap. Link evidence `serves` the **quest**, and the
-direction too when you want the answer pinned to that branch: the
-quest readers (gaps, momentum, alignment, the frontier) still collect
-`serves` one hop from the quest (`gaps._live_servers`), so a
-direction-only link is invisible to them until retire-dossier slice 5
-wires `directions.quest_evidence` through.
+**`ATTEMPT:` never goes on a ref** — it was chunk-level only, valid on
+the dossier's pinned ledger chunks, and retires with it. Attempt state
+lives only on a direction todo's `STATUS`; a standalone memory, finding
+or todo linked to the quest carries none. The convention for what hangs
+where (Reto 2026-11-13):
+
+| thing | lives as | its state |
+|---|---|---|
+| an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
+| the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
+| a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
+| an open question | a `hypothesis` logbook entry | the `open-hypothesis` gap tracks it |
+| evidence — finding, paper, measure, structure | `serves` the quest | — |
+
+An idea's state never rides a tag — not `ATTEMPT:`, not
+`DREAM:speculative`: a try that ran its course marks `done`, a
+never-again `won't-do`, and the *why* is a `hypothesis`/`dead-end`
+entry. **Open questions stay out of the striving statement** — the first
+line keeps the one asymptotic sentence ([[precis-quest-writing-help]]); a
+"what if…" is a `hypothesis` entry where the gap list sees it. Nest a
+check with `part-of`, never `parent_id` — a `parent_id` child joins the
+direction tree itself and leaves `doable` with it. Link evidence
+`serves` the **quest**, and the direction too when you want the answer
+pinned to that branch: the quest readers (gaps, momentum, alignment, the
+frontier) still collect `serves` one hop from the quest
+(`gaps._live_servers`), so a direction-only link is invisible to them
+until retire-dossier slice 5 wires `directions.quest_evidence` through.
 When you search the tree (or the literature) for prior art, phrase the
 query as the thing you expect to find, not as a question — *"subsurface
 H co-doping on Pd(111) lowers NO dissociation barrier"*, not *"does H
 help?"*. Search matches statements; [[precis-search-help]]'s `answers=`
 legs are the same move for papers.
 
-### The dossier is deprecated
+## The dossier is deprecated
 
 The `dossier-of` `draft` — a narrative **rewritten each tick** plus
 pinned `ATTEMPT:`-tagged ledger chunks — is being retired (Reto
