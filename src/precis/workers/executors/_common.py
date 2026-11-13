@@ -137,6 +137,15 @@ CLAIM_AGE_STEP_ENV = "PRECIS_CLAIM_AGE_STEP_S"
 DEFAULT_CLAIM_CLASS_AGE_S = 1800.0
 CLAIM_CLASS_AGE_ENV = "PRECIS_CLAIM_CLASS_AGE_S"
 
+#: Reserved background share (td656098): the class order lets a promoted
+#: background row tie recurring but never beat agent work, so an
+#: always-busy agent queue starved it. About one claim in this many goes
+#: to the oldest waiting background row — unless a human-class or prio-1
+#: row waits (they still preempt). Spare capacity drains background
+#: freely anyway. The tick is per process and per executor.
+_BG_SHARE_EVERY = 10
+_bg_share_ticks: dict[str, int] = {}
+
 #: ``0`` restores the exact pre-slice-2 claim order (aged prio, queued
 #: age, ref_id — the 1.5 floor); anything else keeps the class order.
 CLAIM_CLASS_RANK_ENV = "PRECIS_CLAIM_CLASS_RANK"
@@ -1346,6 +1355,11 @@ def claim_executor_jobs(
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
 
+    **Background share (td656098).** The order never lets a background
+    row beat agent work, so a saturated agent queue would starve it:
+    about one pick in :data:`_BG_SHARE_EVERY` goes to the oldest queued
+    background row instead, unless a human-class or prio-1 row waits.
+
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
     2026-10-24, D4 share half; release band 2026-11-07, gr584136).**
@@ -2085,8 +2099,7 @@ def claim_executor_jobs(
               ) s ON s.sjt = r.meta->>'job_type'
                  AND s.sps = COALESCE(r.meta->'params'->>'pass', '')"""
         share_params = (executor, claim_host, STATUS_NAMESPACE, RUNNING)
-    rows = conn.execute(
-        f"""
+    fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
@@ -2139,37 +2152,71 @@ def claim_executor_jobs(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}
-         ORDER BY claim_rank ASC, {share_order_sql}aged_prio ASC,
-                  q.qs ASC, r.ref_id ASC
+               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}@@BG_WHERE@@
+         ORDER BY @@ORDER_BY@@
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
-        """,
-        (
-            *order_params,
-            STATUS_NAMESPACE,
-            list(CLAIMABLE),
-            _DEFAULT_JOB_PRIO,
-            _DEFAULT_JOB_PRIO,
-            _DEFAULT_JOB_PRIO,
-            executor,
-            STATUS_NAMESPACE,
-            list(CLAIMABLE),
-            _DEFAULT_JOB_PRIO,
-            *share_params,
-            executor,
-            node,
-            STATUS_NAMESPACE,
-            list(CLAIMABLE),
-            STATUS_NAMESPACE,
-            list(TERMINAL),
-            *parent_params,
-            *suspend_params,
-            *cap_params,
-            *reserve_block_params,
-            fresh_limit * _CLAIM_OVERFETCH,
+        """
+    fresh_params: tuple[Any, ...] = (
+        *order_params,
+        STATUS_NAMESPACE,
+        list(CLAIMABLE),
+        _DEFAULT_JOB_PRIO,
+        _DEFAULT_JOB_PRIO,
+        _DEFAULT_JOB_PRIO,
+        executor,
+        STATUS_NAMESPACE,
+        list(CLAIMABLE),
+        _DEFAULT_JOB_PRIO,
+        *share_params,
+        executor,
+        node,
+        STATUS_NAMESPACE,
+        list(CLAIMABLE),
+        STATUS_NAMESPACE,
+        list(TERMINAL),
+        *parent_params,
+        *suspend_params,
+        *cap_params,
+        *reserve_block_params,
+    )
+    rows = conn.execute(
+        fresh_sql.replace("@@BG_WHERE@@", "").replace(
+            "@@ORDER_BY@@",
+            f"claim_rank ASC, {share_order_sql}aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
+        (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
     ).fetchall()
+    # Cross-class starvation guard (td656098): the order above never lets
+    # a background row beat agent work, so under an always-busy agent
+    # queue it never claims. About 1 claim in ``_BG_SHARE_EVERY`` is
+    # reserved for the OLDEST waiting background row; fetch it into the
+    # window explicitly (the overfetch window is agent-ordered and may
+    # not contain it).
+    bg_ticks = _bg_share_ticks.get(executor, 0)
+    bg_share_due = (
+        class_rank_on
+        and fresh_limit > 0
+        and any(
+            (bg_ticks + i) % _BG_SHARE_EVERY == 0 for i in range(1, fresh_limit + 1)
+        )
+    )
+    if bg_share_due:
+        have = {int(r[0]) for r in rows}
+        rows = [
+            *rows,
+            *(
+                r
+                for r in conn.execute(
+                    fresh_sql.replace(
+                        "@@BG_WHERE@@",
+                        " AND b.base_class = 3 AND COALESCE(r.prio, %s)::float8 <> 1",
+                    ).replace("@@ORDER_BY@@", "q.qs ASC, r.ref_id ASC"),
+                    (*fresh_params, _DEFAULT_JOB_PRIO, _CLAIM_OVERFETCH),
+                ).fetchall()
+                if int(r[0]) not in have
+            ),
+        ]
 
     # Scarcity re-rank (6d-deferred, §5.3): capability-rarity is the FIRST
     # claim-order key, then prio (0014 direction — LOWER is more urgent), then
@@ -2262,15 +2309,35 @@ def claim_executor_jobs(
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
         return (-scarcity, rank, share, aged, r[5] or r[4], int(r[0]))
 
+    def _oldest_background(cands: list[Any]) -> int | None:
+        """Index of the oldest queued background-class row — the reserved
+        share's pick. ``None`` when a human-class or prio-1 row waits
+        (they preempt the share) or no background row is queued."""
+        if any(_row_prio(c) == 1.0 or _row_base(c) == 0 for c in cands):
+            return None
+        bg = [
+            i
+            for i, c in enumerate(cands)
+            if _row_base(c) == _BASE_CLASS_RANK["background"]
+        ]
+        if not bg:
+            return None
+        return min(bg, key=lambda i: (cands[i][5] or cands[i][4], int(cands[i][0])))
+
     fresh_claimed = 0
     remaining = sorted(rows, key=_order_key)
     while remaining and fresh_claimed < fresh_limit:
         # Pick the best row under the CURRENT share counts — popping
         # argmin each time keeps a ``limit``-sized batch interleaving
         # shares rather than claiming a statically-sorted prefix.
-        r = remaining.pop(
-            min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
-        )
+        pick = min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
+        if class_rank_on:
+            bg_ticks += 1
+            if bg_ticks % _BG_SHARE_EVERY == 0:
+                oldest = _oldest_background(remaining)
+                if oldest is not None:
+                    pick = oldest
+        r = remaining.pop(pick)
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
         job_type = str(meta.get("job_type") or "")
         cap = caps.get(job_type)
@@ -2302,6 +2369,7 @@ def claim_executor_jobs(
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
         share_key = _share_key(meta)
         running_by_share[share_key] = running_by_share.get(share_key, 0) + 1
+    _bg_share_ticks[executor] = bg_ticks
     return claimed
 
 

@@ -866,6 +866,16 @@ def _reset_connection_scope() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_bg_share_ticks() -> Iterator[None]:
+    """Zero the per-process background-share tick (td656098) so a claim
+    test never lands on the 1-in-10 reserved pick by accumulated count."""
+    from precis.workers.executors import _common
+
+    _common._bg_share_ticks.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_design_tree_caches() -> Iterator[None]:
     """Clear ``design_tree``'s ``@cache``d export reads around each test.
 

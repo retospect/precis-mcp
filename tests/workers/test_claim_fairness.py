@@ -562,3 +562,52 @@ def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
     lanes = int(match.group(1))
     assert lanes >= 2
     assert 1 <= _DRAIN_CAP < lanes
+
+
+def test_background_share_holds_under_saturated_agent_queue(
+    store: Store, monkeypatch: Any
+) -> None:
+    """Cross-class starvation (td656098): with agent work always queued,
+    the oldest background row still claims about 1 pick in 10."""
+    from precis.workers.executors import _common
+
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 0)
+    agents = [_job(store, origin="agent", prio=3, queued_s_ago=60) for _ in range(12)]
+    bg_old = _job(store, origin="background", prio=5, queued_s_ago=100)
+    bg_new = _job(store, origin="background", prio=5, queued_s_ago=50)
+    got = _claim(store, limit=12)
+    assert got.index(bg_old) == 9  # the 10th pick is the reserved one
+    assert set(agents[:9]) <= set(got[:9])
+    assert bg_new not in got[:10]
+
+
+def test_background_share_fires_when_window_misses_background(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The agent-ordered overfetch window may not contain the background
+    row at all; the share still reaches it."""
+    from precis.workers.executors import _common
+
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 9)
+    for _ in range(3):
+        _job(store, origin="agent", prio=3)
+    bg = _job(store, origin="background", prio=5, queued_s_ago=100)
+    assert _claim(store, limit=1) == [bg]
+
+
+def test_human_preempts_background_share(store: Store, monkeypatch: Any) -> None:
+    from precis.workers.executors import _common
+
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 9)
+    human = _job(store, origin="human", prio=3)
+    _job(store, origin="background", prio=5, queued_s_ago=100)
+    assert _claim(store, limit=1) == [human]
+    p1 = _job(store, origin="background", prio=1)
+    assert _claim(store, limit=1)[:1] in ([p1], [])
+
+
+def test_background_drains_freely_without_agent_work(store: Store) -> None:
+    bgs = [
+        _job(store, origin="background", prio=5, queued_s_ago=60 * i) for i in (1, 2)
+    ]
+    assert set(_claim(store)) == set(bgs)
