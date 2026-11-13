@@ -27,7 +27,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -2442,9 +2442,13 @@ class TestTryOpenalexContent:
     ) -> None:
         # gr162141: a paid fetch failing with 402 Payment Required must
         # raise the *same* fetch_oa:openalex_balance alert the proactive
-        # credits_remaining poll uses — even though this stub's own
-        # credits_remaining reading (not exercised here) might look
-        # healthy, because the paid content wallet is a separate balance.
+        # balance poll uses. The reactive path is the ground-truth
+        # fallback for the fail-soft poll: a poll error resolves rather
+        # than raises the alert, and its numbers are the endpoint's own
+        # view of the account — a paid download's payment-shaped refusal
+        # is the one proof the fetch key's account is dry. Poll and
+        # downloads share one key, so a healthy poll already reads the
+        # paying account.
         monkeypatch.setattr(
             fetch_oa,
             "_query_openalex_content_urls",
@@ -3568,6 +3572,104 @@ def test_openalex_credits_probe_takes_a_limiter_token(
             fetch_oa._query_openalex_credits_remaining("k")
     assert taken == ["openalex"]
     client.assert_not_called()
+
+
+class TestOpenAlexUsdBalance:
+    """gr658921: the poll must count prepaid USD, not just the daily allotment."""
+
+    @staticmethod
+    def _poll(
+        monkeypatch: pytest.MonkeyPatch, rl: dict, headers: Any = None
+    ) -> int | None:
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda *a, **k: None)
+        resp = MagicMock()
+        resp.json.return_value = {"rate_limit": rl}
+        if headers is not None:
+            resp.headers = headers
+        client = MagicMock()
+        client.get.return_value = resp
+        with patch.object(fetch_oa, "http_client") as hc:
+            hc.return_value.__enter__.return_value = client
+            return fetch_oa._query_openalex_credits_remaining("k")
+
+    def test_prepaid_balance_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        got = self._poll(
+            monkeypatch,
+            {
+                "credits_remaining": 1094,
+                "daily_remaining_usd": 0.01,
+                "prepaid_remaining_usd": 50.0,
+            },
+        )
+        assert got == 500_100
+
+    def test_legacy_credits_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._poll(monkeypatch, {"credits_remaining": 1094}) == 1094
+
+    def test_usd_headers_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No USD fields in the body: the response's own X-RateLimit-*-USD
+        # headers (daily + prepaid pools) stand in for them.
+        got = self._poll(
+            monkeypatch,
+            {"credits_remaining": 1094},
+            {
+                "x-ratelimit-remaining-usd": "0.01",
+                "x-ratelimit-prepaid-remaining-usd": "50.0",
+            },
+        )
+        assert got == 500_100
+
+    def test_body_usd_fields_win_over_headers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The body fields are authoritative; headers are only a fallback.
+        got = self._poll(
+            monkeypatch,
+            {"daily_remaining_usd": 0.02, "prepaid_remaining_usd": 0.0},
+            {
+                "x-ratelimit-remaining-usd": "99.0",
+                "x-ratelimit-prepaid-remaining-usd": "99.0",
+            },
+        )
+        assert got == 200
+
+    def test_usd_header_junk_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An unparseable header value must not poison the legacy fallback.
+        got = self._poll(
+            monkeypatch,
+            {"credits_remaining": 1094},
+            {"x-ratelimit-remaining-usd": "not-a-number"},
+        )
+        assert got == 1094
+
+    def test_parse_usd_header(self) -> None:
+        assert fetch_oa._parse_usd_header("1.5") == 1.5
+        assert fetch_oa._parse_usd_header(None) is None
+        assert fetch_oa._parse_usd_header("junk") is None
+
+    def test_key_fingerprint_hides_key(self) -> None:
+        fp = fetch_oa._key_fingerprint("secret-key")
+        assert len(fp) == 8 and "secret" not in fp
+
+    def test_key_echo_logged_truncated(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Whether /rate-limit masks its api_key echo is undocumented — the
+        # poll must log it truncated, never in full.
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda *a, **k: None)
+        resp = MagicMock()
+        resp.json.return_value = {
+            "api_key": "FULL-SECRET-ECHO-KEY",
+            "rate_limit": {"credits_remaining": 1},
+        }
+        client = MagicMock()
+        client.get.return_value = resp
+        with patch.object(fetch_oa, "http_client") as hc:
+            hc.return_value.__enter__.return_value = client
+            with caplog.at_level(logging.INFO, logger="precis.workers.fetch_oa"):
+                fetch_oa._query_openalex_credits_remaining("k")
+        assert "FULL-SECRET-ECHO-KEY" not in caplog.text
+        assert "FULL…" in caplog.text
 
 
 class TestOpenAlexBalanceAlert:

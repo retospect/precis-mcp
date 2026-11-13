@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import hashlib
 import json
 import logging
 import math
@@ -1426,22 +1427,30 @@ def _core_api_key() -> str:
 
 _OPENALEX_CONTENT_HOST = "content.openalex.org"
 
-#: OpenAlex account rate-limit / credits endpoint. Keyed; reports the daily
-#: ``credits_remaining`` for the account (content fetch = 100 credits each).
+#: OpenAlex account rate-limit / credits endpoint. Keyed; reports USD
+#: accounting for the key's account: the daily allowance
+#: (``daily_remaining_usd``) and the separate prepaid pool
+#: (``prepaid_remaining_usd``). It exposes no account/user/org identity, only
+#: an echo of the key (``api_key``); whether that echo arrives masked is
+#: undocumented, so each poll logs it truncated. The keyed
+#: response also carries ``X-RateLimit-Remaining-USD`` /
+#: ``X-RateLimit-Prepaid-Remaining-USD`` headers (advertised in its
+#: ``Access-Control-Expose-Headers``) — the same two pools, used as a
+#: fallback when the body's USD fields are absent.
 _OPENALEX_RATE_LIMIT_URL = "https://api.openalex.org/rate-limit"
 
 #: Alert source + stable fingerprint for the low-balance condition. Shared
 #: between the proactive :func:`check_openalex_balance` poll and the reactive
 #: detector in :func:`_try_openalex_content` (gr162141) — same key, so
 #: whichever trigger fires, the *other* path's healthy reading still
-#: auto-resolves it. Deliberately: OpenAlex's ``/rate-limit`` endpoint
-#: reports ``credits_remaining`` for the metered API, but paid content
-#: downloads may draw against a separate prepaid USD wallet that endpoint
-#: never surfaces — so the wallet can run dry (paid fetches failing) while
-#: ``credits_remaining`` still looks healthy. The reactive trigger below is
-#: the guaranteed-correct fallback: it fires straight off the paid fetch's
-#: own failure, regardless of which balance model OpenAlex is actually
-#: enforcing.
+#: auto-resolves it. The poll and the downloads read the *same* key:
+#: ``run_oa_fetch_pass`` resolves one ``openalex_content_key`` and passes it
+#: to both, so the poll already sees the paying account (per OpenAlex's docs
+#: a key belongs to exactly one account, and content downloads are metered
+#: against that account's usage). The reactive trigger is the ground-truth
+#: fallback for when the poll can't be trusted — it fails soft and
+#: auto-resolves on error, and its numbers are the endpoint's own view
+#: rather than proof of what downloads are actually charged.
 _OPENALEX_BALANCE_SOURCE = RULES_BY_ID[
     "fetch_oa:openalex_balance/openalex-content-credits-low"
 ].rule
@@ -1515,10 +1524,15 @@ def _openalex_meta_params(email: str) -> dict[str, str]:
 
 
 def _openalex_min_credits() -> int:
-    """Raise the low-balance alert below this many daily content credits.
+    """Raise the low-balance alert below this many credit-equivalents.
 
-    Configurable via ``PRECIS_OPENALEX_MIN_CREDITS`` (raw credits); the default
-    is ``_OPENALEX_MIN_FETCHES_DEFAULT`` paid fetches' worth (20 × 100 = 2000),
+    One credit-equivalent is 1/100 of a content fetch's USD cost, summed over
+    the daily allowance and prepaid balance (see
+    :func:`_query_openalex_credits_remaining`).
+
+    Configurable via ``PRECIS_OPENALEX_MIN_CREDITS`` (credit-equivalents);
+    the default is ``_OPENALEX_MIN_FETCHES_DEFAULT`` paid fetches' worth
+    (20 × 100 = 2000),
     so the alert fires while there's still runway to acquire papers, not only
     once the account is fully dry.
     """
@@ -1534,8 +1548,24 @@ def _openalex_min_credits() -> int:
     return _OPENALEX_MIN_FETCHES_DEFAULT * _OPENALEX_CONTENT_CREDIT_COST
 
 
+def _parse_usd_header(value: Any) -> float | None:
+    """Parse an ``X-RateLimit-*-USD`` header value; ``None`` when absent/junk."""
+    if not isinstance(value, (str, int, float)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _query_openalex_credits_remaining(api_key: str) -> int | None:
-    """Return the account's daily ``credits_remaining`` from OpenAlex, or None.
+    """Return the key's spendable balance in credit-equivalents, or None.
+
+    Daily + prepaid USD remaining (100 credits = one $0.01 content fetch),
+    read from the /rate-limit body when it carries OpenAlex's USD fields,
+    else from the response's own ``X-RateLimit-Remaining-USD`` /
+    ``X-RateLimit-Prepaid-Remaining-USD`` headers, else the legacy daily
+    ``credits_remaining``.
 
     Hits the keyed ``/rate-limit`` endpoint. ``None`` on any failure or a
     missing/malformed number — the caller treats that as "can't read a balance"
@@ -1547,15 +1577,94 @@ def _query_openalex_credits_remaining(api_key: str) -> int | None:
         resp.raise_for_status()
         data = resp.json()
     rl = data.get("rate_limit") or {}
+    # No account identity is exposed; the key echo is the only handle. The
+    # schema is undocumented, so don't trust the echo to arrive masked —
+    # log it truncated (the fingerprint already identifies the key).
+    log.info(
+        "fetch_oa: OpenAlex /rate-limit answered for key %s (echoed %s), "
+        "prepaid_expires_at=%s content_cost_usd=%s",
+        _key_fingerprint(api_key),
+        _echo_preview(data.get("api_key")),
+        rl.get("prepaid_expires_at"),
+        (rl.get("endpoint_costs_usd") or {}).get("content"),
+    )
+    # The keyed response also carries USD headers (advertised in its
+    # ``Access-Control-Expose-Headers``): ``X-RateLimit-Remaining-USD``
+    # mirrors the daily bucket and ``X-RateLimit-Prepaid-Remaining-USD`` the
+    # separate prepaid pool — the same two-pool model as the body fields.
+    # Logged on every poll so a body/headers disagreement is visible.
+    hdr_daily = _parse_usd_header(resp.headers.get("x-ratelimit-remaining-usd"))
+    hdr_prepaid = _parse_usd_header(
+        resp.headers.get("x-ratelimit-prepaid-remaining-usd")
+    )
+    log.info(
+        "fetch_oa: OpenAlex /rate-limit USD headers for key %s: "
+        "remaining_usd=%s prepaid_remaining_usd=%s",
+        _key_fingerprint(api_key),
+        hdr_daily,
+        hdr_prepaid,
+    )
+    # OpenAlex moved to USD accounting: a free daily budget plus a separate
+    # prepaid balance that is drawn only after the daily budget is spent.
+    # ``credits_remaining`` is the deprecated daily-only view and ignores
+    # prepaid money entirely (gr658921), so prefer the USD fields.
+    daily = rl.get("daily_remaining_usd")
+    prepaid = rl.get("prepaid_remaining_usd")
+    usd = [v for v in (daily, prepaid) if isinstance(v, (int, float))]
+    if not usd and (hdr_daily is not None or hdr_prepaid is not None):
+        # Body without USD fields (schema drift): fall back to the response's
+        # own USD headers — header names per the endpoint's expose-headers,
+        # semantics mirroring the body pools.
+        daily, prepaid = hdr_daily, hdr_prepaid
+        usd = [v for v in (daily, prepaid) if v is not None]
+        log.info(
+            "fetch_oa: OpenAlex balance for key %s read from USD headers "
+            "(body had no USD fields)",
+            _key_fingerprint(api_key),
+        )
+    if usd:
+        total_usd = float(sum(usd))
+        remaining = round(total_usd / _OPENALEX_CONTENT_COST_USD)
+        remaining *= _OPENALEX_CONTENT_CREDIT_COST
+        log.info(
+            "fetch_oa: OpenAlex balance for key %s: daily_remaining_usd=%s "
+            "prepaid_remaining_usd=%s prepaid_balance_usd=%s -> %d credit-equiv",
+            _key_fingerprint(api_key),
+            daily,
+            prepaid,
+            rl.get("prepaid_balance_usd"),
+            remaining,
+        )
+        return remaining
     raw = rl.get("credits_remaining")
+    log.info(
+        "fetch_oa: OpenAlex balance for key %s: legacy credits_remaining=%s "
+        "(no USD fields in /rate-limit; prepaid balance not visible)",
+        _key_fingerprint(api_key),
+        raw,
+    )
     return int(raw) if isinstance(raw, (int, float)) else None
 
 
+def _key_fingerprint(api_key: str) -> str:
+    """Non-reversible short tag identifying which key a balance poll used."""
+    return hashlib.sha256(api_key.encode()).hexdigest()[:8]
+
+
+def _echo_preview(echoed: Any) -> str:
+    """Truncated ``api_key`` echo for logs — ``/rate-limit``'s schema is
+    undocumented, so treat the echo as possibly unmasked key material."""
+    if not isinstance(echoed, str) or not echoed:
+        return repr(echoed)
+    return f"{echoed[:4]}…({len(echoed)}ch)"
+
+
 def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
-    """Poll OpenAlex's ``credits_remaining`` and raise/clear the low-balance alert.
+    """Poll OpenAlex's spendable balance and raise/clear the low-balance alert.
 
     Called once per fetch pass on the paid host (best-effort — never raises).
-    Returns the observed ``credits_remaining`` (``None`` when the poll failed or
+    Returns the observed balance in credit-equivalents (daily + prepaid USD,
+    100 per $0.01 content fetch; ``None`` when the poll failed or
     the endpoint gave no number). When the balance is at or below
     :func:`_openalex_min_credits` a deduped ``warn`` alert is raised (source
     ``fetch_oa:openalex_balance``); when it recovers — or the poll can't read a
@@ -1586,15 +1695,17 @@ def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
                 f"(~{fetches_left} paid fetches)"
             ),
             detail=(
-                f"credits_remaining={remaining} ≤ floor={floor}; each paid "
+                f"spendable_credit_equiv={remaining} ≤ floor={floor}; each paid "
                 f"content fetch costs {_OPENALEX_CONTENT_CREDIT_COST} credits. "
-                "This is the keyed daily allotment — it refills on OpenAlex's "
-                "daily roll, which self-resolves this alert. If the prepaid "
-                "content wallet (not reported by /rate-limit) is dry instead, "
-                "paid fetches fail with a payment/quota signal — the reactive "
-                "trigger raises this same alert off that failure. Top-up is "
-                "account billing at https://openalex.org/users. Unpaid "
-                "api.openalex.org legs don't draw this balance."
+                "Balance = daily budget + prepaid balance remaining for the key "
+                "actually used for fetches (key fingerprint is logged at "
+                "each poll). If credits were bought on a different "
+                "account/key, they won't show here; note prepaid usage "
+                "expires 3 months after the most recent purchase. Paid "
+                "fetches that fail with a payment/quota signal raise this "
+                "same alert. Top-up is account billing at "
+                "https://openalex.org/users. Unpaid api.openalex.org legs "
+                "don't draw this balance."
             ),
             severity="warn",
         )
@@ -2271,10 +2382,15 @@ def _try_openalex_content(
     A bare 429 with no payment-shaped body does *not* raise this alert — it's
     generic rate-limiting, same as ``_try_unpaywall``'s ``rate_limited``
     classification, not a wallet/balance signal.
-    This exists because a paid content download can draw against a separate
-    prepaid balance the ``/rate-limit`` endpoint never reports — so
-    ``credits_remaining`` can look healthy while that wallet is dry and every
-    paid fetch is failing. Best-effort and non-fatal: the fetch still records
+    This exists because the proactive poll is best-effort and fail-soft: a
+    poll that errors resolves the alert instead of raising it, and the
+    endpoint's numbers are its own view of the account — a paid download's
+    own payment-shaped refusal is the one ground truth that the fetch key's
+    account is dry. Note the poll and this leg share one key:
+    ``run_oa_fetch_pass`` passes the same ``openalex_content_key`` to
+    :func:`check_openalex_balance` and to every content download, so a poll
+    reading is already a reading of the paying account. Best-effort and
+    non-fatal: the fetch still records
     ``fetch_failed`` exactly as before either way.
     """
     if not api_key or not stub.doi or not _DOI_RE.match(stub.doi):
@@ -2334,11 +2450,12 @@ def _try_openalex_content(
         if signal is not None and store is not None:
             # Reactive trigger (gr162141): the paid content download itself
             # failed with a payment/quota shape. Raises the *same* alert key
-            # as check_openalex_balance's proactive credits_remaining poll —
-            # a separate prepaid wallet can be dry (paid fetches failing)
-            # while /rate-limit still reports a healthy credits_remaining, so
-            # this is the guaranteed-correct fallback regardless of which
-            # balance model is actually gating the account. Best-effort:
+            # as check_openalex_balance's proactive poll — the ground-truth
+            # fallback for when the poll is untrusted: it fails soft (a poll
+            # error auto-resolves the alert) and its numbers are the
+            # endpoint's own view, not proof of what downloads are actually
+            # charged. (Poll and downloads use the same key, so this is not
+            # an account-mismatch detector.) Best-effort:
             # never raises, and the fetch still records fetch_failed below.
             # ``store`` is None for the manual one-shot CLI
             # (``precis fetch-openalex``), which has no nursery-alert flow —
@@ -2352,11 +2469,11 @@ def _try_openalex_content(
                     detail=(
                         f"paid fetch failed with payment/quota signal {signal} "
                         f"(doi={stub.doi}): {err[:200]}. Reactive trigger — "
-                        "distinct from the proactive credits_remaining poll "
-                        "(check_openalex_balance); a separate prepaid content "
-                        "wallet may be dry even though /rate-limit still "
-                        "reports a healthy balance. Top up at "
-                        "https://openalex.org/users."
+                        "distinct from the proactive balance poll "
+                        "(check_openalex_balance, which reads the same key's "
+                        "account); the fetch key's account is out of spendable "
+                        "balance — daily budget spent and prepaid dry or "
+                        "expired. Top up at https://openalex.org/users."
                     ),
                     severity="warn",
                 )

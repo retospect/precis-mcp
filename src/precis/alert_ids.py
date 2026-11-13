@@ -671,13 +671,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "The OpenAlex content-credit balance is below the low-water mark.",
         "warn",
         "fetch",
-        triage="Read the alert detail: the poll reads the keyed daily "
-        "allotment (resets on OpenAlex's daily roll — the alert "
-        "self-resolves), a payment/quota-shaped paid-fetch failure is the "
-        "separate prepaid wallet. Top-up is account billing at "
+        triage="Read the alert detail: the poll sums the fetch key's daily "
+        "budget and prepaid USD balance (key fingerprint in the worker log); "
+        "credits bought on another account/key won't show. A "
+        "payment/quota-shaped paid-fetch failure also raises it. Top-up is "
+        "account billing at "
         "openalex.org/users (Reto); unpaid api.openalex.org legs don't "
         "draw this balance.",
-        budget="per fetch pass; the allotment rolls daily",
+        budget="per fetch pass; the daily pool rolls, prepaid doesn't",
     ),
     AlertRule(
         "orcid_enrich",

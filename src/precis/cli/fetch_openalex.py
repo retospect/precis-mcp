@@ -11,7 +11,8 @@ https://openalex.org/users, then fund a balance). This is the deliberate
 operator path; the routine ``fetch_oa`` cascade runs the same leg automatically
 once the key is configured on the fetch host (the key IS the opt-in as of
 2026-07-16 — the old ``PRECIS_OPENALEX_CONTENT_AUTO`` second gate was dropped in
-favour of a low-balance alert on ``credits_remaining``).
+favour of a low-balance alert on the key's spendable balance (daily budget +
+prepaid USD)).
 
 Usage::
 
