@@ -334,7 +334,7 @@ def test_small_retry_skips_content_and_timeout(monkeypatch: pytest.MonkeyPatch) 
     assert out.error is None and len(calls) == 2 and len(waits) == 1
     # A transport-flagged wall-clock timeout (LlmResult.timed_out) is never retried.
     prov = _Prov(_errored("stalled", timed_out=True, paused=True))
-    out = router._run_with_retry(
+    out, _attempt_ms = router._run_with_retry(
         prov,
         LlmRequest(tier=Tier.SMALL, prompt="x"),
         model="m",

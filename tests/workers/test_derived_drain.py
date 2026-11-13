@@ -306,3 +306,43 @@ def test_concurrency_param_beats_advertised(
     dd._dispatch(cast(DispatchContext, ctx), dd.SPEC)
 
     assert calls and all(c["concurrency"] == 7 for c in calls)
+
+
+# ── gr595543: the summarize runner wires the escalation rung ─────────────
+
+
+def test_summarize_runner_wires_the_escalate_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PRECIS_SUMMARIZE_ESCALATE_MODEL`` set → the runner hands the pass a
+    DISTINCT escalate client (mirroring the standing pass's wiring in
+    ``cli/_worker_passes.py``); unset → ``None``, the pass refuses as
+    before. Without this the derived_drain caller never saw the new
+    escalation behaviour."""
+    from precis.utils.llm.router import DispatchClient
+
+    seen: dict[str, Any] = {}
+
+    def _fake_pass(store: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
+    monkeypatch.setattr(
+        "precis.workers.llm_summarize.run_llm_summarize_pass", _fake_pass
+    )
+
+    monkeypatch.delenv("PRECIS_SUMMARIZE_ESCALATE_MODEL", raising=False)
+    runner = dd._make_summarize_runner()
+    runner(object(), batch_size=16, concurrency=1)
+    assert seen["escalate_client"] is None
+    assert isinstance(seen["client"], DispatchClient)
+
+    monkeypatch.setenv("PRECIS_SUMMARIZE_ESCALATE_MODEL", "big-model")
+    seen.clear()
+    runner = dd._make_summarize_runner()
+    runner(object(), batch_size=16, concurrency=1)
+    esc = seen["escalate_client"]
+    assert isinstance(esc, DispatchClient)
+    assert esc is not seen["client"]
+    assert esc.model == "big-model"
+    assert esc.source == "llm_summarize:escalate"

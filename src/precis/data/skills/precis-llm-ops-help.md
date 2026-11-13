@@ -60,6 +60,42 @@ A failover chain falls through to the next model on every class except
 per-sample format flake, so another rung's fresh sample may parse even
 though it is the same model on a different wire.
 
+## Attempts and runs — the ledger (gr595543)
+
+Every `llm_call_log` row a `route()`/
+`dispatch_async()` call writes shares a `run_id` and a 1-based `attempt`
+ordinal (migration 0317): rungs the ladder walked past and SMALL-lane
+in-process retries are errored rows stamped `features.superseded`, so a
+run's outcome is its last attempt. Escalation reads as attempt N+1 on the
+same run on a bigger rung; `features.rung` names the rung label (the
+provider entry) that served each attempt. NULL `run_id` = a pre-0317 row
+or a writer outside the router.
+
+A caller's own multi-`route()` attempt sequence — a hard-gate
+rejection's repair turns, an escalation re-dispatch on a bigger rung —
+joins one run via `router.run_scope()` (the next `route()` in its
+extent adopts the ledger; a `route()` inside a running call still mints
+its own). A request carrying `req.accept` (a hard gate over an
+error-free reply: `True` accepts, `False` or a reason string rejects)
+runs a `FailoverProvider` even on a single rung and records
+`features.gate_verdict` = `pass`/`rejected` (+ `features.gate_reason`)
+on each attempt's row — a rejected rung walks past like an errored one,
+so gate-driven escalation is attempt N+1 on a bigger rung, the signal
+`suitability`'s rollup counts as outcome rows. Each row's
+`duration_ms` is that attempt's own wall clock, never the run's whole
+retry window — and a ladder's outcome row names the rung that actually
+served it in both `transport` and `duration_ms`: a local rung 0 that
+fell through to a hosted rung is attributed to the hosted wire at the
+hosted attempt's latency, not to rung 0's (the walked-past rungs carry
+their own superseded rows) — and when a retried walk's terminal rung
+is itself superseded, its row charges that rung's `attempt_ms`, not
+the span the earlier rungs already logged. An empty reply the
+caller's hard gate rejected counts as that rejection: `llm_summarize`
+escalates it to the wired `PRECIS_SUMMARIZE_ESCALATE_MODEL` rung
+instead of silently retrying the small client; a dispatch fault on
+the escalation stays that chunk's outcome (paused backs off, a
+genuine failure fails the chunk) rather than aborting the batch.
+
 **Quota stamping.** Claude reports an exhausted quota as ordinary answer
 text, so the router recognises the wording ("hit your session limit ...
 resets 3pm (UTC)", "out of extra usage") when it makes up the whole reply.

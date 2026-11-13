@@ -147,19 +147,35 @@ _PassRunner = Callable[..., dict[str, Any]]
 
 
 def _make_summarize_runner() -> _PassRunner:
-    """A ``Tier.SMALL`` (local-only) summarize runner — mirrors the client
-    ``cli/worker.py`` builds for the standing ``llm_summarize`` pass."""
+    """A ``Tier.SMALL`` (local-only) summarize runner + optional escalation
+    rung — mirrors the client wiring ``cli/_worker_passes.py`` builds for
+    the standing ``llm_summarize`` pass (``PRECIS_SUMMARIZE_ESCALATE_MODEL``):
+    when the small rung's repair turns still trip the gist contract, the
+    chunk escalates to the bigger rung instead of refusing the write."""
     from precis.utils.llm.router import DispatchClient, Tier
     from precis.workers.llm_summarize import SUMMARIZER_NAME, run_llm_summarize_pass
 
     client = DispatchClient(
         tier=Tier.SMALL, source="llm_summarize", log_call=True, log_blobs=False
     )
+    escalate_model = os.environ.get("PRECIS_SUMMARIZE_ESCALATE_MODEL") or None
+    escalate_client = (
+        DispatchClient(
+            tier=Tier.SMALL,
+            model=escalate_model,
+            source="llm_summarize:escalate",
+            log_call=True,
+            log_blobs=False,
+        )
+        if escalate_model
+        else None
+    )
 
     def run_once(store: Store, *, batch_size: int, concurrency: int) -> dict[str, Any]:
         return run_llm_summarize_pass(
             store,
             client=client,
+            escalate_client=escalate_client,
             summarizer=SUMMARIZER_NAME,
             batch_size=batch_size,
             concurrency=concurrency,

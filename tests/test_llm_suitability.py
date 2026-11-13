@@ -323,6 +323,38 @@ def test_no_signal_rows_never_move_a_posterior(store: Any) -> None:
     assert _suit_meta(store, model)["offerings"] == before
 
 
+def test_gate_verdict_rows_count_as_outcomes(store: Any) -> None:
+    """gr595543: the attempts ledger's hard-gate verdict IS the outcome —
+    ``gate_verdict='pass'`` a success (even on a lite row with
+    ``data_parsed`` unset), ``'rejected'`` a failure even when the reply
+    otherwise ``data_parsed``. Where the small rung passes ~90% you start
+    small; ~20% you skip to the middle tier."""
+    from precis.utils.llm.suitability import rollup
+
+    tag = uuid4().hex[:8]
+    model, src = f"suit-m-{tag}", f"suit-{tag}"
+    _card(store, model)
+    # 4 gated passes on lite rows (data_parsed NULL), 1 ordinary success,
+    # 1 rejection that "parsed" — 5 successes / 1 failure of 6 rows.
+    for _ in range(4):
+        _slog(
+            store,
+            model,
+            source=src,
+            data_parsed=None,
+            extra_features={"gate_verdict": "pass"},
+        )
+    _slog(store, model, source=src)
+    _slog(store, model, source=src, extra_features={"gate_verdict": "rejected"})
+
+    rows = rollup(store)
+    row = next(r for r in rows if r.model == model)
+    assert row.n == 6
+    cell = _cell(store, model)
+    assert cell["alpha"] == pytest.approx(1.0 + 5)  # Beta(1,1) + 5 successes
+    assert cell["beta"] == pytest.approx(1.0 + 1)
+
+
 def test_drift_halves_pre_drift_outcomes(store: Any) -> None:
     from precis.utils.llm.suitability import rollup
 

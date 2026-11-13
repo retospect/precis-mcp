@@ -13,10 +13,12 @@ import logging
 import threading
 import urllib.error
 from email.message import Message
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from precis.utils.llm.router import DispatchClient, DispatchError
 from precis.workers.llm_summarize import (
     EMPTY_RETRY_ATTEMPTS,
     GIST_REPAIR_ATTEMPTS,
@@ -665,6 +667,216 @@ def test_run_pass_clean_candidate_stored_untouched() -> None:
     assert len(t.calls) == 1  # no retry needed
     (_sql, params), *_ = conn.writes
     assert params[2] == "cobalt catalyst triples turnover\n\n12,000 h-1."
+
+
+# --------------------------------------------------------------------------
+# attempts ledger (gr595543): the contract as the router's hard gate,
+# repair turns + escalation as attempts on one run
+# --------------------------------------------------------------------------
+
+
+class _GateRecordingDispatchClient(DispatchClient):
+    """A DispatchClient stub: records the ``accept`` gate each call was
+    offered and serves canned replies — no router needed (evaluating the
+    gate is FailoverProvider's job; these tests check the worker's plumb)."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+        self.calls: list[list[dict[str, str]]] = []
+        self.accepts: list[Any] = []
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        extra_body: dict[str, Any] | None = None,
+        accept: Any = None,
+    ) -> Any:
+        self.calls.append(messages)
+        self.accepts.append(accept)
+        reply = self._replies.pop(0) if self._replies else "BRIEF: g\nDETAIL: d."
+        return SimpleNamespace(text=reply, total_tokens=None)
+
+
+def test_run_pass_threads_the_contract_gate_into_a_dispatch_client() -> None:
+    """gr595543: a routed client is offered the chunk's hard gate on every
+    completion — so the attempt's route-log row records the verdict — where
+    a bare LlmClient completes ungated exactly as before."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    client = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."])
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
+    assert len(client.calls) == 1
+    gate = client.accepts[0]
+    assert callable(gate)
+    # The gate IS the chunk's output contract: a clean reply passes with
+    # True, a leaked-reasoning one rejects with the trip reason.
+    assert gate(SimpleNamespace(text="BRIEF: g\nDETAIL: d.")) is True
+    assert isinstance(gate(SimpleNamespace(text=_LEAKED_REASONING)), str)
+
+
+def test_run_pass_escalates_to_the_bigger_rung(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr576133's same-model retry loop ends: when the small rung's repairs
+    all lose the contract the chunk escalates to the wired escalate_client —
+    attempt N+1 on a bigger rung — instead of refusing the write."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient(
+        [_LEAKED_REASONING] * (1 + GIST_REPAIR_ATTEMPTS)
+    )
+    big = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."])
+
+    with caplog.at_level(logging.WARNING):
+        result = run_llm_summarize_pass(
+            store, client=small, escalate_client=big, batch_size=10
+        )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
+    assert len(small.calls) == 1 + GIST_REPAIR_ATTEMPTS
+    assert len(big.calls) == 1
+    # Both rungs were offered the contract gate; the escalate rung is a
+    # distinct client (the same-model-twice hazard the env pin avoids).
+    assert all(callable(a) for a in [*small.accepts, *big.accepts])
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."
+
+
+def test_run_pass_without_escalate_client_refuses_as_before() -> None:
+    """No bigger rung wired → the exhausted-repairs path is unchanged: the
+    write is refused, the lease's attempts bump records the failure."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    client = LlmClient(LlmConfig(), transport=_FakeTransport(_LEAKED_REASONING))
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1, "rejected": 1}
+    assert conn.leases == {1: 1}
+    assert conn.writes == []
+
+
+def test_run_pass_escalates_an_empty_candidate_to_the_bigger_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr595543 review: an empty small-rung candidate trips the hard gate;
+    with a bigger rung wired that rejection escalates — the chunk reaches
+    the escalation instead of the EmptySummaryError retrying the small
+    client invisibly (gr576133)."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient([""])
+    big = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."])
+    sleeps: list[float] = []
+    monkeypatch.setattr("precis.workers.llm_summarize.time.sleep", sleeps.append)
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
+    assert len(small.calls) == 1  # no same-model empty retry
+    assert len(big.calls) == 1
+    assert sleeps == []  # escalation answered; the retry backoff never ran
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."
+
+
+class _RaisingDispatchClient(DispatchClient):
+    """A DispatchClient whose ``complete`` raises a scripted exception —
+    the bigger-rung fault shapes the pass must keep per chunk (an escape
+    aborts the batch before any of its outcomes persist)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.calls = 0
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        extra_body: dict[str, Any] | None = None,
+        accept: Any = None,
+    ) -> Any:
+        self.calls += 1
+        raise self._exc
+
+
+def test_run_pass_escalation_dispatch_error_fails_only_that_chunk() -> None:
+    """gr595543 review: a genuine DispatchError out of the bigger rung used
+    to escape ``_complete`` and abort the whole batch before any outcome
+    was persisted. It is a per-chunk failure now — the sibling's summary
+    still lands."""
+    conn = _FakeConn(
+        claim_rows=[_claim_row(chunk_id=1), _claim_row(chunk_id=2)],
+        card_text="Title: x",
+    )
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient(["", "BRIEF: g\nDETAIL: d."])
+    big = _RaisingDispatchClient(DispatchError("backend exploded"))
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 2, "ok": 1, "failed": 1, "rejected": 0}
+    assert big.calls == 1
+    assert conn.leases == {1: 1}  # chunk 1's lease bumped, kept for retry
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."  # chunk 2's summary written
+
+
+def test_run_pass_escalation_paused_backs_off_per_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr595543 review: a paused DispatchError (all local slots busy) from
+    the bigger rung keeps the paused-backoff handling — the chunk backs
+    off and retries the sequence, ending as a recorded transient miss,
+    never an abort."""
+    monkeypatch.setattr("precis.workers.llm_summarize.EMPTY_RETRY_BACKOFF_S", 0.0)
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient([""] * (EMPTY_RETRY_ATTEMPTS + 1))
+    big = _RaisingDispatchClient(
+        DispatchError("all local serving slots busy", paused=True)
+    )
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1, "rejected": 0}
+    # Every empty-retry attempt escalated and paused — the backoff ran the
+    # full in-process retry budget before the miss was recorded transient.
+    assert big.calls == EMPTY_RETRY_ATTEMPTS + 1
+    assert conn.leases == {1: 1}
+    assert conn.writes == []
+
+
+def test_run_pass_escalation_unexpected_error_fails_only_that_chunk() -> None:
+    """gr595543 review: a non-DispatchError fault out of the bigger rung
+    (a parse flake, a client bug) is likewise a per-chunk failure, not a
+    batch abort."""
+    conn = _FakeConn(
+        claim_rows=[_claim_row(chunk_id=1), _claim_row(chunk_id=2)],
+        card_text="Title: x",
+    )
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient(["", "BRIEF: g\nDETAIL: d."])
+    big = _RaisingDispatchClient(RuntimeError("client exploded"))
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 2, "ok": 1, "failed": 1, "rejected": 0}
+    assert conn.leases == {1: 1}
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."
 
 
 # --------------------------------------------------------------------------

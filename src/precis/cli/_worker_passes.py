@@ -690,11 +690,31 @@ def build_ref_passes(
             # this only raises the cap.
             max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS,
         )
+        # Escalation (gr595543): when the small rung's repair turns still
+        # trip the gist contract, the chunk escalates to a bigger rung —
+        # attempt N+1 on the SAME router run, ending the same-model retry
+        # loop gr576133 reported. A *distinct* client bound to the
+        # env-pinned model (mirrors classify's gate/escalate shape below;
+        # a registered op source would silently re-run the small chain).
+        _sum_escalate_model = os.environ.get("PRECIS_SUMMARIZE_ESCALATE_MODEL") or None
+        _sum_escalate_client = (
+            _DispatchClient(
+                tier=_Tier.SMALL,
+                model=_sum_escalate_model,
+                source="llm_summarize:escalate",
+                log_call=True,
+                log_blobs=False,
+                max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS,
+            )
+            if _sum_escalate_model
+            else None
+        )
 
         def _llm_summarize_pass(batch_size: int) -> _BatchResult:
             r = run_llm_summarize_pass(
                 store,
                 client=_summarize_client,
+                escalate_client=_sum_escalate_client,
                 summarizer=SUMMARIZER_NAME,
                 batch_size=min(batch_size, 16),
                 # Live service_config.concurrency wins; NULL/no row -> env value.

@@ -179,6 +179,16 @@ class LlmCallRecord:
     #: ``features`` still carries it (alongside ``retry_at``) — this column is
     #: the queryable projection, not the only store.
     reason_class: str | None = None
+    #: The attempts-ledger identity (migration 0317): ``run_id`` groups every
+    #: logged attempt of one router run (one ``route()``/``dispatch_async()``
+    #: invocation — ladder rungs walked, in-process retries, gate early-outs —
+    #: plus every ``route()`` inside a caller-bound
+    #: ``router.run_scope()`` extent), ``attempt`` is this row's 1-based
+    #: ordinal within it. Escalation reads as attempt N+1 on the same run
+    #: on a bigger rung. ``None``/``None`` from a writer outside the
+    #: router (tests, backfills, cost records).
+    run_id: str | None = None
+    attempt: int | None = None
 
 
 def _billed_usd(rec: LlmCallRecord) -> float | None:
@@ -317,13 +327,14 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 cost_usd, billed_usd, turns_used, duration_ms, errored, error,
                 data_parsed, ref_id, features, placement, placement_routed,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                reason_class
+                reason_class, run_id, attempt
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s,
+                %s, %s, %s
             )
             """,
             (
@@ -352,6 +363,8 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 rec.cache_read_tokens,
                 rec.cache_creation_tokens,
                 rec.reason_class,
+                rec.run_id,
+                rec.attempt,
             ),
         )
         conn.commit()

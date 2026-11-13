@@ -51,6 +51,22 @@ import/edit path — gets the same :class:`~precis.errors.BadInput`
 refusal. The pass reports the contract's own rate as ``rejected``
 alongside ``ok``/``failed``, so a model drifting off contract is visible
 as a rate rather than as a scatter of per-chunk warnings.
+
+**Attempts ledger** (gr595543): when the client is a router
+:class:`~precis.utils.llm.router.DispatchClient`, the same contract is
+threaded *into* the dispatch as its hard gate (``req.accept``), so every
+attempt's route-log row records ``features.gate_verdict``/``gate_reason``
+— and one chunk's whole sequence (first candidate, repair turns,
+escalation) runs inside :func:`~precis.utils.llm.router.run_scope` so
+the rows share one ``run_id`` with ascending ``attempt`` ordinals.
+``PRECIS_SUMMARIZE_ESCALATE_MODEL`` (wired in ``_worker_passes``) is a
+distinct client bound to a bigger rung: when the small rung's repairs
+exhaust the contract, the chunk escalates to it — attempt N+1 on a
+bigger rung of the same run, not an invisible same-model retry
+(gr576133) and not a fresh unrelated run. A dispatch fault on the
+escalation itself stays this chunk's outcome (a paused one backs off,
+a genuine one fails the chunk) — never an escape that aborts the batch
+before its outcomes persist.
 """
 
 from __future__ import annotations
@@ -61,6 +77,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any
@@ -72,7 +89,7 @@ from precis.liveness import drain_requested
 from precis.store.protocols import PoolStore
 from precis.utils.llm.openai_tools import HttpTransport as Transport
 from precis.utils.llm.openai_tools import _UrllibTransport
-from precis.utils.llm.router import DispatchError
+from precis.utils.llm.router import DispatchClient, DispatchError, run_scope
 from precis.utils.prompt import (
     AssemblyContext,
     Layer,
@@ -1744,10 +1761,105 @@ def _is_numeric_dump(text: str) -> bool:
     return sum(c.isdigit() for c in text) / len(text) > MAX_DIGIT_FRACTION
 
 
+def _contract_gate(claim: _Claimed) -> Callable[[Any], bool | str]:
+    """The output contract as the router's hard gate (an ``AcceptFn``).
+
+    Threaded into ``LlmRequest.accept`` when the client is a
+    :class:`DispatchClient`: a candidate that trips :func:`_reject_reason`
+    is a *recorded* gate rejection — the attempt's route-log row carries
+    ``features.gate_verdict='rejected'`` plus the trip reason — instead of
+    an invisible caller-side retry (gr595543). An empty/unparseable reply
+    rejects as ``"empty summary"``, the same verdict :func:`parse_summary`
+    applies.
+    """
+
+    def _gate(result: Any) -> bool | str:
+        try:
+            candidate = parse_summary(result.text)
+        except EmptySummaryError:
+            return "empty summary"
+        return _reject_reason(candidate, claim.text, cited_ids=claim.cited_ids) or True
+
+    return _gate
+
+
+def _complete_gated(
+    client: Any,
+    messages: list[dict[str, str]],
+    *,
+    gate: Callable[[Any], bool | str],
+) -> Any:
+    """``client.complete`` with the hard gate threaded in when the client
+    routes: a :class:`DispatchClient` stamps ``features.gate_verdict`` on
+    the attempt's row (and a multi-rung chain escalates the rejection);
+    a bare ``LlmClient`` just completes, as it always has."""
+    if isinstance(client, DispatchClient):
+        return client.complete(messages, accept=gate)
+    return client.complete(messages)
+
+
+@dataclass
+class _Gen:
+    """One rung's gated generation sequence (first candidate + repair
+    turns): the passing candidate, or the terminal rejection with its
+    first + last trip reasons. ``drained`` marks a mid-sequence SIGTERM
+    stop — the lease stays for the reaper."""
+
+    summary: str | None = None
+    total_tokens: int | None = None
+    first_reason: str | None = None
+    reason: str | None = None
+    drained: bool = False
+
+
+def _gen(
+    client: Any,
+    messages: list[dict[str, str]],
+    *,
+    claim: _Claimed,
+    gate: Callable[[Any], bool | str],
+) -> _Gen:
+    """One rung's generation sequence: the first candidate plus up to
+    :data:`GIST_REPAIR_ATTEMPTS` repair turns, each dispatched under
+    ``gate`` so its attempt's row records the verdict. Returns the
+    passing candidate, ``drained``, or the terminal rejection reason."""
+    result = _complete_gated(client, messages, gate=gate)
+    summary = parse_summary(result.text)
+    reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
+    if reason is None:
+        return _Gen(summary=summary, total_tokens=result.total_tokens)
+    first_reason = reason
+    convo = list(messages)
+    for _repair in range(GIST_REPAIR_ATTEMPTS):
+        log.warning(
+            "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
+            claim.chunk_id,
+            reason,
+            summary[:80],
+        )
+        if drain_requested():
+            return _Gen(drained=True, first_reason=first_reason)
+        convo += [
+            {"role": "assistant", "content": result.text},
+            _repair_message(reason),
+        ]
+        result = _complete_gated(client, convo, gate=gate)
+        summary = parse_summary(result.text)
+        reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
+        if reason is None:
+            return _Gen(
+                summary=summary,
+                total_tokens=result.total_tokens,
+                first_reason=first_reason,
+            )
+    return _Gen(reason=reason, first_reason=first_reason)
+
+
 def run_llm_summarize_pass(
     store: PoolStore,
     *,
     client: Any,
+    escalate_client: Any | None = None,
     summarizer: str = SUMMARIZER_NAME,
     batch_size: int = 16,
     concurrency: int = 1,
@@ -1782,6 +1894,12 @@ def run_llm_summarize_pass(
        write that still fails goes through the normal ``_mark_failed`` path.
        A crashed worker between phases simply leaves leases that the cooldown
        re-claims.
+
+    ``escalate_client`` (optional — ``PRECIS_SUMMARIZE_ESCALATE_MODEL``):
+    a DISTINCT client bound to a bigger rung. When the small rung's
+    repairs still trip the contract, the chunk escalates to it inside the
+    same router run — attempt N+1 on a bigger rung (gr595543), mirroring
+    classify's gate/escalate shape. ``None`` keeps the terminal refusal.
     """
     # Clamp before anything else — mirrors classify.py's run_classify_pass
     # (see MAX_CONCURRENCY_ENV above).
@@ -1829,126 +1947,209 @@ def run_llm_summarize_pass(
         claim, messages, prompt_hash = item
         empty_exc: EmptySummaryError | None = None
         busy_exc: DispatchError | None = None
-        # Retry an EMPTY completion in-process: it is a transient backend blank
-        # (the shared 80B returns "" under contention), and the same input
-        # summarizes on replay — so a momentary blip is recovered here instead
-        # of deferring a whole cooldown. Runs in a pool worker thread, so the
-        # short backoff never blocks the main-thread lease heartbeat.
-        for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
-            if drain_requested():
-                # The drain flag flipped mid-pass (SIGTERM): no further
-                # dispatches — the router's drain arm would refuse them
-                # anyway (gr575071). A chunk never attempted keeps its lease
-                # for the cooldown reaper (drained, not failed); one that
-                # already missed keeps the transient it recorded.
-                return _Outcome(
-                    claim,
-                    prompt_hash,
-                    None,
-                    None,
-                    empty_exc or busy_exc,
-                    drained=empty_exc is None and busy_exc is None,
-                )
-            try:
-                result = client.complete(messages)
-                summary = parse_summary(result.text)
-                reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
-                if reason is None:
+        gate = _contract_gate(claim)
+        # One chunk's whole attempt *sequence* — first candidate, repair
+        # turns, escalation — is one router run (gr595543): every dispatch
+        # a routed client makes in here shares its run_id with ascending
+        # attempt ordinals, so "small rung lost the gate, bigger rung
+        # answered" is countable instead of invisible.
+        with run_scope():
+            for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
+                if drain_requested():
+                    # The drain flag flipped mid-pass (SIGTERM): no further
+                    # dispatches — the router's drain arm would refuse them
+                    # anyway (gr575071). A chunk never attempted keeps its
+                    # lease for the cooldown reaper (drained, not failed);
+                    # one that already missed keeps the transient it
+                    # recorded.
                     return _Outcome(
-                        claim, prompt_hash, summary, result.total_tokens, None
+                        claim,
+                        prompt_hash,
+                        None,
+                        None,
+                        empty_exc or busy_exc,
+                        drained=empty_exc is None and busy_exc is None,
                     )
-                # Fail-closed output contract (gr338215, gist guard
-                # 2026-10-13): never store a candidate that reads like
-                # leaked reasoning or names an identifier the chunk does
-                # not carry. Each rejection goes back to the model with
-                # the specific reason for up to GIST_REPAIR_ATTEMPTS
-                # repairs; still failing, the write is refused — the old
-                # gist (or none) stays and the reason lands on the lease's
-                # failure record via _mark_failed.
-                first_reason = reason
-                convo = list(messages)
-                for _repair in range(GIST_REPAIR_ATTEMPTS):
-                    log.warning(
-                        "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
-                        claim.chunk_id,
-                        reason,
-                        summary[:80],
-                    )
-                    if drain_requested():
-                        # Drain flipped mid-repair (SIGTERM): the repair
-                        # dispatch would be refused by the router's drain arm
-                        # anyway (gr575071). Same outcome shape as the
-                        # attempt-loop guard above — a chunk that already
-                        # missed keeps its recorded transient, otherwise the
-                        # lease stays for the cooldown reaper; the rejection
-                        # is logged, not recorded as a failure.
+                try:
+                    gen = _gen(client, messages, claim=claim, gate=gate)
+                    # Fail-closed output contract (gr338215, gist guard
+                    # 2026-10-13): never store a candidate that reads like
+                    # leaked reasoning or names an identifier the chunk
+                    # does not carry. Each rejection goes back to the model
+                    # with the specific reason for up to
+                    # GIST_REPAIR_ATTEMPTS repairs; still failing, the
+                    # chunk escalates to the wired bigger rung
+                    # (escalate_client — attempt N+1 on this same run),
+                    # and only a rung-2 refusal refuses the write — the
+                    # old gist (or none) stays and the reason lands on the
+                    # lease's failure record via _mark_failed.
+                    if gen.drained:
                         return _Outcome(
                             claim,
                             prompt_hash,
                             None,
                             None,
                             empty_exc or busy_exc,
-                            first_reason,
+                            gen.first_reason,
                             drained=empty_exc is None and busy_exc is None,
                         )
-                    convo += [
-                        {"role": "assistant", "content": result.text},
-                        _repair_message(reason),
-                    ]
-                    result = client.complete(convo)
-                    summary = parse_summary(result.text)
-                    reason = _reject_reason(
-                        summary, claim.text, cited_ids=claim.cited_ids
-                    )
-                    if reason is None:
+                    if gen.summary is not None:
                         return _Outcome(
                             claim,
                             prompt_hash,
-                            summary,
-                            result.total_tokens,
+                            gen.summary,
+                            gen.total_tokens,
                             None,
-                            first_reason,
+                            gen.first_reason,
                         )
-                log.warning(
-                    "llm_summarize: chunk_id=%s gist refused after %d repairs "
-                    "(%s); keeping existing summary",
-                    claim.chunk_id,
-                    GIST_REPAIR_ATTEMPTS,
-                    reason,
-                )
-                return _Outcome(
-                    claim,
-                    prompt_hash,
-                    None,
-                    None,
-                    GistRejectedError(f"gist refused: {reason}"),
-                    first_reason,
-                )
-            except EmptySummaryError as exc:
-                # A model/backend miss, not a bug — no per-chunk ERROR traceback
-                # (it floods the log surface). Recorded below only if *every*
-                # retry also comes back empty (a sustained window); the caller
-                # emits one aggregated WARNING per batch.
-                empty_exc = exc
-                if attempt < EMPTY_RETRY_ATTEMPTS:
-                    time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
-            except DispatchError as exc:
-                if not exc.paused:
-                    # A genuine dispatch/transport failure — no retry.
+                    refused = gen.reason
+                    if escalate_client is not None:
+                        if drain_requested():
+                            return _Outcome(
+                                claim,
+                                prompt_hash,
+                                None,
+                                None,
+                                empty_exc or busy_exc,
+                                gen.first_reason,
+                                drained=empty_exc is None and busy_exc is None,
+                            )
+                        # Escalation: the bigger rung's generation sequence
+                        # continues the same run — attempt N+1 on a bigger
+                        # rung, not a new run and not another same-model
+                        # retry (gr576133).
+                        esc = _gen(escalate_client, messages, claim=claim, gate=gate)
+                        if esc.drained:
+                            return _Outcome(
+                                claim,
+                                prompt_hash,
+                                None,
+                                None,
+                                empty_exc or busy_exc,
+                                gen.first_reason,
+                                drained=empty_exc is None and busy_exc is None,
+                            )
+                        if esc.summary is not None:
+                            return _Outcome(
+                                claim,
+                                prompt_hash,
+                                esc.summary,
+                                esc.total_tokens,
+                                None,
+                                gen.first_reason,
+                            )
+                        refused = esc.reason or refused
+                    log.warning(
+                        "llm_summarize: chunk_id=%s gist refused after %d repairs "
+                        "(%s); keeping existing summary",
+                        claim.chunk_id,
+                        GIST_REPAIR_ATTEMPTS,
+                        refused,
+                    )
+                    return _Outcome(
+                        claim,
+                        prompt_hash,
+                        None,
+                        None,
+                        GistRejectedError(f"gist refused: {refused}"),
+                        gen.first_reason,
+                    )
+                except EmptySummaryError as exc:
+                    # A model/backend miss, not a bug — no per-chunk ERROR
+                    # traceback (it floods the log surface). Recorded below
+                    # only if *every* retry also comes back empty (a sustained
+                    # window); the caller emits one aggregated WARNING per
+                    # batch.
+                    empty_exc = exc
+                    # An empty candidate tripped the hard gate (its row
+                    # recorded the rejection) — with a bigger rung wired,
+                    # that rejection IS the escalation trigger (gr595543):
+                    # attempt N+1 on the same run, not another invisible
+                    # same-model retry that never reaches the escalation
+                    # (gr576133).
+                    if escalate_client is not None and not drain_requested():
+                        try:
+                            esc = _gen(
+                                escalate_client, messages, claim=claim, gate=gate
+                            )
+                        except EmptySummaryError:
+                            esc = None  # the bigger rung missed too
+                        except DispatchError as exc:
+                            # An escalation dispatch fault is still THIS
+                            # chunk's outcome — escaping _complete would
+                            # abort the batch before any outcome persisted
+                            # (gr595543 review). A genuine failure fails the
+                            # chunk; a paused one (all slots busy) joins the
+                            # backoff below, exactly as the outer handler.
+                            if not exc.paused:
+                                log.exception(
+                                    "llm_summarize: chunk_id=%s failed",
+                                    claim.chunk_id,
+                                )
+                                return _Outcome(claim, prompt_hash, None, None, exc)
+                            busy_exc = exc
+                            esc = None
+                        except Exception as exc:  # a genuine error — per chunk
+                            log.exception(
+                                "llm_summarize: chunk_id=%s failed", claim.chunk_id
+                            )
+                            return _Outcome(claim, prompt_hash, None, None, exc)
+                        if esc is not None:
+                            if esc.drained:
+                                return _Outcome(
+                                    claim,
+                                    prompt_hash,
+                                    None,
+                                    None,
+                                    empty_exc or busy_exc,
+                                    "empty summary",
+                                    drained=empty_exc is None and busy_exc is None,
+                                )
+                            if esc.summary is not None:
+                                return _Outcome(
+                                    claim,
+                                    prompt_hash,
+                                    esc.summary,
+                                    esc.total_tokens,
+                                    None,
+                                    "empty summary",
+                                )
+                            if esc.reason is not None:
+                                # The bigger rung ran but lost the contract —
+                                # terminal, same verdict shape as the
+                                # small-rung refusal below.
+                                return _Outcome(
+                                    claim,
+                                    prompt_hash,
+                                    None,
+                                    None,
+                                    GistRejectedError(f"gist refused: {esc.reason}"),
+                                    "empty summary",
+                                )
+                            # reason-less, summary-less: fall through to the
+                            # small-client retry loop below.
+                    if attempt < EMPTY_RETRY_ATTEMPTS:
+                        time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
+                except DispatchError as exc:
+                    if not exc.paused:
+                        # A genuine dispatch/transport failure — no retry.
+                        log.exception(
+                            "llm_summarize: chunk_id=%s failed", claim.chunk_id
+                        )
+                        return _Outcome(claim, prompt_hash, None, None, exc)
+                    # All local serving slots busy — router.DispatchError.paused
+                    # is an expected, self-clearing backoff signal under
+                    # contention, not a bug. Same "no per-chunk ERROR
+                    # traceback" treatment as EmptySummaryError above (it
+                    # floods the log surface and reads as an outage on
+                    # /status even while summaries keep landing).
+                    busy_exc = exc
+                    if attempt < EMPTY_RETRY_ATTEMPTS:
+                        time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
+                except Exception as exc:  # a genuine error — recorded below
                     log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
                     return _Outcome(claim, prompt_hash, None, None, exc)
-                # All local serving slots busy — router.DispatchError.paused is
-                # an expected, self-clearing backoff signal under contention,
-                # not a bug. Same "no per-chunk ERROR traceback" treatment as
-                # EmptySummaryError above (it floods the log surface and reads
-                # as an outage on /status even while summaries keep landing).
-                busy_exc = exc
-                if attempt < EMPTY_RETRY_ATTEMPTS:
-                    time.sleep(EMPTY_RETRY_BACKOFF_S * (attempt + 1))
-            except Exception as exc:  # a genuine error — no retry, recorded below
-                log.exception("llm_summarize: chunk_id=%s failed", claim.chunk_id)
-                return _Outcome(claim, prompt_hash, None, None, exc)
-        return _Outcome(claim, prompt_hash, None, None, empty_exc or busy_exc)
+            return _Outcome(claim, prompt_hash, None, None, empty_exc or busy_exc)
 
     # The slow phase. ex.map preserves order, so writes stay deterministic.
     # After each completion the MAIN thread heartbeats the batch's leases so

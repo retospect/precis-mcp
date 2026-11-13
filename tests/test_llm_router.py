@@ -3201,7 +3201,7 @@ def test_run_with_retry_does_not_requeue_a_limiter_refusal_in_process(
             return router._limiter_refused(req, model, RateLimited("host:x"))
 
     monkeypatch.setattr(router, "_retry_sleep", lambda s: None)
-    out = router._run_with_retry(
+    out, _attempt_ms = router._run_with_retry(
         Refusing(),
         LlmRequest(tier=Tier.SMALL, prompt="x"),
         model="m",
@@ -7614,6 +7614,432 @@ def test_failover_does_not_log_the_last_failed_rung(
     out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x"), model="m")
     assert out.error == "b"
     assert [r.error for r in recorded] == ["a"]
+
+
+# ── gr595543: attempts ledger — every logged row links to its run ────────
+#
+# A "run" is one route()/dispatch_async() invocation. Every llm_call_log
+# row it writes — ladder rungs walked past, in-process retries, gate
+# early-outs, the final outcome — carries the run's run_id and a 1-based
+# attempt ordinal, so "small failed, big succeeded on the same run" is
+# countable. Before this each dispatch row stood alone: escalation was
+# invisible (gr576133's same-model retry left one row, not three).
+
+
+def test_detached_failover_numbers_attempts_in_one_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ladder walked outside route() still groups its rung rows under one
+    run_id (join-or-mint): ordinals in walk order, the rung label — the
+    provider entry — stamped per row, superseded on every walked-past row."""
+    recorded = _capture_route_log(monkeypatch)
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_err("a")))
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_COMPAT, _FakeProv(_err("b"))
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("fine"))
+    )
+    prov = router.FailoverProvider(
+        [
+            router.Rung(Transport.LOCAL, label="small-local"),
+            router.Rung(Transport.OPENAI_COMPAT, label="hosted"),
+            router.Rung(Transport.OPENAI_TOOLS),
+        ]
+    )
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x"), model="m")
+    assert out.text == "fine"
+    assert out.rung_label == "openai_tools"  # unlabelled rung → transport value
+    assert [r.attempt for r in recorded] == [1, 2]
+    assert {r.run_id for r in recorded} == {recorded[0].run_id}
+    assert recorded[0].run_id is not None
+    assert [r.features.get("rung") for r in recorded] == ["small-local", "hosted"]
+    assert all(r.features.get("superseded") is True for r in recorded)
+
+
+def test_route_links_escalation_attempts_to_one_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gripe's shape: rung 0 fails, the bigger rung wins — same run_id,
+    attempt 2 for the win; a second route() call mints a different run."""
+    recorded = _capture_route_log(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [
+            router.Rung(Transport.LOCAL, label="small"),
+            router.Rung(Transport.OPENAI_TOOLS, label="big"),
+        ],
+    )
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_err("down")))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("up")))
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is None and out.rung_label == "big"
+    assert [r.attempt for r in recorded] == [1, 2]
+    run_ids = {r.run_id for r in recorded}
+    assert len(run_ids) == 1
+    first_run = run_ids.pop()
+    assert [r.features.get("rung") for r in recorded] == ["small", "big"]
+    assert recorded[0].features.get("superseded") is True
+    assert "superseded" not in recorded[1].features
+    recorded.clear()
+    route(LlmRequest(tier=Tier.SMALL, prompt="y"))
+    assert recorded and all(r.run_id != first_run for r in recorded)
+
+
+def test_small_lane_retries_log_each_attempt_in_one_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr576133 made visible: a rate-failed SMALL call retried in-process
+    leaves one errored row per try — same run, next ordinal, same model —
+    superseded on every try but the last."""
+    recorded = _capture_route_log(monkeypatch)
+    monkeypatch.setattr(router, "_retry_sleep", lambda _s: None)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, label="oss")],
+    )
+    _stub_fenced_gates(monkeypatch)
+    fails = _FakeProv(
+        LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.SMALL,
+            error="HTTP Error 429",
+            reason_class="rate",
+        )
+    )
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, fails)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is not None
+    assert fails.calls == router._retry_attempts()
+    assert [r.attempt for r in recorded] == list(range(1, fails.calls + 1))
+    assert len({r.run_id for r in recorded}) == 1
+    assert all(r.model == "m" for r in recorded)
+    assert [r.features.get("superseded") for r in recorded] == [
+        *([True] * (fails.calls - 1)),
+        None,
+    ]
+
+
+def test_run_scope_links_a_callers_attempt_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller's own multi-route() sequence — a rejected answer's repair
+    turns — joins one run via run_scope(): shared run_id, ascending
+    ordinals; a call outside the scope mints its own run as before."""
+    recorded = _capture_route_log(monkeypatch)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, label="oss")],
+    )
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_ok("a")))
+
+    with router.run_scope() as run_id:
+        route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+        route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert [r.attempt for r in recorded] == [1, 2, 1]
+    assert recorded[0].run_id == recorded[1].run_id == run_id
+    assert recorded[2].run_id != run_id
+
+
+def test_nested_route_mints_its_own_run_inside_run_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_scope is an attempt *sequence*, not ambient state: a route()
+    inside a running call — the requirement judge inside a decision probe —
+    still mints its own run instead of charging rows to the caller's."""
+    recorded = _capture_route_log(monkeypatch)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, label="oss")],
+    )
+
+    class _NestedProv:
+        def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+            if req.prompt == "outer":
+                route(LlmRequest(tier=Tier.SMALL, prompt="inner"))
+            return _ok("outer")
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _NestedProv())
+
+    with router.run_scope() as run_id:
+        route(LlmRequest(tier=Tier.SMALL, prompt="outer"))
+
+    assert [r.attempt for r in recorded] == [1, 1]
+    assert recorded[1].run_id == run_id  # the outer call's outcome row
+    assert recorded[0].run_id != run_id  # the nested route minted its own
+
+
+def test_gate_rejection_escalates_and_records_the_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """req.accept judges every attempt: rung 0's error-free reply is
+    rejected — its row records gate_verdict/gate_reason, superseded — and
+    the run escalates to rung 1: attempt 2 on the same run, verdict pass.
+    This is the ledger's "the contract refused, the bigger rung answered"
+    signal (review: callback-rejected attempts were invisible)."""
+    recorded = _capture_route_log(monkeypatch)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [
+            router.Rung(Transport.LOCAL, label="small"),
+            router.Rung(Transport.OPENAI_TOOLS, label="big"),
+        ],
+    )
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_ok("leak")))
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("clean"))
+    )
+
+    out = route(
+        LlmRequest(
+            tier=Tier.SMALL,
+            prompt="x",
+            accept=lambda res: True if res.text == "clean" else "contract violation",
+        )
+    )
+
+    assert out.text == "clean" and out.gate_verdict == "pass"
+    assert [r.attempt for r in recorded] == [1, 2]
+    assert len({r.run_id for r in recorded}) == 1
+    assert recorded[0].features.get("gate_verdict") == "rejected"
+    assert recorded[0].features.get("gate_reason") == "contract violation"
+    assert recorded[0].features.get("superseded") is True
+    assert recorded[1].features.get("gate_verdict") == "pass"
+    assert "superseded" not in recorded[1].features
+
+
+def test_gate_rejection_on_the_last_rung_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-rung gated call that loses the contract returns the
+    rejected result — the terminal verdict on attempt 1's row — not a
+    silent error-free success the caller then re-detects."""
+    recorded = _capture_route_log(monkeypatch)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, label="oss")],
+    )
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_ok("leak")))
+
+    out = route(
+        LlmRequest(
+            tier=Tier.SMALL,
+            prompt="x",
+            accept=lambda res: "contract violation",
+        )
+    )
+
+    assert out.error is None
+    assert out.gate_verdict == "rejected"
+    assert out.gate_reason == "contract violation"
+    assert [r.attempt for r in recorded] == [1]
+    assert recorded[0].features.get("gate_verdict") == "rejected"
+    assert recorded[0].features.get("gate_reason") == "contract violation"
+    assert "superseded" not in recorded[0].features
+
+
+def test_retry_outcome_row_records_its_own_attempt_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outcome row's duration_ms is the LAST attempt's wall clock —
+    charging the run's whole retry window (failed tries + backoff) to it
+    overstated the winning attempt's latency (gr595543 review)."""
+    recorded = _capture_route_log(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(router.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        router, "_retry_sleep", lambda s: clock.__setitem__(0, clock[0] + s)
+    )
+    monkeypatch.setattr(router, "_retry_attempts", lambda: 3)
+    monkeypatch.setattr(router.random, "random", lambda: 0.5)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, label="oss")],
+    )
+
+    class _FlakyLocal:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+            self.calls += 1
+            clock[0] += 0.5  # each attempt takes 500 ms
+            if self.calls == 1:
+                return LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=Tier.SMALL,
+                    error="HTTP Error 429",
+                    reason_class="rate",
+                )
+            return _ok("recovered", model=model)
+
+    flaky = _FlakyLocal()
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, flaky)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is None and flaky.calls == 2
+    # Total clock = 0.5 try + 2.0s backoff + 0.5 try. The outcome row's
+    # duration is the last attempt's own 500 ms, not the run's 3000; the
+    # superseded try's row carries its own 500 ms.
+    assert [r.duration_ms for r in recorded] == [500, 500]
+
+
+def test_failover_outcome_row_records_the_winning_rungs_wire_and_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr595543 review: a ladder walk's outcome row names the rung that
+    ACTUALLY served it — the row's ``transport`` column and the winning
+    attempt's own wall clock — not rung 0's transport nor the walk's whole
+    span (a local rung 0 falling through to a hosted rung was attributed
+    to the local wire at the full walk's latency, corrupting the
+    per-provider suitability rows)."""
+    recorded = _capture_route_log(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(router.time, "monotonic", lambda: clock[0])
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [
+            router.Rung(Transport.LOCAL, label="small"),
+            router.Rung(Transport.OPENAI_TOOLS, label="big"),
+        ],
+    )
+
+    class _TimedProv:
+        """A provider that burns ``ms`` of (fake) clock per call."""
+
+        def __init__(self, ms: int, result: LlmResult) -> None:
+            self._ms = ms
+            self._result = result
+
+        def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+            clock[0] += self._ms / 1000.0
+            return self._result
+
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.LOCAL, _TimedProv(800, _err("down"))
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _TimedProv(300, _ok("up"))
+    )
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is None
+    assert out.rung_transport is Transport.OPENAI_TOOLS
+    assert out.attempt_ms == 300
+    # Rung 0's superseded row: its own 800 ms on the local wire. The
+    # outcome row: the winning rung's 300 ms on the hosted wire — not
+    # 1100 ms on "local".
+    assert [r.duration_ms for r in recorded] == [800, 300]
+    assert [r.transport for r in recorded] == [
+        Transport.LOCAL.value,
+        Transport.OPENAI_TOOLS.value,
+    ]
+    assert [r.features.get("rung") for r in recorded] == ["small", "big"]
+
+
+def test_retried_walk_superseded_row_charges_the_terminal_rungs_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr595543 review: when ``_run_with_retry`` retries a whole ladder
+    walk (SMALL lane, a retryable class on the terminal rung), the
+    superseded terminal-rung row it writes carries THAT attempt's own
+    ``attempt_ms`` — never the walk's full span. The earlier rungs already
+    wrote their own superseded rows inside ``provider.run``; charging the
+    span would double-count them on every retry."""
+    recorded = _capture_route_log(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(router.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(router, "_retry_sleep", lambda _s: None)
+    monkeypatch.setattr(router, "_retry_attempts", lambda: 2)
+    monkeypatch.setattr(router.random, "random", lambda: 0.5)
+    _stub_fenced_gates(monkeypatch)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [
+            router.Rung(Transport.LOCAL, label="small"),
+            router.Rung(Transport.OPENAI_COMPAT, label="hosted"),
+        ],
+    )
+
+    class _TimedProv:
+        """A provider that burns ``ms`` of (fake) clock per call."""
+
+        def __init__(self, ms: int, result: LlmResult) -> None:
+            self._ms = ms
+            self._result = result
+
+        def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+            clock[0] += self._ms / 1000.0
+            return self._result
+
+    rate = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.SMALL,
+        error="HTTP Error 429",
+        reason_class="rate",
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.LOCAL, _TimedProv(800, _err("down"))
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_COMPAT, _TimedProv(300, rate)
+    )
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is not None
+    # Each walk: rung 0 (800 ms, superseded inside the ladder) then the
+    # terminal rung (300 ms). attempts=2 runs the whole walk twice, so the
+    # rows are [rung0, terminal] + [rung0, terminal-outcome]: the superseded
+    # terminal rows charge 300 ms — the pre-fix span would log 1100.
+    assert [r.duration_ms for r in recorded] == [800, 300, 800, 300]
+    assert [r.features.get("rung") for r in recorded] == [
+        "small",
+        "hosted",
+        "small",
+        "hosted",
+    ]
+    assert [r.features.get("superseded") for r in recorded] == [
+        True,
+        True,
+        True,
+        None,
+    ]
+    assert [r.attempt for r in recorded] == [1, 2, 3, 4]
+    assert len({r.run_id for r in recorded}) == 1
 
 
 # ── gr500371: host-availability gate — skip rungs this host can't run ─────

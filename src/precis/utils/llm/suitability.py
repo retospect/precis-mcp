@@ -210,8 +210,11 @@ _ROLLUP_SQL = (
     "features->'observed'->>'model', "
     "features->'observed'->>'provider', "
     "count(*), "
-    "count(*) FILTER (WHERE NOT errored AND data_parsed), "
-    "count(*) FILTER (WHERE reason_class = 'unparseable') "
+    "count(*) FILTER (WHERE (NOT errored AND data_parsed "
+    "AND (features->>'gate_verdict') IS DISTINCT FROM 'rejected') "
+    "OR features->>'gate_verdict' = 'pass'), "
+    "count(*) FILTER (WHERE reason_class = 'unparseable' "
+    "OR features->>'gate_verdict' = 'rejected') "
     "FROM llm_call_log "
     "WHERE ts > now() - (%s * interval '1 day') "
     "AND {not_gated} "
@@ -256,7 +259,12 @@ def rollup(
     (the adapter), task kind, source, UTC day and the observed identity
     the wire reported. A row is an *outcome* only when it was a validated
     production result: ``not errored and data_parsed`` is a success,
-    ``reason_class = 'unparseable'`` a failure; every other row — quota,
+    ``reason_class = 'unparseable'`` a failure — and a caller hard gate's
+    verdict overrides both: ``features.gate_verdict = 'rejected'`` counts
+    the attempt a failure (the contract refused an error-free reply —
+    the attempts ledger's outcome, gr595543), ``'pass'`` counts it a
+    success even on a lite row where ``data_parsed`` is never set;
+    every other row — quota,
     rate, budget, transport, content, unclassified — is no signal and is
     skipped. Gated rows (never ran) and paused rows (a window pause, not
     an outcome) are excluded in SQL, so they cannot move a posterior.

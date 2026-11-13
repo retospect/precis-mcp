@@ -93,6 +93,21 @@ def test_record_call_returns_the_logged_request_hash(store: Any) -> None:
     assert route_log.record_call(_rec()) is None
 
 
+def test_record_call_persists_run_and_attempt(store: Any) -> None:
+    # Migration 0317: run_id + attempt round-trip to the row; a writer
+    # outside the router (no run scope) leaves both NULL like a pre-0317 row.
+    tag = uuid4().hex[:8]
+    src = f"run-{tag}"
+    route_log.record_call(_rec(source=src, run_id=f"rid-{tag}", attempt=2), store=store)
+    route_log.record_call(_rec(source=src), store=store)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT run_id, attempt FROM llm_call_log WHERE source=%s ORDER BY id",
+            (src,),
+        ).fetchall()
+    assert rows == [(f"rid-{tag}", 2), (None, None)]
+
+
 def test_record_call_persists_token_counts(store: Any) -> None:
     # Migration 0121: the four token fields round-trip to the row untouched —
     # None stays None (claude_p reports no telemetry), a set value survives.

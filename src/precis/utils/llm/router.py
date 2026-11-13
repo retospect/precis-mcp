@@ -61,7 +61,9 @@ import random
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import uuid
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
 from datetime import UTC, datetime, timedelta
@@ -1085,6 +1087,38 @@ class LlmResult:
     #: local primary that fell back to cloud really did spend money.
     #: ``None`` only when no rung was resolved (an early error return).
     placement: str | None = None
+    #: The label of the chain rung this result came from — :attr:`Rung.label`
+    #: (``'oss'``/``'claude-fallback'``/a chain ``placement`` label) or the
+    #: transport value when the rung is unlabelled — stamped by
+    #: :class:`FailoverProvider` per attempt so the route-log row names the
+    #: provider entry (the offering, in decide vocabulary) that produced it.
+    #: ``None`` on a result that never went through the ladder.
+    rung_label: str | None = None
+    #: The :class:`Transport` of the chain rung that produced this result —
+    #: stamped by :class:`FailoverProvider` per attempt (with ``rung_label``)
+    #: so the route-log row's ``transport`` column names the wire that
+    #: ACTUALLY ran, not rung 0's: a local rung 0 that fell through to a
+    #: hosted rung would otherwise attribute the hosted attempt's outcome to
+    #: the local wire, corrupting cross-provider suitability (gr595543
+    #: review). ``None`` on a result that never went through the ladder.
+    rung_transport: Transport | None = None
+    #: The producing rung attempt's own wall clock in milliseconds — stamped
+    #: by :class:`FailoverProvider` on the result it returns, so the
+    #: caller's outcome row charges the winning attempt's latency instead of
+    #: the run's whole failover walk (earlier rungs' tries already carry
+    #: their own superseded rows; charging their time to the outcome row
+    #: double-counts, gr595543 review). ``None`` — the caller times its own
+    #: window (a single-rung direct dispatch, a gate early-out).
+    attempt_ms: int | None = None
+    #: The caller's hard-gate verdict on this attempt
+    #: (:attr:`LlmRequest.accept` — an :data:`AcceptFn`): ``"pass"`` on an
+    #: approved error-free reply, ``"rejected"`` on a refused one
+    #: (``gate_reason`` carries the contract's trip reason), ``None`` when
+    #: the call was ungated or the attempt errored before the gate ran.
+    #: Stamped by :class:`FailoverProvider`; the route-log row mirrors it
+    #: as ``features.gate_verdict``/``features.gate_reason`` (gr595543).
+    gate_verdict: str | None = None
+    gate_reason: str | None = None
     #: The provider *entry* that ran — the ``<account>`` segment of the
     #: rung's offering key and pool rows (:func:`rung_account`), stamped
     #: from the rung that actually ran, same as ``placement``. One entry
@@ -1611,6 +1645,16 @@ class LlmRequest:
     #: is an error result, never a silent fall-through to an unboxed rung.
     #: ``None`` ⇒ no filter (the open default).
     require_transport: Transport | None = None
+    #: The caller's hard gate — an :data:`AcceptFn` judged per attempt
+    #: inside the ladder: ``True`` accepts the error-free reply, ``False``
+    #: (or the contract's own reason string) rejects it, walking past to
+    #: the next rung and stamping :attr:`LlmResult.gate_verdict` on each
+    #: attempt (gr595543: a gate rejection IS the escalation trigger —
+    #: attempt N+1 on a bigger rung, not an invisible same-model retry).
+    #: Caller-side only: never serialized into the request, never sent to
+    #: a transport. ``None`` ⇒ error-free accepts (transport-error-only
+    #: failover — the default).
+    accept: AcceptFn | None = None
 
     def __post_init__(self) -> None:
         if self.task_kind is not None and not isinstance(self.task_kind, str):
@@ -2401,10 +2445,118 @@ class Rung:
     profile: str | None = None
 
 
-#: A quality gate on an error-free result: return ``True`` to accept, ``False``
-#: to fall through to the next rung. ``None`` (the default) accepts any
-#: error-free result — i.e. failover is transport-error-only.
-AcceptFn = Callable[[LlmResult], bool]
+#: A quality (hard) gate on an error-free result: return ``True`` to accept,
+#: ``False`` — or the contract's own rejection-reason string — to fall through
+#: to the next rung (the string is logged as the row's
+#: ``features.gate_reason``). ``None`` (the default) accepts any error-free
+#: result — i.e. failover is transport-error-only.
+AcceptFn = Callable[[LlmResult], bool | str]
+
+
+# ── attempts ledger (gr595543) ──────────────────────────────────────────
+#
+# One **run** is one ``route()``/``dispatch_async()`` invocation. Every
+# ``llm_call_log`` row the run writes — each rung the ladder walks past, an
+# in-process retry, a gate early-out, the final outcome — carries the run's
+# ``run_id`` and its 1-based ``attempt`` ordinal, so "small failed, big
+# succeeded on the same run" is countable and escalation reads as attempt
+# N+1 on a bigger rung.
+
+
+@dataclass(slots=True)
+class _RunLedger:
+    """One run's mutable ledger cursor: the id every row shares plus the
+    count of rows written so far. Mutable on purpose — the attempt ordinal
+    advances across ``_record_dispatch`` calls in the run's dynamic extent.
+
+    ``joinable`` is set only by :func:`run_scope`: the next ``route()``/
+    ``dispatch_async()`` boundary adopts the ledger (and flips the flag off
+    for its extent) instead of minting."""
+
+    run_id: str
+    attempt: int = 0
+    joinable: bool = False
+
+
+#: The active run's cursor, bound by :func:`route`/:func:`dispatch_async` for
+#: the call's dynamic extent. A ContextVar (not module state) keeps a nested
+#: ``route()`` — the requirement judge firing inside ``_decision_probe`` —
+#: on its own run instead of charging its rows to the caller's.
+_RUN: ContextVar[_RunLedger | None] = ContextVar("precis_llm_run", default=None)
+
+
+@contextlib.contextmanager
+def _new_run_scope() -> Iterator[None]:
+    """A fresh run — the ``route()``/``dispatch_async()`` entry boundary.
+    Always mints, never joins: a nested ``route()`` is a separate logical
+    call, not another attempt at the outer request."""
+    token = _RUN.set(_RunLedger(run_id=uuid.uuid4().hex))
+    try:
+        yield
+    finally:
+        _RUN.reset(token)
+
+
+@contextlib.contextmanager
+def run_scope() -> Iterator[str]:
+    """Bind one shared run for every ``route()``/``dispatch_async()`` call
+    in this extent (gr595543); yields its ``run_id``.
+
+    A caller's own attempt *sequence* — a hard-gate rejection's repair
+    turns, an escalation re-dispatch on a bigger rung (llm_summarize's
+    contract repair + escalate client) — logs under one ``run_id`` with
+    ascending ``attempt`` ordinals instead of each ``route()`` minting an
+    unrelated run. Mint-only: a nested ``run_scope()`` starts a NEW run,
+    and a ``route()`` inside another ``route()``'s extent — the
+    requirement judge inside the decision probe — still mints its own.
+    """
+    ledger = _RunLedger(run_id=uuid.uuid4().hex, joinable=True)
+    token = _RUN.set(ledger)
+    try:
+        yield ledger.run_id
+    finally:
+        _RUN.reset(token)
+
+
+@contextlib.contextmanager
+def _route_run_scope() -> Iterator[None]:
+    """The ``route()``/``dispatch_async()`` entry boundary: adopt a
+    caller-bound :func:`run_scope` ledger when one is bound — flipping
+    ``joinable`` off for the call's extent so a nested ``route()`` mints
+    its own run — else mint a fresh run."""
+    run = _RUN.get()
+    if run is not None and run.joinable:
+        run.joinable = False
+        try:
+            yield
+        finally:
+            run.joinable = True
+        return
+    with _new_run_scope():
+        yield
+
+
+@contextlib.contextmanager
+def _join_run_scope() -> Iterator[None]:
+    """Join the active run; mint one when a ledger writer runs detached —
+    a :class:`FailoverProvider` used outside ``route()`` (tests, the eval
+    harness) still groups its rung walk under one id."""
+    if _RUN.get() is not None:
+        yield
+        return
+    with _new_run_scope():
+        yield
+
+
+def _run_attempt() -> tuple[str, int]:
+    """The ``(run_id, attempt)`` for the row being written — joins the
+    active run (bumping its ordinal) or mints a singleton run for a
+    detached writer (``record_dispatch`` outside any scope)."""
+    run = _RUN.get()
+    if run is None:
+        return uuid.uuid4().hex, 1
+    run.attempt += 1
+    return run.run_id, run.attempt
 
 
 def _empty_length_is_failure(res: LlmResult) -> LlmResult:
@@ -2452,6 +2604,14 @@ class FailoverProvider:
         self._accept = accept
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        # One ladder walk is a single run's rung sequence: join the caller's
+        # run (route()'s scope) or mint one when detached, so the
+        # intermediate-failure rows below share one run_id with the final
+        # row the caller writes.
+        with _join_run_scope():
+            return self._walk(req, model=model)
+
+    def _walk(self, req: LlmRequest, *, model: str) -> LlmResult:
         last: LlmResult | None = None
         for i, rung in enumerate(self._rungs):
             # A rung's `max_tokens` applies only when the caller left the cap
@@ -2495,15 +2655,38 @@ class FailoverProvider:
             # Stamp the rung that actually ran. Done per-iteration (not once at
             # the end) so a fall-through to a cloud rung is recorded as cloud —
             # the accounting must follow the money, not the operator's intent.
-            # `account` names the rung's provider entry beside it, so the
-            # attempts ledger and the health demotion attribute the attempt to
-            # the login route that ran, not the provider (gr595548).
+            # ``rung_label`` rides along so the row names the provider entry
+            # (the offering) that produced it; `account` names the rung's
+            # provider entry beside it, so the attempts ledger and the health
+            # demotion attribute the attempt to the login route that ran, not
+            # the provider (gr595548); ``rung_transport`` keeps the row's
+            # transport column on the wire that ran, not rung 0's.
             last = _replace(
-                last, placement=_placement_of(rung), account=request_account(req, rung)
+                last,
+                placement=_placement_of(rung),
+                rung_label=rung.label or rung.transport.value,
+                account=request_account(req, rung),
+                rung_transport=rung.transport,
             )
-            accepted = last.error is None and (
-                self._accept is None or self._accept(last)
-            )
+            accepted = last.error is None
+            if accepted and self._accept is not None:
+                verdict = self._accept(last)
+                # The caller's hard gate judges an error-free reply: True
+                # passes; False — or the contract's own reason string — is
+                # a rejection, stamped so the attempt's route-log row records
+                # the gate outcome (features.gate_verdict/gate_reason). A
+                # rejected rung walks past like an errored one: escalation
+                # is attempt N+1 on a bigger rung, not an invisible
+                # same-model retry (gr595543).
+                if verdict is True:
+                    last = _replace(last, gate_verdict="pass")
+                else:
+                    last = _replace(
+                        last,
+                        gate_verdict="rejected",
+                        gate_reason=verdict if isinstance(verdict, str) else None,
+                    )
+                    accepted = False
             if accepted:
                 if i > 0:
                     # A fallback rung ran — warn: the primary failed and this
@@ -2519,7 +2702,12 @@ class FailoverProvider:
                         rung.model or model,
                         i,
                     )
-                return last
+                # The winning attempt's own wall clock — the caller's
+                # outcome row charges THIS, not the walk's whole span
+                # (earlier rungs' tries carry their own superseded rows).
+                return _replace(
+                    last, attempt_ms=int((time.monotonic() - started) * 1000)
+                )
             if last.error is not None:
                 log.warning(
                     "llm-failover: rung %d (%s, model=%s) failed: %s (class=%s)",
@@ -2535,15 +2723,38 @@ class FailoverProvider:
                     # A rung we are walking past would otherwise leave no
                     # trace beyond the warning above. The final rung's result
                     # is logged by the caller (`route`), so only intermediate
-                    # failures are written here (gr489474).
+                    # failures are written here (gr489474). `superseded`
+                    # because the next attempt's row is this run's outcome.
                     _record_dispatch(
                         call_req,
                         last,
                         transport=rung.transport,
                         duration_ms=int((time.monotonic() - started) * 1000),
+                        superseded=True,
                     )
+            elif last.gate_verdict == "rejected" and i < len(self._rungs) - 1:
+                # A callback-rejected attempt ran clean but lost the gate —
+                # log it like an errored walk-past (same superseded shape),
+                # else the ledger shows a silent jump to the next rung.
+                log.warning(
+                    "llm-failover: rung %d (%s, model=%s) rejected by the "
+                    "caller gate%s",
+                    i,
+                    rung.label or rung.transport.value,
+                    rung.model or model,
+                    f": {last.gate_reason}" if last.gate_reason else "",
+                )
+                _record_dispatch(
+                    call_req,
+                    last,
+                    transport=rung.transport,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    superseded=True,
+                )
         assert last is not None  # rungs is non-empty
-        return last
+        # The terminal attempt's own wall clock — same contract as the
+        # accepted-rung return above.
+        return _replace(last, attempt_ms=int((time.monotonic() - started) * 1000))
 
 
 def _claude_default(tier: Tier) -> str:
@@ -3443,7 +3654,8 @@ def _run_with_retry(
     *,
     model: str,
     transport: Transport,
-) -> LlmResult:
+    rung_label: str | None = None,
+) -> tuple[LlmResult, int]:
     """Run ``provider`` and, on the SMALL lane over a tool-less transport,
     retry a ``rate``/``transport``-class failure with bounded exponential
     backoff before surfacing it (item 3 of
@@ -3457,45 +3669,93 @@ def _run_with_retry(
     (an identical prompt against the same stalled wire stalls again), nor
     is a ``quota``/``budget``/``content`` class (minutes-to-hours horizons
     or a verdict on the prompt itself). Other tiers and transports run once.
+
+    Each superseded try writes its own ``llm_call_log`` row — same run,
+    next attempt ordinal, same model — so "the pass retried the same local
+    model instead of escalating" is finally countable (gr576133 was
+    invisible precisely because only the last try left a row). A
+    superseded row's duration is that try's own clock — a retried ladder
+    walk's terminal rung charges its stamped ``attempt_ms``, never the
+    walk's whole span, which its earlier rungs already logged.
+
+    Returns ``(result, attempt_ms)``: the LAST attempt's own wall clock —
+    the outcome row's duration is its attempt's, never the run's whole
+    retry window.
     """
     attempts = (
         _retry_attempts()
         if req.tier is Tier.SMALL and transport in _INPROCESS_RETRY_TRANSPORTS
         else 1
     )
-    waited = 0.0
-    result = _classified(provider.run(req, model=model))
-    for n in range(1, attempts):
-        if (
-            result.error is None
-            or result.timed_out
-            or result.reason_class not in _failure.INPROCESS_RETRY_CLASSES
-        ):
-            break
-        wait = min(_RETRY_BASE_S * (2 ** (n - 1)), _RETRY_MAX_WAIT_S)
-        wait = min(wait * (0.75 + random.random() * 0.5), _RETRY_MAX_WAIT_S - waited)
-        hint = _server_retry_hint_s(result)
-        if hint is not None:
-            # The upstream named its own Retry-After: never retry sooner, and
-            # a wait beyond the in-process budget is left to ``retry_at``.
-            if hint > _RETRY_MAX_WAIT_S - waited:
-                break
-            wait = max(wait, hint)
-        if wait <= 0:
-            break
-        log.info(
-            "route: %s failure on the SMALL lane (%s) — retry %d/%d in %.1fs: %s",
-            result.reason_class,
-            transport.value,
-            n,
-            attempts - 1,
-            wait,
-            result.error,
-        )
-        _retry_sleep(wait)
-        waited += wait
+    with _join_run_scope():
+        waited = 0.0
+        started = time.monotonic()
         result = _classified(provider.run(req, model=model))
-    return result
+        if result.rung_label is None:
+            result = _replace(result, rung_label=rung_label)
+        for n in range(1, attempts):
+            if (
+                result.error is None
+                or result.timed_out
+                or result.reason_class not in _failure.INPROCESS_RETRY_CLASSES
+            ):
+                break
+            wait = min(_RETRY_BASE_S * (2 ** (n - 1)), _RETRY_MAX_WAIT_S)
+            wait = min(
+                wait * (0.75 + random.random() * 0.5), _RETRY_MAX_WAIT_S - waited
+            )
+            hint = _server_retry_hint_s(result)
+            if hint is not None:
+                # The upstream named its own Retry-After: never retry sooner,
+                # and a wait beyond the in-process budget is left to
+                # ``retry_at``.
+                if hint > _RETRY_MAX_WAIT_S - waited:
+                    break
+                wait = max(wait, hint)
+            if wait <= 0:
+                break
+            log.info(
+                "route: %s failure on the SMALL lane (%s) — retry %d/%d in %.1fs: %s",
+                result.reason_class,
+                transport.value,
+                n,
+                attempts - 1,
+                wait,
+                result.error,
+            )
+            # The failed try about to be superseded — logged like a ladder
+            # fall-through: the caller records only the returned (last) one.
+            # A ladder's result already carries its terminal rung's own clock
+            # (``attempt_ms``); the walked-past rungs wrote their own
+            # superseded rows inside ``provider.run``, so charging this row
+            # the whole ``started`` window would double-count them
+            # (gr595543 review).
+            _record_dispatch(
+                req,
+                result,
+                transport=transport,
+                duration_ms=_outcome_duration_ms(result, started),
+                superseded=True,
+            )
+            _retry_sleep(wait)
+            waited += wait
+            started = time.monotonic()
+            result = _classified(provider.run(req, model=model))
+            if result.rung_label is None:
+                result = _replace(result, rung_label=rung_label)
+        # The last attempt's own wall clock — ``started`` was reset ahead of
+        # its run. The caller charges THIS, not the run's whole retry window
+        # (tries + backoff sleeps), which would overstate the outcome row's
+        # latency (gr595543 review): the superseded tries carry their own.
+        # A ladder's result already carries its winning rung's clock
+        # (``FailoverProvider`` stamps ``attempt_ms``) — that wins over this
+        # window, which spans the whole failover walk.
+        attempt_ms = (
+            result.attempt_ms
+            if result.attempt_ms is not None
+            else int((time.monotonic() - started) * 1000)
+        )
+    return result, attempt_ms
 
 
 def _subscription_quota_trusted() -> bool:
@@ -3872,6 +4132,17 @@ def _provider_for_ladder(ladder: list[Rung]) -> LlmProvider:
     return provider_for(ladder[0].transport, bare=ladder[0].bare)
 
 
+def _dispatch_provider(ladder: list[Rung], accept: AcceptFn | None) -> LlmProvider:
+    """The provider a resolved ladder dispatches through, with the
+    caller's hard gate threaded in when it has one: a gated call always
+    walks a :class:`FailoverProvider` — even a single rung — so every
+    attempt's verdict is evaluated, stamped, and on a rejection walked
+    past to the next rung (gr595543)."""
+    if accept is not None:
+        return FailoverProvider(ladder, accept=accept)
+    return _provider_for_ladder(ladder)
+
+
 def _keyword_model_rung(model: str, *, tools_needed: bool) -> Rung:
     """The single rung for a bare-model keyword target — the transport the
     model id implies: a ``claude*`` id rides the claude wire, a model served
@@ -4063,15 +4334,16 @@ def route(req: LlmRequest) -> LlmResult:
     recorded so the history builds itself. Autoskill never fails a call: any
     fault routes the request unchanged; ``PRECIS_AUTOSKILL=off`` disables it.
     """
-    if req.tools_needed and _autoskill.enabled():
-        started = datetime.now(UTC)
-        plan = _autoskill.prepare(req)
-        if plan is not None:
-            req = _autoskill.apply(plan, req)
-            result = _route_inner(req)
-            _autoskill.record(plan, req, result, started)
-            return result
-    return _route_inner(req)
+    with _route_run_scope():
+        if req.tools_needed and _autoskill.enabled():
+            started = datetime.now(UTC)
+            plan = _autoskill.prepare(req)
+            if plan is not None:
+                req = _autoskill.apply(plan, req)
+                result = _route_inner(req)
+                _autoskill.record(plan, req, result, started)
+                return result
+        return _route_inner(req)
 
 
 def _decision_probe(
@@ -4385,7 +4657,7 @@ def _run_chosen(
         # precedence lands on call_model, which already folds in the
         # reserved slot's served_model and the hosted-small remap; left
         # alone, the rung's unremapped model would win.
-        result = FailoverProvider([_replace(rung, model=None)]).run(
+        result = FailoverProvider([_replace(rung, model=None)], accept=req.accept).run(
             call_req, model=call_model
         )
     finally:
@@ -4400,6 +4672,8 @@ def _run_chosen(
                 else _placement_of(rung)
             ),
         )
+    if result.rung_label is None:
+        result = _replace(result, rung_label=rung.label or rung.transport.value)
     request_hash = _record_dispatch(
         req,
         result,
@@ -4409,6 +4683,14 @@ def _run_chosen(
         decision={**stamp, "executed": "decision"},
     )
     if result.error is None:
+        if result.gate_verdict == "rejected":
+            # The chosen offering's reply ran clean but lost the caller's
+            # hard gate — the row above records the verdict; the legacy
+            # ladder serves the call (escalation is its next attempt on
+            # this run, not a silent same-model retry).
+            return None, _fallback_stamp(
+                stamp, "gate", result.gate_reason or "caller gate rejected"
+            )
         _tally_gate(req, "served")
         if req.degraded_from:
             _tally_gate(req, "degraded")
@@ -4468,6 +4750,19 @@ def _apply_chosen(
     except Exception as exc:
         log.debug("llm-router: chosen dispatch fault — legacy ladder", exc_info=True)
         return None, _fallback_stamp(stamp, "unresolved", str(exc))
+
+
+def _outcome_duration_ms(result: LlmResult, started: float) -> int:
+    """The outcome row's ``duration_ms``: the producing rung attempt's own
+    wall clock when the ladder stamped it (:attr:`LlmResult.attempt_ms` —
+    a failover walk's earlier tries already carry their own superseded
+    rows), else the caller's own window (a gate's work, a single-rung
+    dispatch that stamps nothing)."""
+    return (
+        result.attempt_ms
+        if result.attempt_ms is not None
+        else int((time.monotonic() - started) * 1000)
+    )
 
 
 def _route_inner(req: LlmRequest) -> LlmResult:
@@ -4779,7 +5074,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     if _applied is not None:
         return _applied
     transport = ladder[0].transport
-    provider: LlmProvider = _provider_for_ladder(ladder)
+    provider: LlmProvider = _dispatch_provider(ladder, req.accept)
     # Global circuit breaker: refuse a *new paid* call once its resource is
     # exhausted (only free local tiers pass; dark when no store is bound).
     # Folds into the normalized error result so callers degrade gracefully.
@@ -4824,7 +5119,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         paused_rung = ladder[0]
         ladder = fallback_ladder
         transport = ladder[0].transport
-        provider = _provider_for_ladder(ladder)
+        provider = _dispatch_provider(ladder, req.accept)
         # Which rung ran, recorded on the route-log row's features — the
         # cast's traceable record of composing off the subscription lane
         # (and the row the op's UTC-day fallback spend cap sums).
@@ -5036,7 +5331,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     account=request_account(req, nxt),
                 )
             started = time.monotonic()
-            result = _classified(FailoverProvider(ladder[1:]).run(req, model=model))
+            result = _classified(
+                FailoverProvider(ladder[1:], accept=req.accept).run(req, model=model)
+            )
             _react_to_quota(result, transport=nxt.transport, bare=nxt.bare)
             result = _replace(
                 result,
@@ -5044,7 +5341,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     req,
                     result,
                     transport=ladder[1].transport,
-                    duration_ms=int((time.monotonic() - started) * 1000),
+                    duration_ms=_outcome_duration_ms(result, started),
                     routed=routed,
                     decision=decision,
                 ),
@@ -5079,7 +5376,8 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 [
                     _replace(ladder[0], label=_fallback_placement(transport)),
                     *ladder[1:],
-                ]
+                ],
+                accept=req.accept,
             )
             started = time.monotonic()
             result = _classified(escape.run(req, model=saturated_model))
@@ -5089,7 +5387,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     req,
                     result,
                     transport=transport,
-                    duration_ms=int((time.monotonic() - started) * 1000),
+                    duration_ms=_outcome_duration_ms(result, started),
                     routed=routed,
                     decision=decision,
                 ),
@@ -5134,10 +5432,13 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         has_local_slot=call_req.local_url is not None,
         profile=ladder[0].profile,
     )
-    started = time.monotonic()
     try:
-        result = _run_with_retry(
-            provider, call_req, model=call_model, transport=transport
+        result, attempt_ms = _run_with_retry(
+            provider,
+            call_req,
+            model=call_model,
+            transport=transport,
+            rung_label=ladder[0].label or transport.value,
         )
     finally:
         _local.release(slot)
@@ -5158,6 +5459,8 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
+    if result.rung_label is None:
+        result = _replace(result, rung_label=ladder[0].label or transport.value)
     if result.account is None:
         result = _replace(result, account=request_account(req, ladder[0]))
     return _replace(
@@ -5166,7 +5469,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             req,
             result,
             transport=transport,
-            duration_ms=int((time.monotonic() - started) * 1000),
+            duration_ms=attempt_ms,
             routed=routed,
             decision=decision,
         ),
@@ -5212,7 +5515,14 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
 
 async def dispatch_async(req: LlmRequest) -> LlmResult:
     """Async twin of :func:`route`, for a caller that needs the real-time
-    ``on_event`` stream (asa_bot's Discord bridge).
+    ``on_event`` stream (asa_bot's Discord bridge). See the inner function
+    for the full contract."""
+    with _route_run_scope():
+        return await _dispatch_async_inner(req)
+
+
+async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
+    """The body of :func:`dispatch_async` under its run scope.
 
     Mirrors :func:`route`'s gate sequence (backend fallback, transport
     resolution, budget breaker, window admission, local-serving slot) inline
@@ -5434,8 +5744,21 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
+    if result.rung_label is None:
+        result = _replace(result, rung_label=ladder[0].label or transport.value)
     if result.account is None:
         result = _replace(result, account=request_account(req, ladder[0]))
+    # Parity with the sync ladder's gate: this path dispatches straight to
+    # the one rung (no FailoverProvider), so the caller's hard gate is
+    # judged here and stamped for the row below — a rejection has no rung
+    # left to walk to and surfaces as the run's terminal verdict.
+    if req.accept is not None and result.error is None:
+        verdict = req.accept(result)
+        result = _replace(
+            result,
+            gate_verdict="pass" if verdict is True else "rejected",
+            gate_reason=verdict if isinstance(verdict, str) else None,
+        )
     return _replace(
         result,
         request_hash=_record_dispatch(
@@ -5572,6 +5895,7 @@ class DispatchClient:
         messages: list[dict[str, str]],
         *,
         extra_body: dict[str, Any] | None = None,
+        accept: AcceptFn | None = None,
     ) -> LlmResult:
         # ``extra_body`` (OpenRouter booking) is a hosted-backend concern; the
         # local completion path these passes use never sets it, so it is ignored.
@@ -5613,6 +5937,7 @@ class DispatchClient:
                 placement=self.placement,
                 work_class=self.work_class,
                 extra_args=self.extra_args,
+                accept=accept,
             )
         )
         if res.error is not None:
@@ -5715,6 +6040,14 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
             feats["reason_class"] = result.reason_class
         if result.retry_at is not None:
             feats["retry_at"] = result.retry_at.isoformat()
+        # The caller's hard-gate verdict on this attempt (``req.accept`` →
+        # :class:`FailoverProvider`): ``pass`` on an approved reply,
+        # ``rejected`` + ``gate_reason`` on a refused one — the attempts
+        # ledger's per-attempt outcome (gr595543).
+        if result.gate_verdict is not None:
+            feats["gate_verdict"] = result.gate_verdict
+            if result.gate_reason is not None:
+                feats["gate_reason"] = result.gate_reason
         # A parse-failure row keeps a scrubbed head of the reply itself:
         # on a lite row (``log_blobs=False``) the response blob is never
         # stored, so this is the only place the model's answer survives —
@@ -5776,6 +6109,7 @@ def _record_dispatch(
     duration_ms: int,
     routed: str | None = None,
     gated: bool = False,
+    superseded: bool = False,
     decision: dict[str, Any] | None = None,
 ) -> str | None:
     """Best-effort: record the full call to the route-log. Dark (no-op) unless a
@@ -5795,12 +6129,35 @@ def _record_dispatch(
     ``_fallback_placement`` guess would fabricate a landed class), and gets
     ``features.gated = true`` so health readers (the llm-degraded probe, the
     llm_catalog tote, ``_llm_spend``, ``placement_share``) can exclude rows
-    that never ran from call-health stats."""
+    that never ran from call-health stats.
+
+    ``superseded`` marks a real attempt the run walked past — a rung the
+    ladder fell through, an in-process retry — so a reader can pick the
+    run's outcome row (the last attempt, unmarked) without ordering every
+    sibling. The row still counts as an attempt that ran and failed.
+
+    Every row carries the run's ``run_id`` + ``attempt`` ordinal
+    (:func:`_run_attempt`, migration 0317): escalation is attempt N+1 on the
+    same run on a bigger rung; ``features.rung`` names the provider entry
+    that served the attempt when the ladder stamped one."""
     from precis import route_log
 
     if not req.log_call or not route_log.enabled():
         return None
+    # A ladder stamps the rung that actually ran on its result; that wire
+    # is the row's transport, whatever rung 0 the caller was gated on (the
+    # walk may have fallen through to another transport — suitability reads
+    # this column per provider entry, gr595543 review). An explicit
+    # ``transport`` (a gate early-out's rung, a single-rung direct path)
+    # stands when the result carries no stamp.
+    if result.rung_transport is not None:
+        transport = result.rung_transport
+    run_id, attempt = _run_attempt()
     feats = _route_features(req, result)
+    if result.rung_label is not None:
+        feats["rung"] = result.rung_label
+    if superseded:
+        feats["superseded"] = True
     if result.account is not None:
         # The provider entry that ran (gr595548) — the attempts ledger
         # names the login route so its learned rate/quota/pass-rate state
@@ -5885,6 +6242,8 @@ def _record_dispatch(
                 cache_read_tokens=result.cache_read_tokens,
                 cache_creation_tokens=result.cache_creation_tokens,
                 reason_class=result.reason_class,
+                run_id=run_id,
+                attempt=attempt,
             )
         )
         return logged if isinstance(logged, str) else None
@@ -7113,6 +7472,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
 
 
 __all__ = [
+    "AcceptFn",
     "AgentResult",
     "Backend",
     "ClaudePResult",
@@ -7134,6 +7494,7 @@ __all__ = [
     "result_from_openai",
     "route",
     "run_oss_tool_loop",
+    "run_scope",
     "select_transport",
     "transport_for_profile",
 ]
