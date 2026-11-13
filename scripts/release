@@ -105,6 +105,17 @@ own record too; clear with `round supersede`); any other =
 `round deploy`'s.
 
 PRECIS_ROUND_ROOT selects the checkout (as for scripts/round).
+
+Catpath wheel preflight relief (gr584832): the deploy's preflight
+(scripts/deploy, gr263082) dies without a controller-side autocatpath wheel
+source, which the fix-lane host can never have (catpath is private). When
+uv.lock's autocatpath pin has no checkout here AND every
+autocatpath_plugin host's wheelhouse already holds the pin-matching wheel,
+this script hands `round deploy` PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 — the
+seed is already done. Anything unproven (a pin below pyproject's floor —
+the gr499104 guard the bypass would skip — a mismatch, an unreadable
+inventory, an unreachable host) changes nothing: the preflight still
+fails loudly.
 """
 
 from __future__ import annotations
@@ -230,10 +241,14 @@ def release_branches() -> list[str] | None:
     return [ln.split("refs/heads/", 1)[1] for ln in out.splitlines() if "\trefs/" in ln]
 
 
-def rnd(*args: str, stream: bool = False) -> subprocess.CompletedProcess[str]:
+def rnd(
+    *args: str, stream: bool = False, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     argv = [str(ROUND), *args]
     if stream:
-        return subprocess.run(argv, cwd=ROOT, check=False, text=True, encoding="utf-8")
+        return subprocess.run(
+            argv, cwd=ROOT, check=False, text=True, encoding="utf-8", env=env
+        )
     return subprocess.run(
         argv,
         cwd=ROOT,
@@ -241,6 +256,7 @@ def rnd(*args: str, stream: bool = False) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -725,10 +741,7 @@ def live_releases(
                 db_n > n
                 or (
                     db_n == n
-                    and (
-                        db_terminal
-                        or (db_branch and db_branch != r.get("branch"))
-                    )
+                    and (db_terminal or (db_branch and db_branch != r.get("branch")))
                 )
             )
         ):
@@ -761,9 +774,7 @@ def stale_why(rel: dict[str, Any], prod: str) -> str:
     )
 
 
-def _dead_open_rel(
-    rels: list[dict[str, Any]], prod: str
-) -> dict[str, Any] | None:
+def _dead_open_rel(rels: list[dict[str, Any]], prod: str) -> dict[str, Any] | None:
     """The open record provably dead (gr582590): its branch is absent on
     origin AND origin/prod already contains its base — a forked clone's
     leftover whose payload shipped, not in-flight work. None when nothing
@@ -1453,6 +1464,300 @@ def _mark_deploy_failed(branch: str) -> None:
         sys.stdout.flush()
 
 
+# ── catpath wheel preflight relief (gr584832) ─────────────────────────────
+# scripts/deploy's preflight (gr263082) dies unless a pin-matching
+# autocatpath wheel is reachable from the controller (a catpath checkout at
+# one of the probe paths, or PRECIS_CATPATH_DIR), because the wheelhouse
+# seed is the only channel to a plugin host. retospect/catpath is a PRIVATE
+# repo: the fix-lane user cannot clone it, so every factory release_deploy
+# died in preflight even with the fleet already seeded at the pinned
+# version (r243: uv.lock pin 0.50.0, plugin hosts already on 0.50.0). The
+# preflight lives in scripts/deploy, which this flow reaches only through
+# `round deploy` — so the relief runs here, where the deploy is launched:
+# when the lock's pin has NO controller-side wheel source and every
+# autocatpath_plugin host's wheelhouse already holds the pin-matching
+# wheel, the seed has nothing left to do; hand the deploy the documented
+# manual bypass PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 instead of dying. Any
+# doubt — no pin, a lock below pyproject's floor, a checkout present, an
+# unreadable inventory, an unreachable host, a host missing the wheel —
+# changes nothing and the preflight decides as before, so a pin MISMATCH
+# with no wheel source still fails loudly.
+#
+# Probing uses the same overlay inventory scripts/deploy resolves (its own
+# deploy/inventory, else the main checkout's / PRECIS_OVERLAY_DIR) and the
+# same capability map the seed tasks gate on
+# (precis_capabilities.autocatpath_plugin; topology lives in the overlay's
+# group_vars, so ansible-inventory's merged hostvars answer it directly).
+
+
+def _probe_run(
+    argv: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str] | None:
+    """One probe command; None when the binary is missing or hangs (the
+    relief fails closed and the preflight decides)."""
+    try:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _ansible_probe_env() -> dict[str, str]:
+    """PATH with every .venv/bin dropped and PRECIS_ANSIBLE_BIN_DIR first —
+    the same choice scripts/deploy's _deploy_sanitize_path makes (a project
+    .venv carrying ansible-core would otherwise shadow the full package),
+    with VIRTUAL_ENV unset for the same reason."""
+    env = dict(os.environ)
+    parts = [
+        p for p in env.get("PATH", "").split(":") if p and not p.endswith("/.venv/bin")
+    ]
+    bin_dir = env.get("PRECIS_ANSIBLE_BIN_DIR", "").strip()
+    if bin_dir:
+        parts.insert(0, bin_dir)
+    env["PATH"] = ":".join(parts)
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def _autocatpath_lock_pin(lock_text: str) -> tuple[str, str]:
+    """(sha, version) uv.lock pins autocatpath at — the same package-stanza
+    read as scripts/lib/autocatpath-wheel.sh's autocatpath_locked_sha /
+    autocatpath_locked_version, so this and the preflight never disagree
+    about what the lock says."""
+    sha = ""
+    version = ""
+    in_pkg = False
+    for line in lock_text.splitlines():
+        if line == 'name = "autocatpath"':
+            in_pkg = True
+            continue
+        if not in_pkg:
+            continue
+        if line.startswith("[["):
+            break
+        if not sha and line.startswith("source = ") and "#" in line:
+            m = re.search(r'#([0-9a-f]{7,40})"', line)
+            if m:
+                sha = m.group(1)
+        elif not version and line.startswith("version = "):
+            m = re.match(r'version = "([^"]*)"', line)
+            if m:
+                version = m.group(1)
+    return sha, version
+
+
+def _catpath_checkout_present(root: Path, home: Path | None = None) -> bool:
+    """True when the deploy preflight's probe would find a catpath checkout
+    (PRECIS_CATPATH_DIR, else the conventional siblings — the same list
+    scripts/lib/autocatpath-wheel.sh's autocatpath_probe_dirs walks). With a
+    checkout the preflight does its full provenance job (and may build);
+    the relief is only for the no-source case."""
+    env_dir = os.environ.get("PRECIS_CATPATH_DIR", "").strip()
+    if env_dir:
+        return (Path(env_dir) / "pyproject.toml").is_file()
+    main_root = root
+    cp = _probe_run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root,
+        env=dict(os.environ),
+    )
+    if cp is not None and cp.returncode == 0 and cp.stdout.strip():
+        main_root = Path(cp.stdout.strip()).parent
+    home = home or Path.home()
+    for cand in (
+        main_root.parent / "catpath",
+        home / "work" / "project" / "code" / "catpath",
+        home / "catpath",
+    ):
+        if (cand / "pyproject.toml").is_file():
+            return True
+    return False
+
+
+def _overlay_inv_args(root: Path) -> tuple[list[str], Path] | None:
+    """(extra ansible args, the deploy/ dir to run from) replicating
+    scripts/deploy's overlay resolution; None when no usable overlay exists
+    (the deploy dies on that itself, louder, a moment later)."""
+    cluster = root / "deploy"
+    if (cluster / "inventory").is_dir():
+        # ansible.cfg's relative inventory/vault paths resolve from here.
+        return [], cluster
+    cp = _probe_run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root,
+        env=dict(os.environ),
+    )
+    main = Path(cp.stdout.strip()).parent if cp and cp.returncode == 0 else root
+    overlay = Path(
+        os.environ.get("PRECIS_OVERLAY_DIR", "").strip()
+        or main / "deploy" / "inventory"
+    )
+    vault = overlay.parent / ".vault-pass"
+    if overlay.is_dir() and vault.is_file():
+        return [
+            "-i",
+            str(overlay / "hosts.yml"),
+            "--vault-password-file",
+            str(vault),
+        ], cluster
+    return None
+
+
+def _plugin_hosts(
+    cluster: Path, inv_args: list[str], env: dict[str, str]
+) -> dict[str, str] | None:
+    """{host: wheelhouse_dir} for every autocatpath_plugin host — the same
+    membership test the seed tasks apply
+    (`inventory_hostname in precis_capabilities.autocatpath_plugin`), read
+    from ansible-inventory's merged hostvars. None when the inventory
+    cannot be read (fail closed: no relief)."""
+    cp = _probe_run(["ansible-inventory", "--list", *inv_args], cwd=cluster, env=env)
+    if cp is None or cp.returncode:
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return None
+    hostvars = data.get("_meta", {}).get("hostvars", {})
+    if not isinstance(hostvars, dict):
+        return None
+    out: dict[str, str] = {}
+    for host, vars_ in hostvars.items():
+        if not isinstance(vars_, dict):
+            continue
+        caps = vars_.get("precis_capabilities")
+        if not isinstance(caps, dict):
+            continue
+        if host in (caps.get("autocatpath_plugin") or []):
+            out[host] = str(vars_.get("autocatpath_wheelhouse") or "/opt/precis/wheels")
+    return out
+
+
+def _wheelhouse_seeded(
+    cluster: Path,
+    inv_args: list[str],
+    env: dict[str, str],
+    hosts: dict[str, str],
+    version: str,
+) -> bool:
+    """True when EVERY plugin host's wheelhouse holds the pin-matching
+    wheel — the artifact the seed task would have copied, so its absence
+    is exactly what the preflight dies on. One unreachable or missing host
+    fails the whole probe (fail closed)."""
+    for host, wheelhouse in hosts.items():
+        cmd = f"ls -d {shlex.quote(wheelhouse)}/autocatpath-{version}-*.whl 2>/dev/null"
+        cp = _probe_run(
+            ["ansible", host, "-m", "shell", "-a", cmd, *inv_args],
+            cwd=cluster,
+            env=env,
+        )
+        if cp is None or cp.returncode or not cp.stdout.strip():
+            return False
+    return True
+
+
+def _version_ge(a: str, b: str) -> bool:
+    """version_ge's answer for the plain X.Y.Z release numbers both sides
+    are filtered to: numeric segments, a shorter prefix ordering before a
+    longer one (sort -V's order, so "0.50" < "0.50.0"). False on anything
+    with an empty segment — fail closed, never guess."""
+    if (
+        not a
+        or not b
+        or not all(part.isdigit() for v in (a, b) for part in v.split("."))
+    ):
+        return False
+    return tuple(int(p) for p in a.split(".")) >= tuple(int(p) for p in b.split("."))
+
+
+def _autocatpath_floor(pyproject: Path) -> str | None:
+    """The lowest `autocatpath>=X` floor pyproject declares — the same
+    read as scripts/lib/autocatpath-wheel.sh's autocatpath_floor (last
+    match on a line, then the lowest across lines: a wheel only has to
+    clear ONE extra's floor, so the lowest is the gate). None when no
+    floor is declared — the deploy then skips the catpath block
+    entirely, and there is no preflight to relieve."""
+    try:
+        lines = pyproject.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    pat = re.compile(r'autocatpath[^"]*>=([0-9][0-9.]*)')
+    floors = [ms[-1] for line in lines if (ms := pat.findall(line))]
+    if not floors:
+        return None
+    return min(
+        floors,
+        key=lambda v: tuple(int(p) for p in v.split(".") if p.isdigit()),
+    )
+
+
+def catpath_preflight_relief() -> str | None:
+    """The line to print when this deploy should run with
+    PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1, else None. Read the whole story at
+    the section header above (gr584832)."""
+    if os.environ.get("PRECIS_DEPLOY_SKIP_CATPATH_WHEEL"):
+        return None
+    if "autocatpath_wheel" in os.environ.get("PRECIS_DEPLOY_EXTRA_VARS", ""):
+        return None
+    lock = ROOT / "uv.lock"
+    if not lock.is_file():
+        return None
+    try:
+        sha, version = _autocatpath_lock_pin(lock.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    # The version is interpolated into a remote glob — only a plain release
+    # number may reach it.
+    if not version or not re.fullmatch(r"[0-9][0-9.]*", version):
+        return None
+    # The gr499104 guard the bypass would otherwise skip: the locked
+    # version must still clear pyproject's floor. Below it the wheelhouse
+    # holds a wheel no extra can resolve and the on-host install fails
+    # mid-run — exactly what the preflight's die exists to prevent, so it
+    # keeps it. No declared floor means the deploy skips the catpath block
+    # outright and needs no relief.
+    floor = _autocatpath_floor(ROOT / "pyproject.toml")
+    if floor is None or not _version_ge(version, floor):
+        return None
+    if _catpath_checkout_present(ROOT):
+        return None
+    resolved = _overlay_inv_args(ROOT)
+    if resolved is None:
+        return None
+    inv_args, cluster = resolved
+    env = _ansible_probe_env()
+    hosts = _plugin_hosts(cluster, inv_args, env)
+    pin = f"{sha[:12]} (v{version})" if sha else f"v{version}"
+    if hosts is None:
+        say(
+            "catpath preflight relief (gr584832): the inventory could not be "
+            "read — leaving the catpath wheel preflight to decide"
+        )
+        return None
+    if not hosts:
+        return (
+            "catpath preflight relief (gr584832): no autocatpath_plugin hosts "
+            f"in the inventory — nothing to seed for uv.lock pin {pin}; deploy "
+            "runs with PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1"
+        )
+    if not _wheelhouse_seeded(cluster, inv_args, env, hosts, version):
+        return None
+    return (
+        "catpath preflight relief (gr584832): every autocatpath_plugin host "
+        f"({', '.join(sorted(hosts))}) already holds autocatpath-{version} in "
+        f"its wheelhouse — the seed uv.lock pin {pin} needs is done; deploy "
+        "runs with PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1"
+    )
+
+
 def deploy_and_close(
     args: argparse.Namespace, sha: str, *, finish_pointer: bool = False
 ) -> int:
@@ -1464,7 +1769,12 @@ def deploy_and_close(
     label = release_label(before)
     prev = rev("origin/prod")
     command = ("deploy", "--finish-pointer") if finish_pointer else ("deploy",)
-    rc = rnd(*command, stream=True).returncode
+    deploy_env = None
+    relief = catpath_preflight_relief()
+    if relief:
+        say(relief)
+        deploy_env = {**os.environ, "PRECIS_DEPLOY_SKIP_CATPATH_WHEEL": "1"}
+    rc = rnd(*command, stream=True, env=deploy_env).returncode
     if rc in (0, 3):
         # The rollout ran, so its migrate play did too — name whatever
         # post-migration steps it left pending (gr514955). Best-effort.

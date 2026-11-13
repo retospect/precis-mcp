@@ -66,6 +66,7 @@ scripts/precis-chat::castor_base 1
 scripts/reap-idle-gates::_docker 1
 scripts/reap-idle-gates::_sessions 1
 scripts/reap-index-locks::_run 1
+scripts/release::_probe_run 1
 scripts/release::note_gripes 1
 scripts/release::rnd 2
 scripts/release::validate_gripes 1
