@@ -95,7 +95,9 @@ dispatcher also picks up `llm_tier`-set leaves and mints a
 
 ```python
 put(kind='todo', text='Diagnose gripe:42 — rate-limit edge case',
-    meta={'executor': 'claude_inproc', 'job_type': 'diagnose_gripe'},
+    meta={'executor': 'claude_inproc', 'job_type': 'diagnose_gripe',
+          'params': {'gripe_id': 42}},  # required — the dispatcher
+    #   copies meta.params verbatim; the fixes link does NOT fill it
     args={'parent_id': <parent_todo>})
 link(kind='todo', id=<new_todo>, target='gripe:42', rel='fixes')
 # → the dispatch worker mints the job on its next pass — minutes,
