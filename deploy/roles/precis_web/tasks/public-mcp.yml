@@ -103,6 +103,9 @@
       PRECIS_SKIP_SCHEMA_CHECK: ""
       PRECIS_EMBEDDER: "{{ precis_mcp_public_embedder }}"
       PRECIS_EMBEDDER_URL: "{{ precis_mcp_public_embedder_url }}"
+      # python kind: server code readable by connectors, never writable.
+      PRECIS_PYTHON_ROOTS: "precis:/Users/deploy/precis-fix-repo,catpath:/Users/deploy/catpath"
+      PRECIS_PYTHON_READONLY: "1"
   notify: restart precis-mcp-public
 
 - name: Load the public MCP LaunchDaemon if absent
