@@ -90,6 +90,33 @@ branches, `scripts/gen-schema`, ansible `shell:` psql tasks); pinned by
 `tests/test_scripted_psql_skips_psqlrc.py`. When a comparison never
 matches, look at the bytes (`| od -c`) before theorising.
 
+### Dogfood a hexfold change
+
+Authoring an `se`/hexfold change is specced by the `se-design` skill;
+this is the dev-ops half — exercise it against this worktree's own dev
+stack, not prod:
+
+- `./scripts/dev db-up` starts the worktree's dev Postgres and brings
+  `precis_dev` to the packaged schema; drive it with the seven-verb CLI
+  — `./scripts/dev uv run --no-sync precis tools put --kind se …` (the
+  same handlers as the MCP verbs) — from a driver kept in dogfood.local
+  (the `*.local/` gitignore rule keeps the throwaway script out of the
+  tree).
+- A driver that builds the schema itself must discover the migration
+  sources including plugins — `Migrator.discover_sources(builtin_dir)`
+  in `src/precis/store/migrate.py`, which composes the built-in dir
+  with every source advertised on the `precis.migrations` entry-point
+  group. The legacy single-directory `Migrator(dsn, migrations_dir)`
+  applies only `src/precis/migrations`, so the plugin chains
+  (`src/precis_se/migrations/`, `precis_chem`, …) never run and the se
+  block tables are missing.
+- Operations longer than about two minutes go through
+  `./scripts/prod-precis tools …` in the background, not a session MCP
+  call. Write subcommands refuse unless the tree descends from
+  `origin/prod` — `git rebase origin/prod`, or run from a tree that
+  does (read subcommands only warn; the `READ_ONLY` table in
+  `scripts/prod-precis` is the source of which is which).
+
 ## Never `cd` into your own worktree
 
 The Bash shell already runs in the worktree root, and the harness
