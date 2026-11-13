@@ -12,7 +12,9 @@ the user:
   (``[11](#page-5-0)`` → ``[11]``) — ingest strips the link form for
   every post-2026-08 chunk, but already-ingested chunks still carry
   it, so this read path scrubs it too.
-* Table grids that poison the RAKE keyword cell on search hits.
+* Table grids that poison the RAKE keyword cell on search hits —
+  surfaced as a one-line caption of residue-cleaned header cells
+  instead (gr664574).
 
 Pure functions; no store, no I/O. Tests live in
 ``tests/test_mcp_critic_regressions.py`` (the image-marker leakage
@@ -172,10 +174,26 @@ def _chunk_keywords_or_caption(text: str) -> str:
     agent *what kind of thing* this is without the noise.
 
     Heuristic: starts with ``|`` after lstrip, pipe density >5 %.
+    Rows without stored keywords get the worker's residue handling
+    (markup/table-line strip, ``et al``/journal-tail drop), so the
+    cell matches stored keywords. Table captions use ``/`` between
+    header cells, never ``|`` or a comma, and each header cell gets
+    the same inline residue strip — a ``vinyl<br/>alcohol`` header
+    renders 'vinyl alcohol', not literal markup (gr664574).
+
     Same heuristic the pre-greenfield paragraph→table backfill used,
     so legacy chunks that landed before the ``chunk_kind='table'``
     classifier still surface readable cells here.
     """
+    # Same residue handling as the worker's stored keywords (gr664574):
+    # ``_clean_residue`` covers the table-caption cells below, and
+    # ``_clean_keyword_text`` + ``_is_junk_keyword`` the prose fallback.
+    from precis.workers.chunk_keywords import (
+        _clean_keyword_text,
+        _clean_residue,
+        _is_junk_keyword,
+    )
+
     stripped = text.lstrip()
     is_table = (
         stripped.startswith("|")
@@ -184,17 +202,34 @@ def _chunk_keywords_or_caption(text: str) -> str:
     )
     if is_table:
         first_line = stripped.split("\n", 1)[0].strip()
-        # Drop empty cells / trim long rows so the caption fits the
-        # one-line cell budget. ``A, (A) | B, (B) | C, (C) | …`` is
-        # plenty for an agent to recognise a data table.
-        cells = [c.strip() for c in first_line.strip("|").split("|") if c.strip()]
+        # Clean each header cell before it echoes into the cell —
+        # ``vinyl<br/>alcohol`` renders 'vinyl alcohol', and a cell
+        # that is only an image marker or URL drops to empty.
+        cells = [
+            c
+            for c in (
+                re.sub(r"\s+", " ", _clean_residue(cell)).strip()
+                for cell in first_line.strip("|").split("|")
+            )
+            if c
+        ]
         if cells:
-            caption = " | ".join(cells[:6])
+            # ``/`` not ``|``: the cell is comma-separated and a pipe
+            # reads as a row dump to a client splitting the cell.
+            caption = " / ".join(c.replace(",", ";") for c in cells[:6])
             if len(cells) > 6:
-                caption += " | …"
+                caption += " / …"
             return f"[table] {caption}"
         return "[table]"
-    return keyword_summary(text, top_k=5)
+    # Prose fallback: strip tags / table lines first, over-fetch,
+    # drop junk candidates.
+    cleaned = _clean_keyword_text(text)
+    phrases = [
+        p
+        for p in keyword_summary(cleaned, top_k=15, separator="\n").split("\n")
+        if p and not _is_junk_keyword(p)
+    ]
+    return ", ".join(phrases[:5])
 
 
 def _scrub_block_text(text: str) -> str:

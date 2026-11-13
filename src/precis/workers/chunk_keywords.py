@@ -11,7 +11,7 @@ per-CHUNK keybert keywords and stores them directly on ``chunks``:
 * ``chunks.keywords_meta JSONB`` — versioned rich envelope::
 
       {
-        "version": "1.0",
+        "version": "1.1",
         "embedder": "bge-m3",
         "keywords": [
           {"short": "MOF", "long": "metal-organic framework", "score": 0.82},
@@ -29,7 +29,10 @@ Algorithm (per chunk):
    pollute the keyword set if included.
 3. Load (or compute + lazy-stash) the paper's abbreviation dict from
    ``refs.meta['abbrevs']`` (Schwartz-Hearst).
-4. Generate candidate phrases via RAKE.
+4. Generate candidate phrases via RAKE on *cleaned* text —
+   :func:`_clean_keyword_text` strips markup and table-dump residue
+   first, :func:`_is_junk_keyword` drops the citation/boilerplate
+   candidates cleaning can't reach (gr664574).
 5. For each candidate that matches a known short, embed its **long
    form** for scoring — gives bge-m3 the richer context (the
    embedding knows ``MOF ≈ metal-organic framework``).
@@ -39,7 +42,11 @@ Algorithm (per chunk):
 
 Lazy upgrade: bump :data:`KEYWORDS_VERSION` to invalidate every
 existing row's ``keywords_meta.version`` mismatch; the claim query
-re-claims those chunks for re-extraction.
+re-claims those chunks for re-extraction. The ``1.0`` → ``1.1`` bump
+(gr664574, residue cleaning) re-derives the ~4.6M-row corpus through
+tier 3's paced stale claim — a background burn that always yields to
+interactive (tier 1) and fresh (tier 2) claims, per the gr664574
+ruling ("slow background burn, not a one-off bulk run").
 
 **Claim shape (gr520236 / gr550973 / gr563702).** Three tiered ``FOR
 UPDATE OF c SKIP LOCKED`` queries, newest-first within each: (1)
@@ -116,6 +123,7 @@ the ``EmbedderUnavailable`` branch, not a failure.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -130,6 +138,7 @@ from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.db_retry import retry_locked
 from precis.utils.env import env_flag, env_float, env_int
+from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.rake import extract_keywords as _rake_phrases
 from precis.workers._claim import bulk_reserve
 
@@ -139,7 +148,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: Bump on algorithm changes so existing rows get re-extracted.
-KEYWORDS_VERSION = "1.0"
+#: ``1.1`` (gr664574, 2026-11-13): candidate generation now cleans
+#: markup/citation residue first — the stored corpus re-derives via
+#: the tier-3 stale claim, the ruling's "slow background burn".
+KEYWORDS_VERSION = "1.1"
 
 #: Fixed signed-bigint key for the single-runner advisory lock (same idiom
 #: as ``paper_reconcile``/``openalex_enrich``/``paper_meta_enrich`` — see
@@ -692,6 +704,365 @@ def ensure_paper_abbrevs(conn: Connection, ref_id: int) -> dict[str, str]:
     return detected
 
 
+# ---------------------------------------------------------------------------
+# Candidate-text cleaning + junk-candidate rules (gr664574)
+#
+# A 2026-11-13 audit of ~8k prod rows found ~1 stored keyword in 20 is
+# markup or citation residue: tag tokens (``vinyl<br/>alcohol`` →
+# 'vinyl br alcohol'), table-grid lines RAKE fused into one phrase,
+# 'rahman et al' citation residue (~250 distinct strings), journal-
+# abbreviation tails ('carbon capture sci technol'), section headings
+# ('article info') and URL slugs — RAKE ran on raw ``chunks.text``,
+# which carries all of it.
+#
+# The ruling's shape: clean the text BEFORE candidate generation, then
+# drop the residue classes no cleaner can reach. Deliberately NOT a
+# token blacklist: the dry run's tag-name rule also dropped real
+# two-letter abbreviations ('pe', 'ts', 'rt'), so tag names leave only
+# as literal ``<…>`` markup. No plural/hyphen/acronym folding —
+# measured, not worth it.
+# ---------------------------------------------------------------------------
+
+#: JATS/HTML tags — ``<br/>``, ``<sub>``, ``<p class="block-type">`` —
+#: whose names and attribute words otherwise tokenise as keywords
+#: ('br', 'sub', 'p block-type text'). Requiring a letter right after
+#: ``<`` keeps ``x < y`` prose untouched; ``[^<>\n]`` keeps a stray
+#: ``<`` from eating across lines.
+_TAG_RE = re.compile(r"</?[A-Za-z][^<>\n]*>")
+
+#: Markdown image markers (``![](_page_19_Figure_1.jpeg)``): the asset
+#: path's tokens ('page', 'figure', 'jpeg') are pure residue — the
+#: display path scrubs the same shape for agents
+#: (``handlers._paper_text``); same rule, keyword side.
+_IMAGE_MARKER_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+#: Character entities — ``&nbsp;`` ``&amp;`` ``&#x27;`` — that survived
+#: ingest. Whitespace or punctuation semantically; their names
+#: ('nbsp', 'amp') would otherwise read as keyword tokens.
+_ENTITY_RE = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]*|#\d+|#x[0-9A-Fa-f]+);")
+
+#: Absolute URLs and bare ``www.`` hosts — the path fragments tokenise
+#: into 'doi'/'org'/'10'-style slugs. Runs after the tag strip so a
+#: URL inside an attribute (``<a href="…">``) is already gone and
+#: ``\S+`` never has to survive tag syntax.
+_URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+
+
+def _is_table_line(line: str) -> bool:
+    """True when a line is a table grid row, not prose.
+
+    Opens with ``|`` (Marker's markdown-grid shape, including the
+    ``|---|---|`` separator) or carries ≥2 pipes — three unanchored
+    cells, the JATS/acatome dump shape ('model | r | ρ'). Single-pipe
+    prose (``a | b``) survives; the rare inline pipe pair
+    (``{x | p | q}``) is the accepted collateral — much rarer in this
+    corpus than unmarked grid rows.
+    """
+    return line.lstrip().startswith("|") or line.count("|") >= 2
+
+
+def _clean_residue(text: str) -> str:
+    """Inline residue strip, line-structure preserving.
+
+    Shared by :func:`_clean_keyword_text` (which then drops table
+    lines) and the search row's table-caption cells
+    (``handlers._paper_text._chunk_keywords_or_caption``) — a header
+    cell like ``vinyl<br/>alcohol`` renders 'vinyl alcohol' rather
+    than echoing literal markup. Order matters: image markers and
+    page-anchor links first (their ``(…)`` targets would confuse the
+    later passes), then tags, entities, URLs — a URL inside a tag
+    attribute (``<a href="…">``) is already gone by then, so ``\\S+``
+    never meets tag syntax. Page-anchor links (``[11](#page-5-0)``)
+    fold back to ``[11]``: the citation mark is real text, only the
+    dead anchor is residue.
+    """
+    text = _IMAGE_MARKER_RE.sub(" ", text)
+    text = strip_page_anchor_links(text)
+    text = _TAG_RE.sub(" ", text)
+    text = _ENTITY_RE.sub(" ", text)
+    return _URL_RE.sub(" ", text)
+
+
+def _clean_keyword_text(text: str) -> str:
+    """Strip markup + table-dump residue before RAKE candidate generation.
+
+    :func:`_clean_residue` does the inline strip; the table-line drop
+    runs last so a markdown grid's cell words can't fuse into one
+    phrase.
+    """
+    return "\n".join(
+        ln for ln in _clean_residue(text).splitlines() if not _is_table_line(ln)
+    )
+
+
+#: ``et al`` anywhere — pure citation residue ('rahman et al',
+#: '00151-4 tao et al'). A lone surname that survives as its own
+#: candidate is tolerated; the rule kills the telltale pair.
+_ET_AL_RE = re.compile(r"\bet al\b")
+
+#: Manuscript/DOI ids and year-letter tails (``00151-4``, ``2024a``),
+#: full-matched per token. Anchored on 4+ leading digits so real
+#: numeric compounds ('235u', '4h-sic', '365nm', 'mof-5') stay.
+_CITATION_ID_RE = re.compile(r"\d{4,}[a-z]?(?:-\d+)?")
+
+#: Run-in section headings that fuse with the phrase following them —
+#: a JATS ``Keywords:``/``Article info`` heading ahead of a topic word
+#: produces 'keywords polyethylene'. The plural forms only: 'keyword
+#: extraction' singular is a real topic.
+_LEADING_HEADING_RE = re.compile(
+    r"^(?:keywords|key words|index terms|subject terms|mesh terms|"
+    r"article info|article information)\b"
+)
+
+#: URL/DOI slugs as whole words inside a candidate.
+_URL_TOKENS: frozenset[str] = frozenset({"http", "https", "www", "doi", "dx"})
+
+#: Marker/acatome class names that survive when markup lost only its
+#: brackets ('li li block-type listitem' already bare).
+_MARKUP_TOKENS: frozenset[str] = frozenset({"block-type", "listitem"})
+
+#: ISO-4/LTWA journal-name fragments ('sci', 'technol', 'lett',
+#: 'mater', …). One alone can be a coincidental word — 'water res'
+#: keeps; TWO inside a ≤4-word candidate is a journal-name tail
+#: ('carbon capture sci technol', 'j am chem soc', 'phys rev lett'),
+#: and a bare single fragment is never a topic ('technol' alone).
+#: Deliberately fragments only: complete words ('nature', 'science',
+#: 'energy', 'letters', 'polymer', 'cell', 'colloid', 'langmuir')
+#: stay out — they carry topic, and 'nano lett' surviving beats
+#: losing 'langmuir' to a name that is also a phenomenon.
+_JOURNAL_ABBREV_TOKENS: frozenset[str] = frozenset(
+    {
+        "j",
+        "sci",
+        "technol",
+        "lett",
+        "phys",
+        "chem",
+        "mater",
+        "appl",
+        "adv",
+        "res",
+        "int",
+        "rev",
+        "proc",
+        "nat",
+        "natl",
+        "acad",
+        "soc",
+        "eng",
+        "med",
+        "biol",
+        "comput",
+        "theor",
+        "environ",
+        "sustain",
+        "catal",
+        "polym",
+        "cryst",
+        "commun",
+        "anal",
+        "chim",
+        "acta",
+        "inorg",
+        "org",
+        "mol",
+        "nanotechnol",
+        "nanosci",
+        "exp",
+        "clin",
+        "immunol",
+        "pharmacol",
+        "toxicol",
+        "virol",
+        "microbiol",
+        "genet",
+        "neurosci",
+        "neurol",
+        "psychol",
+        "geol",
+        "astrophys",
+        "astron",
+        "mech",
+        "annu",
+        "curr",
+        "opin",
+        "funct",
+        "electrochem",
+        "electrochim",
+        "photochem",
+        "photobiol",
+        "biochem",
+        "biophys",
+        "bioorg",
+        "medchem",
+        "bioinform",
+        "bioresour",
+        "biotechnol",
+        "eur",
+        "angew",
+        "acs",
+        "rsc",
+        "acc",
+        "ceram",
+        "des",
+        "discov",
+        "prod",
+        "spectrom",
+        "ed",
+        "mod",
+        "opt",
+        "bull",
+        "rep",
+        "ind",
+        "express",
+        "surf",
+        "hydrog",
+        "ecol",
+        "nucl",
+        "radiat",
+        "instrum",
+        "meas",
+        "metall",
+        "compd",
+        "magn",
+        "supercond",
+        "semicond",
+        "thermochim",
+        "calorim",
+        "chromatogr",
+        "microsc",
+        "crystallogr",
+        "synchrotron",
+        "abstr",
+        "ext",
+        "conf",
+        "symp",
+    }
+)
+
+#: Whole-candidate match — section headings and publisher chrome that
+#: read as topics to RAKE but carry nothing ('article info',
+#: 'keywords', 'supporting information'). Exact match only, so a real
+#: phrase keeps the word inside it ('periodic table', 'figure of
+#: merit' survive while bare 'figure' drops).
+_BOILERPLATE_PHRASES: frozenset[str] = frozenset(
+    {
+        "abstract",
+        "keywords",
+        "key words",
+        "index terms",
+        "subject terms",
+        "mesh terms",
+        "article",
+        "article info",
+        "article information",
+        "article history",
+        "article metrics",
+        "journal",
+        "editorial",
+        "author information",
+        "author info",
+        "corresponding author",
+        "corresponding authors",
+        "equal contribution",
+        "contributed equally",
+        "these authors contributed equally",
+        "author contributions",
+        "credit author statement",
+        "authorship contribution statement",
+        "supporting information",
+        "supplementary information",
+        "additional information",
+        "associated content",
+        "related content",
+        "recommended articles",
+        "data availability",
+        "data availability statement",
+        "declaration of interest",
+        "declaration of competing interest",
+        "conflict of interest",
+        "conflicts of interest",
+        "acknowledgement",
+        "acknowledgements",
+        "acknowledgment",
+        "acknowledgments",
+        "graphical abstract",
+        "highlights",
+        "table of contents",
+        "references",
+        "notes",
+        "appendix",
+        "figure",
+        "fig",
+        "table",
+        "scheme",
+        "equation",
+        "section",
+        "chapter",
+        "page",
+        "vol",
+        "pp",
+        "edn",
+        "issn",
+        "isbn",
+        "open access",
+        "all rights reserved",
+        "creative commons",
+        "copyright",
+        "publisher",
+        "preprint",
+        "arxiv",
+        "download pdf",
+        "view pdf",
+        "full text",
+        "crossmark",
+        "check for updates",
+        "rights and permissions",
+        "get rights and content",
+        "peer review",
+        "peer reviewed",
+        "available online",
+        "published online",
+        "received",
+        "accepted",
+        "revised",
+        "early view",
+    }
+)
+
+
+def _is_junk_keyword(candidate: str) -> bool:
+    """True when a RAKE candidate is residue, not a topic (gr664574).
+
+    Candidates arrive as RAKE emits them — lowercase, space-joined
+    words. The rules cover the audit's residue classes that text
+    cleaning can't reach: citation residue ('rahman et al',
+    ``00151-4`` ids), journal-abbreviation tails ('carbon capture
+    sci technol'), boilerplate headings ('article info'), URL slugs,
+    Marker class names ('block-type'), LaTeX underscores ('z_
+    gamma') and bare single letters, which are never a topic.
+    """
+    cand = candidate.strip().lower()
+    if len(cand) <= 1 or "_" in cand or cand in _BOILERPLATE_PHRASES:
+        return True
+    if _ET_AL_RE.search(cand) or _LEADING_HEADING_RE.match(cand):
+        return True
+    tokens = cand.split()
+    if any(t in _URL_TOKENS or t in _MARKUP_TOKENS for t in tokens):
+        return True
+    if any(_CITATION_ID_RE.fullmatch(t) for t in tokens):
+        return True
+    journal = sum(t in _JOURNAL_ABBREV_TOKENS for t in tokens)
+    # Two fragments anywhere convict ('carbon capture sci technol',
+    # 'j am chem soc'); a bare fragment alone is never a topic. A
+    # fragment TAIL after ≥2 real words is the same journal name cut
+    # by its own abbreviation periods ('carbon capture sci.') — one
+    # real word keeps ('water res', 'green chem', 'nano lett').
+    if journal >= 2 or (len(tokens) == 1 and journal == 1):
+        return True
+    return tokens[-1] in _JOURNAL_ABBREV_TOKENS and len(tokens) - journal >= 2
+
+
 def extract_chunk_keywords(
     *,
     chunk_text: str,
@@ -706,7 +1077,10 @@ def extract_chunk_keywords(
     descending by score.
 
     Algorithm:
-      1. RAKE candidate generation (up to ``_RAKE_POOL`` phrases).
+      1. RAKE candidate generation (up to ``_RAKE_POOL`` phrases) on
+         cleaned text — :func:`_clean_keyword_text` strips markup and
+         table-dump residue, :func:`_is_junk_keyword` drops
+         citation/boilerplate candidates (gr664574).
       2. For each candidate: if it matches a known short, embed its
          long form (richer context for bge-m3). Otherwise embed as-is.
       3. Cosine vs. chunk embedding; descending sort.
@@ -724,7 +1098,13 @@ def _prepare_keyword_candidates(
     chunk_text: str, abbrevs: dict[str, str]
 ) -> list[tuple[str, str | None]]:
     """Keep each candidate's embedding text and paper-local short form."""
-    candidates = _rake_phrases(chunk_text, max_keywords=_RAKE_POOL)
+    candidates = [
+        cand
+        for cand in _rake_phrases(
+            _clean_keyword_text(chunk_text), max_keywords=_RAKE_POOL
+        )
+        if not _is_junk_keyword(cand)
+    ]
 
     # Build the candidate→embedding_text mapping (long-form if known
     # short). We preserve the candidate-as-it-appeared for short-
