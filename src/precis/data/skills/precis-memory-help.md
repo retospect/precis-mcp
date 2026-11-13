@@ -635,6 +635,8 @@ append-only judgment history (page it with `args={'limit': 20,
 
 ```python
 get(kind="memory", id=73, view="considerations")
+# a quest scope reads the same ledger:
+get(kind="quest", id="qu<N>", view="considerations")
 ```
 
 A novelty search for the same scope consumes the valid `not-useful`

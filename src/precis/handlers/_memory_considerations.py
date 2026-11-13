@@ -1,7 +1,9 @@
-"""``get(kind='memory', id=N, view='considerations')`` — the scope's
-consideration ledger (spec me626852, gr662069).
+"""``get(id=N, view='considerations')`` — a scope's consideration ledger
+(spec me626852, gr662069), served by the kinds that can scope a verdict
+(:data:`precis.store._consideration_ops.CONSIDERATION_LEDGER_KINDS` —
+memory and quest today).
 
-Renders the memory's ``considered`` edges in three cohorts — current
+Renders the scope's ``considered`` edges in three cohorts — current
 verdicts, the stale ``REOPEN`` queue (a material scope/source change since
 judgment, or an ``edge-lost`` judgment whose ``considered`` edge died in a
 chunk-replacement cascade; reconsider by re-judging through
@@ -118,7 +120,7 @@ def render_considerations(
     """The scope ledger: current verdicts, the reconsider queue, the
     needs-text cohort, then the judgment history (one page)."""
     verdicts = store.scoped_considerations(ref.id)
-    handle = _handle("memory", ref.id)
+    handle = _handle(ref.kind, ref.id)
     titles = _titles(store, sorted({v.dst_ref_id for v in verdicts}))
     scope_title = ref.title or ""
     header = f"Considerations for {handle} — {scope_title}".rstrip(" —")
@@ -131,7 +133,7 @@ def render_considerations(
     if not verdicts:
         sections.append(
             "\nNo considered verdicts yet. Record one:\n"
-            f"  link(kind='memory', id={handle}, target='<source>', "
+            f"  link(kind={ref.kind!r}, id={handle}, target='<source>', "
             "rel='considered', reason='why it does (not) fit', "
             "meta={'verdict': 'useful|not-useful|uncertain', "
             "'depth': 'abstract'})"
@@ -170,7 +172,7 @@ def render_considerations(
         window = f"{first}–{last} of {total}"
         if total > len(history):
             window += (
-                f" — page with get(kind='memory', id={handle}, "
+                f" — page with get(kind={ref.kind!r}, id={handle}, "
                 "view='considerations', args={'limit': <n>, 'offset': <m>})"
             )
         sections.append(

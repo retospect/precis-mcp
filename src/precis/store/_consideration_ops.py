@@ -52,8 +52,9 @@ inside :meth:`LinksMixin.add_link`).
 
 Consumers: ``search(args={'novel_for': <scope>})`` merges valid scoped
 exclusions across every search leg (dispatch facet, gr662069);
-``get(kind='memory', id=<scope>, view='considerations')`` renders the
-ledger with inspect/reconsider access. Global search, direct lookup and
+``get(id=<scope>, view='considerations')`` renders the ledger with
+inspect/reconsider access on the kinds in
+:data:`CONSIDERATION_LEDGER_KINDS`. Global search, direct lookup and
 other memories' scopes are untouched.
 """
 
@@ -72,6 +73,14 @@ from precis.errors import BadInput
 
 #: The scoped memory-or-question → source relation (migration 0320).
 CONSIDER_RELATION = "considered"
+
+#: Kinds whose ``get`` serves ``view='considerations'`` — the scope
+#: ledger (current verdicts, the reopen queue, the judgment history).
+#: Any live ref can be a ``novel_for`` scope, but only these expose the
+#: ledger; the search facet's inspect hint points the rest at
+#: ``view='links'``, which lists live ``considered`` edges but cannot
+#: show judgment history or ``edge-lost`` reconsiderations.
+CONSIDERATION_LEDGER_KINDS: frozenset[str] = frozenset({"memory", "quest"})
 
 #: Outcome vocabulary — useful / not-useful / uncertain (me626852).
 CONSIDER_VERDICTS: tuple[str, ...] = ("useful", "not-useful", "uncertain")

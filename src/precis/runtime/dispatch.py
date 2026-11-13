@@ -2927,6 +2927,7 @@ class DispatchMixin(RuntimeShape):
         Refuses (never silently unfiltered) when the scope doesn't
         resolve, so a typo can't make judged-out hits look "new".
         """
+        from precis.store._consideration_ops import CONSIDERATION_LEDGER_KINDS
         from precis.utils import handle_registry
         from precis.utils.link_target import parse_link_target
 
@@ -2982,8 +2983,8 @@ class DispatchMixin(RuntimeShape):
                 f"{len(found.needs_text)} awaiting text (acquisition, not rejection)"
             )
         inspect_hint = (
-            f"get(kind='memory', id={scope_handle!r}, view='considerations')"
-            if scope.kind == "memory"
+            f"get(kind={scope.kind!r}, id={scope_handle!r}, view='considerations')"
+            if scope.kind in CONSIDERATION_LEDGER_KINDS
             else f"get(kind={scope.kind!r}, id={scope_handle!r}, "
             "view='links', args={'rel': 'considered', 'direction': 'out'})"
         )

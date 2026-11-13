@@ -664,6 +664,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "served",
     "meta",
     "replay",
+    "considerations",
 )
 
 
@@ -690,6 +691,28 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
             next="args={'budget': 2500}",
         )
     return raw
+
+
+def _ledger_page_arg(
+    args: dict[str, Any] | None, name: str, default: int, minimum: int
+) -> int:
+    """One ``view='considerations'`` history-window knob — ``args['limit']``
+    (>= 1) or ``args['offset']`` (>= 0), the same paging the memory
+    ledger's ``limit=``/``offset=`` kwargs take (gr662069)."""
+    if not isinstance(args, dict) or args.get(name) is None:
+        return default
+    raw = args[name]
+    try:
+        parsed = int(str(raw))
+    except (TypeError, ValueError):
+        parsed = minimum - 1
+    if parsed < minimum:
+        raise BadInput(
+            f"args={{{name!r}: {raw!r}}}: {name} must be an integer >= {minimum}",
+            next=f"get(kind='quest', id=N, view='considerations', "
+            f"args={{{name!r}: <int>}})",
+        )
+    return parsed
 
 
 #: ``view='results'`` ``args['format']`` values — ``'toon'`` (default) is the
@@ -1072,7 +1095,10 @@ class QuestHandler(NumericRefHandler):
             "measurand over everything serving it; view='pourbaix' the "
             "per-candidate surface-Pourbaix validity maps; view='replay' "
             "the measured history as an optimisation benchmark (top-5% "
-            "coverage + regret vs a seeded random baseline). "
+            "coverage + regret vs a seeded random baseline); "
+            "view='considerations' the quest's scoped verdict ledger — "
+            "current rel='considered' verdicts, the reopen queue and the "
+            "judgment history (args={'limit': N, 'offset': M} pages it). "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -2098,6 +2124,28 @@ class QuestHandler(NumericRefHandler):
         if view == "served" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_served(ref, args))
+        if view == "considerations" and concrete:
+            # gr662069 (me626852): a quest is a consideration scope — the
+            # lit-search's verdict ledger. The shared render shows
+            # current verdicts, the reopen queue (stale + edge-lost) and
+            # the paged judgment history — everything view='links'
+            # cannot show.
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='considerations' requires one quest id",
+                    next="get(kind='quest', id=N, view='considerations')",
+                )
+            from precis.handlers._memory_considerations import (
+                render_considerations,
+            )
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return render_considerations(
+                self.store,
+                ref,
+                history_limit=_ledger_page_arg(args, "limit", 10, 1),
+                history_offset=_ledger_page_arg(args, "offset", 0, 0),
+            )
         if view == "replay" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_replay(ref, args))
@@ -2122,7 +2170,8 @@ class QuestHandler(NumericRefHandler):
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
                     "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
-                    "rubric, served, meta, replay (quest-specific) · "
+                    "rubric, served, meta, replay, considerations "
+                    "(quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",

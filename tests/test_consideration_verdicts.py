@@ -763,3 +763,158 @@ def test_concurrent_pair_judgments_serialize_to_one_edge(store: Store) -> None:
     # The deterministic-half judgment plus the eight burst ones — the
     # history never collapses concurrent verdicts either.
     assert len(_history(store, scope)) == 9
+
+
+# ── review td662210 FIX: the quest-scope ledger view ────────────────────
+
+
+def test_quest_considerations_view_shows_ledger(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A quest scope exposes the same ledger memory does (review
+    td662210): the write door already accepted quest judgments, but only
+    kind='memory' served view='considerations' — a quest scope was
+    pointed at view='links', which lists live edges but cannot show the
+    judgment history or an edge-lost reconsideration."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    src = _mk_paper(store, slug="cv-q1", title="Q1", text=f"{_Q} q1.")
+    _judge(store, quest.id, src, reason="off the quest's axis", model="m-4")
+    out, is_error = rt.dispatch_with_status(
+        "get",
+        {"kind": "quest", "id": f"qu{quest.id}", "view": "considerations"},
+    )
+    assert not is_error, out
+    assert f"qu{quest.id}" in out
+    assert "not-useful" in out and "off the quest's axis" in out
+    assert "abstract" in out  # an abstract-only verdict shows as such
+    assert "Judgment history" in out and "m-4" in out
+
+
+def test_quest_considerations_view_shows_edge_lost(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Chunk-loss inspection on a quest scope: a chunk-grounded verdict
+    whose edge died in a chunk-replacement cascade surfaces in the
+    REOPEN queue as edge-lost — the row view='links' structurally cannot
+    show (no live edge is left to list)."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    src = _mk_paper(store, slug="cv-q2", title="Q2", text=f"{_Q} q2.")
+    chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
+    store.add_link(
+        src_ref_id=quest.id,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "passage-level mismatch",
+        },
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
+    out, is_error = rt.dispatch_with_status(
+        "get",
+        {"kind": "quest", "id": quest.id, "view": "considerations"},
+    )
+    assert not is_error, out
+    assert "edge-lost" in out and "REOPEN" in out
+    assert "passage-level mismatch" in out
+    assert "Judgment history" in out
+
+
+def test_quest_considerations_view_pages_and_validates(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The quest ledger takes the same history window the memory one
+    does — ``args={'limit': N, 'offset': M}`` — and refuses a bad one."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    src = _mk_paper(store, slug="cv-q3", title="Q3", text=f"{_Q} q3.")
+    for n in range(3):
+        _judge(store, quest.id, src, reason=f"run {n}: out")
+    out, is_error = rt.dispatch_with_status(
+        "get",
+        {
+            "kind": "quest",
+            "id": quest.id,
+            "view": "considerations",
+            "__extras__": {"limit": 2, "offset": 0},
+        },
+    )
+    assert not is_error, out
+    assert "1–2 of 3" in out
+    out2, is_error = rt.dispatch_with_status(
+        "get",
+        {
+            "kind": "quest",
+            "id": quest.id,
+            "view": "considerations",
+            "__extras__": {"limit": 2, "offset": 2},
+        },
+    )
+    assert not is_error, out2
+    assert "3–3 of 3" in out2
+    bad, is_error = rt.dispatch_with_status(
+        "get",
+        {
+            "kind": "quest",
+            "id": quest.id,
+            "view": "considerations",
+            "__extras__": {"limit": 0},
+        },
+    )
+    assert is_error
+    assert "limit" in bad
+
+
+def test_quest_considerations_view_refuses_id_list(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    out, is_error = rt.dispatch_with_status(
+        "get",
+        {"kind": "quest", "id": [quest.id], "view": "considerations"},
+    )
+    assert is_error
+    assert "one quest id" in out
+
+
+def test_novel_for_quest_scope_points_at_ledger(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The facet's inspect hint names the ledger view for a quest scope
+    — not view='links', which cannot reach the judgment history or the
+    edge-lost queue."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="the quest question")
+    rejected = _mk_paper(store, slug="cv-q4", title="Out", text=f"{_Q} q4.")
+    kept = _mk_paper(store, slug="cv-q5", title="In", text=f"{_Q} q5.")
+    _judge(store, quest.id, rejected)
+    out, is_error = rt.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": _Q,
+            "page_size": 20,
+            "__extras__": {"novel_for": f"qu{quest.id}"},
+        },
+    )
+    assert not is_error, out
+    assert "view='considerations'" in out
+    assert "view='links'" not in out
+    assert _pc(store, rejected) not in out
+    assert _pc(store, kept) in out
