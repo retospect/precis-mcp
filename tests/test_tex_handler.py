@@ -19,7 +19,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.handlers.plaintext import PlaintextHandler
 from precis.handlers.tex import TexHandler
 from precis.store import Store
@@ -821,3 +821,289 @@ def test_toc_residual_db_error_names_the_child(
 
     with pytest.raises(Upstream, match="broken"):
         handler.get(id="main", view="toc")
+
+
+# ── gr660623: delete/get must resolve the same tombstone ─────────────
+#
+# Observed on 2026-11-13: delete(kind='tex', id=<slug>) answered
+# NotFound yet the ref ended up with retired_at set — a partial write
+# the caller couldn't see — while get on a retired slug answered the
+# same NotFound a typo would. The door now resolves the ref
+# include_deleted so a tombstone reports Gone, a retire that loses a
+# race reports Gone (not a bare NotFound beside a retired ref), and
+# the ack names exactly which state changed.
+
+
+def test_delete_file_ack_names_retired_ref(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """A whole-file delete must ack what it did — both sides of the
+    mutation are named so the caller can tell a file+ref retire from
+    a file-only or ref-only one."""
+    _write(tex_root, "intro.tex", r"\section{Intro}" + "\n")
+    handler.get(id="intro")
+    ref = store.get_ref(kind="tex", id="intro")
+    assert ref is not None
+    resp = handler.delete(id="intro", confirm="delete-file-intro")
+    assert "deleted file" in resp.body
+    assert f"ref id={ref.id}" in resp.body
+    assert not (tex_root / "intro.tex").exists()
+    tomb = store.get_ref(kind="tex", id="intro", include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+
+
+def test_delete_already_retired_reports_gone(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """gr660623: a second delete on the same slug used to raise the
+    same NotFound a typo would — after the first delete the slug is a
+    tombstone, so it must report Gone and change nothing."""
+    _write(tex_root, "gone.tex", r"\section{G}" + "\n")
+    handler.get(id="gone")
+    handler.delete(id="gone", confirm="delete-file-gone")
+    ref = store.get_ref(kind="tex", id="gone", include_deleted=True)
+    assert ref is not None and ref.retired_at is not None
+    with pytest.raises(Gone, match="already deleted"):
+        handler.delete(id="gone", confirm="delete-file-gone")
+
+
+def test_get_retired_ref_with_file_on_disk_reports_gone(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """td661027 review of gr660623: a retired ref whose file is STILL on
+    disk (a delete whose unlink failed after the restore died, or a bare
+    retire) must not be silently re-ingested — ``Store.insert_ref``
+    reclaims the slug from the retired owner for a new live ref, which
+    would make get serve a fresh ref while delete on the same slug
+    reports Gone. The tombstone probe runs before ingestion, so get
+    answers Gone and the slug stays with the tombstone."""
+    _write(tex_root, "ghost.tex", r"\section{G}" + "\n")
+    handler.get(id="ghost")
+    ref = store.get_ref(kind="tex", id="ghost")
+    assert ref is not None
+    store.retire_ref(ref.id)  # ref retired; the file stays on disk
+    assert (tex_root / "ghost.tex").exists()
+    with pytest.raises(Gone, match="deleted"):
+        handler.get(id="ghost")
+    tomb = store.get_ref(kind="tex", id="ghost", include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+    assert tomb.id == ref.id, "the tombstone must keep the slug"
+    assert store.get_ref(kind="tex", id="ghost") is None, (
+        "get must not have re-ingested the on-disk file into a new live ref"
+    )
+    assert (tex_root / "ghost.tex").exists(), "get must not touch the file"
+
+
+def test_get_on_retired_ref_reports_gone(handler: TexHandler, tex_root: Path) -> None:
+    """gr660623: get and delete must resolve the same slug the same
+    way. After a delete retires the ref, get must answer Gone (the
+    tombstone delete reports), not the suggestions-rich NotFound."""
+    _write(tex_root, "gone.tex", r"\section{G}" + "\n")
+    handler.get(id="gone")
+    handler.delete(id="gone", confirm="delete-file-gone")
+    with pytest.raises(Gone, match="deleted"):
+        handler.get(id="gone")
+
+
+def test_delete_off_disk_ref_retires_and_says_so(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """A live ref whose file isn't under this root (foreign workspace)
+    can still be deleted by slug — the ack must name the ref retire
+    and admit no file was removed."""
+    _write(tex_root, "remote.tex", r"\section{R}" + "\n")
+    handler.get(id="remote")
+    ref = store.get_ref(kind="tex", id="remote")
+    assert ref is not None
+    (tex_root / "remote.tex").unlink()  # file "leaves" this root
+    resp = handler.delete(id="remote", confirm="delete-file-remote")
+    assert "retired" in resp.body
+    assert f"ref id={ref.id}" in resp.body
+    assert "no file" in resp.body
+    tomb = store.get_ref(kind="tex", id="remote", include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+
+
+def test_delete_racing_retire_reports_gone(
+    handler: TexHandler,
+    tex_root: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If retire_ref loses a race (another writer retired between our
+    resolve and the retire), delete must report the tombstone — Gone —
+    not a NotFound that hides a completed retire (gr660623's exact
+    failure mode). The retire now runs BEFORE the file unlink
+    (td661027 review), so a lost race must also leave the file on
+    disk: the call changed nothing the caller can't see."""
+    _write(tex_root, "raced.tex", r"\section{R}" + "\n")
+    handler.get(id="raced")
+
+    real_retire_ref = store.retire_ref
+
+    def racing_retire(ref_id, *, conn=None):
+        # Truthful race: the other writer's retire LANDS, ours then
+        # finds the tombstone.
+        real_retire_ref(ref_id, conn=conn)
+        raise NotFound("ref is already retired")
+
+    monkeypatch.setattr(store, "retire_ref", racing_retire)
+    with pytest.raises(Gone):
+        handler.delete(id="raced", confirm="delete-file-raced")
+    assert (tex_root / "raced.tex").exists(), (
+        "a delete that raises Gone must not have unlinked the file"
+    )
+    tomb = store.get_ref(kind="tex", id="raced", include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+
+
+def test_delete_unlink_failure_restores_ref(
+    handler: TexHandler,
+    tex_root: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlink failure after a successful retire must roll the ref
+    back (restore_ref) and report that NOTHING was deleted — otherwise
+    the caller retries into a tombstone while the file is still there
+    (td661027 review of gr660623)."""
+    _write(tex_root, "stuck.tex", r"\section{S}" + "\n")
+    handler.get(id="stuck")
+
+    def boom(path):
+        raise OSError("operation not permitted")
+
+    monkeypatch.setattr("os.remove", boom)
+    with pytest.raises(Upstream, match="nothing was deleted"):
+        handler.delete(id="stuck", confirm="delete-file-stuck")
+    assert (tex_root / "stuck.tex").exists()
+    ref = store.get_ref(kind="tex", id="stuck")
+    assert ref is not None and ref.retired_at is None, (
+        "the ref retire must be rolled back when the unlink fails"
+    )
+
+
+def test_delete_unlink_failure_restore_fails_names_both_mutations(
+    handler: TexHandler,
+    tex_root: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Double failure (unlink fails AND restore_ref dies): the error
+    must truthfully name both mutations — ref retired, file still on
+    disk — instead of claiming a clean rollback or a clean delete."""
+    _write(tex_root, "wedged.tex", r"\section{W}" + "\n")
+    handler.get(id="wedged")
+
+    def boom_remove(path):
+        raise OSError("operation not permitted")
+
+    def boom_restore(ref_id, *, conn=None):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr("os.remove", boom_remove)
+    monkeypatch.setattr(store, "restore_ref", boom_restore)
+    with pytest.raises(Upstream, match="could not be rolled back"):
+        handler.delete(id="wedged", confirm="delete-file-wedged")
+    assert (tex_root / "wedged.tex").exists()
+    tomb = store.get_ref(kind="tex", id="wedged", include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+
+
+# ── td661027 review of gr660623: read paths must not resurrect ──────
+#
+# get and delete probe the tombstone via ``_require_existing_file``,
+# but two read paths still called ``ensure_ingested`` directly:
+# scoped ``search`` (plaintext.search) and the ``/toc`` walker's
+# ``\\input{}`` resolver. On a retired ref whose file is still on
+# disk either one silently re-ingested — ``Store.insert_ref``
+# reclaims the slug for a NEW live ref — so the caller that just saw
+# ``Gone`` from delete would find the "deleted" file alive again.
+
+
+def test_search_scope_on_tombstone_reports_gone(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """A scoped search whose scope slug is a tombstone must report
+    Gone — the same answer get and delete give — instead of
+    re-ingesting the on-disk file into a fresh live ref."""
+    _write(tex_root, "doc.tex", r"\section{Doc}" + "\n\nneedle body\n")
+    handler.get(id="doc")
+    ref = store.get_ref(kind="tex", id="doc")
+    assert ref is not None
+    store.retire_ref(ref.id)  # tombstone; the file stays on disk
+    assert (tex_root / "doc.tex").exists()
+    with pytest.raises(Gone, match="deleted"):
+        handler.search(q="needle", scope="doc")
+    tomb = store.get_ref(kind="tex", id="doc", include_deleted=True)
+    assert tomb is not None and tomb.id == ref.id, "the tombstone must keep the slug"
+    assert store.get_ref(kind="tex", id="doc") is None, (
+        "search must not have re-ingested the file into a new live ref"
+    )
+    assert (tex_root / "doc.tex").exists(), "search must not touch the file"
+
+
+def test_toc_marks_on_disk_tombstone_child_deleted(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """A ``\\input{}`` child whose ref is retired but whose file is
+    still on disk renders a "(deleted)" marker — the walker must not
+    resurrect it into a new live ref."""
+    _write(
+        tex_root,
+        "main.tex",
+        r"\section{Root}" + "\n\n" + r"\input{ghost}" + "\n",
+    )
+    _write(tex_root, "ghost.tex", r"\section{GhostChild}" + "\n")
+    handler.get(id="ghost")
+    ref = store.get_ref(kind="tex", id="ghost")
+    assert ref is not None
+    store.retire_ref(ref.id)  # tombstone; the file stays on disk
+
+    body = handler.get(id="main", view="toc").body
+    assert r"\input{ghost} → ghost (deleted)" in body
+    assert "GhostChild" not in body, "the dead child's sections must not be expanded"
+    tomb = store.get_ref(kind="tex", id="ghost", include_deleted=True)
+    assert tomb is not None and tomb.id == ref.id, "the tombstone must keep the slug"
+    assert store.get_ref(kind="tex", id="ghost") is None, (
+        "the toc walk must not have re-ingested the file"
+    )
+    assert (tex_root / "ghost.tex").exists()
+
+
+def test_toc_marks_off_disk_tombstone_child_deleted(
+    handler: TexHandler, tex_root: Path, store: Store
+) -> None:
+    """A ``\\input{}`` child that is a tombstone AND has no file under
+    this root still answers "(deleted)", not the "not found" marker a
+    typo would — pass 2 of the resolver probes the tombstone too."""
+    _write(
+        tex_root,
+        "main.tex",
+        r"\section{Root}" + "\n\n" + r"\input{gone}" + "\n",
+    )
+    _write(tex_root, "gone.tex", r"\section{GoneChild}" + "\n")
+    handler.get(id="gone")
+    ref = store.get_ref(kind="tex", id="gone")
+    assert ref is not None
+    store.retire_ref(ref.id)
+    (tex_root / "gone.tex").unlink()
+
+    body = handler.get(id="main", view="toc").body
+    assert r"\input{gone} → gone (deleted)" in body
+    assert "not found" not in body
+
+
+def test_toc_still_expands_live_child(handler: TexHandler, tex_root: Path) -> None:
+    """Guard the guard: a live ``\\input{}`` child must still resolve
+    and expand inline — the tombstone probe only fires on retired
+    refs, never on a live or never-ingested slug."""
+    _write(
+        tex_root,
+        "main.tex",
+        r"\section{Root}" + "\n\n" + r"\input{alive}" + "\n",
+    )
+    _write(tex_root, "alive.tex", r"\section{AliveChild}" + "\n")
+    body = handler.get(id="main", view="toc").body
+    assert "AliveChild" in body
+    assert "(deleted)" not in body

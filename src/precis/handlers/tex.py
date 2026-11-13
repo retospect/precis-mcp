@@ -69,7 +69,7 @@ class _TocIngestBudget:
 class _InputResolution:
     """Result of resolving one ``\\input{}``/``\\include{}`` argument.
 
-    Three outcomes ``_toc_walk`` renders differently:
+    Four outcomes ``_toc_walk`` renders differently:
 
     - ``ref`` set: resolved + ingested (or already current) — walk
       recurses into it. ``stored_only=True`` marks the sub-case where
@@ -77,14 +77,19 @@ class _InputResolution:
       carries the sections to walk (gr659000).
     - ``pending=True``: resolved to a real file but the ingest budget
       is exhausted — rendered as a "not yet indexed" marker.
-    - neither: the target didn't resolve to a file under ``root`` nor
-      to a live stored ref — rendered as the "not found" marker.
+    - ``deleted=True``: the slug is a tombstone — a retired ref whose
+      file may still be on disk. Rendered as a "(deleted)" marker;
+      the walk must not re-ingest it into a new live ref (gr660623,
+      td661027 review).
+    - none set: the target didn't resolve to a file under ``root``
+      nor to a live stored ref — rendered as the "not found" marker.
     """
 
     ref: Ref | None
     child_slug: str | None
     pending: bool = False
     stored_only: bool = False
+    deleted: bool = False
 
 
 class TexHandler(PlaintextHandler):
@@ -270,6 +275,12 @@ class TexHandler(PlaintextHandler):
                         f"{resolution.child_slug} (not yet indexed)"
                     )
                     continue
+                if resolution.deleted:
+                    lines.append(
+                        f"{indent}⚠ \\input{{{input_arg}}} → "
+                        f"{resolution.child_slug} (deleted)"
+                    )
+                    continue
                 if resolution.ref is None:
                     lines.append(f"{indent}⚠ \\input{{{input_arg}}} → not found")
                     continue
@@ -324,10 +335,13 @@ class TexHandler(PlaintextHandler):
         :attr:`root` (the latter is silently dropped from the TOC;
         the ``\\input`` line still appears in the source);
         ``pending=True`` if the target resolves to a real file but the
-        per-walk ingest *budget* is exhausted (gr311327); ``ref`` set
-        otherwise — ``stored_only=True`` when the file isn't under
-        this root but a live stored ref still supplies its sections
-        (gr659000).
+        per-walk ingest *budget* is exhausted (gr311327);
+        ``deleted=True`` when the slug resolves to a retired ref —
+        the walk reports the tombstone rather than re-ingesting the
+        on-disk file into a new live ref (gr660623, td661027);
+        ``ref`` set otherwise — ``stored_only=True`` when the file
+        isn't under this root but a live stored ref still supplies
+        its sections (gr659000).
 
         Path resolution mirrors LaTeX:
 
@@ -392,6 +406,15 @@ class TexHandler(PlaintextHandler):
                 missed.append((str(rel), child_slug))
                 continue
 
+            # Tombstone before ingest (td661027 review of gr660623):
+            # a retired ref whose file is still on disk must not be
+            # re-ingested by a READ — ``Store.insert_ref`` would
+            # reclaim the slug for a NEW live ref while delete on the
+            # same slug reports ``Gone``. Surface the tombstone as a
+            # "(deleted)" marker instead; the file stays untouched.
+            if self._tombstone(child_slug) is not None:
+                return _InputResolution(ref=None, child_slug=child_slug, deleted=True)
+
             if not self._is_toc_child_fresh(child_slug, abs_path):
                 if budget.remaining <= 0:
                     budget.pending.append(child_slug)
@@ -443,5 +466,7 @@ class TexHandler(PlaintextHandler):
                     child_slug=stored.slug or child_slug,
                     stored_only=True,
                 )
+            if self._tombstone(child_slug) is not None:
+                return _InputResolution(ref=None, child_slug=child_slug, deleted=True)
 
         return _InputResolution(ref=None, child_slug=None)

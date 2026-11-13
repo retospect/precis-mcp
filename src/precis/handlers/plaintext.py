@@ -35,9 +35,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
 from precis.handlers._eye import is_eye_view
 from precis.handlers._mode_help import require_mode
+from precis.handlers._readonly_fs import is_readonly_fs_error
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import MirrorRoot
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
@@ -726,6 +727,16 @@ class PlaintextHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
+            # Tombstone before ingest (td661027 review of gr660623):
+            # a retired scope whose file is still on disk would
+            # otherwise be re-ingested into a NEW live ref while
+            # delete on the same slug reports Gone.
+            if self._tombstone(scope) is not None:
+                raise Gone(
+                    f"{self._KIND} file {scope!r} is deleted",
+                    next=f"search(kind='{self._KIND}', q={q.strip()!r}) "
+                    "to search live files",
+                )
             scope_ref = self.ensure_ingested(scope, missing_ok=True)
             if scope_ref is None:
                 raise NotFound(
@@ -1220,16 +1231,109 @@ class PlaintextHandler(Handler):
         can create via the API, it can also delete via the API
         (MCP critic MINOR-C 2026-05-02). Gated behind an explicit
         confirm string encoding the slug (see :meth:`delete`).
+
+        The door is honest about which state it changed (gr660623):
+        it retires the ref and says so, or raises having changed
+        nothing — never a ``NotFound`` beside a retired ref. The
+        ref resolves ``include_deleted`` so an already-retired slug
+        reports ``Gone`` (a tombstone, not a typo) instead of the
+        bare NotFound a racing retire used to surface as; a
+        ``retire_ref`` miss after our live resolve means a
+        concurrent writer beat us to it — also ``Gone``. The file
+        probe goes through ``_path_for_slug`` (the same
+        lossy-filename-aware lookup reads use) so get and delete
+        can't disagree on whether the file is there.
+
+        Mutation order (td661027 review of gr660623): the ref is
+        retired BEFORE the file is unlinked. A retire failure then
+        raises with disk untouched — the previous unlink-first order
+        removed the file and only then discovered the retire lost a
+        race, leaving the file gone behind a ``Gone`` error. If the
+        unlink fails after a successful retire, the ref is restored
+        (:meth:`Store.restore_ref` is the soft-delete inverse) so the
+        caller-visible state matches the disk again; a read-only-mount
+        ``OSError`` is then re-raised unchanged so the verb
+        decorator's EROFS→``Unsupported`` translation (gr311325) still
+        applies, and only when the restore itself fails does the
+        error truthfully acknowledge that the ref stayed retired
+        while the file remains.
         """
-        path = self._resolve_path(slug, must_exist=False)
-        ref = self.store.get_ref(kind=self._KIND, id=slug)
-        if not path.exists() and ref is None:
+        path = self._path_for_slug(slug)
+        ref = self.store.get_ref(kind=self._KIND, id=slug, include_deleted=True)
+        if ref is not None and ref.retired_at is not None:
+            raise Gone(
+                f"{self._KIND} file {slug!r} is already deleted",
+                next=f"get(kind='{self._KIND}') to list live files",
+            )
+        file_existed = path.exists()
+        if not file_existed and ref is None:
             self._raise_file_not_found(slug)
-        if path.exists():
-            os.remove(path)
         if ref is not None:
-            self.store.retire_ref(ref.id)
-        return Response(body=format_write_result(verb="deleted file", file_slug=slug))
+            try:
+                self.store.retire_ref(ref.id)
+            except NotFound:
+                # A concurrent writer retired the ref between our
+                # live resolve and the retire — report the
+                # tombstone truthfully. Disk is untouched: this
+                # door changed nothing (gr660623, td661027).
+                raise Gone(
+                    f"{self._KIND} file {slug!r} was already deleted "
+                    f"(ref id={ref.id} retired concurrently)",
+                    next=f"get(kind='{self._KIND}') to list live files",
+                ) from None
+        if file_existed:
+            try:
+                os.remove(path)
+            except OSError as exc:
+                if ref is None:
+                    if is_readonly_fs_error(exc):
+                        raise  # verb decorator: EROFS → Unsupported
+                    raise Upstream(
+                        f"could not remove file {slug!r}: {exc}",
+                        next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
+                        f"confirm='delete-file-{slug}')",
+                    ) from exc
+                try:
+                    restored = self.store.restore_ref(ref.id)
+                except Exception as restore_exc:
+                    # Double failure: the ref is retired, the file is
+                    # still on disk, and the rollback died too. Name
+                    # every mutation — the caller cannot see this
+                    # state from the error kind alone.
+                    raise Upstream(
+                        f"could not remove file {slug!r}: {exc}. The "
+                        f"{self._KIND} ref id={ref.id} retire could not be "
+                        f"rolled back either: {restore_exc}. The ref is "
+                        "retired while the file remains on disk — "
+                        "investigate before re-deleting",
+                        next=f"get(kind='{self._KIND}', id={slug!r}) to "
+                        "inspect the ref state",
+                    ) from exc
+                if restored and not is_readonly_fs_error(exc):
+                    raise Upstream(
+                        f"could not remove file {slug!r}: {exc}. The "
+                        f"{self._KIND} ref retire was rolled back — nothing "
+                        "was deleted",
+                        next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
+                        f"confirm='delete-file-{slug}')",
+                    ) from exc
+                # Read-only mount (or a concurrent writer already
+                # restored the ref): the retire is undone or out of
+                # our hands, so re-raise the OSError unchanged — the
+                # verb decorator's EROFS→Unsupported translation
+                # (gr311325) applies, and any other OSError surfaces
+                # as the real problem it is.
+                raise
+        if ref is not None and file_existed:
+            ack = f"deleted file {slug!r} + retired its {self._KIND} ref id={ref.id}"
+        elif ref is not None:
+            ack = (
+                f"retired {self._KIND} ref id={ref.id} for {slug!r} — "
+                "no file under this root (foreign workspace or already gone)"
+            )
+        else:
+            ack = format_write_result(verb="deleted file", file_slug=slug)
+        return Response(body=ack)
 
     def _put_anchored(
         self,
@@ -1686,7 +1790,11 @@ class PlaintextHandler(Handler):
             if ref is not None:
                 if missing_ok:
                     return ref
-                self.store.retire_ref(ref.id)
+                try:
+                    self.store.retire_ref(ref.id)
+                except NotFound:
+                    # Concurrent retire — the end state is the same.
+                    pass
             return None
 
         st = path.stat()
@@ -1825,6 +1933,25 @@ class PlaintextHandler(Handler):
             ),
         )
 
+    def _tombstone(self, slug: str) -> Ref | None:
+        """The retired ref holding *slug*, or ``None``.
+
+        Resolves the slug the same way every door does —
+        ``Store.get_ref`` ``include_deleted=True``, which prefers a
+        live claimant over a dead one — so "is this slug a
+        tombstone?" answers identically in get, delete, search
+        ``scope=`` and the tex ``\\input`` walker (gr660623). A
+        non-``None`` return means ingest MUST NOT proceed:
+        ``Store.insert_ref`` silently reclaims the slug from the
+        retired owner for a NEW live ref, which would leave delete
+        reporting ``Gone`` while reads serve a resurrected ref
+        (td661027 review of gr660623).
+        """
+        tomb = self.store.get_ref(kind=self._KIND, id=slug, include_deleted=True)
+        if tomb is not None and tomb.retired_at is not None:
+            return tomb
+        return None
+
     def _require_existing_file(self, slug: str) -> Ref:
         """Ingest + return a file ref, or raise a suggestions-rich NotFound.
 
@@ -1836,7 +1963,24 @@ class PlaintextHandler(Handler):
         root still resolves — reads serve the stored blocks, writes
         then fail honestly at ``_resolve_path(must_exist=True)``
         (gr659000).
+
+        A slug whose ref is already retired raises ``Gone`` — the
+        tombstone answer ``delete`` gives for the same slug —
+        rather than the suggestions-rich NotFound that reads like
+        a typo (gr660623: get and delete resolve the same slug).
+        The tombstone probe runs BEFORE ``ensure_ingested`` (td661027
+        review of gr660623): a retired ref whose file is still on
+        disk (e.g. a delete whose unlink failed after the restore
+        died) would otherwise be re-ingested here —
+        ``Store.insert_ref`` silently reclaims the slug from the
+        retired owner for a NEW live ref — so get would serve a
+        fresh ref while delete on the same slug reports ``Gone``.
         """
+        if self._tombstone(slug) is not None:
+            raise Gone(
+                f"{self._KIND} file {slug!r} is deleted",
+                next=f"get(kind='{self._KIND}') to list live files",
+            )
         ref = self.ensure_ingested(slug, missing_ok=True)
         if ref is None:
             self._raise_file_not_found(slug)

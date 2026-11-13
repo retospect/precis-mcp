@@ -523,16 +523,21 @@ def test_edit_on_readonly_mount_raises_unsupported(
 
 
 def test_delete_file_on_readonly_mount_raises_unsupported(
-    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+    handler: PlaintextHandler,
+    pt_root: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Whole-file delete goes through ``os.remove``, not
-    ``_atomic_write`` — must translate too."""
+    ``_atomic_write`` — must translate too. The ref retire that now
+    runs first must be rolled back as well: a refused delete changes
+    nothing (gr660623/td661027)."""
     import errno
-
-    from precis.handlers import plaintext as plaintext_mod
 
     _write(pt_root, "doc.txt", "x.\n")
     handler.get(id="doc")  # force ingest so the ref exists
+    ref = store.get_ref(kind="plaintext", id="doc")
+    assert ref is not None
 
     def _erofs_remove(*args: object, **kwargs: object) -> None:
         raise OSError(errno.EROFS, "Read-only file system")
@@ -540,6 +545,11 @@ def test_delete_file_on_readonly_mount_raises_unsupported(
     monkeypatch.setattr(plaintext_mod.os, "remove", _erofs_remove)
     with pytest.raises(Unsupported, match="read-only"):
         handler.delete(id="doc", confirm="delete-file-doc")
+    assert (pt_root / "doc.txt").exists()
+    live = store.get_ref(kind="plaintext", id="doc")
+    assert live is not None and live.retired_at is None, (
+        "the refused delete must roll its ref retire back"
+    )
 
 
 def test_put_create_non_readonly_oserror_still_raises_oserror(
