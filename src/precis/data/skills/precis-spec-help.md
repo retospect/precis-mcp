@@ -65,6 +65,9 @@ its sections directly or through design sub-hubs.
   hangs. `search(kind='memory', tags=['spec:*'], view='toc')` lists
   every spec root wherever it sits — the tips of the `spec:` tag's
   forest — with keywords and member counts.
+- Tags are flat `axis:value` labels — hierarchy lives only in `part-of`
+  edges (me631991): a tag names a searchable axis, never a level in the
+  tree, so no tag is minted to fake a parent-child step.
 - Programme membership plus the generated TOCs are the navigable
   inventory. **No file index** is required or wanted, and no
   hand-maintained outline either.
@@ -179,7 +182,9 @@ wave** (kinetics: 2026-12-05) passed explicitly — the default is floored
 at today + 14 days (gr631565), which lands the wave on the transfer
 date, not its chosen review date. Ruling and
 gotcha titles carry no "Reto <date>:" or "Gotcha:" prefix; the tags and
-meta say what they are.
+meta say what they are. A gap-analysis or capability-comparison memory
+is also `part-of` the **Prior art hub** `me608724`, so prior-art recall
+finds it alongside its spec home.
 
 ## How do slices and plan todos carry a spec's execution?
 
@@ -363,8 +368,11 @@ its completion is not proof of physical file deletion.
 retires at once, superseded by the python-kind handle of the symbol that
 carries it (`python:catpath::<qualname>` for the engine,
 `python:main::<qualname>` for precis); its group hub or spec root keeps a
-one-line pointer naming the behaviour and the handles. A partially built
-section keeps only its open design, opening with one Built sentence.
+one-line pointer naming the behaviour and the handles. The same rule
+fires at transfer: a slice written at transfer that code already carries
+retires at once, superseded by its python-kind handle — it never parks
+in the graph as design text. A partially built section keeps only its
+open design, opening with one Built sentence.
 
 **Lifecycle retirement.** When every slice todo serving a section is
 done and its gripes are closed, the section retires — superseded by the
