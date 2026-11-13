@@ -11,6 +11,7 @@ narrowly (not through the full MCP tool-dispatch surface).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sys
 from collections.abc import Iterator
@@ -226,14 +227,16 @@ def test_session_idle_timeout_reaches_the_session_manager() -> None:
 
 def _session_status_app() -> Any:
     """A Starlette app whose /mcp endpoint returns the status the caller
-    asks for via ``x-status``, wrapped in the session-log middleware."""
+    asks for via ``x-status`` — body ``x-body`` or ``the-body`` — wrapped
+    in the session-log middleware."""
     from starlette.applications import Starlette
     from starlette.responses import PlainTextResponse
     from starlette.routing import Route
 
     async def _endpoint(request: Any) -> Any:
         return PlainTextResponse(
-            "the-body", status_code=int(request.headers["x-status"])
+            request.headers.get("x-body", "the-body"),
+            status_code=int(request.headers["x-status"]),
         )
 
     app = Starlette(
@@ -309,6 +312,410 @@ def test_session_log_middleware_ignores_ok_and_other_paths(
         client.post("/other", headers={"x-status": "404"})
 
     assert not [r for r in caplog.records if "session=" in r.getMessage()]
+
+
+# ── missing-session-id recovery + failure-line detail (gr660591) ──
+
+
+def _edge_app(*installers: Any) -> Any:
+    """A Starlette /mcp endpoint echoing its request body, wrapped in the
+    given middleware installers — applied in order, so the first lands
+    innermost exactly like ``_run_network_transport``."""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    async def _endpoint(request: Any) -> Any:
+        return JSONResponse({"echo": (await request.body()).decode("utf-8")})
+
+    app = Starlette(
+        routes=[Route("/mcp", _endpoint, methods=["GET", "POST", "DELETE"])]
+    )
+    for install in installers:
+        install(app, mcp_path="/mcp")
+    return app
+
+
+def _tools_call_body() -> bytes:
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get", "arguments": {}},
+        }
+    ).encode("utf-8")
+
+
+def _initialize_body() -> bytes:
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "t", "version": "0"},
+            },
+        }
+    ).encode("utf-8")
+
+
+def test_session_recover_answers_a_missing_id_like_a_stale_session() -> None:
+    """The SDK's bare ``400 Missing session ID`` never reaches the client:
+    a session-id-less non-initialize POST gets the stale-session 404 +
+    ``mcp-session-error: reinitialize`` it already recovers from
+    (gr660591)."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.post("/mcp", content=_tools_call_body())
+    assert resp.status_code == 404
+    assert resp.headers["mcp-session-error"] == "reinitialize"
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.json()["error"]["message"] == "Session not found"
+    notified = client.post(
+        "/mcp",
+        content=json.dumps(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        ).encode("utf-8"),
+    )
+    assert notified.status_code == 404
+    assert notified.headers["mcp-session-error"] == "reinitialize"
+
+
+def test_session_recover_lets_a_bare_initialize_through() -> None:
+    """``initialize`` is the one request that must arrive without an id —
+    it passes through with its body intact."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.post("/mcp", content=_initialize_body())
+    assert resp.status_code == 200
+    assert resp.json()["echo"] == _initialize_body().decode("utf-8")
+
+
+def test_session_recover_answers_a_missing_id_on_get_and_delete() -> None:
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    for method in ("GET", "DELETE"):
+        resp = client.request(method, "/mcp")
+        assert resp.status_code == 404
+        assert resp.headers["mcp-session-error"] == "reinitialize"
+
+
+def test_session_recover_never_intercepts_a_present_id() -> None:
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.post(
+        "/mcp",
+        content=_tools_call_body(),
+        headers={"mcp-session-id": "deadbeefsessionid0123456789abcdef"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["echo"] == _tools_call_body().decode("utf-8")
+
+
+def test_session_recover_answers_an_unreadable_body_with_404() -> None:
+    """A body that cannot name an ``initialize`` cannot open a session."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.post("/mcp", content=b"{not json")
+    assert resp.status_code == 404
+    assert resp.headers["mcp-session-error"] == "reinitialize"
+
+
+def test_session_recover_leaves_other_methods_to_the_app() -> None:
+    """OPTIONS and friends sit outside the session grammar — the app's
+    own answer (a 405 here) stands, not the recovery's 404."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.request("OPTIONS", "/mcp")
+    assert resp.status_code == 405
+    assert "mcp-session-error" not in resp.headers
+
+
+def test_session_log_names_the_rpc_method_and_error_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The failure line now carries the JSON-RPC method the client
+    attempted and an excerpt of the error body — what an upstream report
+    needs (gr660591). The synthesized missing-id 404 logs the same way."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(
+        _edge_app(server._install_session_recover, server._install_session_log)
+    )
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post("/mcp", content=_tools_call_body())
+
+    assert resp.status_code == 404
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "session=-" in m and "rpc=tools/call" in m and "Session not found" in m
+        for m in messages
+    )
+
+
+def test_session_log_replays_the_request_body_to_the_app() -> None:
+    """Buffering the POST for the failure line must not eat it — the app
+    still reads the body whole."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_log))
+    resp = client.post("/mcp", content=_tools_call_body())
+    assert resp.status_code == 200
+    assert resp.json()["echo"] == _tools_call_body().decode("utf-8")
+
+
+def test_session_log_sanitizes_sdk_validation_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The SDK's 400 on an unvalidateable request echoes Pydantic's
+    ``str`` — ``input_value`` spans carry the client's tool arguments
+    verbatim, and this logger is outside the protocol payload filters.
+    The failure line must keep only the dump's static first line, like
+    the wire-log filters do for shared/session.py (review td661882)."""
+    from starlette.testclient import TestClient
+
+    leak = "PRIVATE-CLIENT-DATA"
+    sdk_body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": "server-error",
+            "error": {
+                "code": -32600,
+                "message": (
+                    "Validation error: 1 validation error for JSONRPCRequest\n"
+                    "params.arguments\n"
+                    "  Input should be a valid dictionary [type=dict_type, "
+                    f"input_value={{'text': '{leak}'}}, input_type=dict]\n"
+                    "    For further information visit "
+                    "https://errors.pydantic.dev/2.12/v/dict_type"
+                ),
+            },
+        }
+    )
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post("/mcp", headers={"x-status": "400", "x-body": sdk_body})
+
+    assert resp.status_code == 400
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("validation error for JSONRPCRequest" in m for m in messages)
+    logged = "\n".join(messages)
+    assert leak not in logged
+    # the location lines can carry client dict keys — first line only
+    assert "params.arguments" not in logged
+    assert "input_value" not in logged
+
+
+def test_session_log_escapes_and_bounds_rpc_method_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Method names are client controlled: a newline must reach the log
+    as an escape, not a forged second line, and a pathological name —
+    or a crowd of them — is bounded (review td661882)."""
+    from starlette.testclient import TestClient
+
+    forged = "forged\nmcp POST /mcp -> 200 session=ok rpc=admin"
+    long_name = "x" * 500
+    batch = json.dumps(
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": forged},
+            {"jsonrpc": "2.0", "id": 2, "method": long_name},
+        ]
+    ).encode("utf-8")
+    crowd = json.dumps(
+        [
+            {"jsonrpc": "2.0", "id": i, "method": f"method{i}"}
+            for i in range(server._SESSION_LOG_METHODS_MAX + 2)
+        ]
+    ).encode("utf-8")
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post("/mcp", headers={"x-status": "404"}, content=batch)
+        crowd_resp = client.post("/mcp", headers={"x-status": "404"}, content=crowd)
+
+    assert resp.status_code == 404 == crowd_resp.status_code
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages
+    # every record is one physical line — the newline cannot forge a
+    # second one — and the name logs in its escaped form
+    assert all("\n" not in m for m in messages)
+    logged = "\n".join(messages)
+    assert "forged\\n" in logged
+    # a 500-char name is cut to the per-method cap
+    assert "x" * server._SESSION_LOG_METHOD_CAP in logged
+    assert "x" * (server._SESSION_LOG_METHOD_CAP + 1) not in logged
+    # the crowd past _SESSION_LOG_METHODS_MAX collapses into a count
+    assert "(+2 more)" in logged
+
+
+def test_missing_id_gets_the_stale_session_answer_on_the_real_app(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """End-to-end on a real FastMCP streamable app in production
+    middleware order (gr660591): a session-id-less ``tools/call`` gets
+    the stale-session 404 + hint rather than the SDK's bare 400, a bare
+    ``initialize`` still opens a session, an id-bearing call still
+    reaches the SDK, and an unauthenticated caller still earns its 401
+    before the recovery runs (it and the failure logger install inside
+    the bearer gate)."""
+    import asyncio
+
+    import httpx
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("session-recover-test")
+    app = mcp.streamable_http_app()
+    server._install_session_recover(app, mcp_path="/mcp")
+    server._install_session_log(app, mcp_path="/mcp")
+    server._install_token_auth(app, token="install")
+    auth = {
+        "Accept": "application/json, text/event-stream",
+        "Authorization": "Bearer install",
+    }
+    call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "get", "arguments": {"kind": "learning", "id": "/x"}},
+    }
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost:8000",
+            ) as client,
+        ):
+            missing = await client.post("/mcp", headers=auth, json=call)
+            assert missing.status_code == 404
+            assert missing.headers["mcp-session-error"] == "reinitialize"
+            assert missing.json()["error"]["message"] == "Session not found"
+            initialized = await client.post(
+                "/mcp",
+                headers=auth,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "0"},
+                    },
+                },
+            )
+            assert initialized.status_code == 200
+            session = initialized.headers["mcp-session-id"]
+            bound = await client.post(
+                "/mcp", headers={**auth, "mcp-session-id": session}, json=call
+            )
+            assert bound.status_code == 200
+            for method in ("GET", "DELETE"):
+                resp = await client.request(method, "/mcp", headers=auth)
+                assert resp.status_code == 404
+                assert resp.headers["mcp-session-error"] == "reinitialize"
+            denied = await client.post(
+                "/mcp", headers={"Accept": auth["Accept"]}, json=call
+            )
+            assert denied.status_code == 401
+
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        asyncio.run(exercise())
+    assert any(
+        "session=-" in r.getMessage() and "rpc=tools/call" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_an_unfinished_upload_does_not_delay_the_401() -> None:
+    """A 401 never waits on the request body: the session middlewares
+    buffer it inside the bearer gate, so an unauthenticated caller whose
+    upload never finishes still earns its refusal without a single body
+    read (review td661882 — the outermost logger used to drain first)."""
+    import asyncio
+
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.types import Message
+
+    async def _endpoint(request: Any) -> Any:
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp", _endpoint, methods=["POST"])])
+    # Production order (innermost first): recover, log, bearer gate.
+    server._install_session_recover(app, mcp_path="/mcp")
+    server._install_session_log(app, mcp_path="/mcp")
+    server._install_token_auth(app, token="s3cr3t")
+
+    reads = 0
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        nonlocal reads
+        reads += 1
+        # An upload that stalls: http.request chunks that never end.
+        return {"type": "http.request", "body": b"x", "more_body": reads < 3}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/mcp",
+        "raw_path": b"/mcp",
+        "query_string": b"",
+        "headers": [],
+        "extensions": {},
+        "client": ("127.0.0.1", 12345),
+        "server": ("localhost", 8000),
+    }
+    asyncio.run(app(scope, receive, send))
+
+    statuses = [m["status"] for m in sent if m["type"] == "http.response.start"]
+    assert statuses == [401]
+    assert reads == 0
+
+
+def test_session_recover_survives_a_pathologically_nested_body() -> None:
+    """``json.loads`` fails a deeply nested body with ``RecursionError``,
+    not ``ValueError`` — an unreadable body still cannot be an
+    ``initialize`` and earns the same 404 + reinitialize hint rather
+    than a 500 (review td661882)."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_edge_app(server._install_session_recover))
+    resp = client.post("/mcp", content=b"[" * 100_000)
+    assert resp.status_code == 404
+    assert resp.headers["mcp-session-error"] == "reinitialize"
+
+
+def test_session_log_survives_a_pathologically_nested_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The failure-line ``rpc=`` lookup hits the same ``RecursionError``
+    — it must degrade to ``rpc=-``, not break the emit (review
+    td661882)."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post("/mcp", headers={"x-status": "404"}, content=b"[" * 100_000)
+    assert resp.status_code == 404
+    assert any("rpc=-" in r.getMessage() for r in caplog.records)
 
 
 # ── main()'s transport branching (stdio stays byte-identical) ──────
