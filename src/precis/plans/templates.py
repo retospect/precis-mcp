@@ -394,7 +394,7 @@ def mint_plan_task(
 
 
 def mint_merge_back_resolver(
-    store: Store, plan_root: int, rn: str, body: str
+    store: Store, plan_root: int, rn: str, body: str, head: str | None = None
 ) -> tuple[int, int]:
     """``(resolver, ours)`` — the two nodes a conflicting merge-back
     (release-train T3, :mod:`precis.workers.job_types.release_merge_back`)
@@ -403,7 +403,10 @@ def mint_merge_back_resolver(
     ``meta.merge_back_resolver = rN`` (the key the caller dedupes on),
     and a second ``merge_back`` node blocked-by it whose
     ``strategy="ours"`` merge records the release head as an ancestor
-    of main once the resolver's squash carried the content."""
+    of main once the resolver's squash carried the content. ``head`` is
+    the release head sha the ours-merge records — named in its brief
+    because ``origin/release/r<N>`` may already be retired; ``None``
+    leaves the brief on the ref."""
 
     def build(m: _Minter) -> None:
         rid = m.node(
@@ -416,6 +419,7 @@ def mint_merge_back_resolver(
             "type": "release_confirm",
             "params": {"merge_back": True, "strategy": "ours", "resolver": rid},
         }
+        merged = head if head else f"origin/release/{rn}"
         mid = m.node(
             "merge_back",
             f"Record release/{rn} as merged into main",
@@ -423,7 +427,7 @@ def mint_merge_back_resolver(
             body=(
                 f"release_confirm (merge_back mode, strategy=ours): once the "
                 f"resolver td{rid} landed, `git merge --no-ff -s ours "
-                f"origin/release/{rn}` off origin/main, message 'Merge "
+                f"{merged}` off origin/main, message 'Merge "
                 f"release/{rn} fix forward (resolved in <sha>)', pushed to "
                 "main — the release head becomes an ancestor of main with "
                 "main's tree unchanged."

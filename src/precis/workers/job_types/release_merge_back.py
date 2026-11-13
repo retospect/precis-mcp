@@ -21,12 +21,19 @@ the lands' path).
 * No commit past the cut, or a release head main already contains: no
   merge commit — recorded as a no-op. A retry after a push that landed
   but was never recorded reads the same no-op.
+* ``scripts/round`` retires ``release/r<N>`` on origin once its head is
+  on main, and a queued merge_back can run behind the delete (gr660285):
+  a gone ref is not a fetch failure to retry. The recorded head
+  (``confirmed.sha``, else ``meta.release.sha``) already on
+  ``origin/main`` is the same no-op; still fetchable by sha it merges;
+  anything else fails for a human.
 * Hunks main already has (the same fix landed twice) resolve by content:
   git's three-way merge takes identical changes clean.
 * A real conflict pushes nothing: the merge is aborted and two nodes are
   minted under the plan root (:func:`precis.plans.templates.mint_merge_back_resolver`):
   ONE resolver todo — a normal ``run_slice`` slice off main that carries
-  the release fixes' intent onto main, resolving the conflicting hunks —
+  the release fixes' intent onto main, resolving the conflicting hunks
+  (its brief names the merged head sha, not the possibly-retired ref) —
   and a second ``merge_back`` node blocked-by it with
   ``strategy="ours"``. ``scripts/ship`` squashes every land into one
   non-merge commit, so the resolver alone can never make the release
@@ -114,27 +121,30 @@ def _record(store: Any, todo_id: int, outcome: dict[str, Any]) -> None:
     )
 
 
-def _resolver_body(rn: str, cut: str, files: list[str]) -> str:
+def _resolver_body(rn: str, cut: str, head: str, files: list[str]) -> str:
     shown = ", ".join(f"`{f}`" for f in files[:20]) or "(git named none)"
-    since = f"{cut[:12]}..origin/release/{rn}" if cut else f"origin/release/{rn}"
+    since = f"{cut[:12]}..{head[:12]}" if cut else head[:12]
     return (
-        f"Release {rn} deployed, but merging `origin/release/{rn}` back into "
-        f"main conflicts in {shown}. Make main carry the release fixes' "
-        f"intent: on your slice branch (cut from origin/main), `git fetch "
-        f"origin release/{rn}`, read the fixes with `git log -p {since}`, "
-        "and apply each one's change to main, resolving the conflicting "
-        "hunks so BOTH sides' intent survives (the release's fixes and "
-        "main's later work). Commit plain commits, not a merge: the lander "
-        "squashes the slice onto main like any other. Run the tests the "
-        "conflicted files touch. A fix main already carries needs nothing. "
-        f"Once this lands, the plan's next merge-back node records "
-        f"release/{rn} as merged into main (an ours-merge, no content); the "
-        "next release is not cut before then."
+        f"Release {rn} deployed, but merging its head {head[:12]} back "
+        f"into main conflicts in {shown}. Make main carry the release "
+        "fixes' intent: on your slice branch (cut from origin/main), "
+        f"`git fetch origin {head}` — the recorded head sha, not "
+        f"`release/{rn}`: round close retires that ref once the head is "
+        "on main, so the branch may already be gone — then read the fixes "
+        f"with `git log -p {since}`, and apply each one's change to main, "
+        "resolving the conflicting hunks so BOTH sides' intent survives "
+        "(the release's fixes and main's later work). Commit plain "
+        "commits, not a merge: the lander squashes the slice onto main "
+        "like any other. Run the tests the conflicted files touch. A fix "
+        "main already carries needs nothing. Once this lands, the plan's "
+        f"next merge-back node records release/{rn} as merged into main "
+        "(an ours-merge on the same head, no content); the next release "
+        "is not cut before then."
     )
 
 
 def _resolver(
-    store: Any, todo_id: int, rn: str, cut: str, files: list[str]
+    store: Any, todo_id: int, rn: str, cut: str, head: str, files: list[str]
 ) -> tuple[int, bool]:
     """``(resolver id, minted)`` — the ONE resolver todo under the plan
     root for ``rn``. The dedupe reads :data:`RESOLVER_KEY`, the key the
@@ -160,7 +170,7 @@ def _resolver(
         if dup is not None:
             return int(dup[0]), False
         rid, _ours = _templates.mint_merge_back_resolver(
-            store, root, rn, _resolver_body(rn, cut, files)
+            store, root, rn, _resolver_body(rn, cut, head, files), head=head
         )
     return rid, True
 
@@ -178,6 +188,60 @@ def _resolved_in(store: Any, resolver: Any) -> tuple[str | None, str | None]:
         return None, f"resolver td{resolver} is {status}, not done"
     sha = _rp._fix_landed_sha(store, resolver)
     return (sha[:12] if sha else f"td{resolver}"), None
+
+
+def _recorded_head(rel: dict[str, Any]) -> str:
+    """The release head the plan recorded: the confirmed deploy sha,
+    else ``meta.release.sha`` (``record_head``'s restamp after a fix
+    round), else the cut."""
+    confirmed = rel.get("confirmed")
+    if isinstance(confirmed, dict):
+        sha = str(confirmed.get("sha") or "").strip()
+        if sha:
+            return sha
+    return str(rel.get("sha") or rel.get("cut_sha") or "").strip()
+
+
+def _gone_ref_head(
+    store: Any, todo_id: int, root: Path, rel: dict[str, Any], branch: str
+) -> tuple[str, dict[str, Any] | None]:
+    """``(head, outcome)`` for a deleted ``origin/<branch>`` —
+    ``scripts/round`` retires release/r<N> once its head is on main, and
+    a queued merge_back can run behind the delete (gr660285). ``outcome``
+    is the terminal ``noop`` when the recorded head is already on
+    ``origin/main`` — nothing to merge — or ``failed`` when no usable
+    head can be fetched; ``None`` passes ``head`` on to the merge."""
+    refresh = _git(["fetch", "-q", "origin", "main"], root)
+    if refresh.returncode != 0:
+        return "", {"state": "failed", "why": f"git fetch: {_err(refresh)}"}
+    head = _recorded_head(rel)
+    full = (
+        _out(_git(["rev-parse", "--verify", "-q", f"{head}^{{commit}}"], root))
+        if head
+        else ""
+    )
+    if not full:
+        if not head or _git(["fetch", "-q", "origin", head], root).returncode != 0:
+            return "", {
+                "state": "failed",
+                "why": f"origin/{branch} is gone and the recorded head "
+                f"{head[:12] or 'is unrecorded'} cannot be fetched — "
+                "recover the release commits by hand",
+            }
+        full = _out(_git(["rev-parse", "--verify", "-q", f"{head}^{{commit}}"], root))
+        if not full:
+            return "", {
+                "state": "failed",
+                "why": f"origin/{branch} is gone and {head[:12]} is unreadable",
+            }
+    if _git(["merge-base", "--is-ancestor", full, "origin/main"], root).returncode == 0:
+        out = {
+            "state": "noop",
+            "why": f"origin/{branch} is gone; main already contains {full[:12]}",
+        }
+        _record(store, todo_id, out)
+        return "", out
+    return full, None
 
 
 def merge_back(
@@ -211,11 +275,20 @@ def merge_back(
     fetch = _git(
         ["fetch", "-q", "origin", "main", f"+refs/heads/{branch}:{tracking}"], root
     )
-    if fetch.returncode != 0:
-        return {"state": "failed", "why": f"git fetch: {_err(fetch)}"}
-    head = _out(_git(["rev-parse", "--verify", "-q", f"{tracking}^{{commit}}"], root))
-    if not head:
-        return {"state": "failed", "why": f"origin/{branch} is unreadable"}
+    if fetch.returncode == 0:
+        head = _out(
+            _git(["rev-parse", "--verify", "-q", f"{tracking}^{{commit}}"], root)
+        )
+        if not head:
+            return {"state": "failed", "why": f"origin/{branch} is unreadable"}
+    else:
+        probe = _git(["ls-remote", "--heads", "origin", f"refs/heads/{branch}"], root)
+        if probe.returncode != 0 or _out(probe):
+            # Not a deleted ref — a real fetch failure; the tick retries.
+            return {"state": "failed", "why": f"git fetch: {_err(fetch)}"}
+        head, outcome = _gone_ref_head(store, todo_id, root, rel, branch)
+        if outcome is not None:
+            return outcome
     cut = str(rel.get("cut_sha") or rel.get("sha") or "")
     cut_full = _out(_git(["rev-parse", "--verify", "-q", f"{cut}^{{commit}}"], root))
     out: dict[str, Any]
@@ -239,9 +312,7 @@ def merge_back(
             add = _git(["worktree", "add", "--detach", str(tree), "origin/main"], root)
             if add.returncode != 0:
                 return {"state": "failed", "why": f"git worktree add: {_err(add)}"}
-            merge = _git(
-                ["merge", "--no-ff", *how, "-m", message, f"origin/{branch}"], tree
-            )
+            merge = _git(["merge", "--no-ff", *how, "-m", message, head], tree)
             if merge.returncode != 0:
                 files = [
                     f
@@ -255,7 +326,7 @@ def merge_back(
                     # No unmerged path: git refused for another reason (no
                     # identity, a bad ref) — not a conflict to hand off.
                     return {"state": "failed", "why": f"git merge: {_err(merge)}"}
-                rid, _minted = _resolver(store, todo_id, rn, cut_full, files)
+                rid, _minted = _resolver(store, todo_id, rn, cut_full, head, files)
                 out = {"state": "conflict", "resolver": rid, "files": files[:50]}
                 _record(store, todo_id, out)
                 return out

@@ -149,6 +149,29 @@ def test_a_conflicting_merge_mints_one_resolver_and_pushes_nothing(
     assert again["resolver"] == rid and _origin(rig, "main") == main_before
 
 
+def test_a_deleted_release_branch_conflict_briefs_the_resolver_on_the_sha(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    """The gone-ref path can still hit a real conflict: the resolver
+    brief must fetch and read the recovered head sha — it cannot fetch
+    the retired ``release/r<N>`` ref."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    head = _commit(root, "release/r7", "app.py", "release\n", "release fix")
+    R.record_head(store, mint.root_id, head)
+    main_before = _commit(root, "main", "app.py", "main\n", "main edit")
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "conflict" and out["files"] == ["app.py"]
+    assert _origin(rig, "main") == main_before
+    body = T._todo_body(store, out["resolver"])
+    assert f"git fetch origin {head}" in body
+    assert "git fetch origin release/r7" not in body
+    assert f"..{head[:12]}" in body
+    ours = _ours_node(store, mint.root_id)
+    assert f"-s ours {head}" in T._todo_body(store, ours["id"])
+
+
 def _resolvers(store: Store, root_id: int) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -317,6 +340,105 @@ def test_a_failed_fetch_fails_and_pushes_nothing(
     monkeypatch.setattr(mb, "_git", _failing(mb._git, "fetch"))
     out = mb.merge_back(store, mint.ids["merge_back"], root)
     assert out == {"state": "failed", "why": "git fetch: refused"}
+    assert _origin(rig, "main") == before
+
+
+def test_a_failed_fetch_on_a_gone_ref_still_fails_when_main_wont_fetch(
+    store: Store, rig: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted release branch plus an unfetchable main is the
+    tick-retry kind of failure, not a noop."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    monkeypatch.setattr(mb, "_git", _failing(mb._git, "fetch"))
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "failed" and "git fetch" in out["why"]
+
+
+def test_a_deleted_release_branch_whose_head_is_on_main_is_a_noop(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    """gr660285: ``scripts/round`` retires release/r<N> once its head is
+    on main; a queued merge_back behind the delete reads noop, not a
+    retried fetch failure that parks the pass on a human ask."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    main_before = _commit(root, "main", "later.txt", "main\n", "main after the cut")
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "noop" and "gone" in out["why"]
+    assert _origin(rig, "main") == main_before
+    rel = R.release_of(store, mint.root_id)
+    assert rel is not None and rel["merge_back"]["state"] == "noop"
+
+
+def test_a_deleted_release_branch_with_unmerged_commits_still_merges(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    """The ref is gone but its recorded head is still in the checkout —
+    a hand-deleted branch carrying work merges on the sha."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    head = _commit(root, "release/r7", "fix1.txt", "a\n", "fix 1")
+    R.record_head(store, mint.root_id, head)
+    _commit(root, "main", "later.txt", "main\n", "main after the cut")
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "merged" and out["head"] == head
+    main = _origin(rig, "main")
+    parents = _g(rig["origin"], "rev-list", "--parents", "-n1", main).split()[1:]
+    assert parents[1] == head
+    assert _g(rig["origin"], "log", "-1", "--format=%s", main) == mb.merge_message("r7")
+
+
+def test_a_deleted_release_branch_fetches_its_recorded_head_by_sha(
+    store: Store, rig: dict[str, Path], tmp_path: Path
+) -> None:
+    """The head commit exists on the server but not in this checkout —
+    fetch it by sha and merge."""
+    root, origin = rig["root"], rig["origin"]
+    _g(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+    mint = _cut(store, root)
+    # Order matters: root must fetch main BEFORE the fix commit exists,
+    # else its objects land here and the sha fetch is never exercised.
+    _commit(root, "main", "later.txt", "main\n", "main after the cut")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    _g(other, "config", "user.name", "t")
+    _g(other, "config", "user.email", "t@t")
+    head = _commit(other, "release/r7", "fix1.txt", "a\n", "fix 1")
+    R.record_head(store, mint.root_id, head)
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    absent = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"{head}^{{commit}}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert absent.returncode != 0  # the sha fetch is really exercised
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "merged" and out["head"] == head
+    main = _origin(rig, "main")
+    parents = _g(origin, "rev-list", "--parents", "-n1", main).split()[1:]
+    assert parents[1] == head
+
+
+def test_a_deleted_release_branch_with_an_unfetchable_head_fails(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    """A gone ref whose recorded head can be neither read nor fetched
+    fails for a human — nothing recoverable to merge."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    R.record_head(store, mint.root_id, "f" * 40)
+    _commit(root, "main", "later.txt", "main\n", "main after the cut")
+    _g(root, "push", "-q", "origin", "--delete", "release/r7")
+    before = _origin(rig, "main")
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "failed" and "gone" in out["why"]
     assert _origin(rig, "main") == before
 
 
