@@ -274,8 +274,39 @@ factory keeps the machinery and adds an owner to every branch.
   slices and lander alike while the loop closes once — vault
   `PRECIS_FACTORY_GIT_TOKEN`, installed as git's credential helper by
   `workers/factory_git` for `land_slice`, the release ops and `gh`; the
-  slice session gets no credential at all. The `slice/*`-only token on a
-  second account plus a ruleset on the protected refs is the next step.
+  slice session gets no credential at all. The `ship` launch itself gets
+  no token in its env, no token fd, and no helper it can make answer
+  (gr659929: its gates run the branch's scripts; review td660513 — both
+  the fd-wiring and a depth-authorized credential broker failed: branch
+  code at an accepted depth ran `git credential fill` and read the token
+  back, and the broker itself launched with `python -m` from the slice
+  tree, where a branch-added root `precis/__init__.py` shadowed the
+  trusted package). The boundary is now physical, not process-table:
+  the lander keeps a bare mirror of the land refs in the main checkout's
+  `scratch/` (`workers/factory_git_mirror`), refreshes it from GitHub
+  under the token at launch with `git` argv alone (never an interpreter
+  from the slice tree), and gives ship env-config url-rewrite entries —
+  `url.<mirror>.insteadOf` covering the real origin URL (git resolves a
+  remote's own URL without consulting command-scope config, so rewriting
+  at the transport layer is the only env-scoped lever) — so ship fetches,
+  squashes and CAS-pushes exactly as before, against the mirror. A green
+  ship is not the land: the lander then pushes only the refs ship moved
+  to the real origin, each leased on the tip GitHub held at launch; a
+  lost race defers the land and ship re-runs against a fresh mirror, and
+  the token reaches only the lander's own git calls — never argv, never
+  an env name, never an fd. No trusted read honors `refs/replace`
+  either: `--no-replace-objects` rides every lander git argv and
+  `GIT_NO_REPLACE_OBJECTS` every trusted env and land-spawned child —
+  the mirror and the shared dir are same-uid writable, and a
+  replacement planted for an oracle-verified sha would otherwise put
+  attacker-authored objects into the reads that verify the land (the
+  drift helper's `git show`, the sync's ancestry check). Those launch
+  tips persist beside the mirror
+  under the main checkout's `scratch/` — never the branch-writable
+  tree — so an adopted handle's sync fails closed when they are gone
+  (review td660513). The `slice/*`-only
+  token on a second account plus a ruleset on the protected refs is the
+  next step.
 - **Landing is immediate: builder done → `scripts/ship`.** The lander
   (the release-owner daemon of step 4, a W-tier runner until it exists)
   lands the branch as soon as the handoff says done, with no verdict to

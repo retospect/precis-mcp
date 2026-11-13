@@ -18,9 +18,35 @@ or a file:
 * ``GH_TOKEN`` for ``gh``;
 * the token itself under :data:`SECRET_NAME`, for the helper to read.
 
-The slice *session* never gets this env: ``run_slice.slice_env`` is an
-allowlist and the brief says "do not push" — the builder's branch leaves
-the host only through the lander. Resolution is env → vault
+That env wiring suits only launches where every layer is trusted — and
+the trusted set is narrow (review td660513 sharpened it twice): a
+credential-bearing call also runs in a fresh ops gitdir
+(:func:`precis.workers.factory_git_mirror._ops_repo`) so no
+adversary-writable repo config or hook file meets the token, and any
+code it interprets — the drift preflight's helper — is ``git show``n
+from an oracle-verified mirror tip, never executed out of the slice
+tree where a branch-supplied file or import shadow would run over the
+credential. ``ship`` is different: its host-side steps run the
+*branch's* scripts (the checked-lane selector), so :func:`git_auth_env`
+would hand every commit the no-expiry token through ``os.environ``
+(gr659929). Nor can a process-side filter separate ship's own git calls
+from a gate child's — same depth, same env, forgeable argv (review
+td660513 on the broker that tried: branch code at an accepted depth ran
+``git credential fill`` and read the token back). The wiring ship gets
+now carries **no credential at
+all**: :func:`precis.workers.factory_git_mirror.mirror_ship_env` gives
+ship env-config url-rewrite entries that point every git transport
+contact with the real origin URL at a local bare mirror the lander
+refreshes and syncs under this module's wiring, so the token reaches
+only the lander's own git calls and ship's tree — every host-side branch
+script under it — holds nothing to steal. ``gh`` calls under ship fall back to the host's
+own gh auth (``GH_CONFIG_DIR``): without it they go blind, and the
+lander's own drift preflight — which keeps the env wiring and fails
+closed — is the gate that still protects an unattended land.
+
+The slice *session* never gets either wiring: ``run_slice.slice_env`` is
+an allowlist and the brief says "do not push" — the builder's branch
+leaves the host only through the lander. Resolution is env → vault
 (``secrets.get_secret`` / ``reveal_unbound``, like the OAuth token); with
 no token the env is returned unchanged and the host's own credentials, if
 any, apply.

@@ -2,7 +2,11 @@
 
 The token reaches git through a credential helper installed via
 ``GIT_CONFIG_*`` env entries and ``gh`` through ``GH_TOKEN``; it is never on
-argv. No token → the env is returned unchanged.
+argv. No token → the env is returned unchanged. Ship's gates run the
+branch's own scripts (gr659929), so ship's tree holds no credential at all:
+the lander points ship's ``origin`` at a local bare mirror it refreshes and
+syncs under this wiring (:mod:`precis.workers.factory_git_mirror`), and ship
+fetches, squashes and CAS-pushes against the mirror credential-free.
 """
 
 from __future__ import annotations

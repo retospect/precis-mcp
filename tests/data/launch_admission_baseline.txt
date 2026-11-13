@@ -121,6 +121,7 @@ src/precis/workers/executors/claude_docker.py::_launch_build 1
 src/precis/workers/executors/claude_docker.py::_launch_run 1
 src/precis/workers/executors/claude_docker.py::_launch_script 1
 src/precis/workers/executors/claude_docker.py::_podman 1
+src/precis/workers/factory_git_mirror.py::_run 1
 src/precis/workers/gripe_triage.py::_post_board 1
 src/precis/workers/heartbeat.py::_temp_from_cmd 1
 src/precis/workers/heartbeat.py::_temp_from_macos_smc 1
