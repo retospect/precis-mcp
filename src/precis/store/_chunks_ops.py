@@ -160,11 +160,10 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     # Inside a bounded-call scope the freshest bound is the scope's
     # remaining budget *now*; take the tightest of the three so a
     # statement that starts late cannot outlive the call deadline.
-    from precis.store.pool import CHECKOUT_BUDGET
+    from precis.store.pool import checkout_budget_cap_ms
 
-    budget = CHECKOUT_BUDGET.get()
-    if budget is not None:
-        cap_ms = int(min(budget[1], (budget[0] - time.monotonic()) * 1000))
+    cap_ms = checkout_budget_cap_ms()
+    if cap_ms is not None:
         timeout_ms = cap_ms if timeout_ms is None else min(timeout_ms, cap_ms)
     if timeout_ms is not None:
         # SET LOCAL semantics (is_local=true), like the GUCs below: pgbouncer
@@ -1047,13 +1046,18 @@ class ChunkStore:
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"
         )
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
                 # Mirror the OR retry in search_chunks_lexical —
                 # this count IS that leg's universe for the "N of K"
-                # header, so it must count the same rows.
+                # header, so it must count the same rows. Re-derive
+                # the remaining budget first — the retry would
+                # otherwise inherit the checkout-time cap (gr664954).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
@@ -1210,12 +1214,16 @@ class ChunkStore:
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"
         )
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
                 # Same OR retry as search_chunks_lexical — the
                 # notice counts the universe the leg actually searched.
+                # Re-derive the remaining budget first (gr664954).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
@@ -1386,6 +1394,8 @@ class ChunkStore:
                 "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
             )
 
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             rows = conn.execute(
                 _sql("websearch_to_tsquery('english', %s)"), params
@@ -1404,6 +1414,10 @@ class ChunkStore:
                 # unscoped guard runs.
                 strict_empty = offset == 0
                 if not strict_empty:
+                    # The checkout's statement_timeout froze at checkout
+                    # — re-derive the remaining budget or this probe
+                    # inherits the stale cap (gr664954, td665127).
+                    apply_checkout_budget(conn)
                     probe = conn.execute(
                         "SELECT EXISTS(SELECT 1 FROM chunks c "
                         "JOIN refs r ON r.ref_id = c.ref_id, "
@@ -1414,6 +1428,9 @@ class ChunkStore:
                     assert probe is not None
                     strict_empty = not probe[0]
                 if strict_empty:
+                    # Same re-derive before the retry itself — the AND
+                    # leg (and the probe) already spent budget.
+                    apply_checkout_budget(conn)
                     rows = conn.execute(
                         _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
                     ).fetchall()
@@ -1965,9 +1982,15 @@ class ChunkStore:
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
         or_leg = _or_retry(q, scope_ref_id)
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
             if or_leg and scope_ref_id is None:
+                # Second statement on this checkout (the gate read ran
+                # first) — re-derive the remaining budget or it
+                # inherits the checkout-time cap (gr664954, td665127).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     "SELECT EXISTS(SELECT 1 FROM chunks c "
                     "JOIN refs r ON r.ref_id = c.ref_id, "

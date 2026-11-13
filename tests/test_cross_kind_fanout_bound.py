@@ -488,7 +488,17 @@ def test_checkout_budget_bounds_the_pool_wait(
     rt = runtime_with_store
     store = rt.hub.store
     assert store is not None
-    held = [store.pool.getconn() for _ in range(int(store.pool.max_size))]
+    # Saturate the pool by draining it to empty rather than assuming all
+    # ``max_size`` connections are free: ``boot``'s background threads
+    # (``precis-checklist-sync``) hold a checkout for the test's
+    # duration, so a fixed ``max_size`` count waits out the full 30 s
+    # getconn timeout instead of saturating.
+    held: list[Any] = []
+    try:
+        while True:
+            held.append(store.pool.getconn(timeout=2.0))
+    except PoolTimeout:
+        pass
     token = CHECKOUT_BUDGET.set((time.monotonic() - 1.0, 4000.0))  # past
     try:
         t0 = time.perf_counter()
@@ -499,3 +509,107 @@ def test_checkout_budget_bounds_the_pool_wait(
         CHECKOUT_BUDGET.reset(token)
         for conn in held:
             store.pool.putconn(conn)
+
+
+def test_apply_checkout_budget_recaps_a_late_statement(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr664954 (review td665127): ``statement_timeout`` freezes at the
+    value the checkout's ``set_config`` wrote — a further statement on
+    the same checkout re-applies so it cannot outlive the call
+    deadline."""
+    from precis.store.pool import CHECKOUT_BUDGET, apply_checkout_budget
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    token = CHECKOUT_BUDGET.set((time.monotonic() + 60.0, 4000.0))
+    try:
+        with store.pool.connection() as conn:
+            # The scope's remaining budget shrank mid-checkout: the next
+            # statement must not keep the 4000 ms the checkout wrote.
+            CHECKOUT_BUDGET.set((time.monotonic() + 0.5, 4000.0))
+            apply_checkout_budget(conn)
+            row = conn.execute(
+                "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+            ).fetchone()
+        assert row is not None
+        assert 0 < int(row[0]) <= 500
+    finally:
+        CHECKOUT_BUDGET.reset(token)
+
+
+def test_lexical_or_retry_recomputes_the_statement_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr664954 (review td665127): ``search_chunks_lexical`` runs its
+    strict AND leg and the OR retry on one checkout. The AND leg spends
+    budget first, so the retry must re-derive the remaining budget —
+    not inherit the stale checkout-time cap and hold a fan-out worker
+    past the call deadline."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.store import pool as pool_mod
+    from precis.store._chunks_ops import ChunkStore
+    from precis.store.core import StoreCore
+    from precis.store.pool import CHECKOUT_BUDGET
+
+    clock = {"t": 1000.0}
+
+    class _Clock:
+        @staticmethod
+        def monotonic() -> float:
+            return clock["t"]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(pool_mod, "time", _Clock())
+
+    calls: list[tuple[str, Any]] = []
+
+    class _Rows:
+        def fetchall(self) -> list:
+            return []
+
+        def fetchone(self) -> None:
+            return None
+
+    class _Conn:
+        def execute(self, sql: Any, params: Any = None) -> _Rows:
+            calls.append((str(sql), params))
+            # The strict AND leg consumes 9.5 s of the scope's 10 s
+            # deadline before coming back empty — what remains for the
+            # OR retry is ~500 ms, not the checkout's 10 s cap.
+            if "websearch_to_tsquery" in str(sql):
+                clock["t"] += 9.5
+            return _Rows()
+
+    class _Pool:
+        @contextmanager
+        def connection(self, timeout: float | None = None) -> Any:
+            yield _Conn()
+
+    chunks = ChunkStore.__new__(ChunkStore)
+    chunks._core = cast(StoreCore, SimpleNamespace(pool=_Pool()))
+
+    token = CHECKOUT_BUDGET.set((clock["t"] + 10.0, 40_000.0))
+    try:
+        out = chunks.search_chunks_lexical(q="alpha beta gamma", limit=5)
+    finally:
+        CHECKOUT_BUDGET.reset(token)
+    assert out == []
+
+    statements = [s for s, _p in calls]
+    and_i = next(i for i, s in enumerate(statements) if "websearch_to_tsquery" in s)
+    or_i = next(i for i, s in enumerate(statements) if "plainto_tsquery" in s)
+    recaps = [
+        params
+        for i, (s, params) in enumerate(calls)
+        if "set_config('statement_timeout'" in s and and_i < i < or_i
+    ]
+    assert recaps, "no statement_timeout re-cap between the AND leg and OR retry"
+    for params in recaps:
+        assert params is not None and 0 < int(params[0]) <= 500
