@@ -94,7 +94,7 @@ unless `args={'force': True}`; dated history is listed but exempt.
 ## A coined term is a taxon
 
 A coined or overloaded term is a taxon, not a memory line and not a
-file (docs/glossary.md is retired, Reto 2026-11-03, gr559340). Look it
+file (the glossary file is retired, Reto 2026-11-03, gr559340). Look it
 up with `search(kind='taxon', q='<term>', args={'under': 'tn559460'})`. Add
 it in the session that coins it — `put(kind='taxon', text='<term> —
 <gloss> → <start-here anchor> · skill <name>', meta={'pointer':

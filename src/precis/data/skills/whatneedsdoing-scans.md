@@ -59,7 +59,7 @@ nightly build ⋅ main on CI):
   today", skip the heavy pass (**once/day at most** — constant re-auditing
   churns without benefit). The same `scripts/memory-lint` call also runs a
   **sibling-repo path check** (weekly, self-gated, no judgment pass needed —
-  `~/work/<name>` / `~/work/project(s)/code/<name>` paths memory cites,
+  `~/work/<name>` / `~/work/project(s)/code/<name>` paths memory cites, <!-- home-path: allow — the path shapes the check matches -->
   verified to still exist on disk) and self-stamps its own log
   (`~/.cache/precis/memory-sibling-repos.log`, untracked; procedure in
   `docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
