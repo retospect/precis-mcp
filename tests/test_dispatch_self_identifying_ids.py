@@ -133,3 +133,90 @@ class TestProseFileId:
         )
         assert "[error" not in out
         assert "Catalyst landscape body." in out
+
+
+class TestMissingKindIdWhy:
+    """gr661902: the fingerprint recurred on ids that *look*
+    self-identifying but resolve to nothing live — the bare
+    ``missing kind=`` refusal never said why the id didn't route, so
+    sessions repeated the identical call. The refusal now leads with
+    the specific failure (dead numeric id, retired ref, file address
+    no live file owns, unclaimed ``::`` alias) and, for a live ref of
+    a kind this build doesn't serve, infers the kind anyway so the
+    pointed kind error names it."""
+
+    def test_dead_numeric_id_names_no_live_ref(
+        self, rooted_runtime: PrecisRuntime
+    ) -> None:
+        out = rooted_runtime.dispatch("get", {"id": 987654321})
+        assert "[error:BadInput]" in out
+        assert "missing kind" in out
+        assert "names no live ref" in out
+        assert "pass kind=" in out
+        assert "self-identifying" in out
+
+    def test_retired_numeric_id_names_its_kind(
+        self, rooted_runtime: PrecisRuntime
+    ) -> None:
+        import re
+
+        put = rooted_runtime.dispatch("put", {"kind": "todo", "text": "soon gone"})
+        tid = int(re.search(r"id=(\d+)", put).group(1))  # type: ignore[union-attr]
+        rooted_runtime.dispatch("delete", {"kind": "todo", "id": tid})
+        out = rooted_runtime.dispatch("get", {"id": tid})
+        assert "missing kind" in out
+        assert "retired todo" in out
+        assert "kind='todo'" in out
+
+    def test_live_ref_of_dead_kind_routes_to_kind_error(self, store: Store) -> None:
+        """A bare numeric id naming a live ref of a kind this build
+        doesn't serve infers the kind anyway — the "unknown kind" /
+        "registered but disabled" error names it, beating
+        ``missing kind=`` (e.g. prod ``get(id=1518127)`` on a gated
+        kind)."""
+        hub = boot(store=store)  # no precis_root → file kinds not live
+        rt = PrecisRuntime(config=PrecisConfig(), hub=hub)
+        assert "tex" not in hub.kinds
+        ref = store.insert_ref(
+            kind="tex", slug="ghost--file", title="Ghost", provider="manual"
+        )
+        out = rt.dispatch("get", {"id": ref.id})
+        assert "missing kind" not in out
+        assert "[error" in out
+        assert "tex" in out
+
+    def test_missing_file_slug_names_file_kinds(
+        self, rooted_runtime: PrecisRuntime
+    ) -> None:
+        out = rooted_runtime.dispatch("get", {"id": "tex--no-such-file"})
+        assert "missing kind" in out
+        assert "no live file owns" in out
+        assert "'tex'" in out
+
+    def test_ambiguous_file_stem_names_owner_kinds(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        (ws / "notes").mkdir(parents=True)
+        (ws / "notes" / "meeting.md").write_text("# M\n", encoding="utf-8")
+        (ws / "notes" / "meeting.tex").write_text("T\n", encoding="utf-8")
+        hub = boot(store=store, precis_root=str(ws))
+        rt = PrecisRuntime(config=PrecisConfig(), hub=hub)
+        out = rt.dispatch("get", {"id": "notes--meeting"})
+        assert "missing kind" in out
+        assert "ambiguous" in out
+        assert "'markdown'" in out
+        assert "'tex'" in out
+
+    def test_unknown_qualname_alias_points_at_python(
+        self, rooted_runtime: PrecisRuntime
+    ) -> None:
+        out = rooted_runtime.dispatch("get", {"id": "bogus::m.f"})
+        assert "missing kind" in out
+        assert "kind='python'" in out
+
+    def test_non_kind_colon_prefix_named(self, rooted_runtime: PrecisRuntime) -> None:
+        out = rooted_runtime.dispatch("get", {"id": "nosuchkind:thing"})
+        assert "missing kind" in out
+        assert "'nosuchkind'" in out
+        assert "not a live kind" in out

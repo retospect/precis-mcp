@@ -3372,7 +3372,13 @@ class DispatchMixin(RuntimeShape):
         return resolved if not is_chunk else kind
 
     def _kind_of_bare_id(self, raw: Any) -> str | None:
-        """Kind of the live ref a bare positive int ``id`` names, else None."""
+        """Kind of the live ref a bare positive int ``id`` names, else None.
+
+        The kind is returned even when it is gated out of this build
+        (gr661902): a live ref names its kind unambiguously, and routing
+        it lets ``_resolve_handler`` raise the pointed "registered but
+        disabled" / "unknown kind" error — which names the real kind —
+        instead of the generic missing-kind bounce."""
         if isinstance(raw, bool):
             return None
         if isinstance(raw, str) and raw.strip().isdigit():
@@ -3382,7 +3388,7 @@ class DispatchMixin(RuntimeShape):
         if self.store is None:
             return None
         ref = self.store.fetch_refs_by_ids([raw], include_deleted=False).get(raw)
-        if ref is None or ref.kind not in self.hub.kinds:
+        if ref is None:
             return None
         return str(ref.kind)
 
@@ -3439,19 +3445,126 @@ class DispatchMixin(RuntimeShape):
         per-verb help-skill pointer is still appended by
         :meth:`_maybe_add_skill_hint` after this.
         """
+        # gr661902: a recurrence of the missing-kind bounce showed ids
+        # that *would* self-identify when they named something live —
+        # get(id=<dead ref-id>), get(id='tex--<missing>'). When an id=
+        # was passed, lead with why it couldn't route instead of the
+        # bare "pick one" so the next call is different.
+        hints: list[str] = []
+        why = self._why_id_needs_kind(args.get("id"))
+        if why is not None:
+            hints.append(why)
         if verb == "link":
             # gr518636: link(mode='add', rel='…') with no kind=/id=/target=
             # bounced on bare "missing kind=" — the refusal must name the
             # whole call shape, with the caller's own rel= filled in.
             rel = args.get("rel")
             rel_arg = f", rel={rel!r}" if isinstance(rel, str) and rel.strip() else ""
-            return [
-                f"link(kind='<source kind>', id=<source id>, "
-                f"target='<kind>:<identifier>'{rel_arg})",
-                "a typed id needs no kind=: link(id='td12', target='todo:34') "
-                "or id='todo:12' self-identify",
-            ]
-        return ["pass kind=<one of the listed options>"]
+            hints.extend(
+                [
+                    f"link(kind='<source kind>', id=<source id>, "
+                    f"target='<kind>:<identifier>'{rel_arg})",
+                    "a typed id needs no kind=: link(id='td12', target='todo:34') "
+                    "or id='todo:12' self-identify",
+                ]
+            )
+            return hints
+        hints.append("pass kind=<one of the listed options>")
+        if verb == "get":
+            hints.append(
+                "or give id= a self-identifying shape, no kind= needed: "
+                "'kind:id', a record handle like 'pa123', a live numeric "
+                "ref id, 'alias::qualname' for python, or a live file slug"
+            )
+        return hints
+
+    def _why_id_needs_kind(self, raw: Any) -> str | None:
+        """Why a passed ``id=`` could not self-identify its kind.
+
+        gr661902: the bounce recurred on ids that *look* self-identifying
+        but resolve to nothing live — a dead numeric ref id, a file-slug
+        address no live file owns, an ``::`` qualname the python probe
+        didn't claim. The bare refusal never said which case it was, so
+        sessions repeated the identical call. Each recognized shape gets
+        a lead naming the failure; ``None`` for shapes with no sharper
+        story (the generic hint still applies).
+        """
+        if raw is None or isinstance(raw, (bool, list, tuple)):
+            return None
+        if isinstance(raw, int):
+            return self._numeric_id_why(raw)
+        if not isinstance(raw, str):
+            return None
+        s = raw.strip()
+        if not s:
+            return None
+        if s.isdigit():
+            return self._numeric_id_why(int(s))
+        if "::" in s:
+            if "python" in self.hub.kinds or "python" in getattr(
+                self.hub, "loadabilities", {}
+            ):
+                return (
+                    f"{s!r} is <alias>::<qualname>, the python kind's "
+                    "address grammar — pass kind='python'"
+                )
+            return None
+        # A colon the splitter honours is a live kind already routed;
+        # what remains is a non-kind prefix or a colon past a separator.
+        head = re.split(r"[/~?]", s, maxsplit=1)[0]
+        if ":" in head:
+            prefix = head.split(":", 1)[0].strip()
+            return (
+                f"{s!r} — prefix '{prefix}' is not a live kind "
+                "in this build; pass kind=<one of the listed options>"
+            )
+        if "--" in s or "/" in s or "." in s.rsplit("/", 1)[-1]:
+            owners = self._file_kind_owners(s)
+            if len(owners) > 1:
+                return (
+                    f"{s!r} is owned by {len(owners)} file kinds — "
+                    f"ambiguous: pass kind= one of "
+                    f"{', '.join(repr(o) for o in owners)}"
+                )
+            file_kinds = self._file_kind_names()
+            if not owners and file_kinds:
+                return (
+                    f"{s!r} is a file-slug/path address no live file owns "
+                    f"— pass kind= one of "
+                    f"{', '.join(repr(k) for k in file_kinds)} for a "
+                    "pointed not-found"
+                )
+        return None
+
+    def _numeric_id_why(self, n: int) -> str | None:
+        """Lead for a bare numeric ``id=`` that still needs ``kind=``.
+
+        get/link would already have inferred a live ref's kind, so this
+        fires when the id names nothing live (dead/never-existed), a
+        retired ref, or — for the verbs that never infer — a live ref
+        the caller must still name. Each case gets a different lead."""
+        if self.store is None:
+            return None
+        try:
+            ref = self.store.fetch_refs_by_ids([n], include_deleted=True).get(n)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.debug("missing-kind id probe failed", exc_info=True)
+            return None
+        if ref is None:
+            return (
+                f"id={n} names no live ref — a bare numeric id only "
+                "self-identifies when a live ref owns it"
+            )
+        if ref.retired_at is not None:
+            return (
+                f"id={n} is a retired {ref.kind} ref — a bare numeric id "
+                "only self-identifies live refs; name the tombstone's "
+                f"kind explicitly: get(kind='{ref.kind}', id={n})"
+            )
+        return (
+            f"id={n} is a live {ref.kind} — pass kind='{ref.kind}' "
+            "(bare numeric id= self-identifies on get/link only)"
+        )
 
     def _resolve_handler(self, kind: str, verb: str, *, raw_id: Any = None) -> Handler:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
@@ -4724,7 +4837,19 @@ class DispatchMixin(RuntimeShape):
         an ambiguous stem is never guessed."""
         if args.get("kind") is not None or self.hub is None:
             return
+        owners = self._file_kind_owners(ident)
+        if len(owners) == 1:
+            args["kind"] = owners[0]
+
+    def _file_kind_owners(self, ident: str) -> list[str]:
+        """Live kinds whose ``owns_existing_file`` probe claims ``ident``.
+
+        The probe set is the plaintext-family handlers (markdown,
+        plaintext, tex, …) — a kind that never addresses files on disk
+        has no probe and can't claim the id."""
         owners: list[str] = []
+        if self.hub is None:
+            return owners
         for kind in sorted(self.hub.kinds):
             probe = getattr(self.hub.handler_for(kind), "owns_existing_file", None)
             if probe is None:
@@ -4734,8 +4859,17 @@ class DispatchMixin(RuntimeShape):
                     owners.append(kind)
             except Exception:  # pragma: no cover — disk/store outage etc.
                 log.debug("file-kind probe failed for %s", kind, exc_info=True)
-        if len(owners) == 1:
-            args["kind"] = owners[0]
+        return owners
+
+    def _file_kind_names(self) -> list[str]:
+        """Live kinds that answer the file-ownership probe."""
+        if self.hub is None:
+            return []
+        return [
+            k
+            for k in sorted(self.hub.kinds)
+            if getattr(self.hub.handler_for(k), "owns_existing_file", None) is not None
+        ]
 
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
         """Universal handles: route a draft chunk handle ``dc<id>`` (optionally with a
