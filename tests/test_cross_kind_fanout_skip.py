@@ -216,6 +216,7 @@ def test_probe_and_fan_out_share_one_call_deadline(
         kind_overrides: dict[str, dict[str, Any]] | None = None,
         *,
         deadline_at: float | None = None,
+        prioritize: bool = False,
     ) -> dict[str, Any]:
         seen_deadlines["fanout"] = deadline_at if deadline_at is not None else -1.0
         return {}

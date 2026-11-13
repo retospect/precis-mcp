@@ -178,3 +178,43 @@ def test_deadline_cancels_the_query_on_the_server(
     assert running == 0, "kind's query still running on the server after deadline"
     assert errors and "statement timeout" in str(errors[0]).lower()
     assert kinds[0] in out
+
+
+def test_submit_order_puts_high_signal_kinds_first() -> None:
+    """gr665028: the priority tier submits ahead of the rest in its
+    listed order; non-tier kinds keep their incoming order, so a
+    deadline that can't cover every kind drops the low-signal tail."""
+    ordered = search_mod._cross_kind_submit_order(
+        ["web", "skill", "anki", "memory", "job"]
+    )
+    assert ordered == ["memory", "skill", "anki", "web", "job"]
+
+
+def test_fan_out_workers_reach_priority_kinds_first(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr665028: with every worker held, the first wave the pool runs is
+    the priority tier — alphabetical submit order is exactly how the
+    2026-11-13 collapse dropped memory/skill from the merge. Applies to
+    the default expansion only: an explicit kind list is caller intent
+    and keeps its own submit order."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()
+    started: list[str] = []
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def fake(k: str) -> list:
+        with lock:
+            started.append(k)
+            if len(started) >= search_mod.CROSS_KIND_MAX_WORKERS:
+                gate.set()
+        gate.wait(5)
+        return []
+
+    _patch_invoke(monkeypatch, rt, fake)
+    out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10}, prioritize=True)
+    gate.set()
+    n = search_mod.CROSS_KIND_MAX_WORKERS
+    assert set(out) == set(kinds)
+    assert set(started[:n]) == set(search_mod._cross_kind_submit_order(kinds)[:n])

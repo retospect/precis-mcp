@@ -250,6 +250,37 @@ CROSS_KIND_DEADLINE_S = 12.0
 #: healthy kind's latency (a ready partial-index kind answers in <1 s)
 #: and well below the whole-fan-out deadline.
 CROSS_KIND_PER_KIND_S = 4.0
+#: Fan-out submission priority (gr665028). The executor drains FIFO, so
+#: submit order decides which kinds a tight shared deadline still
+#: serves. Alphabetical order put the highest-signal kinds mid/late
+#: queue — the 2026-11-13 collapse dropped exactly memory and skill
+#: (TimeoutError without a worker) while low-signal corpus hits filled
+#: the merge; per-kind searches for both answered fast moments later.
+#: These kinds submit first, in listed order; every other kind keeps
+#: its incoming order behind them, and results stay keyed by kind so
+#: render order is untouched either way.
+CROSS_KIND_FIRST_KINDS: tuple[str, ...] = (
+    "memory",
+    "skill",
+    "todo",
+    "gripe",
+    "quest",
+    "finding",
+    "draft",
+    "conversation",
+    "anki",
+)
+
+_FIRST_KIND_RANK = {k: i for i, k in enumerate(CROSS_KIND_FIRST_KINDS)}
+
+
+def _cross_kind_submit_order(kinds: list[str]) -> list[str]:
+    """``kinds`` reordered for submission: :data:`CROSS_KIND_FIRST_KINDS`
+    first in listed order, the rest in their incoming order (stable
+    sort), so a straggler-held worker pool drops the low-signal tail
+    rather than the kinds an unscoped search most needs."""
+    return sorted(kinds, key=lambda k: _FIRST_KIND_RANK.get(k, len(_FIRST_KIND_RANK)))
+
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
@@ -2772,7 +2803,11 @@ class SearchMixin(RuntimeShape):
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
         fanned = self._cross_kind_fan_out(
-            kinds, base_kwargs, kind_overrides, deadline_at=deadline_at
+            kinds,
+            base_kwargs,
+            kind_overrides,
+            deadline_at=deadline_at,
+            prioritize=default_expansion,
         )
         for k in kinds:
             if k not in fanned:
@@ -3277,6 +3312,7 @@ class SearchMixin(RuntimeShape):
         kind_overrides: dict[str, dict[str, Any]] | None = None,
         *,
         deadline_at: float | None = None,
+        prioritize: bool = False,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
         :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
@@ -3300,12 +3336,22 @@ class SearchMixin(RuntimeShape):
         :meth:`_dispatch_cross_kind` passes the deadline its ANN route
         probe already drew from, so probe and fan-out together fit the
         one budget (td649559).
+
+        gr665028: ``prioritize=True`` (the default expansion — an
+        explicit kind list is caller intent and keeps its own order)
+        submits jobs in :func:`_cross_kind_submit_order`, high-signal
+        kinds first, so when the deadline can't cover every kind the
+        TimeoutError tail eats the low-signal end of the queue, not
+        memory/skill. Submission order only decides who gets a worker
+        sooner; ``out`` stays keyed by kind and the caller's
+        ``kinds``-ordered reporting is unchanged.
         """
         from concurrent.futures import wait
 
         from precis.store.pool import _PINNED
 
-        jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
+        submit = _cross_kind_submit_order(kinds) if prioritize else kinds
+        jobs = [(k, h) for k in submit if (h := self.hub.handler_for(k)) is not None]
         out: dict[str, list[SearchHit] | Exception] = {}
         if not jobs:
             return out
