@@ -35,7 +35,7 @@ import psycopg
 
 from precis.errors import DraftExportRefused
 from precis.identity import is_placeholder_title, make_pdf_sha256, normalize_doi
-from precis.ingest.article_spread import mark_article_start
+from precis.ingest.article_spread import mark_article_start, note_issue_splice
 from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
@@ -669,6 +669,26 @@ def _note_article_spread(
         )
 
 
+def _note_issue_splice(store: Store, ref_id: int | None, *, conn: Any) -> None:
+    """Flag a stored body that is a whole scanned issue spliced into one
+    record (gr658690) — several unrelated articles concatenated, so no
+    single title repair can resolve the junk title. Journals
+    ``ingest:spread`` / ``issue_splice`` and tags ``multi-article``; best-
+    effort, like :func:`_note_article_spread` — detection failure must not
+    fail the ingest.
+    """
+    if ref_id is None:
+        return
+    try:
+        note_issue_splice(store, int(ref_id), conn=conn)
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (pdf): could not flag issue splice for ref_id=%s: %s",
+            ref_id,
+            exc,
+        )
+
+
 def _ingest_pdf(
     input: PdfInput,
     *,
@@ -895,6 +915,9 @@ def _ingest_pdf(
                 # gr515439: mark a leading foreign prefix (previous
                 # article's tail) so title/front-matter readers skip it.
                 mark_article_start(store, existing, conn=conn)
+                # gr658690: flag a whole scanned issue spliced into one
+                # record (no single title exists to repair).
+                _note_issue_splice(store, existing, conn=conn)
             conn.commit()
             stored_kind = _lookup_kind(existing, conn=conn)
             _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
@@ -946,6 +969,7 @@ def _ingest_pdf(
         if result.chunks_written:
             _note_article_spread(store, result.ref_id, spread, input, conn=conn)
             mark_article_start(store, result.ref_id, conn=conn)
+            _note_issue_splice(store, result.ref_id, conn=conn)
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)

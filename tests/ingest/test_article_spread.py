@@ -22,8 +22,11 @@ from precis.ingest.add import (
 )
 from precis.ingest.article_spread import (
     article_start_ord,
+    detect_issue_splice,
+    foreign_tail_ord,
     leading_foreign_ord,
     mark_article_start,
+    note_issue_splice,
     trim_to_article,
 )
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
@@ -389,6 +392,24 @@ def _paper(sha: str, spread: dict[str, Any] | None) -> PaperToWrite:
     )
 
 
+def _spliced_paper(sha: str) -> PaperToWrite:
+    """gr658690: one record whose body is three concatenated letters from
+    a scanned journal issue."""
+    base = _paper(sha, None)
+    return PaperToWrite(
+        **{
+            **base.__dict__,
+            "chunks": [
+                ChunkToWrite(ord=-1, chunk_kind="card_combined", text=KROTO),
+                *[
+                    ChunkToWrite(ord=c.ord, chunk_kind=c.chunk_kind, text=c.text)
+                    for c in _spliced_issue_chunks()
+                ],
+            ],
+        }
+    )
+
+
 def _events_and_tag(store: Any, ref_id: int) -> tuple[list[Any], bool, Any]:
     with store.pool.connection() as conn:
         events = conn.execute(
@@ -453,6 +474,35 @@ class TestIngestJournalsSpread:
         result = self._ingest(store, tmp_path, "one.pdf", None)
         events, tagged, _meta = _events_and_tag(store, result.ref_id)
         assert events == [] and not tagged
+
+    def test_spliced_issue_body_is_flagged(self, store, tmp_path: Path) -> None:
+        """gr658690: a whole scanned issue ingested as one record gets the
+        ``issue_splice`` journal row + ``multi-article`` tag at ingest."""
+        pdf = tmp_path / "spliced.pdf"
+        pdf.write_bytes(b"%PDF-1.4 spliced")
+        sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        with patch(
+            "precis.ingest.pipeline.extract_paper",
+            return_value=_spliced_paper(sha),
+        ):
+            result = precis_add(PdfInput(pdf_path=pdf), store=store)
+        assert isinstance(result, IngestResult)
+        events, tagged, _meta = _events_and_tag(store, result.ref_id)
+        assert [e[0] for e in events] == ["issue_splice"]
+        assert events[0][1]["ack_ords"] == [2, 6, 10]
+        assert events[0][1]["restart_ord"] == 4
+        assert tagged
+
+    def test_ordinary_body_is_not_flagged(self, store, tmp_path: Path) -> None:
+        """Negative: the plain two-chunk fixture body carries no splice
+        signature, so no ``issue_splice`` row appears."""
+        result = self._ingest(store, tmp_path, "plain.pdf", None)
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT 1 FROM ref_events WHERE ref_id = %s AND event = 'issue_splice'",
+                (result.ref_id,),
+            ).fetchall()
+        assert rows == []
 
     def test_handle_named_drop_targets_the_stub_identity(
         self, store, tmp_path: Path
@@ -835,3 +885,331 @@ class TestMarkArticleStart:
                 (ref.id,),
             ).fetchone()
         assert row is not None and row[0]["was"] == 8
+
+
+# ── spliced-issue detector (gr658690) ─────────────────────────────
+
+LETTER_A = "Magnetic-field pumping through a Schottky diode"
+LETTER_B = "Imaging the surface reconstruction of alpha-alumina"
+LETTER_C = "Adaptive quantum control of a photochemical reaction"
+
+
+def _spliced_issue_chunks() -> list[Any]:
+    """gr658690 / pa453299: three unrelated Nature letters concatenated
+    by one scanned journal issue into a single record."""
+    return [
+        _c(0, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+        _c(1, "The diode pumps a magnetic field through the junction. " + PROSE),
+        _c(2, "Acknowledgements. We thank the Swiss NSF for support."),
+        _c(3, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+        _c(4, f"{LETTER_B}\nJ. V. Barth & M. Reichling\n{OTHER_PROSE}"),
+        _c(5, "The alumina surface reconstructs under the probe tip. " + OTHER_PROSE),
+        _c(6, "Acknowledgements. We thank the DFG for funding."),
+        _c(7, "- 1. Barth, J. V. et al. Nature 414, 1 (2001).", "references"),
+        _c(8, f"{LETTER_C}\nT. Brixner & G. Gerber\n{PROSE}"),
+        _c(9, "Adaptive femtosecond pulse shaping controls the yield. " + PROSE),
+        _c(10, "Acknowledgements. We thank the Hamburg cluster."),
+        _c(11, "- 1. Brixner, T. et al. Nature 414, 57 (2001).", "references"),
+    ]
+
+
+def _issue_with_toc_chunks() -> list[Any]:
+    """A contents cluster between two articles and no mid-stream
+    title+byline restart — acks + TOC are still two signals."""
+    return [
+        _c(0, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+        _c(1, "The diode pumps a magnetic field through the junction. " + PROSE),
+        _c(2, "Acknowledgements. We thank the Swiss NSF for support."),
+        _c(3, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+        _c(4, "Contents\nPhotonic band gaps 1\nQuantum dots 5\nCorrespondence 9"),
+        _c(5, f"Photonic band gaps in planar microcavities\n{OTHER_PROSE}"),
+        _c(6, "The alumina surface reconstructs under the probe tip. " + OTHER_PROSE),
+        _c(7, "Acknowledgements. We thank the DFG for funding."),
+        _c(8, "- 1. Barth, J. V. et al. Nature 414, 1 (2001).", "references"),
+        _c(9, "Trailing matter from the second letter. " + OTHER_PROSE),
+        _c(10, "More trailing matter. " + OTHER_PROSE),
+        _c(11, "Still more trailing matter. " + OTHER_PROSE),
+    ]
+
+
+def _mild_variant_chunks() -> list[Any]:
+    """gr658690 mild variant (pa478920): the previous article's tail — a
+    few stray references plus its acknowledgement — ahead of the record's
+    one real article. The dominant identity is clear, so a normal title
+    fix resolves it; it is the explicitly excluded case and must NOT
+    flag."""
+    return [
+        _c(0, "- 11. Foreign, A. Nature 400, 1 (1999).", "references"),
+        _c(1, "Acknowledgements. We thank the foreign funder."),
+        _c(2, "- 12. Tail, B. Science 401, 2 (2000).", "references"),
+        _c(3, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+        _c(4, "The diode pumps a magnetic field. " + PROSE),
+        _c(5, "The junction rectifies the pump current. " + PROSE),
+        _c(6, "Measured pump voltages agree with theory. " + PROSE),
+        _c(7, "The effect persists to higher fields. " + PROSE),
+        _c(8, "Further spectra confirm the mechanism. " + PROSE),
+        _c(9, "Control samples show no pumping. " + PROSE),
+        _c(10, "The pump bandwidth matches the design. " + PROSE),
+        _c(11, "Acknowledgements. We thank the Swiss NSF."),
+        _c(12, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+    ]
+
+
+class TestForeignTailOrd:
+    """Review td659685: the structural article boundary for a junk title
+    with no DOI — the derivation that keeps the pa478920 mild variant
+    (one dominant article behind a stray foreign tail) out of the splice
+    flag, so a normal title fix still resolves it."""
+
+    def test_mild_variant_marks_the_dominant_article(self) -> None:
+        chunks = _mild_variant_chunks()
+        assert foreign_tail_ord(chunks) == 3
+        # Measured from the derived boundary the body carries no signal.
+        assert detect_issue_splice(chunks, start_ord=3) is None
+
+    def test_rumelhart_shape_marks_the_same_ord_as_the_title_anchor(
+        self,
+    ) -> None:
+        """The gr515439 prefix fixtures are tails too — the structural
+        boundary lands where the title anchor does."""
+        assert foreign_tail_ord(_rumelhart_prefix_chunks()) == 8
+
+    def test_spliced_issue_marks_nothing(self) -> None:
+        """Ord 0 is already an article opening — the first article's own
+        head, not a foreign tail."""
+        assert foreign_tail_ord(_spliced_issue_chunks()) is None
+
+    def test_ack_only_prefix_is_no_boundary(self) -> None:
+        """The strict closer: an acknowledgement / Received line alone can
+        be the paper's own front matter — only a references chunk proves
+        a foreign tail."""
+        chunks = [
+            _c(0, "Acknowledgements. We thank the funder."),
+            _c(1, "Received 1 June; accepted 5 July 2001."),
+            _c(2, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+        ]
+        assert foreign_tail_ord(chunks) is None
+
+    def test_opening_needs_the_byline(self) -> None:
+        """A title line not followed by a multi-name byline is not an
+        opening — the kipp shape (title + prose, no author line) derives
+        no boundary."""
+        assert foreign_tail_ord(_kipp_prefix_chunks()) is None
+
+
+class TestDetectIssueSplice:
+    def test_three_letters_concatenated_fires(self) -> None:
+        splice = detect_issue_splice(_spliced_issue_chunks())
+        assert splice is not None
+        assert splice.ack_ords == (2, 6, 10)
+        assert splice.restart_ord == 4
+        assert splice.toc_ord is None
+        assert splice.signal_count == 2
+
+    def test_acks_plus_contents_cluster_fires(self) -> None:
+        splice = detect_issue_splice(_issue_with_toc_chunks())
+        assert splice is not None
+        assert splice.ack_ords == (2, 7)
+        assert splice.restart_ord is None
+        assert splice.toc_ord == 4
+
+    def test_single_ack_with_restart_is_not_enough(self) -> None:
+        """Restart signal + a single ack is still one signal — the acks
+        signal needs TWO openers (one per spliced article)."""
+        chunks = [
+            _c(0, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+            _c(1, "The diode pumps a magnetic field. " + PROSE),
+            _c(2, "Acknowledgements. We thank the Swiss NSF for support."),
+            _c(3, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+            _c(4, "Calibrating the diode pump\nM. Buess & G. Aeppli\n" + PROSE),
+            _c(5, "The calibration follows a standard procedure. " + PROSE),
+            _c(6, "Further calibration details. " + PROSE),
+            _c(7, "Yet more calibration details. " + PROSE),
+            _c(8, "Even more calibration details. " + PROSE),
+            _c(9, "Penultimate calibration details. " + PROSE),
+            _c(10, "Final calibration details. " + PROSE),
+            _c(11, "Concluding calibration details. " + PROSE),
+        ]
+        splice = detect_issue_splice(chunks)
+        assert splice is None
+
+    def test_ordinary_paper_fires_nothing(self) -> None:
+        """A normal article: one ack, standard headings, a mid-stream
+        title-like section header followed by prose (never a byline)."""
+        chunks = [
+            _c(0, f"Graphene growth on copper foils\nJane Doe\n{PROSE}"),
+            _c(1, "We grow graphene by CVD on copper. " + PROSE),
+            _c(2, "Growth kinetics on polycrystalline copper"),
+            _c(3, "The kinetics follow a parabolic law. " + PROSE),
+            _c(4, "Results and discussion"),
+            _c(5, "The results agree with the model. " + PROSE),
+            _c(6, "More results follow here. " + PROSE),
+            _c(7, "Further results and discussion. " + PROSE),
+            _c(8, "References"),
+            _c(9, "- 1. Smith, J. Nature 1, 2 (2001).", "references"),
+            _c(10, "Acknowledgements. We thank the EPSRC."),
+            _c(11, "Methods"),
+            _c(12, "The CVD recipe is standard. " + PROSE),
+        ]
+        assert detect_issue_splice(chunks) is None
+
+    def test_small_body_never_fires(self) -> None:
+        """Under the body-chunk floor even a boundary-rich prefix is not
+        an issue — a handful of chunks is never a whole scan."""
+        assert detect_issue_splice(_spliced_issue_chunks()[:6]) is None
+
+    def test_splice_at_very_start_is_own_front_matter(self) -> None:
+        """The title+byline at ord 0-2 is the paper's own front matter;
+        with no acks and no TOC nothing fires."""
+        chunks = [
+            _c(0, f"{LETTER_A}\nM. Buess & G. Aeppli\n{PROSE}"),
+            _c(1, "The diode pumps a magnetic field. " + PROSE),
+            _c(2, "More of the same article. " + PROSE),
+            _c(3, "Still the same article. " + PROSE),
+            _c(4, "Yet the same article. " + PROSE),
+            _c(5, "And more of it. " + PROSE),
+            _c(6, "A further stretch. " + PROSE),
+            _c(7, "Near the end now. " + PROSE),
+            _c(8, "References"),
+            _c(9, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+            _c(10, "Acknowledgements. We thank the Swiss NSF."),
+            _c(11, "Received 1 June; accepted 1 July 2001."),
+        ]
+        assert detect_issue_splice(chunks) is None
+
+    def test_mild_variant_needs_the_boundary(self) -> None:
+        """pa478920 shape: a foreign ack/reference prefix, the dominant
+        article's title+byline at ord >= 3 and its own ack. Unmarked that
+        reads as two splice signals; measured from the established
+        ``article_start_ord`` nothing fires — it is the explicitly
+        excluded mild variant, resolvable by a normal title fix."""
+        chunks = _mild_variant_chunks()
+        # Unmarked: foreign ack + restart at the own title + own ack.
+        assert detect_issue_splice(chunks) is not None
+        # start_ord=3: the prefix feeds no signal and the article's own
+        # front matter is exempt — one ack, no restart.
+        assert detect_issue_splice(chunks, start_ord=3) is None
+
+    def test_start_ord_still_flags_a_later_splice(self) -> None:
+        """A marked foreign prefix doesn't blind the detector: a second
+        article spliced after the paper's own span still fires."""
+        chunks = _mild_variant_chunks() + [
+            _c(13, f"{LETTER_B}\nJ. V. Barth & M. Reichling\n{OTHER_PROSE}"),
+            _c(14, "The alumina surface reconstructs. " + OTHER_PROSE),
+            _c(15, "Acknowledgements. We thank the DFG."),
+        ]
+        splice = detect_issue_splice(chunks, start_ord=3)
+        assert splice is not None
+        assert splice.restart_ord == 13
+        assert splice.ack_ords == (11, 15)
+
+
+class TestNoteIssueSplice:
+    def _seed(self, store: Any, chunks: list[Any], slug: str, title: str = "__") -> Any:
+        ref = store.insert_ref(kind="paper", slug=slug, title=title)
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind})
+                for c in chunks
+            ],
+        )
+        return ref
+
+    def _events(self, store: Any, ref_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT event, payload FROM ref_events WHERE ref_id = %s "
+                "AND event = 'issue_splice'",
+                (ref_id,),
+            ).fetchall()
+
+    def test_journals_event_and_tags(self, store) -> None:
+        ref = self._seed(store, _spliced_issue_chunks(), "pa453299x")
+        splice = note_issue_splice(store, ref.id)
+        assert splice is not None and splice.restart_ord == 4
+
+        (row,) = self._events(store, ref.id)
+        assert row[0] == "issue_splice"
+        assert row[1]["ack_ords"] == [2, 6, 10]
+        rendered = {str(t) for t in store.tags_for(ref.id)}
+        assert any("multi-article" in r for r in rendered), rendered
+
+    def test_idempotent_one_event_ever(self, store) -> None:
+        ref = self._seed(store, _spliced_issue_chunks(), "pa453293x")
+        assert note_issue_splice(store, ref.id) is not None
+        assert note_issue_splice(store, ref.id) is None
+        assert len(self._events(store, ref.id)) == 1
+
+    def test_no_signature_writes_nothing(self, store) -> None:
+        ref = self._seed(store, _spliced_issue_chunks()[:6], "shortx")
+        assert note_issue_splice(store, ref.id) is None
+        assert self._events(store, ref.id) == []
+        rendered = {str(t) for t in store.tags_for(ref.id)}
+        assert not any("multi-article" in r for r in rendered), rendered
+
+    def test_inside_uncommitted_tx(self, store) -> None:
+        """At ingest the ref and its chunks are uncommitted on the ingest
+        conn — reads must run on that conn or the flag silently skips."""
+        with store.tx() as conn:
+            rid = int(
+                store.insert_ref(
+                    kind="paper", slug="uncomsplice", title="__", conn=conn
+                ).id
+            )
+            store.chunks.insert_chunks(
+                rid,
+                [
+                    ChunkInsert(
+                        ord=c.ord, text=c.text, meta={"chunk_kind": c.chunk_kind}
+                    )
+                    for c in _spliced_issue_chunks()
+                ],
+                conn=conn,
+            )
+            splice = note_issue_splice(store, rid, conn=conn)
+        assert splice is not None and splice.restart_ord == 4
+        assert len(self._events(store, rid)) == 1
+
+    def test_mild_variant_is_not_flagged(self, store) -> None:
+        """Review td659685: pa478920 — one dominant article behind a
+        stray foreign prefix — is a title fix, not a split.
+        ``note_issue_splice`` establishes the article boundary first
+        (:func:`mark_article_start`), so the prefix's ack and the
+        article's own title/byline stop reading as a splice."""
+        chunks = _rumelhart_prefix_chunks() + [
+            _c(10, "The delta rule generalises cleanly. " + OWN_PROSE),
+            _c(11, "Hidden units reshape the feature space. " + OWN_PROSE),
+            _c(12, "Learning curves fall monotonically. " + OWN_PROSE),
+            _c(13, "Generalisation holds on held-out data. " + OWN_PROSE),
+            _c(14, "The procedure converges reliably. " + OWN_PROSE),
+            _c(15, "More confirmation of convergence. " + OWN_PROSE),
+            _c(16, "Acknowledgements. We thank the reviewers."),
+            _c(17, "- 1. Rumelhart, D. E. Nature 323, 533 (1986).", "references"),
+        ]
+        # Unmarked the body fires: acks at ords 2 and 16, restart at 8.
+        assert detect_issue_splice(chunks) is not None
+        ref = self._seed(store, chunks, "pa478920x", title=RUMELHART)
+        assert note_issue_splice(store, ref.id) is None
+        assert self._events(store, ref.id) == []
+        # The boundary was established on the way — readers shift their
+        # windows to the paper's own article at ord 8.
+        assert article_start_ord(store, ref.id) == 8
+
+    def test_mild_variant_junk_title_is_not_flagged(self, store) -> None:
+        """Review td659685 regression: the pa478920 shape with a junk
+        title and no stored DOI — ``leading_foreign_ord`` has no anchor,
+        so :func:`foreign_tail_ord` is what keeps the foreign ack, the
+        dominant article's own title/byline and its own ack from reading
+        as a splice."""
+        chunks = _mild_variant_chunks()
+        # Unmarked the body still carries two signals.
+        assert detect_issue_splice(chunks) is not None
+        ref = self._seed(store, chunks, "pa478920j")
+        assert note_issue_splice(store, ref.id) is None
+        assert self._events(store, ref.id) == []
+        rendered = {str(t) for t in store.tags_for(ref.id)}
+        assert not any("multi-article" in r for r in rendered)
+        # The structural boundary is detection-local — it is never
+        # stamped on ``refs.meta['article_start_ord']``.
+        assert article_start_ord(store, ref.id) == 0

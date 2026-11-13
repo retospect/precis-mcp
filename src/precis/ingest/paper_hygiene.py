@@ -54,6 +54,12 @@ ingestion/edit bugs that the current code no longer produces:
   :func:`heal_bodiless_ref` is the per-ref twin — same pipeline on one
   named ref, driven by the ``paper_reextract`` job (gr517423), with
   ``force`` to re-judge a sha the pass already settled.
+* :func:`flag_spliced_issue_papers` — a live junk-titled paper whose body
+  is a whole scanned journal issue spliced into one record (gr658690:
+  pa453299, pa453293 — several unrelated articles concatenated, so no
+  single title repair can resolve it). Detects the splice signature on
+  stored chunks and journals it; :func:`raise_junk_title_papers` then
+  routes the paper to a split todo instead of a title-fix todo.
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
@@ -1525,6 +1531,103 @@ def _queue_partial_refetch(
 
 
 # ---------------------------------------------------------------------------
+# Spliced journal issues — flag what no title repair can fix (gr658690)
+# ---------------------------------------------------------------------------
+
+
+def flag_spliced_issue_papers(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[int]:
+    """Flag junk-titled papers whose body is a spliced scanned journal issue.
+
+    Some scanned-journal-issue PDFs ingest as ONE paper record containing
+    several unrelated articles concatenated (gr658690: pa453299, pa453293 —
+    distinct Nature Letters interleaved). No single correct title exists
+    for such a record, so the title-repair cascade terminally fails and the
+    owner queue used to receive a title-fix todo asking a human for a title
+    that cannot exist. This pass detects the splice signature
+    (:func:`precis.ingest.article_spread.detect_issue_splice` — repeated
+    acknowledgement openers, a mid-stream title+byline restart, a
+    mid-stream contents cluster; two of three required) on the stored body
+    chunks of junk-titled live papers and journals it through
+    :func:`precis.ingest.article_spread.note_issue_splice`
+    (``ingest:spread`` / ``issue_splice`` event + the ``multi-article``
+    tag), so :func:`raise_junk_title_papers` routes the paper to a split
+    todo instead.
+
+    Candidates are live papers with a junk title (the same
+    placeholder/PII/garbage predicates the title-fix legs use — a
+    real-titled paper is out of scope here) that don't carry the journal
+    row yet. Detection is pure reads until a positive, so a clean corpus
+    costs one title scan; a positive writes once and never again (the
+    event row is the idempotency key). Returns the flagged ref_ids; a dry
+    run returns what *would* be flagged without writing.
+    """
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE
+    from precis.ingest.article_spread import (
+        ISSUE_SPLICE_EVENT,
+        detect_issue_splice,
+        foreign_tail_ord,
+        leading_foreign_ord,
+        note_issue_splice,
+    )
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   (SELECT min(d.id_value) FROM ref_identifiers d
+                     WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi') AS doi
+              FROM refs r
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.human_verified_at IS NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_events e
+                      WHERE e.ref_id = r.ref_id
+                        AND e.source = %s AND e.event = %s)
+             ORDER BY r.ref_id
+            """,
+            (ARTICLE_SPREAD_SOURCE, ISSUE_SPLICE_EVENT),
+        ).fetchall()
+
+    flagged: list[int] = []
+    for ref_id, title, doi in rows:
+        t = (title or "").strip()
+        # The Python predicates are the gate — no SQL length bound, since
+        # filename/export junk legitimately runs long.
+        if not (is_placeholder_title(t) or is_pii(t) or is_garbage_title(t)):
+            continue
+        if limit and len(flagged) >= limit:
+            break
+        rid = int(ref_id)
+        chunks = store.chunks.list_chunks_for_ref(rid)
+        # The gr515439 boundary: a leading foreign tail (the previous
+        # article's references / acknowledgement) is not the paper's, so
+        # the signals are measured from the article's own span — else the
+        # mild variant (one dominant article + a stray prefix) reads as a
+        # splice. Same read-only derivation :func:`note_issue_splice`
+        # applies through :func:`mark_article_start` on the write path.
+        # These candidates are junk-titled by construction, often with no
+        # DOI — the identity anchor finds nothing, so the structural
+        # boundary (:func:`foreign_tail_ord`, first article opening behind
+        # a proven references tail) is the fallback (review td659685).
+        start = (
+            leading_foreign_ord(chunks, title=t, doi=doi)
+            or foreign_tail_ord(chunks)
+            or 0
+        )
+        if detect_issue_splice(chunks, start_ord=start) is None:
+            continue
+        flagged.append(rid)
+        if not dry_run:
+            note_issue_splice(store, rid)
+    if flagged and not dry_run:
+        log.info("paper_hygiene: flagged %d spliced-issue paper(s)", len(flagged))
+    return flagged
+
+
+# ---------------------------------------------------------------------------
 # Metadata hygiene counters (read-only)
 # ---------------------------------------------------------------------------
 
@@ -1863,6 +1966,13 @@ _TRANSIENT_MISS_REASONS = frozenset(
     {"crossref-timeout", "s2-timeout", "openalex-timeout", "error"}
 )
 
+#: Open tag + ``meta.source`` marking a "split this paper record into one
+#: record per spliced article" human todo (gr658690) — the spliced-issue
+#: sibling of :data:`TITLE_FIX_TAG` / :data:`TITLE_FIX_SOURCE`: the paper's
+#: body is a whole scanned journal issue and no title assignment can fix it.
+SPLIT_FIX_TAG = "paper-needs-split"
+SPLIT_FIX_SOURCE = "paper_hygiene:split"
+
 
 @dataclass
 class TitleRepairOutcome:
@@ -2088,11 +2198,16 @@ def repair_junk_title_papers(
     rest of the batch unstamped, like ``paper_meta_enrich``. The stamp is
     also what lets :func:`raise_junk_title_papers` file a todo — so the
     owner queue only ever holds papers the cascade actually concluded on
-    (gr508499).
+    (gr508499). Papers already flagged as spliced scanned issues
+    (``ingest:spread`` / ``issue_splice``, gr658690) are excluded: no
+    single title exists to resolve, a lucky registry hit would only
+    disguise the splice, and the split ask routes them instead.
 
     Returns one :class:`TitleRepairOutcome` per candidate; ``dry_run``
     (default) resolves but writes nothing.
     """
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE
+    from precis.ingest.article_spread import ISSUE_SPLICE_EVENT
     from precis.ingest.crossref import lookup_crossref
     from precis.ingest.openalex_meta import fetch_openalex_work
     from precis.ingest.semantic_scholar import S2RateLimited, lookup_s2
@@ -2120,13 +2235,22 @@ def repair_junk_title_papers(
                AND r.retired_at IS NULL
                AND r.human_verified_at IS NULL
                AND r.created_at < now() - make_interval(days => %s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_events e
+                      WHERE e.ref_id = r.ref_id
+                        AND e.source = %s AND e.event = %s)
                AND coalesce(CASE
                      WHEN jsonb_typeof(r.meta->'title_repair_v') = 'number'
                      THEN (r.meta->>'title_repair_v')::int END, 0)
                    < %s
              ORDER BY r.ref_id
             """,
-            (grace_days, _TITLE_REPAIR_VERSION),
+            (
+                grace_days,
+                ARTICLE_SPREAD_SOURCE,
+                ISSUE_SPLICE_EVENT,
+                _TITLE_REPAIR_VERSION,
+            ),
         ).fetchall()
 
     candidates = [
@@ -2364,15 +2488,32 @@ def raise_junk_title_papers(
     (the enrich route owns them); papers younger than ``grace_days``;
     papers the repair cascade has not yet concluded on.
 
+    Spliced issues route differently (gr658690): a paper carrying an
+    ``ingest:spread`` / ``issue_splice`` journal row is a whole scanned
+    journal issue — several unrelated articles in one record — so no title
+    assignment can ever satisfy its todo. The splice signature is its own
+    terminal verdict, so the route skips every title-repair gate: no
+    ``title_repair_v`` stamp is required (a transient-failure loop could
+    never produce one), the junk-title predicates don't apply (a lucky
+    repair can't un-splice the body), and a DOI'd placeholder isn't left
+    to enrich (the DOI fixes at most one of the spliced articles). Those
+    papers get a ``paper-needs-split`` todo (``meta.source``
+    :data:`SPLIT_FIX_SOURCE`) asking the owner to split the record into
+    one paper per article instead, and any open title-fix todos for the
+    same paper are auto-resolved (``how='issue_splice'``) so the queue
+    never holds both asks at once.
+
     Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
-    and a paper with an open todo, or one closed with any status other
-    than ``STATUS:done`` (``wontfix``: a human chose to leave it), is never
-    re-filed. When every prior todo is ``STATUS:done`` and the title is
-    still junk, the fix did not take, so one new todo is filed (and holds
-    until it is closed in turn). Returns the paper ref_ids a todo was (or, dry-run, would be)
-    filed for.
+    and a paper with an open todo of the kind this pass would file, or one
+    closed with any status other than ``STATUS:done`` (``wontfix``: a
+    human chose to leave it), is never re-filed. When every prior todo is
+    ``STATUS:done`` and the title is still junk, the fix did not take, so
+    one new todo is filed (and holds until it is closed in turn). Returns
+    the paper ref_ids a todo was (or, dry-run, would be) filed for.
     """
     from precis.config import load_config
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE
+    from precis.ingest.article_spread import ISSUE_SPLICE_EVENT
     from precis.utils.handle_registry import format_handle
 
     with store.pool.connection() as conn:
@@ -2384,68 +2525,136 @@ def raise_junk_title_papers(
                               WHERE ck.ref_id = r.ref_id
                                 AND ck.id_kind = 'cite_key'), ''),
                    EXISTS (SELECT 1 FROM ref_identifiers d
-                            WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi')
+                            WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi'),
+                   EXISTS (SELECT 1 FROM ref_events e
+                            WHERE e.ref_id = r.ref_id
+                              AND e.source = %s AND e.event = %s) AS spliced,
+                   EXISTS (SELECT 1 FROM refs t
+                            WHERE t.kind = 'todo'
+                              AND t.meta->>'source' = %s
+                              AND t.meta->>'paper_ref_id' = r.ref_id::text
+                              AND NOT EXISTS (
+                                    SELECT 1 FROM ref_tags rt
+                                      JOIN tags tg USING (tag_id)
+                                     WHERE rt.ref_id = t.ref_id
+                                       AND tg.namespace = 'STATUS'
+                                       AND tg.value = 'done')) AS has_open_title_todo,
+                   EXISTS (SELECT 1 FROM refs t
+                            WHERE t.kind = 'todo'
+                              AND t.meta->>'source' = %s
+                              AND t.meta->>'paper_ref_id' = r.ref_id::text
+                              AND NOT EXISTS (
+                                    SELECT 1 FROM ref_tags rt
+                                      JOIN tags tg USING (tag_id)
+                                     WHERE rt.ref_id = t.ref_id
+                                       AND tg.namespace = 'STATUS'
+                                       AND tg.value = 'done')) AS has_open_split_todo
               FROM refs r
              WHERE r.kind = 'paper'
                AND r.retired_at IS NULL
                AND r.human_verified_at IS NULL
                AND r.created_at < now() - make_interval(days => %s)
-               AND coalesce(CASE
-                     WHEN jsonb_typeof(r.meta->'title_repair_v') = 'number'
-                     THEN (r.meta->>'title_repair_v')::int END, 0)
-                   >= %s
-               AND NOT EXISTS (
-                     SELECT 1 FROM refs t
-                      WHERE t.kind = 'todo'
-                        AND t.meta->>'source' = %s
-                        AND t.meta->>'paper_ref_id' = r.ref_id::text
-                        AND NOT EXISTS (
-                              SELECT 1 FROM ref_tags rt
-                                JOIN tags tg USING (tag_id)
-                               WHERE rt.ref_id = t.ref_id
-                                 AND tg.namespace = 'STATUS'
-                                 AND tg.value = 'done'))
+               AND (
+                     EXISTS (SELECT 1 FROM ref_events e2
+                              WHERE e2.ref_id = r.ref_id
+                                AND e2.source = %s AND e2.event = %s)
+                     OR coalesce(CASE
+                           WHEN jsonb_typeof(r.meta->'title_repair_v') = 'number'
+                           THEN (r.meta->>'title_repair_v')::int END, 0)
+                         >= %s
+                   )
              ORDER BY r.ref_id
             """,
-            (grace_days, _TITLE_REPAIR_VERSION, TITLE_FIX_SOURCE),
+            (
+                ARTICLE_SPREAD_SOURCE,
+                ISSUE_SPLICE_EVENT,
+                TITLE_FIX_SOURCE,
+                SPLIT_FIX_SOURCE,
+                grace_days,
+                ARTICLE_SPREAD_SOURCE,
+                ISSUE_SPLICE_EVENT,
+                _TITLE_REPAIR_VERSION,
+            ),
         ).fetchall()
 
-    todo: list[tuple[int, str, str | None, str]] = []
-    for ref_id, title, owner, entry_type, cite_key, has_doi in rows:
+    todo: list[tuple[int, str, str | None, str, bool, bool]] = []
+    for (
+        ref_id,
+        title,
+        owner,
+        entry_type,
+        cite_key,
+        has_doi,
+        spliced,
+        has_open_title_todo,
+        has_open_split_todo,
+    ) in rows:
+        t = (title or "").strip()
+        if spliced:
+            # A confirmed splice files the split ask on the signature
+            # alone — the entry_type / junk-title / DOI-placeholder gates
+            # below are all title-repair gates and don't apply (gr658690).
+            if has_open_split_todo:
+                continue
+            todo.append(
+                (int(ref_id), t, owner, cite_key, True, bool(has_open_title_todo))
+            )
+            continue
         # Non-article entry_types keep their (often section-shaped)
         # titles — the junk rules are article-title rules (gr515227).
         if entry_type and entry_type.strip().lower() not in _ARTICLE_ENTRY_TYPES:
             continue
-        t = (title or "").strip()
         if is_placeholder_title(t):
             if has_doi:
                 continue  # paper_meta_enrich / requeue_placeholder_title_papers
         elif not (is_pii(t) or is_garbage_title(t)):
             continue
-        todo.append((int(ref_id), t, owner, cite_key))
+        if has_open_title_todo:
+            continue
+        todo.append((int(ref_id), t, owner, cite_key, False, False))
     if limit:
         todo = todo[:limit]
     if dry_run:
         return [t[0] for t in todo]
 
     default_owner = load_config().owner
-    for ref_id, t, owner, cite_key in todo:
+    for ref_id, t, owner, cite_key, spliced, had_title_todo in todo:
         login = owner or default_owner
         handle = f"paper:{format_handle('paper', ref_id)}"
-        text = (
-            f"Fix title/metadata of {handle} (cite_key {cite_key or '?'}): "
-            f"stored title {t!r} is junk and automation could not repair it. "
-            "Set the real title (and authors/year) on the paper; until then "
-            "citations resolve to an untitled paper."
-        )
+        if spliced:
+            source = SPLIT_FIX_SOURCE
+            text = (
+                f"Split {handle} (cite_key {cite_key or '?'}): the stored "
+                "body is a scanned journal issue splicing several "
+                "unrelated articles into one record — no single title can "
+                f"describe it (stored title {t!r}). Split the body into "
+                "one paper record per article."
+            )
+            fix_tag = SPLIT_FIX_TAG
+        else:
+            source = TITLE_FIX_SOURCE
+            text = (
+                f"Fix title/metadata of {handle} (cite_key {cite_key or '?'}): "
+                f"stored title {t!r} is junk and automation could not repair it. "
+                "Set the real title (and authors/year) on the paper; until then "
+                "citations resolve to an untitled paper."
+            )
+            fix_tag = TITLE_FIX_TAG
         with store.tx() as conn:
             todo_ref = store.insert_ref(
                 kind="todo",
                 slug=None,
                 title=text,
-                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": ref_id},
+                meta={"source": source, "paper_ref_id": ref_id},
                 conn=conn,
             )
+            if spliced and had_title_todo:
+                # gr658690: the old ask ("set a real title") is impossible
+                # for a spliced issue — close it so the queue holds only the
+                # split ask.
+                _close_title_fix_todos(
+                    store, ref_id, conn=conn, how="issue_splice", new_title=""
+                )
             store.add_tag(
                 todo_ref.id,
                 Tag.closed("STATUS", "open"),
@@ -2453,12 +2662,16 @@ def raise_junk_title_papers(
                 replace_prefix=True,
                 conn=conn,
             )
-            for tag in (f"waiting-for:{login}", TITLE_FIX_TAG):
+            for tag in (f"waiting-for:{login}", fix_tag):
                 store.add_tag(
                     todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn
                 )
     if todo:
-        log.info("raise_junk_title_papers: filed %d title-fix todo(s)", len(todo))
+        log.info(
+            "raise_junk_title_papers: filed %d todo(s) (%d split)",
+            len(todo),
+            sum(1 for t in todo if t[4]),
+        )
     return [t[0] for t in todo]
 
 
@@ -2526,16 +2739,20 @@ def requeue_papers_for_enrich(
 
 __all__ = [
     "BODILESS_HEAL_SOURCE",
+    "SPLIT_FIX_SOURCE",
+    "SPLIT_FIX_TAG",
     "BodilessOutcome",
     "MetadataHygieneStats",
     "bodiless_extract_per_pass",
     "collapse_superseded_chains",
+    "flag_spliced_issue_papers",
     "heal_bodiless_pdfs",
     "heal_bodiless_ref",
     "heal_drifted_cards",
     "is_filename_like_title",
     "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
+    "raise_junk_title_papers",
     "requeue_front_matter_only_papers",
     "requeue_papers_for_enrich",
     "requeue_placeholder_title_papers",

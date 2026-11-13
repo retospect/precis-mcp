@@ -8,6 +8,7 @@ from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.paper_hygiene import (
     close_resolved_title_fix_todos,
     collapse_superseded_chains,
+    flag_spliced_issue_papers,
     heal_drifted_cards,
     is_filename_like_title,
     migrate_dangling_paper_links,
@@ -16,6 +17,7 @@ from precis.ingest.paper_hygiene import (
     requeue_placeholder_title_papers,
 )
 from precis.store import Store
+from precis.store.types import Tag
 
 
 def _paper(store: Store, *, slug: str, title: str) -> int:
@@ -1887,3 +1889,356 @@ def _fake_crossref(result: dict[str, Any] | None) -> Any:
         return result
 
     return fn
+
+
+# ── spliced journal issues (gr658690) ─────────────────────────────
+
+
+def _spliced_body(store: Store, ref_id: int) -> None:
+    """Three concatenated letters: acks ×3 + a mid-stream title+byline
+    restart — two splice signals on stored body chunks."""
+    chunks = [
+        (
+            0,
+            "Magnetic-field pumping through a Schottky diode\nM. Buess & G. Aeppli",
+            "paragraph",
+        ),
+        (1, "The diode pumps a magnetic field through the junction. " * 4, "paragraph"),
+        (2, "Acknowledgements. We thank the Swiss NSF for support.", "paragraph"),
+        (3, "- 1. Buess, M. et al. Nature 413, 822 (2001).", "references"),
+        (
+            4,
+            "Imaging the surface reconstruction of alpha-alumina\nJ. V. Barth & M. Reichling",
+            "paragraph",
+        ),
+        (5, "The alumina surface reconstructs under the probe tip. " * 4, "paragraph"),
+        (6, "Acknowledgements. We thank the DFG for funding.", "paragraph"),
+        (7, "- 1. Barth, J. V. et al. Nature 414, 1 (2001).", "references"),
+        (
+            8,
+            "Adaptive quantum control of a photochemical reaction\nT. Brixner & G. Gerber",
+            "paragraph",
+        ),
+        (9, "Adaptive femtosecond pulse shaping controls the yield. " * 4, "paragraph"),
+        (10, "Acknowledgements. We thank the Hamburg cluster.", "paragraph"),
+        (11, "- 1. Brixner, T. et al. Nature 414, 57 (2001).", "references"),
+    ]
+    for ord_, text, kind in chunks:
+        _kind_chunk(store, ref_id, ord_, text, kind)
+
+
+def _mild_body(store: Store, ref_id: int, *, doi: str = "") -> None:
+    """The gr658690 mild variant (pa478920): a stray foreign
+    references/acknowledgement tail ahead of the record's one dominant
+    article — the dominant identity is clear, so a normal title fix
+    resolves it; it is the explicitly excluded case and must NOT flag.
+    ``doi`` is the dominant article's DOI when the record carries one."""
+    chunks = [
+        (0, "- 9. Foreign, A. Nature 399, 1 (1999).", "references"),
+        (1, "Acknowledgements. We thank the foreign funder.", "paragraph"),
+        (2, "- 10. Tail, B. Science 401, 2 (2000).", "references"),
+        (
+            3,
+            "Adaptive routing in mesh sensor networks\nJ. Doe & R. Roe"
+            + (f"\ndoi:{doi}" if doi else ""),
+            "paragraph",
+        ),
+        *[
+            (i, f"Routing metrics hold across topologies {i}. " * 4, "paragraph")
+            for i in range(4, 11)
+        ],
+        (11, "Acknowledgements. We thank the reviewers.", "paragraph"),
+        (12, "- 1. Doe, J. et al. Nature 400, 5 (1999).", "references"),
+    ]
+    for ord_, text, kind in chunks:
+        _kind_chunk(store, ref_id, ord_, text, kind)
+
+
+class TestFlagSplicedIssuePapers:
+    def _junk_old(self, store: Store, *, slug: str, title: str = "__") -> int:
+        rid = _paper(store, slug=slug, title=title)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        return rid
+
+    def _splice_events(self, store: Store, ref_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT payload FROM ref_events WHERE ref_id = %s "
+                "AND source = 'ingest:spread' AND event = 'issue_splice'",
+                (ref_id,),
+            ).fetchall()
+
+    def test_dry_run_writes_nothing(self, store: Store) -> None:
+        rid = self._junk_old(store, slug="splicedry")
+        _spliced_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=True) == [rid]
+        assert self._splice_events(store, rid) == []
+
+    def test_apply_journals_event_and_tag(self, store: Store) -> None:
+        rid = self._junk_old(store, slug="spliceapp")
+        _spliced_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=False) == [rid]
+
+        (row,) = self._splice_events(store, rid)
+        assert row[0]["ack_ords"] == [2, 6, 10]
+        assert row[0]["restart_ord"] == 4
+        rendered = {str(t) for t in store.tags_for(rid)}
+        assert any("multi-article" in r for r in rendered), rendered
+
+    def test_idempotent_flagged_once(self, store: Store) -> None:
+        rid = self._junk_old(store, slug="spliceidem")
+        _spliced_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=False) == [rid]
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+        assert len(self._splice_events(store, rid)) == 1
+
+    def test_real_titled_paper_out_of_scope(self, store: Store) -> None:
+        """The backlog sweep only covers junk-titled papers — a spliced
+        body behind a real title is left to the ingest path / a human."""
+        rid = self._junk_old(store, slug="splicereal", title="A Real Title")
+        _spliced_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+
+    def test_junk_paper_without_signature_not_flagged(self, store: Store) -> None:
+        rid = self._junk_old(store, slug="splicenone")
+        for ord_ in range(12):
+            _kind_chunk(
+                store, rid, ord_, f"Plain body text of one article. {ord_} " * 8
+            )
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+
+    def test_long_junk_title_is_flagged(self, store: Store) -> None:
+        """Review td659685: filename/export junk runs well past 40 chars
+        — the old SQL length bound silently dropped real candidates; the
+        Python predicates are the only title gate."""
+        rid = self._junk_old(
+            store,
+            slug="splicelong",
+            title="Microsoft Word - nnano_2006_77_feature_final_submission.indd",
+        )
+        _spliced_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=False) == [rid]
+
+    def test_foreign_prefix_paper_not_flagged(self, store: Store) -> None:
+        """Review td659685: the mild variant (pa478920) — a stray foreign
+        references/acknowledgement tail plus one dominant article — is a
+        title fix, not a splice: the derived article boundary suppresses
+        the flag even though the unmarked body carries two signals."""
+        rid = self._junk_old(store, slug="splicemild")
+        store.set_ref_identifier(rid, "doi", "10.1038/323533a0", source="manual")
+        _mild_body(store, rid, doi="10.1038/323533a0")
+        # The same body unmarked fires (foreign ack + restart + own ack).
+        from precis.ingest.article_spread import detect_issue_splice
+
+        assert detect_issue_splice(store.chunks.list_chunks_for_ref(rid)) is not None
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+
+    def test_mild_variant_junk_title_no_doi_not_flagged(self, store: Store) -> None:
+        """Review td659685 regression: with a junk title and no stored DOI
+        ``leading_foreign_ord`` has no anchor at all — the structural
+        boundary (:func:`foreign_tail_ord`) is what suppresses the flag,
+        so normal title repair still owns the record."""
+        rid = self._junk_old(store, slug="splicemild2")
+        _mild_body(store, rid)
+        from precis.ingest.article_spread import detect_issue_splice
+
+        assert detect_issue_splice(store.chunks.list_chunks_for_ref(rid)) is not None
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+        assert self._splice_events(store, rid) == []
+
+
+class TestRaiseRoutesSplicedIssues:
+    """gr658690: a spliced-issue paper gets a split todo, not a
+    title-fix todo — no single title exists to assign."""
+
+    def _old(self, store: Store, *, slug: str, title: str = "__") -> int:
+        rid = _paper(store, slug=slug, title=title)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        return rid
+
+    def _stamp(self, store: Store, ref_id: int) -> None:
+        from precis.ingest.paper_hygiene import _TITLE_REPAIR_VERSION
+
+        store.stamp_ref_meta(ref_id, {"title_repair_v": _TITLE_REPAIR_VERSION})
+
+    def _splice_event(self, store: Store, ref_id: int) -> None:
+        from precis.ingest.add import ARTICLE_SPREAD_SOURCE
+        from precis.ingest.article_spread import ISSUE_SPLICE_EVENT
+
+        store.append_event(
+            ref_id,
+            source=ARTICLE_SPREAD_SOURCE,
+            event=ISSUE_SPLICE_EVENT,
+            payload={"ack_ords": [2, 6, 10], "restart_ord": 4},
+        )
+
+    def _todos(self, store: Store, paper_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT ref_id, title, meta FROM refs WHERE kind='todo' "
+                "AND meta->>'paper_ref_id' = %s",
+                (str(paper_id),),
+            ).fetchall()
+
+    def _todo_status(self, store: Store, todo_id: int) -> str | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT tg.value FROM ref_tags rt JOIN tags tg USING (tag_id) "
+                "WHERE rt.ref_id = %s AND tg.namespace = 'STATUS'",
+                (todo_id,),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def test_files_split_todo_not_title_fix(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import SPLIT_FIX_SOURCE
+
+        rid = self._old(store, slug="split01")
+        self._stamp(store, rid)
+        self._splice_event(store, rid)
+
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+
+        (todo,) = self._todos(store, rid)
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert any("paper-needs-split" in r for r in rendered), rendered
+        assert not any("paper-title-fix" in r for r in rendered), rendered
+        assert "waiting-for:reto" in rendered, rendered
+        assert todo[2]["source"] == SPLIT_FIX_SOURCE
+        assert "Split" in todo[1] and "scanned journal issue" in todo[1]
+
+    def test_not_refiled_while_open(self, store: Store) -> None:
+        rid = self._old(store, slug="split02")
+        self._stamp(store, rid)
+        self._splice_event(store, rid)
+        raise_junk_title_papers(store, dry_run=False)
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 1
+
+    def test_open_title_fix_todo_is_closed(self, store: Store) -> None:
+        """A title-fix todo filed before the splice was detected is
+        auto-resolved when the split todo lands — the queue never holds
+        both asks at once."""
+        from precis.ingest.paper_hygiene import TITLE_FIX_SOURCE
+
+        rid = self._old(store, slug="split03")
+        self._stamp(store, rid)
+        with store.tx() as conn:
+            old_todo = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="Fix title",
+                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": rid},
+                conn=conn,
+            )
+            store.add_tag(
+                old_todo.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+        self._splice_event(store, rid)
+
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        todos = self._todos(store, rid)
+        assert len(todos) == 2
+        assert self._todo_status(store, old_todo.id) == "done"
+        # The new todo is the split ask.
+        new_todo = next(t for t in todos if t[0] != old_todo.id)
+        rendered = {str(t) for t in store.tags_for(new_todo[0])}
+        assert any("paper-needs-split" in r for r in rendered), rendered
+
+    def test_unspliced_paper_still_gets_title_fix(self, store: Store) -> None:
+        """No splice event → the title-fix route is unchanged."""
+        rid = self._old(store, slug="split04")
+        self._stamp(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert any("paper-title-fix" in r for r in rendered), rendered
+
+    def test_split_todo_needs_no_repair_stamp(self, store: Store) -> None:
+        """Review td659685: the split route is independent of title
+        repair — a confirmed splice files without the terminal
+        ``title_repair_v`` stamp (a transient-failure loop could never
+        produce one, so the stamp gate must not gate splices)."""
+        from precis.ingest.paper_hygiene import SPLIT_FIX_SOURCE
+
+        rid = self._old(store, slug="split05")
+        self._splice_event(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert todo[2]["source"] == SPLIT_FIX_SOURCE
+
+    def test_split_todo_despite_doi_placeholder(self, store: Store) -> None:
+        """A DOI'd placeholder is normally enrich's business — but a
+        confirmed splice still gets the split ask; the DOI can name at
+        most one of the spliced articles."""
+        from precis.ingest.paper_hygiene import SPLIT_FIX_SOURCE
+
+        rid = self._old(store, slug="split06", title=PLACEHOLDER_TITLE)
+        store.set_ref_identifier(rid, "doi", "10.1038/323533a0", source="manual")
+        self._splice_event(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert todo[2]["source"] == SPLIT_FIX_SOURCE
+
+    def test_split_todo_despite_repaired_title(self, store: Store) -> None:
+        """A splice confirmed before a repair 'fixed' the title still
+        files the split ask — the signature is the terminal verdict, not
+        the title."""
+        from precis.ingest.paper_hygiene import SPLIT_FIX_SOURCE
+
+        rid = self._old(store, slug="split07", title="A plausible real title")
+        self._splice_event(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert todo[2]["source"] == SPLIT_FIX_SOURCE
+
+    def test_spliced_paper_skips_repair(self, store: Store) -> None:
+        """A flagged splice never enters the title-repair cascade — no
+        single title exists to resolve, and a lucky registry hit would
+        only disguise the splice."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        def refuse(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("network resolver should not be called")
+
+        rid = self._old(store, slug="split08")
+        self._splice_event(store, rid)
+        assert (
+            repair_junk_title_papers(
+                store,
+                dry_run=False,
+                crossref_fn=refuse,
+                openalex_fn=refuse,
+                s2_fn=refuse,
+            )
+            == []
+        )
+
+    def test_mild_variant_keeps_the_title_fix_route(self, store: Store) -> None:
+        """Review td659685 end to end: the excluded mild variant (junk
+        title, no DOI, one dominant article behind a stray foreign tail)
+        is never flagged, so the normal route still owns it — a stamped
+        junk title files a title-fix todo, not a split."""
+        rid = self._old(store, slug="split09")
+        _mild_body(store, rid)
+        assert flag_spliced_issue_papers(store, dry_run=False) == []
+        self._stamp(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert any("paper-title-fix" in r for r in rendered), rendered
+        assert not any("paper-needs-split" in r for r in rendered), rendered

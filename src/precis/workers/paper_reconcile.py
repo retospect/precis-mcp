@@ -18,7 +18,11 @@ the system worker at a low cadence so the corpus self-heals:
   each unflagged junk title (markup render → DOI registries → S2 title
   search) and stamps terminal outcomes;
   :func:`~precis.ingest.paper_hygiene.raise_junk_title_papers` then files
-  an owner todo only for papers carrying that stamp. All are
+  an owner title-fix todo only for papers carrying that stamp; a paper
+  :func:`~precis.ingest.paper_hygiene.flag_spliced_issue_papers` has
+  journaled as a spliced scanned issue (gr658690) needs no stamp — the
+  signature is its own terminal verdict — and gets a ``paper-needs-
+  split`` todo instead of a title-fix one. All are
   SQL-only except :func:`~precis.ingest.paper_hygiene.heal_bodiless_pdfs`,
   which may re-run Marker over a held PDF: that leg is capped per pass
   (``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default 5, ``0`` = judge
@@ -129,6 +133,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 bodiless_extract_per_pass,
                 close_resolved_title_fix_todos,
                 collapse_superseded_chains,
+                flag_spliced_issue_papers,
                 heal_bodiless_pdfs,
                 heal_drifted_cards,
                 heal_partial_body_papers,
@@ -177,12 +182,18 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # Junk titles get a repair attempt first (gr500372): resolve
             # the real title via the stored DOI (Crossref, then OpenAlex)
             # or an S2 title search over the stripped export name +
-            # first-page body lines. What the cascade terminally fails
-            # (its title_repair_v stamp) then goes to the owner's queue
-            # (gr477964, gr508499); idempotent, so the daily pass never
-            # re-files.
+            # first-page body lines. Spliced scanned issues are flagged
+            # before the cascade runs so the cascade skips them (no title
+            # exists to resolve) and the owner queue routes them to a
+            # split todo (gr658690), not a title-fix todo.
             # Capped per pass so a backlog trickles into the queue
             # instead of flooding it on the first run after deploy.
+            spliced = flag_spliced_issue_papers(store, dry_run=False, limit=limit)
+            if spliced:
+                log.info(
+                    "paper_reconcile: flagged %d spliced-issue paper(s)",
+                    len(spliced),
+                )
             repaired = repair_junk_title_papers(
                 store,
                 dry_run=False,
@@ -291,6 +302,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(relinked)
                 + len(requeued)
                 + len(bodiless_judged)
+                + len(spliced)
                 + len(repaired)
                 + len(raised)
                 + len(stale_closed)

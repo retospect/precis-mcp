@@ -50,6 +50,24 @@ after it — and :func:`mark_article_start` stamps
 ``refs.meta['article_start_ord']``. Body chunks are append-only, so the
 marker shifts readers' ``pos_range`` windows instead of deleting:
 :func:`article_start_ord` is the one read helper.
+
+**Spliced-issue detector (gr658690).** A whole scanned journal issue can
+also arrive as "the PDF of one paper": several unrelated Letters/articles
+concatenated into a single record whose title is junk (pa453299, pa453293
+— no single correct title exists, so neither the block-level trim nor the
+junk-title repair cascade can resolve it). :func:`detect_issue_splice`
+recognizes that signature on stored body chunks — repeated acknowledgement
+openers (one per spliced article), an abrupt mid-stream title+byline
+restart, an incoherent mid-stream contents cluster — and requires at
+least two of the three to fire, the same conservatism as the trim: a
+wrong flag costs a human a split of a healthy paper. The signals are
+measured from the article boundary — ``article_start_ord`` when stamped,
+else :func:`foreign_tail_ord`'s structural derivation — so the mild
+variant (one dominant article behind a stray foreign prefix, resolvable
+by a normal title fix) never flags. :func:`note_issue_splice`
+journals the verdict under ``ingest:spread`` / ``issue_splice`` and tags
+the paper ``multi-article`` so the owner queue routes it to a split todo
+instead of a title-fix todo.
 """
 
 from __future__ import annotations
@@ -65,6 +83,11 @@ if TYPE_CHECKING:
     from psycopg import Connection
 
     from precis.store import Store
+
+#: ``ref_events.event`` of the spliced-issue journal row (source
+#: ``ingest:spread``, same source as the trim's spread journal so the one
+#: monitoring query covers both).
+ISSUE_SPLICE_EVENT = "issue_splice"
 
 #: Head match a kept article needs, and the ceiling every other article
 #: must stay under (head and full text) for a title-based keep or a cut.
@@ -763,6 +786,285 @@ def mark_article_start(
             conn=c,
         )
         return start
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
+# ---- Spliced-issue detector (gr658690) --------------------------------
+#
+# ``trim_to_article`` runs on Marker blocks before chunking and keeps the
+# target article; a whole scanned issue (several unrelated articles, no
+# single title) defeats it at the identity-matching step. These run on
+# stored body chunks instead, so they cover both fresh ingests (wired into
+# ``precis.ingest.add`` next to ``mark_article_start``) and legacy records
+# swept by the reconcile pass.
+
+#: Minimum stored body chunks before the splice signature may fire — a
+#: spliced scan is an issue's worth of text; a handful of chunks is never
+#: an issue.
+_SPLICE_MIN_BODY_CHUNKS = 10
+
+#: A title/byline restart or a contents cluster only counts this many ords
+#: into the article — the paper's own title block sits at the first ords of
+#: its span, so an article-boundary signature there is the paper's own front
+#: matter. Measured from ``start_ord``, the established article boundary
+#: (gr515439): ords below it are the previous article's tail, not the paper's.
+_SPLICE_MIDSTREAM_MIN_ORD = 3
+
+#: A mid-stream contents cluster: an issue-level "Contents" page lands
+#: between articles, never inside one.
+_TOC_HEAD_RE = re.compile(r"^(?:contents|table of contents)\b", re.IGNORECASE)
+
+
+@dataclasses.dataclass(frozen=True)
+class IssueSplice:
+    """The spliced-issue signature over a paper's stored body chunks.
+
+    ``ack_ords`` holds the ords of every acknowledgement opener; a genuine
+    single article has at most one. ``restart_ord`` is the first
+    mid-stream chunk opening on a non-standard title header immediately
+    followed by a multi-name byline — an article boundary mid-body.
+    ``toc_ord`` is the first mid-stream contents-heading chunk.
+    ``start_ord`` is the established article boundary the signals were
+    measured from (``0`` when none was established — stamped or
+    structural; see :func:`detect_issue_splice`).
+    """
+
+    ack_ords: tuple[int, ...]
+    restart_ord: int | None
+    toc_ord: int | None
+    body_chunks: int
+    start_ord: int = 0
+
+    @property
+    def signal_count(self) -> int:
+        """How many of the three independent splice signals fired."""
+        return (
+            (len(self.ack_ords) >= 2)
+            + (self.restart_ord is not None)
+            + (self.toc_ord is not None)
+        )
+
+    def audit(self) -> dict[str, Any]:
+        """The ``ref_events`` payload."""
+        out: dict[str, Any] = {
+            "body_chunks": self.body_chunks,
+            "ack_ords": list(self.ack_ords),
+        }
+        if self.start_ord:
+            out["start_ord"] = self.start_ord
+        if self.restart_ord is not None:
+            out["restart_ord"] = self.restart_ord
+        if self.toc_ord is not None:
+            out["toc_ord"] = self.toc_ord
+        return out
+
+
+def _head_lines(text: str) -> list[str]:
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+
+def _opens_article(body: Sequence[Any], idx: int) -> bool:
+    """Chunk ``idx`` opens an article: its first line is a non-standard
+    title head (:func:`_header_kind` == ``title``) and its own next line —
+    or, when it has none, the next chunk's first line — is a multi-name
+    byline. The one opening signature the restart signal and the
+    structural boundary (:func:`foreign_tail_ord`) both test."""
+    lines = _head_lines(getattr(body[idx], "text", "") or "")
+    if not lines or _header_kind(lines[0]) != "title":
+        return False
+    nxt = lines[1] if len(lines) > 1 else ""
+    if not _is_multi_byline(nxt) and idx + 1 < len(body):
+        nxt_lines = _head_lines(getattr(body[idx + 1], "text", "") or "")
+        nxt = nxt_lines[0] if nxt_lines else ""
+    return _is_multi_byline(nxt)
+
+
+def detect_issue_splice(
+    chunks: Sequence[Any], *, start_ord: int = 0
+) -> IssueSplice | None:
+    """Detect a scanned-journal-issue splice over stored body chunks.
+
+    The signature is two or more of three independent signals, each the
+    fingerprint of an article boundary that a single paper does not have
+    mid-body:
+
+    * **repeated acknowledgements** — acknowledgement openers
+      (:data:`_ACK_RE` on a chunk's first line) at two or more ords; a
+      genuine article has exactly one;
+    * **mid-stream restart** — a chunk this far past the front matter
+      opening on a non-standard title header (:func:`_header_kind` ==
+      ``title``) whose own next line, or the next non-empty chunk's first
+      line, is a multi-name byline;
+    * **contents cluster** — a mid-stream chunk opening on a contents /
+      table-of-contents heading.
+
+    ``start_ord`` is the established article boundary
+    (``refs.meta['article_start_ord']``, gr515439 — or, when a junk title
+    and no DOI leave the identity anchor empty, the structural boundary
+    callers derive with :func:`foreign_tail_ord`): ords below it are the
+    previous article's tail, not the paper's, so they feed no signal, and
+    the front-matter exemption covers the first
+    :data:`_SPLICE_MIDSTREAM_MIN_ORD` ords *of the paper's own span*. That
+    matters for the mild variant (pa478920): a stray foreign
+    acknowledgement/reference prefix ahead of one dominant article reads
+    as repeated acks plus a "restart" at the article's own title —
+    resolvable by a normal title fix, never a split.
+
+    Also requires at least :data:`_SPLICE_MIN_BODY_CHUNKS` non-empty body
+    chunks at or past ``start_ord``. Pure — never raises; returns ``None``
+    (no confident splice) unless two signals fire, the same conservatism as
+    :func:`trim_to_article`: a wrong flag costs a human a split of a
+    healthy paper.
+    """
+    start_ord = max(0, int(start_ord or 0))
+    body = [
+        c
+        for c in chunks
+        if int(getattr(c, "ord", 0) or 0) >= start_ord
+        and (getattr(c, "text", "") or "").strip()
+    ]
+    if len(body) < _SPLICE_MIN_BODY_CHUNKS:
+        return None
+    ack_ords: list[int] = []
+    restart_ord: int | None = None
+    toc_ord: int | None = None
+    for idx, chunk in enumerate(body):
+        ord_ = int(getattr(chunk, "ord", 0) or 0)
+        lines = _head_lines(getattr(chunk, "text", "") or "")
+        head = lines[0] if lines else ""
+        if _ACK_RE.match(head):
+            ack_ords.append(ord_)
+        if ord_ < start_ord + _SPLICE_MIDSTREAM_MIN_ORD:
+            continue
+        if toc_ord is None and _TOC_HEAD_RE.match(head):
+            toc_ord = ord_
+        if restart_ord is None and _opens_article(body, idx):
+            restart_ord = ord_
+    splice = IssueSplice(
+        ack_ords=tuple(ack_ords),
+        restart_ord=restart_ord,
+        toc_ord=toc_ord,
+        body_chunks=len(body),
+        start_ord=start_ord,
+    )
+    return splice if splice.signal_count >= 2 else None
+
+
+def _is_references_chunk(chunk: Any) -> bool:
+    """A stored references chunk (by kind or by text shape) — a
+    bibliography in the leading ords is never the paper's own front
+    matter."""
+    if getattr(chunk, "chunk_kind", "") == "references":
+        return True
+    text = (getattr(chunk, "text", "") or "").strip()
+    return bool(_REFERENCE_RE.match(text) and _YEAR_RE.search(text))
+
+
+def foreign_tail_ord(chunks: Sequence[Any]) -> int | None:
+    """The ord where the paper's own article starts, when the leading
+    body chunks are a foreign article's tail — derived structurally for
+    the junk-titled, DOI-less records :func:`leading_foreign_ord` has no
+    anchor for (the gr658690 mild variant, pa478920: a few stray
+    reference-list chunks plus the previous article's acknowledgement
+    ahead of the record's one dominant article).
+
+    The boundary is the body's *first* article opening — the same
+    title-head + multi-name-byline signature the restart signal tests
+    (:func:`_opens_article`) — provided the chunks before it are a proven
+    tail: they hold a references chunk. The stricter closer is the
+    DOI-only rule of :func:`leading_foreign_ord`: a Received/
+    acknowledgement/Correspondence line alone can be the paper's own
+    front matter, but a bibliography in the leading ords is not. A first
+    opening with no proven tail behind it is the paper's own head (or an
+    unprovable one) — no boundary; later openings are the splice
+    detector's restart signal, never a *leading* boundary. Only the
+    leading :data:`_LEADING_ORD_CAP` ords count, the same cap as
+    :func:`leading_foreign_ord`.
+
+    Deliberately detection-local: without an identity anchor it is never
+    stamped on ``refs.meta['article_start_ord']`` — the gr515439 marker
+    stays title/DOI-anchored.
+    """
+    body = [
+        c
+        for c in chunks
+        if int(getattr(c, "ord", 0) or 0) >= 0
+        and (getattr(c, "text", "") or "").strip()
+    ]
+    prefix: list[Any] = []
+    for idx, chunk in enumerate(body):
+        ord_ = int(getattr(chunk, "ord", 0) or 0)
+        if ord_ >= _LEADING_ORD_CAP:
+            break
+        if _opens_article(body, idx):
+            if prefix and any(_is_references_chunk(c) for c in prefix):
+                return ord_
+            return None
+        prefix.append(chunk)
+    return None
+
+
+def note_issue_splice(
+    store: Store, ref_id: int, *, conn: Connection | None = None
+) -> IssueSplice | None:
+    """Journal + tag a stored body that carries the spliced-issue signature.
+
+    Journals ``ingest:spread`` / :data:`ISSUE_SPLICE_EVENT` with the
+    signature audit and tags the paper ``multi-article`` (the tag's meaning
+    — "the stored body still holds several articles" — is exactly right
+    for a splice). Idempotent: a ref that already has the journal row is
+    never re-examined, so the daily sweep touches each spliced record
+    once. Returns the detected signature, or ``None`` when the body
+    doesn't carry it (or it was already flagged).
+
+    The boundary is established first (:func:`mark_article_start`, kept
+    in step with the chunks): the mild variant — one dominant article
+    behind a stray foreign prefix — must not flag, and its acks and
+    title only stop reading as a splice once the signals are measured
+    from ``article_start_ord``. When the title is junk and no DOI is
+    stored, the identity anchor finds nothing, so the boundary falls
+    back to :func:`foreign_tail_ord` — the structural first-opening-
+    behind-a-references-tail derivation; without it that same mild
+    variant reads as a splice and is wrongly excluded from title repair.
+
+    Everything runs on the caller's ``conn`` when given: at ingest the ref
+    and its chunks are still uncommitted, so pool-side reads would see
+    nothing and the flag would silently skip.
+    """
+    from precis.ingest.add import ARTICLE_SPREAD_SOURCE, MULTI_ARTICLE_TAG
+    from precis.store.types import Tag
+
+    def _do(c: Connection) -> IssueSplice | None:
+        if (
+            c.execute(
+                "SELECT 1 FROM ref_events WHERE ref_id = %s "
+                "AND source = %s AND event = %s LIMIT 1",
+                (ref_id, ARTICLE_SPREAD_SOURCE, ISSUE_SPLICE_EVENT),
+            ).fetchone()
+            is not None
+        ):
+            return None
+        mark_article_start(store, ref_id, conn=c)
+        chunks = store.chunks.list_chunks_for_ref(ref_id, conn=c)
+        start = (
+            article_start_ord(store, ref_id, conn=c) or foreign_tail_ord(chunks) or 0
+        )
+        splice = detect_issue_splice(chunks, start_ord=start)
+        if splice is None:
+            return None
+        store.append_event(
+            ref_id,
+            source=ARTICLE_SPREAD_SOURCE,
+            event=ISSUE_SPLICE_EVENT,
+            payload=splice.audit(),
+            conn=c,
+        )
+        store.add_tag(ref_id, Tag.open(MULTI_ARTICLE_TAG), set_by="system", conn=c)
+        return splice
 
     if conn is not None:
         return _do(conn)
