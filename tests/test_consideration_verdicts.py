@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from precis.errors import BadInput
+from precis.graph.garden.apply import apply_merge
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
@@ -1257,3 +1258,85 @@ def test_merge_withdrawn_later_verdict_does_not_resurrect(
     by_verdict = {j["verdict"]: j for j in hist}
     assert by_verdict["useful"]["withdrawn_at"] is not None
     assert by_verdict["not-useful"]["withdrawn_at"] is None
+
+
+# ── review td662210 FIX: the garden merge door refuses judged losers ────
+
+
+def _live(store: Store, ref_id: int) -> bool:
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT retired_at IS NULL FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def test_garden_merge_refuses_judged_loser_source(store: Store) -> None:
+    """``apply_merge`` snapshots links for undo but has no judgment
+    reconcile — a merge that would strand a live verdict on the retired
+    loser (or let a collapsed edge keep the wrong twin's verdict)
+    refuses outright; ``migrate_links`` is the door that reconciles
+    (review td662210)."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-g1", title="G1", text=f"{_Q} g1.")
+    dup = _mk_paper(store, slug="cv-g2", title="G2", text=f"{_Q} g2.")
+    _judge(store, scope, dup, verdict="not-useful", reason="off-axis")
+    with pytest.raises(BadInput, match="consideration"):
+        apply_merge(store, dup, surv, actor="reto")
+    # Nothing applied: the loser lives and the verdict is untouched.
+    assert _live(store, dup)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1 and edges[0].dst_ref_id == dup
+    hist = _history(store, scope)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+
+
+def test_garden_merge_refuses_judged_loser_scope(store: Store) -> None:
+    """The scope side is symmetric: a memory loser that judged a source
+    refuses too — its verdicts would strand under a retired scope as
+    permanent edge-lost orphans."""
+    old_scope = _mk_memory(store, title="old scope", text="the question")
+    new_scope = _mk_memory(store, title="new scope", text="the question")
+    src = _mk_paper(store, slug="cv-g3", title="G3", text=f"{_Q} g3.")
+    _judge(store, old_scope, src, verdict="not-useful", reason="off-axis")
+    with pytest.raises(BadInput, match="consideration"):
+        apply_merge(store, old_scope, new_scope, actor="reto")
+    assert _live(store, old_scope)
+    assert len(store.links_for(old_scope, relation="considered")) == 1
+
+
+def test_garden_merge_allows_withdrawn_only_judgments(store: Store) -> None:
+    """Withdrawn judgments are terminal history: they may keep the
+    honest pre-merge pin, so they do not block the merge."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-g4", title="G4", text=f"{_Q} g4.")
+    dup = _mk_paper(store, slug="cv-g5", title="G5", text=f"{_Q} g5.")
+    _judge(store, scope, dup, verdict="not-useful", reason="off-axis")
+    store.remove_link(src_ref_id=scope, dst_ref_id=dup, relation="considered")
+    apply_merge(store, dup, surv, actor="reto")
+    assert not _live(store, dup)
+    # The withdrawn row still names the ref it actually judged — the
+    # same provenance the merge record's prior_ref_id keeps.
+    hist = _history(store, scope)
+    assert len(hist) == 1
+    assert hist[0]["source_ref_id"] == dup
+    assert hist[0]["withdrawn_at"] is not None
+
+
+def test_garden_merge_winner_side_judgments_untouched(store: Store) -> None:
+    """A verdict naming only the winner never moves — the repoint
+    cannot strand it, so the merge proceeds and the edge carries on."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-g6", title="G6", text=f"{_Q} g6.")
+    dup = _mk_paper(store, slug="cv-g7", title="G7", text=f"{_Q} g7.")
+    _judge(store, scope, surv, verdict="not-useful", reason="off-axis")
+    apply_merge(store, dup, surv, actor="reto")
+    assert not _live(store, dup)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].dst_ref_id == surv
+    assert edges[0].meta["verdict"] == "not-useful"
+    # An identical-source judgment stays valid: the merge is not a
+    # material change to either pinned revision.
+    found = store.consideration_exclusions(scope)
+    assert found.excluded == frozenset({surv})

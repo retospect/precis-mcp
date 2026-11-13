@@ -56,6 +56,15 @@ move is the canonical_unit-safe re-point
 ``precis.allow_measurand_repoint`` door): run it first, then this.
 Memory rewrite and undo likewise refuse links anchoring measures: deleting
 and reinserting an edge would otherwise clear its measure FK permanently.
+
+The considerations guard is the same shape (review td662210): a loser
+carrying a live — unwithdrawn — ``considerations`` judgment refuses.
+The verdict ledger's merge reconcile lives in
+``store.migrate_links`` (``migrate_considerations``); this door's undo
+record snapshots links only, so judgments re-pointed or re-resolved here
+could not be replayed on ``undo_merge`` — and the paper body move's pin
+re-anchor would already have moved them. Withdrawn rows are terminal
+history and may keep the honest pre-merge pin.
 """
 
 from __future__ import annotations
@@ -179,6 +188,21 @@ def _check_reviewed_merge(
             )
 
 
+def _live_consideration_count(conn: Any, ref_id: int) -> int:
+    """Unwithdrawn ``considerations`` rows naming ``ref_id`` on either
+    pin — the live verdict state a merge would strand or mis-carry.
+    Withdrawn rows are terminal history: their pre-merge pin stays
+    honest provenance, the same way the merge record keeps
+    ``prior_ref_id`` (review td662210)."""
+    row = conn.execute(
+        "SELECT count(*) FROM considerations "
+        "WHERE (scope_ref_id = %(r)s OR source_ref_id = %(r)s) "
+        "  AND withdrawn_at IS NULL",
+        {"r": ref_id},
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 @dataclass(slots=True)
 class MergeRecord:
     """The reversal record stored on the loser at ``meta.garden_merge``."""
@@ -207,11 +231,12 @@ def apply_merge(
     """Apply an accepted merge: loser folds into winner, links repoint.
 
     Caller-facing contract (the AC4 door): raises :class:`BadInput` /
-    :class:`NotFound` on a missing, retired, cross-kind, already-merged or
-    measures-carrying pair — the whole thing runs in one transaction so
-    nothing is half-applied. ``actor`` lands in the ``approved`` review
-    row written when ``review_id`` names the proposal being applied;
-    that row always carries ``garden.outcome='applied'``, the
+    :class:`NotFound` on a missing, retired, cross-kind, already-merged,
+    measures-carrying or live-judgment-carrying pair — the whole thing
+    runs in one transaction so nothing is half-applied. ``actor`` lands
+    in the ``approved`` review row written when ``review_id`` names the
+    proposal being applied; that row always carries
+    ``garden.outcome='applied'``, the
     ``loser``/``winner`` and the ``merge_id`` (gr512124), plus
     ``verdict_extra`` (the caller's why/evidence) and ``model`` in the
     model column.
@@ -280,6 +305,30 @@ def apply_merge(
             raise BadInput(
                 f"ref {loser_id} carries measure row(s); re-pointing "
                 "measures on merge is not built — resolve them first"
+            )
+
+        # considerations guard (gr662069, review td662210) — same shape
+        # as the measures guard. The verdict ledger's merge reconcile
+        # lives in ``store.migrate_links`` (``migrate_considerations``);
+        # this door's undo record snapshots links only, so judgments
+        # re-pointed here — outright, or through the paper body move's
+        # pin re-anchor — could not be replayed on undo_merge, and a
+        # conflict-collapsed 'considered' edge would keep whichever twin
+        # verdict happened to pre-exist rather than the pair's latest
+        # judgment. A live judgment naming the loser refuses; winner-side
+        # judgments are untouched by the repoint and need none. Re-checked
+        # before the retire below so a judgment raced in mid-merge rolls
+        # the whole transaction back instead of stranding.
+        n_considerations = _live_consideration_count(conn, loser_id)
+        if n_considerations:
+            raise BadInput(
+                f"ref {loser_id} carries {n_considerations} live "
+                "consideration judgment(s); garden merge does not "
+                "reconcile the verdict ledger — resolve them first",
+                next="delete the loser's 'considered' edges (the removal "
+                "stamps its judgments withdrawn) and retry, or merge "
+                "through store.migrate_links, which re-points the "
+                "ledger onto the canonical refs",
             )
 
         # Optional proposal-marking: approve the garden row being applied.
@@ -458,6 +507,16 @@ def apply_merge(
             conn.execute(
                 "DELETE FROM links WHERE src_ref_id = %(r)s OR dst_ref_id = %(r)s",
                 {"r": loser_id},
+            )
+
+        # Late pass of the considerations guard: a judgment that raced
+        # in mid-merge is visible under READ COMMITTED now — refuse and
+        # roll the whole transaction back rather than strand it on the
+        # ref the retire below tombstones.
+        if _live_consideration_count(conn, loser_id):
+            raise BadInput(
+                f"ref {loser_id} gained a live consideration judgment "
+                "mid-merge; retry the merge"
             )
 
         # Fold the loser's name into the winner's aliases; stamp the loser

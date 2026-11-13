@@ -64,7 +64,10 @@ their pair onto the canonical refs, the canonical pair's edge resolves
 to the pair's LATEST unwithdrawn judgment (never whichever twin
 happened to pre-exist), and duplicate live ``considered`` edges of the
 pair collapse to one — the write door's ref-pair granularity carried
-across dedup (review td662210).
+across dedup (review td662210). The garden merge
+(:mod:`precis.graph.garden.apply`) is a different door — its undo
+record snapshots links only, so until it grows an undo-safe reconcile
+it refuses a loser carrying a live judgment outright.
 """
 
 from __future__ import annotations
@@ -490,8 +493,10 @@ class ConsiderationMixin:
         The garden merge (:mod:`precis.graph.garden.apply`) is a
         different door — it snapshots links for undo, so a consideration
         reconcile there needs the undo record too; until that path grows
-        the same pass, a garden merge keeps the carried verdicts its
-        edge dedup leaves but never re-resolves judgment order.
+        the same pass, ``apply_merge`` refuses a loser carrying a live
+        (unwithdrawn) judgment outright rather than strand it on the
+        retired endpoint or let a collapsed edge keep the wrong twin's
+        verdict.
         """
         legacy = {
             (int(s), int(d))

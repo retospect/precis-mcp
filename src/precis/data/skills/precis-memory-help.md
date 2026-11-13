@@ -633,7 +633,10 @@ Rules that bite:
   current verdict is its LATEST judgment — whichever side it was judged
   on. A verdict judged against different content goes stale on the
   canonical ref (real reconsideration); an identical-content merge keeps
-  it valid.
+  it valid. The garden merge apply door is the exception: its undo
+  record has no judgment reconcile yet, so it refuses a merge loser
+  carrying a live verdict — withdraw the pair's `considered` edge
+  first, or merge through the dedup/supersede door.
 
 Inspect the ledger — current verdicts, the reopen queue, and the
 append-only judgment history (page it with `args={'limit': 20,
