@@ -2255,6 +2255,217 @@ class TestRepairJunkTitlePapers:
         ref = store.fetch_refs_by_ids([rid])[rid]
         assert ref.title == "Recovered Page One Title"
 
+    def test_front_matter_leg_persists_derived_title(self, store: Store) -> None:
+        """gr658887: every registry leg missed, but chunk 0's front matter
+        states the title unambiguously — a title head followed by a
+        multi-name byline. The derived title the display fallback already
+        renders is persisted to ``refs.title``, not left for the owner
+        queue."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="fm001", title="")
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            "**Varieties of Helmholtz Machine**\n\nG. E. Hinton & P. Dayan",
+        )
+        _kind_chunk(store, rid, 1, "The Helmholtz machine learns. " * 4)
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.title == "Varieties of Helmholtz Machine"
+        # A repair is not a concluded failure — no stamp, no owner todo.
+        assert _meta(store, rid).get("title_repair_v") is None
+        assert raise_junk_title_papers(store, dry_run=True) == []
+        with store.pool.connection() as conn:
+            ev = conn.execute(
+                "SELECT payload FROM ref_events WHERE ref_id = %s "
+                "AND event = 'title_repaired'",
+                (rid,),
+            ).fetchone()
+        assert ev is not None and ev[0]["how"] == "front-matter"
+
+    def test_front_matter_leg_needs_the_byline(self, store: Store) -> None:
+        """The signature is a title head *followed by a multi-name
+        byline*; a lone title-like first line is not confident enough —
+        the paper still fails and stamps for the owner queue."""
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
+
+        rid = self._old(store, slug="fm002", title="")
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            "An Obscure Machine Learning Result\n\n"
+            + "The experiment proceeded as follows. " * 4,
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "failed")]
+        assert _meta(store, rid).get("title_repair_v") == _TITLE_REPAIR_VERSION
+        assert store.fetch_refs_by_ids([rid])[rid].title == ""
+
+    def test_front_matter_leg_respects_article_boundary(self, store: Store) -> None:
+        """The gr658690 mild variant: a stray foreign references/ack tail
+        ahead of the record's own article — the derived title comes from
+        the paper's own opening (the structural boundary), never the
+        foreign leading chunks."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="fm003", title="")
+        _mild_body(store, rid)
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.title == "Adaptive routing in mesh sensor networks"
+
+    def test_front_matter_leg_declines_spliced_body(self, store: Store) -> None:
+        """A scanned-issue splice also opens title-head + byline, but no
+        single title exists to persist — the leg declines so the splice
+        keeps its split routing instead of being disguised as fixed."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="fm004", title="")
+        _spliced_body(store, rid)
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "failed")]
+        assert store.fetch_refs_by_ids([rid])[rid].title == ""
+
+    def test_front_matter_leg_dry_run_writes_nothing(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="fm005", title="")
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            "A Dry-Run Derived Title\nJ. Doe & R. Roe",
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=True,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert store.fetch_refs_by_ids([rid])[rid].title == ""
+
+    def test_front_matter_leg_retries_the_stamped_backlog(self, store: Store) -> None:
+        """gr658887 review: the papers this leg is *for* are precisely the
+        v1-stamped backlog — every paper the pre-front-matter cascade had
+        concluded on. The version bump re-arms them for exactly one fresh
+        attempt; a stale stamp must not exclude them from the only leg
+        that can fix them."""
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
+
+        rid = self._old(store, slug="fm006", title="")
+        store.stamp_ref_meta(rid, {"title_repair_v": _TITLE_REPAIR_VERSION - 1})
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            "A Backlog Paper Its Own Title\nA. One & B. Two",
+        )
+        still_junk = self._old(store, slug="fm007", title="__")
+        store.stamp_ref_meta(still_junk, {"title_repair_v": _TITLE_REPAIR_VERSION - 1})
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert {o.ref_id: o.action for o in out} == {
+            rid: "front-matter",
+            still_junk: "failed",
+        }
+        assert (
+            store.fetch_refs_by_ids([rid])[rid].title == "A Backlog Paper Its Own Title"
+        )
+        # The still-unfixable one re-concludes at the current version —
+        # the owner queue picks it up — while the repaired paper never
+        # stamps and stays out of every queue.
+        assert _meta(store, still_junk).get("title_repair_v") == _TITLE_REPAIR_VERSION
+        assert raise_junk_title_papers(store, dry_run=True) == [still_junk]
+
+    def test_front_matter_leg_preserves_stored_metadata_in_cards(
+        self, store: Store
+    ) -> None:
+        """gr658887 review: the leg's Resolution is title-only, but the
+        card rebuild must mirror the ref's *effective* metadata — the
+        COALESCE merge ``update_paper_fields`` just wrote — not res's
+        fields alone. A stored byline/abstract/keywords survives the
+        rewrite instead of ``card_combined`` collapsing to the title."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="fm008", title="")
+        store.update_paper_fields(
+            rid,
+            authors=[{"name": "Hinton, Geoffrey E."}, {"name": "Dayan, Peter"}],
+            meta_patch={
+                "abstract": "A stored abstract the repair must keep.",
+                "keywords": ["helmholtz machine"],
+            },
+            source="test",
+        )
+        _card(
+            store,
+            rid,
+            "Geoffrey E. Hinton; Peter Dayan\n\n"
+            "A stored abstract the repair must keep.\n\nhelmholtz machine",
+        )
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            "**Varieties of Helmholtz Machine**\n\nG. E. Hinton & P. Dayan",
+        )
+        _kind_chunk(store, rid, 1, "The Helmholtz machine learns. " * 4)
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        card = _card_text(store, rid)
+        assert card.startswith("Varieties of Helmholtz Machine\n\n")
+        assert "Hinton" in card and "Dayan" in card
+        assert "A stored abstract the repair must keep." in card
+        assert "helmholtz machine" in card
+
     def test_failed_repair_stamps_and_skips_next_pass(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import (
             _TITLE_REPAIR_VERSION,

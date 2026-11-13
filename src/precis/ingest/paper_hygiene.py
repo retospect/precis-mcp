@@ -2096,12 +2096,16 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: and the stamped backlog should get one more attempt. Without the stamp the
 #: daily pass would re-burn registry lookups on titles it already proved it
 #: cannot fix (transient failures — timeouts, rate limits — are left
-#: unstamped so the next pass retries them). v2: two new tricks re-arm
-#: the v1-stamped backlog — the title leg can fold a stub into the live
-#: owner of its recovered DOI (``_merge_into_doi_owner``, gr658635), and
-#: the cascade diverts OCR-concatenated multi-article bodies to the
-#: body-split route before any registry lookup (gr658650).
-_TITLE_REPAIR_VERSION = 2
+#: unstamped so the next pass retries them). v2 re-armed the v1-stamped
+#: backlog for two tricks — folding a stub into the live owner of its
+#: recovered DOI (``_merge_into_doi_owner``, gr658635), and diverting
+#: OCR-concatenated multi-article bodies to the body-split route before
+#: any registry lookup (gr658650). v3 adds the front-matter leg
+#: (gr658887): the whole pre-v3 backlog was stamped before the leg
+#: existed, and the bump is what re-arms those papers for exactly one
+#: fresh attempt — a stale stamp must not exclude them from the only leg
+#: that can fix them.
+_TITLE_REPAIR_VERSION = 3
 
 #: ``meta.front_matter_v`` stamp written once :func:`_apply_front_matter`
 #: has mined a paper's chunk-0 byline/date at the current parser version —
@@ -2146,7 +2150,7 @@ class TitleRepairOutcome:
     """What the repair pass did (or concluded) for one junk-titled paper."""
 
     ref_id: int
-    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'merged' | 'split' | 'parked' | 'failed' | 'skipped'
+    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'front-matter' | 'merged' | 'split' | 'parked' | 'failed' | 'skipped'
     detail: str = ""
     new_title: str = ""
 
@@ -2487,6 +2491,40 @@ def _resolve_openalex(
     return _guard_registry_mismatch(store, res)
 
 
+def _front_matter_title(store: Store, ref: Any) -> str | None:
+    """The title the paper's own body already states, when its opening is
+    unambiguous — the last leg of the junk-title cascade (gr658887).
+
+    The signature is :func:`~precis.ingest.article_spread.front_matter_title`
+    measured from the established boundary: the stamped
+    ``article_start_ord``, else the structural
+    :func:`~precis.ingest.article_spread.foreign_tail_ord` derivation —
+    the same fallback the splice detector uses when a junk title and no
+    DOI leave ``leading_foreign_ord`` without an anchor. A foreign
+    leading tail can therefore never supply the title, and a body that
+    still reads as a scanned-issue splice (``detect_issue_splice`` — the
+    unflagged window before :func:`flag_spliced_issue_papers` runs in the
+    same reconcile pass) is declined outright: no single title exists to
+    persist. The derived string also has to clear the usual title-line
+    gate (``_is_title_like`` — junk, PII, furniture and affiliation
+    filters) before it may write.
+    """
+    from precis.ingest.article_spread import (
+        article_start_ord,
+        detect_issue_splice,
+        foreign_tail_ord,
+        front_matter_title,
+    )
+    from precis.ingest.metadata_resolve import _is_title_like
+
+    chunks = store.chunks.list_chunks_for_ref(ref.id)
+    start = article_start_ord(store, ref.id) or foreign_tail_ord(chunks) or 0
+    if detect_issue_splice(chunks, start_ord=start) is not None:
+        return None
+    title = front_matter_title(chunks, start_ord=start)
+    return title if title and _is_title_like(title) else None
+
+
 def repair_junk_title_papers(
     store: Store,
     *,
@@ -2514,6 +2552,11 @@ def repair_junk_title_papers(
     * **title** — S2 title search (``_resolve_by_title``) over the stripped
       export name plus first-page body-chunk candidates, under the usual
       similarity/year/formula gates.
+    * **front-matter** — last resort, no registry at all (gr658887): the
+      paper's own opening chunk states the title unambiguously (a title
+      head followed by a multi-name byline at the article boundary), so
+      it is persisted rather than stamped as a failure for the owner
+      queue.
 
     A resolved DOI that another live paper already holds means the stub is
     an undetected duplicate: the pass folds it into that owner
@@ -2764,6 +2807,7 @@ def _repair_one(
     :func:`repair_junk_title_papers` for the leg order and stamping rule)."""
     from precis.ingest.article_spread import mark_article_start
     from precis.ingest.metadata_resolve import (
+        Resolution,
         _resolve_by_doi,
         _resolve_by_title,
         apply_resolution,
@@ -2867,6 +2911,21 @@ def _repair_one(
     )
     if out is not None:
         return out
+
+    # Leg 4 — the paper's own front matter (gr658887): every registry
+    # leg missed, but the body's opening chunk may still state the title
+    # unambiguously — a title head immediately followed by a multi-name
+    # byline, the article-opening signature the spread detectors test.
+    # That derived title is what the display fallback already renders;
+    # persist it instead of stamping a failure the owner queue then
+    # fixes by hand. Parked conflicts never reach here — they return
+    # above, so a local write can't mask a registry mismatch.
+    derived = _front_matter_title(store, ref)
+    if derived:
+        return _apply_resolution(
+            Resolution(rid, "auto", "-", "front-matter", title=derived),
+            "front-matter",
+        )
 
     # No registry vouched for it — the chunk-0 byline and date still state
     # the year and authors the title was read from (gr658886).

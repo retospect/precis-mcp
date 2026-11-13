@@ -24,6 +24,7 @@ from precis.ingest.article_spread import (
     article_start_ord,
     detect_issue_splice,
     foreign_tail_ord,
+    front_matter_title,
     leading_foreign_ord,
     mark_article_start,
     note_issue_splice,
@@ -1213,3 +1214,127 @@ class TestNoteIssueSplice:
         # The structural boundary is detection-local — it is never
         # stamped on ``refs.meta['article_start_ord']``.
         assert article_start_ord(store, ref.id) == 0
+
+
+# ── front-matter title derivation (gr658887) ──────────────────────
+
+
+class TestFrontMatterTitle:
+    """gr658887 / review td660456: the derived title the repair leg
+    persists is store-ready — layout markup and proven footnote/
+    affiliation ``<sup>`` markers come off, but a *meaningful*
+    superscript (a charge, an oxidation state, an in-formula
+    superscript) is the title's own text and must survive."""
+
+    def test_signature_needs_the_byline(self) -> None:
+        """A title-like head alone is not confident enough — no
+        multi-name byline, no derivation."""
+        chunks = [_c(0, f"{LETTER_A}\n{PROSE}")]
+        assert front_matter_title(chunks) is None
+
+    def test_start_ord_measures_the_own_opening(self) -> None:
+        """Ords below the boundary are a foreign tail: the derivation
+        moves to the paper's own opening, never to whatever opens the
+        leading chunks."""
+        chunks = _spliced_issue_chunks()
+        assert front_matter_title(chunks) == LETTER_A
+        assert front_matter_title(chunks, start_ord=4) == LETTER_B
+        # Mid-article there is no opening to read.
+        assert front_matter_title(chunks, start_ord=5) is None
+
+    def test_layout_markup_comes_off(self) -> None:
+        chunks = [
+            _c(
+                0,
+                "**Varieties of Helmholtz Machine**\n\nG. E. Hinton & P. Dayan",
+            )
+        ]
+        assert front_matter_title(chunks) == "Varieties of Helmholtz Machine"
+
+    def test_trailing_footnote_markers_drop(self) -> None:
+        """The title head's trailing ``<sup>`` furniture drops whole
+        when its content is something a superscript cannot be: a mark
+        list or range, an always-furniture symbol (``‡§¶#‖``), or a
+        lone mark with furniture proof (bold styling, a whitespace
+        gap — a lone ``†`` no longer counts: it can be the Hermitian
+        dagger, see the td660456 regression below)."""
+        for sup in (
+            "<sup>1,†</sup>",
+            "<sup>1–3</sup>",
+            "<sup>a,b</sup>",
+            "<sup>‡</sup>",
+            "<sup>*,†</sup>",
+            "<sup><b>2</b></sup>",
+            "<sup><b>a</b></sup>",
+            "<sup><b>†</b></sup>",
+            " <sup>1</sup>",
+        ):
+            chunks = [
+                _c(
+                    0,
+                    f"Field-effect mobility in rubrene crystals{sup}\nJ. Doe & R. Roe",
+                )
+            ]
+            assert front_matter_title(chunks) == (
+                "Field-effect mobility in rubrene crystals"
+            ), sup
+
+    def test_meaningful_superscripts_survive(self) -> None:
+        """A ``<sup>`` drops only when BOTH legs hold — trailing
+        position AND content a superscript cannot be. Charges,
+        oxidation states and in-formula superscripts are the title's
+        own text, mid-title or terminal."""
+        cases = [
+            ("Charge-ordered Ca<sup>2+</sup> pumping", "Charge-ordered Ca2+ pumping"),
+            ("Pd<sup>II</sup>-catalysed coupling", "PdII-catalysed coupling"),
+            (
+                "The x<sup>2</sup> term in lattice models",
+                "The x2 term in lattice models",
+            ),
+            ("Production of K<sup>*</sup> resonances", "Production of K* resonances"),
+            ("A decay via the D<sup>0</sup> channel", "A decay via the D0 channel"),
+        ]
+        for head, want in cases:
+            chunks = [_c(0, f"{head}\nJ. Doe & R. Roe")]
+            assert front_matter_title(chunks) == want, head
+
+    def test_terminal_ambiguous_marks_survive(self) -> None:
+        """Review td660456 regression: marker-shaped content plus a
+        trailing position does not prove a footnote — a lone terminal
+        mark can be the title's own superscript, so it stays. That
+        covers ``x<sup>n-1</sup>`` (hyphen-minus is the math minus,
+        never a list separator) and ``H<sup>†</sup>`` (the
+        Hermitian-conjugate dagger)."""
+        cases = [
+            ("Studies of x<sup>2</sup>", "Studies of x2"),
+            ("Observation of K<sup>*</sup>", "Observation of K*"),
+            ("Branching ratios of B<sup>*</sup>", "Branching ratios of B*"),
+            ("Studies of x<sup>n-1</sup>", "Studies of xn-1"),
+            ("Scaling of x<sup>1-2</sup>", "Scaling of x1-2"),
+            ("Properties of H<sup>†</sup>", "Properties of H†"),
+            # Lone footnote-looking marks stay too — position alone
+            # can't tell them from the superscripts above.
+            (
+                "Mobility in rubrene crystals<sup>1</sup>",
+                "Mobility in rubrene crystals1",
+            ),
+            (
+                "Mobility in rubrene crystals<sup>a</sup>",
+                "Mobility in rubrene crystalsa",
+            ),
+            (
+                "Mobility in rubrene crystals<sup>†</sup>",
+                "Mobility in rubrene crystals†",
+            ),
+        ]
+        for head, want in cases:
+            chunks = [_c(0, f"{head}\nJ. Doe & R. Roe")]
+            assert front_matter_title(chunks) == want, head
+
+    def test_marker_inside_emphasis_still_drops(self) -> None:
+        """``**Title<sup>‡</sup>**`` — the marker trails the emphasis
+        wrapper, and ``‡`` is always-furniture, so it drops even nested
+        in the layout emphasis. (``†`` would survive here: nested
+        position is not furniture proof — review td660456.)"""
+        chunks = [_c(0, "**Field-effect mobility<sup>‡</sup>**\nJ. Doe & R. Roe")]
+        assert front_matter_title(chunks) == "Field-effect mobility"

@@ -94,7 +94,7 @@ from precis.ingest.verify_metadata import content_tokens, title_overlap
 from precis.liveness import drain_sleep
 from precis.store import Store, Tag
 from precis.store._identifiers_ops import _cleared_schemes
-from precis.utils.authors import to_name_dicts
+from precis.utils.authors import author_names, to_name_dicts
 from precis.utils.rate_limit import RateLimited
 from precis.utils.title_views import title_plain
 
@@ -872,7 +872,7 @@ def apply_resolution(
                 res.doi,
             )
             return
-        store.update_paper_fields(
+        updated = store.update_paper_fields(
             res.ref_id,
             title=res.title or None,
             year=res.year,
@@ -886,14 +886,24 @@ def apply_resolution(
                 store.set_ref_identifier(
                     res.ref_id, scheme, str(value), source=source, conn=conn
                 )
-        author_names = [a["name"] for a in res.author_dicts if a.get("name")]
+        # Cards mirror the ref's *effective* metadata, not res's fields
+        # alone — an empty res field means "keep the stored value" (the
+        # COALESCE merge update_paper_fields just wrote), so updated
+        # already carries both. Rebuilding from res would blank the
+        # stored byline/abstract out of card_combined on a title-only
+        # repair (gr658887).
+        meta = updated.meta or {}
+        abstract = meta.get("abstract", "")
+        abstract = abstract if isinstance(abstract, str) else ""
+        kw_raw = meta.get("keywords", [])
+        keywords = list(kw_raw) if isinstance(kw_raw, list) else []
         rewrite_cards(
             conn,
             res.ref_id,
-            title=title_plain(res.title),
-            author_names=author_names,
-            abstract=res.abstract,
-            keywords=[],
+            title=title_plain(updated.title or res.title),
+            author_names=author_names(updated.authors),
+            abstract=abstract,
+            keywords=keywords,
         )
         store.remove_tag(res.ref_id, TRIAGE_TAG, conn=conn)
     if res.author_dicts or res.year is not None:

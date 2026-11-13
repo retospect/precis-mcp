@@ -16,9 +16,9 @@ the system worker at a low cadence so the corpus self-heals:
   including the junk-title pair:
   :func:`~precis.ingest.paper_hygiene.repair_junk_title_papers` attempts
   each unflagged junk title (markup render → DOI registries → S2 title
-  search) and stamps terminal outcomes — diverting OCR-concatenated
-  multi-article bodies (gr658650) to the body-split route before any
-  registry lookup;
+  search → the paper's own front matter) and stamps terminal outcomes —
+  diverting OCR-concatenated multi-article bodies (gr658650) to the
+  body-split route before any registry lookup;
   :func:`~precis.ingest.paper_hygiene.raise_junk_title_papers` then files
   an owner todo only for papers carrying that stamp — a title-fix todo,
   or a ``paper-needs-split`` todo when the body is a spliced scanned
@@ -221,7 +221,8 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             repaired_n = sum(
                 1
                 for o in repaired
-                if o.action in ("markup", "crossref", "openalex", "title")
+                if o.action
+                in ("markup", "crossref", "openalex", "title", "front-matter")
             )
             # Unconditional (gr508499): an aggregate even at zero attempts,
             # and the word "junk-title" so the q='junk' worker_logs probe

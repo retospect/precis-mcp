@@ -78,6 +78,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.title_body import is_placeholder_title, title_body_score
+from precis.utils.title_views import title_plain
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -1006,6 +1007,140 @@ def foreign_tail_ord(chunks: Sequence[Any]) -> int | None:
             return None
         prefix.append(chunk)
     return None
+
+
+#: A whole-line emphasis wrapper — ``**Title**`` / ``_Title_`` front-matter
+#: layout emphasis, never part of the title text itself.
+_WRAP_EMPH_RE = re.compile(r"(\*{1,2}|_{1,2})\s*(\S.*?)\s*\1", re.S)
+
+#: One ``<sup>`` span on a title head — a footnote/affiliation marker or a
+#: real superscript, decided per-span by :func:`_drop_marker_sup`.
+_SUP_SPAN_RE = re.compile(r"<sup\b[^>]*>(.*?)</sup>", re.I | re.S)
+
+#: One footnote/affiliation mark: a digit run, a footnote symbol or a
+#: single lowercase affiliation letter — ``1``, ``12``, ``†``, ``*``, ``a``.
+_MARK = r"(?:\d+|[†‡§¶*#‖]|[a-z])"
+
+#: A mark *list* — ``1,2``, ``1–3``, ``a,b``, ``*,†``, ``1 a`` — is always
+#: furniture: an exponent, a charge or an oxidation state is one token,
+#: never a separator-joined list. Hyphen-minus stays OUT of the
+#: separator class: it is the math minus, not a list join, so
+#: ``x<sup>n-1</sup>`` (review td660456) and any other hyphen-joined
+#: exponent expression survive as the title's own text. (A leading
+#: ``-`` can't start a mark either, so a minus exponent like
+#: ``<sup>-1</sup>`` never matches.)
+_MARK_LIST_RE = re.compile(rf"{_MARK}(?:[\s,;–—]+{_MARK})+")
+
+#: A trailing singleton of ``‡§¶#‖`` is furniture — none of these has a
+#: scientific-superscript reading in a paper title. ``†`` is deliberately
+#: absent: it doubles as the Hermitian-conjugate/adjoint dagger, so
+#: ``Properties of H<sup>†</sup>`` is the title's own text (review
+#: td660456). A lone ``†`` survives like any other ambiguous lone mark
+#: and drops only inside a list or with furniture proof.
+_FOOTNOTE_SYMBOL_RE = re.compile(r"[‡§¶#‖]+")
+
+#: A lone mark (``1``, ``a``, ``*``, ``†``) is ambiguous —
+#: ``x<sup>2</sup>`` is an exponent, ``K<sup>*</sup>`` a star and
+#: ``H<sup>†</sup>`` the Hermitian conjugate, so it drops only with
+#: extra furniture proof: bold/strong styling a scientific superscript
+#: never carries (``<sup><b>1</b></sup>`` — italic doesn't count,
+#: ``<i>n</i>`` is how a variable exponent arrives), or a whitespace
+#: gap before the span, which a superscript's own base never leaves.
+_LONE_MARK_RE = re.compile(_MARK)
+_SUP_BOLD_RE = re.compile(r"</?(?:b|strong)\b[^>]*>", re.I)
+
+#: Tags nested inside a marker span are stripped before the content
+#: tests — though ``<b>``/``<strong>`` is itself furniture proof
+#: (:data:`_SUP_BOLD_RE`), and the footnote symbols ``*``/``†`` are
+#: content, never noise.
+_SUP_INNER_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+#: A footnote marker *trails* the title head ("Title<sup>1,†</sup>"):
+#: after it only whitespace, terminal punctuation and emphasis closers
+#: remain. A ``<sup>`` with title text still after it sat mid-title, where
+#: a superscript is the formula's own ("the x<sup>2</sup> term"), never a
+#: dangling footnote digit. Necessary but not sufficient — the content
+#: must also be something a superscript cannot be (see
+#: :func:`_drop_marker_sup`).
+_SUP_TAIL_NOISE_RE = re.compile(r"[\s*_~^`.,;:!?()\[\]'\"–—-]*")
+
+
+def _drop_marker_sup(m: re.Match[str]) -> str:
+    """``<sup>`` → ``""`` for a proven footnote/affiliation marker; any
+    other span verbatim so :func:`title_plain` renders its content.
+
+    Proven needs BOTH legs (review td660456): the span trails the line
+    AND its content is something a superscript cannot be — a mark list
+    (:data:`_MARK_LIST_RE` — hyphen-minus never separates), an
+    always-furniture symbol (:data:`_FOOTNOTE_SYMBOL_RE`, ``‡§¶#‖`` —
+    ``†`` is not one, see there) or a lone mark carrying furniture proof
+    (:data:`_SUP_BOLD_RE` or a whitespace gap before the span).
+    Marker-shaped plus trailing alone is not proof: a lone
+    ``<sup>2</sup>``/``<sup>*</sup>``/``<sup>†</sup>`` at line end can be
+    the title's own ``x²``/``K*``/``H†``, so ambiguous marks stay for
+    ``title_plain``."""
+    inner = _SUP_INNER_TAG_RE.sub("", m.group(1)).strip()
+    tail = _SUP_INNER_TAG_RE.sub("", m.string[m.end() :])
+    if not _SUP_TAIL_NOISE_RE.fullmatch(tail):
+        return m.group(0)
+    if _MARK_LIST_RE.fullmatch(inner) or _FOOTNOTE_SYMBOL_RE.fullmatch(inner):
+        return ""
+    if _LONE_MARK_RE.fullmatch(inner) and (
+        _SUP_BOLD_RE.search(m.group(1))
+        or (m.start() > 0 and m.string[m.start() - 1].isspace())
+    ):
+        return ""
+    return m.group(0)
+
+
+def _storable_title(line: str) -> str:
+    """A chunk head line → a storable title: markdown heading marks and
+    wrapping emphasis (the front-matter layout, not the text) off, proven
+    footnote/affiliation ``<sup>`` markers dropped whole
+    (:func:`_drop_marker_sup` — real superscripts stay), then
+    :func:`~precis.utils.title_views.title_plain` flattens the residual
+    inline markup (``mml:math``, ``<sub>``, kept ``<sup>``, ``$…$``)."""
+    s = _SUP_SPAN_RE.sub(_drop_marker_sup, line.strip())
+    s = re.sub(r"^#{1,6}\s+", "", s)
+    for _ in range(2):
+        m = _WRAP_EMPH_RE.fullmatch(s)
+        if not m:
+            break
+        s = m.group(2).strip()
+    return title_plain(s)
+
+
+def front_matter_title(chunks: Sequence[Any], *, start_ord: int = 0) -> str | None:
+    """The title a paper's own front matter states, or ``None`` (gr658887).
+
+    The test is the article-opening signature the restart signal and the
+    structural boundary share (:func:`_opens_article`): the first body
+    chunk at or past ``start_ord`` must open on a non-standard title head
+    immediately followed by a multi-name byline. Only that pairing makes
+    the head line a *title* — alone it could be a running head, a
+    furniture line or a section label.
+
+    ``start_ord`` is the established article boundary
+    (``refs.meta['article_start_ord']``, or the structural
+    :func:`foreign_tail_ord` derivation when no anchor exists to stamp
+    one) — ords below it are the previous article's tail, so a foreign
+    title head can never become this paper's title. The returned string
+    is store-ready: :func:`_storable_title` has already removed the
+    layout emphasis and any *proven* trailing footnote/affiliation
+    ``<sup>`` markers (:func:`_drop_marker_sup` — a lone ambiguous mark
+    stays, being possibly the title's own superscript), and rendered
+    residual inline markup to its plain view. Pure — never raises.
+    """
+    start_ord = max(0, int(start_ord or 0))
+    body = [
+        c
+        for c in chunks
+        if int(getattr(c, "ord", 0) or 0) >= start_ord
+        and (getattr(c, "text", "") or "").strip()
+    ]
+    if not body or not _opens_article(body, 0):
+        return None
+    return _storable_title(_head_lines(getattr(body[0], "text", "") or "")[0]) or None
 
 
 def note_issue_splice(
