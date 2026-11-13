@@ -352,6 +352,16 @@ class TestScrapeWatchPageMeta:
     page HTML. We monkeypatch ``safe_get`` to return a fixture HTML
     blob so the tests stay offline."""
 
+    @pytest.fixture(autouse=True)
+    def _no_politeness(self, monkeypatch) -> None:
+        # ``with_backoff`` keeps a process-wide host limiter and breaker for
+        # www.youtube.com; an earlier test in the same worker can leave it
+        # open or spent, and the scrape then returns {} before our stub runs
+        # (order-dependent; the r296 gate red). Call straight through.
+        import precis.utils.http as _http
+
+        monkeypatch.setattr(_http, "with_backoff", lambda fn, **_kw: fn())
+
     def _stub_response(self, html: str, status: int = 200):
         import httpx
 
