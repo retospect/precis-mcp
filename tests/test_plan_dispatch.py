@@ -9196,3 +9196,247 @@ def test_minted_repo_release_node_dispatches_for_its_repo(
     assert meta["job_type"] == "repo_release"
     assert meta["params"] == {"todo_id": rel, "repo": "catpath"}
     assert any(f"td{rel}: dispatched repo_release" in n for n in res.notes)
+
+
+# ── pin_bump nodes (td659522 step 4) ───────────────────────────────
+
+
+@pytest.fixture
+def pin_op(store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``pin_bump`` is not registered yet: a fake job type stands in for it
+    beside the ``release_op`` stand-in (this test module only)."""
+    real = pd.get_job_type
+    fake = SimpleNamespace(
+        params_schema={
+            "properties": {"todo_id": {}, "release_todo": {}, "pin_repo": {}},
+            "required": ["todo_id", "release_todo", "pin_repo"],
+            "additionalProperties": False,
+        },
+        validate_submit=None,
+        compatible_executors=frozenset({"job_inproc"}),
+    )
+
+    def lookup(name: str) -> Any:
+        return fake if name == "pin_bump" else real(name)
+
+    monkeypatch.setattr(pd, "get_job_type", lookup)
+    monkeypatch.setattr(job_types_pkg, "get_job_type", lookup)
+    return fake
+
+
+def _pin_plan(
+    store: Store,
+    *,
+    releases: int = 1,
+    op: Any = "pin_bump",
+    release_tags: tuple[str, ...] = ("repo:catpath",),
+    ready: bool = True,
+    retries: int = 1,
+) -> T.PlanMint:
+    """root: b1 -> rel (repo_release, ``release_tags``) -> pin (pin_bump).
+    ``ready`` closes the slice and every release node so the pin is next;
+    ``releases=0`` leaves the pin with no blocker."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("b1", "Build", {"op": "run_slice"}, body="Build it.")
+        names = [f"rel{i}" if releases > 1 else "rel" for i in range(releases)]
+        for name in names:
+            m.node(name, "Cut", {"op": "repo_release"}, blocked_by=("b1",))
+        m.node(
+            "pin",
+            "Bump the pin",
+            {"op": op, "retries": retries},
+            blocked_by=tuple(names),
+        )
+
+    mint = T._run(store, None, build)
+    if ready:
+        _mark_done(store, mint.ids["b1"])
+    for key, ref_id in mint.ids.items():
+        if key.startswith("rel"):
+            for tag in release_tags:
+                store.add_tag(ref_id, Tag.open(tag), set_by="system")
+            if ready:
+                _mark_done(store, ref_id)
+    return mint
+
+
+def test_pin_bump_node_is_stamped_from_its_done_release_blocker(
+    store: Store, pin_op: Any
+) -> None:
+    """A ready pin-bump node dispatches with the release node it is blocked
+    by (done) as ``release_todo`` and that node's repo as ``pin_repo``; if
+    this fails the job cannot find the tag it must pin."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    res = pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, pin)
+    assert meta["job_type"] == "pin_bump"
+    assert meta["params"] == {
+        "todo_id": pin,
+        "release_todo": mint.ids["rel"],
+        "pin_repo": "catpath",
+    }
+    assert any(f"td{pin}: dispatched pin_bump" in n for n in res.notes)
+
+
+def test_pin_bump_op_params_win_over_the_stamped_ones(
+    store: Store, pin_op: Any
+) -> None:
+    """Params already on the op are kept and only the missing ones are
+    stamped; if this fails an explicit ``pin_repo`` is overwritten."""
+    mint = _pin_plan(
+        store,
+        op={"type": "pin_bump", "params": {"pin_repo": "hexfold"}},
+    )
+    pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, mint.ids["pin"])
+    assert meta["params"]["pin_repo"] == "hexfold"
+    assert meta["params"]["release_todo"] == mint.ids["rel"]
+
+
+@pytest.mark.parametrize(
+    ("shape", "why"),
+    [
+        ("no_release", "exactly one"),
+        ("two_releases", "exactly one"),
+        ("release_no_repo", "exactly one non-default repo"),
+        ("release_default_repo", "exactly one non-default repo"),
+        ("release_two_repos", "exactly one non-default repo"),
+        ("pin_inherits_catpath", "builds in precis"),
+    ],
+)
+def test_pin_bump_node_with_a_bad_shape_is_not_dispatched(
+    store: Store, pin_op: Any, shape: str, why: str
+) -> None:
+    """A pin-bump node with no single release blocker, a release node that
+    does not govern exactly one non-default repo, or a pin node resolving
+    to another repo mints nothing and leaves one note; if this fails a
+    mis-planned bump runs against the wrong tag or repo."""
+    if shape == "no_release":
+        mint = _pin_plan(store, releases=0)
+    elif shape == "two_releases":
+        mint = _pin_plan(store, releases=2)
+    elif shape == "release_no_repo":
+        mint = _pin_plan(store, release_tags=())
+    elif shape == "release_default_repo":
+        mint = _pin_plan(store, release_tags=("repo:precis",))
+    elif shape == "release_two_repos":
+        mint = _pin_plan(store, release_tags=("repo:catpath", "repo:hexfold"))
+    else:
+        mint = _pin_plan(store)
+        store.add_tag(mint.root_id, Tag.open("repo:catpath"), set_by="system")
+    pin = mint.ids["pin"]
+    res = pd.run_pass(store)
+    assert _jobs_under(store, pin) == []
+    notes = [n for n in res.notes if n.startswith(f"td{pin}: pin_bump not dispatched")]
+    assert len(notes) == 1 and why in notes[0], res.notes
+
+
+def test_succeeded_pin_bump_without_a_land_keeps_the_node_open(
+    store: Store, pin_op: Any
+) -> None:
+    """A succeeded ``pin_bump`` job is a hand-off, not the bump on main: the
+    node stays open, mints no second ``pin_bump`` and files no cap ask
+    (``retries`` is 1, so a counted attempt would cap it); if this fails
+    the node closes or re-bumps before its land."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    for _ in range(2):
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks) == (0, 0)
+    assert [m["job_type"] for _j, m in _jobs_under(store, pin)] == ["pin_bump"]
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+    assert any("waiting for its land_slice" in n for n in res.notes)
+
+
+def test_succeeded_land_after_a_pin_bump_closes_the_node(
+    store: Store, pin_op: Any
+) -> None:
+    """The ``land_slice`` that follows the job closes the node, as for a
+    slice; if this fails a landed bump leaves its node (and every glue
+    todo blocked by it) open."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(store, pin, "land_slice", "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, pin) == "done"
+    assert any(f"task td{pin} closed: land_slice" in n for n in res.notes)
+
+
+def test_failed_land_redispatches_pin_bump_as_one_attempt(
+    store: Store, pin_op: Any
+) -> None:
+    """A ``pin_bump`` plus its red ``land_slice`` is one attempt, and the
+    retry is a rebuild (``pin_bump``), not a bare land; with ``retries: 2``
+    a second attempt remains. If this fails the pair counts twice and caps,
+    or the bump lands a stale branch."""
+    mint = _pin_plan(store, retries=2)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(store, pin, "land_slice", "failed")
+    plan = pd._load(store, [mint.root_id])
+    assert pd._attempts(plan, plan.nodes[pin]) == 1
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump"
+    assert job["params"]["release_todo"] == mint.ids["rel"]
+
+
+def test_failed_land_at_the_retry_cap_does_not_redispatch_pin_bump(
+    store: Store, pin_op: Any
+) -> None:
+    """With ``retries: 1`` the pair is the one allowed attempt: no new
+    ``pin_bump`` is minted; if this fails the cap does not bind a bump."""
+    mint = _pin_plan(store, retries=1)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(store, pin, "land_slice", "failed")
+    pd.run_pass(store)
+    assert [m["job_type"] for _j, m in _jobs_under(store, pin)] == [
+        "pin_bump",
+        "land_slice",
+    ]
+
+
+@pytest.mark.parametrize(
+    "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
+)
+def test_verdict_line_never_closes_a_pin_bump_node(
+    store: Store, pin_op: Any, line: str
+) -> None:
+    """A verdict line on a pin-bump node does not close it: only its land
+    does; if this fails a stray comment closes a bump that never reached
+    main."""
+    mint = _pin_plan(store, ready=False)
+    pin = mint.ids["pin"]
+    _mark_done(store, mint.ids["b1"], mint.ids["rel"])
+    _todo_comment(store, pin, line)
+    pd.run_pass(store)
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_pin_bump_node_dies_with_a_dead_release_node(store: Store, pin_op: Any) -> None:
+    """A pin-bump node behind a release node whose only slice is moot is
+    closed with it by the dead-chain walk; if this fails an abandoned
+    release leaves its bump open."""
+    mint = _pin_plan(store, ready=False)
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_pin_bump_node_lives_while_its_release_node_is_open(
+    store: Store, pin_op: Any
+) -> None:
+    """An open release node (its slice alive) keeps the pin-bump node open;
+    if this fails a bump dies before its release is ruled out."""
+    mint = _pin_plan(store, ready=False)
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rel", "pin")
+    assert all(v not in pd.TERMINAL_TODO_STATUSES for v in got.values())

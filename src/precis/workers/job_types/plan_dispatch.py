@@ -141,8 +141,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``analysis:`` comment was posted since (td543749); a mechanical task (``meta.op`` other than ``run_slice``) whose
    newest job succeeded; a ``run_slice`` task whose newest job is a
    succeeded ``land_slice`` (a succeeded build alone never closes it, and
-   a build plus its red land count as one attempt). Deepest first, so
-   nested phases cascade in one pass.
+   a build plus its red land count as one attempt); a ``pin_bump`` node
+   follows that rule too (its job hands a branch to ``land_slice`` and
+   succeeds, so a succeeded ``pin_bump`` alone neither closes the node nor
+   re-dispatches it, and a failed land re-dispatches the build).
+   Deepest first, so nested phases cascade in one pass.
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
    ``blocked-by`` target on it or an ancestor — a terminal target stays
@@ -158,6 +161,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    it parks a gripe in ``gripe_dispatch`` (gr645524):
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
+   A ``pin_bump`` node (td659522 step 4) takes ``release_todo`` (its one
+   ``blocked-by`` ``repo_release`` node) and ``pin_repo`` (that node's one
+   non-default repo) from the plan; it is skipped, with a note, when it has
+   no single such blocker, the release node governs no or several repos or
+   the default one, or the node itself resolves to a repo other than precis.
    A ``run_slice`` class with no enabled offering is blocked on one
    coordinator ask before any job is minted (gr611305). So is a
    ``run_slice`` leaf whose judged text — its body and newest
@@ -552,6 +560,12 @@ DEFAULT_OP = "run_slice"
 #: The mechanical op that cuts a release of a second repo (td659522
 #: step 3). Named, not imported: the job module registers separately.
 REPO_RELEASE_OP = "repo_release"
+
+#: The mechanical op that bumps a second repo's pin in precis after its
+#: release node cut the tag (td659522 step 4). Named, not imported. Its
+#: job hands a branch to ``land_slice`` and succeeds: the node closes
+#: through that land, like a ``run_slice`` slice, never on the job itself.
+PIN_BUMP_OP = "pin_bump"
 
 #: The todo's comment chunk kind (``handlers.todo._COMMENT_KIND``; restated —
 #: workers never import handlers).
@@ -3290,6 +3304,10 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
             # td659522 step 3: the tag on the remote is the result — a
             # release node closes only through its succeeded job.
             continue
+        if _is_pin_bump(n):
+            # td659522 step 4: a pin-bump node closes only through its
+            # land_slice; no verdict line stands for the bump on main.
+            continue
         if plan.live_job(n):
             continue
         root = plan.nodes.get(n.root)
@@ -3685,7 +3703,10 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # then a succeeded land_slice (its ship closes the todo first;
             # this is the backstop). A succeeded run_slice alone never does.
             jobs = plan.jobs(n)
-            if _op_type(n) == DEFAULT_OP and not (
+            # A pin-bump node follows the slice rule (td659522 step 4): its
+            # job hands the branch to a land_slice and succeeds before
+            # the bump is on main.
+            if _op_type(n) in (DEFAULT_OP, PIN_BUMP_OP) and not (
                 jobs and jobs[-1].meta.get("job_type") == "land_slice"
             ):
                 continue
@@ -3865,10 +3886,10 @@ def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
         # A build that handed off to the lander is one attempt with its
-        # land_slice, not two.
+        # land_slice, not two (a pin_bump likewise, td659522 step 4).
         and not (
             j.status == "succeeded"
-            and j.meta.get("job_type") == DEFAULT_OP
+            and j.meta.get("job_type") in (DEFAULT_OP, PIN_BUMP_OP)
             and any(k.meta.get("job_type") == "land_slice" for k in jobs[i + 1 :])
         )
     ]
@@ -4465,6 +4486,8 @@ def _capped(
     rungs: tuple[_lanes.Rung, ...] = (),
     spend_capped: bool = False,
 ) -> bool:
+    if _pin_awaits_land(plan, n):
+        return False  # the land owns the node (td659522 step 4)
     jobs = plan.jobs(n)
     # The newest job need only be TERMINAL: a cancelled job burns no
     # attempt itself (:func:`_attempt_jobs` skips it), but the attempts
@@ -4529,6 +4552,76 @@ def _is_repo_release(n: _Node) -> bool:
     """``n`` is a second-repo release node: its resolved mechanical op
     is :data:`REPO_RELEASE_OP` (td659522 step 3)."""
     return _resolve_op(n)[0] == REPO_RELEASE_OP
+
+
+def _is_pin_bump(n: _Node) -> bool:
+    """``n`` is a pin-bump node: its resolved mechanical op is
+    :data:`PIN_BUMP_OP` (td659522 step 4)."""
+    return _resolve_op(n)[0] == PIN_BUMP_OP
+
+
+def _pin_awaits_land(plan: _Plan, n: _Node) -> bool:
+    """``n`` is a pin-bump node whose newest job is a succeeded
+    ``pin_bump`` above the re-arm floor: the branch is handed to the
+    lander, and the node waits for that land (it closes through it, and a
+    failed land re-dispatches the build). Neither a cap ask nor a second
+    ``pin_bump`` may fire in this state."""
+    if not _is_pin_bump(n):
+        return False
+    jobs = plan.jobs(n)
+    if not jobs:
+        return False
+    j = jobs[-1]
+    floor = _rearm_floor(n)
+    return (
+        j.status == "succeeded"
+        and j.meta.get("job_type") == PIN_BUMP_OP
+        and (floor is None or j.id > floor)
+    )
+
+
+def _pin_params(
+    plan: _Plan, n: _Node, params: dict[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """The ``pin_bump`` params of ``n`` (``todo_id``, ``release_todo``,
+    ``pin_repo``; ones already on the op are kept) and ``None``, or the
+    reason it must not dispatch. ``release_todo`` is the single non-ask
+    ``blocked-by`` target of ``n`` that is a ``repo_release`` node, open
+    or done; blockers are read from ``plan.nodes``, so a target outside
+    the loaded subtrees (no op to read) does not count. ``pin_repo`` is
+    the one non-default repo governing that release node. The pin-bump
+    node itself builds in precis: it must resolve to no repo or the
+    default one."""
+    own = _node_repos(plan, n)
+    if own and own != [_lanes.DEFAULT_REPO]:
+        return params, (
+            f"resolves to repo {', '.join(own)}; it builds in precis "
+            "(carry repo:precis or inherit no repo: tag)"
+        )
+    releases = [
+        m
+        for b in plan.blockers.get(n.id, [])
+        if not b.is_ask
+        and (m := plan.nodes.get(b.id)) is not None
+        and m.kind == "todo"
+        and _is_repo_release(m)
+    ]
+    ids = sorted({m.id for m in releases})
+    if len(ids) != 1:
+        return params, (
+            f"needs exactly one {REPO_RELEASE_OP} blocked-by target, found {len(ids)}"
+        )
+    repos = _node_repos(plan, releases[0])
+    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+        return params, (
+            f"release td{ids[0]} must govern exactly one non-default repo, "
+            f"found {repos or 'none'}"
+        )
+    out = dict(params)
+    out.setdefault("todo_id", n.id)
+    out.setdefault("release_todo", ids[0])
+    out.setdefault("pin_repo", repos[0])
+    return out, None
 
 
 def _tag_minted_repo(
@@ -5639,6 +5732,20 @@ def _step_dispatch(
                 continue
             params["repo"] = tagged[0]
             params.setdefault("todo_id", n.id)
+        if _is_pin_bump(n):
+            # td659522 step 4: the pin-bump job names its release node and
+            # the repo it pins; it builds in precis (no ``repo`` param).
+            params, pin_problem = _pin_params(plan, n, params)
+            if pin_problem is not None:
+                res.notes.append(
+                    f"td{n.id}: {PIN_BUMP_OP} not dispatched — {pin_problem}"
+                )
+                continue
+            if _pin_awaits_land(plan, n):
+                res.notes.append(
+                    f"td{n.id}: {PIN_BUMP_OP} succeeded; waiting for its land_slice"
+                )
+                continue
         reland = _reland_params(plan, n, w.store)
         if job_type == DEFAULT_OP and reland is None:
             task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
