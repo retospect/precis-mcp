@@ -7,10 +7,11 @@ the shared registry in tools/__init__.py.
 Personal identity binds anew from the trusted HTTP request's ASGI scope
 for each dispatch, including an explicit anonymous scope for stdio and
 unbound callers. Session state, wire metadata and revision attribution
-cannot authorize personal records. Learning calls never log payloads.
-Personal tokens reach only learning calls and the exact learning-help read.
-OAuth app grants either preserve that narrow boundary or explicitly consent
-to full MCP tool access, while keeping their account and app attribution.
+cannot authorize personal records. Private calls never log payloads.
+Personal tokens reach only private-kind calls and each kind's exact help
+read. OAuth app grants either preserve that narrow boundary or explicitly
+consent to full MCP tool access, while keeping their account and app
+attribution.
 Their live account and legacy revision actor are still revalidated before
 the scope check; install, slice and in-process callers retain their scope.
 """
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis import principal, serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
-from precis.learning_privacy import is_learning_call
+from precis.private_kinds import private_kind_of
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
 from precis.user_context import current_principal, user_actor_scope
 
@@ -207,10 +208,11 @@ def _log_tool_call(
             return v[:limit] + "…"
         return v
 
-    if is_learning_call(payload):
+    private = private_kind_of(payload)
+    if private is not None:
         # Private notes, identifiers, forged fields and their error text
         # must not enter the generic shared audit stream on either path.
-        payload = {"kind": "learning"}
+        payload = {"kind": private}
 
     sample: dict[str, Any] = {}
     for key in _SCALAR_KEYS:
@@ -441,7 +443,7 @@ def _dispatch_as_user(
                     verb,
                     payload,
                     fold=_ctx_session(ctx) is not None
-                    and not is_learning_call(payload),
+                    and private_kind_of(payload) is None,
                 )
             finally:
                 _RESPONSE_IMAGES.reset(_img_token)
@@ -497,47 +499,42 @@ def _dispatch_as_user(
 
 
 def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
-    """Apply PAT's private-learning boundary or an OAuth app's capabilities."""
+    """Apply PAT's private-kind boundary or an OAuth app's capabilities."""
+    from precis import private_kinds
     from precis.whoami import CALL as WHOAMI
 
+    verbs = {"get", "search", "put", "edit", "delete", "tag", "link"}
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
     if oauth is not None:
         if "mcp:full" in oauth.scopes:
-            return verb in {"get", "search", "put", "edit", "delete", "tag", "link"}
-        if is_learning_call(payload):
-            return "learning" in oauth.scopes and verb in {
-                "get",
-                "search",
-                "put",
-                "edit",
-                "delete",
-                "tag",
-                "link",
-            }
+            return verb in verbs
+        private = private_kind_of(payload)
+        if private is not None:
+            entry = private_kinds.PRIVATE_KINDS[private]
+            return entry.oauth_scope in oauth.scopes and verb in verbs
         return verb == "get" and payload in (
-            {"kind": "skill", "id": "precis-learning-help"},
+            *(
+                {"kind": "skill", "id": entry.help_skill}
+                for entry in private_kinds.PRIVATE_KINDS.values()
+                if entry.oauth_scope in oauth.scopes
+            ),
             {"kind": "skill", "id": "precis-oauth-help"},
             WHOAMI,
         )
-    if verb in {
-        "get",
-        "search",
-        "put",
-        "edit",
-        "delete",
-        "tag",
-        "link",
-    } and is_learning_call(payload):
+    if verb in verbs and private_kind_of(payload) is not None:
         # dispatch_with_status uses this same classifier before any other
-        # routing. Malformed/mixed learning calls refuse in dispatch_learning;
-        # they cannot fall through to a non-learning handler or batch.
+        # routing. Malformed/mixed private calls refuse in dispatch_private;
+        # they cannot fall through to a non-private handler or batch.
         return True
-    # These two public, read-only documents let a personal client discover
+    # These public, read-only documents let a personal client discover
     # its permitted surface and its own identity without opening skill
     # search, toc or other views.
     return verb == "get" and payload in (
-        {"kind": "skill", "id": "precis-learning-help"},
+        *(
+            {"kind": "skill", "id": entry.help_skill}
+            for entry in private_kinds.PRIVATE_KINDS.values()
+        ),
         WHOAMI,
     )
 
@@ -545,6 +542,7 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
 def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
     """Refuse personal MCP calls outside the allowlist without echoing input."""
     if current_principal() is not None and not _personal_call_allowed(verb, payload):
+        from precis import private_kinds
         from precis.errors import Denied
 
         owner = current_principal()
@@ -553,10 +551,16 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
                 "this operation is outside the OAuth connection's permissions",
                 next="review the connection at /account/connections and reconnect with the required permissions",
             )
+        entries = tuple(private_kinds.PRIVATE_KINDS.values())
+        kinds = ", ".join(entry.kind for entry in entries)
+        helps = ", ".join(f"{entry.kind} help" for entry in entries)
+        calls = "; ".join(f"get(kind='{entry.kind}')" for entry in entries)
+        reads = "; ".join(
+            f"get(kind='skill', id='{entry.help_skill}')" for entry in entries
+        )
         raise Denied(
-            "personal MCP tokens permit learning calls, learning help and whoami only",
-            next="get(kind='learning'); get(kind='skill', id='precis-learning-help'); "
-            "get(kind='profile', id='me')",
+            f"personal MCP tokens permit {kinds} calls, {helps} and whoami only",
+            next=f"{calls}; {reads}; get(kind='profile', id='me')",
         )
 
 
