@@ -137,7 +137,7 @@ class Rel:
 @pytest.fixture
 def rel(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> Rel:  # noqa: F811
     store = _Store()
-    store.add_todo(42, tags=("repo:catpath",))
+    store.add_todo(42, tags=("repo:catpath",), meta={"retries": 1})
     events: list[str] = []
     lease = ReleaseLease(events)
     r = Rel(rig, store, lease, events)
@@ -865,7 +865,50 @@ def test_three_raced_rounds_end_attempt_free(rel: Rel) -> None:
     _attempt_free(ctx, rel.store, repo_land.RACED_CLASS)
     assert len(rel.pushes) == 3 and len(rel.rig.launches) == 3
     assert not rel.tree().exists()
-    _no_pushed_record(rel)
+    # The last round's record stays: the next job's resume check reads the
+    # remote and clears it (the sha is not on the base).
+    assert rel.record()["state"] == "pushed"
+    ctx2, handle2 = _submitted(rel)
+    rel.outcomes[:] = []
+    rel.on_push = None
+    assert repo_release.poll(ctx2, handle2) is False, ctx2.failure
+    assert handle2["phase"] == "check" and rel.record() is None
+
+
+def test_a_raced_push_that_landed_under_another_commit_waits_for_its_ci(
+    rel: Rel,
+) -> None:
+    """If this fails a push that landed, with someone's commit on top before
+    the read-back, is read as lost: the record is cleared, a second version is
+    cut and the first release commit is never tagged."""
+    ctx, handle = _prepared(rel)
+    first = handle["sha"]
+    _finish(handle, 0)
+    rel.outcomes[:] = [("raced", "main moved")]
+
+    def landed_then_moved() -> None:
+        _g(rel.rig.clone, "push", "-q", "origin", f"{first}:refs/heads/main")
+        _g(rel.rig.clone, "reset", "-q", "--hard", first)
+        rel.commit("fix: a hand push on top")
+
+    rel.on_push = landed_then_moved
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "ci" and handle["sha"] == first
+    assert rel.record()["state"] == "pushed" and rel.record()["sha"] == first
+    assert len(rel.pushes) == 1 and len(rel.rig.launches) == 1
+    assert "stamp:clear" not in rel.events
+
+
+def test_a_history_git_cannot_read_ends_attempt_free_and_keeps_the_record(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a git error on the resume's ancestry check is read as
+    "the push never happened" and a pushed release commit is forgotten."""
+    monkeypatch.setattr(repo_release, "_on_base", lambda root, sha, tip: None)
+    ctx, _handle, done = _resumed(rel, _pushed_record(rel.tip()))
+    assert done is True
+    _attempt_free(ctx, rel.store, repo_release.READ_CLASS)
+    assert rel.record()["state"] == "pushed"
 
 
 def test_a_push_error_is_attempt_free_and_leaves_the_record_for_the_resume(
@@ -1330,6 +1373,56 @@ def test_a_failed_rerun_post_is_retried_on_the_next_poll(rel: Rel) -> None:
     assert handle["reruns"] == 1 and rel.rerun_calls == [500, 500]
 
 
+def test_a_403_after_an_unanswered_rerun_post_reads_as_requested(rel: Rel) -> None:
+    """If this fails a re-run POST that was accepted but whose reply was lost
+    ends in a false "token lacks Actions write" ask (GitHub answers 403 for a
+    run that is already re-running); or a second 403 is excused too."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="cancelled")]
+    rel.rerun_results[:] = [(False, 0), (False, 403), (False, 403)]
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["reruns"] == 0 and handle["rerun_unsure"] is True
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False and ctx.status is None
+    assert handle["reruns"] == 1 and handle["rerun_attempt_before"] == 1
+    assert "rerun_unsure" not in handle
+    # attempt 2 was cancelled as well: this 403 is a real refusal
+    rel.runs = [_run(sha, conclusion="cancelled", run_attempt=2)]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "Actions write")
+
+
+def test_the_retry_after_a_red_release_counts_from_the_last_tagged_release(
+    rel: Rel,
+) -> None:
+    """If this fails the try after a red release reads the untagged release
+    commit as "no previous release" and cuts a minor for fixes only; or it
+    trusts a carried tag the remote no longer has at that sha."""
+    base = rel.tip()
+    rel.tags["v1.2.0"] = base
+    rel.commit("fix: first")
+    ctx, handle, sha = _in_ci(rel)
+    assert handle["version"] == "1.2.1" and rel.record()["prev_sha"] == base
+    rel.runs = [_run(sha, conclusion="failure")]
+    _g(rel.rig.clone, "push", "-q", "origin", f"{sha}:refs/heads/main")
+    assert repo_release.poll(ctx, handle) is True
+    red = rel.record()
+    assert red["state"] == "red"
+    _g(rel.rig.clone, "reset", "-q", "--hard", sha)
+    rel.commit("fix: what CI caught")
+    ctx2, handle2 = _prepared(rel)
+    assert handle2["version"] == "1.2.2" and handle2["prev_tag"] == "v1.2.0"
+    assert handle2["prev_sha"] == base
+    body = _g(rel.rig.clone, "log", "-1", "--format=%b", handle2["sha"])
+    assert "v1.2.0" in body and "what CI caught" in body
+    # the carried tag moved on the remote: not trusted, back to a first release
+    rel.store.refs[42].meta["repo_release"] = red
+    rel.tags["v1.2.0"] = "f" * 40
+    ctx3, handle3 = _prepared(rel)
+    assert handle3["version"] == "1.3.0" and handle3["prev_tag"] is None
+
+
 def test_a_404_on_the_runs_read_is_the_coordinators_failure(rel: Rel) -> None:
     """If this fails a token with no Actions read on a private repo is treated
     as a passing outage and the release waits for nothing."""
@@ -1651,6 +1744,59 @@ def test_nodes_that_do_not_hold_the_release(rel: Rel, case: str) -> None:
     else:
         _node(rel, 43, meta={"op": "repo_release"})
     assert repo_release.validate_submit(rel.store, params=PARAMS) is None
+
+
+@pytest.mark.parametrize("retries", [None, 0, 2, "1"])
+def test_a_release_node_without_retries_1_is_refused(rel: Rel, retries: Any) -> None:
+    """If this fails a release node the dispatcher would retry blind (its
+    default is two tries) is minted, and a failed release spends a second
+    version before anyone is asked."""
+    meta = rel.store.refs[42].meta
+    meta.pop("retries")
+    if retries is not None:
+        meta["retries"] = retries
+    refusal = repo_release.validate_submit(rel.store, params=PARAMS) or ""
+    assert "meta.retries = 1" in refusal and "todo 42" in refusal
+
+
+@pytest.mark.parametrize("when", ["parked", "verifying"])
+def test_a_fix_opened_after_submit_stops_the_release_before_the_push(
+    rel: Rel, when: str
+) -> None:
+    """If this fails a review's fix minted while the release waited for the
+    lease or ran its check is released around: the push goes out without it."""
+    if when == "parked":
+        ctx, handle = _submitted(rel)
+        _node(rel, 43)
+        assert repo_release.poll(ctx, handle) is True
+        assert rel.rig.lease.acquires == []
+    else:
+        ctx, handle = _prepared(rel)
+        _finish(handle, 0)
+        _node(rel, 43)
+        assert repo_release.poll(ctx, handle) is True
+        assert not rel.tree().exists()
+    _attempt_free(ctx, rel.store, repo_release.BATCH_CLASS)
+    assert rel.pushes == [] and "td43" in (ctx.failure or "")
+    _no_pushed_record(rel)
+
+
+def test_a_fix_opened_after_the_push_does_not_keep_the_release_from_its_tag(
+    rel: Rel,
+) -> None:
+    """If this fails a pushed release commit is never tagged because a later
+    fix reopened the batch."""
+    ctx, handle, sha = _in_ci(rel)
+    _g(rel.rig.clone, "push", "-q", "origin", f"{sha}:refs/heads/main")
+    _node(rel, 43)
+    # a later job (the first one died in its CI wait) resumes the pushed sha
+    ctx2, handle2 = _submitted(rel)
+    assert repo_release.poll(ctx2, handle2) is False, ctx2.failure
+    assert handle2["phase"] == "ci" and handle2["sha"] == sha
+    _due(handle2)
+    rel.runs = [_run(sha)]
+    assert repo_release.poll(ctx2, handle2) is True and ctx2.status == "succeeded"
+    assert rel.record()["state"] == "tagged" and rel.tags["v1.3.0"] == sha
 
 
 def test_a_slice_with_a_job_under_it_still_holds_the_release(rel: Rel) -> None:

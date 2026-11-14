@@ -8989,6 +8989,105 @@ def test_gate_release_on_is_idempotent_and_skips_closed_releases(
     assert mint.ids["b2"] not in _blocked_by_ids(store, rel)
 
 
+def test_gate_release_on_matches_the_same_repo_without_a_direct_edge(
+    store: Store, release_op: Any
+) -> None:
+    """A reviewer of a fix has no edge from the release node, so the gate
+    matches on the governing repo: a same-repo release is gated, a release of
+    another repo is not, and the direct-edge rule still holds. If this fails
+    a second-round fix leaves the release free to cut unfixed code."""
+    mint = _release_plan(store)
+    ids = mint.ids
+    review = ids["rb1"]
+
+    def extra(m: T._Minter) -> None:
+        m.node("same", "Same release", {"op": "repo_release", "retries": 1})
+        m.node("far", "Far release", {"op": "repo_release", "retries": 1})
+        m.node("gate", "Fix", {"op": "run_slice"})
+
+    more = T._run_body(store, mint.root_id, mint.root_id, extra).ids
+    for key, repo in (("same", "catpath"), ("far", "hexfold")):
+        store.add_tag(more[key], Tag.open(f"repo:{repo}"), set_by="system")
+    store.add_tag(more["gate"], Tag.open("repo:catpath"), set_by="system")
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    pd._gate_release_on(
+        store, plan, w, plan.nodes[review], more["gate"], datetime.now(UTC)
+    )
+    assert _blocked_by_ids(store, more["same"]) == [more["gate"]]
+    assert _blocked_by_ids(store, more["far"]) == []
+    # The direct-edge rule: rel is blocked-by the reviewer, whatever its repo.
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([review, more["gate"]])
+
+
+def test_gate_release_on_falls_back_to_the_reviewers_repo(
+    store: Store, release_op: Any
+) -> None:
+    """A minted todo resolving to no repo takes the reviewer's; if this fails
+    the fallback never gates and an untagged fix lets the release go."""
+    mint = _release_plan(store)
+    review = mint.ids["rb1"]
+
+    def extra(m: T._Minter) -> None:
+        m.node("same", "Same release", {"op": "repo_release", "retries": 1})
+        m.node("gate", "Fix", {"op": "run_slice"})
+
+    more = T._run_body(store, mint.root_id, mint.root_id, extra).ids
+    store.add_tag(more["same"], Tag.open("repo:catpath"), set_by="system")
+    store.add_tag(review, Tag.open("repo:catpath"), set_by="system")
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    pd._gate_release_on(
+        store, plan, w, plan.nodes[review], more["gate"], datetime.now(UTC)
+    )
+    assert _blocked_by_ids(store, more["same"]) == [more["gate"]]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [
+        ("review: FIX — a.py misses the empty case", False),
+        ("review: REVERT — bad", True),
+    ],
+)
+@pytest.mark.parametrize(
+    ("target_tag", "root_tag", "expected"),
+    [
+        ("repo:catpath", None, True),
+        (None, None, False),
+        ("repo:precis", None, False),
+        ("repo:catpath", "repo:catpath", False),
+    ],
+)
+def test_fix_or_revert_todo_carries_the_reviewed_slices_second_repo(
+    store: Store,
+    release_op: Any,
+    verdict: str,
+    landed_job: bool,
+    target_tag: str | None,
+    root_tag: str | None,
+    expected: bool,
+) -> None:
+    """The fix or revert todo is minted under the plan root with only the
+    plan tag; it gets ``repo:<name>`` from the reviewed slice's tag when that
+    is a single non-default repo the root does not already carry. If this
+    fails a second-repo fix builds in the default repo."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    ids = mint.ids
+    if target_tag:
+        store.add_tag(ids["b1"], Tag.open(target_tag), set_by="system")
+    if root_tag:
+        store.add_tag(mint.root_id, Tag.open(root_tag), set_by="system")
+    pd.run_pass(store)
+    (new,) = [
+        c
+        for c in _children(store, mint.root_id)
+        if c not in (ids["b1"], ids["rb1"], ids["rel"], ids["pin"])
+    ]
+    tags = {t for t in _open_tags(store, new) if t.startswith("repo:")}
+    assert tags == ({"repo:catpath"} if expected else set())
+
+
 def _plan_statuses(store: Store, mint: T.PlanMint, *keys: str) -> dict[str, str | None]:
     return {k: _status(store, mint.ids[k]) for k in keys}
 

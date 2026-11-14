@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -209,3 +210,105 @@ def test_stale_holder_is_skipped_and_alerted_once(store: Store) -> None:
     assert _alert_count(store) == 1
     assert rl.acquire(store, REPO, job_id=b, kind="land") is None
     assert _alert_count(store) == 1
+
+
+def _age(store: Store, jid: int) -> None:
+    """Push ``jid``'s deadline past the stale window."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float8)"
+            " WHERE ref_id = %s",
+            (time.time() - rl.STALE_AFTER_S - 60, jid),
+        )
+
+
+def _revive(store: Store, jid: int) -> None:
+    """Give ``jid`` a fresh deadline, as a re-claimed job gets."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float8)"
+            " WHERE ref_id = %s",
+            (time.time() + 600, jid),
+        )
+
+
+def test_own_lease_loses_to_live_lower_rival() -> None:
+    """Of two live holders the lower job id keeps the lease; if this fails a
+    revived holder sits beside the job that took over."""
+    d = decide([_holds(1), _holds(2)], REPO, job_id=2, kind="release", now=NOW)
+    assert d.blocker == {"job_id": 1, "kind": "land", "reason": "held"}
+    assert d.holder is not None and d.holder["job_id"] == 1
+    d = decide([_holds(1), _holds(2)], REPO, job_id=1, kind="land", now=NOW)
+    assert d.blocker is None and d.holder is not None and d.holder["job_id"] == 1
+
+
+def test_stale_wanter_is_ignored_and_listed() -> None:
+    """If this fails a dead wanter freezes every land, or a live one stops
+    blocking."""
+    past = NOW - rl.STALE_AFTER_S - 1
+    dead = LeaseRow(job_id=5, terminal=False, want={"repo": REPO}, deadline=past)
+    d = decide([dead], REPO, job_id=2, kind="land", now=NOW)
+    assert d.blocker is None and d.stale == [5]
+    live = LeaseRow(job_id=5, terminal=False, want={"repo": REPO}, deadline=NOW + 100)
+    d = decide([live], REPO, job_id=2, kind="land", now=NOW)
+    assert d.blocker is not None and d.blocker["reason"] == "wanted"
+    assert d.stale == []
+
+
+@pytest.mark.db
+def test_takeover_strips_stale_holder_and_revived_one_is_blocked(
+    store: Store,
+) -> None:
+    """If this fails a stale holder keeps its key after another job took the
+    lease, and on revival co-holds it (holder() names the lower id)."""
+    land, rel = _job(store), _job(store, "repo_release")
+    assert rl.acquire(store, REPO, job_id=land, kind="land") is None
+    _age(store, land)
+    assert rl.acquire(store, REPO, job_id=rel, kind="release") is None
+    assert rl.LEASE_KEY not in _meta(store, land)
+    _revive(store, land)
+    assert rl.acquire(store, REPO, job_id=land, kind="land") == {
+        "job_id": rel,
+        "kind": "release",
+        "reason": "held",
+    }
+    h = rl.holder(store, REPO)
+    assert h is not None and h["job_id"] == rel
+
+
+@pytest.mark.db
+def test_two_live_holders_resolve_to_lower_id_and_loser_is_stripped(
+    store: Store,
+) -> None:
+    """If this fails two live keys persist: the lower id keeps the lease and
+    the loser's key goes at its next acquire."""
+    a, b = _job(store), _job(store, "repo_release")
+    for jid, kind in ((a, "land"), (b, "release")):
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object(%s::text, %s::jsonb)"
+                " WHERE ref_id = %s",
+                (rl.LEASE_KEY, json.dumps(_lease(kind=kind)), jid),
+            )
+    assert rl.acquire(store, REPO, job_id=a, kind="land") is None
+    assert rl.acquire(store, REPO, job_id=b, kind="release") == {
+        "job_id": a,
+        "kind": "land",
+        "reason": "held",
+    }
+    assert rl.LEASE_KEY not in _meta(store, b)
+    assert rl.LEASE_KEY in _meta(store, a)
+
+
+@pytest.mark.db
+def test_stale_wanter_does_not_block_a_land_and_is_alerted(store: Store) -> None:
+    """If this fails a release that died while wanting freezes the repo's
+    lands, or a live want stops blocking."""
+    rel, land = _job(store, "repo_release"), _job(store)
+    rl.want(store, REPO, job_id=rel)
+    got = rl.acquire(store, REPO, job_id=land, kind="land")
+    assert got is not None and got["reason"] == "wanted"
+    _age(store, rel)
+    assert rl.acquire(store, REPO, job_id=land, kind="land") is None
+    assert _alert_count(store) == 1
+    assert rl.WANT_KEY in _meta(store, rel)  # wants are not evicted

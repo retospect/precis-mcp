@@ -2340,6 +2340,7 @@ def _review_fix(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
     node = plan.nodes[fix_id]
+    _tag_minted_repo(plan, w, n, fix_id, now)
     _gate_release_on(store, plan, w, n, fix_id, now)
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
     if target is not None:
@@ -2447,6 +2448,7 @@ def _review_revert(
             f"never main.\nland target: {target}\n\nWhy (review td{n.id}): {why}"
         )
     revert_id = _mint_task(store, plan, w, n.root, title, body, now)
+    _tag_minted_repo(plan, w, n, revert_id, now)
     _gate_release_on(store, plan, w, n, revert_id, now)
     if target is not None:
         w.stamp_meta(plan.nodes[revert_id], {_release.LAND_TARGET_KEY: target})
@@ -4529,19 +4531,56 @@ def _is_repo_release(n: _Node) -> bool:
     return _resolve_op(n)[0] == REPO_RELEASE_OP
 
 
+def _tag_minted_repo(
+    plan: _Plan, w: _Writer, reviewer: _Node, minted_id: int, now: datetime
+) -> None:
+    """Carry the reviewed slice's second repo onto the fix or revert todo
+    ``_mint_task`` just made under the plan root (it only has the
+    ``plan:`` tag, so it would resolve to the default repo): the repo
+    governing the reviewer, else the first review target that has one. Only
+    a single non-default repo not already governing the minted node is
+    tagged."""
+    minted = plan.nodes.get(minted_id)
+    if minted is None:
+        return
+    repos = _node_repos(plan, reviewer)
+    for t in () if repos else _review_targets(plan, reviewer):
+        repos = _node_repos(plan, t)
+        if repos:
+            break
+    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+        return
+    if _node_repos(plan, minted) == repos:
+        return
+    w.add_tag(minted, f"repo:{repos[0]}", now)
+
+
 def _gate_release_on(
     store: Any, plan: _Plan, w: _Writer, reviewer: _Node, gate_id: int, now: datetime
 ) -> None:
-    """Hold every OPEN ``repo_release`` node of ``reviewer``'s plan that is
-    ``blocked-by`` the reviewer behind ``gate_id`` too — the fix or
-    revert todo the reviewer's verdict just minted. The reviewer closes
-    ``done`` at FIX/REVERT, so without this edge the release would
-    unblock and cut unfixed code. Idempotent: an existing edge is kept."""
+    """Hold every OPEN ``repo_release`` node of ``reviewer``'s plan behind
+    ``gate_id`` too — the fix or revert todo the reviewer's verdict just
+    minted — when it is ``blocked-by`` the reviewer, or governs the same
+    repo(s) as the minted todo (the reviewer's when the minted one
+    resolves none): a reviewer of a fix has no edge from the release. The
+    reviewer closes ``done`` at FIX/REVERT, so without this edge the
+    release would unblock and cut unfixed code. Idempotent: an existing
+    edge is kept."""
+    minted = plan.nodes.get(gate_id)
+    repos = sorted(_node_repos(plan, minted)) if minted is not None else []
+    repos = repos or sorted(_node_repos(plan, reviewer))
     for m in plan.todos():
-        if m.root != reviewer.root or _closed(m) or not _is_repo_release(m):
+        if (
+            m.id == gate_id
+            or m.root != reviewer.root
+            or _closed(m)
+            or not _is_repo_release(m)
+        ):
             continue
         edges = plan.blockers.setdefault(m.id, [])
-        if not any(b.id == reviewer.id for b in edges):
+        if not any(b.id == reviewer.id for b in edges) and not (
+            repos and sorted(_node_repos(plan, m)) == repos
+        ):
             continue
         if any(b.id == gate_id for b in edges):
             continue

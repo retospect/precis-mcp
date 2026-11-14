@@ -3,8 +3,8 @@
 Lands of a second repo (``repo_land``, behind the ``land_slice`` job type)
 are not serialised by anything else, and the mechanical ``repo_release``
 job must hold every land of its repo while it waits for CI on the release
-commit. This module is that hold. Nothing calls it yet: ``repo_land``
-adopts it in R3, ``repo_release`` in R5.
+commit. This module is that hold. ``repo_land`` and ``repo_release``
+call it.
 
 The lease is *derived from live job rows*: no table, no setting, no todo
 meta. A job holds the lease for repo R while its status is non-terminal and
@@ -23,10 +23,14 @@ repo (``wanted``) -- a waiting release outranks new lands, or a steady
 stream of lands would starve it. A ``release`` is blocked only by another
 live holder.
 
-A holder whose ``meta.deadline`` (epoch seconds, the ssh_node wall-clock
-kill deadline) passed more than :data:`STALE_AFTER_S` ago is ignored and
-flagged with one alert: a dead job whose row never went terminal must not
-freeze the repo. The decision itself is pure (:func:`decide`, rows in,
+A holder or wanter whose ``meta.deadline`` (epoch seconds, the ssh_node
+wall-clock kill deadline) passed more than :data:`STALE_AFTER_S` ago is
+ignored and flagged with one alert: a dead job whose row never went
+terminal must not freeze the repo. A job that freshly takes the lease
+strips the lease key from the stale holders it skipped (take-over evicts),
+and a job that loses to a live rival strips its own key, so a revived
+holder never sits beside the job that took over; of two live holders the
+lower job id keeps it. The decision itself is pure (:func:`decide`, rows in,
 decision out); the DB part only reads candidate rows and stamps meta.
 
 :func:`acquire` runs in one ``store.atomic()`` under a transaction-scoped
@@ -79,7 +83,7 @@ class LeaseRow:
 class Decision:
     """``blocker`` is the job in the way (``None`` = free or already ours);
     ``holder`` is the live, non-stale holder; ``stale`` lists the stale
-    holders skipped, to be flagged."""
+    holders and wanters skipped, to be flagged."""
 
     blocker: dict[str, Any] | None = None
     holder: dict[str, Any] | None = None
@@ -102,36 +106,43 @@ def decide(
     for a plain holder query, which never blocks anything)."""
     out = Decision()
     wanters: list[int] = []
+    own: dict[str, Any] | None = None
+    other: dict[str, Any] | None = None
     for row in sorted(rows, key=lambda r: r.job_id):
         if row.terminal:
             continue
         lease = row.lease
         if lease and lease.get("repo") == repo:
+            info = {
+                "job_id": row.job_id,
+                "kind": lease.get("kind"),
+                "at": lease.get("at"),
+            }
             if row.job_id == job_id:
-                out.holder = {
-                    "job_id": row.job_id,
-                    "kind": lease.get("kind"),
-                    "at": lease.get("at"),
-                }
-                out.blocker = None
-                return out
-            if _is_stale(row, now):
+                own = info
+            elif _is_stale(row, now):
                 out.stale.append(row.job_id)
-            elif out.holder is None:
-                out.holder = {
-                    "job_id": row.job_id,
-                    "kind": lease.get("kind"),
-                    "at": lease.get("at"),
-                }
+            elif other is None:
+                other = info
         want = row.want
         if want and want.get("repo") == repo and row.job_id != job_id:
-            wanters.append(row.job_id)
+            if _is_stale(row, now):
+                if row.job_id not in out.stale:
+                    out.stale.append(row.job_id)
+            else:
+                wanters.append(row.job_id)
     if job_id is None:
+        out.holder = other
         return out
-    if out.holder is not None:
+    if own is not None and (other is None or job_id < other["job_id"]):
+        # Ours, and no live rival with a lower id: the lower id keeps it.
+        out.holder = own
+        return out
+    out.holder = other
+    if other is not None:
         out.blocker = {
-            "job_id": out.holder["job_id"],
-            "kind": out.holder["kind"],
+            "job_id": other["job_id"],
+            "kind": other["kind"],
             "reason": "held",
         }
     elif kind == "land" and wanters:
@@ -199,11 +210,11 @@ def _flag_stale(store: Store, repo: str, stale: list[int]) -> None:
                 store,
                 source=_ALERT_SOURCE,
                 fingerprint=f"stale-holder:{repo}/{jid}",
-                title=f"repo lease for {repo} held by stale job #{jid}",
+                title=f"repo lease for {repo} blocked by stale job #{jid}",
                 detail=(
-                    f"job #{jid} still carries the {repo} lease but its deadline "
-                    f"passed over {STALE_AFTER_S}s ago; the lease is ignored so "
-                    "the repo is not frozen. Cancel or reap the job."
+                    f"job #{jid} still carries the {repo} lease or want but its "
+                    f"deadline passed over {STALE_AFTER_S}s ago; it is ignored "
+                    "so the repo is not frozen. Cancel or reap the job."
                 ),
                 severity="warn",
                 subject_ref_id=jid,
@@ -242,11 +253,23 @@ def acquire(
         dec = decide(
             _rows(store, conn, repo, job_id), repo, job_id=job_id, kind=kind, now=ts
         )
-        if dec.blocker is None:
+        if dec.blocker is not None:
+            conn.execute(
+                "UPDATE refs SET meta = meta - %s WHERE ref_id = %s"
+                " AND meta -> %s ->> 'repo' = %s",
+                (LEASE_KEY, job_id, LEASE_KEY, repo),
+            )
+        else:
             conn.execute(
                 "UPDATE refs SET meta = meta - %s WHERE ref_id = %s", (WANT_KEY, job_id)
             )
             if dec.holder is None:
+                if dec.stale:
+                    conn.execute(
+                        "UPDATE refs SET meta = meta - %s"
+                        " WHERE ref_id = ANY(%s) AND meta -> %s ->> 'repo' = %s",
+                        (LEASE_KEY, dec.stale, LEASE_KEY, repo),
+                    )
                 set_meta(
                     conn,
                     job_id,

@@ -439,6 +439,7 @@ RECORD_CLASS = "release-record"
 TAG_PUSH_CLASS = "tag-push"
 CI_UNREADABLE_CLASS = "github-unreadable"
 CI_WALL_CLASS = "ci-wall"
+BATCH_CLASS = "batch-open"
 
 _BODY_SUBJECTS = 100
 _BUMPS = frozenset({"auto", "minor", "patch"})
@@ -600,6 +601,15 @@ def validate_submit(
     if refusal is not None or store is None:
         return refusal
     repo = str(params["repo"]).strip()
+    node = store.get_ref(kind="todo", id=params["todo_id"])
+    if (getattr(node, "meta", None) or {}).get("retries") != 1:
+        # plan_dispatch retries a failed op node blind until meta.retries
+        # failures; a blind retry of a release spends a version.
+        return (
+            f"repo_release: todo {params['todo_id']} must carry meta.retries = 1 "
+            "(one failed release asks; a blind retry spends a version); next: "
+            "set it on the release node"
+        )
     root, held = _open_siblings(store, params["todo_id"], repo)
     if not held:
         return None
@@ -721,6 +731,18 @@ def _is_ancestor(root: Path, ancestor: str, sha: str) -> bool:
     return (
         _ls._git(["merge-base", "--is-ancestor", ancestor, sha], root).returncode == 0
     )
+
+
+def _on_base(root: Path, sha: str, tip: str) -> bool | None:
+    """Whether ``sha`` is an ancestor of the fetched ``tip``; ``None`` when
+    git could not say. A sha the clone does not hold is not on the base (the
+    fetch of ``tip`` would have brought it)."""
+    rc = _ls._git(["merge-base", "--is-ancestor", sha, tip], root).returncode
+    if rc in (0, 1):
+        return rc == 0
+    if _ls._git(["cat-file", "-e", f"{sha}^{{commit}}"], root).returncode != 0:
+        return False
+    return None
 
 
 def _numstat_ok(cwd: Path, tip: str, sha: str) -> bool:
@@ -914,7 +936,18 @@ def _resume(
             ci=_cheap_ci(profile, sha),
         )
         return True, None
-    if _is_ancestor(root, sha, tip):
+    on_base = _on_base(root, sha, tip)
+    if on_base is None:
+        _fail(
+            ctx,
+            todo_id,
+            f"git could not say whether {sha[:9]} is on origin/{profile.base}",
+            handoff="release FAILED: git could not read the clone's history "
+            "(infrastructure); the release resumes the pushed commit.",
+            attempt_free=READ_CLASS,
+        )
+        return True, None
+    if on_base:
         # The commit is on the base but untagged: the push happened, so wait
         # for its CI run rather than cut another.
         handle = _ci_handle(profile, {**record, "sha": sha}, rounds)
@@ -926,6 +959,39 @@ def _resume(
         return True, handle
     _stamp_record(ctx, todo_id, None)  # the push never happened
     return False, None
+
+
+def _carried_prev(
+    ctx: Any,
+    profile: _lanes.RepoProfile,
+    todo_id: int,
+    current: str,
+    env: dict[str, str],
+) -> tuple[str | None, str] | None:
+    """``(tag, sha)`` of the release this node's untagged release commit of
+    version ``current`` was cut from: the stored record's ``prev_tag`` /
+    ``prev_sha``, taken only when the record is for that version and the
+    remote's tag still points at that sha. ``(None, "")`` when there is none
+    to carry; ``None`` when the remote could not be read."""
+    record = _stored_record(ctx.store, todo_id) or {}
+    tag, sha = record.get("prev_tag"), _rl._hex(record.get("prev_sha"))
+    if (
+        record.get("repo") != profile.name
+        or record.get("version") != current
+        or not isinstance(tag, str)
+        or not tag.startswith(profile.tag_prefix)
+        or not sha
+    ):
+        return None, ""
+    try:
+        if tag_name(profile.tag_prefix, tag[len(profile.tag_prefix) :]) != tag:
+            return None, ""
+    except ReleaseError:
+        return None, ""
+    at = _mirror.ls_remote_tag(profile.remote, tag, env=env)
+    if at is None:
+        return None
+    return (tag, sha) if at == sha else (None, "")
 
 
 def _no_op(
@@ -1104,6 +1170,21 @@ def _prepare(
             tip=tip,
         )
         return None
+    prev_tag: str | None = current_tag if prev_sha else None
+    if not prev_sha:
+        # The tip's version was never tagged. When it is this node's own red
+        # or conflicted release commit, count from the release that one was
+        # cut from, so a retry after fixes is not read as a first release.
+        carried = _carried_prev(ctx, profile, todo_id, current, env)
+        if carried is None:
+            free(
+                f"the previous release tag could not be read on {profile.name}'s remote",
+                "the remote's previous release tag could not be read "
+                "(infrastructure); the release is retried.",
+                TAG_ORACLE_CLASS,
+            )
+            return None
+        prev_tag, prev_sha = carried
     # The bump: params.bump, or from the first-parent subjects since the
     # previous tag (none to read when it is absent or off the base).
     on_base = bool(prev_sha) and _is_ancestor(root, prev_sha, tip)
@@ -1173,7 +1254,6 @@ def _prepare(
         "-c",
         f"user.email={RELEASE_IDENT[1]}",
     ]
-    prev_tag = current_tag if prev_sha else None
     body = _commit_body(
         package, tag, bump, why, prev_tag if on_base else None, subjects
     )
@@ -1335,6 +1415,28 @@ def _admission_gap(
     return _release_refusal(ctx.store, params)
 
 
+def _batch_open(ctx: Any, todo_id: int, profile: _lanes.RepoProfile, what: str) -> bool:
+    """The submit backstop, read again before the push: a slice or reviewer of
+    the repo that opened under the plan root since submit (a review's fix)
+    fails the job attempt-free, and the next dispatch holds on it. ``True``
+    when the job was failed. Never read once the commit is pushed: a later
+    fix must not keep a pushed release from its tag."""
+    _root, held = _open_siblings(ctx.store, todo_id, profile.name)
+    if not held:
+        return False
+    shown = ", ".join(f"td{i}" for i in held[:8])
+    _fail(
+        ctx,
+        todo_id,
+        f"{len(held)} slice or reviewer node(s) of {profile.name!r} opened under "
+        f"the plan since submit ({shown}); {what}",
+        handoff=f"release FAILED: the batch is open again ({shown}); the release "
+        "waits until they close.",
+        attempt_free=BATCH_CLASS,
+    )
+    return True
+
+
 def _poll_lease(
     ctx: Any,
     handle: dict[str, Any],
@@ -1357,6 +1459,9 @@ def _poll_lease(
             "release waited; it is retried once the repo is open.",
             attempt_free=_rl.CLOSED_CLASS,
         )
+        return True
+    pushed = (_stored_record(ctx.store, todo_id) or {}).get("state") == "pushed"
+    if not pushed and _batch_open(ctx, todo_id, profile, "not releasing"):
         return True
     _repo_lease.want(ctx.store, profile.name, job_id=_rl._job_id(ctx))
     blocker = _repo_lease.acquire(
@@ -1507,6 +1612,9 @@ def _poll_green(
             "release is retried once it is open.",
             _rl.CLOSED_CLASS,
         )
+    if _batch_open(ctx, todo_id, profile, "not pushing"):
+        _drop_tree(root, todo_id)
+        return True
     held = _repo_lease.holder(ctx.store, profile.name)
     if held is None or held.get("job_id") != _rl._job_id(ctx):
         by = f"job #{held.get('job_id')}" if held else "no job"
@@ -1556,7 +1664,9 @@ def _poll_green(
         object_dirs=objects,
     )
     if outcome == "raced":
-        _stamp_record(ctx, todo_id, None)
+        # The record stays "pushed": the push may have landed with someone
+        # else's commit on top. The resume check in _prepare reads the new tip
+        # and either waits for this sha's CI or clears the record.
         _drop_tree(root, todo_id)
         rounds = _int(handle.get("rounds"), 1)
         if rounds >= MAX_ROUNDS:
@@ -1952,6 +2062,16 @@ def _poll_cancelled(
             f"re-run {reruns + 1}/{MAX_RERUNS} requested",
         )
         return _wait(ctx, handle, todo_id, "re-run requested", now=now)
+    if status == 403 and handle.pop("rerun_unsure", False):
+        # The POST before this one got no answer and may have been accepted:
+        # GitHub answers 403 for a run that is already re-running. Read it as
+        # requested; were it a real refusal, the wait ends at the CI wall and
+        # the next job's first POST says so.
+        handle["reruns"] = reruns + 1
+        handle["rerun_attempt_before"] = int(run.get("run_attempt") or 1)
+        return _wait(ctx, handle, todo_id, "re-run probably requested", now=now)
+    if status == 0:
+        handle["rerun_unsure"] = True
     if status in (401, 403, 404):
         why = (
             f"GitHub refused the re-run of CI run {run.get('id')} on "
