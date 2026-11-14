@@ -121,6 +121,7 @@ _SEARCH_DISPATCH_KEYS = frozenset(
         "uncited",
         "cited",
         "hubbed",
+        "novel_for",
         "canon",
         "angle",
         "like",
