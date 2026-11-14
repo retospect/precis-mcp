@@ -654,6 +654,13 @@ PREFIX_LANE_FALLBACK_MODELS: tuple[str, ...] = (
 #: retry (review td661037).
 ALLOWLIST_MODEL_ADAPTERS: frozenset[str] = frozenset({"devin_tree"})
 
+#: Note prefix :func:`diverse_model_pick` returns when a lane that could
+#: run a different model exists but is at cap or backed off right now: a
+#: wait, not a refusal. The caller parks on the lane-wait machinery
+#: instead of refusing — a full claude-sub lane read as "no fit lane"
+#: filed one coordinator ask per validate node (gr674214).
+DIVERSE_BUSY_PREFIX = "run_slice: the different-model lane is busy"
+
 
 def diverse_model_pick(
     store: Any,
@@ -777,6 +784,24 @@ def diverse_model_pick(
     if not paid_ok and any(ln.cost_class == _lanes.COST_FREE for ln in fit):
         fit = [ln for ln in fit if ln.cost_class == _lanes.COST_FREE]
     if not fit:
+        busy = sorted(
+            ln.name
+            for ln in candidates
+            if ln is not lane
+            and ln.enabled
+            and not ln.parked
+            and ln.fits(task_class)
+            and (ln.name in backed or live.get(ln.name, 0) >= ln.cap)
+            and _alt(ln) is not None
+        )
+        if busy:
+            return (
+                None,
+                None,
+                f"{DIVERSE_BUSY_PREFIX}: {', '.join(busy)} would run a model "
+                f"outside {sorted(avoid)} but is full or backed off; parked "
+                f"until a slot frees",
+            )
         return _refuse()
     best = min(
         fit,

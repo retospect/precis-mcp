@@ -845,6 +845,34 @@ def test_diverse_pick_respects_caps_backoffs_and_free_first() -> None:
     assert (new_lane.name, model) == ("free", "m5")
 
 
+@pytest.mark.parametrize("why", ["full", "backed"])
+def test_diverse_pick_parks_when_the_only_different_lane_is_busy(why: str) -> None:
+    """gr674214: claude-sub at cap was the only lane outside the code
+    models; that is a wait, so the pick returns the busy note (the caller
+    parks), not the refusal that mints a coordinator ask."""
+    picked = _lane("codex", models=("kimi-for-coding",), default_model=None)
+    other = _lane("claude-sub", models=("claude-sonnet-5-5",), cap=3)
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=picked,
+        model=None,
+        candidates=(picked, other),
+        counts={"claude-sub": 3} if why == "full" else {},
+        backoffs=(
+            {"claude-sub": datetime.now(UTC) + timedelta(hours=1)}
+            if why == "backed"
+            else None
+        ),
+        paid_ok=True,
+        avoid=frozenset({"kimi-for-coding"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane, model) == (None, None)
+    assert note and note.startswith(outcome.DIVERSE_BUSY_PREFIX)
+    assert "claude-sub" in note and "refusing" not in note
+
+
 # ── build_outcome end-to-end ──────────────────────────────────────
 
 

@@ -608,6 +608,11 @@ def _diverse_test_pick(
     )
     if note:
         ctx.append_chunk("job_event", note)
+    if new_lane is None and note and note.startswith(_outcome.DIVERSE_BUSY_PREFIX):
+        # A busy different-model lane is a wait (gr674214): park, never
+        # refuse — a refusal mints a coordinator ask per node.
+        _park_lane_full(ctx, note)
+        return None, None, None
     return new_lane, new_model, note
 
 
