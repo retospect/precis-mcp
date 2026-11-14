@@ -5366,6 +5366,35 @@ def test_submit_lander_handoff_still_launches_on_an_ahead_branch(
     assert seams["lands"] == [] and len(seams["launch"]) == 1
 
 
+def test_submit_review_handoff_still_launches_on_an_ahead_branch(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr674785 review (td675373): a pre-land ``handoff: review: FIX``
+    brief skips the land route like a lander handoff — the branch the
+    reviewer rejected wants the REBUILD the verdict asked for, not a
+    defer back into the same open review (the ping-pong: route → reject
+    → reopen → route, no session ever run)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=(
+            "handoff: review: FIX — the widget check is wrong\n\n"
+            "(review td55, pre-land: the branch is still on origin — "
+            "rebuild on it from the brief with this finding in mind)",
+        ),
+    )
+    _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert seams["lands"] == [] and seams["push"] == []
+    assert len(seams["launch"]) == 1
+
+
 def test_submit_ahead_branch_route_failure_falls_back_to_launch(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5538,6 +5567,74 @@ def test_carried_novel_work_is_none(tmp_path: Path) -> None:
     # match and a "+" line remains.
     (repo / "f.txt").write_text("fixed\n", encoding="utf-8")
     assert _git(repo, "commit", "-qam", "half the fix").returncode == 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+
+    assert run_slice._carried_on_base(repo, "origin/main", "slice/9") is None
+
+
+def test_carried_reverted_squash_land_is_none(tmp_path: Path) -> None:
+    """gr674785 review (td675373): a squash carrier REVERTED upstream
+    still patch-matches — the patch-id rides the history — but the fix
+    itself is gone from main. ``None`` leaves the caller's own ruling
+    rather than closing the todo on work that is no longer there."""
+    repo = _carried_repo(tmp_path)
+    _slice_branch(repo, ("f.txt", "fixed\n"), ("g.txt", "added\n"))
+    (repo / "f.txt").write_text("fixed\n", encoding="utf-8")
+    (repo / "g.txt").write_text("added\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    assert _git(repo, "commit", "-qm", "squash: fix the widget").returncode == 0
+    assert _git(repo, "revert", "--no-edit", "HEAD").returncode == 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+
+    assert run_slice._carried_on_base(repo, "origin/main", "slice/9") is None
+
+
+def test_carried_reverted_cherry_pick_is_none(tmp_path: Path) -> None:
+    """The per-commit arm the same way: every ahead commit has an
+    upstream twin, but the twin was reverted — patch equivalence is
+    history, not presence."""
+    repo = _carried_repo(tmp_path)
+    tip = _slice_branch(repo, ("f.txt", "fixed\n"))
+    assert _git(repo, "cherry-pick", "-n", tip).returncode == 0
+    assert _git(repo, "commit", "-qm", "pick: fix the widget").returncode == 0
+    assert _git(repo, "revert", "--no-edit", "HEAD").returncode == 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+
+    assert run_slice._carried_on_base(repo, "origin/main", "slice/9") is None
+
+
+def test_carried_squash_land_outlives_unrelated_drift(tmp_path: Path) -> None:
+    """The remains check is presence-of-change, not tree equality: main
+    moving on in files the branch never touched keeps the carry."""
+    repo = _carried_repo(tmp_path)
+    _slice_branch(repo, ("f.txt", "fixed\n"), ("g.txt", "added\n"))
+    (repo / "f.txt").write_text("fixed\n", encoding="utf-8")
+    (repo / "g.txt").write_text("added\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    assert _git(repo, "commit", "-qm", "squash: fix the widget").returncode == 0
+    land_sha = _git(repo, "rev-parse", "main").stdout.strip()
+    (repo / "h.txt").write_text("unrelated\n", encoding="utf-8")
+    _git(repo, "add", "h.txt")
+    assert _git(repo, "commit", "-qm", "drift elsewhere").returncode == 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+
+    got = run_slice._carried_on_base(repo, "origin/main", "slice/9")
+    assert got is not None and got["how"] == "squash"
+    assert got["sha"] == land_sha
+
+
+def test_carried_merged_tip_then_drift_is_unproven(tmp_path: Path) -> None:
+    """The ancestor arm's tree match is strict: main advancing past the
+    merge — even harmlessly — reads unproven, not carried. The caller's
+    fallback costs a retry, never a wrong close."""
+    repo = _carried_repo(tmp_path)
+    _slice_branch(repo, ("f.txt", "fixed\n"))
+    assert (
+        _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "slice/9").returncode == 0
+    )
+    (repo / "h.txt").write_text("later\n", encoding="utf-8")
+    _git(repo, "add", "h.txt")
+    assert _git(repo, "commit", "-qm", "main moves on").returncode == 0
     _git(repo, "update-ref", "refs/remotes/origin/main", "main")
 
     assert run_slice._carried_on_base(repo, "origin/main", "slice/9") is None

@@ -40,8 +40,10 @@ that holds the lane's credentials with ``params.target_node``):
   ``attempt_free`` "already-on-main"; commits ahead with novel work go
   to the land — the pre-land reviewer when one gates it, else a
   ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
-  ``handoff: lander:`` brief skips that second arm since the branch is
-  mid-fix by design; the submit-time ``branch_tip``/``branch_ahead``
+  ``handoff: lander:`` or ``handoff: review: FIX|REVERT`` brief skips
+  that second arm since the branch is mid-fix by design (the reviewer's
+  reject wants the rebuild, not a route back into the same review);
+  the submit-time ``branch_tip``/``branch_ahead``
   the job records is the poll arm's evidence for the same ruling —
   writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
@@ -298,6 +300,17 @@ _BRIEF_PREFIXES: tuple[str, ...] = ("brief:", "handoff:")
 #: from a failed builder's final message, which the newest ``brief:``
 #: wins over while an ``attempt:`` tag stands (gr571311).
 _LANDER_HANDOFF_PREFIX = "handoff: lander:"
+
+#: The pre-land reviewer's FIX/REVERT verdict rides the target todo as
+#: ``handoff: review: …`` (``plan_dispatch._review_back_to_builder``,
+#: gr570506): the branch it rejected wants the REBUILD the verdict asks
+#: for, so the handoff bypasses ``_route_ahead_branch``'s land route
+#: exactly like a lander handoff (gr674785 review, td675373 — without
+#: the bypass the ahead-branch route deferred the unchanged diff back
+#: into the same open review, an unbounded reject/reopen ping-pong).
+_REVIEW_REBUILD_RE = re.compile(
+    r"^handoff:\s*review:\s*_*(?:FIX|REVERT)\b", re.IGNORECASE
+)
 
 #: Todo statuses that refuse a launch.
 _CLOSED_STATUSES = frozenset({"done", "won't-do"})
@@ -3952,6 +3965,12 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         if tip_sha:
             ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
+        # A handoff asking for the session skips the land route: the
+        # lander's failure brief, or the pre-land reviewer's
+        # ``handoff: review: FIX|REVERT`` back-to-builder — the rejected
+        # branch wants its rebuild, not a defer back into the same open
+        # review (gr674785 review, td675373).
+        resume = (latest or "").lstrip()
         if (
             ahead_n
             and not is_generator
@@ -3964,10 +3983,8 @@ def submit(ctx: Any, spec: Any) -> Any:
                 f"origin/{base}",
                 lane.name,
                 other_repo=profile is not None,
-                lander=(latest or "")
-                .lstrip()
-                .lower()
-                .startswith(_LANDER_HANDOFF_PREFIX),
+                rebuild=resume.lower().startswith(_LANDER_HANDOFF_PREFIX)
+                or _REVIEW_REBUILD_RE.match(resume) is not None,
             )
         ):
             return None
@@ -4997,6 +5014,26 @@ def _diff_patch_id(tree: Path, spec: str) -> str | None:
     return None
 
 
+def _remains_on_base(tree: Path, base: str, tip: str) -> bool:
+    """``True`` when a three-way merge of ``tip`` into ``base`` is a
+    no-op — the tree ``git merge-tree --write-tree`` writes IS
+    ``base``'s, so every change the branch introduced is still on it
+    (gr674785 review, td675373): a carrier REVERTED upstream still
+    patch-matches — the patch-id rides the history forever — but the
+    merge would reintroduce the change, so historical equivalence alone
+    is no proof the fix remains. ``False`` on anything else — a merge
+    that would add work, a conflict (``merge-tree`` exits 1), or git
+    not answering: unproven, like the carry itself."""
+    merged = _git(["merge-tree", "--write-tree", base, tip], tree)
+    if merged.returncode != 0:
+        return False
+    written = next((ln.strip() for ln in merged.stdout.splitlines() if ln.strip()), "")
+    if not written:
+        return False
+    base_tree = _git(["rev-parse", f"{base}^{{tree}}"], tree)
+    return base_tree.returncode == 0 and written == base_tree.stdout.strip()
+
+
 def _carried_on_base(
     tree: Path, base: str, tip: str = "HEAD"
 ) -> dict[str, str | None] | None:
@@ -5006,11 +5043,19 @@ def _carried_on_base(
     branch's NET diff patch-identical to a single upstream commit (the
     squash land — invisible to per-commit equivalence, so the combined
     ``<mb>..<tip>`` patch-id is matched against the bounded upstream
-    scan). ``tip`` wholly contained in ``base`` carries by ``"ancestor"``
-    with ``sha`` = ``tip`` itself. ``sha`` is the landing commit the
-    scan found — ``None`` when it did not (a ``git cherry``-proved carry
-    needs no scan to stand). ``None`` when ``tip`` holds novel work or
-    git cannot judge — the caller's own ruling then decides."""
+    scan) — AND the change remains on the base
+    (:func:`_remains_on_base`; patch equivalence is history, a carrier
+    reverted upstream still matches while the fix itself is gone).
+    ``tip`` wholly contained in ``base`` carries by ``"ancestor"`` with
+    ``sha`` = ``tip`` itself, gated the same way by the tree match (the
+    merge check is a no-op by construction there — ``tip`` IS the merge
+    base — so a merged tip proves its tree sits on ``base``'s
+    wholesale; drift and a post-merge revert read alike, as unproven).
+    ``sha`` is the landing commit the scan found — ``None`` when it did
+    not (a ``git cherry``-proved carry needs no scan to stand).
+    ``None`` when ``tip`` holds novel work, the change no longer sits
+    on ``base``, or git cannot judge — the caller's own ruling then
+    decides."""
     _fetch_main(tree, base)
     cherry = _git(["cherry", base, tip], tree)
     if cherry.returncode != 0:
@@ -5019,6 +5064,8 @@ def _carried_on_base(
     if not lines:
         anc = _git(["merge-base", "--is-ancestor", tip, base], tree)
         if anc.returncode != 0:
+            return None
+        if _git(["diff", "--quiet", tip, base], tree).returncode != 0:
             return None
         rev = _git(["rev-parse", tip], tree)
         tip_sha = rev.stdout.strip() if rev.returncode == 0 else tip
@@ -5038,8 +5085,14 @@ def _carried_on_base(
         # Novel per-commit work: a carry stands only when the branch's
         # NET diff is patch-identical to one upstream commit — the
         # squash land per-commit equivalence cannot see.
-        if combined is not None and combined in upstream:
+        if (
+            combined is not None
+            and combined in upstream
+            and _remains_on_base(tree, base, tip)
+        ):
             return {"how": "squash", "sha": upstream[combined]}
+        return None
+    if not _remains_on_base(tree, base, tip):
         return None
     sha: str | None = upstream.get(combined) if combined else None
     if sha is None:
@@ -5056,7 +5109,7 @@ def _route_ahead_branch(
     lane: str | None,
     *,
     other_repo: bool = False,
-    lander: bool = False,
+    rebuild: bool = False,
 ) -> bool:
     """Judge the branch a retry reuses BEFORE a session spends a rung
     re-discovering its state (gr674785 — td665126 burned all five rungs
@@ -5072,8 +5125,11 @@ def _route_ahead_branch(
     ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
     when the branch is empty, git cannot judge, the route could not be
     taken (the session's own poll then mints the land as before), or a
-    lander handoff stands — a branch mid-fix by design wants the
-    session the lander asked for."""
+    handoff asking for the session stands — the lander's failure brief
+    or the pre-land reviewer's FIX/REVERT back-to-builder (gr674785
+    review, td675373): the branch is mid-fix by design and wants the
+    rebuild the handoff asked for, not a route back into the same
+    review."""
     try:
         _fetch_main(tree, base)
         cherry = _git(["cherry", base, "HEAD"], tree)
@@ -5106,7 +5162,7 @@ def _route_ahead_branch(
             "no build attempt burned (gr674785)"
         )
         return True
-    if lander:
+    if rebuild:
         return False
     try:
         if other_repo:
