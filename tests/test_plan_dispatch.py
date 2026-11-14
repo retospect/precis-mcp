@@ -19,6 +19,7 @@ from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.workers import job_types as job_types_pkg
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
@@ -8795,3 +8796,268 @@ def test_pending_land_holds_a_post_land_reviewer(store: Store) -> None:
     store.stamp_ref_meta(build, {"pending_land": None})
     pd.run_pass(store)
     assert len(_jobs_under(store, review)) == 1
+
+
+# ── repo_release nodes (td659522 step 3) ───────────────────────────
+
+
+@pytest.fixture
+def release_op(store: Store, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``repo_release`` is not registered yet: a tiny fake job type stands
+    in for it (this test module only) and ``catpath`` is opened for the
+    factory so the step-0 repo refusal passes."""
+    real = pd.get_job_type
+    fake = SimpleNamespace(
+        params_schema={
+            "properties": {"todo_id": {}, "repo": {}},
+            "required": ["todo_id", "repo"],
+            "additionalProperties": False,
+        },
+        validate_submit=None,
+        compatible_executors=frozenset({"job_inproc"}),
+    )
+
+    def lookup(name: str) -> Any:
+        return fake if name == "repo_release" else real(name)
+
+    # The dispatcher's own lookup, and the one plan-meta validation
+    # (``precis.plans.nodes``) imports from the package at call time.
+    monkeypatch.setattr(pd, "get_job_type", lookup)
+    monkeypatch.setattr(job_types_pkg, "get_job_type", lookup)
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        yield fake
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+
+
+def _release_plan(
+    store: Store, *, slices: tuple[str, ...] = ("b1",), reviewed: bool = True
+) -> T.PlanMint:
+    """root: slices -> (reviewer each) -> rel (repo_release) -> pin."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        feeds: list[str] = []
+        for s in slices:
+            b = m.node(s, f"Build {s}", {"op": "run_slice"}, body="Build it.")
+            if reviewed:
+                m.node(
+                    f"r{s}",
+                    f"Review {s}",
+                    T._reviewer(b),
+                    body=T._reviewer_brief(b),
+                    blocked_by=(s,),
+                )
+                feeds.append(f"r{s}")
+            else:
+                feeds.append(s)
+        m.node(
+            "rel",
+            "Cut the release",
+            {"op": "repo_release", "retries": 1},
+            blocked_by=tuple(feeds),
+        )
+        m.node("pin", "Bump the pin", {"op": "run_slice"}, blocked_by=("rel",))
+
+    return T._run(store, None, build)
+
+
+def test_repo_release_node_dispatches_with_its_repo(
+    store: Store, release_op: Any
+) -> None:
+    """A ready ``repo_release`` node carries ``repo`` (its own tag, else the
+    nearest tagged ancestor's) and ``todo_id`` on the job; if this fails
+    the release job runs without knowing which repo to tag."""
+    mint = _release_plan(store, reviewed=False)
+    rel = mint.ids["rel"]
+    _mark_done(store, mint.ids["b1"])
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, rel)
+    assert meta["job_type"] == "repo_release"
+    assert meta["params"] == {"todo_id": rel, "repo": "catpath"}
+    assert any(f"td{rel}: dispatched repo_release" in n for n in res.notes)
+
+
+def test_repo_release_node_takes_its_ancestors_repo(
+    store: Store, release_op: Any
+) -> None:
+    """The repo tag on the plan root reaches a release node, as for
+    ``run_slice``; if this fails an ancestor-tagged plan never releases."""
+    mint = _release_plan(store, reviewed=False)
+    _mark_done(store, mint.ids["b1"])
+    store.add_tag(mint.root_id, Tag.open("repo:catpath"), set_by="system")
+    pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, mint.ids["rel"])
+    assert meta["params"]["repo"] == "catpath"
+
+
+@pytest.mark.parametrize("tag", [None, "repo:precis"])
+def test_repo_release_node_without_a_second_repo_is_skipped(
+    store: Store, release_op: Any, tag: str | None
+) -> None:
+    """A release node resolving to nothing or to precis never dispatches
+    (precis releases go through ``release_cut``) and leaves a note; if this
+    fails the job would tag precis through the second-repo path."""
+    mint = _release_plan(store, reviewed=False)
+    rel = mint.ids["rel"]
+    _mark_done(store, mint.ids["b1"])
+    if tag:
+        store.add_tag(rel, Tag.open(tag), set_by="system")
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rel) == []
+    assert any(n.startswith(f"td{rel}: repo_release not dispatched") for n in res.notes)
+
+
+def _release_reviewed(store: Store, verdict: str, *, landed_job: bool) -> T.PlanMint:
+    """``_reviewed`` / ``_reviewed_landed`` on the release plan: the build
+    landed, the review ran and posted ``verdict``."""
+    mint = _release_plan(store)
+    build, review = mint.ids["b1"], mint.ids["rb1"]
+    _job(store, build, lane="claude-sub")
+    if landed_job:
+        _slice_job(store, build, "land_slice", "succeeded")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, verdict)
+    _todo_comment(store, review, "handoff: reviewed the squash diff")
+    return mint
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [
+        ("review: FIX — a.py misses the empty case", False),
+        ("review: REVERT — bad", True),
+    ],
+)
+def test_reviewer_fix_or_revert_gates_the_release_node(
+    store: Store, release_op: Any, verdict: str, landed_job: bool
+) -> None:
+    """The reviewer closes ``done`` at FIX/REVERT; the release node
+    ``blocked-by`` it must also wait on the minted fix/revert todo, a
+    second pass adds no second edge, and a release node not behind that
+    reviewer is untouched. If this fails the release cuts unfixed code."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    ids = mint.ids
+    rel, review = ids["rel"], ids["rb1"]
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+
+    def other(m: T._Minter) -> None:
+        m.node("other", "Other release", {"op": "repo_release", "retries": 1})
+
+    other_id = T._run_body(store, mint.root_id, mint.root_id, other).ids["other"]
+
+    pd.run_pass(store)
+    (new,) = [
+        c
+        for c in _children(store, mint.root_id)
+        if c not in (ids["b1"], review, rel, ids["pin"], other_id)
+    ]
+    assert _blocked_by_ids(store, rel) == sorted([review, new])
+    assert _blocked_by_ids(store, other_id) == []
+    assert _status(store, new) != "done"
+    assert _jobs_under(store, rel) == []  # not ready while the fix is open
+    pd.run_pass(store)
+    assert _blocked_by_ids(store, rel) == sorted([review, new])
+
+
+def test_gate_release_on_is_idempotent_and_skips_closed_releases(
+    store: Store, release_op: Any
+) -> None:
+    """Calling the helper twice adds one edge; a closed release node is
+    left alone. If this fails a replayed verdict stacks duplicate edges or
+    reopens a cut release's gate."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    rel, review = mint.ids["rel"], mint.ids["rb1"]
+    gate = mint.ids["pin"]  # any todo id stands in for the fix todo
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    now = datetime.now(UTC)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], gate, now)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], gate, now)
+    assert _blocked_by_ids(store, rel) == sorted([review, mint.ids["rb2"], gate])
+    _mark_done(store, rel)
+    plan = pd._load(store)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], mint.ids["b2"], now)
+    assert mint.ids["b2"] not in _blocked_by_ids(store, rel)
+
+
+def _plan_statuses(store: Store, mint: T.PlanMint, *keys: str) -> dict[str, str | None]:
+    return {k: _status(store, mint.ids[k]) for k in keys}
+
+
+def test_release_join_stays_open_while_one_slice_lives(
+    store: Store, release_op: Any
+) -> None:
+    """Two slices feed one release node: one moot slice closes its own
+    reviewer but not the release node nor the pin behind it. If this fails
+    one dropped slice drops the whole release."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert got["rb1"] == "won't-do"
+    assert got["rel"] not in pd.TERMINAL_TODO_STATUSES
+    assert got["pin"] not in pd.TERMINAL_TODO_STATUSES
+    assert got["rb2"] not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_release_join_closes_when_every_slice_is_dead(
+    store: Store, release_op: Any
+) -> None:
+    """With every blocker dead the release node closes like any
+    descendant, and the walk continues behind it. If this fails a release
+    of nothing hangs the plan open."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    _moot_tag(store, mint.ids["b1"])
+    _moot_tag(store, mint.ids["b2"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_plain_chain_still_closes_whole_under_one_dead_slice(store: Store) -> None:
+    """Regression guard: with no release node a single moot slice still
+    closes its whole descendant chain."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("b1", "Build", {"op": "run_slice"})
+        m.node("b2", "Build two", {"op": "run_slice"})
+        m.node("c1", "Chain one", {"op": "run_slice"}, blocked_by=("b1", "b2"))
+        m.node("c2", "Chain two", {"op": "run_slice"}, blocked_by=("c1",))
+
+    mint = T._run(store, None, build)
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    assert _plan_statuses(store, mint, "c1", "c2") == {
+        "c1": "won't-do",
+        "c2": "won't-do",
+    }
+
+
+@pytest.mark.parametrize(
+    "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
+)
+def test_verdict_line_never_closes_a_release_node(
+    store: Store, release_op: Any, line: str
+) -> None:
+    """A release node closes only through its succeeded job; the same line
+    on an ordinary task still closes it. If this fails a stray comment
+    closes a release whose tag never reached the remote."""
+    mint = _release_plan(store, reviewed=False)
+    rel, b1 = mint.ids["rel"], mint.ids["b1"]
+    _mark_done(store, b1)
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+    _todo_comment(store, rel, line)
+    _todo_comment(store, mint.ids["pin"], line)
+    pd.run_pass(store)
+    assert _status(store, rel) != "done"
+    assert _status(store, mint.ids["pin"]) == "done"

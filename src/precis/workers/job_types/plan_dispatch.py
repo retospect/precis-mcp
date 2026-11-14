@@ -549,6 +549,10 @@ DEFAULT_RETRIES = 2
 #: The job type a task without ``meta.op`` (and every generator) runs.
 DEFAULT_OP = "run_slice"
 
+#: The mechanical op that cuts a release of a second repo (td659522
+#: step 3). Named, not imported: the job module registers separately.
+REPO_RELEASE_OP = "repo_release"
+
 #: The todo's comment chunk kind (``handlers.todo._COMMENT_KIND``; restated —
 #: workers never import handlers).
 _COMMENT_KIND = "todo_comment"
@@ -2336,6 +2340,7 @@ def _review_fix(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
     node = plan.nodes[fix_id]
+    _gate_release_on(store, plan, w, n, fix_id, now)
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
     if target is not None:
         w.stamp_meta(node, {_release.LAND_TARGET_KEY: target})
@@ -2442,6 +2447,7 @@ def _review_revert(
             f"never main.\nland target: {target}\n\nWhy (review td{n.id}): {why}"
         )
     revert_id = _mint_task(store, plan, w, n.root, title, body, now)
+    _gate_release_on(store, plan, w, n, revert_id, now)
     if target is not None:
         w.stamp_meta(plan.nodes[revert_id], {_release.LAND_TARGET_KEY: target})
     requeue = [t for t, sha in landed if sha] or targets
@@ -3155,23 +3161,46 @@ def _moot_descendants(plan: _Plan, n: _Node) -> list[_Node]:
     """The open todos under ``n.root`` ``blocked-by``-dependent on ``n``,
     transitively — the review / wait-for-prod / validate chain a task
     moot closes (td584381 S1d review). A closed link in the chain still
-    transmits: the closure walks through it, it is just not re-closed."""
+    transmits: the closure walks through it, it is just not re-closed.
+
+    A ``repo_release`` node is a join, not a chain link (td659522 step
+    3): the walk enters it only once ALL its non-ask blockers are dead —
+    ``n`` itself, a node already walked, a ruled-out (non-``done``
+    terminal) or ``verdict:moot`` node. One live blocker keeps it, and
+    everything behind it, out; the walk re-tests it from each blocker
+    it reaches, so a join whose last blocker dies later in the walk
+    still closes."""
     dependents: dict[int, set[int]] = {}
     for src, targets in plan.blockers.items():
         for b in targets:
             dependents.setdefault(b.id, set()).add(src)
     seen = {n.id}
+    reached = {n.id}
     frontier = [n.id]
     out: list[_Node] = []
+
+    def blocker_dead(b: _Blocker) -> bool:
+        node = plan.nodes.get(b.id)
+        if b.is_ask or (node is not None and _is_ask_node(node)):
+            return True  # an ask is a question, not work the join waits on
+        if b.id in reached or plan.status_of(b) in _RULING_STATUSES:
+            return True
+        return node is not None and MOOT_TAG in node.open_tags
+
     while frontier:
         cur = frontier.pop()
-        for dep_id in dependents.get(cur, ()):
+        for dep_id in sorted(dependents.get(cur, ())):
             if dep_id in seen:
                 continue
-            seen.add(dep_id)
             m = plan.nodes.get(dep_id)
+            if m is not None and m.kind == "todo" and _is_repo_release(m):
+                live = [b for b in plan.blockers.get(dep_id, []) if not blocker_dead(b)]
+                if live:
+                    continue  # not seen: a later blocker may complete the join
+            seen.add(dep_id)
             if m is None or m.kind != "todo" or m.root != n.root:
                 continue
+            reached.add(dep_id)
             frontier.append(dep_id)
             if not _closed(m):
                 out.append(m)
@@ -3254,6 +3283,10 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     from — until a newer job exists (td604695)."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
+            continue
+        if _is_repo_release(n):
+            # td659522 step 3: the tag on the remote is the result — a
+            # release node closes only through its succeeded job.
             continue
         if plan.live_job(n):
             continue
@@ -4490,6 +4523,33 @@ def _resolve_op(n: _Node) -> tuple[str, dict[str, Any]]:
     return DEFAULT_OP, {"todo_id": n.id}
 
 
+def _is_repo_release(n: _Node) -> bool:
+    """``n`` is a second-repo release node: its resolved mechanical op
+    is :data:`REPO_RELEASE_OP` (td659522 step 3)."""
+    return _resolve_op(n)[0] == REPO_RELEASE_OP
+
+
+def _gate_release_on(
+    store: Any, plan: _Plan, w: _Writer, reviewer: _Node, gate_id: int, now: datetime
+) -> None:
+    """Hold every OPEN ``repo_release`` node of ``reviewer``'s plan that is
+    ``blocked-by`` the reviewer behind ``gate_id`` too — the fix or
+    revert todo the reviewer's verdict just minted. The reviewer closes
+    ``done`` at FIX/REVERT, so without this edge the release would
+    unblock and cut unfixed code. Idempotent: an existing edge is kept."""
+    for m in plan.todos():
+        if m.root != reviewer.root or _closed(m) or not _is_repo_release(m):
+            continue
+        edges = plan.blockers.setdefault(m.id, [])
+        if not any(b.id == reviewer.id for b in edges):
+            continue
+        if any(b.id == gate_id for b in edges):
+            continue
+        if not w.dry_run:
+            store.add_link(src_ref_id=m.id, dst_ref_id=gate_id, relation="blocked-by")
+        edges.append(_Blocker(id=gate_id, status="open", is_ask=False, created_at=now))
+
+
 def _params_problem(schema: dict[str, Any], params: dict[str, Any]) -> str | None:
     """The submit path's static check: required keys, no unknown keys."""
     missing = [k for k in schema.get("required", []) if k not in params]
@@ -5525,6 +5585,21 @@ def _step_dispatch(
                     )
         if plan.blocked(n) or plan.paused(n):
             continue
+        if _is_repo_release(n):
+            # td659522 step 3: the release job cuts a tag in a second
+            # repo; it takes the node's repo like a build does. A node
+            # that resolves to precis or to nothing is not its business
+            # (precis releases go through release_cut).
+            tagged = _node_repos(plan, n)
+            if not tagged or tagged[0] == _lanes.DEFAULT_REPO:
+                res.notes.append(
+                    f"td{n.id}: {REPO_RELEASE_OP} not dispatched — no "
+                    "second-repo repo: tag; precis releases go through "
+                    "release_cut"
+                )
+                continue
+            params["repo"] = tagged[0]
+            params.setdefault("todo_id", n.id)
         reland = _reland_params(plan, n, w.store)
         if job_type == DEFAULT_OP and reland is None:
             task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
