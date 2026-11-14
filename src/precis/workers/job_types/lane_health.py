@@ -24,9 +24,10 @@ wording verbatim (gr601062): an ``auth`` read on an absent token is a
 host/vault miss, not the lane's verdict, so it applies
 ``unprobed``/``vault-miss`` and the summary attributes ``auth (token
 absent)`` vs ``auth (token rejected)``. Host affinity is the registry
-``placement`` row (``repo_checkout``, ``claude_bin``, ``git`` — the
-same tokens a slice needs), so no worker without the lane CLIs can
-claim the job:
+``placement`` row (``repo_checkout``, ``claude_bin``, ``git`` —
+``claude_bin`` anchors the job to a host that can exercise the claude
+ping; a slice itself needs only the ``builder`` floor since gr676054),
+so no worker without the lane CLIs can claim the job:
 
 * red (``auth``/``outage``) on a healthy lane parks it —
   ``parked_reason = "<outcome>:<key>"`` — held out of dispatch exactly

@@ -590,31 +590,23 @@ def executor_lane_limits(
             (keys + host_keys,),
         ).fetchall()
     )
-    raw_cap = (
-        rows.get(host_keys[0], rows.get(keys[0])) if host_keys else rows.get(keys[0])
-    )
+    cap_key = host_keys[0] if host_keys and host_keys[0] in rows else keys[0]
+    raw_cap = rows.get(cap_key)
     if raw_cap is not None:
         try:
             cap = max(0, int(str(raw_cap)))
         except ValueError:
-            log.warning(
-                "claim: %s%s=%r is not an int; ignored",
-                _EXECUTOR_CAP_KEY_PREFIX,
-                f"{executor}.{host}" if host else executor,
-                raw_cap,
-            )
-    raw_reserve = (
-        rows.get(host_keys[1], rows.get(keys[1])) if host_keys else rows.get(keys[1])
-    )
+            log.warning("claim: %s=%r is not an int; ignored", cap_key, raw_cap)
+    reserve_key = host_keys[1] if host_keys and host_keys[1] in rows else keys[1]
+    raw_reserve = rows.get(reserve_key)
     if raw_reserve is not None:
         try:
             parsed = json.loads(str(raw_reserve))
             reserve = {str(k): max(0, int(v)) for k, v in dict(parsed).items()}
         except (ValueError, TypeError, AttributeError):
             log.warning(
-                "claim: %s%s=%r is not a {job_type: slots} map; ignored",
-                _RESERVE_KEY_PREFIX,
-                f"{executor}.{host}" if host else executor,
+                "claim: %s=%r is not a {job_type: slots} map; ignored",
+                reserve_key,
                 raw_reserve,
             )
     return cap, reserve

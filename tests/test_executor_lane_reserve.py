@@ -356,6 +356,56 @@ def test_host_suffixed_reserve_replaces_the_global_on_that_host(
             conn.commit()
 
 
+def test_malformed_override_warning_names_the_key_it_came_from(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The host-suffixed read falls back to the unsuffixed key, so a
+    malformed value can come from EITHER — the warning must name the key
+    that actually supplied it, not the suffix the caller passed."""
+    import logging
+
+    from precis.workers.executors._common import executor_lane_limits
+
+    keys = [
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node",
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node.h1",
+        f"{_RESERVE_KEY_PREFIX}ssh_node",
+        f"{_RESERVE_KEY_PREFIX}ssh_node.h1",
+    ]
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, 'bogus'), "
+                "(%s, 'not-json') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                (keys[0], keys[2]),
+            )
+            conn.commit()
+            with caplog.at_level(logging.WARNING):
+                executor_lane_limits(conn, "ssh_node", host="h1")
+            assert f"{keys[0]}='bogus'" in caplog.text
+            assert f"{keys[2]}='not-json'" in caplog.text
+            assert "ssh_node.h1" not in caplog.text
+            # The suffixed keys win once present — and are named when
+            # they are the malformed source.
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, 'host-bogus'), "
+                "(%s, 'also-not-json') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                (keys[1], keys[3]),
+            )
+            conn.commit()
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                executor_lane_limits(conn, "ssh_node", host="h1")
+            assert f"{keys[1]}='host-bogus'" in caplog.text
+            assert f"{keys[3]}='also-not-json'" in caplog.text
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM app_state WHERE key = ANY(%s)", (keys,))
+            conn.commit()
+
+
 # ── the setting door validates the new key families ────────────────────
 
 

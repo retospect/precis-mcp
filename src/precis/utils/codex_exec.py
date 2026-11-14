@@ -170,7 +170,7 @@ class CodexExecResult:
 
 def resolve_codex_binary() -> str:
     """The codex binary path — ``PRECIS_CODEX_BIN`` or ``codex``."""
-    return os.environ.get("PRECIS_CODEX_BIN", "codex")
+    return os.environ.get("PRECIS_CODEX_BIN") or "codex"
 
 
 def codex_home() -> Path:
@@ -181,12 +181,20 @@ def codex_home() -> Path:
 def codex_bin_present() -> bool:
     """Whether THIS host can exec ``codex`` — ``PRECIS_CODEX_BIN`` (a name
     on PATH or an absolute path, the escape hatch for a launchd daemon's
-    thin PATH) else ``codex`` on PATH. Mirrors
+    thin PATH) else ``codex`` on PATH. An explicit path must be an
+    executable file — the same read
+    :func:`precis.workers.job_types._slice_adapters.adapter_bin_present`
+    applies, so a non-executable override neither advertises
+    ``codex_bin`` nor leaves a codex lane pickable (gr676054). Mirrors
     :func:`precis.workers.capability_probe._probe_claude_bin`."""
     configured = resolve_codex_binary()
     return bool(
         shutil.which(configured)
-        or (os.path.isabs(configured) and os.path.exists(configured))
+        or (
+            os.path.isabs(configured)
+            and os.path.isfile(configured)
+            and os.access(configured, os.X_OK)
+        )
     )
 
 

@@ -405,12 +405,18 @@ def test_probe_claude_bin_env_abspath_off_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A daemon PATH often misses claude — an absolute PRECIS_CLAUDE_BIN
-    is found via existence, mirroring container_runtime."""
+    is found via existence + exec bit, the same read
+    ``adapter_bin_present`` makes (gr676054: an override the host cannot
+    exec must not advertise ``claude_bin``)."""
     binp = tmp_path / "claude"
     binp.write_text("#!/bin/sh\n", encoding="utf-8")
+    binp.chmod(0o755)
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", str(binp))
     monkeypatch.setattr(cap.shutil, "which", _which(set()))
     assert cap._probe_claude_bin() == 1
+    # Same path, exec bit dropped → absent, matching the pick filter.
+    binp.chmod(0o644)
+    assert cap._probe_claude_bin() == 0
 
 
 def test_probe_claude_bin_absent(monkeypatch: pytest.MonkeyPatch) -> None:

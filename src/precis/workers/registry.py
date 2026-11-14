@@ -1556,9 +1556,11 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Lane health probe (job)",
         category="jobs",
         kind=ServiceKind.JOB,
-        # The probe must run where the sessions run (gr588221 review):
-        # same host affinity as run_slice — the lane CLIs and their
-        # logins are the probe surface.
+        # The probe must run where the sessions run (gr588221 review) —
+        # anchored on ``claude_bin``, not run_slice's ``builder`` floor
+        # (gr676054): its load-bearing read is the claude auth ping,
+        # which a claude-less builder host could only stamp ``unprobed``.
+        # The other lane CLIs absent report unprobed by design.
         placement=frozenset({"repo_checkout", "claude_bin", "git"}),
         one_line="Hourly credential probe per enabled lane: red parks it "
         "out of dispatch, green unparks; enabled stays the human switch.",

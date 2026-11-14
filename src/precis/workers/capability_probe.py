@@ -307,10 +307,16 @@ def _probe_claude_bin() -> int:
     name on PATH or an absolute path, the same override
     ``utils/claude_agent`` honors; a launchd daemon's PATH often misses
     it, so the full path is the escape hatch — mirrors
-    :func:`container_runtime`), else ``claude`` on PATH."""
+    :func:`container_runtime`), else ``claude`` on PATH. An explicit
+    path must be an executable file — the same read
+    :func:`_slice_adapters.adapter_bin_present` applies, so the
+    advertised ``claude_bin`` token never outruns what a lane pick can
+    exec (gr676054)."""
     configured = os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
     if shutil.which(configured) or (
-        os.path.isabs(configured) and os.path.exists(configured)
+        os.path.isabs(configured)
+        and os.path.isfile(configured)
+        and os.access(configured, os.X_OK)
     ):
         return 1
     return 0
