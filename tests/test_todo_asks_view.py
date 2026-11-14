@@ -173,7 +173,11 @@ def test_render_groups_by_class_then_quest_then_thread(
     out = handler.search(view="asks").body
     lines = out.splitlines()
 
-    assert lines[0] == "# asks — 1 showstopper · 2 decision · 1 discussion"
+    # gr652333: the header tails with the untriaged count (none of the
+    # seeded rows carries an asks-triage stamp yet).
+    assert (
+        lines[0] == "# asks — 1 showstopper · 2 decision · 1 discussion · 4 untriaged"
+    )
     heads = [ln for ln in lines if ln.split(" (")[0] in asks_view.CLASSES]
     assert [h.split(" (")[0] for h in heads] == [
         "showstopper",
@@ -570,3 +574,49 @@ def test_a_resolved_alert_leaves_the_model(hub: Hub, store: Store) -> None:
     assert alerts_mod.resolve_alert(store, alert.id, resolved_by="test")
     assert all(r.ref_id != alert.id for r in asks_view.asks_model(store).rows)
     assert alert.id not in {r.ref_id for r in asks_view.reto_queue(store)}
+
+
+def test_stamped_routed_hidden_and_untriaged_counted(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr652333: a row stamped ``asks-triage:resolved`` or ``:routed``
+    leaves the model; a row with no stamp is counted as untriaged in
+    both rendered headers."""
+    kept = _ask(handler, "Approve the staged rollout?")
+    hidden = _ask(handler, "Coordinator ticket, not a question")
+    fresh = _ask(handler, "Brand new ask, never triaged")
+
+    store.add_tag(kept, Tag.open("asks-triage:kept"), set_by="system")
+    store.add_tag(hidden, Tag.open("asks-triage:routed"), set_by="system")
+    store.remove_tag(hidden, Tag.open("ask-user"))
+    store.add_tag(hidden, Tag.open("waiting-for:coordinator"), set_by="system")
+
+    model = asks_view.asks_model(store)
+    assert {r.ref_id for r in model.rows} == {kept, fresh}
+    assert _row(model, kept).triage == "kept"
+    assert _row(model, fresh).triage == ""
+
+    # The headers report the one unstamped row.
+    assert "· 1 untriaged" in handler.search(view="asks").body
+    assert "· 1 untriaged" in handler.search(view="reto-queue").body
+
+
+def test_coordinator_view_lists_routed_rows(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr652333 slice 4: ``search(kind='todo', view='coordinator')``
+    lists ``waiting-for:coordinator`` rows — the queue ``asks_triage``
+    routes coordinator-bound work onto."""
+    assert TodoView("coordinator") is TodoView.COORDINATOR
+    routed = _ask(handler, "A lane decision, not an owner question")
+    other = _ask(handler, "A real owner question")
+    store.remove_tag(routed, Tag.open("ask-user"))
+    store.add_tag(routed, Tag.open("waiting-for:coordinator"), set_by="system")
+
+    body = handler.search(view="coordinator").body
+    assert body.startswith("# coordinator — 1 waiting")
+    assert f"td{routed}" in body
+    assert f"td{other}" not in body
+
+    # And the routed row is off the owner-facing model.
+    assert all(r.ref_id != routed for r in asks_view.asks_model(store).rows)

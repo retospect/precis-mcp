@@ -165,7 +165,21 @@ records what it's waiting on. Targets carry an explicit kind prefix
 `waiting-for:reto` marks a question for Reto. Once he has ruled and the
 todo carries the answer, remove the tag right after that write
 (`tag(kind='todo', id=T, remove=['waiting-for:reto'])`) so it leaves
-his decision queue.
+his decision queue. `waiting-for:coordinator` is the same shape aimed
+at the fleet coordinator — rows land on
+`search(kind='todo', view='coordinator')`, not the owner's asks list.
+The `asks_triage` service (15-minute tick, dark unless its
+`service_config` prio lights it) reads each untriaged asks row and
+resolves, routes, or rewrites it before it reaches the owner; every
+handled row carries an `asks-triage:<outcome>` stamp, and both list
+headers report any `N untriaged` left behind. An
+`ask-user:uncertain-halt-outcome` row is a halted lane, not a
+question: the pass re-audits the prior attempt and re-arms it only
+when the audit verifies (stamp `rearmed`); otherwise it parks on the
+coordinator queue (`routed`) with the audit attached. A row it routes
+`chore:<kind>` folds into that kind's batch todo and parks on
+`waiting-for:chore-batch` — the batch owns the work; lift the park
+only as the batch drains the member, never to run the member itself.
 
 ## Move a todo under another (reparent)
 ## Change a todo's parent in the tree

@@ -24,10 +24,24 @@ Quest grouping: :func:`quest_of` walks ``refs.parent_id`` up from the
 row to its root and takes the first ``serves`` link to a quest on the
 way (the row itself first). Argument happens as comments on the row —
 every row starts with its handle so it is a ``get``.
+
+Triage (gr652333): the ``asks_triage`` pass stamps every row it handles
+with an ``asks-triage:<outcome>`` open tag + ``meta.asks_triage``. A row
+stamped ``resolved`` or ``routed`` leaves this list — it is closed,
+parked on the coordinator queue (``waiting-for:coordinator`` —
+``view='coordinator'``; also where an ``uncertain-halt-outcome`` row
+whose prior attempt fails the re-arm audit lands), or folded —
+parked ``waiting-for:chore-batch`` so a member carrying a dispatch
+signal can't run its own copy — into a ``chore:<kind>`` worker
+batch; ``kept`` and ``rearmed`` rows stay and
+carry their stamp. Both rendered headers report the rows still WITHOUT
+a stamp as ``N untriaged`` — the spec's done-check: after a sweep every
+row is stamped, and the ones that aren't are counted out loud.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -72,6 +86,15 @@ _TAGS = (
 #: generic needs-spec an agent can write); ``<answer>`` is what he must give.
 RETO_TAG = "for-reto:"
 RETO_ANSWERS: tuple[str, ...] = ("ruling", "spec", "review", "other")
+#: The ``asks_triage`` stamp (gr652333): ``asks-triage:<outcome>`` —
+#: ``kept`` stays, ``rearmed`` is a released halt park, ``resolved`` /
+#: ``routed`` are hidden by the model.
+TRIAGE_PREFIX = "asks-triage:"
+#: Stamp outcomes :func:`asks_model` hides — a resolved or routed row
+#: left the owner's list; kept/rearmed stay visible with their stamp.
+TRIAGE_HIDDEN: frozenset[str] = frozenset({"resolved", "routed"})
+#: A routed row's coordinator tag — ``view='coordinator'`` lists it.
+COORDINATOR_TAG = "waiting-for:coordinator"
 #: Ancestor hops when walking ``parent_id``.
 _MAX_HOPS = 20
 _QUESTION_CAP = 160
@@ -107,6 +130,10 @@ class AskRow:
     #: Open rows blocked-by this one — ``meta.ask.blocks`` already writes
     #: that link, so the slice it names is counted, not added on top.
     blocked: int = 0
+    #: The ``asks-triage:<outcome>`` stamp's outcome, ``""`` when the row
+    #: was never triaged (gr652333 — ``asks_model`` drops ``resolved`` /
+    #: ``routed``; the header counts what's left unstamped).
+    triage: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -478,6 +505,14 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 blocks=blocks,
                 context=str((ask or {}).get("context") or ""),
                 answer=_reto_answer(tags),
+                triage=next(
+                    (
+                        t[len(TRIAGE_PREFIX) :]
+                        for t in tags
+                        if t.startswith(TRIAGE_PREFIX)
+                    ),
+                    "",
+                ),
                 created_at=created,
                 updated_at=updated,
             )
@@ -505,10 +540,19 @@ def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
 
 def asks_model(store: Store) -> AsksModel:
     """Every row that waits on the human, classed and quest-resolved —
-    sorted most-blocked first within a class (gr595189)."""
-    rows = _ref_rows(store)
+    sorted most-blocked first within a class (gr595189). A row stamped
+    ``asks-triage:resolved``/``:routed`` already left the owner's plate
+    (closed, parked on the coordinator queue, or folded into a chore
+    batch) — the model drops it (gr652333)."""
+    rows = [r for r in _ref_rows(store) if r.triage not in TRIAGE_HIDDEN]
     rows.sort(key=lambda r: (_RANK[r.klass], *_blocked_key(r), r.kind, r.ref_id or 0))
     return AsksModel(rows=tuple(rows))
+
+
+def untriaged_count(rows: Iterable[AskRow]) -> int:
+    """Rows without an ``asks-triage:`` stamp — the header's done-check
+    (gr652333): after a sweep every row is stamped; these aren't."""
+    return sum(1 for r in rows if not r.triage)
 
 
 def _age(age_days: float) -> str:
@@ -541,6 +585,8 @@ def render_asks(store: Store) -> Response:
     model = asks_model(store)
     counts = model.counts()
     head = " · ".join(f"{counts[c]} {c}" for c in CLASSES)
+    if untriaged := untriaged_count(model.rows):
+        head += f" · {untriaged} untriaged"
     out = [f"# asks — {head}" if model.rows else "# asks — nothing waits on you"]
     for g in model.groups():
         out += ["", f"{g.klass} ({g.count}) — {CLASS_HINTS[g.klass]}"]
@@ -695,9 +741,11 @@ def render_reto_queue(
         frag = f"{shown} of {total}"
     else:
         frag = str(total)
+    untriaged = untriaged_count(rows)
     out = [
         f"# reto-queue — {frag} waiting, most blocked first"
         + (f" (q={q!r})" if q and q.strip() else "")
+        + (f" · {untriaged} untriaged" if untriaged else "")
     ]
     now = datetime.now(UTC)
     for i, r in enumerate(window, offset + 1):
@@ -731,4 +779,76 @@ def render_reto_queue(
         body=body,
         result_count=shown,
         result_ids=[r.ref_id for r in window if r.ref_id is not None],
+    )
+
+
+# ── the coordinator queue ──────────────────────────────────────────
+
+
+def coordinator_model(store: Store) -> list[AskRow]:
+    """``waiting-for:coordinator`` rows — the queue ``asks_triage``
+    routes coordinator-bound work onto (gr652333). These are NOT asks:
+    the tag is outside the owner-facing ``_TAGS`` set, so a routed row
+    leaves :func:`asks_model` and waits here for the coordinator lane.
+    Oldest first — the longest wait surfaces first."""
+    with store.pool.connection() as conn:
+        cands = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.created_at, r.updated_at
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND r.resolved_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                      AND t.value = %s)
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2
+                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             ORDER BY r.created_at, r.ref_id
+            """,
+            (COORDINATOR_TAG, list(_TERMINAL)),
+        ).fetchall()
+    return [
+        AskRow(
+            klass="coordinator",
+            kind="todo",
+            ref_id=int(ref_id),
+            handle=_h("todo", int(ref_id)),
+            title=_first_line(title),
+            reasons=(COORDINATOR_TAG,),
+            created_at=created,
+            updated_at=updated,
+        )
+        for ref_id, title, created, updated in cands
+    ]
+
+
+def render_coordinator(store: Store) -> Response:
+    """``search(kind='todo', view='coordinator')`` — the coordinator's own
+    queue: asks rows ``asks_triage`` routed away from the owner."""
+    rows = coordinator_model(store)
+    if not rows:
+        body = "# coordinator — nothing waits on the coordinator"
+        body += render_next_section(
+            [("search(kind='todo', view='asks')", "the owner-facing list")]
+        )
+        return Response(body=body, result_count=0)
+    out = [f"# coordinator — {len(rows)} waiting, oldest first"]
+    for r in rows:
+        out.append(f"{r.handle} — {r.title} · {_age(r.age_days)}")
+    body = "\n".join(out)
+    body += render_next_section(
+        [
+            ("get(kind='todo', id=N)", "a row with its comment timeline"),
+            ("search(kind='todo', view='asks')", "the owner-facing list"),
+        ]
+    )
+    return Response(
+        body=body,
+        result_count=len(rows),
+        result_ids=[r.ref_id for r in rows if r.ref_id is not None],
     )

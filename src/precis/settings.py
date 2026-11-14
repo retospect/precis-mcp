@@ -584,6 +584,18 @@ REGISTRY: dict[str, SettingSpec] = {
             "reads as 'filer'.",
         ),
         SettingSpec(
+            key="asks_triage.tier",
+            type="str",
+            env_var="PRECIS_ASKS_TRIAGE_TIER",
+            default="big",
+            doc="LLM tier for the asks_triage pass's per-row triage call "
+            "(precis.workers.asks_triage, gr652333): a router tier name "
+            "(frontier|big|medium) or a retired alias. Default 'big' — "
+            "the spec's recommended Sonnet-class posture; 'frontier' is "
+            "the 'clever' upgrade for a stubborn backlog, 'medium' the "
+            "cheap downgrade. Unknown values fall back to 'big'.",
+        ),
+        SettingSpec(
             key="release.red_waiver",
             type="str",
             env_var=None,

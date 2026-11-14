@@ -1659,6 +1659,31 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
+        # gr652333 (precis.workers.asks_triage): the 15-minute
+        # `asks_triage` scheduler cadence fires the pass over the asks
+        # ("needs you") list; this row names the service so
+        # `precis service` can light it. NO `default_profiles` and no
+        # rotation wiring (ref_pass=False): dark until a service_config
+        # row (prio > 0) lights it.
+        # uses_model: one call per untriaged row (≤10/tick) on the
+        # registered `asks_triage.tier` setting (default Sonnet-class
+        # `big`; `frontier` is the spec's "clever" lift).
+        name="asks_triage",
+        label="Asks triage",
+        category="health",
+        kind=ServiceKind.PASS,
+        # The per-row call goes through claude_p-class transports —
+        # can't containerize; the cadence's `eligible` mirrors this.
+        needs_claude="cli",
+        uses_model=True,
+        cost_sources=("asks_triage",),
+        one_line="15-minute LLM tick over the untriaged asks rows — "
+        "resolves, routes (coordinator queue / chore batch) or rewrites "
+        "each with an asks-triage: stamp; dark until service_config "
+        "lights it.",
+        doc_skill="precis-todo-help",
+    ),
+    ServiceSpec(
         name="pool_refresh",
         label="Pool refresh",
         category="health",

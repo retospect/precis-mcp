@@ -42,7 +42,8 @@ shape with four first-class extensions:
 Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
-                              |'active'|'doing'|'done'|'work'|'asks'|'reto-queue')
+                              |'active'|'doing'|'done'|'work'|'asks'|'reto-queue'
+                              |'coordinator')
     get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch')
 
 ``view='comments'`` is selectable: ``args={'comment': K}`` reads one
@@ -298,6 +299,9 @@ class TodoView(StrEnum):
     # td574946 S1: the rescue queue — every live node carrying an open
     # ``rescue:<class>`` tag, grouped by class.
     RESCUE = "rescue"
+    # gr652333: the coordinator's own queue — asks rows ``asks_triage``
+    # routed off the owner's list (``waiting-for:coordinator``).
+    COORDINATOR = "coordinator"
 
 
 def _doable_under_ids(store: Store, raw: Any) -> list[int]:
@@ -417,6 +421,7 @@ _TREE_SEARCH_VIEWS: dict[
         store, page_size=ps
     ),
     TodoView.RESCUE: lambda store, args, ps: views.render_rescue(store),
+    TodoView.COORDINATOR: lambda store, args, ps: asks_view.render_coordinator(store),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have

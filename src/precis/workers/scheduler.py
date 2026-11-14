@@ -407,6 +407,27 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_asks_triage(store: Store, batch_size: int) -> None:
+    """One asks triage tick (gr652333): the gate on the owner's
+    needs-you list — take up to 10 untriaged asks rows, one model
+    call each on the registered ``asks_triage.tier`` (default
+    ``big``), resolve/route/rewrite and stamp.
+    Dark unless ``service_config`` lights ``asks_triage`` for this host
+    — gated per host on the cadence (``service=``) and again inside the
+    pass. ``batch_size`` is unused — the pass's own batch cap is the
+    throttle. spends=True: the tick bills per-row model calls."""
+    del batch_size
+    from precis.workers.asks_triage import run_asks_triage_pass
+
+    result = run_asks_triage_pass(store)
+    log.info(
+        "scheduler: asks_triage inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_pool_refresh(store: Store, batch_size: int) -> None:
     """Copy pool signals; the pass checks its dark-by-default gate."""
     del batch_size
@@ -1091,6 +1112,15 @@ def _gripe_triage_eligible() -> bool:
     return capability_probe.claude_bin_present()
 
 
+def _asks_triage_eligible() -> bool:
+    """Same strict ``claude_bin_present`` probe as
+    :func:`_gripe_triage_eligible` — the per-row calls route through the
+    same claude-class transports (gr652333)."""
+    from precis.workers import capability_probe
+
+    return capability_probe.claude_bin_present()
+
+
 def _structural_eligible() -> bool:
     """The SAME gate ``run_structural_pass`` checks internally
     (``precis.workers.review._gate_enabled``) AND the claude-agent lane
@@ -1491,6 +1521,21 @@ CADENCES: tuple[Cadence, ...] = (
         run=_run_gripe_triage,
         eligible=_gripe_triage_eligible,
         service="gripe_triage",
+        spends=True,
+    ),
+    # gr652333: the asks ("needs you") triage tick — same 15-minute
+    # shape as gripe_triage's, one model call per untriaged row
+    # (cap 10/fire, tier from the registered `asks_triage.tier`).
+    # `service` gates the claim on the host's resolved
+    # asks_triage prio and the pass re-checks inside; `eligible` is the
+    # same strict claude-binary probe. spends=True: each row bills one
+    # model call, so the daily ceiling gates the fire.
+    Cadence(
+        name="asks_triage",
+        interval_s=15 * 60,
+        run=_run_asks_triage,
+        eligible=_asks_triage_eligible,
+        service="asks_triage",
         spends=True,
     ),
     Cadence(
