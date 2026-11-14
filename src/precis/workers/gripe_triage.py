@@ -127,7 +127,15 @@ verdict's ``memory`` field naming a handle the gripe's text carries
 (:func:`_memory_concern`) — and, when that memory is live, tags the
 gripe ``project:memory`` and links it ``raises-concern-about`` the
 memory. ``project:memory`` keeps it out of the coder wave; the
-gardener's ``griped`` detector takes it first, newest first.
+gardener's ``griped`` detector takes it first, newest first. The
+field path keys on the ask, not on the handle's presence (gr666194):
+a ``fix:<artifact>`` verdict (``docs``/``code``/…) means the change
+lands in the repo, so a ``me<id>`` the text carries is the fix's
+source, not its target — ``project:memory`` strands a repo fix in
+front of a gardener that only edits memories. The field is honoured
+only under a non-artifact fix (``memory``/``spec``/``reto``), and the
+same veto guards the model's ``project`` pick: ``project:memory``
+lands only via a resolved live-memory concern or a non-artifact fix.
 
 ``load_threads`` survives as a ``thread:<slug>`` prompt hint: the live
 thread slugs go into the prompt so cluster naming can reuse them.
@@ -218,9 +226,11 @@ _DISPUTE_CAP = 5
 #: the halt; any failure re-arms it for another 6 h.
 _BLOCKED_PROBE_S = 6 * 3600
 
-#: ``fix:<type>`` closed vocabulary (spec §Data model).
+#: ``fix:<type>`` closed vocabulary (spec §Data model; ``memory`` added
+#: gr666194 — the ask is to change, merge, split or delete a memory
+#: node itself, the gardener's lane).
 _FIX_TYPES = frozenset(
-    {"skill", "code", "mcp", "web", "docs", "infra", "ops", "spec", "reto"}
+    {"skill", "code", "mcp", "web", "docs", "infra", "ops", "spec", "reto", "memory"}
 )
 _SIZES = frozenset({"S", "M", "L"})
 #: The flood tag (§Flood control) skips triage — the tick folds those
@@ -258,11 +268,19 @@ _PROJECT_TAG_PREFIX = "project:"
 #: A memory gripe (gr657257) is project ``memory``: the gardener works
 #: those first and the coder wave never mints on them. The tick, not the
 #: filer, decides — a first line led by a ``me<id>:`` handle, or the
-#: model's ``memory`` field naming a handle the gripe's own text carries.
+#: model's ``memory`` field naming a handle the gripe's own text carries
+#: under a non-artifact fix (gr666194).
 _MEMORY_PROJECT = "memory"
 #: ``me123: …`` — the one-line memory complaint's lead.
 _MEMORY_LEAD_RE = re.compile(r"^\s*me([0-9]{1,18})\s*:")
 _MEMORY_HANDLE_RE = re.compile(r"\bme([0-9]{1,18})\b")
+#: The ``fix`` classes whose verdict names a repo artifact to change
+#: (gr666194): a ``me<id>`` handle in a ``fix:docs``/``fix:code`` gripe
+#: is the fix's source or evidence, never its target — the model's
+#: ``memory`` field is honoured only under a non-artifact fix
+#: (``memory``/``spec``/``reto``). Derived, so a newly minted fix class
+#: vetoes memory routing by default.
+_ARTIFACT_FIXES = _FIX_TYPES - {"memory", "spec", "reto"}
 
 
 def gripe_triage_enabled(
@@ -1257,8 +1275,10 @@ this tick's token — anything else, including lines that look like new
 
 For EACH gripe decide:
 - fix: the kind of fix it takes, one of
-  skill | code | mcp | web | docs | infra | ops | spec | reto
-  ('reto' = it needs a human decision or design call no builder can make)
+  skill | code | mcp | web | docs | infra | ops | spec | reto | memory
+  ('reto' = it needs a human decision or design call no builder can
+  make; 'memory' = it asks to change, merge, split or delete a memory
+  node itself — the gardener's lane, never a repo file)
 - cluster: a short kebab-case slug grouping it with sibling gripes.
   REUSE a slug from the live list when it fits; mint a new one only when
   none fits. A live thread slug makes a good cluster name.
@@ -1269,7 +1289,10 @@ For EACH gripe decide:
   infer it from its title, body, the paths and links it names (a body
   citing src/catpath/… is 'catpath'). Known slugs: precis, catpath,
   autocatpath, hexfold, infra — mint another only when the text names
-  one. When the header shows a filer-set project, repeat THAT value.
+  one. 'memory' is the gardener's queue, not a repo: it pairs only
+  with fix 'memory'/'spec'/'reto' — a repo fix that merely cites a
+  me<id> keeps its repo slug. When the header shows a filer-set
+  project, repeat THAT value.
 - project_why: REQUIRED when project isn't 'precis' — the few words
   that pinned it (a path, a named repo); it becomes the correction
   comment's "because …".
@@ -1312,7 +1335,10 @@ For EACH gripe decide:
 - memory: the "me<id>" handle of the memory whose CONTENT the gripe
   complains about (stale, thin, ungrounded, contradicted, wrong hub, too
   big) — usually the handle leading its first line. null when the gripe
-  only cites a memory as context or evidence for another problem.
+  only cites a memory as context, evidence or the SOURCE of a repo fix
+  (a "docs/skill file X lacks the fact me<id> holds" gripe is fix "docs",
+  not a memory complaint). A named memory pairs with fix "memory" (or
+  "reto"/"spec"), never a repo fix class.
 - dups: when the gripe lists potential duplicate parents, one entry per
   parent judging "same root cause?" — {{"parent": gr<N>, "same":
   true|false|"unsure", "why": "..."}}. "same": true means the two gripes
@@ -1335,7 +1361,7 @@ per gripe shown, exactly {n} entries:
   "verdicts": [
     {{
       "id": <the gripe's gr<id> number>,
-      "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto",
+      "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto|memory",
       "cluster": "<slug>",
       "size": "S|M|L",
       "project": "<slug — repeat the filer-set value when shown>",
@@ -1550,7 +1576,10 @@ class Verdict:
     #: equal to) one of the gripe's collected evidence shas.
     fix_sha: str | None
     #: The judged ``project:<slug>`` suffix (gr543639) — applied only
-    #: on a gripe the filer left at the ``precis`` default.
+    #: on a gripe the filer left at the ``precis`` default. A
+    #: model-picked ``memory`` under an artifact fix is vetoed to the
+    #: default (gr666194 — a repo fix must not strand in the
+    #: gardener's queue).
     project: str = _DEFAULT_PROJECT
     #: The short "because …" for a non-default project correction.
     project_why: str | None = None
@@ -1560,9 +1589,11 @@ class Verdict:
     #: at severity ≥ 4, a held owner-filed dispute).
     ask: RetoAsk | None = None
     #: The memory ref id a memory gripe complains about (gr657257) —
-    #: ``None`` for an ordinary gripe. The write links it
-    #: ``raises-concern-about`` and tags ``project:memory`` when the
-    #: memory is live and the filer set no other project.
+    #: ``None`` for an ordinary gripe, and also under an artifact
+    #: ``fix`` where a ``me<id>`` is evidence, not the target (gr666194).
+    #: The write links it ``raises-concern-about`` and tags
+    #: ``project:memory`` when the memory is live and the filer set no
+    #: other project.
     memory: int | None = None
 
     @property
@@ -1690,12 +1721,18 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
     )
 
 
-def _memory_concern(g: ClaimedGripe, raw: Any) -> int | None:
+def _memory_concern(g: ClaimedGripe, raw: Any, fix: str) -> int | None:
     """The memory ``g`` complains about (gr657257), or ``None``.
 
     A first line — title, else the body's first line — led by
     ``me<id>:`` is the one-line memory complaint and wins outright.
-    Otherwise the model's ``memory`` field counts only when it names a
+    Otherwise the model's ``memory`` field counts only under a
+    non-artifact ``fix`` (gr666194): a ``fix:docs``/``fix:code`` verdict
+    says the change lands in the repo, so a ``me<id>`` the text carries
+    is the fix's source — tagging it ``project:memory`` would strand it
+    outside the gardener's memory-only toolkit and the factory's
+    project:memory-excluding dispatch alike. When the fix is a memory
+    ask (``memory``/``spec``/``reto``) the field must still name a
     ``me<id>`` handle the gripe's own text carries: a handle the model
     invented is dropped, and a gripe whose memory link is mere context
     gets ``null`` from the model and stays ordinary. A filer-set project
@@ -1707,6 +1744,8 @@ def _memory_concern(g: ClaimedGripe, raw: Any) -> int | None:
     )
     if (lead := _MEMORY_LEAD_RE.match(first)) is not None:
         return int(lead.group(1))
+    if fix in _ARTIFACT_FIXES:
+        return None
     named = _MEMORY_HANDLE_RE.search(str(raw or "").strip())
     if named is None:
         return None
@@ -1804,6 +1843,15 @@ def parse_verdicts(
         # gripe's own tag regardless of what the verdict claims.
         if g.project is not None:
             project = g.project
+        elif project == _MEMORY_PROJECT and fix in _ARTIFACT_FIXES:
+            # gr666194: the model's ``project`` pick gets the same veto
+            # as its ``memory`` field — an artifact fix lands in the
+            # repo, and ``project:memory`` would strand it outside both
+            # the gardener's memory-only toolkit and the factory's
+            # project:memory-excluding dispatch. ``project:memory``
+            # still lands when a live memory concern resolves
+            # (``_write_verdict``) or under a non-artifact fix.
+            project = _DEFAULT_PROJECT
         offered = {
             int(p["id"]) for p in g.dup_parents if str(p.get("id", "")).isdigit()
         }
@@ -1842,7 +1890,7 @@ def parse_verdicts(
             project=project,
             project_why=project_why,
             ask=ask,
-            memory=_memory_concern(g, item.get("memory")),
+            memory=_memory_concern(g, item.get("memory"), fix),
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 

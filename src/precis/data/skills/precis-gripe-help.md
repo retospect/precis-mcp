@@ -839,6 +839,12 @@ triage tick classifies it, tags `project:memory`, links the memory with
 next pass, closing it with a `resolved:` comment. Until then the
 memory's fisheye carries an `under review: gr<N> …` line. Use the full form below for route disagreements.
 
+A gripe that asks to change the repo and merely names a memory as the
+source — "skill X lacks the fact me123 holds" — is a repo fix
+(`fix:docs`/`fix:code`/…), not a memory complaint: the tick keeps it in
+the repo lane so a builder can land it. `project:memory` is only for
+gripes asking to change the memory node itself.
+
 ## Tool bugs and memory confusion go to gripes
 
 A gripe reports something wrong with the **precis tool / MCP surface /
