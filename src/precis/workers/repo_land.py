@@ -173,11 +173,13 @@ def _staged_empty(land_tree: Path) -> bool | None:
 
 def _changed_paths(land_tree: Path, tip: str, sha: str) -> list[str] | None:
     """Paths the squash commit changes against ``tip`` (renames split);
-    ``None`` when git cannot say."""
-    out = _read(land_tree, ["diff", "--name-only", "--no-renames", tip, sha])
+    ``None`` when git cannot say. ``-z`` because a name carrying a tab or
+    a non-ASCII byte is otherwise C-quoted whole (``core.quotePath``),
+    and the quoted form never matches a deny glob (review td677929)."""
+    out = _read(land_tree, ["diff", "--name-only", "--no-renames", "-z", tip, sha])
     if out is None:
         return None
-    return sorted({ln.strip() for ln in out.splitlines() if ln.strip()})
+    return sorted(p for p in out.split("\0") if p)
 
 
 def _branch_author(root: Path, branch: str) -> tuple[str, str] | None:

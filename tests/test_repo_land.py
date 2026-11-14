@@ -228,6 +228,25 @@ def test_github_dir_change_is_refused_and_stamped_human_only(rig: Rig) -> None:
     assert "attempt:1" in store.tag_strings(42)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".github/workflows/ci\tbot.yml",
+        ".github/workflows/café.yml",
+    ],
+)
+def test_deny_path_git_quotes_is_still_refused(rig: Rig, name: str) -> None:
+    """A deny path carrying a tab or a non-ASCII byte is C-quoted by
+    ``git diff --name-only``; ``-z`` must still refuse it (td677929)."""
+    rig.commit_on_branch({name: "on: push\n"})
+    ctx, handle, store = _submit(rig)
+    assert handle is None and ctx.failure is not None
+    assert "deny path" in ctx.failure and name in ctx.failure
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [name]
+    assert rig.launches == [] and not rig.land_tree().exists()
+    assert "attempt:1" in store.tag_strings(42)
+
+
 def test_version_change_is_refused_but_other_pyproject_edits_land(rig: Rig) -> None:
     rig.commit_on_branch({"pyproject.toml": PYPROJECT.replace("1.0.0", "1.1.0")})
     ctx, handle, _ = _submit(rig)
