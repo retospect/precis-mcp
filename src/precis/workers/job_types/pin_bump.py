@@ -3,8 +3,11 @@
 precis pins the engine package ``autocatpath`` by git rev; moving the pin is
 a four-file change (``pyproject.toml``, ``uv.lock``,
 ``deploy/group_vars/all.yml``, the anchor literals in
-``tests/test_coverage_job.py``). The module has two halves; nothing
-registers it yet (R2: ``SPEC`` is defined, wired nowhere).
+``tests/test_coverage_job.py``). The module has two halves. ``SPEC`` is
+registered (R6: ``_BUILTIN_JOB_TYPES``, ``get_job_type``, ``SERVICES``,
+``DESCRIBERS``, ``FACTORY_PIPELINE_JOB_TYPES``) but still refused
+end-to-end: no real repo profile names a ``pinner`` yet
+(``test_no_real_profile_names_the_pinner_yet``; R7 is the switch).
 
 The pure half comes first: text in, text out, no I/O, no subprocess, no
 store. Every helper edits the text by line, then re-parses the result
@@ -70,9 +73,11 @@ this job). Phases, in the handle's ``phase``:
   only on a land, so the job closes the node itself: the same gripe
   resolution, one ``pinned:`` comment (never ``landed:``), ``STATUS:done``.
 
-:func:`finish` is the closing tail ``land_slice`` calls right before its land
-record: it stamps the record ``landed`` and resolves the batch's gripes.
-:func:`validate_submit` serialises pin bumps (one in flight at a time).
+:func:`finish` is the closing tail ``land_slice`` runs right before its
+land record (``_landed_finish``, on any todo whose meta carries a pin
+record): it stamps the record ``landed`` and resolves the batch's
+gripes. :func:`validate_submit` serialises pin bumps (one in flight at a
+time).
 
 The derive and verify runs execute repo code as the worker's user, so the
 pin tree, run dir, venvs and uv cache are attacker-writable. Only a 64-hex

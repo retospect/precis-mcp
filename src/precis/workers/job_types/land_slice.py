@@ -5026,6 +5026,37 @@ def poll(ctx: Any, handle: Any) -> bool:
     )
 
 
+def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
+    """td659522 step 4: the ``land_slice`` a ``pin_bump`` mints lands the
+    pin node's own branch — :func:`pin_bump.finish` is its closing tail,
+    run right before this land's record: ``meta.pin_bump`` ``state:
+    "landed"`` plus the batch's ``fixes`` / ``related-to`` gripe
+    resolution (without it the record would sit ``handed`` forever and
+    the ``pin_bump/stale-open:{todo}`` alert would fire). A plain slice
+    carries no pin record and is skipped; a no-diff reland finishes at
+    the record's own commit. Never raises — the land is real, the record
+    is a report; ``finish``'s own ``landed`` stamp is idempotent."""
+    try:
+        ref = store.get_ref(kind="todo", id=todo_id)
+        record = (getattr(ref, "meta", None) or {}).get("pin_bump")
+        if not isinstance(record, dict):
+            return None
+        landed_sha = sha
+        if landed_sha is None:
+            from precis.workers import repo_land
+
+            landed_sha = repo_land._hex(record.get("commit")) or None
+        if landed_sha is None:
+            return "pin: record present but no sha to finish at"
+        from precis.workers.job_types import pin_bump
+
+        pin_bump.finish(store, todo_id, landed_sha)
+        return f"pin: record landed at {landed_sha[:9]}"
+    except Exception:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: pin finish for td%d failed", todo_id, exc_info=True)
+        return "pin: finish FAILED"
+
+
 def _landed_finish(
     ctx: Any,
     handle: dict[str, Any],
@@ -5036,12 +5067,13 @@ def _landed_finish(
     status: str | None,
     notify_deferred: bool = False,
 ) -> bool:
-    """The green tail — the land record, the plan gate, the gripe rung,
-    the logbook, cleanup, the PR close — shared by :func:`poll`'s
-    ship-green path and :func:`_launch_ship`'s pre-ship already-landed
-    finish (gr650484: ``status="already-landed"``, no ship log exists,
-    ``exit_code`` is None). ``handle`` only needs ``worktree`` and
-    ``subject`` (plus ``fell_back_full`` on the relaunch path).
+    """The green tail — the pin finish, the land record, the plan gate,
+    the gripe rung, the logbook, cleanup, the PR close — shared by
+    :func:`poll`'s ship-green path and :func:`_launch_ship`'s pre-ship
+    already-landed finish (gr650484: ``status="already-landed"``, no
+    ship log exists, ``exit_code`` is None). ``handle`` only needs
+    ``worktree`` and ``subject`` (plus ``fell_back_full`` on the relaunch
+    path).
 
     ``notify_deferred`` is the mirror lands' contract (review td660513
     finding 4): ship ran with ``PRECIS_LAND_NOTIFY=0`` so its
@@ -5059,6 +5091,9 @@ def _landed_finish(
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
     try:
+        pin_note = _pin_finish(store, todo_id, sha)
+        if pin_note is not None:
+            summary.append(pin_note)
         wrote = _record_land(store, todo_id, sha, subject)
         summary.append(
             "todo: "

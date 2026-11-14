@@ -1685,6 +1685,76 @@ def test_poll_green_after_land_notify(
     assert "gate td44" in summary
 
 
+def _pin_todo(store: _Store, **record: Any) -> None:
+    """A pin-bump node handed to the lander (td659522 step 4)."""
+    meta = {
+        "op": "pin_bump",
+        "pin_bump": {
+            "state": "handed",
+            "commit": FULL_SHA,
+            "land_job": 777,
+            "package": "autocatpath",
+            "version": "0.50.0",
+            "repo": "catpath",
+            **record,
+        },
+    }
+    store.add_todo(42, meta=meta)
+
+
+def test_a_pin_bump_land_finishes_the_pin_record(seams: dict[str, Any]) -> None:
+    """td682512 review: the ``land_slice`` a ``pin_bump`` minted runs the
+    pin's closing tail right before the land record —
+    ``meta.pin_bump`` ``state: landed`` at the pushed sha (without it the
+    record would sit ``handed`` forever)."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    record = store.refs[42].meta["pin_bump"]
+    assert record["state"] == "landed" and record["landed_sha"] == FULL_SHA
+    assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert f"pin: record landed at {FULL_SHA[:9]}" in summary
+
+
+def test_a_no_diff_pin_land_finishes_at_the_records_commit(
+    seams: dict[str, Any],
+) -> None:
+    """A reland that squashes nothing still lands the pin record: the
+    commit is on main under the record's own sha."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    record = store.refs[42].meta["pin_bump"]
+    assert record["state"] == "landed" and record["landed_sha"] == FULL_SHA
+
+
+def test_a_plain_slice_land_touches_no_pin_record(seams: dict[str, Any]) -> None:
+    """A land whose todo carries no ``meta.pin_bump`` never calls into
+    ``pin_bump``: no ``pin:`` note, no meta written."""
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert "pin_bump" not in store.refs[42].meta
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "pin:" not in summary
+
+
 def _patch_sync_seams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Stand in the mirror→origin sync: the GitHub url read, the sync
     itself, and the shared-dir repair — recording each's arguments."""
