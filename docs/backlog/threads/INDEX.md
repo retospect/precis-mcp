@@ -115,7 +115,9 @@ Waits:
 Threads: `chemistry.md` (pillar 3d-design; catalysis lives here, Reto
 2026-10-01) · `catalysis-selectivity.md` (active 2026-10-02, Reto "high
 up": fork selectivity, NH₃ network completeness, U/pH window, decisive-step
-NEB, step-annotated diagram) · `nanoreactor.md` (dormant 2026-10-04:
+NEB, step-annotated diagram) · `catpath.md` (active 2026-11-14, Reto,
+gr635804: the engine's validation, the poisoned-pathway re-run and the
+open catpath gripes) · `nanoreactor.md` (dormant 2026-10-04:
 the NO→NH₃ carbon nanoreactor toolchain). Code: `src/precis_pathway`; `../catpath` is the reference
 engine.
 
@@ -135,6 +137,11 @@ Seams:
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
   moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
   stays chemistry's, catalysis-selectivity decides where NEB runs.
+- catpath owns the engine backlog: validation B1 and C (td633735), the
+  poisoned-pathway re-run (td559534) and the `project:catpath` gripes.
+  catalysis-selectivity keeps the science (network, objective, ranking)
+  and waits on catpath for a validated engine; hold 25 is lifted by Reto,
+  not by either thread.
 - `backlog/kinetics-engine-v2.md` (catalysis-selectivity) owns the
   kinetic environment block (T, split input/output partial pressures,
   optional U/σ/cation/pH) and the ΔG/TS provider seam; the

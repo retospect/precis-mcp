@@ -195,6 +195,9 @@ by the catalysis quests.
 2026-10-02, ranked high by Reto: NO→NH₃ must win every fork,
 thermodynamically and kinetically, over a U/pH window, on a complete
 network; plus the explorer's one-step-per-change diagram) ·
+`catpath.md` (created and activated 2026-11-14, Reto, gr635804: the
+catpath engine's validation and backlog get their own thread and
+coordinator session) ·
 `hexfold-toolkit.md` · `se-3d-viewer.md` ·
 `se-nucleic-chain.md` (dormant 2026-10-17: blocked on hexfold
 integration) · `ewod-pcb.md` (also owns the general PCB items —
