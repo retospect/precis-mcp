@@ -33,11 +33,18 @@ The protocol every tabular view shares:
 The response contract: every page carries ``shown/matched/total`` counts,
 per-column aggregates over the rows the page did NOT show (``count, min/
 max/mean`` for numeric columns, a value histogram for enums — e.g. the
-``trusted yes/no`` tally), and a ``next:`` line naming the EXACT call that
+``trusted yes/no`` tally; every column the rows carry is covered, not
+just the projected ones), and a ``next:`` line naming the EXACT call that
 continues (same view, same args, plus the minted cursor) — never an
 unrelated search hint. Rows the caller asked for are never truncated
-mid-row: the optional ``byte_cap`` guard drops WHOLE trailing rows until
-the render fits.
+mid-row: the optional ``byte_cap`` guard drops WHOLE trailing rows
+until the rendered table fits in UTF-8 bytes (the view's own row
+budget — the footer always rides, even on a starved page), while the
+``block_cap``/``Response.budget_fit`` path through
+:func:`lens_budget_fit` refits the whole response — head, table,
+footer and tail — the same way when the runtime transport budget
+binds, so no positional cut can ever sever a row or drop the
+``next:`` line.
 
 Callers shape ``args`` for the continuation themselves (they know their
 own spelling) and hand it to :func:`render_lens_page` with a ``call``
@@ -55,7 +62,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from precis.errors import BadInput
+from precis.errors import BadInput, ResultBudgetExceeded
 
 #: The five args= keys the lens protocol owns (gr592637).
 LENS_KEYS: frozenset[str] = frozenset({"where", "sort", "columns", "limit", "cursor"})
@@ -198,14 +205,20 @@ class LensPage:
     """One page of a lensed table.
 
     ``rows`` — the page slice (post where/sort/cursor, post byte-guard
-    trims). ``matched`` — rows surviving ``where``. ``total`` — every row
-    the view built before the lens. ``hidden`` — matched rows NOT on this
-    page (the aggregate surface). ``columns`` — the effective rendered
-    column order. ``next_args``/cursor minting lives in
-    :func:`render_lens_page`, which needs the caller's call-spelling.
+    trims), projected to the rendered columns. ``page_all`` — the same
+    slice UNprojected: rows the byte guard pushes off the page keep
+    every column when they join the aggregate surface. ``matched`` —
+    rows surviving ``where``. ``total`` — every row the view built
+    before the lens. ``hidden`` — matched rows NOT on this page,
+    earlier pages and later alike, kept UNprojected so the aggregates
+    cover every column the view carries (the ``trusted`` tally must
+    survive a ``columns=`` that leaves it out). ``columns`` — the
+    effective rendered column order. ``next_args``/cursor minting lives
+    in :func:`render_lens_page`, which needs the caller's call-spelling.
     """
 
     rows: list[dict[str, Any]]
+    page_all: list[dict[str, Any]]
     matched: int
     total: int
     hidden: list[dict[str, Any]]
@@ -450,7 +463,10 @@ def apply_lens(
     ``schema`` is the view's declared column order; the lens validates
     ``columns``/``where``/``sort`` names against it (plus whatever keys the
     rows themselves carry) so a typo is refused by name, not silently
-    empty.
+    empty. The projection shapes only what the page PRINTS — the hidden
+    rows keep every column so the aggregates report the full row, not
+    the caller's viewport (a ``columns=`` that drops ``trusted`` must
+    not lose the trust tally).
     """
     carried = sorted(set(schema or ()) | set(_row_columns(rows)))
     unknown_cols = sorted(
@@ -486,9 +502,12 @@ def apply_lens(
     )
     return LensPage(
         rows=[_project(r, columns) for r in page],
+        page_all=page,
         matched=matched,
         total=len(rows),
-        hidden=[_project(r, columns) for r in filtered[offset + len(page) :]],
+        # Every matched row this page does not show — earlier pages AND
+        # the tail — feeds the aggregates, unprojected.
+        hidden=[*filtered[:offset], *filtered[offset + len(page) :]],
         columns=columns,
         spec=spec,
     )
@@ -532,54 +551,138 @@ def render_lens_page(
     call: Callable[[Mapping[str, Any]], str],
     render: Callable[[list[dict[str, Any]]], str] | None = None,
     byte_cap: int = 0,
+    block_cap: int = 0,
 ) -> str:
     """Table body + lens footer.
 
     ``render`` produces the visible table from the page rows (default:
     :func:`precis.format.render_agent_table` over ``page.columns``).
-    ``byte_cap`` (chars) drops WHOLE trailing rows until the render fits —
-    a row is never cut mid-cell. ``args`` is the caller's normalised
-    continuation args (its own preserved knobs + the lens keys); the minted
-    ``cursor`` is merged in for the ``next:`` line, which is emitted only
-    when rows remain after this page.
+    ``byte_cap`` bounds the rendered TABLE in UTF-8 bytes — the view's
+    own row budget: it drops WHOLE trailing rows until the table fits,
+    so a row is never cut mid-cell. The footer (counts + hidden-row
+    aggregates + the ``next:`` line) always rides intact — a starved
+    page is an honest answer, not a truncation. ``block_cap`` bounds
+    the COMPLETE emitted block — table + footer — the same whole-rows
+    way; :func:`lens_budget_fit` uses it for the runtime transport
+    budget, so no positional cut can ever sever a row or drop the
+    ``next:`` line. ``args`` is the caller's normalised continuation
+    args (its own preserved knobs + the lens keys); the minted
+    ``cursor`` is merged in for the ``next:`` line, which is emitted
+    only when rows remain after this page.
     """
     from precis.format import render_agent_table
 
-    shown = list(page.rows)
+    page_rows = list(page.rows)
     if render is None:
         cols = page.columns
 
         def render(rs: list[dict[str, Any]]) -> str:
             return render_agent_table(rs, schema=cols)
 
-    text = render(shown)
-    while byte_cap > 0 and len(text) > byte_cap and shown:
-        shown.pop()  # whole rows only — never a mid-row cut
-        text = render(shown)
-    n_shown = len(shown)
-    # Rows the byte guard dropped join the hidden set — aggregates and the
-    # continue-offset must cover them, else the guard loses rows silently.
-    hidden = [*page.rows[n_shown:], *page.hidden]
-    exhausted = page.spec.offset + n_shown >= page.matched
+    def emit(n_shown: int, text: str | None = None) -> str:
+        shown = page_rows[:n_shown]
+        # Rows the byte guard dropped join the hidden set — aggregates
+        # and the continue-offset must cover them, else the guard loses
+        # rows silently. ``page_all`` keeps their unprojected columns.
+        hidden = [*page.page_all[n_shown:], *page.hidden]
+        exhausted = page.spec.offset + n_shown >= page.matched
 
-    lines = [text] if text else ["(no rows on this page)"]
-    lines.append(f"{n_shown} shown · {page.matched} matched · {page.total} total")
-    if hidden:
-        agg = hidden_aggregates(hidden)
-        if agg:
-            lines.append(f"hidden: {agg}")
-    if exhausted and page.matched > 0:
-        lines.append("(cursor exhausted — every matched row shown)")
-    elif hidden and n_shown == 0:
-        lines.append(
-            "(every matched row exceeds the byte budget — widen it or "
-            "narrow where; a cursor at this offset would self-loop)"
+        if text is None:
+            text = render(shown)
+        lines = [text] if text else ["(no rows on this page)"]
+        lines.append(f"{n_shown} shown · {page.matched} matched · {page.total} total")
+        if hidden:
+            agg = hidden_aggregates(hidden)
+            if agg:
+                lines.append(f"hidden: {agg}")
+        if exhausted and page.matched > 0:
+            lines.append("(cursor exhausted — every matched row shown)")
+        elif hidden and n_shown == 0:
+            lines.append(
+                "(every matched row exceeds the byte budget — widen it or "
+                "narrow where; a cursor at this offset would self-loop)"
+            )
+        elif hidden:
+            next_args = dict(args)
+            next_args["cursor"] = mint_cursor(page.spec, page.spec.offset + n_shown)
+            lines.append(f"next: {call(next_args)}")
+        return "\n".join(lines)
+
+    n_shown = len(page_rows)
+    while n_shown:
+        text = render(page_rows[:n_shown])
+        if byte_cap > 0 and len(text.encode("utf-8")) > byte_cap:
+            n_shown -= 1  # whole rows only — never a mid-row cut
+            continue
+        block = emit(n_shown, text)
+        if block_cap > 0 and len(block.encode("utf-8")) > block_cap:
+            n_shown -= 1
+            continue
+        return block
+    return emit(0)
+
+
+def lens_budget_fit(
+    page: LensPage,
+    *,
+    args: Mapping[str, Any],
+    call: Callable[[Mapping[str, Any]], str],
+    render: Callable[[list[dict[str, Any]]], str] | None = None,
+    byte_cap: int = 0,
+    head: str = "",
+    tail: str = "",
+) -> Callable[[int], str]:
+    """The ``Response.budget_fit`` for a lens page — refits the WHOLE
+    response (``head`` + page block + ``tail``) to the byte cap the
+    runtime hands it, dropping whole rows into the hidden aggregate set
+    so the transport budget can never sever a row or cut the ``next:``
+    continuation (td678021 review: the view-level ``byte_cap`` alone left
+    the head, aggregates and footer outside any bound).
+
+    The returned closure owns the continuation and reads only the
+    already-loaded ``page`` — no store work, per the ``budget_fit``
+    contract. Raises :class:`ResultBudgetExceeded` when the head/tail or
+    even the empty page's fixed block cannot fit; ``byte_cap`` keeps its
+    view-level role inside the runtime cap (the tighter of the two
+    bounds the table).
+    """
+    head_b = len(head.encode("utf-8"))
+    tail_b = len(tail.encode("utf-8"))
+
+    def _narrow_call() -> str:
+        narrow = dict(args)
+        narrow["limit"] = min(page.spec.limit, 5)
+        return call(narrow)
+
+    def fit(cap: int) -> str:
+        room = cap - head_b - tail_b
+        if room <= 0:
+            raise ResultBudgetExceeded(
+                f"the lens page's head/tail alone exceed the {cap}-byte "
+                "result budget — there is no honest row cut to make",
+                next=_narrow_call(),
+            )
+        page_text = render_lens_page(
+            page,
+            args=args,
+            call=call,
+            render=render,
+            byte_cap=byte_cap,
+            block_cap=room,
         )
-    elif hidden:
-        next_args = dict(args)
-        next_args["cursor"] = mint_cursor(page.spec, page.spec.offset + n_shown)
-        lines.append(f"next: {call(next_args)}")
-    return "\n".join(lines)
+        if len(page_text.encode("utf-8")) > room:
+            # Even the zero-row emission (counts + the starved note)
+            # overflows the runtime cap — no row left to drop. (An
+            # overshoot of ``byte_cap`` alone is fine: that is the
+            # starved page the view budget asks for.)
+            raise ResultBudgetExceeded(
+                f"a lens page's fixed block does not fit under the "
+                f"{cap}-byte result budget",
+                next=_narrow_call(),
+            )
+        return head + page_text + tail
+
+    return fit
 
 
 def lens_echo_args(
@@ -591,9 +694,17 @@ def lens_echo_args(
     """The normalised continuation args for a view's ``next:`` line.
 
     Lens keys are emitted in canonical form (``where`` as the merged dict,
-    ``sort`` as ``'col'``/``'-col'`` strings, ``limit`` as int); keys in
-    ``preserve`` (view-local knobs like ``format``/``U``/``gate``) pass
-    through unchanged. ``cursor`` is added by :func:`render_lens_page`.
+    ``limit`` as int); keys in ``preserve`` (view-local knobs like
+    ``format``/``U``/``gate``) pass through unchanged. ``cursor`` is added
+    by :func:`render_lens_page`.
+
+    ``sort`` echoes the DIRECTION explicitly — ``'-col'`` for descending,
+    ``[col, 'asc']`` for ascending — never the bare ``'col'`` string: a
+    view that resolves bare keys to a declared objective sense (the quest
+    candidate views, gr592277) would otherwise re-read its own
+    continuation — ``'name'`` refused as a non-measure, an ascending
+    ``max``-objective key flipped to descending, and either way the
+    rebound spec-hash strands the minted cursor.
     """
     out: dict[str, Any] = {}
     for k in preserve:
@@ -602,9 +713,12 @@ def lens_echo_args(
     if spec.where:
         out["where"] = spec.where
     if spec.sort:
-        out["sort"] = [c if a else f"-{c}" for c, a in spec.sort]
-        if len(out["sort"]) == 1:
-            out["sort"] = out["sort"][0]
+        echoed: list[Any] = [[c, "asc"] if a else f"-{c}" for c, a in spec.sort]
+        # A lone '-col' string unwraps; the pair form must not (a bare
+        # [col, 'asc'] list would parse as two column names).
+        out["sort"] = (
+            echoed[0] if len(echoed) == 1 and isinstance(echoed[0], str) else echoed
+        )
     if spec.columns is not None:
         out["columns"] = list(spec.columns)
     out["limit"] = spec.limit
@@ -619,6 +733,7 @@ __all__ = [
     "LensSpec",
     "apply_lens",
     "hidden_aggregates",
+    "lens_budget_fit",
     "lens_echo_args",
     "match_where",
     "mint_cursor",

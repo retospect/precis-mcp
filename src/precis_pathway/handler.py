@@ -1441,6 +1441,17 @@ class PathwayHandler(Handler):
             else:
                 body = f"{handle}\n{resp.body}"
             resp = replace(resp, body=body)
+            if resp.budget_fit is not None:
+                # The handle line leads every prose body — a refit must
+                # keep it, so the inner fit works the cap it leaves.
+                inner_fit = resp.budget_fit
+                prefix = f"{handle}\n" if body.startswith(f"{handle}\n") else ""
+                prefix_b = len(prefix.encode("utf-8"))
+
+                def _prefixed_fit(cap: int, *, _p: str = prefix) -> str:
+                    return _p + inner_fit(cap - prefix_b)
+
+                resp = replace(resp, budget_fit=_prefixed_fit)
         return resp
 
     def _environment_view(
@@ -1535,10 +1546,19 @@ class PathwayHandler(Handler):
                 "T sets protonation kT. Gas pressures and ion concentration "
                 "do not reprice these energies.\n"
             )
-        return replace(
-            response,
-            body=header + model_note + (response.body or ""),
-        )
+        body = header + model_note + (response.body or "")
+        response = replace(response, body=body)
+        if response.budget_fit is not None:
+            # The header + thermodynamics note lead the body — a refit
+            # must keep them, so the inner fit works the cap they leave.
+            inner_fit = response.budget_fit
+            prefix_b = len((header + model_note).encode("utf-8"))
+
+            def _prefixed_fit(cap: int) -> str:
+                return header + model_note + inner_fit(cap - prefix_b)
+
+            response = replace(response, budget_fit=_prefixed_fit)
+        return response
 
     def _get_view(
         self,
@@ -1622,9 +1642,7 @@ class PathwayHandler(Handler):
 
             return Response(body=objective_text(store, ref))
         if v == "compare":
-            return Response(
-                body=self._compare(store, ref, meta, U=U, gate=gate, lens=lens, id=id)
-            )
+            return self._compare(store, ref, meta, U=U, gate=gate, lens=lens, id=id)
         if v == "staircase":
             return Response(
                 # U alone is the plain re-tilt (the structure view always
@@ -1922,7 +1940,7 @@ class PathwayHandler(Handler):
         gate: str | None = None,
         lens: dict[str, Any] | None = None,
         id: str | int | None = None,
-    ) -> str:
+    ) -> Response:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table. With
         ``U`` (V vs RHE) every CHE-stamped candidate is re-levered first and
@@ -1941,13 +1959,15 @@ class PathwayHandler(Handler):
         ``args={'where': {col: v|[vs]|{min,max}}, 'sort': '-col'|[…],
         'columns': […], 'limit': N, 'cursor': tok}`` — the footer carries
         shown/matched/total + hidden-row aggregates + the exact
-        continuing call."""
+        continuing call. ``budget_fit`` refits the whole response (head
+        notes and gate/anchor/conf legends included) when the transport
+        budget binds — whole rows, never a positional cut."""
         from precis.format import render_agent_table
         from precis.format.table_lens import (
             apply_lens,
+            lens_budget_fit,
             lens_echo_args,
             parse_lens_args,
-            render_lens_page,
         )
         from precis.utils import reaction_graph as analysis
         from precis.utils import trust_gate
@@ -1957,7 +1977,9 @@ class PathwayHandler(Handler):
         r = meta.get("results", {})
         substrate, target = r.get("substrate"), r.get("target")
         if not substrate or not target:
-            return "cannot compare: this pathway has no computed results yet."
+            return Response(
+                body="cannot compare: this pathway has no computed results yet."
+            )
         with store.pool.connection() as conn:
             # Same `cand` join as _list (gr592665): the candidate structure's
             # handle + title rides each compare row; its meta feeds the
@@ -2052,17 +2074,21 @@ class PathwayHandler(Handler):
                     v = str(c["gate"]).split(" ", 1)[0]
                     counts[v] = counts.get(v, 0) + 1
                 tally = ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
-                return (
-                    f"no pathways with gate='{gate}' for {substrate}→{target} "
-                    f"({len(candidates)} compared: {tally}). Drop the filter "
-                    "for every row's verdict, or read view='trust' on one row."
+                return Response(
+                    body=(
+                        f"no pathways with gate='{gate}' for {substrate}→{target} "
+                        f"({len(candidates)} compared: {tally}). Drop the filter "
+                        "for every row's verdict, or read view='trust' on one row."
+                    )
                 )
             candidates = surviving
         if len(candidates) < 2 and gate is None:
-            return (
-                f"only 1 computed pathway for {substrate}→{target}; nothing to "
-                "compare yet. Run variants (different surface/dopant) to build a "
-                "leaderboard."
+            return Response(
+                body=(
+                    f"only 1 computed pathway for {substrate}→{target}; nothing to "
+                    "compare yet. Run variants (different surface/dopant) to build a "
+                    "leaderboard."
+                )
             )
         head, cmp_rows, schema, tails = compare_parts(candidates, U=U)
         spec = parse_lens_args(lens or {})
@@ -2076,16 +2102,22 @@ class PathwayHandler(Handler):
             echo_in["gate"] = gate
         if U is not None:
             echo_in["U"] = U
-        body = render_lens_page(
+        fit = lens_budget_fit(
             page,
             args=lens_echo_args(echo_in, spec, preserve=("gate", "U")),
             call=lambda a: (
                 f"get(kind='pathway', id={id!r}, view='compare', args={a!r})"
             ),
             render=render,
-            byte_cap=24000,
+            head="\n".join(head) + "\n",
+            tail="\n" + "\n".join(tails),
         )
-        return "\n".join([*head, body, *tails])
+        from precis._result_budget import DEFAULT_MAX_BODY_BYTES, _env_cap
+
+        return Response(
+            body=fit(_env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+            budget_fit=fit,
+        )
 
     # -- staircase (SPSO slice 3, the che_affine read) --------------------
     def _staircase(

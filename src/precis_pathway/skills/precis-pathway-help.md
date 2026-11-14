@@ -497,6 +497,14 @@ handle + title), the **reaction coordinate is the columns** (state energies +
 a row for one candidate's whole landscape. Add `args={'U': x}` to rank the same
 table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
+The table shares the **table lens** (gr592637): `args={'where': {col:
+value|[values]|{min,max}}, 'sort': '-col'|[[col,'asc'|'desc'],…],
+'columns': […], 'limit': N (default 20, cap 200), 'cursor': tok}`
+filter/order/project/page rows server-side; every page's footer reports
+`shown · matched · total`, aggregates over the rows it did not show, and
+the literal `next:` call that continues — nothing is dropped
+positionally.
+
 Each row carries a `gate` column — the barrier trust-gate verdict, replayed
 per row exactly like `view='trust'` (`pass` | `blocked (why)` | `n/a` for
 pre-trust-schema runs) — and an `anchor` cell, the named credit anchor

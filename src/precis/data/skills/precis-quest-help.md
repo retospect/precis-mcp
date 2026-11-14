@@ -294,10 +294,7 @@ tail, frontier/gaps panels, servers-lite) — readable without calling
 what varies) rather than band. It renders the compact agent table
 `precis-toon` documents by default;
 `args={'format': 'text'}` swaps in the fixed-width copy the tick
-prompt embeds — "what the next tick would see now". `view='results'`
-and `view='frontier'` are **budgeted** like the tick's copy (2500
-tokens; rows drop from the tail, never the newest ten; the body says
-`(+K … rows omitted)`); `args={'budget': 8000}` widens it. The measure
+prompt embeds — "what the next tick would see now". The measure
 columns are the pathway axes plus the quest's declared **objective**
 columns — for a quest with no `meta.rubric_objectives` that is `energy`,
 so a completed structure relax shows its converged result instead of an
@@ -305,13 +302,33 @@ empty row. On an
 `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
 says the body has no Pareto frontier — it never proposes, so nothing
 converges.
-`results`, `leaderboard` and `frontier` also take
-`args={'trusted': true}` — only candidates carrying an affirmative
+`results`, `leaderboard` and `frontier` share the **table lens**
+(gr592637): `args={'where': {col: value|[values]|{min,max,gt,lt,ne}},
+'sort': '<measure>'|'-col'|[[col,'asc'|'desc'],…], 'columns': […],
+'limit': N (default 20, cap 200), 'cursor': tok}` filter, order,
+project and page the rows server-side — `band` is a first-class
+column on `frontier` (headers name the band's matched count). Each
+page's footer reports `shown · matched · total`, per-column aggregates
+over the rows the page did not show (count/min/max/mean for numerics,
+a value histogram for enums — the `trusted` yes/no tally survives a
+`columns=` that leaves it out), and a `next:` line naming the LITERAL
+call that continues; following it visits every row once. A cursor
+binds its spec — resubmitting it with a changed where/sort/columns/
+limit is refused, not silently resumed. `args={'budget': N}` (default
+2500, the tick's copy) bounds the rendered table in bytes — whole
+rows drop, never mid-row, and what drops joins the aggregates; the
+footer always rides (a too-tight budget prints a starved page, no
+self-loop cursor). The transport budget refits the whole response
+the same way, so a page never ends in a severed row or a missing
+continuation.
+`args={'trusted': true}` is the alias of `where={'trusted': 'yes'}`
+— only candidates carrying an affirmative
 trust verdict (the rows the `trusted` column reads `yes`: no flipped
 `*_trusted` flag, no `*_untrusted_value` stash, no network-stale mark)
 — and `args={'sort': '<measure>'}`, ranking rows by any carried
 measure on its declared objective sense (`min` when undeclared,
-unmeasured last). "Which candidate is trusted AND best" is
+unmeasured last; the lens `'-col'`/`[col,'asc']` spellings order
+explicitly). "Which candidate is trusted AND best" is
 `args={'trusted': true, 'sort': 'barrier'}`. When the confirmed
 frontier is empty because everything measured is unconfirmed, the
 headline's per-axis counts name the ≤10 handles that DO carry it

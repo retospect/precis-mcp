@@ -2047,36 +2047,30 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_frontier(
-                    ref,
-                    budget=_budget_arg(args),
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
-                    args=args,
-                )
+            return self._render_frontier(
+                ref,
+                budget=_budget_arg(args),
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_leaderboard(
-                    ref,
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
-                    args=args,
-                )
+            return self._render_leaderboard(
+                ref,
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "results" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_results(
-                    ref,
-                    budget=_budget_arg(args),
-                    fmt=_results_format_arg(args),
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
-                    args=args,
-                )
+            return self._render_results(
+                ref,
+                budget=_budget_arg(args),
+                fmt=_results_format_arg(args),
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "series" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
@@ -2576,7 +2570,7 @@ class QuestHandler(NumericRefHandler):
         trusted: bool = False,
         sort: Any = None,
         args: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> Response:
         """`view='frontier'` — the Pareto frontier of candidate materials.
 
         The **table lens** (gr592637, :mod:`precis.format.table_lens`) owns
@@ -2590,8 +2584,12 @@ class QuestHandler(NumericRefHandler):
         headers still lead each group present on the page; the footer
         carries shown/matched/total + hidden-row aggregates + the exact
         continuing call. ``budget`` tokens (chars/4, default = the tick's
-        2500) remain as the byte guard — it drops whole rows only, and
-        what it drops joins the hidden-row aggregates.
+        2500) bound the rendered table in UTF-8 bytes — whole rows only,
+        and what drops joins the hidden-row aggregates; the footer
+        always rides (a starved page is an honest answer), and the
+        runtime transport budget refits the WHOLE response through
+        ``Response.budget_fit`` the same way, so no positional cut can
+        sever a row or the ``next:`` line.
 
         ``args={'sort': '<measure>'}`` keeps its declared-sense reading
         (gr592277); both print a ``filter:`` note; a filter that empties
@@ -2608,11 +2606,13 @@ class QuestHandler(NumericRefHandler):
         meta = ref.meta or {}
         body = meta.get(_weave_tick.QUEST_BODY_META_KEY)
         if body == _weave_tick.QUEST_BODY_INQUIRY:
-            return (
-                f"# frontier — quest {ref.id}: {head}\n\n"
-                "this is an inquiry — it reads, reasons, and synthesises; it "
-                "has no proposals and no Pareto frontier (see view='dossier' "
-                "for its living synthesis)."
+            return Response(
+                body=(
+                    f"# frontier — quest {ref.id}: {head}\n\n"
+                    "this is an inquiry — it reads, reasons, and synthesises; it "
+                    "has no proposals and no Pareto frontier (see view='dossier' "
+                    "for its living synthesis)."
+                )
             )
         # bootstrap-roadmap-quest AC7: the roadmap body has no frontier
         # either — its measured state is the capability ledger (a
@@ -2620,21 +2620,23 @@ class QuestHandler(NumericRefHandler):
         # materials). A literal equality per body, not a catch-all for
         # non-materials bodies: a future body must opt in here explicitly.
         if body == _weave_tick.QUEST_BODY_ROADMAP:
-            return (
-                f"# frontier — quest {ref.id}: {head}\n\n"
-                "this is a roadmap — it has no candidate materials and no "
-                "Pareto frontier; the body has no frontier at all. Its "
-                "measured state is the capability ledger (see view='tree' "
-                "for the table, or view='dossier' for the pinned "
-                "capability-ledger chunk)."
+            return Response(
+                body=(
+                    f"# frontier — quest {ref.id}: {head}\n\n"
+                    "this is a roadmap — it has no candidate materials and no "
+                    "Pareto frontier; the body has no frontier at all. Its "
+                    "measured state is the capability ledger (see view='tree' "
+                    "for the table, or view='dossier' for the pinned "
+                    "capability-ledger chunk)."
+                )
             )
         from precis.format import render_agent_table
         from precis.format.table_lens import (
             apply_lens,
+            lens_budget_fit,
             lens_echo_args,
             match_where,
             parse_lens_args,
-            render_lens_page,
         )
         from precis.quest import frontier as frontier_mod
         from precis.quest import protocol as protocol_mod
@@ -2673,7 +2675,7 @@ class QuestHandler(NumericRefHandler):
 
         if not had_candidates:
             lines.append("no candidate structures serve this quest yet.")
-            return "\n".join(lines)
+            return Response(body="\n".join(lines))
 
         def _tri(c: frontier_mod.Candidate) -> str:
             return {True: "yes", False: "no", None: "-"}[candidate_trusted(c)]
@@ -2731,7 +2733,7 @@ class QuestHandler(NumericRefHandler):
         if page.matched == 0:
             if (msg := _trusted_empty_line(spec.where)) is not None:
                 lines.append(msg)
-                return "\n".join(lines)
+                return Response(body="\n".join(lines))
 
         # The empty-frontier explanation reads the UNFILTERED split — its
         # untrusted counts + trusted-complement names are exactly what a
@@ -2760,7 +2762,7 @@ class QuestHandler(NumericRefHandler):
                     out.extend(frontier_explain)
             return "\n\n".join(out)
 
-        body_text = render_lens_page(
+        fit = lens_budget_fit(
             page,
             args=lens_echo_args(lens_args, spec, preserve=("budget",)),
             call=lambda a: (
@@ -2768,9 +2770,14 @@ class QuestHandler(NumericRefHandler):
             ),
             render=render,
             byte_cap=budget * _VIEW_CHARS_PER_TOKEN,
+            head="\n".join(lines) + "\n",
         )
-        lines.append(body_text)
-        return "\n".join(lines)
+        from precis._result_budget import DEFAULT_MAX_BODY_BYTES, _env_cap
+
+        return Response(
+            body=fit(_env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+            budget_fit=fit,
+        )
 
     def _render_leaderboard(
         self,
@@ -2779,7 +2786,7 @@ class QuestHandler(NumericRefHandler):
         trusted: bool = False,
         sort: Any = None,
         args: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> Response:
         """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
 
         One row per candidate design (identity · objective vector · Pareto band ·
@@ -2796,9 +2803,9 @@ class QuestHandler(NumericRefHandler):
         """
         from precis.format.table_lens import (
             apply_lens,
+            lens_budget_fit,
             lens_echo_args,
             parse_lens_args,
-            render_lens_page,
         )
         from precis.quest import frontier as frontier_mod
 
@@ -2818,9 +2825,11 @@ class QuestHandler(NumericRefHandler):
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         obj_line = _objective_line(raw_fr, ref.meta or {})
         if not had_candidates:
-            return (
-                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
-                "no candidate structures serve this quest yet."
+            return Response(
+                body=(
+                    f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
+                    "no candidate structures serve this quest yet."
+                )
             )
         graduated = {
             c.ref_id
@@ -2840,9 +2849,11 @@ class QuestHandler(NumericRefHandler):
         note = _view_args_line(trusted=spec.where.get("trusted"), sort=sort_resolved)
         filter_block = note + "\n" if note else ""
         if page.matched == 0 and (msg := _trusted_empty_line(spec.where)) is not None:
-            return (
-                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-                f"{filter_block}\n{msg}"
+            return Response(
+                body=(
+                    f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
+                    f"{filter_block}\n{msg}"
+                )
             )
         from precis.quest import protocol as protocol_mod
 
@@ -2854,17 +2865,23 @@ class QuestHandler(NumericRefHandler):
             f"{glyph} {tier}" for tier, glyph in frontier_mod.TIER_GLYPH.items()
         )
         proto_block = "\n".join(protocol) + "\n" if protocol else ""
-        body = render_lens_page(
+        fit = lens_budget_fit(
             page,
             args=lens_echo_args(args, spec),
             call=lambda a: (
                 f"get(kind='quest', id='qu{ref.id}', view='leaderboard', args={a!r})"
             ),
             byte_cap=_DEFAULT_VIEW_BUDGET * _VIEW_CHARS_PER_TOKEN,
+            head=(
+                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
+                f"{proto_block}tier: {tier_legend}\n{filter_block}\n"
+            ),
         )
-        return (
-            f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-            f"{proto_block}tier: {tier_legend}\n{filter_block}\n{body}"
+        from precis._result_budget import DEFAULT_MAX_BODY_BYTES, _env_cap
+
+        return Response(
+            body=fit(_env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+            budget_fit=fit,
         )
 
     def _render_results(
@@ -2876,7 +2893,7 @@ class QuestHandler(NumericRefHandler):
         trusted: bool = False,
         sort: Any = None,
         args: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> Response:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
         every Pareto band, dopant/site/co-adsorbate + trust/blocker columns.
@@ -2898,15 +2915,18 @@ class QuestHandler(NumericRefHandler):
         shown/matched/total, hidden-row aggregates, and the exact
         continuing call — the old positional ``(+K omitted)`` cut is gone.
 
-        ``budget`` tokens still cap the rendered table (chars/4; default =
-        the tick's own 2500) as the byte guard — it drops WHOLE rows,
-        never mid-row, and what it drops joins the hidden-row aggregates."""
+        ``budget`` tokens still cap the rendered table (chars/4, counted
+        as UTF-8 bytes; default = the tick's own 2500) — it drops WHOLE
+        rows, never mid-row, and what it drops joins the hidden-row
+        aggregates; the footer always rides.
+        ``Response.budget_fit`` refits head + table + footer against the
+        runtime transport budget the same way."""
         from precis.format import render_agent_table
         from precis.format.table_lens import (
             apply_lens,
+            lens_budget_fit,
             lens_echo_args,
             parse_lens_args,
-            render_lens_page,
         )
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
@@ -2928,9 +2948,11 @@ class QuestHandler(NumericRefHandler):
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         rows = build_results_rows(self.store, ref.id, fr=fr, sort=None)
         if not rows:
-            return (
-                f"# results — quest {ref.id}: {head}\n\n"
-                "no candidate structures serve this quest yet."
+            return Response(
+                body=(
+                    f"# results — quest {ref.id}: {head}\n\n"
+                    "no candidate structures serve this quest yet."
+                )
             )
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
@@ -2958,11 +2980,13 @@ class QuestHandler(NumericRefHandler):
         )
         args_block = args_note + "\n" if args_note else ""
         if page.matched == 0 and (msg := _trusted_empty_line(spec.where)) is not None:
-            return f"# results — quest {ref.id}: {head}\n{args_block}\n{msg}"
+            return Response(
+                body=f"# results — quest {ref.id}: {head}\n{args_block}\n{msg}"
+            )
         label = (
             "## text table (as embedded in the tick prompt)\n" if fmt == "text" else ""
         )
-        body = render_lens_page(
+        fit = lens_budget_fit(
             page,
             args=echo,
             call=lambda a: (
@@ -2970,8 +2994,14 @@ class QuestHandler(NumericRefHandler):
             ),
             render=render,
             byte_cap=budget * _VIEW_CHARS_PER_TOKEN,
+            head=f"# results — quest {ref.id}: {head}\n{args_block}\n{label}",
         )
-        return f"# results — quest {ref.id}: {head}\n{args_block}\n{label}{body}"
+        from precis._result_budget import DEFAULT_MAX_BODY_BYTES, _env_cap
+
+        return Response(
+            body=fit(_env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+            budget_fit=fit,
+        )
 
     def _render_series(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
         """`view='series'` — the *controlled* comparisons among the
