@@ -78,12 +78,50 @@ def test_env_has_parity_keys_and_own_identity() -> None:
         # var precis_mcp_slice_token_dir when set, as 20b's
         # _l_b_slice_token_env (gripe 571617).
         "PRECIS_MCP_SLICE_TOKEN_DIR",
+        # A second repo's clone on this host; rendered from the host var
+        # precis_slice_repos when set (td659522).
+        "PRECIS_SLICE_REPOS",
         "precis_shared_env",
         "precis_identity_env",
     ):
         assert key in env, key
     assert env.count("'PRECIS_PROCESS': 'precis-worker-slices'") == 1
     assert env.count("'PRECIS_SOURCE': 'precis-worker-slices'") == 1
+
+
+def _render_env(**host_vars: object) -> dict[str, str]:
+    """Render the lane's ``service_unit_env`` with the two ansible filters it
+    needs stubbed in (jinja2 core has neither)."""
+    import json
+
+    import jinja2
+    from jinja2.nativetypes import NativeEnvironment
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    env.filters["combine"] = lambda a, b: {**dict(a or {}), **dict(b)}
+    env.filters["to_json"] = json.dumps
+    play_vars = {**_play()["vars"], "_slices_dsn": "postgresql://stub/precis"}
+    rendered = env.from_string(str(_unit_vars()["service_unit_env"])).render(
+        **play_vars,
+        precis_shared_env={},
+        precis_autocatpath_kinetics_seconds=60,
+        **host_vars,
+    )
+    assert isinstance(rendered, dict), f"service_unit_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_slice_repos_renders_as_json_only_when_the_host_var_is_set() -> None:
+    """``PRECIS_SLICE_REPOS`` is the JSON object ``run_slice.slice_root_for``
+    parses (repo name -> absolute clone path). The clone is the operator's to
+    place, so there is no default: unset or empty, the key is omitted."""
+    import json
+
+    repos = {"catpath": "/Users/deploy/catpath"}
+    env = _render_env(precis_slice_repos=repos)
+    assert json.loads(env["PRECIS_SLICE_REPOS"]) == repos
+    assert "PRECIS_SLICE_REPOS" not in _render_env()
+    assert "PRECIS_SLICE_REPOS" not in _render_env(precis_slice_repos={})
 
 
 def test_env_carries_what_the_plan_tick_reads() -> None:

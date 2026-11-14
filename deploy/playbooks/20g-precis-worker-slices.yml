@@ -58,6 +58,15 @@
 # Hand-set on the plist it dies at the next re-render (2026-11-06 r224,
 # gripe 571617: every slice after 01:03Z launched "mcp token: shared").
 #
+# SLICE REPOS. PRECIS_SLICE_REPOS maps a second repo's name to its clone on
+# this host, as a JSON object (run_slice.slice_root_for): run_slice cuts that
+# repo's slice worktrees under the clone and never clones one itself. The
+# clone is the operator's to place, so the value is a host var
+# (precis_slice_repos, a dict of name -> absolute path, no default): set it in
+# the overlay for the gateway; unset or empty, the key is omitted and a slice
+# for any repo but this one fails its submit with the missing-entry message.
+# Not needed until a second repo is opened (factory.open_repos).
+#
 # NO READINESS GATE (unlike 20e/43). A repeated `--only` has no
 # append-vs-store hazard for job_ssh_node, long-registered in the installed
 # argparse choices. plan_tick is NOT in an older venv's choices, but the
@@ -140,6 +149,10 @@
              | combine(
                  {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
                  if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
+               )
+             | combine(
+                 {'PRECIS_SLICE_REPOS': precis_slice_repos | to_json}
+                 if ((precis_slice_repos | default({})) | length > 0) else {}
                ) }}
 
     # gr567471: copy the controller's nightly coverage map to the lander so
