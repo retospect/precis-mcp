@@ -995,6 +995,16 @@ def prod_head_record(
     return rec
 
 
+def _record_base(prev: str, previous: dict[str, Any] | None) -> str:
+    """Where this deploy's landed range starts: the old record's head when
+    git has that commit, else ``prev``. ``rev-list base..head`` then names
+    every commit no record covered yet, whatever moved origin/prod since."""
+    old = str((previous or {}).get("head") or "")
+    if old and git("rev-parse", "--verify", "--quiet", f"{old}^{{commit}}"):
+        return old
+    return prev
+
+
 def record_prod_head(
     prev: str,
     head: str,
@@ -1010,6 +1020,13 @@ def record_prod_head(
     the same ``scripts/prod-precis settings get`` call path, merges, and
     writes with ``settings set``. Best-effort like :func:`note_gripes`: the
     rollout already happened, so any fault is reported, never raised.
+
+    The landed range starts at the old RECORD's head, not at ``prev``, when
+    git knows that commit (:func:`_record_base`): a deploy that moved
+    origin/prod without writing the record (a raw ``scripts/deploy``) left
+    its shas out of ``landed`` for good, and every sha-in-prod gate on them
+    read "not in prod yet" until the rescue tick filed one ask each
+    (gr666159: 180 deployed shas missing, 107 asks).
     """
     if not head:
         return "prod head not recorded: no head sha"
@@ -1017,7 +1034,6 @@ def record_prod_head(
         return f"prod head not recorded: {why}"
     send = transport or _prod_precis
     when = now or datetime.now(UTC)
-    shas = landed if landed is not None else landed_shas(prev, head)
     try:
         rc, out, _err = send(["settings", "get", PROD_HEAD_KEY])
         if rc and _err.strip():
@@ -1026,6 +1042,10 @@ def record_prod_head(
                 subprocess.CompletedProcess([], rc, out, _err),
             )
         previous = parse_prod_head(out) if rc == 0 else None
+        if landed is not None:
+            shas = landed
+        else:
+            shas = landed_shas(_record_base(prev, previous), head)
         rec = prod_head_record(head, shas, previous, when, release=release)
         value = json.dumps(rec, separators=(",", ":"))
         rc, _out, err = send(["settings", "set", PROD_HEAD_KEY, value])
@@ -1839,6 +1859,12 @@ def deploy_and_close(
 
 def run(args: argparse.Namespace) -> int:
     warn_hook_drift()  # gr516942: report (never write) ~/.claude hook drift
+    if getattr(args, "record_prod_head", ""):
+        # scripts/deploy's hook: a raw deploy moves origin/prod, so it owes
+        # prod the record too (gr666159). Best-effort; always exit 0.
+        head = rev(args.record_prod_head)
+        say(record_prod_head("", head or "", release=None))
+        return 0
     if args.deploy_only:
         return deploy_only(args)
     races = 0
@@ -2415,6 +2441,13 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         metavar="rN",
         help="deploy the recorded release/r<N> this worktree cut; never cuts",
+    )
+    mode.add_argument(
+        "--record-prod-head",
+        default="",
+        metavar="SHA",
+        help="only write prod's release.prod_head record for deployed SHA "
+        "(scripts/deploy calls this after moving origin/prod)",
     )
     return run(ap.parse_args(argv))
 

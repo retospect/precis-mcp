@@ -606,6 +606,35 @@ def test_landed_shas_abbreviates_the_range(
     assert seen[1][-1] == "bbb"
 
 
+def test_landed_range_starts_at_the_old_record_head(
+    store: Store, release: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr666159: a raw deploy moved origin/prod past shas no record named;
+    the next record's range runs from the old RECORD's head, not from
+    origin/prod, so the skipped shas land too. A record head git does not
+    know falls back to ``prev``."""
+    prod = FakeProd(store)
+    release.record_prod_head("p0", HEAD, transport=prod, landed=LANDED)
+    ranges: list[str] = []
+
+    def fake_git(*args: str) -> str | None:
+        if args[0] == "rev-parse":
+            return args[-1] if args[-1].startswith(HEAD) else None
+        ranges.append(args[-1])
+        return "5555555eeeee" + "0" * 28
+
+    monkeypatch.setattr(release, "git", fake_git)
+    head2 = "fe" * 20
+    release.record_prod_head("skipped-raw-deploy", head2, transport=prod)
+    assert ranges == [f"{HEAD}..{head2}"]
+    rec = gates.read_prod_head(store)
+    assert rec is not None and rec["landed"][0] == "5555555eeeee"
+
+    store_head = "ab" * 20
+    release.record_prod_head("prev-ref", store_head, transport=prod)
+    assert ranges[-1] == f"prev-ref..{store_head}"  # head2 unknown to git
+
+
 def test_real_transport_skipped_without_prod_dsn(
     release: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
