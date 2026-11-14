@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+import time
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from precis.plans import lanes
-from precis.workers import factory_git, factory_git_mirror, repo_land
+from precis.workers import factory_git, factory_git_mirror, repo_land, repo_lease
 from precis.workers.job_types import land_slice, run_slice
 from tests.test_land_slice import _Ctx, _Store
 
@@ -50,12 +52,38 @@ def _g(cwd: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+class FakeLease:
+    """``repo_lease`` at the ``repo_land`` seam (its SQL is covered by
+    ``test_repo_lease``): free by default, and held by the job once taken."""
+
+    def __init__(self) -> None:
+        self.blocker: dict[str, Any] | None = None
+        self.holder_job: int | None = 901  # the fake ctx's ref_id
+        self.acquires: list[tuple[str, int, str]] = []
+        self.releases: list[tuple[str, int]] = []
+
+    def acquire(
+        self, store: Any, repo: str, *, job_id: int, kind: str
+    ) -> dict[str, Any] | None:
+        self.acquires.append((repo, job_id, kind))
+        return self.blocker
+
+    def holder(self, store: Any, repo: str) -> dict[str, Any] | None:
+        if self.holder_job is None:
+            return None
+        return {"job_id": self.holder_job, "kind": "land", "at": "x"}
+
+    def release(self, store: Any, repo: str, *, job_id: int) -> None:
+        self.releases.append((repo, job_id))
+
+
 @dataclass
 class Rig:
     origin: Path
     clone: Path
     launches: list[tuple[list[str], dict[str, Any]]]
     fetches: list[str]
+    lease: FakeLease = field(default_factory=FakeLease)
 
     def land_tree(self) -> Path:
         return self.clone / ".claude" / "worktrees" / "land-td42"
@@ -118,6 +146,9 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Rig:
         rig.launches.append((argv, kw))
         return 4242
 
+    monkeypatch.setattr(repo_lease, "acquire", rig.lease.acquire)
+    monkeypatch.setattr(repo_lease, "holder", rig.lease.holder)
+    monkeypatch.setattr(repo_lease, "release", rig.lease.release)
     monkeypatch.setattr(factory_git_mirror, "fetch_ref_into", fake_fetch)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "slice_root_for", lambda repo: clone)
@@ -548,6 +579,7 @@ def test_green_pushes_the_handle_sha_and_records_the_land(
     assert (call.sha, call.tip) == (handle["sha"], handle["tip"])
     assert call.object_dirs == (rig.clone / ".git" / "objects",)
     assert ctx.status == "succeeded" and ctx.failure is None
+    assert rig.lease.releases == [("catpath", 901)]
     assert ctx.meta_set["landed_sha"] == handle["sha"]
     # the landed: sha is catpath's: the todo says so for the precis readers
     assert store.refs[42].meta[lanes.LANDED_REPO_KEY] == "catpath"
@@ -779,3 +811,177 @@ def test_kill_never_signals_the_workers_own_pid_or_group(
         repo_land.kill(ctx, handle)
     assert signals == []
     assert not rig.land_tree().exists()
+
+
+# ── The per-repo lease ─────────────────────────────────────────────
+
+HOLDER = {"job_id": 77, "kind": "land", "reason": "held"}
+
+
+def _parked(rig: Rig, blocker: dict[str, Any] = HOLDER) -> tuple[_Ctx, Any, _Store]:
+    """A land whose submit found the lease taken by ``blocker``."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    rig.lease.blocker = blocker
+    return _submit(rig)
+
+
+def _due(handle: dict[str, Any]) -> None:
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+
+
+def test_a_blocked_submit_parks_and_touches_nothing(rig: Rig) -> None:
+    """If this fails a land behind another job's lease fetches, squashes or
+    launches a gate anyway (two lands of one repo overlap), or parks with a
+    handle kill and rescue cannot read."""
+    ctx, handle, _ = _parked(rig)
+    assert ctx.failure is None and ctx.status is None
+    assert rig.fetches == [] and rig.launches == []
+    assert not rig.land_tree().exists()
+    assert handle["lander"] == "repo_land" and handle["phase"] == "lease"
+    assert handle["repo"] == "catpath" and handle["branch"] == "slice/42"
+    assert "pid" not in handle and "sha" not in handle
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ")
+    assert due.replace(tzinfo=UTC) > datetime.now(UTC)
+    assert ctx.meta_set["compute_handle"] is handle
+    assert ctx.meta_set["deadline"] > time.time() + repo_land.LEASE_PARK_S
+    events = [text for kind, text in ctx.chunks if kind == "job_event"]
+    assert len(events) == 1 and "held by land job #77" in events[0]
+    assert rig.lease.acquires == [("catpath", 901, "land")]
+
+
+def test_a_waiting_release_parks_a_land_the_same_way(rig: Rig) -> None:
+    """If this fails a land overtakes a release that is waiting for the
+    lease, and a steady stream of lands starves the release."""
+    wanted = {"job_id": 88, "kind": "release", "reason": "wanted"}
+    ctx, handle, _ = _parked(rig, wanted)
+    assert handle["phase"] == "lease" and rig.launches == []
+    events = [text for kind, text in ctx.chunks if kind == "job_event"]
+    assert len(events) == 1 and "wanted by release job #88" in events[0]
+
+
+def test_a_poll_before_not_before_waits_without_asking_for_the_lease(
+    rig: Rig,
+) -> None:
+    """If this fails every poll tick hits the database for the lease and
+    a parked land retries sooner than the park says."""
+    ctx, handle, _ = _parked(rig)
+    rig.lease.acquires.clear()
+    rig.lease.blocker = None
+    assert repo_land.poll(ctx, handle) is False
+    assert rig.lease.acquires == [] and rig.launches == []
+    assert handle["phase"] == "lease"
+
+
+def test_a_due_poll_that_acquires_launches_the_gate_and_swaps_the_handle(
+    rig: Rig,
+) -> None:
+    """If this fails a land that finally gets the lease never starts its
+    gate, or starts it but the live handle (pid, process identity, sha) is
+    not what the next poll reads."""
+    ctx, handle, _ = _parked(rig)
+    parked = handle
+    _due(handle)
+    rig.lease.blocker = None
+    assert repo_land.poll(ctx, handle) is False
+    assert ctx.failure is None
+    assert len(rig.launches) == 1
+    assert handle is parked and "phase" not in handle and "not_before" not in handle
+    assert handle["pid"] == 4242 and handle["sha"] and handle["tip"]
+    assert ctx.meta_set["compute_handle"] == handle
+    assert ctx.meta_set["compute_handle_released"] is False
+    assert ctx.meta_set["deadline"] == handle["deadline"]
+    if sys.platform == "darwin":
+        assert "ps_identity" in handle or "boot_id" not in handle
+    else:
+        assert ("boot_id" in handle) == ("start_time" in handle)
+    assert rig.land_tree().is_dir()
+
+
+def test_a_due_poll_still_blocked_parks_again_with_a_fresh_deadline(
+    rig: Rig,
+) -> None:
+    """If this fails a land stuck behind a long holder is killed by its own
+    wall clock while parked, or logs a job event on every retry."""
+    ctx, handle, _ = _parked(rig)
+    _due(handle)
+    ctx.meta_set.clear()
+    ctx.chunks.clear()
+    assert repo_land.poll(ctx, handle) is False
+    assert ctx.status is None and rig.launches == []
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ")
+    assert due.replace(tzinfo=UTC) > datetime.now(UTC)
+    assert ctx.meta_set["deadline"] > time.time() + repo_land.LEASE_PARK_S
+    assert handle["deadline"] == ctx.meta_set["deadline"]
+    assert ctx.chunks == []  # same blocker as the first park: no new event
+
+
+def test_a_new_blocker_on_a_re_park_is_named_in_one_event(rig: Rig) -> None:
+    """If this fails a land that moves from waiting on a land to waiting on
+    a release does not say so."""
+    ctx, handle, _ = _parked(rig)
+    _due(handle)
+    ctx.chunks.clear()
+    rig.lease.blocker = {"job_id": 88, "kind": "release", "reason": "wanted"}
+    assert repo_land.poll(ctx, handle) is False
+    assert len(ctx.chunks) == 1 and "job #88" in ctx.chunks[0][1]
+
+
+def test_a_land_blocked_past_the_wait_cap_fails_attempt_free(rig: Rig) -> None:
+    """If this fails a land behind a wedged holder waits forever, or its
+    failure charges the builder an attempt instead of re-minting the land."""
+    ctx, handle, store = _parked(rig)
+    _due(handle)
+    handle["lease_since"] = time.time() - repo_land.LEASE_WAIT_CAP_S - 60
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.HELD_CLASS)
+    assert rig.launches == []
+
+
+@pytest.mark.parametrize("how", ["factory-off", "repo-closed"])
+def test_a_parked_land_waking_to_a_closed_repo_starts_no_gate(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """If this fails a land that waited for the lease takes it and launches a
+    gate after the operator switched the factory off or closed the repo."""
+    ctx, handle, store = _parked(rig)
+    _due(handle)
+    rig.lease.blocker = None
+    rig.lease.acquires.clear()
+    if how == "factory-off":
+        monkeypatch.setattr(run_slice, "factory_off", lambda: True)
+    else:
+        monkeypatch.setattr(
+            land_slice, "_repo_refusal", lambda store, params: "closed by the operator"
+        )
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
+    assert rig.lease.acquires == [] and rig.launches == []
+
+
+@pytest.mark.parametrize("holder_job", [77, None])
+def test_green_without_the_lease_is_attempt_free_and_never_pushed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, holder_job: int | None
+) -> None:
+    """If this fails a land whose lease went stale and was taken by another
+    job (or a release) still pushes over it."""
+    ctx, handle, store = _gated(rig, exit_code=0)
+    pushes = _fake_push(monkeypatch)
+    rig.lease.holder_job = holder_job
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.HELD_CLASS)
+    assert pushes == [] and rig.lease.releases == []
+    assert lanes.LANDED_REPO_KEY not in store.refs[42].meta
+
+
+def test_kill_on_a_parked_handle_does_not_raise(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the wall-clock or operator kill of a parked land raises
+    (a handle without a pid) and the job is never reaped."""
+    ctx, handle, _ = _parked(rig)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        run_slice, "_signal_group", lambda pgid, sig: signals.append((pgid, int(sig)))
+    )
+    repo_land.kill(ctx, handle)
+    assert signals == []

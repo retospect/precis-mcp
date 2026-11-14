@@ -712,21 +712,24 @@ the operator lists it in `factory.open_repos`.
 
 How a second-repo slice lands (`src/precis/workers/repo_land.py`), in order:
 
-1. Fetch the base tip (`run_slice.fetch_base_tip`).
-2. Squash the slice branch into one commit in a throwaway land tree cut on
+1. Take the repo's lease (`src/precis/workers/repo_lease.py`). A land that
+   finds it taken parks and tries again every two minutes.
+2. Fetch the base tip (`run_slice.fetch_base_tip`).
+3. Squash the slice branch into one commit in a throwaway land tree cut on
    that tip.
-3. Refuse the profile's deny paths and any change of `[project].version`
+4. Refuse the profile's deny paths and any change of `[project].version`
    in `pyproject.toml`.
-4. Launch the profile's setup, lint and test commands detached, under an
+5. Launch the profile's setup, lint and test commands detached, under an
    env with no credential (no ssh agent, gh config or docker endpoint).
    The commands are registry constants, never read from the tree.
-5. On a green gate, re-check the handle's sha (its parent is the tip, the
-   diff still clears the deny paths), re-read the factory switch and the
+6. On a green gate, re-check the lease (this job still holds it), the
+   handle's sha (its parent is the tip, the diff still clears the deny
+   paths), re-read the factory switch and the
    admission rules (`land_slice._repo_refusal`: the lander, `factory.open_repos`,
    the todo's tag against the job's repo), stamp `meta.landed_repo`, then
    push that sha as a plain fast-forward (`factory_git_mirror.push_cas`).
-6. Write `landed: <sha>`, close the todo, remove the land tree, the slice
-   tree and the local branch.
+7. Write `landed: <sha>`, close the todo, remove the land tree, the slice
+   tree and the local branch, release the lease.
 
 On the todo: a `landed: <sha>` comment on success. A `handoff: lander:`
 comment marks a charged attempt: a red gate, a merge conflict, a deny-path
@@ -746,7 +749,12 @@ whose gate is running is not pushed.
 
 Known limits:
 
-- catpath lands are not serialised per repo; a raced push is retried.
+- Second-repo lands hold a per-repo lease for the whole gate
+  (`src/precis/workers/repo_lease.py`). A land that finds it taken parks and
+  retries every two minutes without charging the builder; after six hours
+  it fails attempt-free (`repo-held`) and is minted again. A hand push to
+  the repo's main can still race: the push is a plain fast-forward and a
+  raced push is retried.
 - A `landed:` sha on such a todo belongs to the other repo
   (`meta.landed_repo`, `lanes.LANDED_REPO_KEY`). A plan for it must carry
   no `sha-in-prod` gate.

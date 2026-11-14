@@ -3,7 +3,10 @@
 ``land_slice`` lands precis slices through the tree's own ``scripts/ship``.
 A repo described by a :class:`~precis.plans.lanes.RepoProfile` has no such
 script, so this module lands its slice branch from the profile's constants
-alone: fetch the base tip, cut a throwaway *land tree* on it, squash the
+alone: take the repo's lease (:mod:`~precis.workers.repo_lease`, held for the
+whole land, gate included; a taken lease parks the job and :func:`poll`
+tries again every :data:`LEASE_PARK_S`), fetch the base tip, cut a
+throwaway *land tree* on it, squash the
 slice branch in as ONE commit, refuse what the profile denies, and launch
 the profile's setup, lint and test commands against that commit detached.
 ``land_slice`` keeps the job type and hands :func:`submit`, :func:`poll`
@@ -29,7 +32,9 @@ clone, checked to descend from the handle's ``tip`` before the network is
 touched and reconciled against the ``ls-remote`` oracle afterwards. The
 handle's ``sha`` is the only thing ever pushed; no ref or file in the clone
 is read to decide what to push, and the poll first re-confirms that
-``sha^`` is ``tip`` and that the diff still clears the deny paths.
+``sha^`` is ``tip``, that the diff still clears the deny paths and that the job still
+holds the lease (a lease lost to someone else is attempt-free
+:data:`HELD_CLASS`, never pushed).
 
 Failures use ``land_slice``'s recorders: a conflict, a deny-path hit, a
 version change or a red gate is a charged attempt with a ``handoff:`` for
@@ -48,6 +53,7 @@ import shutil
 import signal
 import sys
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +61,7 @@ from precis.plans import lanes as _lanes
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _mirror
+from precis.workers import repo_lease as _repo_lease
 from precis.workers.job_types import land_slice as _ls
 from precis.workers.job_types import run_slice as _rs
 
@@ -75,6 +82,12 @@ _PHASES: tuple[tuple[str, str], ...] = (
     ("lint", "lint_cmds"),
     ("test", "test_cmds"),
 )
+
+#: ``phase`` of a handle parked behind another job's lease, how long a park
+#: lasts and how long a land waits in all before it fails attempt-free.
+LEASE_PHASE = "lease"
+LEASE_PARK_S = 120
+LEASE_WAIT_CAP_S = 6 * 3600
 
 _CONFLICT_LINE_RE = re.compile(r"^CONFLICT\b.*$", re.MULTILINE)
 
@@ -254,9 +267,11 @@ def _commit(land_tree: Path, ident: list[str], subject: str, tip: str) -> str | 
 
 
 def submit(ctx: Any, spec: Any) -> Any:
-    """Detached submit half: land the slice branch of ``params.repo`` and
-    launch its gate. Returns the handle, ``{"no_land": True, ...}`` for a
-    branch with nothing new, or ``None`` after driving the job terminal."""
+    """Detached submit half: take the repo lease, land the slice branch of
+    ``params.repo`` and launch its gate. Returns the handle, a parked
+    ``phase: "lease"`` handle when the lease is taken, ``{"no_land": True,
+    ...}`` for a branch with nothing new, or ``None`` after driving the job
+    terminal."""
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
     todo_id = params.get("todo_id")
@@ -268,7 +283,6 @@ def submit(ctx: Any, spec: Any) -> Any:
         ctx.record_failure(reason.replace("run_slice:", "repo_land:", 1))
         return None
     assert isinstance(todo_id, int)
-    lane = params.get("lane")
     repo = _rs.job_repo(params)
     profile = _lanes.repo_profile(repo)
     if profile is None or not profile.remote:
@@ -283,10 +297,72 @@ def submit(ctx: Any, spec: Any) -> Any:
     except RuntimeError as exc:
         ctx.record_failure(f"repo_land: {exc}")
         return None
+    # 1. The per-repo lease, taken before anything touches the clone and held
+    # for the whole land (gate and push). A taken lease parks the job.
+    blocker = _repo_lease.acquire(
+        ctx.store, profile.name, job_id=_job_id(ctx), kind="land"
+    )
+    if blocker is not None:
+        branch, slice_tree = _slice_names(params, root, todo_id)
+        handle: dict[str, Any] = {
+            "lander": "repo_land",
+            "repo": profile.name,
+            "phase": LEASE_PHASE,
+            "worktree": slice_tree,
+            "slice_tree": slice_tree,
+            "branch": branch,
+            "lease_since": _ls._now().timestamp(),
+        }
+        _park(ctx, handle, blocker)
+        return handle
+    return _start(ctx, profile, root, params)
+
+
+def _job_id(ctx: Any) -> int:
+    """The running job's ref id (the lease key)."""
+    return int(ctx.ref_id)
+
+
+def _slice_names(params: dict[str, Any], root: Path, todo_id: int) -> tuple[str, str]:
+    """``(branch, slice tree)`` of the job's slice."""
     branch = str(params.get("branch") or _rs.slice_branch(todo_id))
     slice_tree = str(params.get("worktree") or "") or str(
         _rs.worktrees_dir(root) / _rs.slice_name(todo_id)
     )
+    return branch, slice_tree
+
+
+def _park(ctx: Any, handle: dict[str, Any], blocker: dict[str, Any]) -> None:
+    """Park ``handle`` for :data:`LEASE_PARK_S` behind ``blocker`` (the shape
+    of ``land_slice._defer_to_main``): ``not_before`` on the handle, no
+    process, the deadline re-armed so parked time does not eat the wall
+    clock. One job event per change of blocker, not one per retry."""
+    due = _ls._now() + timedelta(seconds=LEASE_PARK_S)
+    handle["not_before"] = due.strftime(_ls._TS_FMT)
+    if handle.get("blocker") != blocker.get("job_id"):
+        handle["blocker"] = blocker.get("job_id")
+        ctx.append_chunk(
+            "job_event",
+            f"repo_land: {handle.get('repo')} lease {blocker.get('reason')} by "
+            f"{blocker.get('kind')} job #{blocker.get('job_id')}; parked, "
+            f"trying again after {due:%H:%M}Z",
+        )
+    deadline = due.timestamp() + _ls.wall_seconds()
+    handle["deadline"] = deadline
+    ctx.set_meta(
+        compute_handle=handle, compute_handle_released=False, deadline=deadline
+    )
+
+
+def _start(
+    ctx: Any, profile: _lanes.RepoProfile, root: Path, params: dict[str, Any]
+) -> Any:
+    """Everything from the base fetch on, with the lease held: fetch the tip,
+    cut the land tree, squash, commit, run the deny and version checks and
+    launch the gate. Returns what :func:`submit` returns."""
+    todo_id = params["todo_id"]
+    lane = params.get("lane")
+    branch, slice_tree = _slice_names(params, root, todo_id)
 
     def fail(why: str, handoff: str, *, attempt_free: str | None = None) -> None:
         _ls._fail(ctx, todo_id, lane, why, handoff=handoff, attempt_free=attempt_free)
@@ -473,6 +549,7 @@ RACED_CLASS = "origin-raced"
 PUSH_ERROR_CLASS = "origin-push"
 HANDLE_CLASS = "land-handle"
 CLOSED_CLASS = "repo-closed"
+HELD_CLASS = "repo-held"
 GATE_INFRA_CLASS = "gate infrastructure"
 SETUP_INFRA_CLASS = "gate setup"
 TIMED_OUT_CLASS = "timed-out"
@@ -683,6 +760,17 @@ def _poll_green(
             "(not the branch); the land is retried once it is open.",
             CLOSED_CLASS,
         )
+    # The lease is re-checked at the same moment: one that went stale and was
+    # taken by another job (or a release) while the gate ran must not push.
+    held = _repo_lease.holder(ctx.store, profile.name)
+    if held is None or held.get("job_id") != _job_id(ctx):
+        by = f"job #{held.get('job_id')}" if held else "no job"
+        return free(
+            f"the {profile.name!r} lease is held by {by}, not this job; not pushing",
+            "land FAILED: the repo lease was lost while the gate ran (not the "
+            "branch); the land is retried.",
+            HELD_CLASS,
+        )
     # Stamped BEFORE the push: once the sha can be on the other repo's
     # main, every reader of this todo's ``landed:`` line must be able to
     # tell it is not a precis sha, whatever fails afterwards.
@@ -745,6 +833,12 @@ def _poll_green(
         str(handle.get("branch") or ""),
     )
     summary += cleanup
+    # Pushed and recorded: the critical section is over (the terminal status
+    # below frees the lease anyway; this keeps the key off a succeeded row).
+    try:
+        _repo_lease.release(ctx.store, profile.name, job_id=_job_id(ctx))
+    except Exception:  # pragma: no cover - the land is real; the status frees it
+        log.warning("repo_land: lease release for td%d failed", todo_id, exc_info=True)
     ctx.set_meta(exit_code=0, land_subject=subject, landed_sha=sha, cleanup=cleanup)
     ctx.append_chunk("job_summary", "\n".join(summary))
     ctx.set_status("succeeded")
@@ -775,6 +869,91 @@ def _poll_no_land(ctx: Any, handle: dict[str, Any], todo_id: int) -> bool:
     return True
 
 
+def _poll_lease(
+    ctx: Any, handle: dict[str, Any], params: dict[str, Any], todo_id: int
+) -> bool:
+    """Poll half of a land parked behind another job's lease: ``False``
+    before ``not_before``; at or after it, try the lease again. Still taken:
+    park again, or fail attempt-free once the wait passed
+    :data:`LEASE_WAIT_CAP_S`. Taken: run :func:`_start` and swap its handle in
+    place of the parked one, persisted to ``meta.compute_handle`` (poll cannot
+    hand one back). ``True`` only when the job is terminal."""
+    try:
+        due = datetime.strptime(str(handle["not_before"]), _ls._TS_FMT).replace(
+            tzinfo=UTC
+        )
+    except (KeyError, ValueError):
+        due = _ls._now()  # unreadable marker: do not park forever
+    if _ls._now() < due:
+        return False
+    profile = _lanes.repo_profile(str(handle.get("repo") or ""))
+    root = _handle_root(handle)
+    if root is None or profile is None or not profile.remote:
+        ctx.record_failure(f"repo_land: no root or profile for {handle.get('repo')!r}")
+        return True
+    # A land that waited may wake to a closed repo: re-read what submit and
+    # the pre-push check read, before taking the lease or launching a gate.
+    closed = (
+        "the factory is off"
+        if _rs.factory_off()
+        else f"the handle's repo is not the job's ({_rs.job_repo(params)!r})"
+        if _rs.job_repo(params) != profile.name
+        else _ls._repo_refusal(ctx.store, params)
+    )
+    if closed is not None:
+        ctx.set_meta(compute_handle_released=True)
+        _ls._fail(
+            ctx,
+            todo_id,
+            params.get("lane"),
+            f"repo {profile.name!r} is no longer admitted ({closed}); not landing",
+            handoff="land FAILED: the repo was closed to the factory while the "
+            "land waited for the lease (not the branch); the land is retried "
+            "once it is open.",
+            attempt_free=CLOSED_CLASS,
+        )
+        return True
+    blocker = _repo_lease.acquire(
+        ctx.store, profile.name, job_id=_job_id(ctx), kind="land"
+    )
+    if blocker is not None:
+        since = handle.get("lease_since")
+        waited = (
+            _ls._now().timestamp() - float(since)
+            if isinstance(since, (int, float)) and not isinstance(since, bool)
+            else 0.0
+        )
+        if waited > LEASE_WAIT_CAP_S:
+            ctx.set_meta(compute_handle_released=True)
+            _ls._fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"the {profile.name!r} lease stayed with job #{blocker.get('job_id')} "
+                f"({blocker.get('reason')}) for {int(waited)}s; giving up this try",
+                handoff="land FAILED: the repo lease was held by another job for "
+                "too long (not the branch); the land is retried.",
+                attempt_free=HELD_CLASS,
+            )
+            return True
+        _park(ctx, handle, blocker)
+        return False
+    fresh = _start(ctx, profile, root, params)
+    if not isinstance(fresh, dict):
+        return True  # _start already failed the job
+    handle.clear()
+    handle.update(fresh)
+    deadline = fresh.get("deadline")
+    ctx.set_meta(
+        compute_handle=fresh,
+        compute_handle_released=False,
+        deadline=deadline
+        if isinstance(deadline, (int, float))
+        else _ls._now().timestamp() + _ls.wall_seconds(),
+    )
+    return False
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half with ``land_slice.poll``'s contract: ``False``
     while the gate runs; ``True`` once the job is terminal (succeeded after
@@ -785,6 +964,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = params.get("lane")
+    if handle.get("phase") == LEASE_PHASE:
+        return _poll_lease(ctx, handle, params, todo_id)
     if handle.get("no_land"):
         ctx.set_meta(compute_handle_released=True)
         return _poll_no_land(ctx, handle, todo_id)
@@ -830,8 +1011,8 @@ def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM the gate's process group (never
     the worker's own) and drop the land tree. The slice tree and branch
     stay: nothing of the slice was pushed."""
-    if not isinstance(handle, dict):
-        return
+    if not isinstance(handle, dict) or handle.get("phase") == LEASE_PHASE:
+        return  # a parked handle has no gate and no land tree yet
     _signal_gate(handle)
     params = (getattr(ctx, "meta", None) or {}).get("params") or {}
     root = _handle_root(handle)
