@@ -1863,7 +1863,10 @@ def run(args: argparse.Namespace) -> int:
         # scripts/deploy's hook: a raw deploy moves origin/prod, so it owes
         # prod the record too (gr666159). Best-effort; always exit 0.
         head = rev(args.record_prod_head)
-        say(record_prod_head("", head or "", release=None))
+        if getattr(args, "dry_run", False):
+            say(f"dry-run: would record prod head {(head or '?')[:9]}")
+        else:
+            say(record_prod_head("", head or "", release=None))
         return 0
     if args.deploy_only:
         return deploy_only(args)

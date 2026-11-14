@@ -1989,3 +1989,37 @@ def test_deploy_warn_skips_without_the_wrapper(rig: Rig) -> None:
     out = _release(rig, *FAST, **_green(rig))
     assert out.returncode == 3, out.stdout + out.stderr
     assert "post-migration check skipped" in out.stdout
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_record_prod_head_mode_honours_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    """td674307: `--record-prod-head` alone writes prod's record and exits;
+    with `--dry-run` it only says what it would write."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "1" * 40
+    written: list[str] = []
+    said: list[str] = []
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: head)
+    monkeypatch.setattr(mod, "say", said.append)
+
+    def record(prev: str, h: str, **kw: object) -> str:
+        written.append(h)
+        return f"prod head recorded: {h[:9]}"
+
+    monkeypatch.setattr(mod, "record_prod_head", record)
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha="",
+        adopt=False,
+        dry_run=dry_run,
+        cut_only=False,
+        record_prod_head=head,
+    )
+    assert mod.run(args) == 0
+    assert written == ([] if dry_run else [head])
+    assert said[-1].startswith(
+        "dry-run: would record" if dry_run else "prod head recorded"
+    )
