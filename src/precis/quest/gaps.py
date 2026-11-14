@@ -7,8 +7,10 @@ holes **are** the exploration queue. Two read-time, mechanical computations over
 the nodes that ``serves`` a quest, no minting:
 
 * **Gaps** — a striving with little support, a served ``concept`` stuck at low
-  mastery, a quest with no literature grounding, an un-answered ``hypothesis``
-  logbook entry. Each is a concrete, computable "here is where to look next".
+  mastery, a quest with no literature grounding, an un-answered hypothesis (a
+  ``serves``-linked hypothesis finding not yet settled; the older
+  ``hypothesis`` logbook entry still counts, transitional). Each is a
+  concrete, computable "here is where to look next".
 * **Health** — *momentum* (are deeds + knowledge flowing in? recent logbook +
   recent server activity, open todos moving, no ``child-failed`` bubble) and an
   *alignment floor* (cosine proximity between the quest's card vector and each
@@ -202,10 +204,23 @@ def quest_gaps(
                 )
             )
 
-    # 4. Un-answered hypotheses — a hypothesis logbook entry with no later
-    #    *supported* result / dead-end (:func:`_answers_hypothesis`: a bare
-    #    `by=agent` kill is restatement, not an answer). An open question
-    #    the loop never closed.
+    # 4. Un-answered hypotheses — a hypothesis finding ``serves``-linked to
+    #    the quest that is not yet settled (:func:`_open_hypothesis_findings`;
+    #    the hypothesis is the finding, updated in place — decision
+    #    me674763). The logbook leg underneath is transitional: the tick
+    #    still logs proposals and open questions as ``hypothesis`` entries
+    #    until its own gripe lands, so an entry with no later *supported*
+    #    result / dead-end (:func:`_answers_hypothesis`: a bare `by=agent`
+    #    kill is restatement, not an answer) still surfaces alongside.
+    for r in _open_hypothesis_findings(store, quest_id, live):
+        title = (r.title or "").splitlines()[0] if r.title else ""
+        gaps.append(
+            Gap(
+                kind="open-hypothesis",
+                detail=f"unsettled hypothesis — {title[:70]}",
+                handle=_handle("finding", r.id),
+            )
+        )
     for text in _open_hypotheses(store, quest_id):
         gaps.append(
             Gap(
@@ -353,6 +368,49 @@ def _answers_hypothesis(b: ChunkRow) -> bool:
     return str(meta.get("by")) != "agent" or bool(
         _DEAD_END_ANCHOR_RE.search(getattr(b, "text", "") or "")
     )
+
+
+def _open_hypothesis_findings(
+    store: Store, quest_id: int, live: list[Ref]
+) -> list[Ref]:
+    """Hypothesis findings serving the quest that are not yet settled.
+
+    A finding is a hypothesis when ``meta.artifact_type == 'hypothesis'``
+    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE`` — the durable
+    marker that survives the ``hypothesis-proposed`` triage tag coming off).
+    *Settled* is two signals: the ``STATUS:refuted`` stamp a rejection
+    ruling lands (the do-not-repropose ledger —
+    ``store/_tag_filter.py::REFUTED_TAG``), or a ``settled`` marker on this
+    quest's dialectic block for the hypothesis
+    (``dossier.py::DialecticBlock.settled`` — the tick's ``settle`` op).
+    Retired hypotheses never reach here: ``_live_servers`` drops them.
+    """
+    hyps = [
+        r
+        for r in live
+        if r.kind == "finding"
+        and str((r.meta or {}).get("artifact_type") or "") == "hypothesis"
+    ]
+    if not hyps:
+        return []
+    settled: set[int] = set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
+            "AND t.value = 'refuted'",
+            ([r.id for r in hyps],),
+        ).fetchall()
+    settled.update(int(row[0]) for row in rows)
+    from precis.quest.dossier import _load_dialectic_blocks, dossier_ref_id
+
+    did = dossier_ref_id(store, quest_id)
+    if did is not None:
+        settled.update(
+            b.hypothesis_id for b in _load_dialectic_blocks(store, did) if b.settled
+        )
+    return [r for r in hyps if r.id not in settled]
 
 
 def _open_hypotheses(store: Store, quest_id: int) -> list[str]:

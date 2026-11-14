@@ -142,8 +142,9 @@ number belongs, cited properly once the paper is in the corpus
   abstract itself is a faithful summary — an inflated or vague abstract
   lets a bad claim through unchecked."*
 
-If the paper isn't ingested yet, log the technique as a **`hypothesis`**
-logbook entry (unproven, worth testing) rather than folding it into the
+If the paper isn't ingested yet, the technique is a **hypothesis
+finding** (`hypothesis=True`, `serves` the quest — unproven, worth
+testing) rather than folded into the
 founding text — or better, hold off until it's actually stubbed and
 grounded, so the finding can cite it for real instead of describing it
 from memory.

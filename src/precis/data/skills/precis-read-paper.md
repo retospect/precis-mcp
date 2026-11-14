@@ -256,7 +256,9 @@ duplicate; cite the hub instead.
   (`get(kind='skill', id='precis-quest-help')`).
 - **Cross-paper inference** — this paper's A plus another's B suggesting
   C is a hypothesis finding, at most one per paper
-  (`precis-read-for-question` step 6).
+  (`precis-read-for-question` step 6). When the paper was read for a
+  quest's question, link the hypothesis `serves` that quest so its gap
+  list tracks it.
 
 ## Step 6 — close the pass
 ## Leave one note that says what was done
