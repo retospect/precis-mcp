@@ -1255,6 +1255,8 @@ def test_run_cli_writes_a_results_file_whose_header_pins_everything(
     assert (
         h["caller"]["ladder"] == list(runner.LADDER)
         and h["caller"]["read_k"] == runner.READ_K
+        and h["caller"]["gold_probe_page_size"] == runner.GOLD_PROBE_PAGE_SIZE
+        and h["caller"]["upper_bound"] is False
     )
     assert h["models"] is None and h["judge"] is None
     for key in (
@@ -1586,9 +1588,9 @@ def test_rowkw_without_the_keyword_layer_has_no_signal_and_opens_in_rank_order(
     assert _verbatims(rt) == ["pc3"]
 
 
-def test_rowkw_and_triage_never_ask_for_a_removed_rung_in_any_arm(stub_gold):
+def test_scored_callers_never_ask_for_a_removed_rung_in_any_arm(stub_gold):
     for arm in ("all-on", *ARMS, *runner.COMBINED_ARMS):
-        for caller in ("triage", "rowkw"):
+        for caller in ("triage", "rowkw", "rank-order", "oracle"):
             rt = _StubRuntime(list(_HITS), {}, dict(_ROWS))
             row = runner.run_scripted(
                 rt, _StubCatalog(), _stub_task(), arm, caller=caller, threshold=0.0
@@ -1642,8 +1644,8 @@ def test_a_combined_arm_is_vacuous_only_when_every_layer_it_removes_is_empty():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("caller", ["triage", "rowkw"])
-def test_triage_callers_are_deterministic_and_refusal_free_on_the_real_runtime(
+@pytest.mark.parametrize("caller", ["triage", "rowkw", "rank-order", "oracle"])
+def test_scripted_callers_are_deterministic_and_refusal_free_on_the_real_runtime(
     world, caller
 ):
     tasks, _ = runner.select_tasks(world["rows"])
@@ -1883,9 +1885,11 @@ def test_run_cli_provisions_worlds_and_records_them(
     res = runner.load_results(path)
     h = res["header"]
     assert calls == ["no-links", "chunk-fixed-512"]
-    assert h["schema"] == runner.RESULTS_SCHEMA == 5
+    assert h["schema"] == runner.RESULTS_SCHEMA == 6
     # schema 5: the todo the run was launched under (gr660023)
     assert h["todo"] == "td604857"
+    # schema 6: the gold-rank probe's page size (td664608)
+    assert h["caller"]["gold_probe_page_size"] == runner.GOLD_PROBE_PAGE_SIZE
     assert set(h["worlds"]) == {"no-links", "chunk-fixed-512"}
     assert h["worlds"]["chunk-fixed-512"]["variant"]["chunker"] == "fixed-512"
     assert h["worlds"]["no-links"]["variant"]["links"] is False
@@ -1901,3 +1905,225 @@ def test_run_cli_provisions_worlds_and_records_them(
     assert ("chunk-fixed-512", "planted") not in pairs
     md = runner.report_markdown(res)
     assert "precis_test" in md and "worlds:" in md
+
+
+# ---------------------------------------------------------------------------
+# the gold ranks, and the rank-order / oracle callers (td664608)
+# ---------------------------------------------------------------------------
+
+
+class _PagedStubRuntime:
+    """``search`` returns the caller-page hit list below the probe's page
+    size and the page-100 list at it; ``get`` returns scripted texts and
+    is logged (searches are not — a probe call would show in the row's
+    ``call_log``, never here)."""
+
+    def __init__(
+        self,
+        hits10: list[str],
+        hits100: list[str],
+        texts: dict[tuple[str, str], str] | None = None,
+    ) -> None:
+        self.hits10, self.hits100, self.texts = hits10, hits100, texts or {}
+        self.log: list[tuple[str, str]] = []
+
+    def dispatch_with_status(self, verb, args, fold=True):
+        if verb == "search":
+            hits = (
+                self.hits100
+                if int(args.get("page_size") or 0) >= runner.GOLD_PROBE_PAGE_SIZE
+                else self.hits10
+            )
+            rows = "\n".join(f"{h}\tkw\t" for h in hits)
+            return f"# hits\n{rows}\nNext:\n x", False
+        handle, ext = args["id"], args["extent"]
+        self.log.append((handle, ext))
+        return self.texts.get((handle, ext), f"{handle} {ext}"), False
+
+
+def _rank_chunk(cid: int, *, gold: bool) -> runner.ChunkInfo:
+    """A chunk info overlapping the stub task's ``p0`` evidence in doc
+    ``d`` exactly when ``gold`` — the test :func:`item_overlaps` runs."""
+    text = f"text of pc{cid}"
+    meta = (
+        {"para_id": "p0", "para_char_start": 0, "para_char_end": len(text)}
+        if gold
+        else {}
+    )
+    return runner.ChunkInfo(
+        cid, 1, text, " ".join(text.split()), meta, "d" if gold else "x"
+    )
+
+
+class _RankCatalog(_StubCatalog):
+    """``chunks`` answers real infos with fixed gold membership."""
+
+    def __init__(self, gold_ids: set[int]) -> None:
+        super().__init__()
+        self._gold_ids = set(gold_ids)
+
+    def chunks(self, ids: Iterable[int]) -> dict[int, runner.ChunkInfo]:
+        return {i: _rank_chunk(i, gold=i in self._gold_ids) for i in ids}
+
+
+def _paged_run(
+    hits10: list[str],
+    hits100: list[str],
+    gold_ids: set[int],
+    caller: str,
+    texts: dict[tuple[str, str], str] | None = None,
+    **kw: Any,
+):
+    rt = _PagedStubRuntime(hits10, hits100, texts)
+    row = runner.run_scripted(
+        rt, _RankCatalog(gold_ids), _stub_task(), "all-on", caller=caller, **kw
+    )
+    return row, rt
+
+
+def test_gold_ranks_record_the_first_hit_overlapping_gold():
+    hits = ["pc1", "pc2", "pc3", "pc4", "pc5"]
+    row, _rt = _paged_run(hits, hits, {3}, "rank-order")
+    assert row["gold_rank_page"] == 3 and row["gold_rank_100"] == 3
+
+
+def test_gold_rank_100_sees_gold_the_callers_page_missed():
+    hits10 = [f"pc{i}" for i in range(1, 11)]
+    hits100 = [f"pc{i}" for i in range(1, 41)]  # the gold is pc40, rank 40
+    row, _rt = _paged_run(hits10, hits100, {40}, "rank-order")
+    assert row["gold_rank_page"] is None and row["gold_rank_100"] == 40
+
+
+def test_no_gold_hit_leaves_both_ranks_null():
+    row, _rt = _paged_run(["pc1", "pc2"], ["pc1", "pc2", "pc3"], set(), "rank-order")
+    assert row["gold_rank_page"] is None and row["gold_rank_100"] is None
+
+
+def test_the_page_100_probe_costs_the_row_nothing():
+    hits = ["pc1", "pc2", "pc3"]
+    row, _rt = _paged_run(
+        hits,
+        hits + [f"pc{i}" for i in range(4, 30)],
+        {3},
+        "oracle",
+        texts={("pc3", "verbatim"): "text of pc3"},
+    )
+    # one search (the caller's own page) and one get: the probe's search
+    # is nowhere in tokens, calls or call_log
+    assert [c["verb"] for c in row["call_log"]] == ["search", "get"]
+    assert row["calls"] == len(row["call_log"]) == 2
+    assert row["tokens_total"] == pytest.approx(
+        sum(c["tokens"] for c in row["call_log"]), abs=0.2
+    )
+    assert row["gold_rank_page"] == 3
+
+
+def test_oracle_opens_the_first_gold_hit_verbatim_once_and_stops():
+    hits = ["pc1", "pc2", "pc3", "pc4"]
+    row, rt = _paged_run(
+        hits, hits, {3}, "oracle", texts={("pc3", "verbatim"): "text of pc3"}
+    )
+    assert row["gold_rank_page"] == 3
+    assert row["found"] is True and row["stop"] == "found"
+    assert rt.log == [("pc3", "verbatim")] and row["verbatim_opens"] == 1
+    # found exactly when gold_rank_page is not null: gold beyond the page
+    # is never opened
+    row2, rt2 = _paged_run(
+        ["pc1", "pc2"], [f"pc{i}" for i in range(1, 41)], {40}, "oracle"
+    )
+    assert row2["gold_rank_page"] is None and row2["gold_rank_100"] == 40
+    assert row2["found"] is False and row2["censored"] is True
+    assert rt2.log == [] and row2["verbatim_opens"] == 0
+    assert row2["calls"] == 1  # the search alone
+
+
+def test_rank_order_opens_in_search_rank_order_capped_at_read_k():
+    hits10 = [f"pc{i}" for i in range(1, 9)]
+    row, rt = _paged_run(hits10, hits10, set(), "rank-order")
+    assert _verbatims(rt) == hits10[: runner.READ_K]
+    assert row["verbatim_opens"] == runner.READ_K
+    # a miss is followed by fisheye then +recall on the first opened hit
+    assert rt.log[-2:] == [("pc1", "fisheye"), ("pc1", "+recall")]
+    assert row["caller"] == "rank-order" and row["refusals"] == 0
+    # fewer hits than read_k: all of them and no more
+    _row2, rt2 = _paged_run(["pc1", "pc2"], ["pc1", "pc2"], set(), "rank-order")
+    assert _verbatims(rt2) == ["pc1", "pc2"]
+    # the gold stops the climb where it sits
+    row3, rt3 = _paged_run(
+        hits10,
+        hits10,
+        {3},
+        "rank-order",
+        texts={("pc3", "verbatim"): "text of pc3"},
+    )
+    assert _verbatims(rt3) == ["pc1", "pc2", "pc3"] and row3["found"] is True
+
+
+def test_report_bins_the_first_gold_rank_per_arm_and_source():
+    def gr(
+        arm: str, task: str, page: int | None, g100: int | None, **kw: Any
+    ) -> dict[str, Any]:
+        return _row(task, arm, "s", gold_rank_page=page, gold_rank_100=g100, **kw)
+
+    rows = [
+        gr("all-on", "t1", 3, 3),
+        gr("all-on", "t2", None, 40),
+        gr("all-on", "t3", 8, 8),
+        gr("no-kwd", "t1", None, None),
+        gr("no-kwd", "t2", 55, 55),
+        gr("no-kwd", "t3", 2, 90, source="planted"),
+    ]
+    results = {
+        "header": {"set": "quick", "caller": {"name": "triage"}},
+        "rows": rows,
+    }
+    md = runner.report_markdown(results)
+    assert "### First gold rank — all answerable tasks" in md
+    assert "### First gold rank — qasper tasks only" in md
+    assert "### First gold rank — planted tasks only" in md
+    # all-on: page hits at 3 and 8; probe ranks 3/8 -> 1-10, 40 -> 21-50
+    assert "| all-on | 3 | 2 | 2 | 0 | 1 | 0 | 0 |" in md
+    # no-kwd: 55 and 90 -> 51-100, the null -> beyond 100
+    assert "| no-kwd | 3 | 2 | 0 | 0 | 0 | 2 | 1 |" in md
+    qasper = md.split("### First gold rank — qasper tasks only", 1)[1].split(
+        "### First gold rank — planted tasks only", 1
+    )[0]
+    assert "| no-kwd | 2 | 1 | 0 | 0 | 0 | 1 | 1 |" in qasper
+    assert "no-kwd 50.0%" in qasper
+    planted = md.split("### First gold rank — planted tasks only", 1)[1]
+    assert "| no-kwd | 1 | 1 | 0 | 0 | 0 | 1 | 0 |" in planted
+    assert "| all-on |" not in planted
+    # the past-page share — printed, not judged (the parked drill-down gate)
+    assert "all-on 33.3%" in md and "no-kwd 66.7%" in md
+    assert "21-100" in md
+
+
+def test_an_old_schema_results_file_still_loads_and_reports(tmp_path: Path):
+    res = _raw_results()  # pre-schema-6 rows: no gold_rank fields
+    p = tmp_path / "old.json"
+    p.write_text(json.dumps(res), encoding="utf-8")
+    loaded = runner.load_results(p)
+    md = runner.report_markdown(loaded)
+    assert "| all-on |" in md and "First gold rank" not in md
+    assert "gold@" not in raw.raw_markdown(loaded)
+
+
+def test_raw_row_header_prints_the_gold_ranks_when_present():
+    head = raw.row_header(_row("t1", "all-on", "s", gold_rank_page=3, gold_rank_100=40))
+    assert "gold@page 3" in head and "gold@100 40" in head
+    assert "gold@" not in raw.row_header(_row("t1", "all-on", "s"))
+    assert "gold@" not in raw.row_header(
+        _row("t1", "all-on", "s", gold_rank_page=None, gold_rank_100=None)
+    )
+
+
+def test_oracle_is_labelled_an_upper_bound_wherever_it_is_reported():
+    res = {
+        "header": {
+            "set": "quick",
+            "caller": {"name": "oracle", "upper_bound": True},
+        },
+        "rows": [_row("t1", "all-on", "s")],
+    }
+    assert "UPPER BOUND" in runner.report_markdown(res)
+    assert "oracle (upper bound)" in runner.compare_markdown([res])

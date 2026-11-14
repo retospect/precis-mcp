@@ -8,7 +8,7 @@ fixed call sequence and records what it cost and whether it reached the gold.
 
 Callers
 -------
-Three deterministic, model-free callers (``caller`` on every results row):
+Five deterministic, model-free callers (``caller`` on every results row):
 
 ``triage`` (the default) reads what the arm leaves it and spends verbatim
 reads where a cheap read says the hit is relevant:
@@ -36,6 +36,17 @@ rung the arm switched off, so ``refusals`` is zero for every arm.
 ``triage`` with its own :data:`ROWKW_THRESHOLD`. With the keyword layer off
 the rows print none, so it opens in search rank order.
 
+``rank-order`` is the control for ``rowkw``: it opens the hits in search
+rank order with no scoring and no cut, at most :data:`READ_K` opens, then
+runs the same follow-up rungs as ``rowkw`` (it is :func:`_open_and_follow`
+with ``scoring=False``). ``rowkw`` minus ``rank-order`` is what the row
+keywords buy.
+
+``oracle`` is the ceiling for a page: when any hit on the page overlaps
+the gold it opens the first such hit ``verbatim`` (one get) and stops;
+when none does it opens nothing. It reads the gold by design and is
+labelled an upper bound wherever it is reported.
+
 ``ladder`` (kept for comparison) climbs the whole extent ladder :data:`LADDER`
 (``kwd`` -> ``summary`` -> ``verbatim`` -> ``fisheye`` -> ``+recall``) on each of
 the top :data:`READ_K` hits whatever it saw, and asks for switched-off rungs;
@@ -43,10 +54,27 @@ the server refuses those (``BadInput``), counted in ``refusals``. A refused
 rung is not rendered, so under ``ladder`` an arm looks cheaper by the refused
 call: do not read its token deltas as layer effects.
 
-Both stop at the first call whose output renders a gold-overlapping chunk, or
+All stop at the first call whose output renders a gold-overlapping chunk, or
 when the cumulative tokens reach the budget, or when the hits are exhausted.
 ``memory``-type planted tasks run the same sequence with ``kind='memory'``;
 their gold is the fact sentence, found by containment in the rendered output.
+
+Gold rank
+---------
+Every scripted row of an answerable task also records where the gold sat
+in the result set, independently of what the caller did with it
+(td639074): ``gold_rank_page`` is the 1-based rank of the first hit in
+the caller's own search page that overlaps a gold item (``null`` when
+none does), ``gold_rank_100`` the same over a ``page_size=100`` probe
+with otherwise identical arguments and switches. The probe is a
+measurement, not caller behaviour: it runs once per task and arm through
+its own :class:`Session` with an unlimited budget, so it adds nothing to
+the row's tokens, calls, ``call_log`` or transcript digest. Both ranks
+are kept because order shifts slightly with page size. The report bins
+``gold_rank_100`` per arm and source and prints the share of answerable
+tasks whose first gold sits at ranks 21-100 — past the default product
+page of 20, inside the probe; that share is the gate for the parked
+result-set drill-down feature and is printed as a share, not a verdict.
 
 What counts as "rendered": a chunk is *rendered* only when its whole text
 (whitespace-normalised) occurs in a call's output. A truncated preview line
@@ -106,7 +134,13 @@ from precis.bench.switches import ARMS
 #: arm names. 5 adds ``header.todo`` — the ``td<id>`` the run was launched
 #: under (``PRECIS_CURRENT_TODO``; ``None`` outside a todo), so the
 #: ``bench:index`` search can name a run by its todo reference (gr660023).
-RESULTS_SCHEMA = 5
+#: 6 adds ``gold_rank_page`` / ``gold_rank_100`` to every row — the rank
+#: of the first search hit overlapping the task's gold on the caller's
+#: own page and on a ``page_size=100`` probe — plus
+#: ``header.caller.gold_probe_page_size`` and the ``rank-order`` /
+#: ``oracle`` callers (td664608). Schema-5 files carry none of it;
+#: readers tolerate both.
+RESULTS_SCHEMA = 6
 
 PLANTED_SEED = 7
 PLANTED_N = 40
@@ -122,7 +156,18 @@ READ_K = 5
 RECALL_KS = (1, 3, 5, 10)
 LADDER = ("kwd", "summary", "verbatim", "fisheye", "+recall")
 
-CALLERS = ("triage", "rowkw", "ladder")
+#: The ``gold_rank_100`` probe's page size — the measurement window the
+#: report's "beyond" bin and past-page share are read against.
+GOLD_PROBE_PAGE_SIZE = 100
+#: The product search's own default page (``runtime/search.py`` falls
+#: back to 20 when ``page_size`` is unset): the line the parked
+#: drill-down feature's share is measured from.
+PRODUCT_PAGE = 20
+#: Report bins for the first gold rank (``_gold_rank_table``); a
+#: ``gold_rank_100`` of ``None`` is "beyond 100".
+GOLD_RANK_BINS = ((1, 10), (11, 20), (21, 50), (51, 100))
+
+CALLERS = ("triage", "rowkw", "rank-order", "oracle", "ladder")
 DEFAULT_CALLER = "triage"
 #: ``rowkw`` opens a hit's verbatim only when :func:`overlap_score` of the chunk
 #: keywords its search row prints is at least this; swept like
@@ -547,6 +592,33 @@ def parse_hits(task: BenchTask, body: str) -> list[str]:
     return extract_chunk_handles(rows)
 
 
+def _hit_gold_items(
+    task: BenchTask, hits: Sequence[str], catalog: Catalog
+) -> list[set[int]]:
+    """Per hit, in rank order, the indexes of the task's gold items it
+    overlaps — the overlap test :func:`_recall_at`, the gold ranks and the
+    ``oracle`` caller share: :func:`item_overlaps` on the hit's chunk for
+    paper tasks, a gold fact sentence contained in the hit ref's text for
+    memory tasks."""
+    from precis.utils import handle_registry
+
+    per_rank: list[set[int]] = []
+    if task.is_memory:
+        for h in hits:
+            parsed = handle_registry.parse(h)
+            body = catalog.memory_text(int(parsed[2])) if parsed else ""
+            per_rank.append(
+                {i for i, g in enumerate(task.gold_text) if _norm(g) in body}
+            )
+        return per_rank
+    infos = catalog.chunks(_chunk_ids_in(" ".join(hits)))
+    for h in hits:
+        parsed = handle_registry.parse(h)
+        info = infos.get(int(parsed[2])) if parsed else None
+        per_rank.append(item_overlaps(task, info) if info else set())
+    return per_rank
+
+
 def _recall_at(
     task: BenchTask, hits: Sequence[str], catalog: Catalog
 ) -> dict[int, float | None]:
@@ -554,30 +626,39 @@ def _recall_at(
     items touched by at least one of the top-k hits (``None`` without gold)."""
     if not task.has_gold:
         return {k: None for k in RECALL_KS}
-    per_rank: list[set[int]] = []
-    if task.is_memory:
-        from precis.utils import handle_registry
-
-        for h in hits:
-            parsed = handle_registry.parse(h)
-            body = catalog.memory_text(int(parsed[2])) if parsed else ""
-            per_rank.append(
-                {i for i, g in enumerate(task.gold_text) if _norm(g) in body}
-            )
-    else:
-        infos = catalog.chunks(_chunk_ids_in(" ".join(hits)))
-        from precis.utils import handle_registry
-
-        for h in hits:
-            parsed = handle_registry.parse(h)
-            info = infos.get(int(parsed[2])) if parsed else None
-            per_rank.append(item_overlaps(task, info) if info else set())
+    per_rank = _hit_gold_items(task, hits, catalog)
     n = task.n_items
     out: dict[int, float | None] = {}
     for k in RECALL_KS:
         got: set[int] = set().union(*per_rank[:k]) if per_rank[:k] else set()
         out[k] = round(len(got) / n, 6)
     return out
+
+
+def _first_gold_rank(
+    task: BenchTask, hits: Sequence[str], catalog: Catalog
+) -> int | None:
+    """The 1-based rank of the first hit overlapping a gold item, or
+    ``None`` when no hit does (or the task has no gold)."""
+    if not task.has_gold:
+        return None
+    for i, items in enumerate(_hit_gold_items(task, hits, catalog), 1):
+        if items:
+            return i
+    return None
+
+
+def _probe_gold_rank(
+    runtime: Any, arm: str, task: BenchTask, catalog: Catalog
+) -> int | None:
+    """``gold_rank_100``: the first gold rank of a ``page_size=100`` search
+    with otherwise identical arguments and switches, issued through its
+    own :class:`Session` with an unlimited budget. A measurement, not
+    caller behaviour: run once per task and arm, it adds nothing to the
+    row's tokens, calls, ``call_log`` or transcript digest."""
+    probe = Session(runtime, arm_flags(arm), 10**12)
+    body, _ = probe.call("search", _search_args(task, GOLD_PROBE_PAGE_SIZE))
+    return _first_gold_rank(task, parse_hits(task, body), catalog)
 
 
 def _result(
@@ -599,6 +680,8 @@ def _result(
     caller: str | None = None,
     opens: int = 0,
     call_log: Sequence[Mapping[str, Any]] | None = None,
+    gold_rank_page: int | None = None,
+    gold_rank_100: int | None = None,
 ) -> dict[str, Any]:
     abstain = task.abstain
     censored = (not abstain) and applicable and not found
@@ -626,6 +709,8 @@ def _result(
         "errors": errors,
         "refusals": refusals,
         **{f"recall_at_{k}": recall.get(k) for k in RECALL_KS},
+        "gold_rank_page": gold_rank_page,
+        "gold_rank_100": gold_rank_100,
         "transcript_sha256": transcript,
         "call_log": [dict(c) for c in (call_log or ())],
         "wall_s": round(wall_s, 3),
@@ -644,8 +729,9 @@ def run_scripted(
     caller: str = DEFAULT_CALLER,
     threshold: float | None = None,
 ) -> dict[str, Any]:
-    """The scripted caller (``triage`` or ``ladder``) for one task under one
-    switch arm. ``threshold`` overrides :data:`TRIAGE_THRESHOLD` (the sweep)."""
+    """The scripted caller (``caller``, one of :data:`CALLERS`) for one
+    task under one switch arm. ``threshold`` overrides
+    :data:`TRIAGE_THRESHOLD` (the sweep)."""
     if caller not in CALLERS:
         raise BenchRunError(f"unknown caller {caller!r}; known: {', '.join(CALLERS)}")
     t0 = time.monotonic()
@@ -670,6 +756,10 @@ def run_scripted(
                 read_k,
                 ROWKW_THRESHOLD if threshold is None else threshold,
             )
+        elif caller == "rank-order":
+            found_at = _rank_order(s, task, catalog, hits, read_k)
+        elif caller == "oracle":
+            found_at = _oracle(s, task, catalog, hits)
         else:
             found_at = _triage(
                 s,
@@ -683,6 +773,12 @@ def run_scripted(
             stop = "budget"
     if found_at is not None:
         stop = "found"
+    # The gold ranks are a measurement, not caller behaviour — the page-100
+    # probe runs last, on its own Session, so it touches no row field.
+    gold_rank_page = _first_gold_rank(task, hits, catalog)
+    gold_rank_100 = (
+        _probe_gold_rank(runtime, arm, task, catalog) if task.has_gold else None
+    )
     return _result(
         task,
         arm,
@@ -700,6 +796,8 @@ def run_scripted(
         caller=caller,
         opens=s.opens,
         call_log=s.call_log,
+        gold_rank_page=gold_rank_page,
+        gold_rank_100=gold_rank_100,
     )
 
 
@@ -836,6 +934,53 @@ def _open_and_follow(
         out, _ = s.call("get", {"id": best, "extent": rung})
         if task.has_gold and rendered_gold(task, out, catalog):
             return s.tokens
+    return None
+
+
+def _rank_order(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    hits: Sequence[str],
+    read_k: int,
+) -> float | None:
+    """The ``rank-order`` caller — ``rowkw``'s control: open the hits in
+    search rank order with no scoring and no cut, at most ``read_k``
+    opens, then the same ``fisheye`` / ``+recall`` follow-up rungs on the
+    first opened hit (``_open_and_follow`` with ``scoring=False``).
+    ``rowkw`` minus ``rank-order`` is what the row keywords buy."""
+    scored = [(0.0, rank, h) for rank, h in enumerate(hits)]
+    return _open_and_follow(
+        s,
+        task,
+        catalog,
+        s.switches(),
+        scored,
+        scoring=False,
+        read_k=read_k,
+        threshold=0.0,
+    )
+
+
+def _oracle(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    hits: Sequence[str],
+) -> float | None:
+    """The ``oracle`` caller — the page's ceiling. It reads the gold: when
+    a hit overlaps a gold item it opens the first such hit ``verbatim``
+    (one get) and stops; with no gold hit on the page it opens nothing.
+    An upper bound wherever it is reported, never a policy."""
+    for handle, items in zip(hits, _hit_gold_items(task, hits, catalog), strict=True):
+        if not items:
+            continue
+        if s.out_of_budget:
+            return None
+        out, _ = s.call("get", {"id": handle, "extent": "verbatim"})
+        if task.has_gold and rendered_gold(task, out, catalog):
+            return s.tokens
+        return None
     return None
 
 
@@ -1288,6 +1433,88 @@ def _abstention_table(results: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _gold_rank_table(
+    results: Mapping[str, Any], *, source: str | None, title: str
+) -> list[str]:
+    """One first-gold-rank table for a task source: per scripted arm, the
+    count of answerable tasks whose ``gold_rank_100`` falls in each
+    :data:`GOLD_RANK_BINS` bin (``None`` = beyond the probe) or whose
+    ``gold_rank_page`` put the gold on the caller's own page — then each
+    arm's share of tasks whose first gold sits past the default product
+    page (:data:`PRODUCT_PAGE`) but inside the probe, the parked
+    drill-down feature's gate, printed as a share and not a verdict."""
+    rows = [
+        r
+        for r in results["rows"]
+        if r.get("caller") is not None
+        and not r["abstention"]
+        and r.get("applicable", True)
+        and "gold_rank_100" in r
+        and (source is None or r["source"] == source)
+    ]
+    if not rows:
+        return []
+    lines = [
+        f"### {title}",
+        "",
+        "| arm | n | on the caller's page | 1-10 | 11-20 | 21-50 | 51-100 | "
+        "beyond 100 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    shares: list[str] = []
+    for arm in arm_order(rows):
+        sel = [r for r in rows if r["arm"] == arm]
+        if not sel:
+            continue
+        on_page = past_page = beyond = 0
+        bins = [0] * len(GOLD_RANK_BINS)
+        for r in sel:
+            if r.get("gold_rank_page") is not None:
+                on_page += 1
+            g = r["gold_rank_100"]
+            if g is None:
+                beyond += 1
+                continue
+            if g > PRODUCT_PAGE:
+                past_page += 1
+            for j, (lo, hi) in enumerate(GOLD_RANK_BINS):
+                if lo <= g <= hi:
+                    bins[j] += 1
+                    break
+        lines.append(
+            f"| {arm} | {len(sel)} | {on_page} | "
+            + " | ".join(str(b) for b in bins)
+            + f" | {beyond} |"
+        )
+        shares.append(f"{arm} {past_page / len(sel):.1%}")
+    lines += [
+        "",
+        f"share of answerable tasks whose first gold sits at ranks "
+        f"{PRODUCT_PAGE + 1}-{GOLD_PROBE_PAGE_SIZE} (past the default "
+        f"product page, inside the probe): {', '.join(shares)}",
+    ]
+    return lines
+
+
+def _gold_rank_block(results: Mapping[str, Any]) -> list[str]:
+    """The report's 'first gold rank' section — one :func:`_gold_rank_table`
+    over all answerable tasks, then per source (qasper, planted). Empty
+    when every row predates schema 6 (no ``gold_rank_100`` field), so
+    older results files still report."""
+    if not any("gold_rank_100" in r for r in results["rows"]):
+        return []
+    out: list[str] = []
+    for src, title in (
+        (None, "First gold rank — all answerable tasks"),
+        ("qasper", "First gold rank — qasper tasks only"),
+        ("planted", "First gold rank — planted tasks only"),
+    ):
+        table = _gold_rank_table(results, source=src, title=title)
+        if table:
+            out += ([""] if out else []) + table
+    return out
+
+
 def report_markdown(results: Mapping[str, Any]) -> str:
     """The markdown report: header summary, the per-arm table (all answerable
     tasks, then per source) and the abstention table."""
@@ -1295,8 +1522,18 @@ def report_markdown(results: Mapping[str, Any]) -> str:
     cov = h.get("layer_coverage", {})
     emb = h.get("embedder", {})
     caller = h.get("caller", {})
-    caller_line = f"- caller `{caller.get('name', 'ladder')}`" + (
-        f" · triage threshold {caller['threshold']}" if "threshold" in caller else ""
+    caller_line = (
+        f"- caller `{caller.get('name', 'ladder')}`"
+        + (
+            f" · triage threshold {caller['threshold']}"
+            if "threshold" in caller
+            else ""
+        )
+        + (
+            " · UPPER BOUND — reads the gold to pick the hit: a ceiling, not a policy"
+            if caller.get("upper_bound")
+            else ""
+        )
     )
     out = [
         f"## Memory-ablation run {h.get('set')} — precis {str(h.get('precis_sha', ''))[:9]}"
@@ -1330,6 +1567,9 @@ def report_markdown(results: Mapping[str, Any]) -> str:
             out += [""] + _table(results, source=src, title=f"{src} tasks only")
     if any(r["abstention"] for r in results["rows"]):
         out += [""] + _abstention_table(results)
+    gold_block = _gold_rank_block(results)
+    if gold_block:
+        out += [""] + gold_block
     vac = [a for a, m in h.get("arms", {}).items() if m.get("vacuous")]
     if vac:
         out += [
@@ -1347,7 +1587,11 @@ def compare_markdown(runs: Sequence[Mapping[str, Any]]) -> str:
     per arm and, per caller (the results files in the order given), recall@5,
     median tokens to gold over the tasks that reached it, censored count, mean
     calls, mean verbatim opens and refusals."""
-    names = [str(r["header"].get("caller", {}).get("name", "ladder")) for r in runs]
+    names = [
+        str(r["header"].get("caller", {}).get("name", "ladder"))
+        + (" (upper bound)" if r["header"].get("caller", {}).get("upper_bound") else "")
+        for r in runs
+    ]
     out: list[str] = []
     for src, title in (
         (None, "All answerable tasks"),
@@ -1645,6 +1889,8 @@ def run_cli(
             "search": {"unique_per": "chunk", "page_size": SEARCH_K},
             "read_k": READ_K,
             "ladder": list(LADDER),
+            "gold_probe_page_size": GOLD_PROBE_PAGE_SIZE,
+            "upper_bound": caller == "oracle",
             **(
                 {
                     "threshold": TRIAGE_THRESHOLD

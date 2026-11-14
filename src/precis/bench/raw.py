@@ -111,6 +111,10 @@ def row_header(r: Mapping[str, Any]) -> str:
         bits.append(f"errors {r['errors']}")
     if r.get("recall_at_5") is not None:
         bits.append(f"recall@5 {r['recall_at_5']:.3f}")
+    if r.get("gold_rank_page") is not None:
+        bits.append(f"gold@page {r['gold_rank_page']}")
+    if r.get("gold_rank_100") is not None:
+        bits.append(f"gold@100 {r['gold_rank_100']}")
     return " · ".join(bits)
 
 
