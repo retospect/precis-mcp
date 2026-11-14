@@ -171,6 +171,22 @@ def test_second_repo_lander_and_credential_modules_are_factory_denied(
     assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
 
 
+def test_pin_bump_job_is_factory_denied_before_it_exists() -> None:
+    """If this fails, the factory could rewrite the pin-bump job (td659522
+    step 4) once it lands: the deny entry is in place ahead of the file."""
+    path = "src/precis/workers/job_types/pin_bump.py"
+    assert path in lanes.FACTORY_DENY_WRITE_PATHS
+    assert path in lanes.STRICT_DENY
+    assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
+
+
+def test_no_repo_profile_names_a_pinner_yet() -> None:
+    """If this fails, a profile arms the pin bump before its switch round:
+    ``pinner`` defaults to None and no profile sets it."""
+    assert lanes.RepoProfile(name="x").pinner is None
+    assert [n for n, p in lanes.REPO_PROFILES.items() if p.pinner] == []
+
+
 @pytest.mark.db
 def test_deny_set_is_the_full_list_when_off_or_on_db_error(store: Store) -> None:
     # Default off, no store and an unreadable store all fail closed: the

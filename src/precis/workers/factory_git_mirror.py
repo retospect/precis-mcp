@@ -729,6 +729,63 @@ def fetch_ref_into(
         _drop_ops(ops)
 
 
+def fetch_source_mirror(
+    url: str, ref: str, *, mirror: Path, env: Mapping[str, str]
+) -> str | None:
+    """A local copy of a dependency's source, for a pin-bump job to resolve
+    its git source from with no credential. Make sure a bare repo exists at
+    ``mirror`` (a job-owned directory under
+    :func:`mirror_root`; the caller picks the path), fetch branch ``ref``
+    of ``url`` into it under the factory credential through
+    :func:`fetch_ref_into` (fresh ops gitdir, oracle-checked tip, then a
+    credential-free local push; nothing reads config from the mirror), and
+    return the tip sha, or ``None`` on any failure (the error text is
+    never surfaced, so no token can leak through it).
+
+    The mirror ends with ``refs/heads/<ref>`` at the returned tip and
+    ``HEAD`` pointing at that branch; no tags, no other branches, and the
+    objects of earlier calls stay (``gc.auto 0``). That is all a credential-
+    free ``uv`` needs, run with an ``url.<mirror>.insteadOf`` rewrite of
+    ``url``: for a sha-pinned git source it runs one plain
+    ``git fetch <url> +<sha>:refs/commit/<sha>`` against the mirror (proved
+    with uv 0.13.8), which upload-pack answers from the object store for
+    any commit reachable from the branch. So the commit to pin must be an
+    ancestor of ``ref``'s tip (a release tag is, once merged); a commit
+    only on an unmerged branch is not in the mirror."""
+    local = local_env(env)
+    try:
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        if not _init_bare(mirror, env=local):
+            return None
+        tip = fetch_ref_into(
+            mirror,
+            url,
+            ref,
+            f"refs/heads/{ref}",
+            ops_parent=mirror.parent,
+            env=env,
+        )
+        if tip is None:
+            return None
+        head = _run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "-C",
+                str(mirror),
+                "symbolic-ref",
+                "HEAD",
+                f"refs/heads/{ref}",
+            ],
+            cwd=mirror,
+            env=local,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return tip if head.returncode == 0 else None
+
+
 def push_cas(
     url: str,
     ref: str,

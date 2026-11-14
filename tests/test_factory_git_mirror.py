@@ -1660,3 +1660,93 @@ def test_push_tag_new_rejected_push_with_no_remote_tag_is_error(
     assert outcome == "error"
     assert _git(remote, "tag", "-l") == ""
     assert _ops_clean(tmp_path)
+
+
+# ── fetch_source_mirror (pin-bump derive's local copy of the source) ──
+
+
+def test_fetch_source_mirror_creates_the_mirror_with_the_fetched_commit(
+    tmp_path: Path,
+) -> None:
+    """If this fails, the pin-bump derive has no local bare copy holding the
+    commit uv will ask for: the mirror must exist, hold the tip, and have
+    HEAD on the fetched branch."""
+    remote, _dest, tip = _lander_repos(tmp_path)
+    mirror = tmp_path / "mirrors" / "src.git"
+    got = fgm.fetch_source_mirror(str(remote), "main", mirror=mirror, env=_real_env())
+    assert got == tip
+    assert _git(mirror, "rev-parse", "refs/heads/main") == tip
+    assert _git(mirror, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert _git(mirror, "cat-file", "-t", tip) == "commit"
+    assert list(mirror.parent.glob("ops-*")) == []
+
+
+def test_fetch_source_mirror_is_reused_and_follows_the_branch(
+    tmp_path: Path,
+) -> None:
+    """If this fails, a second call builds a second repo or loses the first
+    call's objects: the same path is re-used and the old commit stays."""
+    remote, dest, tip = _lander_repos(tmp_path)
+    mirror = tmp_path / "src.git"
+    assert (
+        fgm.fetch_source_mirror(str(remote), "main", mirror=mirror, env=_real_env())
+        == tip
+    )
+    new = _commit(dest, "two")
+    _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    assert (
+        fgm.fetch_source_mirror(str(remote), "main", mirror=mirror, env=_real_env())
+        == new
+    )
+    assert _git(mirror, "rev-parse", "refs/heads/main") == new
+    assert _git(mirror, "cat-file", "-t", tip) == "commit"
+
+
+def test_fetch_source_mirror_serves_a_plain_fetch_of_a_sha(tmp_path: Path) -> None:
+    """If this fails, uv's ``git fetch <url> +<sha>:refs/commit/<sha>``
+    against the mirror cannot get the pinned commit."""
+    remote, dest, tip = _lander_repos(tmp_path)
+    mirror = tmp_path / "src.git"
+    assert (
+        fgm.fetch_source_mirror(str(remote), "main", mirror=mirror, env=_real_env())
+        == tip
+    )
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    _git(consumer, "init", "-q")
+    _git(consumer, "fetch", "-q", str(mirror), f"+{tip}:refs/commit/{tip}")
+    assert _git(consumer, "rev-parse", f"refs/commit/{tip}") == tip
+
+
+def test_fetch_source_mirror_is_none_for_a_missing_ref_or_remote(
+    tmp_path: Path,
+) -> None:
+    """If this fails, a failed fetch reports a tip and the derive would run
+    against a mirror that lacks the commit."""
+    remote, _dest, _tip = _lander_repos(tmp_path)
+    mirror = tmp_path / "src.git"
+    env = _real_env()
+    assert fgm.fetch_source_mirror(str(remote), "nope", mirror=mirror, env=env) is None
+    gone = str(tmp_path / "missing.git")
+    assert fgm.fetch_source_mirror(gone, "main", mirror=mirror, env=env) is None
+    assert list(mirror.parent.glob("ops-*")) == []
+
+
+def test_fetch_source_mirror_keeps_the_token_out_of_argv_and_the_mirror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If this fails, the credential reaches argv or runs git inside the
+    job-owned mirror: only the GitHub-facing calls carry it, in env."""
+    remote, _dest, tip = _lander_repos(tmp_path)
+    mirror = tmp_path / "src.git"
+    calls = _record_real(monkeypatch)
+    env = _real_env()
+    assert fgm.fetch_source_mirror(str(remote), "main", mirror=mirror, env=env) == tip
+    assert calls
+    for args, cwd, call_env in calls:
+        assert env["PRECIS_FACTORY_GIT_TOKEN"] not in " ".join(args), args
+        if "PRECIS_FACTORY_GIT_TOKEN" in call_env:
+            assert _github_facing(args, str(remote)), args
+            assert not _inside(cwd, mirror), args
+            if "-C" in args:
+                assert not _inside(Path(args[args.index("-C") + 1]), mirror), args

@@ -115,6 +115,7 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     "src/precis/workers/repo_land.py",
     "src/precis/workers/repo_lease.py",
     "src/precis/workers/job_types/repo_release.py",
+    "src/precis/workers/job_types/pin_bump.py",
     "src/precis/workers/factory_git.py",
     "src/precis/workers/factory_git_mirror.py",
     "src/precis/workers/job_types/run_slice.py",
@@ -376,7 +377,9 @@ class RepoProfile:
     job type that lands a slice of this repo; ``None`` means the repo is
     not buildable end to end. ``releaser`` is the job type that may cut a
     release of this repo; ``None`` means the factory cannot release it.
-    ``release_check_cmds`` are run credential-free in the release tree
+    ``pinner`` is the job type that moves the consumer's (precis's) pin of
+    this repo's package after a release; ``None`` means the pin is moved by
+    hand. ``release_check_cmds`` are run credential-free in the release tree
     before it pushes. ``ci_workflow`` is the workflow file whose run on the
     release commit must be green before the tag. ``tag_prefix`` starts the
     release tag (``v`` plus the version).
@@ -397,6 +400,7 @@ class RepoProfile:
     mcp: bool = False
     lander: str | None = None
     releaser: str | None = None
+    pinner: str | None = None
     release_check_cmds: tuple[str, ...] = ()
     ci_workflow: str | None = None
     tag_prefix: str = "v"
