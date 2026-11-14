@@ -1186,6 +1186,165 @@ class TestVerdictSemantics:
         assert r.extra["reto"] == 0
         assert "reto:ask" not in _open_tag_values(store, gid)
 
+    def test_refused_model_ask_falls_back_to_recommend(self, store: Store) -> None:
+        """gr673371: a model ask that parses but fails the meta.ask
+        lint (an oversized stored option) retries as the fallback ask —
+        and option 1 states triage's recommendation, never the
+        reason's problem statement."""
+        recommend = "bulk-close the duplicate stale-node asks now"
+        reason = (
+            "duplicate stale-node asks are flooding the ask-user queue "
+            "instead of asking once per live node, so real questions drown"
+        )
+        oversized = [
+            {
+                "option": "bulk-close every stale-node ask " + "x" * 150,
+                "cost": "clears the queue",
+                "recommended": True,
+            },
+            {"option": "leave them", "cost": "the queue stays flooded"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=recommend,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        options = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert options[0] == f"{recommend} — triage's recommendation"
+        assert "flooding the ask-user queue" not in options[0]
+
+    def test_refused_model_ask_uses_its_recommended_option(self, store: Store) -> None:
+        """gr673371: with no ``recommend`` line the fallback still shows
+        triage's recommendation — the model's own recommended option —
+        never the reason."""
+        reason = "the asks are flooding the queue instead of asking once"
+        recommended = "bulk-close the stale asks, then cap new ones per live node"
+        oversized = [
+            {"option": recommended, "cost": "one batch close", "recommended": True},
+            {"option": "y" * 190, "cost": "the flood continues"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        options = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert options[0] == f"{recommended} — triage's recommendation"
+
+    def test_long_recommendation_word_cut_not_refused(self, store: Store) -> None:
+        """An over-cap recommendation still lands as option 1 — cut on
+        a word boundary inside the option budget, not mid-word at a
+        bare character limit — while the ask's context and the todo
+        body carry it in full, so the owner reads the whole call they
+        are approving (gr673371)."""
+        recommend = (
+            "bulk-close the duplicate stale-node asks, ship the "
+            "one-ask-per-live-node cap inside factory_rescue_tick, and "
+            "sweep every older duplicate ask the queue still holds open "
+            "for the owner"
+        )
+        assert len(recommend) > gripe_triage._ASK_OPTION_TEXT_CAP
+        oversized = [
+            {"option": "z" * 200, "cost": "dear", "recommended": True},
+            {"option": "leave", "cost": "the flood continues"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend=recommend,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        ask_meta = _meta(store, todos[0]).get("ask") or {}
+        options = ask_meta.get("options") or []
+        assert options[0].startswith("bulk-close the duplicate stale-node asks")
+        assert options[0].endswith("… — triage's recommendation")
+        assert len(options[0]) <= 200
+        assert "…" in options[0]
+        # The bounding is the option's alone — the complete
+        # recommendation stays readable in the ask's context and on
+        # the todo body.
+        assert recommend in (ask_meta.get("context") or "")
+        assert recommend in _body(store, todos[0])
+
+    def test_spaceless_context_keeps_the_model_ask(self, store: Store) -> None:
+        """gr673371: ``excerpt`` returns ``limit + 1`` on a spaceless
+        token — the ellipsis rides past the cut — so a long-token
+        context excerpted at the full 600-char budget lint-refused the
+        model's whole ask and swapped its priced options for the
+        fallback's. The budget reserves the ellipsis: the original
+        ask survives and the body keeps the context whole."""
+        long_url = "https://tickets.example.invalid/" + "q" * 700
+        gid = _gripe(store, "validator loop wants a carve-out")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, fix="reto", ask=_ask(context=long_url))]}
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        ask_meta = _meta(store, todos[0]).get("ask") or {}
+        options = ask_meta.get("options") or []
+        # The model's own priced options survived the lint — a
+        # fallback mint would read "… — triage's recommendation".
+        assert options[0] == "grant the carve-out — ~$20 and one night"
+        context = ask_meta.get("context") or ""
+        assert len(context) <= 600
+        assert context.endswith("…")
+        # The ellipsis bounds only the meta.ask surface — the todo
+        # body carries the context whole.
+        assert long_url in _body(store, todos[0])
+
     def test_needs_spec_and_recommend_dedup(self, store: Store) -> None:
         """gr595189: when the needs-spec note and the recommend note
         would carry the same text, only one comment is written — a

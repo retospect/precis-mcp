@@ -167,6 +167,7 @@ from precis.corpus_layout import host_name
 from precis.utils import dispatch_score as _dscore
 from precis.utils.env import env_float, env_int
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.text import excerpt
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 
@@ -3083,6 +3084,17 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+#: A minted ask stores ``<option> — <cost>`` as one ``meta.ask`` option
+#: string under the 200-char cap (``precis.todo.guards._ASK_OPTION_CAP``);
+#: the fixed `` — triage's recommendation`` tail leaves the option text
+#: this much room, ellipsis included — passed to
+#: :func:`precis.utils.text.excerpt` so an over-long recommendation cuts
+#: on a word boundary, never mid-word (gr673371: a mid-word cut reads
+#: as a broken recommendation, and the cap refusal was what dropped a
+#: real recommendation onto the ``[:150]`` fallback).
+_ASK_OPTION_TEXT_CAP = 200 - len(" — triage's recommendation") - 1
+
+
 def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     """The :class:`RetoAsk` this reto-bound verdict poses — the model's
     own structured ask for ``fix:reto``, else a synthesized one for the
@@ -3137,8 +3149,10 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     # Defensive — a reto-bound verdict carrying no ask at all (only a
     # ``fix:reto`` parse can reach here, and that now requires one):
     # frame the recommendation itself as the choice rather than ask
-    # the owner to do the scoping (gr595189).
-    rec = _one_line(v.recommend or v.reason or g.title)
+    # the owner to do the scoping (gr595189). The option text is the
+    # recommendation word-cut to fit — uncapped, a long one refused the
+    # ask lint and the mint fell back onto the reason (gr673371).
+    rec = _one_line(v.recommendation or v.reason or g.title)
     return RetoAsk(
         question=f"Apply this recommendation on gr{g.ref_id}?",
         context=(
@@ -3146,7 +3160,11 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
             f"recommendation: {rec}. Source: gr{g.ref_id}."
         ),
         options=(
-            AskOption(option=rec, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option=excerpt(rec, limit=_ASK_OPTION_TEXT_CAP),
+                cost="triage's recommendation",
+                recommended=True,
+            ),
             AskOption(
                 option="leave as filed",
                 cost="nothing changes — the gripe stays triaged",
@@ -3257,16 +3275,28 @@ def _gripe_still_reto(conn: Any, gid: int) -> bool:
 def _fallback_ask(gid: int, title: str, rec: str | None) -> RetoAsk:
     """A bounded, lint-safe ask for a ``reto:ask`` gripe whose own ask
     is missing or was refused: frame triage's recommendation as the
-    choice (the same shape as :func:`_reto_ask`'s defensive tail)."""
-    text = _one_line(rec or title)[:150] or f"see gr{gid}"
+    choice (the same shape as :func:`_reto_ask`'s defensive tail).
+    ``rec`` IS the recommendation — the verdict's ``recommend`` line or
+    its recommended option, the ``recommend:`` comment for a stranded
+    gripe — never the reason: the reason is the problem statement, and
+    option 1 cut at a character limit showed it instead of the
+    recommendation (gr673371). Only the option is bounded — the
+    context carries the recommendation whole: ``meta.ask`` word-cuts
+    it at the lint's context cap and the todo body keeps it all, so
+    the owner reads the full call they are approving (gr673371)."""
+    full = _one_line(rec or title) or f"see gr{gid}"
     return RetoAsk(
         question=f"Apply triage's recommendation on gr{gid}?",
         context=(
             f"Triage needs a ruling on gr{gid} ({_one_line(title)[:200]}). "
-            f"Its recommendation: {text}. Source: gr{gid}."
+            f"Its recommendation: {full}. Source: gr{gid}."
         ),
         options=(
-            AskOption(option=text, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option=excerpt(full, limit=_ASK_OPTION_TEXT_CAP),
+                cost="triage's recommendation",
+                recommended=True,
+            ),
             AskOption(
                 option="leave as filed",
                 cost="nothing changes — the gripe stays triaged",
@@ -3430,16 +3460,18 @@ def _drop_ruled_asks(store: Store) -> int:
 
 
 def _write_ask(
-    store: Store, gid: int, gtitle: str, ask: RetoAsk, reason: str | None
+    store: Store, gid: int, gtitle: str, ask: RetoAsk, rec: str | None
 ) -> int | None:
     """Mint or refresh gripe ``gid``'s one ask-user todo and link the
     gripe ``blocked-by`` it (so the asks view counts the waiting work).
-    A lint-refused ask retries once as :func:`_fallback_ask`; ``None``
-    when nothing could be written."""
+    A lint-refused ask retries once as :func:`_fallback_ask`, framed on
+    ``rec`` — the verdict's recommendation, so option 1 still states
+    what triage recommended rather than the reason's problem statement
+    (gr673371); ``None`` when nothing could be written."""
     from precis.errors import PrecisError
     from precis.plans.nodes import finish_mint
     from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-    from precis.todo.guards import check_ask_meta
+    from precis.todo.guards import _ASK_CONTEXT_CAP, check_ask_meta
 
     def build(a: RetoAsk) -> tuple[str, dict[str, Any]]:
         title = _one_line(a.question or gtitle)[:_ASK_TITLE_CAP]
@@ -3453,7 +3485,13 @@ def _write_ask(
             # The waiting work is a gripe, not a todo: ``blocks`` only
             # names todos, so the dependency rides a ``blocked-by`` link.
             "blocks": "nothing",
-            "context": _one_line(a.context or reason or gtitle)[:600],
+            # The lint caps meta.ask.context — word-cut, never
+            # mid-word; the todo body below keeps the full text. The
+            # budget leaves the ellipsis one char of room: on a
+            # spaceless token excerpt returns limit+1, the lint
+            # refused it, and the model's whole ask — context and
+            # priced options — fell back (gr673371).
+            "context": excerpt(a.context or rec or gtitle, limit=_ASK_CONTEXT_CAP - 1),
         }
         check_ask_meta({"ask": meta_ask}, question=title)
         return title, meta_ask
@@ -3469,7 +3507,7 @@ def _write_ask(
             gid,
             exc_info=True,
         )
-        ask = _fallback_ask(gid, gtitle, reason)
+        ask = _fallback_ask(gid, gtitle, rec)
         try:
             title, meta_ask = build(ask)
         except PrecisError:
@@ -3586,7 +3624,13 @@ def _sync_reto_asks(
     todo_id: int | None = None
     written = 0
     for g, v in items:
-        tid = _write_ask(store, g.ref_id, g.title, _reto_ask(g, v), v.reason)
+        tid = _write_ask(
+            store,
+            g.ref_id,
+            g.title,
+            _reto_ask(g, v),
+            v.recommendation or v.reason,
+        )
         if tid is None:
             continue
         written += 1
