@@ -2055,6 +2055,9 @@ def _poll_cancelled(
         return _wait(ctx, handle, todo_id, "another run holds the branch", now=now)
     ok, status = _rerun(api, int(run.get("id") or 0))
     if ok:
+        # An answered POST ends the uncertainty a lost reply left: keep the
+        # flag and a later genuine 403 reads as "probably requested".
+        handle.pop("rerun_unsure", None)
         handle["reruns"] = reruns + 1
         handle["rerun_attempt_before"] = int(run.get("run_attempt") or 1)
         ctx.append_chunk(

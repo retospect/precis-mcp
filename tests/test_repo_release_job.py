@@ -1395,6 +1395,27 @@ def test_a_403_after_an_unanswered_rerun_post_reads_as_requested(rel: Rel) -> No
     _coordinator(ctx, rel.store, "Actions write")
 
 
+def test_an_answered_rerun_post_drops_the_unsure_flag(rel: Rel) -> None:
+    """If this fails a re-run POST answered after a lost reply leaves the
+    unsure flag set, so the next cancelled run's real 403 is excused as
+    "probably requested": one re-run spent and the "token lacks Actions
+    write" ask delayed a poll."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="cancelled")]
+    rel.rerun_results[:] = [(False, 0), (True, 201), (False, 403)]
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["reruns"] == 0 and handle["rerun_unsure"] is True
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["reruns"] == 1 and "rerun_unsure" not in handle
+    # the re-run's attempt was cancelled as well: this 403 is a real refusal
+    rel.runs = [_run(sha, conclusion="cancelled", run_attempt=2)]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "Actions write")
+    assert rel.rerun_calls == [500, 500, 500]
+
+
 def test_the_retry_after_a_red_release_counts_from_the_last_tagged_release(
     rel: Rel,
 ) -> None:
