@@ -260,6 +260,7 @@ def pin(
         repo_release, "_auth_env", lambda: {"PATH": "/bin", "GH_FAKE": TOKEN}
     )
     monkeypatch.setattr(land_slice, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(pb, "REAP_GRACE_S", 0)
     monkeypatch.setattr(
         run_slice, "_signal_group", lambda pgid, sig: p.signals.append((pgid, int(sig)))
     )
@@ -292,13 +293,18 @@ def _finish(handle: dict[str, Any], code: int, log_text: str = "") -> None:
     Path(handle["exit_file"]).write_text(f"{code}\n", encoding="utf-8")
 
 
-def _result(pin: Pin, data: Any) -> None:
+def _result(pin: Pin, data: Any, name: str = pb.RESULT_FILE) -> None:
     text = data if isinstance(data, str) else json.dumps(data)
-    (pin.run_dir() / pb.RESULT_FILE).write_text(text, encoding="utf-8")
+    (pin.run_dir() / name).write_text(text, encoding="utf-8")
 
 
 def _good_result(pin: Pin, key: str = KEY, engine: str = "0.50.0") -> None:
     _result(pin, {"key": key, "engine": engine})
+
+
+def _verify_result(pin: Pin, key: str = KEY, engine: str = "0.50.0") -> None:
+    """What the verify run's own derive step writes."""
+    _result(pin, {"key": key, "engine": engine}, pb.VERIFY_RESULT_FILE)
 
 
 def _verifying(pin: Pin, key: str = KEY) -> tuple[_Ctx, dict[str, Any]]:
@@ -313,6 +319,7 @@ def _verifying(pin: Pin, key: str = KEY) -> tuple[_Ctx, dict[str, Any]]:
 def _committed(pin: Pin) -> tuple[_Ctx, dict[str, Any]]:
     """A job through the verify run: parked in ``handoff``."""
     ctx, handle = _verifying(pin)
+    _verify_result(pin)
     _finish(handle, 0, "5 passed\n")
     assert pb.poll(ctx, handle) is False, ctx.failure
     assert handle["phase"] == "handoff", (handle, ctx.failure)
@@ -1713,6 +1720,7 @@ def test_kill_on_parked_handles_does_nothing(pin: Pin) -> None:
     pb.kill(ctx, resolve)
     pb.kill(ctx, "garbage")
     ctx2, handoff = _committed(pin)
+    pin.signals.clear()  # the finished phases' groups were reaped on the way
     pb.kill(ctx2, handoff)
     assert pin.tree().is_dir() and pin.branch_head() == handoff["commit"]
     assert pin.record()["state"] == "committed" and pin.signals == []
@@ -1725,6 +1733,7 @@ def test_kill_on_a_live_run_signals_its_group_and_drops_what_it_made(
     """If this fails a killed run's group is not signalled, or its tree,
     branch and building record are left behind."""
     ctx, handle = _derived(pin) if phase == "derive" else _verifying(pin)
+    pin.signals.clear()  # the finished phases' groups were reaped on the way
     pb.kill(ctx, handle)
     assert pin.signals == [(4242, 15)]
     assert pin.branch_head() is None and not pin.tree().exists()
@@ -1823,3 +1832,307 @@ def test_the_derive_script_needs_exactly_one_config_assignment(
     proc, result = _run_script(tmp_path, "0.50.0", text)
     assert proc.returncode != 0 and "exactly once" in proc.stderr
     assert not result.exists()
+
+
+# ── review fixes: independent verify, direction, nesting, races ────
+
+
+def test_a_finished_phases_group_is_signalled_before_the_next_phase_starts(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a process the derive or verify left running survives its
+    exit file: nothing TERMs then KILLs the phase's process group before the
+    worker reads results, launches the verify or stamps the record."""
+    seen: list[tuple[int, int, int, str]] = []
+
+    def signal_group(pgid: int, sig: int) -> None:
+        state = str((pin.record() or {}).get("state"))
+        seen.append((pgid, int(sig), len(pin.rig.launches), state))
+
+    monkeypatch.setattr(run_slice, "_signal_group", signal_group)
+    ctx, handle = _derived(pin)
+    _good_result(pin)
+    _finish(handle, 0)
+    assert pb.poll(ctx, handle) is False, ctx.failure
+    # both signals went out while only the derive had launched
+    assert seen == [(4242, 15, 1, "building"), (4242, 9, 1, "building")]
+    assert len(pin.rig.launches) == 2
+    seen.clear()
+    _verify_result(pin)
+    _finish(handle, 0, "5 passed\n")
+    assert pb.poll(ctx, handle) is False, ctx.failure
+    assert seen == [(4242, 15, 2, "building"), (4242, 9, 2, "building")]
+    assert pin.record()["state"] == "committed"
+
+
+def test_a_phase_group_that_is_already_gone_is_fine(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a group with no member left (the usual case) makes the
+    poll raise or fail instead of going on."""
+
+    def gone(pgid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(run_slice, "_signal_group", gone)
+    _verifying(pin)
+
+
+def test_the_verify_is_an_independent_check_in_its_own_venv(pin: Pin) -> None:
+    """If this fails the verify re-uses the derive's venv or result file, does
+    not sync and re-derive the engine and key before the tests, reads a stale
+    leftover, or the venvs and result files outlive the job."""
+    rdir = pin.run_dir()
+    ctx, handle = _derived(pin)
+    stale = rdir / pb.VERIFY_VENV_DIR
+    stale.mkdir()
+    (stale / "left-over").write_text("x", encoding="utf-8")
+    (rdir / pb.VERIFY_RESULT_FILE).write_text("{}", encoding="utf-8")
+    (rdir / pb.VENV_DIR).mkdir()
+    _good_result(pin)
+    _finish(handle, 0)
+    assert pb.poll(ctx, handle) is False, ctx.failure
+    (_, derive_kw), (argv, verify_kw) = pin.rig.launches
+    derive_venv = Path(derive_kw["env"]["UV_PROJECT_ENVIRONMENT"])
+    verify_venv = Path(verify_kw["env"]["UV_PROJECT_ENVIRONMENT"])
+    assert derive_venv == rdir / pb.VENV_DIR
+    assert verify_venv == rdir / pb.VERIFY_VENV_DIR != derive_venv
+    assert not stale.exists() and not derive_venv.exists()  # removed, not reused
+    assert not (rdir / pb.VERIFY_RESULT_FILE).exists()
+    script = Path(argv[1]).read_text(encoding="utf-8")
+    sync = script.index("uv sync --frozen --extra catalyst")
+    derive = script.index("python -I")
+    tests = script.index("pytest -q")
+    assert sync < derive < tests and "uv lock --check" not in script
+    assert pb.VERIFY_RESULT_FILE in script and f" {rdir / pb.RESULT_FILE}" not in script
+    assert (rdir / pb.DERIVE_PY).read_text(encoding="utf-8") == pb.DERIVE_SCRIPT_PY
+    _verify_result(pin)
+    verify_venv.mkdir()
+    _finish(handle, 0, "5 passed\n")
+    assert pb.poll(ctx, handle) is False, ctx.failure
+    assert not verify_venv.exists()
+    assert not (rdir / pb.RESULT_FILE).exists()
+    assert not (rdir / pb.VERIFY_RESULT_FILE).exists()
+    assert (rdir / pb.VERIFY_LOG).exists()  # logs stay for the operator
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"key": "cd34" * 16, "engine": "0.50.0"},
+        {"key": KEY, "engine": "0.49.0"},
+        "not json",
+        None,
+    ],
+)
+def test_a_verify_that_recomputes_another_key_or_engine_is_charged(
+    pin: Pin, second: Any
+) -> None:
+    """If this fails a verify whose own derive step disagrees with the
+    committed key or engine (or wrote nothing, with the derive's result file
+    still lying there) hands a land off or keeps the branch."""
+    ctx, handle = _verifying(pin)
+    if second is not None:
+        _result(pin, second, pb.VERIFY_RESULT_FILE)
+    assert (pin.run_dir() / pb.RESULT_FILE).exists()
+    _finish(handle, 0, "5 passed\n")
+    assert pb.poll(ctx, handle) is True
+    _charged(ctx)
+    assert "verify recomputed" in str(ctx.failure)
+    _nothing_left(pin)
+    assert pin.mints == [] and pin.record() is None
+    assert not (pin.run_dir() / pb.RESULT_FILE).exists()
+
+
+@pytest.mark.parametrize(
+    ("phase", "step"),
+    [("derive", "derive"), ("verify", "derive"), ("verify", "verify")],
+)
+def test_a_timed_out_word_from_python_or_pytest_stays_charged(
+    pin: Pin, phase: str, step: str
+) -> None:
+    """If this fails the transport classifier reads the output of the python
+    or pytest steps, so a test that prints "timed out" turns a red attempt-free."""
+    ctx, handle = _derived(pin) if phase == "derive" else _verifying(pin)
+    _finish(
+        handle,
+        1,
+        "uv sync output\nFAILED test_x - operation timed out\n"
+        f"✖ gate {step} failed: uv run --frozen x\n",
+    )
+    assert pb.poll(ctx, handle) is True
+    _charged(ctx)
+    assert pin.record() is None and pin.branch_head() is None
+
+
+def test_a_transport_failure_in_the_verify_sync_is_attempt_free(pin: Pin) -> None:
+    """If this fails the verify's own sync step is no longer read for
+    transport failures."""
+    ctx, handle = _verifying(pin)
+    _finish(
+        handle,
+        2,
+        "error: error sending request for url\n"
+        "✖ gate sync failed: uv sync --frozen --extra catalyst\n",
+    )
+    assert pb.poll(ctx, handle) is True
+    _attempt_free(ctx, "pin-transport")
+
+
+def _merge_side(p: Pin) -> tuple[str, str]:
+    """Catpath main with a merge of two lines from the old pin: ``(side sha,
+    main-side sha)``, both ancestors of main and neither of the other."""
+    _g(p.cat, "checkout", "-q", "-b", "side", p.old)
+    side = p.cat_commit("0.50.0", note="side")
+    _g(p.cat, "checkout", "-q", "main")
+    _g(p.cat, "merge", "-q", "--no-ff", "-m", "merge", "side")
+    return side, p.new
+
+
+def test_the_same_sha_with_every_text_coherent_is_a_no_op(pin: Pin) -> None:
+    """If this fails a pin already on the release sha is rebuilt."""
+    pin.precis_commit(pin.texts("0.50.0", pin.new))
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is False and handle["noop"] is True
+    assert "already carries" in pin.record()["note"] and pin.branch_head() is None
+
+
+def test_a_release_behind_the_pinned_sha_is_already_past_whatever_the_version(
+    pin: Pin,
+) -> None:
+    """If this fails a release sha that is an ancestor of the pinned sha moves
+    the pin back when the version strings are equal or higher."""
+    later = pin.cat_commit("0.50.0", note="later")
+    pin.precis_commit(pin.texts("0.50.0", later))
+    pin.release(pin.new, "0.50.0")  # same version string, older sha
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is False and handle["noop"] is True
+    assert "already past" in pin.record()["note"] and pin.branch_head() is None
+    assert pin.rig.launches == []
+
+
+def test_a_release_ahead_of_the_pinned_sha_bumps_even_at_the_same_version(
+    pin: Pin,
+) -> None:
+    """If this fails a newer sha that carries the same version string is not
+    bumped to."""
+    pin.precis_commit(pin.texts("0.50.0", pin.new))
+    later = pin.cut("0.50.0", note="later")
+    ctx, handle = _derived(pin)
+    assert handle["sha"] == later and handle["from_sha"] == pin.new
+    assert "noop" not in handle and pin.branch_head() == pin.tip()
+
+
+def test_a_pin_and_release_on_different_lines_are_a_charged_ask(pin: Pin) -> None:
+    """If this fails shas that are not ancestors of each other are bumped or
+    no-op'd, or are retried blind."""
+    side, main_side = _merge_side(pin)
+    pin.precis_commit(pin.texts("0.50.0", side))
+    pin.release(main_side, "0.50.0")
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is True
+    _asks(ctx, "not ancestors of each other")
+    _nothing_left(pin)
+    assert pin.rig.launches == []
+
+
+def test_an_unreadable_ancestry_is_attempt_free(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a mirror git cannot read for the pin ordering is charged."""
+    real = repo_release._on_base
+    calls: list[tuple[str, str]] = []
+
+    def on_base(root: Path, sha: str, tip: str) -> bool | None:
+        calls.append((sha, tip))
+        return None if len(calls) > 1 else real(root, sha, tip)
+
+    monkeypatch.setattr(repo_release, "_on_base", on_base)
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is True
+    _attempt_free(ctx, "release-read")
+    _nothing_left(pin)
+
+
+def test_a_deploy_floor_above_the_release_is_a_charged_ask_never_an_edit(
+    pin: Pin,
+) -> None:
+    """If this fails group_vars' floor is lowered to the release version."""
+    gv = tpb.GROUP_VARS.replace(
+        'autocatpath_min_version: "0.49.0"', 'autocatpath_min_version: "0.55.0"'
+    )
+    pin.precis_commit({"deploy/group_vars/all.yml": gv})
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is True
+    _asks(ctx, "floor is never lowered")
+    _nothing_left(pin)
+    assert pin.rig.launches == []
+
+
+def test_finish_follows_a_phase_inside_a_phase(pin: Pin) -> None:
+    """If this fails a slice two phases down from the node the pin chain is
+    blocked by is left out of the batch (the children step expanded one
+    level)."""
+    _batch(pin)
+    for nid, status in ((86, "doing"), (88, "doing"), (89, "done")):
+        pin.store.add_todo(
+            nid,
+            status=status,
+            meta={"landed_repo": "catpath"} if nid == 89 else None,
+        )
+    pin.store.add_todo(99, status="open")
+    pin.rows += [
+        {"id": 86, "parent_id": 70, "kind": "todo"},
+        {"id": 88, "parent_id": 86, "kind": "todo"},
+        {"id": 89, "parent_id": 88, "kind": "todo"},
+    ]
+    pin.edges.append((REL, 86))
+    pin.links.append((89, 99))
+    pb.finish(pin.store, PIN, SHA)
+    assert pin.record()["slices"] == [81, 85, 89]
+    assert pin.record()["gripes"] == [91, 92, 99]
+
+
+def test_a_land_that_finished_before_the_handoff_stamp_is_not_overwritten(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the hand-off stamp writes ``handed`` over a record the
+    fast land already moved to ``landed``."""
+    ctx, handle = _handoff(pin)
+    real = _mint.mint_job_once
+
+    def fast_land(store: Any, **kw: Any) -> tuple[int, bool]:
+        out = real(store, **kw)
+        pb.finish(store, PIN, SHA)  # the land ran and finished inside the mint
+        return out
+
+    monkeypatch.setattr(_mint, "mint_job_once", fast_land)
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert pin.record()["state"] == "landed" and pin.record()["landed_sha"] == SHA
+    assert "land_job" not in pin.record() and len(pin.mints) == 1
+
+
+def test_a_commit_made_before_a_crash_is_adopted_not_charged(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a worker that died after the branch moved, before the
+    handle was saved, charges the replayed poll a failed compare-and-swap
+    instead of adopting the commit that is already exactly the pin bump."""
+    ctx, handle = _derived(pin)
+    _good_result(pin)
+    _finish(handle, 0)
+
+    def crash(*a: Any, **kw: Any) -> Any:
+        raise OSError("worker died")
+
+    with monkeypatch.context() as m:
+        m.setattr(pb, "_checkout_tree", crash)
+        with pytest.raises(OSError, match="worker died"):
+            pb.poll(ctx, handle)
+    head = pin.branch_head()
+    assert head is not None and head != pin.tip() and "commit" not in handle
+    assert pb.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "verify" and handle["commit"] == head
+    assert pin.branch_head() == head and ctx.status is None
+    assert _g(pin.rig.clone, "rev-list", "--count", f"{pin.tip()}..{head}") == "1"

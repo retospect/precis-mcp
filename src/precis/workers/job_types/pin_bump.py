@@ -27,8 +27,11 @@ this job). Phases, in the handle's ``phase``:
   and a job-owned source mirror of the dependency (the release sha is an
   ancestor of its tip and its ``pyproject.toml`` carries the version), reads
   the four files at the tip, and either ends as a no-op (the pin is
-  already there or past it), refuses (charged, with a coordinator ask) or
-  goes on: the dependency's own ``pyproject.toml`` at the old and the new sha
+  already there or past it, as the mirror's history says: the release sha
+  an ancestor of (or equal to) the pinned sha is "already past" whatever the
+  version strings say), refuses (charged, with a coordinator ask: the two
+  shas on different lines of history, a version below the floor that is not
+  behind the pin, a deploy floor above the release) or goes on: the dependency's own ``pyproject.toml`` at the old and the new sha
   must agree on dependencies, ``requires-python`` and ``[build-system]``
   (``uv lock --check`` compares text only, so a text-edited lock would be
   wrong otherwise), then a worktree ``pin-td<id>`` on ``slice/<id>`` (what
@@ -44,9 +47,18 @@ this job). Phases, in the handle's ``phase``:
   derive left in the tree can reach it, then proved: one child of the tip,
   the four paths at most, each file's text equal to what the worker wrote,
   at most 8 changed lines per file. The tree is recreated clean.
-* ``verify`` (detached, same env): the pin coherence tests and the anchor
-  test in the committed tree. Green stamps ``meta.pin_bump`` ``state:
-  "committed"``.
+* ``verify`` (detached, own venv and result file): an independent check
+  of the engine and the key. ``uv sync --frozen`` into a fresh venv, the
+  worker-written derive script again (engine version assert, key) into a
+  second result file, then the pin coherence tests and the anchor test in the
+  committed tree. Green requires that second result to carry the target
+  engine and the very key committed (else charged, branch and tree
+  dropped), then stamps ``meta.pin_bump`` ``state: "committed"``. When a
+  phase's exit file appears its whole process group is TERMed then KILLed
+  before anything is read. Both venvs and both result files are removed when
+  the job ends; the scripts and logs stay for the operator. The transport
+  classifier reads only the text before a failing ``lock`` / ``sync`` step's
+  marker.
 * ``handoff`` (parked, due at once): a committed bump mints the
   ``land_slice`` for the branch (``run_slice``'s own mint: idem key
   ``land_slice:td<id>``, a child of the node), stamps the record ``handed``
@@ -62,9 +74,15 @@ this job). Phases, in the handle's ``phase``:
 record: it stamps the record ``landed`` and resolves the batch's gripes.
 :func:`validate_submit` serialises pin bumps (one in flight at a time).
 
-The derive runs repo code as the worker's user, so its result file is
-attacker-writable: only a 64-hex key is accepted, and the verify run re-checks
-it with the pin tests. The token is only ever in the env handed to
+The derive and verify runs execute repo code as the worker's user, so the
+pin tree, run dir, venvs and uv cache are attacker-writable. Only a 64-hex
+key for the target engine is accepted from a result file; the commit is built
+from objects and compared byte for byte; the verify recomputes the key in a
+fresh venv. Limits: a process of the same uid that is outside the killed
+group (or that races the kill) can still forge a result file, a log marker
+(which can mislabel a red as attempt-free transport, bounded by the retry
+count) or the uv cache, so a wrong key that both runs agree on is not
+excluded. The token is only ever in the env handed to
 ``factory_git_mirror`` helpers, never in argv, a URL, meta, a chunk or a
 comment, and the detached runs get none.
 """
@@ -80,7 +98,9 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -657,6 +677,12 @@ VERIFY_SCRIPT, VERIFY_LOG, VERIFY_EXIT = (
 DERIVE_PY = "pin_derive.py"
 RESULT_FILE = "pin_result.json"
 VENV_DIR = "pin_venv"
+#: The verify run's own result file and venv: it re-derives into these, so
+#: nothing the derive run left behind is ever read back as the verify's.
+VERIFY_RESULT_FILE = "pin_verify_result.json"
+VERIFY_VENV_DIR = "pin_verify_venv"
+#: Seconds between the TERM and the KILL to a finished phase's process group.
+REAP_GRACE_S = 0.2
 INDEX_FILE = "pin.index"
 _RESULT_MAX = 1024
 
@@ -669,6 +695,9 @@ RECORD_CLASS = "pin-record"
 SOURCE_CLASS = "pin-source"
 TRANSPORT_CLASS = "pin-transport"
 HANDOFF_CLASS = "pin-handoff"
+
+#: The script steps whose output the transport classifier may read.
+TRANSPORT_STEPS: frozenset[str] = frozenset({"lock", "sync"})
 
 #: What uv's registry and git transport failures look like in a log.
 _TRANSPORT_RE = re.compile(
@@ -1051,6 +1080,14 @@ def _edited(
     }
 
 
+def _group_vars_floor(text: str) -> str | None:
+    """The one ``autocatpath_min_version: "X.Y.Z"`` value of the group_vars
+    text, or ``None`` when there is not exactly one such line."""
+    line_re = re.compile(rf"{re.escape(GROUP_VARS_KEY)}: \"([^\"\r\n]*)\"")
+    hits = [m[1] for ln in text.splitlines() if (m := line_re.fullmatch(ln))]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _dep_view(text: str | None) -> dict[str, Any] | None:
     """What a lock text-edit depends on in a dependency's ``pyproject.toml``;
     ``None`` when it is missing or does not parse."""
@@ -1181,6 +1218,7 @@ class _Run:
         if self.handle.get("made"):
             _drop_made(self.root, self.todo_id)
         _clear_building(self.ctx, self.todo_id)
+        _sweep(self.todo_id)
         _fail(
             self.ctx,
             self.todo_id,
@@ -1202,6 +1240,40 @@ class _Run:
 
     def run_dir(self) -> Path:
         return _rs.run_dir(self.todo_id)
+
+
+def _sweep(todo_id: int) -> None:
+    """Remove both venvs and both result files of the job's run dir. The
+    scripts and logs stay for the operator. Never raises, never creates the
+    dir."""
+    try:
+        rdir = _rs.ops_root() / f"td{todo_id}"
+        for name in (VENV_DIR, VERIFY_VENV_DIR):
+            shutil.rmtree(rdir / name, ignore_errors=True)
+        for name in (RESULT_FILE, VERIFY_RESULT_FILE):
+            (rdir / name).unlink(missing_ok=True)
+    except Exception:  # pragma: no cover - cleanup is best effort
+        log.warning("pin_bump: sweeping the run dir of td%d failed", todo_id)
+
+
+def _reap_group(handle: dict[str, Any]) -> None:
+    """A phase's exit file is there: TERM, a short grace, then KILL its whole
+    process group, so nothing the phase started can write results or an exit
+    file after the worker has looked. A group that is already gone is fine;
+    the worker's own group is never signalled."""
+    pgid = _rs._handle_pgid(handle)
+    if pgid <= 1 or _rl._pid(handle.get("pid")) == os.getpid():
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            _rs._signal_group(pgid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            log.warning("pin_bump: signalling group %d failed", pgid, exc_info=True)
+            return
+        if sig == signal.SIGTERM:
+            time.sleep(REAP_GRACE_S)
 
 
 def _detached_env(mirror: Path, remote: str, venv: Path) -> dict[str, str]:
@@ -1229,6 +1301,7 @@ def _start_phase(
     log_name: str,
     exit_name: str,
     steps: list[tuple[str, str]],
+    venv_name: str = VENV_DIR,
 ) -> bool:
     """Launch the steps detached in the pin tree under the credential-free
     env and put the phase on the handle. ``True`` when the launch failed (the
@@ -1264,7 +1337,7 @@ def _start_phase(
             log=log_path,
             exit_file=exit_path,
             env=_detached_env(
-                Path(handle["mirror"]), handle["remote"], rdir / VENV_DIR
+                Path(handle["mirror"]), handle["remote"], rdir / venv_name
             ),
         )
     except Exception as exc:
@@ -1501,20 +1574,53 @@ def _poll_resolve(run: _Run) -> bool:
             f"{profile.name}'s pyproject.toml at {release.sha[:9]} does not say "
             f"{package} {release.version}"
         )
-    # Direction: never move the pin down, never redo it.
-    if compare_versions(release.version, floor) < 0:
-        if _rr._on_base(mirror, release.sha, rev) is True:
+    # Direction: the mirror's history judges, never the version strings. The
+    # pin never moves down and is never redone.
+    if _ls._git(["cat-file", "-e", f"{rev}^{{commit}}"], mirror).returncode != 0:
+        return run.ask(
+            f"precis's pinned sha {rev[:9]} is not in {profile.name}'s history; "
+            "a human decides (a real `uv lock` may be needed)"
+        )
+    release_behind = _rr._on_base(mirror, release.sha, rev)
+    pin_behind = _rr._on_base(mirror, rev, release.sha)
+    if release_behind is None or pin_behind is None:
+        return run.free(
+            f"git could not order {rev[:9]} and {release.sha[:9]}",
+            "git could not read the source mirror (infrastructure); retried.",
+            READ_CLASS,
+        )
+    if rev != release.sha:
+        if release_behind:
             return _no_op(
                 run,
                 release,
                 tip,
                 floor,
                 rev,
-                f"the pin {floor} is already past {release.version}",
+                f"the pin {floor} at {rev[:9]} is already past {release.version}",
             )
+        if not pin_behind:
+            return run.ask(
+                f"the pinned sha {rev[:9]} and release {release.version} at "
+                f"{release.sha[:9]} are not ancestors of each other; a human decides"
+            )
+    if compare_versions(release.version, floor) < 0:
         return run.ask(
-            f"release {release.version} is below precis's floor {floor} and "
+            f"release {release.version} is below precis's floor {floor} but "
             f"{release.sha[:9]} is not behind the pinned sha {rev[:9]}"
+        )
+    try:
+        deploy_floor = _group_vars_floor(files[GROUP_VARS_PATH])
+        diverged = (
+            deploy_floor is not None
+            and compare_versions(deploy_floor, release.version) > 0
+        )
+    except PinError:
+        diverged = False  # an odd line is the edit's to refuse
+    if diverged:
+        return run.ask(
+            f"deploy/group_vars/all.yml floors {GROUP_VARS_KEY} at {deploy_floor}, "
+            f"above the release {release.version}; the floor is never lowered"
         )
     coherent = pin_is_coherent(
         files[PYPROJECT_PATH],
@@ -1541,6 +1647,18 @@ def _poll_resolve(run: _Run) -> bool:
     except PinError as exc:
         return run.ask(f"the pin edit was refused: {exc}")
     return _make_tree_and_derive(run, profile, release, tip, mirror, edited, floor, rev)
+
+
+def _derive_command(
+    rdir: Path, root: Path, todo_id: int, version: str, result: Path
+) -> str:
+    """The step running the worker-written derive script, writing ``result``."""
+    return (
+        "uv run --frozen --extra catalyst python -I "
+        f"{shlex.quote(str(rdir / DERIVE_PY))} {shlex.quote(version)} "
+        f"{shlex.quote(str(_tree_path(root, todo_id) / ANCHOR_PATH))} "
+        f"{shlex.quote(ANCHOR_CONFIG_NAME)} {shlex.quote(str(result))}"
+    )
 
 
 def _make_tree_and_derive(
@@ -1618,10 +1736,7 @@ def _make_tree_and_derive(
         ("sync", "uv sync --frozen --extra catalyst"),
         (
             "derive",
-            "uv run --frozen --extra catalyst python -I "
-            f"{shlex.quote(str(rdir / DERIVE_PY))} {shlex.quote(release.version)} "
-            f"{shlex.quote(str(tree / ANCHOR_PATH))} "
-            f"{shlex.quote(ANCHOR_CONFIG_NAME)} {shlex.quote(str(rdir / RESULT_FILE))}",
+            _derive_command(rdir, root, todo_id, release.version, rdir / RESULT_FILE),
         ),
     ]
     if _start_phase(run, DERIVE_PHASE, DERIVE_SCRIPT, DERIVE_LOG, DERIVE_EXIT, steps):
@@ -1659,6 +1774,8 @@ def _poll_detached(run: _Run, label: str, on_green: Any) -> bool:
             f"the {label} run passed its wall-clock deadline (infrastructure); retried.",
             _rl.TIMED_OUT_CLASS,
         )
+    # The phase is over (or lost): nothing it started may outlive this look.
+    _reap_group(handle)
     if exit_code == 0:
         return bool(on_green(run))
     masked = mask_secrets(_rs._read_log(handle)) or ""
@@ -1673,15 +1790,22 @@ def _poll_detached(run: _Run, label: str, on_green: Any) -> bool:
             "was committed on main and the bump is retried.",
             _rl.GATE_INFRA_CLASS,
         )
-    if _TRANSPORT_RE.search(masked):
+    failed = list(_rl._GATE_FAIL_RE.finditer(masked))
+    # Only the uv steps (lock, sync) can fail on transport: the text before
+    # the failing step's marker, and only when that step is one of them. A
+    # python or pytest run that prints "timed out" is a red, not infrastructure.
+    if (
+        failed
+        and failed[-1][1] in TRANSPORT_STEPS
+        and _TRANSPORT_RE.search(masked[: failed[-1].start()])
+    ):
         return run.free(
             f"the pin {label} hit a transport failure",
             f"the {label} run could not reach a registry or the source mirror "
             "(infrastructure); retried.",
             TRANSPORT_CLASS,
         )
-    found = _rl._GATE_FAIL_RE.findall(masked)
-    command = found[-1][1] if found else f"the {label} run"
+    command = failed[-1][2] if failed else f"the {label} run"
     excerpt = _ls.gate_red_excerpt(masked)
     handoff = (
         f"`{command}` failed (exit {exit_code}) while moving the pin to "
@@ -1697,11 +1821,11 @@ def _poll_detached(run: _Run, label: str, on_green: Any) -> bool:
     )
 
 
-def _read_result(run: _Run) -> str | None:
-    """The key from the result file, or ``None`` unless it is a JSON object of
-    exactly ``key`` (64 lowercase hex) and ``engine`` (the target version).
-    The file is attacker-writable: nothing else in it is ever used."""
-    path = run.run_dir() / RESULT_FILE
+def _read_result(run: _Run, name: str = RESULT_FILE) -> str | None:
+    """The key from the result file ``name``, or ``None`` unless it is a JSON
+    object of exactly ``key`` (64 lowercase hex) and ``engine`` (the target
+    version). The file is attacker-writable: nothing else in it is ever used."""
+    path = run.run_dir() / name
     try:
         if path.stat().st_size > _RESULT_MAX:
             return None
@@ -1868,15 +1992,23 @@ def _poll_derive_green(run: _Run) -> bool:
         )
     except PinError as exc:
         return run.charged(f"the final pin edit was refused: {exc}")
-    commit = _commit_objects(
-        root,
-        tip,
-        branch,
-        edited,
-        f"build(deps): bump {package} to v{version} (td{todo_id})",
-        _commit_body(handle, int(run.params["release_todo"])),
-        run.run_dir() / INDEX_FILE,
-    )
+    # A worker that died after the ref moved, before the handle was saved,
+    # replays this poll: the branch head that already is exactly this commit
+    # on the tip is adopted, not committed over (that would fail the swap).
+    head = _head(root, branch)
+    commit: str | None = None
+    if head and head != tip and _commit_violation(root, tip, head, edited) is None:
+        commit = head
+    else:
+        commit = _commit_objects(
+            root,
+            tip,
+            branch,
+            edited,
+            f"build(deps): bump {package} to v{version} (td{todo_id})",
+            _commit_body(handle, int(run.params["release_todo"])),
+            run.run_dir() / INDEX_FILE,
+        )
     if commit is None:
         return run.charged(
             f"the pin commit for {handle.get('tag')} failed",
@@ -1897,14 +2029,45 @@ def _poll_derive_green(run: _Run) -> bool:
             TREE_CLASS,
         )
     handle["commit"] = commit
+    handle["key"] = key
+    # The verify is an independent check: its own venv and result file, the
+    # worker-written script written afresh (the run dir is not trusted), the
+    # engine installed and the key recomputed there, then the tests.
+    rdir = run.run_dir()
+    try:
+        for leftover in (VENV_DIR, VERIFY_VENV_DIR):
+            shutil.rmtree(rdir / leftover, ignore_errors=True)
+        (rdir / VERIFY_RESULT_FILE).unlink(missing_ok=True)
+        (rdir / DERIVE_PY).write_text(DERIVE_SCRIPT_PY, encoding="utf-8")
+    except OSError as exc:
+        return run.free(
+            f"writing the verify files failed: {exc}",
+            "the run dir could not be written (infrastructure); retried.",
+            TREE_CLASS,
+        )
     steps = [
+        ("sync", "uv sync --frozen --extra catalyst"),
+        (
+            "derive",
+            _derive_command(
+                rdir, run.root, todo_id, version, rdir / VERIFY_RESULT_FILE
+            ),
+        ),
         (
             "verify",
             "uv run --frozen --extra catalyst pytest -q -p no:cacheprovider "
             + " ".join(shlex.quote(t) for t in VERIFY_TESTS),
-        )
+        ),
     ]
-    if _start_phase(run, VERIFY_PHASE, VERIFY_SCRIPT, VERIFY_LOG, VERIFY_EXIT, steps):
+    if _start_phase(
+        run,
+        VERIFY_PHASE,
+        VERIFY_SCRIPT,
+        VERIFY_LOG,
+        VERIFY_EXIT,
+        steps,
+        venv_name=VERIFY_VENV_DIR,
+    ):
         return True
     run.ctx.append_chunk(
         "job_event",
@@ -1930,6 +2093,14 @@ def _poll_verify_green(run: _Run) -> bool:
             "the verified commit is not a child of the tip",
             f"{commit[:9]} is not a child of {tip[:9]}; nothing is landed.",
         )
+    again = _read_result(run, VERIFY_RESULT_FILE)
+    if again is None or again != handle.get("key"):
+        return run.charged(
+            "verify recomputed a different key or engine than the derive",
+            "the verify run recomputed a different anchor key or engine than "
+            f"the one committed in {commit[:9]}; nothing is landed.",
+        )
+    _sweep(todo_id)
     if _checkout_tree(root, todo_id, branch) is None:
         return run.free(
             f"git worktree add failed for the pin tree of td{todo_id}",
@@ -2005,7 +2176,11 @@ def _batch_slices(store: Any, todo_id: int, repo: str) -> list[int]:
     frontier = {todo_id}
     while frontier:
         nxt = {dst for src, dst in edges if src in frontier}
-        nxt |= {nid for nid, parent in parent_of.items() if parent in nxt}
+        while True:  # a blocked-by on a phase gates its children, however deep
+            kids = {nid for nid, parent in parent_of.items() if parent in nxt} - nxt
+            if not kids:
+                break
+            nxt |= kids
         frontier = nxt - found - {todo_id}
         found |= frontier
     parents = set(parent_of.values())
@@ -2203,7 +2378,23 @@ def _poll_handoff(run: _Run) -> bool:
             f"the land_slice job could not be minted ({exc}); retried.",
             HANDOFF_CLASS,
         )
-    if not _stamp(ctx, todo_id, {**record, "state": "handed", "land_job": land}):
+    # The land may already have run and finished: stamp over a record that is
+    # still the committed one, never over a ``landed`` one.
+    latest = _stored(ctx.store, todo_id) or {}
+    if latest.get("commit") == commit and latest.get("state") in ("handed", "landed"):
+        return _succeed(
+            run,
+            f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "
+            f"land_slice jo{land}",
+            land_job=land,
+        )
+    if latest.get("commit") != commit or latest.get("state") != "committed":
+        return run.charged(
+            f"the committed pin record of td{todo_id} changed during the hand-off",
+            "the committed record on the node changed while the land was minted; "
+            "see the land job.",
+        )
+    if not _stamp(ctx, todo_id, {**latest, "state": "handed", "land_job": land}):
         return run.free(
             f"could not stamp the pin record on td{todo_id}",
             "the node could not be marked (infrastructure); retried.",
@@ -2267,13 +2458,11 @@ def kill(ctx: Any, handle: Any) -> None:
     try:
         params = (getattr(ctx, "meta", None) or {}).get("params") or {}
         todo_id = params.get("todo_id")
-        if (
-            isinstance(todo_id, int)
-            and not isinstance(todo_id, bool)
-            and handle.get("made")
-        ):
-            _drop_made(_rs.slice_root(), todo_id)
-            _clear_building(ctx, todo_id)
+        if isinstance(todo_id, int) and not isinstance(todo_id, bool):
+            if handle.get("made"):
+                _drop_made(_rs.slice_root(), todo_id)
+                _clear_building(ctx, todo_id)
+            _sweep(todo_id)
     except Exception:  # pragma: no cover - kill never raises
         log.warning("pin_bump: kill cleanup failed", exc_info=True)
 
