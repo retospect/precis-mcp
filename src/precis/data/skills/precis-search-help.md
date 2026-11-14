@@ -111,10 +111,11 @@ below).
 `search(kind='paper', q=…)` defaults to `unique_per='paper'`: each row is
 one paper — the best hit's `pc<chunk_id>` handle (paste into `get`), a
 `more` column counting that paper's *other* hits in the retrieved pool
-(`+3` = three further matching chunks), and the best chunk's keywords.
-The headline counts both levels: `# 12 of 87 papers for 'q' (240 chunk
-hits)` — M and K are the lexical universe, a lower bound when the
-semantic leg also matched.
+(`+3` = three further matching chunks), the paper's identity (`paper` =
+`pa<id>` + cite key, `year`, `title` clipped span-safe at 70 chars),
+and the best chunk's keywords. The headline counts both levels:
+`# 12 of 87 papers for 'q' (240 chunk hits)` — M and K are the
+lexical universe, a lower bound when the semantic leg also matched.
 
 `unique_per='chunk'` is the drill shape — one row per matching chunk —
 and is implied by the doors that already ask for it: `scope='pa…'`

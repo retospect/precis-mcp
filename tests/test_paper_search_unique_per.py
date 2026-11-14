@@ -27,6 +27,7 @@ from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
+from tests.workers._helpers import seed_chunk
 
 
 def _seed(
@@ -446,3 +447,89 @@ def test_ref_counts_out_stays_empty_on_verbatim(store: Store) -> None:
     )
     assert hits
     assert counts == {}
+
+
+# ── gr608579: paper rows carry the paper's identity ──────────────────────
+
+
+def test_paper_rows_carry_identity_columns(store: Store) -> None:
+    """gr608579: a paper-mode row is the PAPER — ``pa<id>`` + cite key,
+    year and the (clipped) title sit next to the best hit's pc handle —
+    so a hit on a titleless ``references`` chunk still names the paper
+    it belongs to."""
+    ref = store.insert_ref(
+        kind="paper",
+        slug="norr2026survey",
+        title="A Survey of Norrish Herstein Catalytic Cycles",
+        year=2026,
+    )
+    seed_chunk(
+        store,
+        ref_id=ref.id,
+        ord=0,
+        chunk_kind="references",
+        text="[42] umbratic vireline reference entry",
+    )
+    out = _handler(store).search(q="umbratic vireline")
+    table = out.body.split("Next:", 1)[0]
+    assert "{handle\tmore\tpaper\tyear\ttitle\tchunk_keywords\tsize}" in table
+    pa = handle_registry.format_handle("paper", ref.id)
+    assert f"{pa} norr2026survey" in table
+    assert "2026" in table
+    assert "A Survey of Norrish Herstein Catalytic Cycles" in table
+
+    # A slugless, untitled stub: the paper cell is just ``pa<id>`` and
+    # the title cell ``(untitled)``. ``insert_ref`` requires a slug for
+    # paper, so drop the cite_key identifier to mint the bare-handle
+    # shape the corpus's stub papers actually carry.
+    bare = store.insert_ref(kind="paper", slug="gone2026x", title="")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = 'cite_key'",
+            (bare.id,),
+        )
+        conn.commit()
+    seed_chunk(
+        store,
+        ref_id=bare.id,
+        ord=0,
+        chunk_kind="references",
+        text="[9] umbratic vireline second entry",
+    )
+    out2 = _handler(store).search(q="umbratic vireline")
+    pa2 = handle_registry.format_handle("paper", bare.id)
+    assert f"\t{pa2}\t" in out2.body  # slugless: paper cell is just pa<id>
+    assert "(untitled)" in out2.body
+
+
+def test_paper_row_title_clip_is_span_safe(store: Store) -> None:
+    """The 70-char title clip must not split a math/emphasis span — a
+    cut inside ``$…$`` would leave a dangling ``$`` that renders as
+    literal noise (or pairs with a later ``$`` as fake math). The whole
+    span drops instead (``title_md_clip``)."""
+    # 66 chars of prose, then a 15-char math span crossing char 70.
+    long_title = "alpha beta " * 6 + "$\\mathrm{CO_2}$ tail"
+    _seed(store, slug="clip-a", blocks=["umbratic vireline"], title=long_title)
+    out = _handler(store).search(q="umbratic vireline")
+    row = next(ln for ln in out.body.splitlines() if ln.startswith("pc"))
+    title_cell = row.split("\t")[4]  # handle, more, paper, year, title
+    assert title_cell.endswith("…")
+    assert len(title_cell) <= 70
+    assert "$" not in title_cell
+    assert "mathrm" not in title_cell
+
+
+def test_chunk_rows_keep_three_columns(store: Store) -> None:
+    """``unique_per='chunk'`` (and the ``scope=`` door that implies it)
+    keeps the per-hit shape — no ``paper``/``year``/``title`` columns."""
+    ref = _seed(store, slug="cc-a", blocks=["copper nitrate ammonia x"])
+    h = _handler(store)
+    out = h.search(q="copper nitrate ammonia", unique_per="chunk")
+    assert "{handle\tchunk_keywords\tsize}" in out.body
+    assert "\tpaper\t" not in out.body
+    scoped = h.search(
+        q="copper nitrate ammonia",
+        scope=handle_registry.format_handle("paper", ref),
+    )
+    assert "{handle\tchunk_keywords\tsize}" in scoped.body
+    assert "\tpaper\t" not in scoped.body

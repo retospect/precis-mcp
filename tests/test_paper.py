@@ -571,7 +571,7 @@ class TestViews:
         fetch-state table instead of refusing 'unknown view'."""
         a = _seed_paper(store, slug="paper-a", title="Alpha")
         resp = handler.get(id=f"pa{a}", view="status")
-        assert "fetch status — 1 of 1 ids resolved" in resp.body
+        assert "fetch status — 1 ids -> 1 papers" in resp.body
         assert f"pa{a}" in resp.body
 
     def test_toc(self, store: Store, handler: PaperHandler) -> None:

@@ -395,8 +395,9 @@ class TestFetchStatus:
     ) -> None:
         _paper(store, "full2024a", body=1)
         body = papers.search(view="status", ids=["full2024a", "pa99999999"]).body
-        assert "1 of 2 ids resolved" in body, body
+        assert "2 ids -> 1 papers" in body, body
         assert "1 unresolved" in body, body
+        assert "unresolved: pa99999999" in body, body
 
     def test_needs_ids(self, papers: PaperHandler) -> None:
         with pytest.raises(BadInput) as ei:

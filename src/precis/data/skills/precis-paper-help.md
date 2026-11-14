@@ -115,7 +115,8 @@ search(
 
 Each row is one paper — the best hit's chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`), a `+N` count of that paper's other
-hits, and the best chunk's keywords; order is the relevance signal.
+hits, the paper's `pa<id>` + cite key, year and title, and the best
+chunk's keywords; order is the relevance signal.
 `unique_per='chunk'` (implied by `scope=`) returns one row per matching
 chunk instead. A question about one known paper takes `scope=<paper handle>`,
 which searches only that paper's chunks. Mechanics (mode=, bounded results, tags=): `precis-search-help`.
@@ -375,12 +376,18 @@ search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
 get(kind="paper", id="pa123", view="status")   # same table, one paper
 ```
 
-`view='status'` (up to 200 handles/slugs/DOIs): per paper
-`full-text | thin-text | card-only | stub`, PDF present, and the newest
-fetcher outcome (`fetch_ok`, `fetch_failed`, `no_oa_version`, or never
-tried). `thin-text` = ≤12 body chunks **and** a `no_oa_version` newest
-verdict — an abstract or skeleton, not article body. Backlog to chase:
-`view='stubs'`.
+`view='status'` (up to 200 handles/slugs/DOIs): one row per *input* id,
+in input order — `<asked> -> pa<id>  [cite_key]  full-text | thin-text
+| card-only | stub`, PDF present, and the newest fetcher outcome
+(`fetch_ok`, `fetch_failed`, `no_oa_version`, or never tried). A `pc`
+chunk handle lands on its owning paper's row; an input whose paper was
+already shown reads `same as <asked>`; a miss reads `unresolved` and
+the header counts it (`fetch status — M ids -> N papers (D duplicate
+inputs, U unresolved)`, misses listed by name). A `dr`/`dc` container
+id resolves to every paper it cites yet still prints ONE row — each
+cited paper's status a `;`-separated segment. `thin-text` = ≤12 body
+chunks **and** a `no_oa_version` newest verdict — an abstract or
+skeleton, not article body. Backlog to chase: `view='stubs'`.
 
 `view='chunks'` sizes one paper (or an `id=[...]` batch, ≤50): total
 chunks, body count, and breakdowns by `chunk_kind` and `section_path`
@@ -390,6 +397,8 @@ tail:
 get(kind="paper", id="pa5044", view="chunks")
 get(kind="paper", id=["pa5044", "pa31"], view="chunks")
 ```
+
+## Filter a paper search to a cohort — serves, links, venue, stamps
 
 To filter a paper search to a quest's servers / to full text only:
 

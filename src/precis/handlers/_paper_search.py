@@ -58,7 +58,7 @@ from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstrea
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import distance_as_similarity, scores_are_distances
-from precis.utils.title_views import title_md
+from precis.utils.title_views import title_md, title_md_clip
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -1874,11 +1874,28 @@ class PaperSearchResultRenderer:
                     else result.paper_ref_counts.get(ref.id, 1) - 1
                 )
                 row["more"] = f"+{extra_hits}" if extra_hits > 0 else ""
+                # gr608579: a paper-mode row IS the paper, so it carries
+                # the paper's identity — ``pa<id> <cite_key>``, year and
+                # the (clipped) title — next to the best chunk's handle.
+                # Without it a hit on a titleless references chunk left
+                # the caller with a bare pc handle and no way to name or
+                # cite the paper it belongs to.
+                pa = handle_registry.try_format(ref.kind, ref.id) or (
+                    f"{ref.kind}:{ref.id}"
+                )
+                row["paper"] = f"{pa} {ref.slug}" if ref.slug else pa
+                row["year"] = str(ref.year) if ref.year is not None else "n.d."
+                # ``title_md_clip``, not a hard ``[:70]`` char slice —
+                # a cut inside a ``$…$``/``*…*`` span would leave a
+                # dangling marker that renders as literal noise (or
+                # pairs with a later ``$`` as fake math); the clip drops
+                # the whole span instead.
+                row["title"] = title_md_clip(title_md(ref.title), 70) or "(untitled)"
             table_rows.append(row)
         rendered_table = render_agent_table(
             table_rows,
             schema=(
-                ["handle", "more", "chunk_keywords", "size"]
+                ["handle", "more", "paper", "year", "title", "chunk_keywords", "size"]
                 if paper_rows
                 else ["handle", "chunk_keywords", "size"]
             ),

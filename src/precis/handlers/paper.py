@@ -4954,8 +4954,13 @@ class PaperHandler(Handler):
 
     def _fetch_status_view(self, ids: list[str] | None) -> Response:
         """``search(kind='paper', view='status', ids=[…])`` — one row per
-        paper: body state (full-text / thin-text / card-only / stub),
-        has-PDF, and the newest fetcher outcome. Full-text = live
+        *input* id in input order: each ``asked`` id maps to its paper's
+        body state (full-text / thin-text / card-only / stub), has-PDF,
+        and the newest fetcher outcome; a ``dr…``/``dc…`` container id
+        resolves to every cited paper yet still gets ONE row, each
+        paper's status a ``; ``-separated segment; a repeat of a paper
+        already shown reads ``same as <asked>`` and a miss reads
+        ``unresolved`` (gr608579). Full-text = live
         non-card, non-references body chunks; thin-text = at most
         :data:`~precis.store._body_predicate.THIN_BODY_MAX_CHUNKS` of
         them with a ``no_oa_version`` newest fetcher verdict — an
@@ -4977,27 +4982,77 @@ class PaperHandler(Handler):
                 f"ids= has {len(ids)} entries, max {_STATUS_MAX_IDS}",
                 next=f"split the list into pages of up to {_STATUS_MAX_IDS}",
             )
-        resolved = resolve_exclude_paper_ids([str(i) for i in ids], store=self.store)
-        rows = self.store.paper_fetch_status(sorted(resolved))
-        lines = [f"fetch status — {len(rows)} of {len(ids)} ids resolved:", ""]
+        asked_ids = [str(i) for i in ids]
+        # Resolve each input separately so every asked id maps to its own
+        # row (gr608579): a ``pc`` chunk handle lands on its owning paper,
+        # a slug/DOI on the ref itself, a ``dr``/``dc`` container on every
+        # cited paper. The old one-set resolution collapsed repeats, so
+        # "178 of 190 ids resolved" meant duplicates, not misses — and no
+        # input->output trace survived to tell which was which.
+        per_input: list[tuple[str, list[int]]] = [
+            (asked, sorted(resolve_exclude_paper_ids([asked], store=self.store)))
+            for asked in asked_ids
+        ]
+        all_ref_ids = sorted({rid for _a, rids in per_input for rid in rids})
+        status_by_id = {
+            r["ref_id"]: r for r in self.store.paper_fetch_status(all_ref_ids)
+        }
         counts: dict[str, int] = {}
-        for r in rows:
-            counts[r["body"]] = counts.get(r["body"], 0) + 1
-            h = handle_registry.format_handle("paper", r["ref_id"])
-            last = (
-                f"{r['last_event']} {r['last_ts'][:16]}Z ({r['last_source']})"
-                if r["last_event"]
-                else "never tried"
-            )
-            pdf = "pdf" if r["has_pdf"] else "no-pdf"
-            lines.append(
-                f"  {h}  [{r['cite_key'] or h}]  {r['body']}"
-                f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
-            )
-        unresolved = len(ids) - len(rows)
+        seen: dict[int, str] = {}
+        unresolved: list[str] = []
+        n_dup = 0
+        row_lines: list[str] = []
+        for asked, rids in per_input:
+            live = [rid for rid in rids if rid in status_by_id]
+            if not live:
+                unresolved.append(asked)
+                row_lines.append(f"  {asked}  unresolved")
+                continue
+            fresh = [rid for rid in live if rid not in seen]
+            if not fresh:
+                # Every paper this id resolves to was already shown by
+                # an earlier input — one ``same as`` row naming the
+                # antecedent input(s), never a re-print of the cells.
+                antecedents = ", ".join(dict.fromkeys(seen[rid] for rid in live))
+                row_lines.append(f"  {asked}  same as {antecedents}")
+                n_dup += 1
+                continue
+            # One row per input even when a ``dr…``/``dc…`` container
+            # resolves to several papers: each cited paper's status is a
+            # ``; ``-separated segment inside the single row — row N
+            # still answers id N.
+            segments: list[str] = []
+            for rid in live:
+                h = handle_registry.format_handle("paper", rid)
+                if rid in seen:
+                    segments.append(f"{h} same as {seen[rid]}")
+                    continue
+                seen[rid] = asked
+                r = status_by_id[rid]
+                counts[r["body"]] = counts.get(r["body"], 0) + 1
+                last = (
+                    f"{r['last_event']} {r['last_ts'][:16]}Z ({r['last_source']})"
+                    if r["last_event"]
+                    else "never tried"
+                )
+                pdf = "pdf" if r["has_pdf"] else "no-pdf"
+                segments.append(
+                    f"{h}  [{r['cite_key'] or h}]  {r['body']}"
+                    f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
+                )
+            row_lines.append(f"  {asked} -> " + "; ".join(segments))
+        lines = [
+            f"fetch status — {len(asked_ids)} ids -> {len(seen)} papers "
+            f"({n_dup} duplicate inputs, {len(unresolved)} unresolved)",
+            "",
+            *row_lines,
+        ]
+        if unresolved:
+            lines.append("")
+            lines.append("unresolved: " + ", ".join(unresolved))
         summary = " · ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
-        if unresolved > 0:
-            summary += f" · {unresolved} unresolved"
+        if unresolved:
+            summary += f" · {len(unresolved)} unresolved"
         lines.append("")
         lines.append(f"summary: {summary}")
         lines.append(
@@ -5008,7 +5063,7 @@ class PaperHandler(Handler):
                 ]
             )
         )
-        return Response(body="\n".join(lines), result_count=len(rows))
+        return Response(body="\n".join(lines), result_count=len(seen))
 
     def _ingest_rate_view(self, days: int | None) -> Response:
         """``search(kind='paper', view='ingest', days=N)`` — is ingestion
