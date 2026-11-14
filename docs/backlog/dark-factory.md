@@ -331,7 +331,10 @@ factory keeps the machinery and adds an owner to every branch.
   the brief and posts `review: LAND|FIX — <list>|REVERT — <why>`.
   `LAND` mints the held land; `FIX`/`REVERT` send the branch back to
   the builder with the findings as its handoff (nothing is on main to
-  fix or revert). The sha-in-prod gate and validate wait on the land's
+  fix or revert). The held land's submit gate waives only that `done`
+  hold: a `won't-do`/`auto-timeout` set on the stamped build while its
+  land queued is a ruling, and the land refuses (gr663909). The
+  sha-in-prod gate and validate wait on the land's
   `landed:` stamp as before. Pull requests are banned for builders —
   `gh pr` sits in the lane's `deny_exec`; the squash merge is the only
   path to main. Reto reviews only what authority marks Reto-only

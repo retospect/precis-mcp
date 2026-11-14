@@ -2582,6 +2582,185 @@ def test_release_revokes_grant_and_releases_todo_without_a_signal(
     assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
 
 
+# ── gr663909: a mid-run terminal ruling outranks the end-of-run writeback ──
+
+
+def test_release_todo_leaves_a_terminal_status_alone() -> None:
+    """The coordinator closed the todo while the run was in flight: the
+    lease release drops the dead claim but neither reopens the STATUS
+    nor burns an ``attempt:`` — the run's result is discarded."""
+    store = _Store()
+    store.add_todo(42, "t", status="won't-do", tags=("claimed-by:lane-claude-sub",))
+
+    assert run_slice.release_todo(store, 42, "claude-sub") is None
+
+    tags = store.tag_strings(42)
+    assert "STATUS:won't-do" in tags
+    assert "STATUS:open" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert any("result was discarded" in c for c in store.comments(42))
+
+
+def test_release_todo_bumps_attempt_and_reopens_as_before() -> None:
+    """An unruled todo still takes the retry writeback whole."""
+    store = _Store()
+    store.add_todo(
+        42, "t", status="doing", tags=("claimed-by:lane-claude-sub", "attempt:1")
+    )
+
+    assert run_slice.release_todo(store, 42, "claude-sub") == 2
+
+    tags = store.tag_strings(42)
+    assert {"STATUS:open", "attempt:2"} <= tags
+    assert "attempt:1" not in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+
+
+def test_unclaim_todo_leaves_a_terminal_status_alone() -> None:
+    """An attempt-free lease return honours the same terminal ruling."""
+    store = _Store()
+    store.add_todo(42, "t", status="done", tags=("claimed-by:lane-claude-sub",))
+
+    run_slice.unclaim_todo(store, 42, "claude-sub")
+
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert "STATUS:open" not in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert any("result was discarded" in c for c in store.comments(42))
+
+
+def test_close_todo_never_flips_a_wont_do_to_done() -> None:
+    """A ``no-op:`` verdict on a ``won't-do`` todo does not override the
+    coordinator's ruling — the verdict is discarded with the run."""
+    store = _Store()
+    store.add_todo(42, "t", status="won't-do", tags=("claimed-by:lane-claude-sub",))
+
+    run_slice.close_todo(store, 42, "claude-sub", tags=("verdict:moot",))
+
+    tags = store.tag_strings(42)
+    assert "STATUS:won't-do" in tags
+    assert "STATUS:done" not in tags
+    assert "verdict:moot" not in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert any("result was discarded" in c for c in store.comments(42))
+
+
+def test_poll_success_discards_the_result_on_a_mid_run_close(
+    seams: dict[str, Any],
+) -> None:
+    """gr663909's first shape: the coordinator closed the todo ``done``
+    while the builder ran; the clean exit mints no land, reopens
+    nothing and burns no attempt — the job itself succeeds."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    pctx = _poll_ctx(store, ctx)
+    # The mid-run ruling: 'verified:' by hand while the session ran.
+    store.add_tag(42, Tag.closed("STATUS", "done"), replace_prefix=True)
+
+    seams["porcelain"] = " M a.py\n"
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "Landed abc1234.\ntests: ran",
+    }
+    _finish(handle, 0, "noise\n" + json.dumps(result) + "\n")
+
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert "STATUS:open" not in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert seams["lands"] == [] and seams["push"] == []
+    assert "land_job" not in pctx.meta_set
+    discarded = [c for c in store.comments(42) if "result was discarded" in c]
+    assert len(discarded) == 1
+
+
+def test_poll_failure_does_not_reopen_a_mid_run_ruling(
+    seams: dict[str, Any],
+) -> None:
+    """gr663909's second shape: the coordinator parked the todo
+    ``won't-do`` mid-run; the failed attempt's writeback leaves the
+    status standing — no ``STATUS:open``, no ``attempt:`` bump, no
+    relaunch for the ladder to climb."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    pctx = _poll_ctx(store, ctx)
+    store.add_tag(42, Tag.closed("STATUS", "won't-do"), replace_prefix=True)
+
+    result = {"type": "result", "is_error": True, "result": "it broke"}
+    _finish(handle, 1, json.dumps(result) + "\n")
+
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "stays STATUS:won't-do" in (pctx.failure or "")
+
+    tags = store.tag_strings(42)
+    assert "STATUS:won't-do" in tags
+    assert "STATUS:open" not in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    # The terminal arm and release_todo both fire on this writeback —
+    # the comment is still posted exactly once.
+    discarded = [c for c in store.comments(42) if "result was discarded" in c]
+    assert len(discarded) == 1
+
+
+def test_release_todo_reopens_the_machines_own_preland_hold() -> None:
+    """The carve-out (gr570506): a ``done`` stamped ``meta.pending_land``
+    is the machine's own pre-land close, not a ruling — a failed land
+    reopens the build with its attempt burned as before."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "t",
+        status="done",
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"pending_land": {"branch": "slice/42"}},
+    )
+
+    assert run_slice.release_todo(store, 42, "claude-sub") == 1
+
+    tags = store.tag_strings(42)
+    assert {"STATUS:open", "attempt:1"} <= tags
+    assert "claimed-by:lane-claude-sub" not in tags
+
+
+def test_rearm_preland_review_stands_down_on_a_ruled_build() -> None:
+    """A ``won't-do``+``pending_land`` build was ruled out while the land
+    ran: the failed land re-arms nothing and the hold stays stamped."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "t",
+        status="won't-do",
+        meta={"pending_land": {"branch": "slice/42"}},
+    )
+
+    assert run_slice.rearm_preland_review(store, 42) == []
+
+    assert store.refs[42].meta["pending_land"] == {"branch": "slice/42"}
+    assert "STATUS:won't-do" in store.tag_strings(42)
+
+
+def test_submit_refuses_a_todo_at_any_terminal_status() -> None:
+    """The launch gate refuses the whole terminal set — an
+    ``auto-timeout`` todo is as ruled-out as ``done``/``won't-do``."""
+    store = _Store()
+    for status in ("done", "won't-do", "auto-timeout"):
+        store.add_todo(42, "t", status=status)
+        reason = run_slice._todo_rejection(store, 42)
+        assert reason is not None and f"STATUS:{status}" in reason
+
+
 def _finish(handle: dict[str, Any], exit_code: int | None, log: str) -> None:
     Path(handle["log"]).write_text(log, encoding="utf-8")
     if exit_code is not None:

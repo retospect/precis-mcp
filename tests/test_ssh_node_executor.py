@@ -2303,7 +2303,7 @@ def test_poison_guard_releases_run_slice_todo_without_process_identity(
     releases: list[int] = []
     release_todo = run_slice.release_todo
 
-    def release(store: Any, todo_id: int, lane: str | None) -> int:
+    def release(store: Any, todo_id: int, lane: str | None) -> int | None:
         releases.append(todo_id)
         return release_todo(store, todo_id, lane)
 

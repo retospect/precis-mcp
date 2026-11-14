@@ -1011,6 +1011,14 @@ class _Plan:
         ]
 
 
+#: Terminal statuses that are always a *ruling* on the work (gr663909):
+#: on the reopen paths below ``done`` is machine state — the pre-land
+#: hold, the post-land close, an ended digest — but a ``won't-do`` /
+#: ``auto-timeout`` set while a job ran or a review queued outranks the
+#: run's and the verdict's writeback: the node is never reopened.
+_RULING_STATUSES: frozenset[str] = TERMINAL_TODO_STATUSES - {"done"}
+
+
 def _closed(n: _Node) -> bool:
     return n.status in TERMINAL_TODO_STATUSES
 
@@ -2417,6 +2425,17 @@ def _review_revert(
         w.stamp_meta(plan.nodes[revert_id], {_release.LAND_TARGET_KEY: target})
     requeue = [t for t, sha in landed if sha] or targets
     for t in requeue:
+        if t.status in _RULING_STATUSES:
+            # gr663909: a coordinator ruling on the landed node outranks
+            # the REVERT requeue — the verdict keeps its minted revert
+            # task but never reopens the ruled node behind it.
+            w.comment(
+                t,
+                f"plan_dispatch: review REVERT (td{n.id}) — td{t.id} is "
+                f"STATUS:{t.status}, a ruling set while the review ran; "
+                "it stands and the requeue reopens nothing",
+            )
+            continue
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
@@ -2668,11 +2687,25 @@ def _review_back_to_builder(
     ``blocked-by`` edge re-arms while the target is open and releases
     when the next build defers again)."""
     targets = _pending_targets(plan, n)
+    ruled: list[int] = []
     for t in targets:
         w.stamp_meta(t, {_templates.PENDING_LAND_KEY: None})
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
+        if t.status in _RULING_STATUSES:
+            # gr663909: a coordinator ruling set while the review ran
+            # outranks the verdict — no handoff, no reopen. The cleared
+            # hold lets the dead-chain sweep close this review.
+            ruled.append(t.id)
+            w.comment(
+                t,
+                f"plan_dispatch: review {kind} — {rest}\n\n(review td{n.id}, "
+                f"pre-land — but td{t.id} is STATUS:{t.status}, a ruling "
+                "set while the review ran; it stands and the verdict "
+                "reopens nothing)",
+            )
+            continue
         # The rejected build burns no attempt (``_review_revert``'s
         # floor): the rebuild dispatches on a fresh budget.
         ended = [j for j in plan.jobs(t) if j.status in _JOB_ENDED]
@@ -2686,9 +2719,11 @@ def _review_back_to_builder(
         )
         if t.status != "open":
             w.set_status(t, "open")
+    sent_back = [t.id for t in targets if t.id not in ruled]
     res.notes.append(
         f"td{n.id}: review {kind} pre-land — back to the builder: "
-        + ", ".join(f"td{t.id}" for t in targets)
+        + (", ".join(f"td{i}" for i in sent_back) or "nothing")
+        + (f"; STATUS stands on {', '.join(f'td{i}' for i in ruled)}" if ruled else "")
     )
 
 
@@ -2778,13 +2813,24 @@ def _step_reviews(
             # is on main to fix or revert — and the reviewer stays open
             # for the rebuild it then re-gates.
             _review_back_to_builder(store, plan, w, res, n, kind, rest)
-            w.stamp_meta(n, {"rearmed_after_job": newest.id})
-            if n.status != "open":
-                w.set_status(n, "open")
-            res.notes.append(
-                f"td{n.id}: review {kind} for {handle} {marker}; "
-                "pre-land — back to the builder, reviewer stays open"
-            )
+            if all(_closed(t) for t in _review_targets(plan, n)):
+                # gr663909: every held target was ruled closed while the
+                # review ran — nothing is left to re-gate, and an open
+                # reviewer would re-dispatch over terminal blockers.
+                w.set_status(n, "won't-do")
+                res.notes.append(
+                    f"td{n.id}: review {kind} for {handle} {marker}; "
+                    "every held target was ruled closed — the review "
+                    "closes with it"
+                )
+            else:
+                w.stamp_meta(n, {"rearmed_after_job": newest.id})
+                if n.status != "open":
+                    w.set_status(n, "open")
+                res.notes.append(
+                    f"td{n.id}: review {kind} for {handle} {marker}; "
+                    "pre-land — back to the builder, reviewer stays open"
+                )
         elif kind == "FIX":
             fix_id, cap_ask = _review_fix(
                 store, plan, w, res, n, handle, rest, now, lane_table
@@ -2816,6 +2862,19 @@ def _step_reviews(
                 res.notes.append(
                     f"td{n.id}: review REVERT for {handle} {marker}; "
                     f"minted td{revert_id}, closed"
+                )
+            elif (rts := _review_targets(plan, n)) and all(_closed(t) for t in rts):
+                # gr663909: every requeue target was ruled closed while
+                # the review ran — no rebuild comes to re-gate, and an
+                # open reviewer would re-review the same land and
+                # re-mint the revert in a loop. (An out-of-plan ``from``
+                # has no targets — it waits on the revert task itself,
+                # gr597625.)
+                w.set_status(n, "won't-do")
+                res.notes.append(
+                    f"td{n.id}: review REVERT for {handle} {marker}; "
+                    f"minted td{revert_id} — every requeue target was "
+                    "ruled closed, the review closes with it"
                 )
             else:
                 w.stamp_meta(n, {"rearmed_after_job": newest.id})
@@ -4735,7 +4794,11 @@ def _rerun_stall(
     if unpark:
         w.remove_tags(n, [NOREPRO_WAIT_TAG])
         digest = _digest_of(plan, n)
-        if digest is not None and not plan.live_job(digest):
+        if (
+            digest is not None
+            and not plan.live_job(digest)
+            and digest.status not in _RULING_STATUSES
+        ):
             ended = [j for j in plan.jobs(digest) if j.status in _JOB_ENDED]
             if digest.status != "open":
                 w.set_status(digest, "open")

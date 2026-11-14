@@ -6577,6 +6577,29 @@ def test_failed_land_rearms_the_preland_reviewer(store: Store) -> None:
     assert run_slice._preland_reviewer(store, build) == review
 
 
+def test_failed_land_never_rearms_a_ruled_preland_reviewer(store: Store) -> None:
+    """gr663909: a ``won't-do`` on the reviewer is a ruling like the
+    build's — the failed land's re-arm skips it; only the machine's own
+    ``done`` reopens."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.stamp_ref_meta(review, {"preland_review": True})
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    store.add_tag(
+        review,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert run_slice.rearm_preland_review(store, build) == []
+    assert _status(store, review) == "won't-do"
+
+
 def test_preland_review_land_keeps_the_chain_alive_while_land_runs(
     store: Store,
 ) -> None:
@@ -6627,6 +6650,95 @@ def test_preland_review_revert_sends_the_branch_back_to_the_builder(
     assert _status(store, review) == "open"
     comments = _todo_comments(store, build)
     assert any("breaks the API" in c for c in comments)
+
+
+def test_preland_review_fix_never_reopens_a_ruled_build(store: Store) -> None:
+    """gr663909: the coordinator closed the held build ``won't-do`` while
+    the review ran — the FIX verdict drops the machine's
+    ``pending_land`` hold and the dead claim, but the ruling stands: no
+    handoff, no reopen, no fresh builder job, and the reviewer closes
+    with it (nothing is left to re-gate)."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "won't-do"
+    assert _meta(store, build).get("pending_land") is None
+    comments = _todo_comments(store, build)
+    assert not any("handoff:" in c for c in comments)
+    assert any("STATUS:won't-do" in c and "reopens nothing" in c for c in comments)
+    assert _status(store, review) == "won't-do"
+    # No new job mints on the ruled node — the fixture's run_slice is
+    # still its only child.
+    assert len(_jobs_under(store, build)) == 1
+    res2 = pd.run_pass(store)
+    assert len(_jobs_under(store, build)) == 1
+    assert _status(store, build) == "won't-do"
+    assert res2.dispatched == 0
+
+
+def test_review_revert_never_requeues_a_ruled_build(store: Store) -> None:
+    """gr663909: the landed build was closed ``won't-do`` while its
+    post-land review ran — the REVERT verdict still mints its revert
+    task (the sha is on main) but never reopens or re-blocks the ruled
+    node, and the reviewer closes: left open it would re-review the
+    same land and re-mint the revert in a loop."""
+    mint = _reviewed_landed(store, "review: REVERT — breaks the public API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "won't-do"
+    assert _status(store, review) == "won't-do"
+    comments = _todo_comments(store, build)
+    assert any("STATUS:won't-do" in c and "reopens nothing" in c for c in comments)
+    # The revert task minted — a new sibling — but the ruled node is
+    # not blocked-by it and carries no re-arm floor.
+    siblings = _children(store, mint.root_id)
+    assert len(siblings) == 3
+    revert = [s for s in siblings if s not in (build, review)]
+    assert revert[0] not in _blocked_by_ids(store, build)
+    assert "rearmed_after_job" not in _meta(store, build)
+    # And the closed reviewer never re-dispatches: the next pass mints
+    # nothing under it.
+    res2 = pd.run_pass(store)
+    assert len(_jobs_under(store, review)) == 1
+    assert res2.dispatched == 0
+
+
+def test_rerun_stall_never_rearms_a_ruled_digest(store: Store) -> None:
+    """gr663909: a ``won't-do`` digest is a ruling too — the red-verdict
+    stall drops the fix's wait tag and files its ask, but the ruled
+    digest is neither reopened nor floored for a second
+    ``ci_red_digest``."""
+    mint, it = _parked_release_fix(store)
+    run_slice._append_comment(store, it["fix"], "brief: release r7 is red")
+    pd.run_pass(store)
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    _succeed_newest(store, it["fix"])  # the verdict poll; the run still red
+    store.add_tag(
+        it["digest"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    pd.run_pass(store)
+    assert _status(store, it["digest"]) == "won't-do"
+    assert len(_job_ids(store, it["digest"], "ci_red_digest")) == 1
+    assert "rearmed_after_job" not in _meta(store, it["digest"])
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
 
 
 def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:

@@ -175,7 +175,11 @@ that holds the lane's credentials with ``params.target_node``):
   value lost on a worker restart) drops the env-naming lines from the
   tail and withholds the raw handoff for a fixed marker. The
   claim tag goes, the todo returns to ``STATUS:open`` and gains
-  ``attempt:<n>``.
+  ``attempt:<n>`` — unless the todo already sits at a terminal STATUS:
+  a mid-run ruling (the coordinator closing the node ``done`` /
+  ``won't-do`` while the session ran, gr663909) outranks the writeback
+  entirely — no land mint, no verdict close, no reopen, no attempt
+  burned; the run's result is discarded and one comment says so.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
   revokes the MCP grant and releases the todo even when the poison
   guard cannot safely signal a process (poll may never run).
@@ -280,9 +284,6 @@ _BRIEF_PREFIXES: tuple[str, ...] = ("brief:", "handoff:")
 #: from a failed builder's final message, which the newest ``brief:``
 #: wins over while an ``attempt:`` tag stands (gr571311).
 _LANDER_HANDOFF_PREFIX = "handoff: lander:"
-
-#: Todo statuses that refuse a launch.
-_CLOSED_STATUSES = frozenset({"done", "won't-do"})
 
 _DEFAULT_MAX_TURNS = 300
 _DEFAULT_WALL_S = 4 * 3600
@@ -1068,15 +1069,20 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     for a rebuild (gr570506): the reviewer already closed on its LAND
     verdict, so without this ``_preland_reviewer`` finds none and the
     rebuilt code would land unreviewed. Clears ``meta.pending_land``
-    (the rebuild stamps its own) and reopens each closed pre-land
+    (the rebuild stamps its own) and reopens each ``done`` pre-land
     reviewer with ``meta.rearmed_after_job`` at its newest job, so the
-    tick re-dispatches it once the rebuild defers again. Returns the
-    reopened reviewer ids."""
+    tick re-dispatches it once the rebuild defers again — a reviewer at
+    ``won't-do``/``auto-timeout`` is a ruling and stands (gr663909).
+    Returns the reopened reviewer ids."""
     from precis.plans.templates import PENDING_LAND_KEY, PRELAND_REVIEW_KEY
-    from precis.todo import TERMINAL_TODO_STATUSES
 
     ref = store.get_ref(kind="todo", id=todo_id)
     if ref is None or not (ref.meta or {}).get(PENDING_LAND_KEY):
+        return []
+    if _terminal_ruling(store, todo_id) is not None:
+        # gr663909: the todo was ruled out while the land ran — no
+        # rebuild comes, so no reviewer re-arms either. (The held
+        # ``done`` itself is no ruling and re-arms as before.)
         return []
     store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
     with store.pool.connection() as conn:
@@ -1093,7 +1099,10 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     reopened: list[int] = []
     for (rid,) in rows:
         rid = int(rid)
-        if _todo_status(store, rid) not in TERMINAL_TODO_STATUSES:
+        # Only the machine's own ``done`` re-arms (gr570506): a
+        # ``won't-do`` / ``auto-timeout`` on the reviewer is a ruling
+        # (gr663909) and stands like the build's.
+        if _todo_status(store, rid) != "done":
             continue
         with store.pool.connection() as conn:
             row = conn.execute(
@@ -1165,6 +1174,54 @@ def _todo_status(store: Any, todo_id: int) -> str | None:
         if t.prefix == "STATUS":
             return str(t.value)
     return None
+
+
+def _terminal_status(store: Any, todo_id: int) -> str | None:
+    """``todo_id``'s STATUS when terminal — a ruling set while the run was
+    in flight (gr663909: the coordinator closes a node mid-run and the
+    end-of-run writeback must not reopen it — a reopened todo
+    re-dispatches duplicate work) — else ``None``."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    status = _todo_status(store, todo_id)
+    return status if status in TERMINAL_TODO_STATUSES else None
+
+
+def _terminal_ruling(store: Any, todo_id: int) -> str | None:
+    """Terminal STATUS that counts as a ruling on the work (gr663909) —
+    the lease writebacks' check. ``won't-do`` / ``auto-timeout`` are
+    always rulings; ``done`` is, except the pre-land hold: a build
+    stamped ``meta.pending_land`` was closed ``done`` by
+    :func:`_defer_land_for_review` itself (gr570506), and a failed land
+    must reopen it for the rebuild — that ``done`` is machine state,
+    not a ruling."""
+    status = _terminal_status(store, todo_id)
+    if status == "done":
+        from precis.plans.templates import PENDING_LAND_KEY
+
+        ref = store.get_ref(kind="todo", id=todo_id)
+        if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+            return None
+    return status
+
+
+def _discarded_writeback(store: Any, todo_id: int, status: str) -> None:
+    """The comment a lease writeback leaves on a todo a mid-run terminal
+    ruling already closed (gr663909): the run's result is discarded, the
+    STATUS stands. One comment per run: poll's terminal arm and the lease
+    functions can both fire on the same writeback."""
+    text = (
+        f"run_slice: td{todo_id} was already STATUS:{status} (a terminal "
+        "ruling set mid-run) when the run ended; the run's result was "
+        "discarded — the status stands."
+    )
+    newest = max(
+        (c for c in _todo_chunks(store, todo_id) if c.chunk_kind == _COMMENT_KIND),
+        key=lambda c: int(c.ord),
+        default=None,
+    )
+    if newest is None or str(newest.text or "") != text:
+        _append_comment(store, todo_id, text)
 
 
 def _is_generator(store: Any, todo_id: int) -> bool:
@@ -1245,11 +1302,19 @@ def _claim_todo(store: Any, todo_id: int, lane: str) -> None:
     )
 
 
-def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
+def release_todo(store: Any, todo_id: int, lane: str | None) -> int | None:
     """Release the lease after a failed run: drop the claim, return the
-    todo to ``STATUS:open`` and bump ``attempt:<n>``. Returns ``n``."""
+    todo to ``STATUS:open`` and bump ``attempt:<n>``. Returns ``n`` —
+    ``None`` when the todo already sits at a terminal STATUS (a mid-run
+    ruling): the writeback burns no attempt and never reopens it
+    (gr663909); the claim still drops since the run is over either way.
+    The pre-land ``done`` hold is not a ruling
+    (:func:`_terminal_ruling`): a failed land reopens it as before."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return None
     prior = 0
     for value in _open_tag_values(store, todo_id):
         m = _ATTEMPT_RE.match(value)
@@ -1266,9 +1331,13 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
 
 def unclaim_todo(store: Any, todo_id: int, lane: str | None) -> None:
     """Give the lease back with no attempt burned: the lane's window failed
-    (a quota or rate notice), not the task (gr565359)."""
+    (a quota or rate notice), not the task (gr565359). A todo a mid-run
+    ruling already closed keeps its terminal STATUS (gr663909)."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return
     store.add_tag(
         todo_id, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
     )
@@ -1280,9 +1349,14 @@ def close_todo(
     """Close a generator that correctly minted nothing (a ``no-op:`` /
     ``moot:`` verdict): drop the claim, add ``tags``, ``STATUS:done``. The
     tick leaves a childless done generator closed (``_step_reopen`` only
-    reopens one with open children)."""
+    reopens one with open children). A todo a mid-run ruling already
+    closed keeps its terminal STATUS — the run's verdict is discarded
+    with the rest of its writeback (gr663909)."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return
     for value in tags:
         store.add_tag(todo_id, Tag.open(value), set_by="system")
     store.add_tag(
@@ -2256,8 +2330,8 @@ def _todo_rejection(store: Any, todo_id: Any) -> str | None:
             f"run_slice: todo {todo_id} not found (missing or retired); "
             "next: pass the id of a live slice todo"
         )
-    status = _todo_status(store, todo_id)
-    if status in _CLOSED_STATUSES:
+    status = _terminal_status(store, todo_id)
+    if status is not None:
         return (
             f"run_slice: todo {todo_id} is closed (STATUS:{status}); next: "
             f"reopen it with tag(kind='todo', id={todo_id}, add=['STATUS:open']) "
@@ -5895,7 +5969,28 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception:  # pragma: no cover — a gate fault does not convict
         log.warning("run_slice: hard-gate eval on td%d failed", todo_id)
         gate_ok = True
-    if land and not commits and gate_ok:
+    if (terminal := _terminal_status(ctx.store, todo_id)) is not None:
+        # gr663909: a terminal STATUS set while the run was in flight is a
+        # ruling on the work itself and outranks the run's own close —
+        # the whole writeback is discarded: no land mint (the ruling may
+        # be exactly "do not land this"), no verdict close, no reopen.
+        # The lease functions below carry the same guard; this arm stops
+        # the arms that would act on the run's result at all.
+        summary.append(
+            f"Close: none — td{todo_id} was already STATUS:{terminal} when "
+            "the run ended; the run's result was discarded."
+        )
+        # The run is over either way, so its lease still drops — a
+        # ``claimed-by:`` tag outliving its run on a terminal todo never
+        # ages out (hygiene skips closed nodes). Only this run's lane
+        # claim goes, the same drop the lease functions make.
+        if lane:
+            ctx.store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+        try:
+            _discarded_writeback(ctx.store, todo_id, terminal)
+        except Exception:  # pragma: no cover — the job outcome still lands
+            log.warning("run_slice: discarded-run comment on td%d failed", todo_id)
+    elif land and not commits and gate_ok:
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
@@ -6333,10 +6428,13 @@ def poll(ctx: Any, handle: Any) -> bool:
         or gone
         or f"failed (exit {exit_code})"
     )
-    reason = (
-        f"run_slice: session for td{todo_id} {what}; todo back to open, "
-        f"attempt:{attempt}"
-    )
+    if attempt is not None:
+        lease_note = f"todo td{todo_id} back to open, attempt:{attempt}"
+    elif (standing := _terminal_status(ctx.store, todo_id)) is not None:
+        lease_note = f"todo td{todo_id} stays STATUS:{standing} (result discarded)"
+    else:
+        lease_note = f"todo td{todo_id} lease released (no attempt recorded)"
+    reason = f"run_slice: session for td{todo_id} {what}; {lease_note}"
     if tail:
         reason = f"{reason}\n--- log tail ---\n{tail}"
     ctx.record_failure(reason)
@@ -6357,8 +6455,14 @@ def release(ctx: Any, handle: Any) -> None:
     lane = meta.get("lane")
     if lane and f"claimed-by:lane-{lane}" not in _open_tag_values(ctx.store, todo_id):
         return
-    if todo_id and _todo_status(ctx.store, todo_id) == "doing":
-        release_todo(ctx.store, todo_id, str(lane) if lane else None)
+    if todo_id:
+        # ``doing`` takes the ordinary release; a ruling (gr663909 — not
+        # the machine's own pre-land hold) drops only the dead claim.
+        if (
+            _todo_status(ctx.store, todo_id) == "doing"
+            or _terminal_ruling(ctx.store, todo_id) is not None
+        ):
+            release_todo(ctx.store, todo_id, str(lane) if lane else None)
 
 
 def kill(ctx: Any, handle: Any) -> None:
