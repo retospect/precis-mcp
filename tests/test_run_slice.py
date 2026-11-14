@@ -740,9 +740,11 @@ def test_validate_submit_refuses_a_todo_tagged_for_another_repo(
     store.add_todo(13, "glue under engine", tags=("repo:precis",), parent_id=9)
     for ok in (7, 8, 13):
         assert run_slice.validate_submit(store, params={"todo_id": ok}) is None
-    for refused in (9, 10, 12):
+    for refused in (9, 12):
         err = run_slice.validate_submit(store, params={"todo_id": refused})
-        assert err is not None and "no factory build profile" in err, refused
+        assert err is not None and "factory.open_repos" in err, refused
+    both = run_slice.validate_submit(store, params={"todo_id": 10})
+    assert both is not None and "no factory build profile" in both
     two = run_slice.validate_submit(store, params={"todo_id": 11})
     assert two is not None and "2 repo: tags" in two
     # A profiled repo still needs the setting; opened, the submit passes.
@@ -10663,12 +10665,12 @@ def test_submit_in_another_repo_rechecks_the_tag_at_claim_time(
 def test_submit_with_an_unopened_repo_is_refused_by_the_claim_time_guard(
     seams: dict[str, Any],
 ) -> None:
-    """The real registry has no lander for catpath: refused at claim time."""
+    """catpath is openable but not opened: refused at claim time."""
     store = _Store()
     store.add_todo(42, "t", tags=("repo:catpath",))
     ctx, handle = _submit(store, seams, repo="catpath")
     assert handle is None and ctx.status == "failed"
-    assert "no factory build profile" in str(ctx.failure)
+    assert "factory.open_repos" in str(ctx.failure)
     assert seams["launch"] == [] and seams["git"] == []
 
 

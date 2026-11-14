@@ -433,15 +433,15 @@ def test_validate_submit_admits_a_closed_todo_carrying_pending_land(
     assert closed is not None and "is closed" in closed
 
 
-@pytest.fixture(params=["real-registry", "lander-unopened"])
+@pytest.fixture(params=["no-lander", "real-registry"])
 def catpath_registry(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> str:
-    """``catpath`` as the registry has it (no lander), and as a profile that
-    names ``land_slice`` as its lander but is not in ``factory.open_repos``:
+    """``catpath`` with no lander on its profile, and as the registry has it
+    (``land_slice`` is its lander, but it is not in ``factory.open_repos``):
     this lander refuses it either way."""
-    if request.param == "lander-unopened":
-        profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+    if request.param == "no-lander":
+        profile = replace(lanes.REPO_PROFILES["catpath"], lander=None)
         monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
     return str(request.param)
 
@@ -469,7 +469,7 @@ def test_validate_submit_refuses_another_repo(
     )
     assert refused is not None and refused.startswith("land_slice:")
     assert "'catpath'" in refused and "next:" in refused
-    if catpath_registry == "real-registry":
+    if catpath_registry == "no-lander":
         assert "no lander" in refused
     else:
         assert "open_repos" in refused

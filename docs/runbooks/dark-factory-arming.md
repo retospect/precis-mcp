@@ -659,20 +659,25 @@ The other settings a slice host reads:
   is not buildable and open (`lanes.repo_refusal`) and stamps
   `params.repo` on the `run_slice` job for a non-default repo; submit
   refuses a `params.repo` that differs from the todo's tag, and later
-  phases read the job, not the tag. `land_slice` lands the precis repo
-  only and refuses another `params.repo`. Generator and reviewer nodes are
+  phases read the job, not the tag. `land_slice` lands a non-default repo
+  only when the job's `params.repo` names it, the profile's `lander` is
+  `land_slice`, `factory.open_repos` lists it and the todo's `repo:` tag
+  agrees (`land_slice._repo_refusal`); it then hands the land to
+  `src/precis/workers/repo_land.py`. Generator and reviewer nodes are
   refused for a non-default repo.
 - A non-default repo builds from its `lanes.RepoProfile`
   (`lanes.REPO_PROFILES`). `run_slice.submit` finds the clone through
   `PRECIS_SLICE_REPOS`, writes the profile's exclude lines into the
-  clone's `.git/info/exclude`, fetches the base (under the factory git
-  credential, hooks disabled, for a private repo) and refuses unless the
+  clone's `.git/info/exclude`, fetches the base (`run_slice.fetch_base_tip`: a fresh
+  ops gitdir outside the clone under the factory git credential, so no
+  credential-bearing git runs inside the clone) and refuses unless the
   rev the precis `origin/main` `uv.lock` pins for the package is an
   ancestor of the repo's `origin/<base>` (`run_slice._prepare_repo`). The
   session gets a repo-specific brief (`run_slice._render_repo_brief`:
   read-first files, setup and lint commands, touched tests only, the
   profile's deny paths, and rules that beat the task text: no fetch,
-  rebase, push, version bump, tag or pull request), those deny paths, the
+  rebase, push, version bump, tag or pull request; after a lander conflict
+  handoff, one `git merge origin/<base>` is allowed), those deny paths, the
   profile's `UV_PYTHON` and no precis MCP.
 
 Opening a second repo, in order:
@@ -693,12 +698,56 @@ Opening a second repo, in order:
    `git ls-remote` under the credential, plus one API read.
 4. The repo's profile must have a lander: `lanes.known_repos()` lists
    only those and the setting cannot open any other. catpath's `lander`
-   is `None` until td659522 step 2.
+   is `land_slice`, so it is openable.
 5. List the repo in the DB-only setting `factory.open_repos`
    (`lanes.open_repos`: the setting intersected with `known_repos()`).
 
-Today no second repo can be opened: catpath is the only other profile and
-it has no lander.
+catpath is openable but closed by default: it builds and lands only once
+the operator lists it in `factory.open_repos`.
+
+How a second-repo slice lands (`src/precis/workers/repo_land.py`), in order:
+
+1. Fetch the base tip (`run_slice.fetch_base_tip`).
+2. Squash the slice branch into one commit in a throwaway land tree cut on
+   that tip.
+3. Refuse the profile's deny paths and any change of `[project].version`
+   in `pyproject.toml`.
+4. Launch the profile's setup, lint and test commands detached, under an
+   env with no credential (no ssh agent, gh config or docker endpoint).
+   The commands are registry constants, never read from the tree.
+5. On a green gate, re-check the handle's sha (its parent is the tip, the
+   diff still clears the deny paths), re-read the factory switch and the
+   admission rules (`land_slice._repo_refusal`: the lander, `factory.open_repos`,
+   the todo's tag against the job's repo), stamp `meta.landed_repo`, then
+   push that sha as a plain fast-forward (`factory_git_mirror.push_cas`).
+6. Write `landed: <sha>`, close the todo, remove the land tree, the slice
+   tree and the local branch.
+
+On the todo: a `landed: <sha>` comment on success. A `handoff: lander:`
+comment marks a charged attempt: a red gate, a merge conflict, a deny-path
+hit or a version change. The todo reopens with `attempt:<n>` and the branch
+stays for the next build. These are attempt-free and the land is minted
+again: a raced or unverifiable push, a gate that was killed or died without
+an exit code, a setup failure with no dependency file in the diff, a repo
+closed or a todo retagged during the gate, and the wall deadline.
+
+The lander never force-pushes, opens a pull request, resolves a gripe,
+changes the version, cuts a release or tags. Those are later steps of
+td659522.
+
+Kill switches: remove the repo from `factory.open_repos`, or set
+`PRECIS_FACTORY=off`. Both are re-read right before the push, so a land
+whose gate is running is not pushed.
+
+Known limits:
+
+- catpath lands are not serialised per repo; a raced push is retried.
+- A `landed:` sha on such a todo belongs to the other repo
+  (`meta.landed_repo`, `lanes.LANDED_REPO_KEY`). A plan for it must carry
+  no `sha-in-prod` gate.
+- Generator and reviewer nodes for a second repo are still refused.
+- The gate runs as the worker's OS user: it holds no credential but is not
+  sandboxed.
 
 - The session runs `--permission-mode bypassPermissions` with the lane's
   `deny_write_paths` (`STRICT_DENY` in `src/precis/plans/lanes.py` — the

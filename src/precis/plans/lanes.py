@@ -411,7 +411,10 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         pin=("uv.lock", "autocatpath"),
         # 3.12 is in catpath's CI matrix (3.10-3.12) and is precis's floor.
         uv_python="3.12",
-        lander=None,
+        # Landed by ``workers/repo_land.py`` behind the ``land_slice`` job
+        # type (td659522 step 2). Openable, and closed until the operator
+        # lists it in ``factory.open_repos``.
+        lander="land_slice",
     ),
 }
 

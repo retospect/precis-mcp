@@ -445,22 +445,19 @@ def test_repo_refusal_fails_closed() -> None:
     assert lanes.repo_refusal([], object()) is None
     assert lanes.repo_refusal(["precis"], object()) is None
     # A repo without a build profile is refused whatever the setting says.
-    unknown = lanes.repo_refusal(["catpath"], None)
+    unknown = lanes.repo_refusal(["hexfold"], None)
     assert unknown is not None and "no factory build profile" in unknown
+    # A repo with a profile and a lander is still closed until it is listed.
+    closed = lanes.repo_refusal(["catpath"], None)
+    assert closed is not None and "factory.open_repos" in closed
     both = lanes.repo_refusal(["both"], None)
     assert both is not None and "repo:both" in both
     two = lanes.repo_refusal(["precis", "catpath"], None)
     assert two is not None and "2 repo: tags" in two
 
 
-def test_a_known_repo_stays_closed_without_a_readable_setting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(
-        lanes.REPO_PROFILES,
-        "catpath",
-        replace(lanes.REPO_PROFILES["catpath"], lander="land_slice"),
-    )
+def test_a_known_repo_stays_closed_without_a_readable_setting() -> None:
+    assert "catpath" in lanes.known_repos()
     for s in (None, object()):
         assert lanes.open_repos(s) == frozenset({"precis"})
         err = lanes.repo_refusal(["catpath"], s)
@@ -474,14 +471,14 @@ def test_open_repos_lists_only_known_names(
     assert lanes.open_repos(store) == frozenset({"precis"})
     psettings.set_setting("factory.open_repos", "catpath, hexfold", store=store)
     try:
-        # Listed but profile-less: the setting alone opens nothing.
+        landed = lanes.REPO_PROFILES["catpath"]
+        # Listed but lander-less: the setting alone opens nothing.
+        monkeypatch.setitem(
+            lanes.REPO_PROFILES, "catpath", replace(landed, lander=None)
+        )
         assert lanes.open_repos(store) == frozenset({"precis"})
         assert lanes.repo_refusal(["catpath"], store) is not None
-        monkeypatch.setitem(
-            lanes.REPO_PROFILES,
-            "catpath",
-            replace(lanes.REPO_PROFILES["catpath"], lander="land_slice"),
-        )
+        monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", landed)
         assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
         assert lanes.repo_refusal(["catpath"], store) is None
         assert lanes.repo_refusal(["hexfold"], store) is not None
@@ -489,28 +486,30 @@ def test_open_repos_lists_only_known_names(
         psettings.clear_setting("factory.open_repos", store=store)
 
 
-def test_catpath_profile_is_fenced_and_unlanded() -> None:
+def test_catpath_profile_is_fenced_and_landed_by_land_slice() -> None:
     prof = lanes.REPO_PROFILES["catpath"]
     cmds = prof.setup_cmds + prof.lint_cmds + prof.test_cmds
     assert cmds and not any("ruff format" in c for c in cmds)
     assert prof.deny_paths == (".github/**",)
-    assert prof.lander is None
+    assert prof.lander == "land_slice"
     assert prof.remote.startswith("https://") and "@" not in prof.remote
 
 
 def test_profile_lookup_and_known_repos() -> None:
-    assert lanes.known_repos() == ("precis",)
+    assert lanes.known_repos() == ("precis", "catpath")
     precis = lanes.repo_profile("precis")
     assert precis is not None and precis.lander == "land_slice"
     assert lanes.repo_profile("nope") is None
 
 
 @pytest.mark.db
-def test_real_catpath_profile_stays_closed_under_the_setting(store: Store) -> None:
+def test_real_catpath_profile_opens_only_under_the_setting(store: Store) -> None:
+    assert lanes.open_repos(store) == frozenset({"precis"})
+    assert lanes.repo_refusal(["catpath"], store) is not None
     psettings.set_setting("factory.open_repos", "catpath", store=store)
     try:
-        assert lanes.open_repos(store) == frozenset({"precis"})
-        assert lanes.repo_refusal(["catpath"], store) is not None
+        assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
+        assert lanes.repo_refusal(["catpath"], store) is None
     finally:
         psettings.clear_setting("factory.open_repos", store=store)
 
