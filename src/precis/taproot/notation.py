@@ -115,8 +115,6 @@ from collections.abc import Callable
 from functools import lru_cache
 from importlib import resources
 
-from precis.utils import handle_registry
-
 __all__ = ["lint_notation", "normalize_notation"]
 
 #: Single-symbol denominators the "solidus is fine" rule (canon table,
@@ -332,6 +330,27 @@ def _skill_slugs() -> frozenset[str]:
     return frozenset(out)
 
 
+#: Handle shape (``me674763``, ``pc38``, ``pr592588``) for the standalone
+#: load. ``scripts/memory-lint`` check 16 runs this module from a bare
+#: copy under a throwaway ``src/`` where ``precis.utils`` does not exist
+#: (``tests/test_memory_lint.py`` builds exactly that), so the registry's
+#: parser is reached lazily in :func:`_handle_is_well_formed` and this
+#: shape stands in when it cannot be imported. A module-level
+#: ``precis.utils`` import made that load fail silently and the whole
+#: notation check print nothing (release/r313 gate red, 2026-11-14).
+_HANDLE_SHAPE_RE = re.compile(r"[a-z]{2,3}[0-9]+")
+
+
+def _handle_is_well_formed(token: str) -> bool:
+    """``precis.utils.handle_registry.is_well_formed`` when the registry
+    is importable, else the handle shape alone (standalone load)."""
+    try:
+        from precis.utils import handle_registry
+    except Exception:  # pragma: no cover - the memory-lint standalone copy
+        return _HANDLE_SHAPE_RE.fullmatch(token) is not None
+    return handle_registry.is_well_formed(token)
+
+
 def _is_tilde_selector_base(token: str) -> bool:
     """Whether ``token`` names something a ``~<digits>`` selector hangs off.
 
@@ -344,7 +363,7 @@ def _is_tilde_selector_base(token: str) -> bool:
     ``x ~5``), and ordinary prose (``near ~19`` -- slug-shaped, but no
     such skill).
     """
-    if handle_registry.is_well_formed(token):
+    if _handle_is_well_formed(token):
         return True
     if _KIND_ID_REF_RE.fullmatch(token):
         return True
