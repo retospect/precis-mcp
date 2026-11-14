@@ -314,7 +314,11 @@ from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans.logbook import log_plan_event
-from precis.plans.templates import PENDING_LAND_KEY, PENDING_SHA
+from precis.plans.templates import (
+    PENDING_LAND_KEY,
+    PENDING_SHA,
+    PRELAND_DEFER_FAILED_KEY,
+)
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
@@ -1506,11 +1510,17 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
         _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
     ref = store.get_ref(kind="todo", id=todo_id)
-    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+    if ref is not None and (
+        (ref.meta or {}).get(PENDING_LAND_KEY)
+        or (ref.meta or {}).get(PRELAND_DEFER_FAILED_KEY)
+    ):
         # The pre-land hold (gr570506) is discharged: the landed: comment
         # is the record now, and the stamp must not read a post-land
-        # review as pre-land.
-        store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
+        # review as pre-land. A stale preland_defer_failed (gr663738)
+        # discharges with it.
+        store.stamp_ref_meta(
+            todo_id, {PENDING_LAND_KEY: None, PRELAND_DEFER_FAILED_KEY: None}
+        )
         wrote.append("pending_land cleared")
     if _rs._todo_status(store, todo_id) != "done":
         _close_todo(store, todo_id)
@@ -5164,7 +5174,10 @@ def _push_branch(tree: Path, branch: str) -> str:
     the tip ``ls-remote`` reads immediately before the push: an empty
     expectation when the branch is not on origin yet. A move between that
     read and the push is refused (``lease refused``) and still fails the
-    caller; an unreadable origin falls back to the plain push."""
+    caller; an unreadable origin falls back to the plain push. The note
+    carries ``(replaced)`` when the push overwrote a tip origin already
+    held (an amended/rebased build whose earlier push is stale,
+    gr663738)."""
     ops: Path | None = None
     remote: dict[str, str] | None = None
     try:
@@ -5208,9 +5221,15 @@ def _push_branch(tree: Path, branch: str) -> str:
     finally:
         _factory_git_mirror._drop_ops(ops)
     if proc.returncode == 0:
-        return f"branch push of {branch}: on origin"
-    err = (proc.stderr or proc.stdout or "").strip()[:200]
-    if "stale info" in err:
+        prior = (remote or {}).get(branch, "")
+        replaced = " (replaced)" if prior and prior != sha else ""
+        return f"branch push of {branch}: on origin{replaced}"
+    err_full = (proc.stderr or proc.stdout or "").strip()
+    err = err_full[:200]
+    # The "(stale info)" marker trails the full ref line — check the
+    # UNTRUNCATED stderr or a long origin url pushes it past 200 chars
+    # (real-git coverage, review td676510).
+    if "stale info" in err_full:
         seen = (remote or {}).get(branch, "absent")[:9]
         return (
             f"branch push of {branch}: FAILED (lease refused — {branch} moved "

@@ -5132,6 +5132,78 @@ def test_dead_chain_straggler_closes_once_its_job_ends(store: Store) -> None:
     assert (res.asks, res.dispatched) == (0, 0)
 
 
+def test_dead_chain_after_failed_defer_asks_not_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738: a build closed ``done`` on a stale ``validated:`` while
+    its pre-land push never reached origin is a lost push, not a dead
+    land — the sweep files ONE coordinator ask and closes nothing: the
+    reviewer and the never-built dependants stay open, held by the
+    ``meta.preland_defer_failed`` stamp like a held land."""
+    use_lanes(monkeypatch)
+    gid = int(insert_gripe(store, "the lost push", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    gate, validate = mint.ids["gate"], mint.ids["validate"]
+    store.stamp_ref_meta(build, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert res.dispatched == 0
+    # Nothing closed — not the review, not the starved chain.
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "open", key
+    assert _status(store, build) == "done"
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert f"td{build}" in _body_text(store, ask)
+    assert ask in _blocked_by_ids(store, review)
+    assert any("failed pre-land defer" in n and f"td{ask}" in n for n in res.notes)
+
+    # A second pass is quiet: the open ask dedupes, nothing closes.
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert (
+        len([c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)])
+        == 1
+    )
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "open", key
+
+
+def test_dead_chain_wontdo_ruling_on_stamped_target_closes_the_rest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738 review td676510 (resolution path): the ask's drop path
+    is the coordinator closing the stamped target ``won't-do``. The
+    ruling must be honored — the stamp stops holding the chain, the
+    sweep closes the review and the starved dependants ``won't-do``,
+    and no further ask is filed."""
+    use_lanes(monkeypatch)
+    gid = int(insert_gripe(store, "the dropped push", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    gate, validate = mint.ids["gate"], mint.ids["validate"]
+    store.stamp_ref_meta(build, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.asks == 1  # the ask stands while the target claims done
+
+    # The coordinator's drop ruling: close the stamped target won't-do.
+    store.add_tag(
+        build, Tag.closed("STATUS", "won't-do"), set_by="system", replace_prefix=True
+    )
+    res2 = pd.run_pass(store)
+    assert res2.asks == 0
+    for key in ("build", "review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert not any("failed pre-land defer" in n for n in res2.notes)
+    # The hold is gone for good — a third pass stays settled.
+    res3 = pd.run_pass(store)
+    assert (res3.asks, res3.dispatched) == (0, 0)
+
+
 def test_dead_plan_root_closes_its_open_children(store: Store) -> None:
     """gr612091: a plan root closed ``won't-do`` by hand drops the whole
     subtree out of ``_candidate_roots`` — without the sweep the pass's
@@ -5644,6 +5716,32 @@ def test_bare_verdict_comment_needs_no_job(store: Store) -> None:
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
     assert _status(store, task) == "done"
     assert _status(store, mint.root_id) == "won't-do"
+
+
+def test_validated_verdict_ignored_after_failed_preland_defer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738: ``meta.preland_defer_failed`` means the branch never
+    reached origin — a ``validated:`` "the work was already committed"
+    handoff is the failed push's stale read, not proof of a land. The
+    verdict close passes it by and the node re-dispatches for the retry
+    whose lease-guarded push lands the commit."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the slice's work was already built and "
+        "committed on its branch.",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, task) == "open"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, task))
+    # Left open, the build re-dispatches — the retry's defer is what
+    # lands the commit (the push is lease-guarded now).
+    assert res.dispatched == 1
 
 
 def test_human_only_hit_verdict_never_closes(store: Store) -> None:

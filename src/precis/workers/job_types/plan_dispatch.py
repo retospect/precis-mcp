@@ -966,18 +966,30 @@ class _Plan:
         """The blocker's code is not on main yet: ``meta.pending_land``
         on it — a build closed ``done`` with its squash held for the
         pre-land review, or that held land still in flight (gr659981) —
-        or, the blocker being the review itself, on its targets (the
+        or ``meta.preland_defer_failed`` on a blocker still ``done``
+        (gr663738): the push died, the work sits only in a node
+        worktree, and a dependant's cut of main would miss it exactly
+        like the held land. The hold does NOT outlive a drop ruling: a
+        blocker closed ``won't-do`` (or another non-``done`` terminal
+        status) is the coordinator abandoning the work, so it releases
+        its dependants like any dead blocker (review td676510) — or,
+        the blocker being the review itself, on its targets (the
         reviewer closes ``done`` at LAND while the in-flight land has
         not recorded). The load-time :attr:`_Blocker.pending_land` is
         honored on the loaded path too: the load query resolves it in
-        the store, so it sees a reviewer's held targets that sit
-        outside the loaded subtrees — invisible to the in-memory
-        :func:`_pending_targets` (gr659981 review td660658)."""
+        the store under the same ``done`` condition, so it sees a
+        reviewer's held targets that sit outside the loaded subtrees —
+        invisible to the in-memory :func:`_pending_targets` (gr659981
+        review td660658)."""
         node = self.nodes.get(b.id)
         if node is None:
             return b.pending_land
         if (
             isinstance(node.meta.get(_templates.PENDING_LAND_KEY), dict)
+            or (
+                node.status == "done"
+                and node.meta.get(_templates.PRELAND_DEFER_FAILED_KEY)
+            )
             or b.pending_land
         ):
             return True
@@ -1263,6 +1275,15 @@ def _load(store: Any, roots: list[int] | None = None) -> _Plan:
                      WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                    (
                      jsonb_typeof(b.meta->'pending_land') = 'object'
+                     -- gr663738: a failed pre-land defer holds the
+                     -- blocker's dependants like pending_land does —
+                     -- while it stays 'done'; a won't-do ruling drops
+                     -- the hold (review td676510).
+                     OR (b.meta->>'preland_defer_failed' IS NOT NULL
+                         AND EXISTS (
+                           SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                            WHERE rt2.ref_id = b.ref_id
+                              AND t2.namespace = 'STATUS' AND t2.value = 'done'))
                      OR (
                        b.meta->'generate'->>'role' = 'reviewer'
                        AND EXISTS (
@@ -2533,6 +2554,18 @@ def _pending_land(store: Any, todo_id: int) -> bool:
     )
 
 
+def _defer_failed(store: Any, todo_id: int) -> bool:
+    """``meta.preland_defer_failed`` on ``todo_id`` (gr663738): the
+    build's last pre-land defer raised — its branch never reached
+    origin, the work sits only in a node worktree — so a ``done`` with
+    no ``landed:`` is a lost push, not a dead land: neither the verdict
+    close nor the dead-chain sweep may drop it silently."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return bool(
+        ref is not None and (ref.meta or {}).get(_templates.PRELAND_DEFER_FAILED_KEY)
+    )
+
+
 def _pending_targets(plan: _Plan, n: _Node) -> list[_Node]:
     """The reviewer ``n``'s targets whose land it gates — the build todos
     carrying ``meta.pending_land`` (gr570506, pre-land review)."""
@@ -2568,7 +2601,12 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     Targets are ``generate.from``'s todo — its non-ask children when it
     has them (a slicer's slices) — falling back to the non-ask
     ``blocked-by`` edges when ``from`` resolves to no plan todo (an
-    engine-review node points out of its plan subtree)."""
+    engine-review node points out of its plan subtree). A target stamped
+    ``meta.preland_defer_failed`` still counts as dead here — the read
+    IS right that nothing landed; :func:`_close_dead_chain` turns that
+    case into an ask instead of a close while the target still claims
+    ``done``, and honors a ``won't-do`` drop ruling as a plain close
+    (gr663738, review td676510)."""
     pairs: list[tuple[int, str]] = [(t.id, t.status) for t in _review_targets(plan, n)]
     if not pairs:
         fid = _review_from(n)
@@ -2604,7 +2642,12 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
 
 
 def _close_dead_chain(
-    plan: _Plan, w: _Writer, res: PassResult, n: _Node, dead: list[int]
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    dead: list[int],
+    now: datetime,
 ) -> None:
     """Close reviewer ``n`` and the rest of the dead land chain ``won't-do``
     (gr575912): the dead target's other ``blocked-by`` descendants — the
@@ -2613,7 +2656,87 @@ def _close_dead_chain(
     settle. A node carrying a live job defers: the sweep re-runs every
     pass while the targets stay dead (``_step_reviews`` runs it for a
     closed reviewer too), so the straggler closes once its job ends
-    instead of holding the root open forever."""
+    instead of holding the root open forever.
+
+    The carve-out (gr663738): a dead target stamped
+    ``meta.preland_defer_failed`` is a lost push, not a dead land — its
+    reviewed, amended commit sits only in a node worktree. Closing the
+    chain won't-do would drop that work and the never-built dependants
+    with no trace, so the sweep files ONE coordinator ask and closes
+    nothing; the ask's ``blocked-by`` edge on ``n`` parks the review and
+    dedupes later passes, and the stamp holds the dependants
+    (:meth:`_Plan._land_held`).
+
+    Resolution (review td676510): the stamp only counts while the
+    target still claims ``done`` — a stamped target the coordinator
+    closed ``won't-do`` is the explicit drop ruling the ask offers, so
+    it falls back to the normal close below and the chain settles
+    instead of re-filing the ask forever."""
+    stamped = [
+        tid
+        for tid in dead
+        if _defer_failed(w.store, tid) and _todo_status(w.store, tid) == "done"
+    ]
+    if stamped:
+        names = ", ".join(f"td{t}" for t in stamped)
+        if plan.open_asks(n):
+            res.notes.append(
+                f"td{n.id}: dead land chain holds a failed pre-land defer "
+                f"({names}) — its ask already stands"
+            )
+            return
+        if w.dry_run:
+            res.asks += 1
+            res.notes.append(
+                f"td{n.id}: would ask — dead land chain holds a failed "
+                f"pre-land defer ({names})"
+            )
+            return
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=(
+                f"td{n.id}: dead land chain holds a failed pre-land defer "
+                "— re-push the branch or drop the chain?"
+            ),
+            body=(
+                f"The plan tick found review td{n.id} nothing left to "
+                f"judge: {'its land target' if len(dead) == 1 else 'all of its land targets'} "
+                f"({', '.join(f'td{t}' for t in dead)}) closed `done` "
+                "with no `landed:` comment — the usual dead-chain close "
+                "would drop the review and every starved dependant "
+                "won't-do. But "
+                f"{names} carries `meta.preland_defer_failed`: its "
+                "build's push to origin failed, so the commit exists "
+                "only in a slice worktree — closing the chain drops "
+                "real, reviewed work (gr663738). The tick closed "
+                "nothing and parked this review on this ask. To keep "
+                "the work: fetch the sha the stamp names from the node "
+                "worktree (or re-run the build — the push is "
+                "lease-guarded now), push it to "
+                "`origin/slice/<id>`, clear the target's "
+                "`meta.preland_defer_failed` and reopen it — the "
+                "reviewer re-gates on the next defer. To drop it: close "
+                f"{'the target' if len(stamped) == 1 else 'each stamped target'} "
+                "STATUS:won't-do and the sweep closes the rest. "
+                "Answering 'acknowledged' and closing this ask leaves "
+                "the chain parked as-is; the sweep re-files next tick."
+            ),
+            context=(
+                f"review td{n.id}: dead land target(s) {names} carry "
+                "meta.preland_defer_failed — the branch never reached "
+                "origin"
+            ),
+            now=now,
+            block_node=True,
+        )
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: dead land chain holds a failed pre-land defer "
+            f"({names}) — nothing closed, asked in td{ask_id}"
+        )
+        return
     why = (
         f"review target {', '.join(f'td{t}' for t in dead)} closed with no "
         "`landed:` comment — nothing landed to review"
@@ -2743,7 +2866,7 @@ def _step_reviews(
             continue
         dead = _dead_land_targets(plan, store, n)
         if dead:
-            _close_dead_chain(plan, w, res, n, dead)
+            _close_dead_chain(plan, w, res, n, dead, now)
             continue
         if _closed(n):
             continue
@@ -3154,6 +3277,19 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         if verdict is None or _foreign_verdict(store, n, verdict):
             continue
         kind_, why = verdict
+        if n.meta.get(_templates.PRELAND_DEFER_FAILED_KEY):
+            # gr663738: the stamp means the last pre-land defer failed —
+            # the branch never reached origin, so a `validated:` "the
+            # work was already built and committed" handoff is the stale
+            # read the failed push left, not proof anything landed; a
+            # `no-op:`/`moot:` close would strand the stamp the same way.
+            # The node stays open for the retry the lease-guarded push
+            # fixes.
+            res.notes.append(
+                f"td{n.id}: `{kind_}:` ignored — "
+                "meta.preland_defer_failed is stamped; left open (gr663738)"
+            )
+            continue
         w.set_status(n, "done")
         if kind_ == "moot":
             w.add_tags(n, [MOOT_TAG])

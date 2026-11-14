@@ -1126,8 +1126,13 @@ def _defer_land_for_review(
     diff off it; a reaped worktree loses nothing), stamp the land's
     params as ``meta.pending_land`` and close the todo — the tick
     releases the reviewer, which gates the ``land_slice`` mint on its
-    LAND verdict. Returns the push note for the job summary."""
-    from precis.plans.templates import PENDING_LAND_KEY
+    LAND verdict. A defer that made it here succeeded, so a stale
+    ``meta.preland_defer_failed`` (gr663738) clears with the same
+    write. Returns the push note for the job summary."""
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        PRELAND_DEFER_FAILED_KEY,
+    )
     from precis.workers.job_types import land_slice as _ls
 
     note = _ls._push_branch(tree, slice_branch(todo_id))
@@ -1135,7 +1140,10 @@ def _defer_land_for_review(
         raise RuntimeError(note)
     ctx.store.stamp_ref_meta(
         todo_id,
-        {PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked)},
+        {
+            PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked),
+            PRELAND_DEFER_FAILED_KEY: None,
+        },
     )
     _append_comment(
         ctx.store,
@@ -6318,6 +6326,30 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
             except Exception as exc:
                 log.warning("run_slice: pre-land defer for td%d failed", todo_id)
+                # gr663738: the branch never reached origin — the work
+                # sits only in this worktree. Stamp the tip that failed
+                # to push so the tick neither closes the node on a stale
+                # `validated:` handoff nor sweeps its chain won't-do
+                # without an ask; a later successful defer clears it.
+                from precis.plans.templates import PRELAND_DEFER_FAILED_KEY
+
+                tip = (
+                    _git(
+                        ["rev-parse", f"refs/heads/{slice_branch(todo_id)}"],
+                        tree,
+                    ).stdout
+                    or ""
+                ).strip()
+                try:
+                    ctx.store.stamp_ref_meta(
+                        todo_id, {PRELAND_DEFER_FAILED_KEY: tip or True}
+                    )
+                except Exception:
+                    log.warning(
+                        "run_slice: preland_defer_failed stamp for td%d failed",
+                        todo_id,
+                        exc_info=True,
+                    )
                 nothing = f"exited clean but the pre-land defer failed ({exc})"
             else:
                 ctx.set_meta(preland_review=preland)

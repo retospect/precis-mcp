@@ -3642,9 +3642,94 @@ def test_push_branch_rebased_slice_overwrites_its_own_earlier_push(
     origin = _FakeOrigin({"slice/42": old})
     tree = _slice_push_rig(seams, monkeypatch, origin, new)
     note = land_slice._push_branch(tree, "slice/42")
-    assert note == "branch push of slice/42: on origin"
+    assert note == "branch push of slice/42: on origin (replaced)"
     assert origin.tips["slice/42"] == new
     assert f"--force-with-lease=refs/heads/slice/42:{old}" in origin.pushes[0]
+
+
+def _git_run(repo: Path, *args: str) -> str:
+    """A real ``git -C <repo>`` for the real-remote push test — returns
+    stripped stdout, raises on failure (test setup must not go on)."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return proc.stdout.strip()
+
+
+def test_push_branch_replaces_amended_tip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr663738: real git against a local bare remote — the amended
+    commit a FIX-verdict rebuild left replaces the stale tip origin
+    still holds (the lease on the tip ``ls-remote`` just read), the
+    remote tip ends at the new sha and the note marks the replace; a
+    remote moved between that read and the push still fails.
+
+    A real linked worktree is required: the ops repo borrows the common
+    object store via alternates, which a primary checkout never gets."""
+
+    def commit(repo: Path, *args: str) -> None:
+        _git_run(
+            repo,
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            *args,
+        )
+
+    main, bare, tree = tmp_path / "main", tmp_path / "origin.git", tmp_path / "tree"
+    main.mkdir()
+    _git_run(main, "init", "-b", "main")
+    (main / "f.txt").write_text("base\n", encoding="utf-8")
+    _git_run(main, "add", "-A")
+    commit(main, "-m", "base")
+    _git_run(tmp_path, "init", "--bare", str(bare))
+    _git_run(main, "worktree", "add", str(tree), "-b", "slice/42")
+    # The unfixed commit reaches origin; the FIX-verdict rebuild amends it.
+    (tree / "f.txt").write_text("unfixed\n", encoding="utf-8")
+    commit(tree, "-a", "-m", "unfixed (td42)")
+    _git_run(tree, "push", str(bare), "refs/heads/slice/42")
+    (tree / "g.txt").write_text("fix\n", encoding="utf-8")
+    _git_run(tree, "add", "-A")
+    commit(tree, "--amend", "-m", "fixed (td42)")
+    old_tip = _git_run(bare, "rev-parse", "refs/heads/slice/42")
+    new_tip = _git_run(tree, "rev-parse", "refs/heads/slice/42")
+    assert old_tip != new_tip
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    # Local path transport needs no credential; keep the host's out of it.
+    monkeypatch.delenv("PRECIS_FACTORY_GIT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: str(bare),
+    )
+    assert land_slice._push_branch(tree, "slice/42") == (
+        "branch push of slice/42: on origin (replaced)"
+    )
+    assert _git_run(bare, "rev-parse", "refs/heads/slice/42") == new_tip
+
+    # A move between the ls-remote read and the push is refused.
+    commit(main, "--allow-empty", "-m", "theirs")
+    theirs = _git_run(main, "rev-parse", "HEAD")
+    commit(tree, "--allow-empty", "-m", "v2 (td42)")
+    real_ls = land_slice._factory_git_mirror.ls_remote
+
+    def moved_ls(url: str, refs: Any, *, env: Any) -> Any:
+        out = real_ls(url, refs, env=env)
+        _git_run(main, "push", "--force", url, f"{theirs}:refs/heads/slice/42")
+        return out
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "ls_remote", moved_ls)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note.startswith("branch push of slice/42: FAILED (lease refused")
+    assert _git_run(bare, "rev-parse", "refs/heads/slice/42") == theirs
 
 
 def test_push_branch_first_push_expects_the_ref_absent(

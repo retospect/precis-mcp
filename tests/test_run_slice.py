@@ -223,6 +223,14 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             branches = calls.get("branches")
             if branches is not None:
                 return _proc(rc=0 if args[3] in branches else 1)
+        if (
+            args[:1] == ["rev-parse"]
+            and len(args) == 2
+            and args[1].startswith("refs/heads/")
+        ):
+            # A bare branch-tip read — the pre-land defer failure's
+            # ``preland_defer_failed`` stamp (gr663738) names it.
+            return _proc(calls.get("tips", {}).get(args[1], ""))
         if args == ["status", "--porcelain"]:
             return _proc(calls.get("porcelain", ""))
         if args[:2] == ["status", "--porcelain"] and "-z" in args:
@@ -3274,6 +3282,52 @@ def test_poll_success_with_a_failed_preland_push_fails_the_attempt(
     assert "pending_land" not in store.refs[42].meta
     assert "STATUS:open" in store.tag_strings(42)
     assert "attempt:1" in store.tag_strings(42)
+
+
+def test_failed_preland_defer_stamps_node(seams: dict[str, Any]) -> None:
+    """gr663738: a failed pre-land defer stamps
+    ``meta.preland_defer_failed`` = the branch tip that never reached
+    origin, so the tick's verdict close and dead-chain sweep cannot
+    drop the work (or its dependants) without an ask."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["push_note"] = "branch push FAILED: non-fast-forward"
+    tip = "6a1ea506a" + "b" * 31
+    seams["tips"] = {"refs/heads/slice/42": tip}
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = f"{tip[:7]} feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done.\ntests: ran"}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert store.refs[42].meta["preland_defer_failed"] == tip
+    assert "pending_land" not in store.refs[42].meta
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_successful_preland_defer_clears_the_stamp(
+    seams: dict[str, Any],
+) -> None:
+    """The retry whose defer succeeds clears the stamp with the same
+    write that stamps ``meta.pending_land`` — the held land gates on
+    the reviewer as before."""
+    store = _Store()
+    store.add_todo(42, "t", body="b", meta={"preland_defer_failed": "abc1234"})
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done.\ntests: ran"}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert store.refs[42].meta["preland_defer_failed"] is None
+    assert store.refs[42].meta["pending_land"]["todo_id"] == 42
+    assert "STATUS:done" in store.tag_strings(42)
 
 
 @pytest.mark.parametrize(

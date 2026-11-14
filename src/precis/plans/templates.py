@@ -268,6 +268,14 @@ PRELAND_REVIEW_KEY = "preland_review"
 #: target_node?). ``plan_dispatch`` clears the stamp when the verdict
 #: disposes of it (LAND mints, FIX/REVERT reopens the builder).
 PENDING_LAND_KEY = "pending_land"
+#: ``meta.preland_defer_failed`` on a build todo whose pre-land defer
+#: raised (gr663738): the branch never reached origin — the work sits
+#: only in the node worktree — so neither a ``validated:`` handoff nor
+#: the dead-chain sweep may drop it (or its dependants) silently. The
+#: value is the branch tip that failed to push (``True`` when unreadable);
+#: a later successful defer clears it, ``land_slice._record_land``
+#: discharges it.
+PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
 
 #: The verdict lines a reviewer posts; ``plan_dispatch`` parses them.
 REVIEW_GRAMMAR = (
