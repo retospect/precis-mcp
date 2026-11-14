@@ -619,11 +619,19 @@ def test_background_drains_freely_without_agent_work(store: Store) -> None:
 
 def _advertise_all(store: Store, host: str = "h1") -> None:
     """The placement gate (td543917) holds a job whose tokens no live
-    host advertises: ``run_slice`` needs ``repo_checkout/claude_bin/git``,
-    ``autocatpath_seed`` needs ``autocatpath`` — one host offers all."""
+    host advertises: ``run_slice`` needs ``repo_checkout/builder/git``
+    (gr676054: the generic ``builder`` floor replaced ``claude_bin``, which
+    a real lane host still advertises beside it), ``autocatpath_seed``
+    needs ``autocatpath`` — one host offers all."""
     store.sync_host_resource_slots(
         host,
-        {"repo_checkout": 1, "claude_bin": 1, "git": 1, "autocatpath": 1},
+        {
+            "repo_checkout": 1,
+            "builder": 1,
+            "claude_bin": 1,
+            "git": 1,
+            "autocatpath": 1,
+        },
     )
     with store.pool.connection() as conn:
         conn.execute(

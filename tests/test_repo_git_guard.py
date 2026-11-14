@@ -83,6 +83,10 @@ _EXEMPT: set[str] = {
     "tests/test_pcb_dead_exports.py",
     # `git ls-files` returns None → the .gitignore-aware filesystem walk.
     "tests/test_ruff_scripts_excludes.py",
+    # `_git_show` reads the real bump commit as an oracle and skips when
+    # `git show` cannot (no .git, shallow clone); the pure helper tests
+    # around it must keep running in the gate container.
+    "tests/test_pin_bump.py",
 }
 
 _SPAWN = {"run", "Popen", "check_output", "check_call", "call"}

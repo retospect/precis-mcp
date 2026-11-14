@@ -56,7 +56,12 @@ it (step 1 = `ansible all -m ping`).
   `git --git-common-dir`), else `$PRECIS_OVERLAY_DIR` — so a deploy works from
   any worktree. **`deploy/.vault-pass` is the only key to the
   ansible-encrypted `vault.yml` — no git history, no remote. Back it up
-  (password manager) or the vault is unrecoverable.**
+  (password manager) or the vault is unrecoverable.** Before hashing or
+  rendering, `scripts/deploy` (and `scripts/host-ops/play`) reconciles the
+  overlay repo with its `deploy-helper` mirror: fast-forward when behind, push
+  when ahead, refuse on divergence or uncommitted edits
+  (`PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1` renders as-is) —
+  [`cluster-overlay-sync`](./cluster-overlay-sync.md).
 - **Step 0 pins ONE commit.** A single `run_once` `git ls-remote` resolves the
   ref, broadcasts it, and `set_fact`s the three `precis_*_git_ref` install
   vars plus `precis_target_sha`. Install (`@<sha>`), the pre-flight

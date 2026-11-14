@@ -204,7 +204,10 @@ def _draft_lock(store: Any, slug: str) -> Iterator[bool]:
     if not dsn:
         yield True
         return
-    conn = psycopg.connect(dsn)
+    # Bounded like every other dedicated connect in the tree (the outbound
+    # timeout ratchet, tests/test_outbound_timeout_ratchet.py): a wedged
+    # pgbouncer must fail the export, not hang the worker slot.
+    conn = psycopg.connect(dsn, connect_timeout=15)
     try:
         # The holder tx sits idle while the export runs on pool
         # connections — lift prod's idle-in-transaction kill for THIS

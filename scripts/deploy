@@ -11,6 +11,11 @@
 # per-worktree secret copies. Chained after a green ship by the /go command.
 #
 # Steps:
+#   0. overlay sync — the overlay is its own git repo mirrored on the gateway
+#                     (`deploy-helper`); fetch, fast-forward when behind, push
+#                     when ahead, refuse on divergence or uncommitted edits
+#                     (scripts/lib/overlay-sync.sh, gr680328). Nothing is
+#                     hashed or rendered before the two copies agree.
 #   1. reachability — `ansible ping` per host. A host that is down is skipped
 #      automatically when it is NOT serving-critical (the `data` + `gateway`
 #      inventory groups — DB/pgbouncer and the web/MCP host — never skip);
@@ -28,10 +33,6 @@
 #                     selects only login/grant/userlist tasks — it can never
 #                     touch postgresql.conf/pg_hba or reach a restart
 #                     handler, so it is safe to run mid-deploy.
-#      overlay-guard — (gr680328) before role-sync: the private overlay repo's
-#                     HEAD must not lag or diverge from its deploy-helper
-#                     remote (fetch + compare; ahead or dirty only warns;
-#                     PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides a die).
 #      owner-preflight — (gr678404) before role-sync: the owner of
 #                     public._migrations on prod must agree with the overlay's
 #                     precis_db_own_cutover_done; an unreadable prod warns.
@@ -174,7 +175,11 @@ Notable env vars (see the header comment in this script for full docs):
   PRECIS_DEPLOY_NO_LOG, PRECIS_DEPLOY_LOG_DIR, PRECIS_DEPLOY_FROM_TREE,
   PRECIS_OVERLAY_DIR, PRECIS_DEPLOY_SKIP_CATPATH_WHEEL, PRECIS_CATPATH_DIR,
   PRECIS_DEPLOY_SKIP_WHEEL_SMOKE, PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY,
-  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST, DEPLOY_NOW_UTC.
+  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST, DEPLOY_NOW_UTC,
+  PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT (render the overlay copy as-is when the
+  sync preflight would refuse: diverged from, or uncommitted against, its
+  deploy-helper remote — scripts/lib/overlay-sync.sh; alias
+  PRECIS_DEPLOY_ALLOW_STALE_OVERLAY).
 USAGE
 }
 for _a in "$@"; do
@@ -1350,6 +1355,22 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     EXTRA_ARGS+=(-e precis_overlay_dir="${_ov_abs}" -e precis_vault_pass_file="${_ov_vault}")
 fi
 
+# ── overlay sync preflight (gr680328) ───────────────────────────────────
+# The overlay is its own git repo, mirrored on the gateway (`deploy-helper`).
+# Reconcile the two BEFORE hashing or rendering anything from it: fast-forward
+# when this copy is behind, push when it is ahead, refuse on divergence or
+# uncommitted edits (PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1 renders this copy
+# as-is). A plain-directory overlay — no .git of its own, no remote — is left
+# alone. The 2026-11-14 fork (a controller deploy rendered the userlist and
+# .pgpass without precis_system, gr678654) is the why. Tolerant of fixture
+# trees that omit the library.
+if [[ -n "$OVERLAY_DIR" && -f "${REPO_ROOT}/scripts/lib/overlay-sync.sh" ]]; then
+    . "${REPO_ROOT}/scripts/lib/overlay-sync.sh"
+    say "overlay sync preflight (${OVERLAY_DIR})"
+    overlay_sync_preflight "$OVERLAY_DIR" overlay \
+        || die "overlay sync refused this deploy (see above) — no host was touched. Reconcile per docs/runbooks/cluster-overlay-sync.md, or set PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1 to render this copy as-is."
+fi
+
 # ── overlay change detection (gr239588) ─────────────────────────────────
 # deploy/inventory is the gitignored private overlay: an edit there moves no
 # sha and touches no tracked path, so the playbook's sha-move gate and its
@@ -1370,7 +1391,10 @@ _overlay_hash() {
     [[ -d "$dir" ]] || return 0
     (
         cd "$dir" || exit 0
-        LC_ALL=C find . \( -type f -o -type l \) ! -name .DS_Store ! -name '*.retry' ! -name '*.swp' ! -name '*~' ! -name '#*#' -print | LC_ALL=C sort \
+        # .git is pruned: the overlay is its own repo and the sync preflight
+        # fetches on every deploy, so FETCH_HEAD and the packed refs move
+        # without a single rendered byte changing (gr680328).
+        LC_ALL=C find . -name .git -prune -o \( -type f -o -type l \) ! -name .DS_Store ! -name '*.retry' ! -name '*.swp' ! -name '*~' ! -name '#*#' -print | LC_ALL=C sort \
             | while IFS= read -r f; do
                 printf '%s ' "$f"
                 _sha256_stdin < "$f"
@@ -1618,65 +1642,20 @@ _roles_synced_stamp() {
     fi
 }
 
-# ── 1-rb. overlay lag guard + owner preflight (gr680328, gr678404) ────────
+# ── 1-rb. owner preflight (gr678404) ──────────────────────────────────────
 # 2026-11-14: a deploy launched from a Mac whose private overlay had lagged
 # its deploy-helper remote for two months rendered pgpass and the pgbouncer
 # userlist without precis_system (the role lived only in the helper's copy),
 # then tried to migrate as agent_rw after the db-own cutover had made
 # precis_owner the owner of public._migrations. Both facts were knowable
-# before any play ran. A guard dies on a PROVABLE mismatch and warns on
-# anything it cannot read — an unreachable helper or a failed prod read never
-# blocks a deploy by itself. Both run before role-sync, which is the first
-# step that renders credentials.
+# before any play ran. The overlay half is step 0 above (the sync preflight
+# in scripts/lib/overlay-sync.sh: it fast-forwards or pushes instead of only
+# dying, and runs before the overlay hash so a fetch is not a "change"; the
+# die-only overlay-guard that first shipped here the same day folded into
+# it). The owner half stays here: it dies on a PROVABLE mismatch and warns on
+# anything it cannot read — a failed prod read never blocks a deploy by
+# itself — and runs before role-sync, the first step that renders credentials.
 #
-# overlay-guard: the overlay dir is a git repo with a `deploy-helper` remote
-# (melchior's bare helper, the copy the factory's fix lane deploys from).
-#   HEAD == deploy-helper/main            → ok
-#   HEAD strict ancestor (lags)           → die (PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 warns instead)
-#   deploy-helper/main ancestor (ahead)   → warn: push so the fix lane matches
-#   diverged                              → die (same override)
-#   dirty tracked files                   → warn: this deploy renders them
-#   no repo / no remote / fetch failed    → skipped, said once
-_deploy_overlay_lag_guard() {
-    local dir="${OVERLAY_DIR:-}" head helper
-    [[ -n "$dir" ]] || return 0
-    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-    if ! git -C "$dir" remote get-url deploy-helper >/dev/null 2>&1; then
-        say "overlay-guard: ${dir} has no deploy-helper remote — lag check skipped"
-        return 0
-    fi
-    if ! GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o ConnectTimeout=15 -o BatchMode=yes" \
-            git -C "$dir" fetch -q deploy-helper 2>/dev/null; then
-        say "WARNING overlay-guard: could not fetch deploy-helper — lag check skipped (helper unreachable?)"
-        return 0
-    fi
-    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)" || return 0
-    if ! helper="$(git -C "$dir" rev-parse deploy-helper/main 2>/dev/null)"; then
-        say "overlay-guard: deploy-helper has no main branch — lag check skipped"
-        return 0
-    fi
-    if [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-        say "WARNING overlay-guard: the overlay working tree has uncommitted edits — this deploy renders them; commit and push them to deploy-helper so the fix lane's copy matches"
-    fi
-    [[ "$head" == "$helper" ]] && return 0
-    if git -C "$dir" merge-base --is-ancestor "$head" "$helper" 2>/dev/null; then
-        if [[ -n "${PRECIS_DEPLOY_ALLOW_STALE_OVERLAY:-}" ]]; then
-            say "WARNING overlay-guard: overlay HEAD ${head:0:9} lags deploy-helper/main ${helper:0:9} — allowed by PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
-            return 0
-        fi
-        die "overlay-guard: the overlay at ${dir} (HEAD ${head:0:9}) LAGS deploy-helper/main (${helper:0:9}) — a deploy would render stale roles and topology (2026-11-14, gr680328). Fast-forward it: git -C ${dir} merge --ff-only deploy-helper/main (reset --hard when the tree is meant to equal the helper). PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides."
-    fi
-    if git -C "$dir" merge-base --is-ancestor "$helper" "$head" 2>/dev/null; then
-        say "WARNING overlay-guard: overlay HEAD ${head:0:9} is ahead of deploy-helper/main ${helper:0:9} — push it (git -C ${dir} push deploy-helper HEAD:main) so melchior's fix-lane copy renders the same overlay"
-        return 0
-    fi
-    if [[ -n "${PRECIS_DEPLOY_ALLOW_STALE_OVERLAY:-}" ]]; then
-        say "WARNING overlay-guard: overlay HEAD ${head:0:9} and deploy-helper/main ${helper:0:9} have DIVERGED — allowed by PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
-        return 0
-    fi
-    die "overlay-guard: the overlay at ${dir} (HEAD ${head:0:9}) and deploy-helper/main (${helper:0:9}) have DIVERGED — reconcile first (gr680328 comment 4 is the worked example: take the helper as base, re-apply the local additions, push). PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides."
-}
-
 # owner-preflight: who owns public._migrations on prod must agree with the
 # overlay's precis_db_own_cutover_done (the flag picks the migrate DSN's
 # login — precis_owner when true, agent_rw otherwise). Read via prod-psql
@@ -1711,7 +1690,6 @@ if [[ -f "${REPO_ROOT}/scripts/lib/pgb-host.sh" ]]; then
     # shellcheck source=scripts/lib/pgb-host.sh
     . "${REPO_ROOT}/scripts/lib/pgb-host.sh"
 fi
-_deploy_overlay_lag_guard
 _deploy_owner_preflight
 _deploy_role_sync
 

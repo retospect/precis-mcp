@@ -61,6 +61,16 @@ _DEPLOY_SCAN_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "deploy/roles/vllm/tasks/main.yml": frozenset({"vllm_tiktoken_dir"}),
     "deploy/roles/vllm/templates/vllm.service.j2": frozenset({"vllm_tiktoken_dir"}),
+    # The pgbouncer/pgpass refusal asserts (gr678654) ASSEMBLE a vault var
+    # name from `item.password_var` to test its presence (`_var in vars`);
+    # they never resolve it, so the file places no credential. The scan
+    # keeps the whole expression because no bare identifier leads it.
+    "deploy/roles/pgbouncer/tasks/main.yml": frozenset(
+        {"{{ 'vault_' ~ item.password_var }}"}
+    ),
+    "deploy/roles/pgpass/tasks/main.yml": frozenset(
+        {"{{ 'vault_' ~ item.password_var }}"}
+    ),
 }
 
 

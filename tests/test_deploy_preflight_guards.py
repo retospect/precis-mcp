@@ -7,14 +7,19 @@ helper's copy), then migrated as agent_rw after the db-own cutover had made
 precis_owner the owner of public._migrations. Both facts were knowable before
 any play ran.
 
-Policy pinned here: a guard DIES on a provable mismatch (overlay lags or
-diverged from deploy-helper/main; prod owner disagrees with the overlay's
-precis_db_own_cutover_done) and WARNS on anything it cannot read (no
-remote, fetch failure, unreadable prod owner) -- an unreachable helper or a
-failed prod read never blocks a deploy by itself.
+Policy pinned here: a guard DIES on a provable mismatch (overlay diverged
+from deploy-helper/main or carrying uncommitted edits; prod owner disagrees
+with the overlay's precis_db_own_cutover_done), REPAIRS what is safely
+repairable (a lagging overlay fast-forwards, an overlay ahead pushes) and
+WARNS on anything it cannot read (no remote, fetch failure, unreadable prod
+owner) -- an unreachable helper or a failed prod read never blocks a deploy
+by itself.
 
 Layers:
-  A. ``_deploy_overlay_lag_guard`` against real git and local-path remotes.
+  A. the overlay sync preflight (``scripts/lib/overlay-sync.sh``, run at
+     scripts/deploy step 0) against real git and local-path remotes — the
+     wiring and the first guard's override spelling; every relation row is
+     driven in tests/test_overlay_sync.py.
   B. ``_deploy_owner_preflight`` with stub ``scripts/prod-psql`` and
      ``ansible-inventory`` (same extraction pattern as
      tests/test_deploy_role_sync.py).
@@ -137,103 +142,107 @@ def ov(tmp_path: Path) -> Overlay:
     return Overlay(tmp_path)
 
 
-def _guard(
-    overlay: Path | None, env: dict[str, str] | None = None
+LIB = ROOT / "scripts" / "lib" / "overlay-sync.sh"
+
+
+def _sync(
+    overlay: Path, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    setv = f"OVERLAY_DIR='{overlay}'\n" if overlay is not None else ""
-    return _bash(setv + "_deploy_overlay_lag_guard\necho RETURNED\n", env)
+    """Run the preflight the way scripts/deploy does (set -euo pipefail)."""
+    full_env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/")}
+    full_env.update(env or {})
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; overlay_sync_preflight "$2" overlay; echo RETURNED',
+            "_",
+            str(LIB),
+            str(overlay),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        env=full_env,
+    )
 
 
-def test_guard_unset_overlay_dir_is_silent() -> None:
-    r = _guard(None)
+def test_deploy_runs_the_sync_preflight_at_step_zero() -> None:
+    """The die-only overlay-guard that first shipped in the role-sync block
+    folded into the sync preflight: one mechanism, run before the overlay
+    hash (a fetch must not count as an overlay change) and before the owner
+    preflight."""
+    text = DEPLOY.read_text(encoding="utf-8")
+    assert "_deploy_overlay_lag_guard" not in text
+    assert "scripts/lib/overlay-sync.sh" in text
+    first = text.index("overlay_sync_preflight")
+    assert first < text.index('OVERLAY_HASH="$(_overlay_hash')
+    assert first < text.index("_deploy_owner_preflight")
+
+
+def test_sync_in_sync_returns(ov: Overlay) -> None:
+    r = _sync(ov.overlay)
     assert r.returncode == 0, _out(r)
-    assert "say:" not in r.stdout and r.stderr == "", _out(r)
+    assert "in sync" in r.stdout and "RETURNED" in r.stdout, _out(r)
 
 
-def test_guard_non_repo_is_silent(tmp_path: Path) -> None:
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    r = _guard(plain)
-    assert r.returncode == 0, _out(r)
-    assert "say:" not in r.stdout and r.stderr == "", _out(r)
-
-
-def test_guard_no_helper_remote_says_so(ov: Overlay) -> None:
-    _git(ov.overlay, "remote", "remove", "deploy-helper")
-    r = _guard(ov.overlay)
-    assert r.returncode == 0, _out(r)
-    assert "no deploy-helper remote" in r.stdout, _out(r)
-
-
-def test_guard_in_sync_is_silent(ov: Overlay) -> None:
-    r = _guard(ov.overlay)
-    assert r.returncode == 0, _out(r)
-    assert "say:" not in r.stdout and r.stderr == "", _out(r)
-    assert "RETURNED" in r.stdout
-
-
-def test_guard_lagging_dies(ov: Overlay) -> None:
+def test_sync_lagging_fast_forwards_instead_of_dying(ov: Overlay) -> None:
     ov.helper_commit()
-    r = _guard(ov.overlay)
+    r = _sync(ov.overlay)
+    assert r.returncode == 0, _out(r)
+    assert "fast-forwarded" in r.stdout and "RETURNED" in r.stdout, _out(r)
+    assert _git(ov.overlay, "rev-parse", "HEAD") == _git(ov.other, "rev-parse", "HEAD")
+
+
+def test_sync_ahead_pushes_so_the_fix_lane_copy_matches(ov: Overlay) -> None:
+    ov.local_commit()
+    r = _sync(ov.overlay)
+    assert r.returncode == 0, _out(r)
+    assert "pushed" in r.stdout, _out(r)
+    assert _git(ov.overlay, "rev-parse", "HEAD") == _git(
+        ov.overlay, "rev-parse", "deploy-helper/main"
+    )
+
+
+def test_sync_first_guards_override_spelling_still_works(ov: Overlay) -> None:
+    ov.helper_commit()
+    before = _git(ov.overlay, "rev-parse", "HEAD")
+    r = _sync(ov.overlay, {"PRECIS_DEPLOY_ALLOW_STALE_OVERLAY": "1"})
+    assert r.returncode == 0, _out(r)
+    assert "WARNING" in r.stderr and "behind" in r.stderr, _out(r)
+    assert _git(ov.overlay, "rev-parse", "HEAD") == before  # reported, not moved
+
+
+def test_sync_diverged_dies_and_override_warns(ov: Overlay) -> None:
+    ov.helper_commit()
+    ov.local_commit()
+    r = _sync(ov.overlay)
     assert r.returncode != 0, _out(r)
-    assert "RETURNED" not in r.stdout
-    assert "LAGS" in r.stderr, _out(r)
-    assert "merge --ff-only deploy-helper/main" in r.stderr, _out(r)
-
-
-def test_guard_lagging_override_warns(ov: Overlay) -> None:
-    ov.helper_commit()
-    r = _guard(ov.overlay, {"PRECIS_DEPLOY_ALLOW_STALE_OVERLAY": "1"})
+    assert "DIVERGED" in r.stderr and "RETURNED" not in r.stdout, _out(r)
+    r = _sync(ov.overlay, {"PRECIS_DEPLOY_ALLOW_STALE_OVERLAY": "1"})
     assert r.returncode == 0, _out(r)
-    assert "WARNING" in r.stdout and "lags" in r.stdout, _out(r)
+    assert "WARNING" in r.stderr and "DIVERGED" in r.stderr, _out(r)
 
 
-def test_guard_ahead_warns_to_push(ov: Overlay) -> None:
-    ov.local_commit()
-    r = _guard(ov.overlay)
-    assert r.returncode == 0, _out(r)
-    assert "WARNING" in r.stdout and "ahead" in r.stdout and "push" in r.stdout, _out(r)
-
-
-def test_guard_diverged_dies(ov: Overlay) -> None:
+def test_sync_dirty_tracked_file_dies(ov: Overlay) -> None:
     ov.helper_commit()
-    ov.local_commit()
-    r = _guard(ov.overlay)
-    assert r.returncode != 0, _out(r)
-    assert "DIVERGED" in r.stderr, _out(r)
-
-
-def test_guard_diverged_override_warns(ov: Overlay) -> None:
-    ov.helper_commit()
-    ov.local_commit()
-    r = _guard(ov.overlay, {"PRECIS_DEPLOY_ALLOW_STALE_OVERLAY": "1"})
-    assert r.returncode == 0, _out(r)
-    assert "WARNING" in r.stdout and "DIVERGED" in r.stdout, _out(r)
-
-
-def test_guard_dirty_tracked_file_warns(ov: Overlay) -> None:
     (ov.overlay / "base").write_text("edited", encoding="utf-8")
-    r = _guard(ov.overlay)
-    assert r.returncode == 0, _out(r)
-    assert "WARNING" in r.stdout and "uncommitted" in r.stdout, _out(r)
-
-
-def test_guard_dirty_and_lagging_warns_and_dies(ov: Overlay) -> None:
-    ov.helper_commit()
-    (ov.overlay / "base").write_text("edited", encoding="utf-8")
-    r = _guard(ov.overlay)
+    r = _sync(ov.overlay)
     assert r.returncode != 0, _out(r)
-    assert "uncommitted" in r.stdout, _out(r)
-    assert "LAGS" in r.stderr, _out(r)
+    assert "uncommitted" in r.stderr and "RETURNED" not in r.stdout, _out(r)
+    # Refused before the fetch: the lag was never acted on.
+    assert "fast-forwarded" not in r.stdout
 
 
-def test_guard_fetch_failure_warns_and_continues(ov: Overlay, tmp_path: Path) -> None:
+def test_sync_fetch_failure_warns_and_continues(ov: Overlay, tmp_path: Path) -> None:
     _git(
         ov.overlay, "remote", "set-url", "deploy-helper", str(tmp_path / "nonexistent")
     )
-    r = _guard(ov.overlay)
+    r = _sync(ov.overlay)
     assert r.returncode == 0, _out(r)
-    assert "WARNING" in r.stdout and "could not fetch" in r.stdout, _out(r)
+    assert "WARNING" in r.stderr and "could not fetch" in r.stderr, _out(r)
+    assert "RETURNED" in r.stdout
 
 
 # -- B. owner preflight -----------------------------------------------------

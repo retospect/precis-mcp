@@ -1059,6 +1059,7 @@ extend-exclude = [
     "scripts/nightly",
     "scripts/onto-groups",
     "scripts/onto-repoint",
+    "scripts/overlay-sync",
     "scripts/paper-count",
     "scripts/paper-monitor-ingest-dir",
     "scripts/pcb-loop",

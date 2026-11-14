@@ -354,6 +354,15 @@ symlink-free and checkout-independently: it uses **this** checkout's
 So a deploy works from any worktree — `/go` ships+deploys from one — with the
 overlay stored in exactly one place and no per-worktree secret copies.
 
+If `deploy/inventory` is itself a git repo with a remote named `deploy-helper`
+(a *private* mirror of the overlay — never this public repo), `scripts/deploy`
+and `scripts/host-ops/play` reconcile the two before rendering: fetch,
+fast-forward when behind, push when ahead, refuse on divergence or uncommitted
+edits (`PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1` renders the local copy as-is
+once). `scripts/overlay-sync status|commit|push|log|diff` operates that repo
+from any session. A plain directory is left alone. Details:
+`docs/runbooks/cluster-overlay-sync.md`.
+
 ### Fix-lane deploys
 
 The factory's `release_deploy` job runs `scripts/release --deploy-only` as the

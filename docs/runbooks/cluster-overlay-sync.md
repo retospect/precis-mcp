@@ -2,7 +2,7 @@
 
 **When.** You changed the gitignored overlay (`deploy/inventory/`: real
 `hosts.yml` / `topology.yml` / `host_vars` / `group_vars` plus the
-vault-encrypted `vault.yml`) and a deploy launched **on melchior** must see it.
+vault-encrypted `vault.yml`), or a deploy stopped with `overlay-sync: REFUSE`.
 The overlay cannot ride precis-mcp's public git — it is secret and the leak
 gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
 [`cluster-deploy`](./cluster-deploy.md).
@@ -16,6 +16,9 @@ gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
   `deploy/inventory` is a **symlink** to it.
 - On the controller (Mac), `deploy/inventory/` is its own git repo with remote
   `deploy-helper` → that melchior path over ssh.
+- The factory's copy (`precis-fix-repo/deploy/inventory` on melchior, used by
+  the deploy user's `scripts/release --deploy-only`) is a `.git`-less file
+  copy, refreshed from the controller's overlay by every controller deploy.
 - `.vault-pass` is hand-carried once, out of band, to
   `precis-mcp/deploy/.vault-pass` (chmod 600). It sits *beside* `inventory/`,
   never inside the overlay repo, so the key never travels in git. Re-carry only
@@ -23,40 +26,62 @@ gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
 - If the first push into an unborn branch ever fails to check out, fall back to
   a bare repo + working clone.
 
-## Update procedure (from the Mac MAIN checkout — `git -C`, never `cd`)
+## Keeping the two copies in sync (automatic, gr680328)
 
-    OV=<main checkout>/deploy/inventory
-    git -C "$OV" commit -am 'overlay: <what changed>' \
-      && git -C "$OV" push deploy-helper main
+Every `scripts/deploy` and every `scripts/host-ops/play` runs the overlay sync
+preflight (`scripts/lib/overlay-sync.sh`) before hashing or rendering anything.
+It fetches `deploy-helper/main` and acts on the relation:
 
+| Mac copy vs `deploy-helper/main` | action |
+|---|---|
+| identical | proceed |
+| behind | fast-forward the Mac copy, proceed |
+| ahead | push (fast-forward on the helper), proceed |
+| diverged | **refuse** — the 2026-11-14 outage shape |
+| uncommitted tracked edits, or untracked `*.yml` / `*.yaml` / `*.json` / extensionless files | **refuse** — ansible would render them here and they reach nobody else |
+
+Backup names (`*.bak-…`, `*~`, dotfiles) are not ansible-loadable and are
+ignored. A failed fetch (gateway unreachable) only warns, judges against the
+last fetched state and pushes or merges nothing. `PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1`
+(alias `PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1`) renders the Mac copy as-is once:
+everything is reported, nothing refused or mutated. A plain-directory overlay (no `.git` of its own, no `deploy-helper`
+remote) is skipped, which is why the factory's copy deploys unhindered.
+
+## Editing the overlay (from any session, worktree or not)
+
+`scripts/overlay-sync` is the door. It acts only on a directory that is the top
+of its own git repo — never on the code checkout — and prints names, shas and
+counts, never file contents or a vault value:
+
+    scripts/overlay-sync status                 # relation + uncommitted names
+    # edit files under <main checkout>/deploy/inventory (sed/perl/editor)
+    scripts/overlay-sync commit -m 'overlay: <what changed>' [path…]
+    scripts/overlay-sync push                   # or just deploy: the preflight pushes
+    scripts/overlay-sync log                    # both sides: `<` local-only, `>` remote-only
+    scripts/overlay-sync diff                   # file names + status vs the remote
+
+The harness refuses `git -C <main>/deploy/inventory …` and Edit/Write under it
+from a worktree session (its git must target the worktree; the detail is
+withheld over Remote Control, so it looks like a silent failure). Use the
+script. **Never clone the overlay into `/tmp` and push from there**: the Mac
+copy then lags by the clone's commits and keeps committing on its stale base —
+exactly how it forked for eight weeks before the 2026-11-14 outage.
 `updateInstead` checks the push out into melchior's worktree, so the symlink
-reflects it. No manual `pull`, no separate clone.
-
-## From a worktree-isolated session
-
-The harness refuses `git -C <main>/deploy/inventory` and Edit/Write under it,
-and a `!` command from the user runs in the same session so it is refused too
-(the detail is withheld over Remote Control, so it looks like a silent
-failure). What works:
-
-1. `git clone <OV> /tmp/overlay-clone` (allowed); edit + commit there.
-2. `git remote add deploy-helper <dev-user>@melchior:<home>/git_deploy_helper`
-   and push.
-3. The Mac copy now lags by the clone's commits (git refuses a push into its
-   checked-out branch) — the user fast-forwards it from a plain terminal.
+reflects it immediately.
 
 ## ⚠ `remote rejected … (Working directory has unstaged changes)`
 
-`updateInstead` refuses on **any** dirty tracked file — not only files the push
-would touch — so one stale in-place edit on melchior jams the whole channel
-silently (it sat 4 days once). Someone edited `git_deploy_helper` directly
-instead of pushing from the Mac. Resolve:
+The preflight reports this as `the push was rejected`. `updateInstead` refuses
+on **any** dirty tracked file — not only files the push would touch — so one
+stale in-place edit on melchior jams the whole channel silently (it sat 4 days
+once). Someone edited `git_deploy_helper` directly instead of pushing from the
+Mac. Resolve:
 
 1. List the dirty files on melchior (`git status`, `git diff` over ssh).
 2. For each: if it holds real config that exists nowhere else (e.g. a
    `host_vars` flag), **adopt it into the Mac overlay first**, then
    `git checkout -- .` on melchior; if it is a stale/damaged copy, revert it.
-3. Push again.
+3. Push again (`scripts/overlay-sync push`, or re-run the deploy).
 
 **Diagnosing a dirty vault file: compare DECRYPTED content, never ciphertext.**
 ansible-vault re-encrypts with a fresh nonce on every save, so a changed
@@ -72,7 +97,8 @@ Outlook misbehave after such a window, look here first.
 
 **Root pattern:** config edited in place on a node diverges from the Mac source
 of truth and *nothing watches*. It surfaces only as a side effect of unrelated
-work. Edit the overlay on the Mac, push; never edit on the node.
+work. Edit the overlay on the Mac, commit, push (or deploy); never edit on the
+node. The preflight is the watcher that was missing.
 
 ## The overlay needs an off-cluster backup
 

@@ -170,7 +170,10 @@ def test_exactly_the_llm_cadences_are_marked_spending():
     # the whole 48 h wake pass is deferrable under a budget freeze.
     # llm_tier_regression (gr595546): the weekly gold-set pass bills a routed
     # model call per task per rung — deferrable a week under a freeze.
+    # asks_triage (gr652333): bills one routed model call per untriaged ask
+    # row — deferrable under a freeze like the other triage passes.
     assert spending == {
+        "asks_triage",
         "dream_agent",
         "structural",
         "deep_review",
