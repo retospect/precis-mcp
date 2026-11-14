@@ -1,13 +1,61 @@
-"""Pure text helpers of the engine pin-bump job (td659522 step 4, R1a).
+"""``pin_bump``: move precis's pin of a released engine, mechanically (td659522 step 4).
 
 precis pins the engine package ``autocatpath`` by git rev; moving the pin is
 a four-file change (``pyproject.toml``, ``uv.lock``,
 ``deploy/group_vars/all.yml``, the anchor literals in
-``tests/test_coverage_job.py``). This module is the pure half: text in, text
-out, no I/O, no subprocess, no store. Every helper edits the text by line,
-then re-parses the result (``tomllib`` / ``ast`` / a line diff) to prove the
-edit changed exactly what it meant to. The job half comes in a later round;
-nothing registers this module.
+``tests/test_coverage_job.py``). The module has two halves; nothing
+registers it yet (R2: ``SPEC`` is defined, wired nowhere).
+
+The pure half comes first: text in, text out, no I/O, no subprocess, no
+store. Every helper edits the text by line, then re-parses the result
+(``tomllib`` / ``ast`` / a line diff) to prove the edit changed exactly what
+it meant to.
+
+The job half (below the helpers) takes its shapes from
+:mod:`~precis.workers.job_types.repo_release`: an ``ssh_node`` detached
+``submit`` / ``poll`` / ``kill``, the phase in the handle, parked handles via
+:func:`repo_land.park_until`, its own ``_fail`` (attempt-free classes, a
+``handoff:`` comment, never the node's tags or status) and a record stamped
+on the pin node (``meta.pin_bump``). It runs in the precis slice clone and
+needs no clone of the dependency. Params: ``todo_id`` (the pin-bump node),
+``release_todo`` (the release node whose ``meta.repo_release`` names the
+version) and ``pin_repo`` (the dependency's profile; its ``pinner`` must be
+this job). Phases, in the handle's ``phase``:
+
+* ``resolve`` (parked): :func:`submit` only guards and parks. The first poll
+  reads the release record, fetches the precis tip, checks the tag oracle
+  and a job-owned source mirror of the dependency (the release sha is an
+  ancestor of its tip and its ``pyproject.toml`` carries the version), reads
+  the four files at the tip, and either ends as a no-op (the pin is
+  already there or past it), refuses (charged, with a coordinator ask) or
+  goes on: the dependency's own ``pyproject.toml`` at the old and the new sha
+  must agree on dependencies, ``requires-python`` and ``[build-system]``
+  (``uv lock --check`` compares text only, so a text-edited lock would be
+  wrong otherwise), then a worktree ``pin-td<id>`` on ``slice/<id>`` (what
+  ``land_slice`` lands) gets the three edited files. Nothing is committed.
+* ``derive`` (detached, credential-free): ``uv lock --check``, ``uv sync
+  --frozen`` into a venv outside the tree, then a worker-written script
+  asserts the installed engine's version and computes the coverage anchor
+  key with it. The git source resolves from the job's mirror through an
+  ``url.<mirror>.insteadOf`` rewrite.
+* commit (same poll as the derive's green): only a 64-hex key whose engine
+  equals the target is accepted. The commit is built from objects (``hash-
+  object``, a private index, ``commit-tree``, ``update-ref``) so nothing the
+  derive left in the tree can reach it, then proved: one child of the tip,
+  the four paths at most, each file's text equal to what the worker wrote,
+  at most 8 changed lines per file. The tree is recreated clean.
+* ``verify`` (detached, same env): the pin coherence tests and the anchor
+  test in the committed tree. Green stamps ``meta.pin_bump`` ``state:
+  "committed"``.
+* ``handoff`` (parked, every 120 s): a stub; the next round mints the
+  ``land_slice`` for the branch here. A committed record whose commit is
+  still the branch head on the same tip is resumed straight to it.
+
+The derive runs repo code as the worker's user, so its result file is
+attacker-writable: only a 64-hex key is accepted, and the verify run re-checks
+it with the pin tests. The token is only ever in the env handed to
+``factory_git_mirror`` helpers, never in argv, a URL, meta, a chunk or a
+comment, and the detached runs get none.
 """
 
 from __future__ import annotations
@@ -15,10 +63,26 @@ from __future__ import annotations
 import ast
 import copy
 import io
+import json
+import logging
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import tomllib
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
+from precis.plans import lanes as _lanes
+from precis.utils.secret_scan import mask_secrets
+from precis.workers import factory_git_mirror as _mirror
+from precis.workers import repo_land as _rl
+from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import land_slice as _ls
+from precis.workers.job_types import repo_release as _rr
+from precis.workers.job_types import run_slice as _rs
 from precis.workers.job_types.repo_release import (
     _HEADER,
     ReleaseError,
@@ -26,15 +90,27 @@ from precis.workers.job_types.repo_release import (
     _split_version,
 )
 
+log = logging.getLogger(__name__)
+
 __all__ = [
+    "COORDINATOR_ASK_KEY",
+    "DEADLINE_KILL_META",
+    "DESCRIPTION",
+    "NAME",
+    "PARAMS_SCHEMA",
+    "SPEC",
     "PinError",
     "compare_versions",
     "current_pin",
+    "kill",
     "pin_is_coherent",
+    "poll",
     "set_anchor_literals",
     "set_group_vars_floor",
     "set_lock_pin",
     "set_pyproject_pin",
+    "submit",
+    "validate_submit",
 ]
 
 
@@ -472,3 +548,1419 @@ def pin_is_coherent(
         return False
     line = f'{key}: "{version}"'
     return sum(1 for ln in group_vars_text.splitlines() if ln == line) == 1
+
+
+# ═══ The job ═══════════════════════════════════════════════════════════════
+
+NAME = "pin_bump"
+
+PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        # The pin-bump node's todo: it carries meta.pin_bump.
+        "todo_id": {"type": "integer"},
+        # The release node whose meta.repo_release names the version to pin.
+        "release_todo": {"type": "integer"},
+        # The dependency's profile name; its ``pinner`` must be this job.
+        "pin_repo": {"type": "string"},
+    },
+    "required": ["todo_id", "release_todo", "pin_repo"],
+    "additionalProperties": False,
+}
+
+COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"ssh_node"})
+REQUIRES: frozenset[str] = frozenset()
+
+DESCRIPTION: str = (
+    "Move precis's pin of a released second-repo engine, mechanically (no "
+    "LLM): check the release record against the tag oracle and a source "
+    "mirror, edit pyproject.toml, uv.lock and deploy/group_vars/all.yml as "
+    "text, derive the coverage anchor key with the new engine installed "
+    "credential-free, commit the four files on slice/<id>, run the pin "
+    "tests and park for the land. Refused while PRECIS_FACTORY=off, for a "
+    "repo whose profile names another pinner, and for a repo that is not "
+    "open."
+)
+
+#: ``meta.attempt_free`` of this job's attempt-free failures.
+ATTEMPT_FREE_MARK = "infra-pin-bump"
+
+#: The wall-deadline kill's verdict: attempt-free, nothing to re-land.
+DEADLINE_KILL_META: dict[str, Any] = {
+    _rs.ATTEMPT_FREE_KEY: ATTEMPT_FREE_MARK,
+    "red_class": _rl.TIMED_OUT_CLASS,
+}
+
+#: ``job.meta`` key naming why a failed job needs the coordinator, not a
+#: blind retry (``repo_release``'s, which ``plan_dispatch`` reads).
+COORDINATOR_ASK_KEY = _rr.COORDINATOR_ASK_KEY
+
+#: ``todo.meta`` key of the pin record.
+RECORD_KEY = "pin_bump"
+
+#: Handle phases.
+RESOLVE_PHASE = "resolve"
+DERIVE_PHASE = "derive"
+VERIFY_PHASE = "verify"
+HANDOFF_PHASE = "handoff"
+#: Seconds the final phase's stub sleeps between polls.
+HANDOFF_PARK_S = 120
+
+#: The four files a pin bump commits.
+PYPROJECT_PATH = "pyproject.toml"
+LOCK_PATH = "uv.lock"
+GROUP_VARS_PATH = "deploy/group_vars/all.yml"
+ANCHOR_PATH = "tests/test_coverage_job.py"
+PIN_PATHS: tuple[str, ...] = (PYPROJECT_PATH, LOCK_PATH, GROUP_VARS_PATH, ANCHOR_PATH)
+#: The deploy floor key and the anchor config the key is derived from.
+GROUP_VARS_KEY = "autocatpath_min_version"
+ANCHOR_CONFIG_NAME = "JO482106_CONFIG"
+#: Per file, the most lines the commit may add and the most it may remove.
+MAX_FILE_LINES = 8
+#: The anchor pin test the verify run adds to the two coherence test files.
+ANCHOR_TEST = f"{ANCHOR_PATH}::test_anchor_key_pins_jo482106s_normalised_key"
+VERIFY_TESTS: tuple[str, ...] = (
+    "tests/test_coverage_pin_lock.py",
+    "tests/test_deploy_wheelhouse_floor.py",
+    ANCHOR_TEST,
+)
+
+#: Files under the run dir (outside the tree).
+DERIVE_SCRIPT, DERIVE_LOG, DERIVE_EXIT = (
+    "pin_derive.sh",
+    "pin_derive.log",
+    "pin_derive.exit",
+)
+VERIFY_SCRIPT, VERIFY_LOG, VERIFY_EXIT = (
+    "pin_verify.sh",
+    "pin_verify.log",
+    "pin_verify.exit",
+)
+DERIVE_PY = "pin_derive.py"
+RESULT_FILE = "pin_result.json"
+VENV_DIR = "pin_venv"
+INDEX_FILE = "pin.index"
+_RESULT_MAX = 1024
+
+#: ``red_class`` values besides the ones :mod:`repo_land` defines.
+FETCH_CLASS = _rr.FETCH_CLASS
+TAG_ORACLE_CLASS = _rr.TAG_ORACLE_CLASS
+READ_CLASS = _rr.READ_CLASS
+TREE_CLASS = "pin-tree"
+RECORD_CLASS = "pin-record"
+SOURCE_CLASS = "pin-source"
+TRANSPORT_CLASS = "pin-transport"
+
+#: What uv's registry and git transport failures look like in a log.
+_TRANSPORT_RE = re.compile(
+    r"error sending request|connection (?:refused|reset|closed|timed out)"
+    r"|operation timed out|timed out|dns error|failed to lookup"
+    r"|temporary failure in name resolution|name or service not known"
+    r"|could not resolve host|network is unreachable|tcp connect error"
+    r"|(?:http )?status(?: code)?:? \(?5\d\d|returned error: 5\d\d"
+    r"|\b50[0234]\b[ :]+(?:bad gateway|service unavailable|gateway time-?out"
+    r"|internal server error)",
+    re.IGNORECASE,
+)
+
+#: The worker-written script of the derive step (a constant, not a file in
+#: the repo tree): argv are the target version, the anchor module, the
+#: config's name and the result file. It prints nothing and writes
+#: ``{"key", "engine"}`` as JSON.
+DERIVE_SCRIPT_PY = """\
+import ast
+import json
+import sys
+
+
+def main(version, anchor_file, name, result_file):
+    import autocatpath
+
+    if autocatpath.__version__ != version:
+        raise SystemExit(
+            "pin_bump: installed autocatpath is "
+            + str(autocatpath.__version__)
+            + ", not the target "
+            + version
+        )
+    with open(anchor_file, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            found.append(value)
+    if len(found) != 1:
+        raise SystemExit("pin_bump: " + name + " is not assigned exactly once")
+    config = ast.literal_eval(found[0])
+    from precis_pathway import coverage_job, runner
+
+    key = runner.coverage_anchor_key(coverage_job.with_defaults(config))
+    with open(result_file, "w", encoding="utf-8") as fh:
+        json.dump({"key": key, "engine": autocatpath.__version__}, fh)
+
+
+main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+"""
+
+
+# ── Admission ──────────────────────────────────────────────────────
+
+
+def _refusal(store: Any, params: dict[str, Any]) -> str | None:
+    """Why this job may not run (td659522), or ``None``: the factory is on,
+    the pin-bump todo is live, the params are exactly the three, ``pin_repo``
+    names a profile whose ``pinner`` is this job and that ``factory.
+    open_repos`` lists, and ``release_todo`` is a live or done todo. Read at
+    submit and again when the parked job wakes."""
+    lead = "pin_bump: "
+    if _rs.factory_off():
+        return lead + "the factory is off (PRECIS_FACTORY=off); next: unset it"
+    reason = _rs._todo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason.replace("run_slice: ", lead, 1)
+    extra = sorted(set(params) - set(PARAMS_SCHEMA["properties"]))
+    if extra:
+        return (
+            lead + f"unknown params {extra}; next: pass todo_id, release_todo, pin_repo"
+        )
+    release = params.get("release_todo")
+    if not isinstance(release, int) or isinstance(release, bool) or release <= 0:
+        return (
+            lead + "params.release_todo must be a positive integer (the release node)"
+        )
+    repo = params.get("pin_repo")
+    if not isinstance(repo, str) or not repo.strip():
+        return (
+            lead + "the job has no params.pin_repo; next: pass the repo whose pin moves"
+        )
+    repo = repo.strip()
+    profile = _lanes.repo_profile(repo)
+    if profile is None or profile.pinner != NAME:
+        return (
+            lead
+            + f"the profile for {repo!r} names no pinner; next: move the pin by hand"
+        )
+    if repo not in _lanes.open_repos(store):
+        return (
+            lead
+            + f"factory.open_repos does not list {repo!r}; next: move the pin by hand"
+        )
+    if not profile.remote:
+        return (
+            lead + f"the profile for {repo!r} has no remote; next: move the pin by hand"
+        )
+    if store is None:
+        return None
+    if store.get_ref(kind="todo", id=release) is None:
+        return (
+            lead + f"release node {release} not found; next: pass the release node's id"
+        )
+    status = _rs._terminal_status(store, release)
+    if status is not None and status != "done":
+        return lead + (
+            f"release node {release} is closed (STATUS:{status}); next: wait for a "
+            "live or done release node"
+        )
+    return None
+
+
+def validate_submit(
+    store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
+) -> str | None:
+    """Refuses everything :func:`_refusal` does."""
+    del gripe_id
+    return _refusal(store, params)
+
+
+# ── Failures and the record ────────────────────────────────────────
+
+
+def _fail(
+    ctx: Any,
+    todo_id: int,
+    reason: str,
+    *,
+    handoff: str,
+    attempt_free: str | None = None,
+    ask: str | None = None,
+) -> None:
+    """The failure recorder, ``repo_release._fail``'s twin: a ``handoff:``
+    comment on the node, never its claim, ``STATUS`` or tags. ``attempt_free``
+    is the red's class when the host or a remote, not the input, is at fault;
+    ``ask`` is a reason only the coordinator can answer
+    (:data:`COORDINATOR_ASK_KEY`)."""
+    try:
+        _rs._append_comment(ctx.store, todo_id, f"handoff: {handoff}")
+    except Exception:  # pragma: no cover - the job outcome still lands
+        log.warning("pin_bump: handoff comment on td%d failed", todo_id)
+    suffix = ""
+    if ask is not None:
+        ctx.set_meta(**{COORDINATOR_ASK_KEY: ask})
+    if attempt_free is not None:
+        ctx.set_meta(
+            **{_rs.ATTEMPT_FREE_KEY: ATTEMPT_FREE_MARK}, red_class=attempt_free
+        )
+        suffix = f" (no attempt: {attempt_free})"
+    ctx.set_meta(compute_handle_released=True)
+    ctx.record_failure(f"pin_bump: {reason}{suffix}")
+
+
+def _stamp(ctx: Any, todo_id: int, record: dict[str, Any] | None) -> bool:
+    """Write (or, with ``None``, clear) the pin record. ``False`` when the
+    store refuses."""
+    try:
+        ctx.store.stamp_ref_meta(todo_id, {RECORD_KEY: record})
+    except Exception:
+        log.warning("pin_bump: record stamp on td%d failed", todo_id, exc_info=True)
+        return False
+    return True
+
+
+def _stored(store: Any, todo_id: int) -> dict[str, Any] | None:
+    ref = store.get_ref(kind="todo", id=todo_id)
+    record = (getattr(ref, "meta", None) or {}).get(RECORD_KEY) if ref else None
+    return record if isinstance(record, dict) else None
+
+
+# ── Git and the tree ───────────────────────────────────────────────
+
+
+def _tree_path(root: Path, todo_id: int) -> Path:
+    return _rs.worktrees_dir(root) / f"pin-td{todo_id}"
+
+
+def _branch_exists(root: Path, branch: str) -> bool:
+    return _head(root, branch) != ""
+
+
+def _head(root: Path, branch: str) -> str:
+    out = _rl._read(root, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+    return _rl._hex(out)
+
+
+def _git_raw(
+    args: list[str],
+    cwd: Path,
+    *,
+    stdin: bytes | None = None,
+    index: Path | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """``git <args>`` with bytes in and out, under the same scrubbed env and
+    hooks-off args as ``land_slice._git``; ``index`` names a private index
+    file. Never the credential."""
+    env = _mirror.local_env(_ls.land_env())
+    if index is not None:
+        env["GIT_INDEX_FILE"] = str(index)
+    return subprocess.run(
+        ["git", *_mirror.TRUSTED_ARGS, *args],
+        cwd=str(cwd),
+        env=env,
+        input=stdin,
+        capture_output=True,
+        check=False,
+        timeout=300,
+    )
+
+
+def _oid(proc: subprocess.CompletedProcess[bytes]) -> str:
+    if proc.returncode != 0:
+        return ""
+    return _rl._hex(proc.stdout.decode("utf-8", "replace"))
+
+
+def _checkout_tree(root: Path, todo_id: int, branch: str) -> Path | None:
+    """The slice worktree ``pin-td<id>`` freshly checked out on ``branch``
+    (any tree there removed first, the branch kept). ``None`` when git
+    fails."""
+    tree = _tree_path(root, todo_id)
+    if tree.exists():
+        _ls._git(["worktree", "remove", "--force", str(tree)], root)
+        shutil.rmtree(tree, ignore_errors=True)
+    _ls._git(["worktree", "prune"], root)
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    add = _ls._git(["worktree", "add", str(tree), branch], root)
+    return tree if add.returncode == 0 else None
+
+
+def _drop_made(root: Path, todo_id: int) -> None:
+    """Remove the worktree and branch this job made; never raises."""
+    try:
+        _rl._drop_slice(root, _tree_path(root, todo_id), _rs.slice_branch(todo_id))
+    except Exception:  # pragma: no cover - cleanup is best effort
+        log.warning(
+            "pin_bump: dropping the tree of td%d failed", todo_id, exc_info=True
+        )
+
+
+def _clear_building(ctx: Any, todo_id: int) -> None:
+    """Clear a ``building`` record (a committed one is left alone)."""
+    try:
+        if (_stored(ctx.store, todo_id) or {}).get("state") == "building":
+            _stamp(ctx, todo_id, None)
+    except Exception:  # pragma: no cover - best effort
+        log.warning("pin_bump: clearing the record of td%d failed", todo_id)
+
+
+# ── Reading the four files ─────────────────────────────────────────
+
+
+class _ReadError(Exception):
+    """A file could not be read at the tip; ``missing`` says git answered
+    (absent or not UTF-8) rather than failed."""
+
+    def __init__(self, path: str, missing: bool) -> None:
+        super().__init__(path)
+        self.path = path
+        self.missing = missing
+
+
+def _read_files(root: Path, tip: str) -> dict[str, str]:
+    """The four files at ``tip``, byte for byte (``repo_release._show``)."""
+    out: dict[str, str] = {}
+    for path in PIN_PATHS:
+        text = _rr._show(root, tip, path)
+        if text is None:
+            gone = _rl._read(root, ["cat-file", "-e", f"{tip}:{path}"]) is None
+            raise _ReadError(path, gone)
+        out[path] = text
+    return out
+
+
+def _lock_pin(lock_text: str, package: str) -> tuple[str, str]:
+    """``(version, sha)`` of the lock block of ``package``."""
+    _package(package)
+    lines = lock_text.splitlines(keepends=True)
+    vi, si = _lock_block(lines, package)
+    vm = _LOCK_VERSION.fullmatch(lines[vi])
+    sm = _LOCK_SOURCE.fullmatch(lines[si].rstrip("\r\n"))
+    if vm is None or sm is None or sm[2] != sm[3]:
+        raise PinError(f"uv.lock block for {package!r} is not a sha-pinned git source")
+    return vm[2], sm[2]
+
+
+def _anchor_engine(text: str) -> str | None:
+    try:
+        value = _literal(ast.parse(text), "JO482106_ENGINE").value
+    except (PinError, SyntaxError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _edited(
+    files: dict[str, str], package: str, version: str, sha: str
+) -> dict[str, str]:
+    """The three edited texts for the pin move. A file already at the target
+    is kept byte for byte (a half-moved pin is finished, not rewritten)."""
+    py, lock = files[PYPROJECT_PATH], files[LOCK_PATH]
+    floor, rev, _ = current_pin(py, package)
+    lock_version, lock_sha = _lock_pin(lock, package)
+    return {
+        PYPROJECT_PATH: py
+        if (floor, rev) == (version, sha)
+        else set_pyproject_pin(py, package, version=version, sha=sha),
+        LOCK_PATH: lock
+        if (lock_version, lock_sha) == (version, sha)
+        else set_lock_pin(lock, package, version=version, sha=sha, old_sha=lock_sha),
+        GROUP_VARS_PATH: set_group_vars_floor(
+            files[GROUP_VARS_PATH], GROUP_VARS_KEY, version
+        ),
+    }
+
+
+def _dep_view(text: str | None) -> dict[str, Any] | None:
+    """What a lock text-edit depends on in a dependency's ``pyproject.toml``;
+    ``None`` when it is missing or does not parse."""
+    if text is None:
+        return None
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+    project = data.get("project")
+    project = project if isinstance(project, dict) else {}
+    return {
+        "dependencies": project.get("dependencies"),
+        "optional-dependencies": project.get("optional-dependencies"),
+        "requires-python": project.get("requires-python"),
+        "build-system": data.get("build-system"),
+    }
+
+
+# ── The release record ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _Release:
+    package: str
+    version: str
+    sha: str
+    tag: str
+
+
+def _read_release(
+    store: Any, release_todo: int, profile: _lanes.RepoProfile
+) -> _Release | str:
+    """The release the node's ``meta.repo_release`` names, or why it cannot
+    be pinned (never echoing the record's own text)."""
+    ref = store.get_ref(kind="todo", id=release_todo)
+    record = (getattr(ref, "meta", None) or {}).get(_rr.RECORD_KEY) if ref else None
+    if not isinstance(record, dict):
+        return f"release node td{release_todo} carries no release record"
+    if record.get("state") != "tagged":
+        return f"the release on td{release_todo} is not tagged (state is not 'tagged')"
+    if record.get("repo") != profile.name:
+        return (
+            f"the release on td{release_todo} is for another repo than {profile.name!r}"
+        )
+    version, tag = record.get("version"), record.get("tag")
+    sha = _rl._hex(record.get("sha"))
+    try:
+        if not isinstance(version, str):
+            raise ReleaseError("version")
+        _split_version(version)
+        want = _rr.tag_name(profile.tag_prefix, version)
+    except ReleaseError:
+        return f"the release on td{release_todo} carries no X.Y.Z version"
+    if tag != want or not sha:
+        return f"the release on td{release_todo} carries no matching tag and 40-hex sha"
+    package = record.get("package")
+    if profile.pin is not None and package != profile.pin[1]:
+        return (
+            f"the release on td{release_todo} is for another package than the "
+            f"{profile.name!r} profile pins"
+        )
+    if not isinstance(package, str):
+        return f"the release on td{release_todo} names no package"
+    try:
+        _package(package)
+    except PinError:
+        return f"the release on td{release_todo} names no plain package"
+    return _Release(package=package, version=version, sha=sha, tag=want)
+
+
+def _precis_tip(root: Path) -> str | None:
+    """The fetched ``origin/main`` tip of the precis clone (the credentialed
+    fetch of ``run_slice.fetch_base_tip``), ``None`` on any failure."""
+    profile = _lanes.repo_profile(_lanes.DEFAULT_REPO)
+    url = _mirror.github_url(root, env=_ls.land_env())
+    if profile is None or url is None:
+        return None
+    return _rs.fetch_base_tip(replace(profile, remote=url), root)
+
+
+# ── Submit ─────────────────────────────────────────────────────────
+
+
+def submit(ctx: Any, spec: Any) -> Any:
+    """Detached submit half: guards only, no outward write and no git.
+    Returns a parked ``phase: "resolve"`` handle (due at once), or ``None``
+    after failing the job."""
+    del spec
+    params = dict((ctx.meta or {}).get("params") or {})
+    refusal = _refusal(ctx.store, params)
+    if refusal is not None:
+        ctx.record_failure(refusal)
+        return None
+    try:
+        _rs.slice_root()
+    except RuntimeError as exc:
+        ctx.record_failure(f"pin_bump: {exc}")
+        return None
+    handle: dict[str, Any] = {
+        "op": NAME,
+        "repo": _lanes.DEFAULT_REPO,
+        "pin_repo": str(params["pin_repo"]).strip(),
+        "release_todo": params["release_todo"],
+        "phase": RESOLVE_PHASE,
+    }
+    _rl.park_until(ctx, handle, 0)
+    return handle
+
+
+# ── The run ────────────────────────────────────────────────────────
+
+
+class _Run:
+    """One poll's working state; its failure helpers drop what this job made
+    and return ``True`` (the job is terminal)."""
+
+    def __init__(
+        self, ctx: Any, handle: dict[str, Any], params: dict[str, Any], root: Path
+    ) -> None:
+        self.ctx = ctx
+        self.handle = handle
+        self.params = params
+        self.root = root
+        self.todo_id: int = params["todo_id"]
+
+    def _end(self, why: str, handoff: str, **kw: str | None) -> bool:
+        if self.handle.get("made"):
+            _drop_made(self.root, self.todo_id)
+        _clear_building(self.ctx, self.todo_id)
+        _fail(
+            self.ctx,
+            self.todo_id,
+            why,
+            handoff=f"pin bump FAILED: {handoff}",
+            **kw,
+        )
+        return True
+
+    def charged(self, why: str, handoff: str | None = None) -> bool:
+        return self._end(why, handoff or why)
+
+    def ask(self, why: str) -> bool:
+        """Charged, and only the coordinator can answer."""
+        return self._end(why, why, ask=why)
+
+    def free(self, why: str, handoff: str, red_class: str) -> bool:
+        return self._end(why, handoff, attempt_free=red_class)
+
+    def run_dir(self) -> Path:
+        return _rs.run_dir(self.todo_id)
+
+
+def _detached_env(mirror: Path, remote: str, venv: Path) -> dict[str, str]:
+    """The env of a detached run: the gate env (no credential, no PRECIS_*),
+    the dependency's remote rewritten to the job's mirror in both URL forms,
+    no system or global git config, no prompts, and the venv outside the
+    tree. Nothing here is a credential."""
+    precis = _lanes.repo_profile(_lanes.DEFAULT_REPO) or _lanes.RepoProfile(
+        name=_lanes.DEFAULT_REPO
+    )
+    plain = remote.rstrip("/")
+    plain = plain[: -len(".git")] if plain.endswith(".git") else plain
+    env = _mirror.mirror_ship_env(mirror, _rl.gate_env(precis), plain + ".git")
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+    return env
+
+
+def _start_phase(
+    run: _Run,
+    phase: str,
+    script_name: str,
+    log_name: str,
+    exit_name: str,
+    steps: list[tuple[str, str]],
+) -> bool:
+    """Launch the steps detached in the pin tree under the credential-free
+    env and put the phase on the handle. ``True`` when the launch failed (the
+    job is then terminal)."""
+    ctx, handle = run.ctx, run.handle
+    rdir = run.run_dir()
+    log_path, exit_path = rdir / log_name, rdir / exit_name
+    launched = _ls._now()
+    handle.update(
+        {
+            "phase": phase,
+            "log": str(log_path),
+            "exit_file": str(exit_path),
+            "started_at": launched.strftime(_ls._TS_FMT),
+            "deadline": launched.timestamp() + _ls.wall_seconds(),
+        }
+    )
+    for key in ("not_before", "pid", "pgid"):
+        handle.pop(key, None)
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=handle["deadline"],
+    )
+    try:
+        script = rdir / script_name
+        script.write_text(_rl.commands_script(steps), encoding="utf-8")
+        exit_path.unlink(missing_ok=True)
+        pid = _rs._launch(
+            ["/bin/sh", str(script)],
+            cwd=_tree_path(run.root, run.todo_id),
+            stdin=Path(os.devnull),
+            log=log_path,
+            exit_file=exit_path,
+            env=_detached_env(
+                Path(handle["mirror"]), handle["remote"], rdir / VENV_DIR
+            ),
+        )
+    except Exception as exc:
+        log.warning(
+            "pin_bump: %s launch for td%d failed", phase, run.todo_id, exc_info=True
+        )
+        return run.free(
+            f"{phase} launch failed: {exc}",
+            f"the {phase} run did not start ({exc}); retried.",
+            _rl.GATE_INFRA_CLASS,
+        )
+    handle["pid"] = pid
+    handle["pgid"] = pid
+    _rl.stamp_identity(handle, pid)
+    ctx.set_meta(compute_handle=handle, compute_handle_released=False)
+    return False
+
+
+def _record(
+    run: _Run,
+    release: _Release,
+    tip: str,
+    *,
+    state: str,
+    from_version: str,
+    from_sha: str,
+    commit: str | None,
+    noop: bool = False,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """The ``meta.pin_bump`` record. A no-op names no tree or branch."""
+    record: dict[str, Any] = {
+        "state": state,
+        "repo": run.params["pin_repo"],
+        "package": release.package,
+        "version": release.version,
+        "sha": release.sha,
+        "tag": release.tag,
+        "from_version": from_version,
+        "from_sha": from_sha,
+        "commit": commit,
+        "base": tip,
+        "release_todo": run.params["release_todo"],
+        "worktree": None if noop else str(_tree_path(run.root, run.todo_id)),
+        "branch": None if noop else _rs.slice_branch(run.todo_id),
+        "job": _rl._job_id(run.ctx),
+    }
+    if noop:
+        record["noop"] = True
+        record["note"] = note
+    return record
+
+
+def _to_handoff(run: _Run, record: dict[str, Any]) -> None:
+    """Swap the handle for the parked final-phase stub."""
+    fresh: dict[str, Any] = {
+        "op": NAME,
+        "repo": _lanes.DEFAULT_REPO,
+        "pin_repo": run.params["pin_repo"],
+        "release_todo": run.params["release_todo"],
+        "phase": HANDOFF_PHASE,
+        "commit": record.get("commit"),
+        "branch": record.get("branch"),
+        "worktree": record.get("worktree"),
+        "noop": bool(record.get("noop")),
+    }
+    run.handle.clear()
+    run.handle.update(fresh)
+    _rl.park_until(run.ctx, run.handle, HANDOFF_PARK_S)
+
+
+def _no_op(
+    run: _Run, release: _Release, tip: str, floor: str, rev: str, why: str
+) -> bool:
+    """The pin is already there (or past it): stamp the committed record with
+    ``noop`` and park in the final phase."""
+    record = _record(
+        run,
+        release,
+        tip,
+        state="committed",
+        from_version=floor,
+        from_sha=rev,
+        commit=None,
+        noop=True,
+        note=why,
+    )
+    if not _stamp(run.ctx, run.todo_id, record):
+        return run.free(
+            f"could not stamp the pin record on td{run.todo_id}",
+            "the node could not be marked (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    run.ctx.append_chunk(
+        "job_event",
+        f"pin_bump: {release.tag} needs no commit ({why}); parked in handoff",
+    )
+    _to_handoff(run, record)
+    return False
+
+
+# ── Resolve ────────────────────────────────────────────────────────
+
+
+def _resumable(
+    run: _Run, release: _Release, tip: str, record: dict[str, Any] | None
+) -> bool:
+    """Whether ``record`` is a committed pin bump that is still the one to
+    land: same release and package, the commit is still the branch head and
+    the only child of the current tip, the tree is there."""
+    if record is None or record.get("state") != "committed" or record.get("noop"):
+        return False
+    branch = _rs.slice_branch(run.todo_id)
+    commit = _rl._hex(record.get("commit"))
+    same = (
+        record.get("repo") == run.params["pin_repo"]
+        and record.get("release_todo") == run.params["release_todo"]
+        and record.get("package") == release.package
+        and record.get("version") == release.version
+        and record.get("sha") == release.sha
+        and record.get("branch") == branch
+        and record.get("worktree") == str(_tree_path(run.root, run.todo_id))
+        and record.get("base") == tip
+    )
+    if not same or not commit or _head(run.root, branch) != commit:
+        return False
+    out = _rl._read(run.root, ["rev-list", "--parents", "-n", "1", commit])
+    return (out or "").split() == [commit, tip] and _tree_path(
+        run.root, run.todo_id
+    ).is_dir()
+
+
+def _poll_resolve(run: _Run) -> bool:
+    """The first poll: everything from the release record to the derive's
+    launch. ``True`` when the job is terminal."""
+    ctx, params, root, todo_id = run.ctx, run.params, run.root, run.todo_id
+    gap = _refusal(ctx.store, params)
+    if gap is not None:
+        return run.free(
+            f"not admitted ({gap}); not moving the pin",
+            "the pin repo was closed to the factory while the bump waited; "
+            "it is retried once the repo is open.",
+            _rl.CLOSED_CLASS,
+        )
+    profile = _lanes.repo_profile(str(params["pin_repo"]).strip())
+    assert profile is not None  # _refusal checked it
+    release = _read_release(ctx.store, params["release_todo"], profile)
+    if isinstance(release, str):
+        return run.ask(release)
+    tip = _precis_tip(root)
+    if tip is None:
+        return run.free(
+            "could not fetch origin/main of precis",
+            "origin/main of precis could not be fetched (infrastructure); retried.",
+            FETCH_CLASS,
+        )
+    stored = _stored(ctx.store, todo_id)
+    if _resumable(run, release, tip, stored):
+        ctx.append_chunk(
+            "job_event",
+            f"pin_bump: resumes the committed bump of {release.tag} "
+            f"({str((stored or {}).get('commit'))[:9]} on {tip[:9]})",
+        )
+        _to_handoff(run, stored or {})
+        return False
+    try:
+        files = _read_files(root, tip)
+    except _ReadError as exc:
+        if exc.missing:
+            return run.charged(
+                f"{exc.path} is missing or not UTF-8 at {tip[:9]}",
+                f"{exc.path} is missing or not UTF-8 on origin/main.",
+            )
+        return run.free(
+            f"git could not read {exc.path} at {tip[:9]}",
+            f"git could not read {exc.path} (infrastructure); retried.",
+            READ_CLASS,
+        )
+    package = release.package
+    try:
+        floor, rev, _url = current_pin(files[PYPROJECT_PATH], package)
+        _lock_version, lock_sha = _lock_pin(files[LOCK_PATH], package)
+    except PinError as exc:
+        return run.ask(f"precis does not pin {package!r} where expected: {exc}")
+    env = _rr._auth_env()
+    at = _mirror.ls_remote_tag(profile.remote, release.tag, env=env)
+    if at is None:
+        return run.free(
+            f"tag {release.tag} could not be read on {profile.name}'s remote",
+            f"the remote's tag {release.tag} could not be read (infrastructure); retried.",
+            TAG_ORACLE_CLASS,
+        )
+    if at != release.sha:
+        return run.ask(
+            f"tag {release.tag} is {'absent' if not at else 'at ' + at[:9]} on "
+            f"{profile.name}'s remote, not at the release sha {release.sha[:9]}"
+        )
+    mirror = _mirror.mirror_dir(root, f"pin-td{todo_id}")
+    mtip = _mirror.fetch_source_mirror(
+        profile.remote, profile.base, mirror=mirror, env=env
+    )
+    if mtip is None:
+        return run.free(
+            f"could not mirror {profile.name}'s {profile.base}",
+            f"{profile.name}'s {profile.base} could not be fetched "
+            "(infrastructure); retried.",
+            SOURCE_CLASS,
+        )
+    on_base = _rr._on_base(mirror, release.sha, mtip)
+    if on_base is None:
+        return run.free(
+            f"git could not say whether {release.sha[:9]} is on {profile.base}",
+            "git could not read the source mirror (infrastructure); retried.",
+            READ_CLASS,
+        )
+    if not on_base:
+        return run.ask(
+            f"release sha {release.sha[:9]} is not an ancestor of {profile.name}'s "
+            f"{profile.base}"
+        )
+    theirs = _rr._show(mirror, release.sha, "pyproject.toml")
+    try:
+        project = tomllib.loads(theirs or "").get("project", {})
+        named, versioned = project.get("name"), project.get("version")
+        same = (
+            isinstance(named, str)
+            and _norm(named) == _norm(package)
+            and versioned == release.version
+        )
+    except (tomllib.TOMLDecodeError, AttributeError):
+        same = False
+    if not same:
+        return run.ask(
+            f"{profile.name}'s pyproject.toml at {release.sha[:9]} does not say "
+            f"{package} {release.version}"
+        )
+    # Direction: never move the pin down, never redo it.
+    if compare_versions(release.version, floor) < 0:
+        if _rr._on_base(mirror, release.sha, rev) is True:
+            return _no_op(
+                run,
+                release,
+                tip,
+                floor,
+                rev,
+                f"the pin {floor} is already past {release.version}",
+            )
+        return run.ask(
+            f"release {release.version} is below precis's floor {floor} and "
+            f"{release.sha[:9]} is not behind the pinned sha {rev[:9]}"
+        )
+    coherent = pin_is_coherent(
+        files[PYPROJECT_PATH],
+        files[LOCK_PATH],
+        files[GROUP_VARS_PATH],
+        package,
+        version=release.version,
+        sha=release.sha,
+    )
+    if coherent and _anchor_engine(files[ANCHOR_PATH]) == release.version:
+        return _no_op(run, release, tip, floor, rev, "the pin already carries it")
+    # The text-edited lock is only right when nothing resolution depends on
+    # moved between the sha(s) it carries and the new one.
+    new_view = _dep_view(theirs)
+    for old in sorted({rev, lock_sha} - {release.sha}):
+        if _dep_view(_rr._show(mirror, old, "pyproject.toml")) != new_view:
+            return run.ask(
+                f"{profile.name}'s dependencies, requires-python or build system "
+                f"differ between {old[:9]} and {release.sha[:9]}; the lock needs "
+                "a real `uv lock` by a human"
+            )
+    try:
+        edited = _edited(files, package, release.version, release.sha)
+    except PinError as exc:
+        return run.ask(f"the pin edit was refused: {exc}")
+    return _make_tree_and_derive(run, profile, release, tip, mirror, edited, floor, rev)
+
+
+def _make_tree_and_derive(
+    run: _Run,
+    profile: _lanes.RepoProfile,
+    release: _Release,
+    tip: str,
+    mirror: Path,
+    edited: dict[str, str],
+    floor: str,
+    rev: str,
+) -> bool:
+    """Cut the pin tree on ``slice/<id>`` at the tip, write the three edited
+    files into it (no commit) and launch the derive."""
+    ctx, root, todo_id = run.ctx, run.root, run.todo_id
+    branch, tree = _rs.slice_branch(todo_id), _tree_path(root, todo_id)
+    if _branch_exists(root, branch) or tree.exists():
+        ours = (_stored(ctx.store, todo_id) or {}).get("branch") == branch
+        if not ours:
+            return run.ask(
+                f"{branch} or {tree.name} already exists and this job did not make it"
+            )
+        _drop_made(root, todo_id)
+    building = {
+        "state": "building",
+        "repo": run.params["pin_repo"],
+        "branch": branch,
+        "worktree": str(tree),
+        "release_todo": run.params["release_todo"],
+        "job": _rl._job_id(ctx),
+    }
+    if not _stamp(ctx, todo_id, building):
+        return run.free(
+            f"could not stamp the pin record on td{todo_id}",
+            "the node could not be marked (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    run.handle["made"] = True
+    add = _ls._git(["worktree", "add", "-b", branch, str(tree), tip], root)
+    if add.returncode != 0:
+        return run.free(
+            f"git worktree add failed for the pin tree of td{todo_id}",
+            "the pin tree could not be created; retried.",
+            TREE_CLASS,
+        )
+    rdir = run.run_dir()
+    try:
+        for path, text in edited.items():
+            (tree / path).write_bytes(text.encode("utf-8"))
+        shutil.rmtree(rdir / VENV_DIR, ignore_errors=True)
+        (rdir / RESULT_FILE).unlink(missing_ok=True)
+        (rdir / DERIVE_PY).write_text(DERIVE_SCRIPT_PY, encoding="utf-8")
+    except OSError as exc:
+        return run.free(
+            f"writing the pin files failed: {exc}",
+            "the pin tree or run dir could not be written (infrastructure); retried.",
+            TREE_CLASS,
+        )
+    run.handle.update(
+        {
+            "tip": tip,
+            "package": release.package,
+            "version": release.version,
+            "tag": release.tag,
+            "sha": release.sha,
+            "from_version": floor,
+            "from_sha": rev,
+            "mirror": str(mirror),
+            "remote": profile.remote,
+        }
+    )
+    steps = [
+        ("lock", "uv lock --check"),
+        ("sync", "uv sync --frozen --extra catalyst"),
+        (
+            "derive",
+            "uv run --frozen --extra catalyst python -I "
+            f"{shlex.quote(str(rdir / DERIVE_PY))} {shlex.quote(release.version)} "
+            f"{shlex.quote(str(tree / ANCHOR_PATH))} "
+            f"{shlex.quote(ANCHOR_CONFIG_NAME)} {shlex.quote(str(rdir / RESULT_FILE))}",
+        ),
+    ]
+    if _start_phase(run, DERIVE_PHASE, DERIVE_SCRIPT, DERIVE_LOG, DERIVE_EXIT, steps):
+        return True
+    ctx.append_chunk(
+        "job_event",
+        f"pin_bump: {release.tag} on tip {tip[:9]}; derive pid {run.handle['pid']} "
+        f"in {tree}",
+    )
+    return False
+
+
+# ── Detached phases ────────────────────────────────────────────────
+
+
+def _poll_detached(run: _Run, label: str, on_green: Any) -> bool:
+    """The detached run's phase: keep waiting while it runs, classify its end.
+    ``on_green(run)`` takes over on exit 0."""
+    handle, todo_id = run.handle, run.todo_id
+    exit_code = _rs._read_exit(handle)
+    pid = _rl._pid(handle.get("pid"))
+    if exit_code is None and pid > 1 and _ls._process_alive(pid):
+        deadline = handle.get("deadline")
+        past = (
+            isinstance(deadline, (int, float))
+            and not isinstance(deadline, bool)
+            and _ls._now().timestamp() > float(deadline)
+        )
+        if not past:
+            run.ctx.set_meta(compute_handle=handle, compute_handle_released=False)
+            return False
+        _rl._signal_gate(handle)
+        return run.free(
+            f"the pin {label} of td{todo_id} passed its wall deadline",
+            f"the {label} run passed its wall-clock deadline (infrastructure); retried.",
+            _rl.TIMED_OUT_CLASS,
+        )
+    if exit_code == 0:
+        return bool(on_green(run))
+    masked = mask_secrets(_rs._read_log(handle)) or ""
+    if (
+        exit_code is None
+        or exit_code == 137
+        or _ls.gate_kill_line(masked, exit_code) is not None
+    ):
+        return run.free(
+            f"the pin {label} was killed or lost",
+            f"the {label} run was killed from outside (infrastructure); nothing "
+            "was committed on main and the bump is retried.",
+            _rl.GATE_INFRA_CLASS,
+        )
+    if _TRANSPORT_RE.search(masked):
+        return run.free(
+            f"the pin {label} hit a transport failure",
+            f"the {label} run could not reach a registry or the source mirror "
+            "(infrastructure); retried.",
+            TRANSPORT_CLASS,
+        )
+    found = _rl._GATE_FAIL_RE.findall(masked)
+    command = found[-1][1] if found else f"the {label} run"
+    excerpt = _ls.gate_red_excerpt(masked)
+    handoff = (
+        f"`{command}` failed (exit {exit_code}) while moving the pin to "
+        f"{handle.get('tag')}. Nothing was landed."
+    )
+    if excerpt:
+        handoff += f"\n\nThe run's output before the verdict:\n{excerpt}"
+    run.ctx.set_meta(exit_code=exit_code)
+    tail = masked[-_ls._TAIL_CAP :].strip()
+    return run.charged(
+        f"pin {label} red: {command}" + (f"\n--- log tail ---\n{tail}" if tail else ""),
+        handoff,
+    )
+
+
+def _read_result(run: _Run) -> str | None:
+    """The key from the result file, or ``None`` unless it is a JSON object of
+    exactly ``key`` (64 lowercase hex) and ``engine`` (the target version).
+    The file is attacker-writable: nothing else in it is ever used."""
+    path = run.run_dir() / RESULT_FILE
+    try:
+        if path.stat().st_size > _RESULT_MAX:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"key", "engine"}:
+        return None
+    key, engine = data["key"], data["engine"]
+    if not isinstance(key, str) or _KEY64.fullmatch(key) is None:
+        return None
+    if engine != run.handle.get("version"):
+        return None
+    return key
+
+
+def _numstat_violation(root: Path, tip: str, sha: str) -> str | None:
+    out = _rl._read(root, ["diff", "--numstat", "--no-renames", "-z", tip, sha])
+    if out is None:
+        return "numstat failed"
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        parts = entry.split("\t", 2)
+        if len(parts) != 3 or not (parts[0].isdigit() and parts[1].isdigit()):
+            return "a file changed in a way numstat cannot count"
+        if int(parts[0]) > MAX_FILE_LINES or int(parts[1]) > MAX_FILE_LINES:
+            return f"{parts[2]} changes more than {MAX_FILE_LINES} lines"
+    return None
+
+
+def _commit_violation(
+    root: Path, tip: str, sha: str, expected: dict[str, str]
+) -> str | None:
+    """Why ``sha`` is not the pin-bump commit on ``tip``, else ``None``: its
+    only parent is the tip, it changes some of the four paths and nothing
+    else, each file's committed text is what the worker wrote, and no file
+    changes more than :data:`MAX_FILE_LINES` lines."""
+    if not sha or not tip:
+        return "the handle names no sha or tip"
+    out = _rl._read(root, ["rev-list", "--parents", "-n", "1", sha])
+    if (out or "").split() != [sha, tip]:
+        return f"{sha[:9]} is not the only child of {tip[:9]}"
+    paths = _rl._changed_paths(root, tip, sha)
+    if paths is None:
+        return "changed-path enumeration failed"
+    if not paths or not set(paths) <= set(PIN_PATHS):
+        return f"the commit changes {', '.join(paths) or 'nothing'} rather than the pin files"
+    for path, text in expected.items():
+        if _rr._show(root, sha, path) != text:
+            return f"the committed {path} is not the text the worker wrote"
+    return _numstat_violation(root, tip, sha)
+
+
+def _commit_objects(
+    root: Path,
+    tip: str,
+    branch: str,
+    files: dict[str, str],
+    subject: str,
+    body: str,
+    index: Path,
+) -> str | None:
+    """The commit of ``files`` over ``tip`` on ``branch``, built from objects
+    so nothing in the working tree can reach it: blobs by ``hash-object``,
+    the tip's tree in a private index with the four paths replaced, ``write-
+    tree``, ``commit-tree`` and a compare-and-swap ``update-ref``. Its sha,
+    or ``None`` when git fails."""
+    try:
+        blobs: dict[str, str] = {}
+        for path, text in files.items():
+            hashed = _git_raw(
+                ["hash-object", "-w", "--stdin"], root, stdin=text.encode("utf-8")
+            )
+            if not _oid(hashed):
+                return None
+            blobs[path] = _oid(hashed)
+        listing = _git_raw(["ls-tree", "-z", tip, "--", *files], root)
+        modes: dict[str, str] = {}
+        for entry in listing.stdout.decode("utf-8", "replace").split("\0"):
+            head, _, path = entry.partition("\t")
+            parts = head.split()
+            if (
+                len(parts) == 3
+                and parts[1] == "blob"
+                and parts[0] in ("100644", "100755")
+            ):
+                modes[path] = parts[0]
+        if listing.returncode != 0 or set(modes) != set(files):
+            return None
+        index.unlink(missing_ok=True)
+        if _git_raw(["read-tree", tip], root, index=index).returncode != 0:
+            return None
+        info = "".join(f"{modes[p]} {blobs[p]}\t{p}\n" for p in files)
+        updated = _git_raw(
+            ["update-index", "--index-info"],
+            root,
+            stdin=info.encode("utf-8"),
+            index=index,
+        )
+        if updated.returncode != 0:
+            return None
+        tree = _oid(_git_raw(["write-tree"], root, index=index))
+        if not tree:
+            return None
+        ident = [
+            "-c",
+            f"user.name={_rr.RELEASE_IDENT[0]}",
+            "-c",
+            f"user.email={_rr.RELEASE_IDENT[1]}",
+            "-c",
+            "commit.gpgsign=false",
+        ]
+        sha = _oid(
+            _git_raw(
+                [*ident, "commit-tree", tree, "-p", tip, "-m", subject, "-m", body],
+                root,
+            )
+        )
+        if not sha:
+            return None
+        swap = _git_raw(["update-ref", f"refs/heads/{branch}", sha, tip], root)
+        return sha if swap.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        index.unlink(missing_ok=True)
+
+
+def _commit_body(handle: dict[str, Any], release_todo: int) -> str:
+    return (
+        f"Moves the {handle['package']} pin to {handle['tag']}.\n\n"
+        f"Release: {handle['tag']} at {handle['sha']} (release node td{release_todo}).\n"
+        f"Previous pin: v{handle['from_version']} at {handle['from_sha']}.\n"
+        "The lock and the deploy floor are text edits; the anchor key was "
+        "derived with the new engine installed."
+    )
+
+
+def _poll_derive_green(run: _Run) -> bool:
+    """The derive exited 0: take the key, commit the four files, prove the
+    commit, recreate the tree clean and launch the verify run."""
+    handle, root, todo_id = run.handle, run.root, run.todo_id
+    version, sha, tip = str(handle["version"]), str(handle["sha"]), str(handle["tip"])
+    package, branch = str(handle["package"]), _rs.slice_branch(todo_id)
+    key = _read_result(run)
+    if key is None:
+        return run.charged(
+            "the derive's result is not a 64-hex key for the target engine",
+            "the derive's result file is not exactly a 64-hex key and the "
+            f"target engine {version}; nothing was committed.",
+        )
+    try:
+        files = _read_files(root, tip)
+        edited = _edited(files, package, version, sha)
+        edited[ANCHOR_PATH] = set_anchor_literals(
+            files[ANCHOR_PATH], key=key, engine=version
+        )
+    except _ReadError as exc:
+        return run.free(
+            f"git could not read {exc.path} at {tip[:9]}",
+            f"git could not read {exc.path} (infrastructure); retried.",
+            READ_CLASS,
+        )
+    except PinError as exc:
+        return run.charged(f"the final pin edit was refused: {exc}")
+    commit = _commit_objects(
+        root,
+        tip,
+        branch,
+        edited,
+        f"build(deps): bump {package} to v{version} (td{todo_id})",
+        _commit_body(handle, int(run.params["release_todo"])),
+        run.run_dir() / INDEX_FILE,
+    )
+    if commit is None:
+        return run.charged(
+            f"the pin commit for {handle.get('tag')} failed",
+            "git could not commit the pin edit; the base may be unusual.",
+        )
+    violation = _commit_violation(root, tip, commit, edited)
+    if violation is not None:
+        return run.charged(
+            f"pin commit refused: {violation}",
+            f"the pin commit is not a pure pin bump ({violation}).",
+        )
+    # The derive ran repo code in the tree: put a clean checkout of the
+    # commit in its place before anything else runs there.
+    if _checkout_tree(root, todo_id, branch) is None:
+        return run.free(
+            f"git worktree add failed for the pin tree of td{todo_id}",
+            "the pin tree could not be recreated; retried.",
+            TREE_CLASS,
+        )
+    handle["commit"] = commit
+    steps = [
+        (
+            "verify",
+            "uv run --frozen --extra catalyst pytest -q -p no:cacheprovider "
+            + " ".join(shlex.quote(t) for t in VERIFY_TESTS),
+        )
+    ]
+    if _start_phase(run, VERIFY_PHASE, VERIFY_SCRIPT, VERIFY_LOG, VERIFY_EXIT, steps):
+        return True
+    run.ctx.append_chunk(
+        "job_event",
+        f"pin_bump: commit {commit[:9]} on tip {tip[:9]}; verify pid {handle['pid']}",
+    )
+    return False
+
+
+def _poll_verify_green(run: _Run) -> bool:
+    """The verify run exited 0: re-prove the branch, recreate the tree clean,
+    stamp the committed record and park in the final phase."""
+    handle, root, todo_id = run.handle, run.root, run.todo_id
+    tip, commit = str(handle["tip"]), str(handle["commit"])
+    branch = _rs.slice_branch(todo_id)
+    if _head(root, branch) != commit:
+        return run.charged(
+            f"{branch} no longer points at the verified commit",
+            f"{branch} moved off the verified commit {commit[:9]}; nothing is landed.",
+        )
+    out = _rl._read(root, ["rev-list", "--parents", "-n", "1", commit])
+    if (out or "").split() != [commit, tip]:
+        return run.charged(
+            "the verified commit is not a child of the tip",
+            f"{commit[:9]} is not a child of {tip[:9]}; nothing is landed.",
+        )
+    if _checkout_tree(root, todo_id, branch) is None:
+        return run.free(
+            f"git worktree add failed for the pin tree of td{todo_id}",
+            "the pin tree could not be recreated; retried.",
+            TREE_CLASS,
+        )
+    release = _Release(
+        package=str(handle["package"]),
+        version=str(handle["version"]),
+        sha=str(handle["sha"]),
+        tag=str(handle["tag"]),
+    )
+    record = _record(
+        run,
+        release,
+        tip,
+        state="committed",
+        from_version=str(handle["from_version"]),
+        from_sha=str(handle["from_sha"]),
+        commit=commit,
+    )
+    if not _stamp(run.ctx, todo_id, record):
+        return run.free(
+            f"could not stamp the pin record on td{todo_id}",
+            "the node could not be marked (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    run.ctx.append_chunk(
+        "job_event",
+        f"pin_bump: {release.tag} committed as {commit[:9]} on {branch}; "
+        "parked in handoff",
+    )
+    _to_handoff(run, record)
+    return False
+
+
+# ── Poll and kill ──────────────────────────────────────────────────
+
+
+def poll(ctx: Any, handle: Any) -> bool:
+    """Detached poll half with ``repo_release.poll``'s contract: ``False``
+    while the job waits (parked, or a run is live), ``True`` once the job is
+    terminal."""
+    if not isinstance(handle, dict):
+        ctx.record_failure(f"pin_bump: malformed handle {handle!r}")
+        return True
+    params = dict((ctx.meta or {}).get("params") or {})
+    phase = handle.get("phase")
+    if phase in (RESOLVE_PHASE, HANDOFF_PHASE) and not _rr._due(handle):
+        return False
+    todo_id = params.get("todo_id")
+    if not isinstance(todo_id, int) or isinstance(todo_id, bool):
+        ctx.record_failure("pin_bump: the job has no params.todo_id")
+        return True
+    try:
+        root = _rs.slice_root()
+    except RuntimeError as exc:
+        ctx.record_failure(f"pin_bump: {exc}")
+        return True
+    run = _Run(ctx, handle, params, root)
+    if phase == RESOLVE_PHASE:
+        return _poll_resolve(run)
+    if phase == DERIVE_PHASE:
+        return _poll_detached(run, "derive", _poll_derive_green)
+    if phase == VERIFY_PHASE:
+        return _poll_detached(run, "verify", _poll_verify_green)
+    if phase == HANDOFF_PHASE:
+        # R2 stub: the next round mints the land_slice for the branch here.
+        _rl.park_until(ctx, handle, HANDOFF_PARK_S)
+        return False
+    ctx.record_failure(f"pin_bump: unknown phase {phase!r}")
+    return True
+
+
+def kill(ctx: Any, handle: Any) -> None:
+    """Wall-clock / operator kill: SIGTERM a live run's process group (never
+    the worker's own) and drop the worktree and branch this job made. A
+    parked handle has neither (a committed bump waiting in ``handoff`` is
+    kept for the resume), and nothing here raises."""
+    if not isinstance(handle, dict) or handle.get("phase") not in (
+        DERIVE_PHASE,
+        VERIFY_PHASE,
+    ):
+        return
+    _rl._signal_gate(handle)
+    try:
+        params = (getattr(ctx, "meta", None) or {}).get("params") or {}
+        todo_id = params.get("todo_id")
+        if (
+            isinstance(todo_id, int)
+            and not isinstance(todo_id, bool)
+            and handle.get("made")
+        ):
+            _drop_made(_rs.slice_root(), todo_id)
+            _clear_building(ctx, todo_id)
+    except Exception:  # pragma: no cover - kill never raises
+        log.warning("pin_bump: kill cleanup failed", exc_info=True)
+
+
+SPEC = JobTypeSpec(
+    name=NAME,
+    params_schema=PARAMS_SCHEMA,
+    compatible_executors=COMPATIBLE_EXECUTORS,
+    requires=REQUIRES,
+    description=DESCRIPTION,
+    validate_submit=validate_submit,
+    submit=submit,
+    poll=poll,
+    kill=kill,
+    deadline_kill_meta=DEADLINE_KILL_META,
+    wall_seconds=_ls.wall_seconds,
+)
