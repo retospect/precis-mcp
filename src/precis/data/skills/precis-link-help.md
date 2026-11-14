@@ -93,7 +93,18 @@ the whole call back. `mode='remove'` takes the same id list.
 | `target` | str | required | A handle, or `kind:identifier[~selector]` (required for file-backed kinds). |
 | `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
 | `mode` | str | `add` | `add` or `remove`. |
-| `reason` | str | — | The edge's why (`links.meta.reason`), on kinds whose `link` takes `meta=` (memory/finding/paper/taxon/todo/gripe — except `rel='parent'`, which is a virtual edge with nowhere to store it). `'.'` marks reviewed-obvious; a sentence records what the edge adds beyond what the row already shows. |
+| `reason` | str | — | The edge's why (`links.meta.reason`), on kinds whose `link` takes `meta=` (memory/finding/paper/taxon/todo/gripe — except `rel='parent'`, which is a virtual edge with nowhere to store it). `'.'` marks reviewed-obvious; a sentence records what the edge adds beyond what the row already shows. A `considered` edge carries its why inside the verdict block (`meta`), not `reason=`. |
+
+## Record that a candidate was considered and rejected
+
+```python
+link(kind="memory", id=73, target="pa<id>", rel="considered",
+     meta={"verdict": "not-useful", "reason": "lithium-only; question is sodium",
+           "depth": "abstract"})
+```
+
+The verdict, depth, ledger and `novel_for` exclusion are in
+`precis-memory-help` §Record a considered verdict on a source.
 
 ## Link at creation time instead
 
@@ -189,6 +200,8 @@ annotation.
 ## See also
 
 - [[precis-relations]] — relation vocabulary, per-kind constraints
+- [[precis-link-reason-help]] — what to write in reason=
+- [[precis-memory-help]] — considered verdicts, the ledger
 - [[precis-put-help]] — link= on creation
 - [[precis-tags]] — tags vs links — when to reach for which
 - [[precis-overview]] — verbs and address grammar

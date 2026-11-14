@@ -44,6 +44,10 @@ get(kind="paper", id="pa<id>", view="claims")    # hubs already grounded on it
 get(kind="paper", id="pa<id>", view="links")     # setup memories, cites, disputes
 ```
 
+`view='links'` also shows prior verdicts (`<-considered: me… — not useful
+(…)`) and prior reasons on cites/disputes: a prior reader's judgment is a
+fact to reuse, not redo.
+
 A prior `read-paper:` note lists what that pass wrote. Start from it:
 fill gaps, do not redo. Every write below checks for its target first,
 so a second run on the same paper should write nothing new.
@@ -224,14 +228,29 @@ for papers it comes out as:
   the specific input: the number, the setup, the hub.
   `"PBE+U puts the O* binding at −0.42 eV on Fe(110) [fi<id>, me<setup>]"`
   — not "a new paper discusses binding". Then
-  `link(kind="memory", id="me<n>", target="pc<result>", rel="cites")`.
+  `link(kind="memory", id="me<n>", target="pc<result>", rel="cites",
+  reason="<what this paper adds for me<n>>")`.
 - **Already holds the fact** → no edit; add the `cites` link if this
   paper is new evidence for it.
 - **Holds a conflicting value** → do not overwrite. Edit in the
   discrepancy with both setups named, and `link(rel='disputes')` to the
   chunk. Different setups often explain the gap; say which.
 - **Mentions the topic in passing** → leave it; not every keyword hit is
-  interested.
+  interested. Cheap triage of hits you did not read never writes a verdict.
+
+Every `cites`/`disputes` link written here carries `reason=`: what THIS
+paper adds for THAT memory, a short phrase, never the paper's title;
+`'.'` when the row already says it ([[precis-link-reason-help]]).
+
+When you read a candidate memory's body (or a paper chunk against it) and
+judged the paper does not serve that node, record the negative half so
+the next reader and `novel_for` searches skip it:
+
+```python
+link(kind="memory", id="me<n>", target="pa<id>", rel="considered",
+     meta={"verdict": "not-useful", "reason": "<why not, for this node>",
+           "depth": "fulltext"})  # or abstract, partial, …
+```
 
 A **new memory** is earned when a result matters to ongoing work and no
 node can hold it: a new design consequence, a new open question the
@@ -265,7 +284,8 @@ duplicate; cite the hub instead.
 put(kind="paper", id="pa<id>",
     text="read-paper: setup me<a>; hubs fi<1> (new), fi<2> (converged); "
          "measures mx<p>, mx<q>; survey_extract jb<j>; "
-         "memories edited me<x>, me<y>; new me<z>; gaps: SI not ingested")
+         "memories edited me<x>, me<y>; new me<z>; considered: me<q>, me<r>; "
+         "gaps: SI not ingested")
 ```
 
 This note is step 0's marker for the next reader. Report the same list
@@ -296,3 +316,4 @@ to the caller, with each hub labelled new or existing.
 - [[precis-make-memory]] — the reconciliation policy step 4 applies.
 - [[precis-relations]] — `qualifies`, `derived-from`, `cites`, `disputes`.
 - [[precis-classify-help]] — attaching refs to taxonomy nodes.
+- [[precis-link-reason-help]] — writing reason= on cites/disputes/considered edges.

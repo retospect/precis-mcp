@@ -945,6 +945,18 @@ class LinksMixin:
     # edge is added or removed so the argument-graph STALE: flag stays a
     # pure function of current graph reachability.
     argument_ripple_retraction: Any
+    # Provided by ConsiderationMixin — appends one judgment row for a
+    # ``considered`` edge write inside the same transaction.
+    record_consideration: Any
+    # Provided by ConsiderationMixin — stamps ``withdrawn_at`` on a
+    # pair's judgment rows when a door deletes its ``considered`` edge,
+    # so a deliberate withdrawal differs from a chunk-cascade edge loss.
+    withdraw_considerations: Any
+    withdraw_consideration_pair: Any
+    # Provided by ConsiderationMixin — re-points the ``considered``
+    # judgment ledger onto the canonical refs and resolves each merged
+    # pair's current verdict (``migrate_links``'s post-delete pass).
+    migrate_considerations: Any
     # Provided by GroundingsMixin — endpoint groundings for the
     # slice-2b definition-only link-time refusal.
     grounding_set: Any
@@ -1218,6 +1230,16 @@ class LinksMixin:
                     next="link(..., rel='rejects', meta={'reason': 'why this part was rejected'})",
                 )
 
+        if relation == "considered":
+            # Verdict admission (me626852, gr662069): verdict/reason/depth
+            # are required, stamped keys refused, checked_at normalised —
+            # before any write, and before _do resolves the endpoints.
+            from precis.store._consideration_ops import (
+                validate_considered_meta,
+            )
+
+            meta = validate_considered_meta(meta)
+
         forged = _EDGE_VALIDITY_META_KEYS & (meta or {}).keys()
         if forged:
             raise BadInput(
@@ -1292,8 +1314,14 @@ class LinksMixin:
             # Machine-edge write rule (graph-gardener-value slice 1): the
             # one gate, inside this admission. A routed write (``explains``
             # between claim hubs → ``link_claims``) returns here instead
-            # of the plain INSERT below.
-            if _machine_write_context() is not None:
+            # of the plain INSERT below. ``considered`` is exempt: the
+            # verdict edge runs its own admission
+            # (:func:`validate_considered_meta` — reason/depth/revision
+            # pins) plus an append-only judgment row, which is exactly the
+            # "what retrieval cannot recompute" record the gate exists to
+            # protect; the generic evidence-pin/annotation contract does
+            # not apply to a judgment ledger.
+            if relation != "considered" and _machine_write_context() is not None:
                 routed = _machine_edge_admission(
                     self,
                     c,
@@ -1362,6 +1390,42 @@ class LinksMixin:
             ins_meta = dict(meta or {})
             if asserted_sha is not None:
                 ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
+            strip_judgment = ""
+            if relation == "considered":
+                # Serialize the pair's judgment writes before any edge
+                # write: concurrent verdicts at different chunk endpoints
+                # hit no unique-index conflict, so without the pair lock
+                # each side's supersede-DELETE (record_consideration)
+                # could miss the other's uncommitted edge and both commit
+                # live — a superseded not-useful would keep excluding
+                # beside the newer verdict (review td662210).
+                from precis.store._consideration_ops import (
+                    CONSIDER_JUDGMENT_KEYS,
+                    lock_consideration_pair,
+                    stamp_considered,
+                )
+
+                lock_consideration_pair(c, src_ref_id, dst_ref_id)
+                # The verdict edge pins both endpoint revisions it was
+                # judged against (gr662069) — staleness is then a lazy
+                # read, never a write back onto the edge.
+                ins_meta = stamp_considered(
+                    c,
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    dst_ref_id=dst_ref_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=ins_meta,
+                )
+                # A re-judgment REPLACEs the judgment block: the conflict
+                # path below strips the previous judgment's keys before
+                # overlaying the new meta, so an optional key (passages,
+                # actor/model/run/prompt) the new judgment omits is gone,
+                # never silently retained from the earlier run.
+                strip_judgment = "".join(
+                    f" - '{key}'" for key in sorted(CONSIDER_JUDGMENT_KEYS)
+                )
+            kept_meta = f"(links.meta{strip_judgment})"
 
             extra_params: tuple[Any, ...] = ()
             if asserted_sha is not None and not preserve_fingerprint:
@@ -1369,10 +1433,14 @@ class LinksMixin:
                 # merges only under ``merge_meta`` (unchanged semantics).
                 # When the stored sha had drifted the edge was suspect and
                 # this reviewed re-link is the clear — record actor + UTC.
-                conflict_meta = dict(meta or {}) if merge_meta else {}
+                # A re-judged ``considered`` edge is the same shape: the
+                # latest verdict's stamped meta replaces the verdict keys.
+                conflict_meta = (
+                    dict(ins_meta) if (merge_meta or relation == "considered") else {}
+                )
                 conflict_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
                 meta_clause = (
-                    ", meta = links.meta || %s || CASE WHEN "
+                    f", meta = {kept_meta} || %s || CASE WHEN "
                     f"links.meta ? '{ASSERTED_FINGERPRINT_META}' AND "
                     f"links.meta->>'{ASSERTED_FINGERPRINT_META}' "
                     "IS DISTINCT FROM %s THEN "
@@ -1386,14 +1454,17 @@ class LinksMixin:
                     set_by,
                     datetime.now(UTC).isoformat(),
                 )
-            elif merge_meta:
-                meta_clause = ", meta = links.meta || EXCLUDED.meta"
+            elif merge_meta or relation == "considered":
+                # ``considered`` always merges on conflict: one edge per
+                # (scope, source) pair carries the LATEST verdict block;
+                # the per-judgment history lives in `considerations`.
+                meta_clause = f", meta = {kept_meta} || EXCLUDED.meta"
                 if preserve_fingerprint:
                     # ``EXCLUDED.meta`` carries the fresh stamp for the
                     # INSERT path; the merge must not let it move a
                     # stored fingerprint either.
                     meta_clause = (
-                        ", meta = links.meta || (EXCLUDED.meta - "
+                        f", meta = {kept_meta} || (EXCLUDED.meta - "
                         f"'{ASSERTED_FINGERPRINT_META}')"
                     )
             else:
@@ -1438,6 +1509,21 @@ class LinksMixin:
                 "links INSERT returned no row — schema invariant violated"
             )
             link_id = int(row[0])
+
+            if relation == "considered":
+                # Append-only judgment history (gr662069): one row per
+                # judgment, so canonical-identity dedup on the edge never
+                # collapses two runs' verdicts.
+                self.record_consideration(
+                    c,
+                    link_id=link_id,
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    dst_ref_id=dst_ref_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=ins_meta,
+                    set_by=set_by,
+                )
 
             # Re-SELECT through the standard projection so the
             # returned Link carries the LEFT-JOIN-translated pos
@@ -1504,9 +1590,25 @@ class LinksMixin:
             if relation is not None:
                 clauses.append("relation = %s")
                 params.append(relation)
-            sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
-            cur = c.execute(sql, params)
-            n = cur.rowcount or 0
+            # RETURNING feeds the ``considered`` withdrawal stamp: an
+            # explicit door delete marks the pair's judgments withdrawn
+            # (review td662210) — unlike a chunk-cascade edge loss, which
+            # no door sees and which therefore stays 'edge-lost' in the
+            # reconsider queue.
+            sql = (
+                f"DELETE FROM links WHERE {' AND '.join(clauses)} "
+                "RETURNING src_ref_id, src_chunk_id, dst_ref_id, "
+                "dst_chunk_id, relation"
+            )
+            deleted = c.execute(sql, params).fetchall()
+            n = len(deleted)
+            withdrawn = [r[:4] for r in deleted if r[4] == "considered"]
+            if withdrawn:
+                self.withdraw_considerations(c, withdrawn)
+            elif relation in (None, "considered"):
+                # No live edge matched (e.g. a chunk cascade already took
+                # it): the pair's orphan judgment is still withdrawable.
+                self.withdraw_consideration_pair(c, src_ref_id, dst_ref_id)
 
             # Argument-graph retraction push hook, remove side (the argument graph
             # §5/R5: "every retraction-edge add *or* remove reruns the
@@ -2236,6 +2338,15 @@ class LinksMixin:
            v0; a conflict-skipped copy leaves its act unbound, so the
            pre-existing twin edge keeps its own stamp.
         2. DELETE the original rows touching ``old_ref_id``.
+        3. Reconcile the ``considered`` ledger:
+           :meth:`ConsiderationMixin.migrate_considerations` re-points
+           every judgment naming ``old_ref_id`` onto the canonical refs,
+           resolves each merged pair's current verdict to its latest
+           unwithdrawn judgment (a conflict-collapsed edge must not keep
+           an older twin's verdict), and collapses duplicate live
+           ``considered`` edges of a canonical pair — otherwise the
+           stranded rows would read as ``edge-lost`` false
+           reconsiderations (review td662210).
 
         Returns the number of old rows deleted (the migrated count;
         deduped duplicates collapse into existing survivor edges).
@@ -2378,6 +2489,11 @@ class LinksMixin:
             "AND (NOT %(preserve_supersedes)s OR relation <> 'supersedes')",
             {"old": old_ref_id, "preserve_supersedes": preserve_supersedes},
         )
+        # Post-delete so the reconcile reads the final live-edge state:
+        # judgments re-point onto the canonical refs and each merged
+        # pair's surviving edge carries its latest judgment (review
+        # td662210). A no-op when the loser was never judged.
+        self.migrate_considerations(conn, old_ref_id=old_ref_id, new_ref_id=new_ref_id)
         return cur.rowcount or 0
 
     def unlink_ref(
@@ -2484,10 +2600,22 @@ class LinksMixin:
         Returns the row count."""
         if not link_ids:
             return 0
-        cur = conn.execute(
-            "DELETE FROM links WHERE link_id = ANY(%s)", (list(link_ids),)
-        )
-        return cur.rowcount or 0
+        # RETURNING feeds the ``considered`` withdrawal stamp (review
+        # td662210): a prune through this door is an explicit withdrawal,
+        # not a cascade loss — the pair's judgments leave the queue.
+        # Garden undo replays deliberately bypass this door — their
+        # delete is transient, the restored edge revives with its
+        # judgments (``_delete_replay_links`` in garden apply).
+        rows = conn.execute(
+            "DELETE FROM links WHERE link_id = ANY(%s) "
+            "RETURNING src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+            "relation",
+            (list(link_ids),),
+        ).fetchall()
+        withdrawn = [r[:4] for r in rows if r[4] == "considered"]
+        if withdrawn:
+            self.withdraw_considerations(conn, withdrawn)
+        return len(rows)
 
     # -- s2_neighbors (the Sources/Cited tabs' store) --------------------
 

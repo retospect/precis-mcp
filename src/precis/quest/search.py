@@ -304,6 +304,7 @@ def _local_graph_search(
                 ln.src_ref_id
                 for ln in store.links_for(quest_id, direction="in", relation=rel)
             )
+        exclude |= judged_out(store, quest_id)
         query_vec: list[float] | None = None
         if embedder is not None:
             try:
@@ -326,6 +327,24 @@ def _local_graph_search(
         log.warning("quest %s: local graph search failed", quest_id, exc_info=True)
         return []
     return [(ref.id, ref.kind, float(score)) for _blk, ref, score in rows]
+
+
+def judged_out(store: Store, quest_id: int) -> frozenset[int]:
+    """Sources the quest holds a *valid* ``not-useful`` ``considered``
+    verdict on (gr662069, spec me626852) — the lit-search's "seen, not
+    linked" ledger gr592951 asked for, read from the general mechanism
+    instead of a private one. Every search leg drops them and the link
+    loop never re-serves them, so a judged-out candidate stops costing a
+    quest-link row and tick tokens on every run. A *stale* verdict (the
+    quest's question or the source changed since the judgment) excludes
+    nothing: it sits in ``get(kind='quest', id=…, view='considerations')``
+    for reconsideration. A read failure excludes nothing either — a miss,
+    never a broken tick."""
+    try:
+        return store.consideration_exclusions(quest_id).excluded
+    except Exception:
+        log.warning("quest %s: considered-verdict read failed", quest_id, exc_info=True)
+        return frozenset()
 
 
 @dataclass(frozen=True)
@@ -543,16 +562,28 @@ def run_search_step(
     logged with its score; a ``None``-scored hit always passes (there is
     nothing to floor it against). Default floor is ``0.0`` (log-only, see
     :func:`relevance_floor`).
+
+    **Judged-out candidates** (gr662069 / gr592951): sources carrying a
+    valid ``not-useful`` ``considered`` verdict on the quest
+    (:func:`judged_out`) are passed to every leg as exclusions and
+    skipped by the link loop, so a candidate a prior run rejected is
+    never re-linked; the step's notes say how many were held out.
     """
     search = search_fn or _default_paper_search
     quest_tag = Tag.open(quest_tag_value(quest_id, store))
     existing = {
         s.id for s in _live_servers(store, quest_id) if s.kind in LINKABLE_KINDS
     }
+    rejected = judged_out(store, quest_id)
     floor = relevance_floor()
     queries_run = 0
     linked_total = 0
     notes: list[str] = []
+    if rejected:
+        notes.append(
+            f"held out {len(rejected)} considered-not-useful source(s) "
+            "(view='considerations')"
+        )
 
     for raw in searches[:MAX_QUERIES]:
         entry = _parse_search_entry(raw)
@@ -560,6 +591,7 @@ def run_search_step(
             continue
         query = entry.query
         queries_run += 1
+        skip = list(existing | rejected)
         merged: list[tuple[int, float | None]] = []
         if entry.hypothetical:
             merged.extend(
@@ -569,11 +601,11 @@ def run_search_step(
                     quest_id,
                     query,
                     entry.hypothetical,
-                    list(existing),
+                    skip,
                 )
             )
         seen = {rid for rid, _score in merged}
-        for rid, score in search(store, query, list(existing)):
+        for rid, score in search(store, query, skip):
             if rid in seen:
                 continue
             seen.add(rid)
@@ -604,7 +636,10 @@ def run_search_step(
         hits = above_floor[:MAX_LINK_PER_QUERY]
         linked: list[int] = []
         for rid in hits:
-            if rid in existing:
+            # A search_fn that ignores its exclude list (a legacy test
+            # double, a stale cache) must still not re-serve a judged-out
+            # candidate.
+            if rid in existing or rid in rejected:
                 continue
             store.add_link(
                 src_ref_id=rid,

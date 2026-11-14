@@ -178,6 +178,12 @@ Without it step 2 finds nothing and the next search starts cold. The
 write mechanics and shape rules: [[precis-make-memory]],
 [[precis-memory-help]].
 
+Record what you checked and rejected so the next run skips it: a
+`rel='considered'` verdict on the question's scope memory (or quest)
+per judged-out candidate — `search(..., args={'novel_for': 'me<N>'})`
+then excludes those sources across every leg and reports them
+([[precis-memory-help]] §Record a considered verdict).
+
 ## See also
 
 - [[precis-search-help]] — search mechanics, modes, broad retrieval

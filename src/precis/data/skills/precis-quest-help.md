@@ -222,6 +222,7 @@ get(
 search(kind="quest", q="trusted anchor", scope="qu7")  # same retrieval
 # rendered as a hit list — also args={"within": "qu7"}
 get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
+get(kind="quest", id=7, view="considerations")  # scoped verdict ledger — rel='considered' judgments, reopen queue + history
 get(
     kind="quest", id=7, view="log"
 )  # raw ref-events audit trail (generic, not logbook-specific)
@@ -233,7 +234,8 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
 leaderboard · results · series · measures · logbook · pourbaix · status ·
-rubric` (quest-specific — `dossier` is deprecated, kept only for
+rubric · served · meta · replay · kinetics-summary · considerations`
+(quest-specific — `dossier` is deprecated, kept only for
 quests not yet converted) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):

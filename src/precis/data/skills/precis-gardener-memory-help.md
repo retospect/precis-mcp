@@ -273,6 +273,13 @@ links, reverses moved edges and removes the newly written supersedes trail.
 Changed successors or affected link ends refuse undo with a repair next step;
 unrelated successor links are left alone. An undone removal blocks every removal
 route of that node, including a merge losing it, until its content changes.
+Live `considered` verdicts gate the same way on both sides: the apply
+refuses a target — or a canonical pair a migrated `considered` edge
+would collapse onto — carrying an unwithdrawn judgment, because the
+links-only snapshot cannot replay a re-pointed pin or a withdrawn
+verdict, and the undo refuses while a live judgment names the retired
+scope. Withdraw the pair's edge first, or use the unreviewed delete
+door, which reconciles the ledger.
 In strict mode, restoring a legacy link stamps it from version zero to one while
 preserving its original origin and confidence; the result reports `links_restamped`.
 Both actions require review that still-true claims and needed

@@ -82,7 +82,12 @@ from precis.utils.entity_courtesy import (
     entity_handles,
     safe_entity_states,
 )
-from precis.utils.link_tag_ops import link_reason_suffix
+from precis.utils.link_tag_ops import (
+    CONSIDERED_VERDICT_LABELS,
+    LinkWhy,
+    link_reason_suffix,
+    link_why,
+)
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
@@ -1083,9 +1088,24 @@ class _RingNeighbour:
     passages: tuple[tuple[int, int | None], ...] = ()
     log_entry: tuple[int, str] | None = None
     suspect: bool = False
-    #: Distinct non-empty ``meta.reason`` values across the folded edges,
-    #: first-seen order (gr626896 — an edge's why displays where it lists).
+    #: Distinct non-empty whys across the folded edges, first-seen order
+    #: (gr626896 — an edge's why displays where it lists; a ``considered``
+    #: edge's is the composed verdict line, :func:`link_why`).
     reasons: tuple[str, ...] = ()
+    #: The ``considered`` verdict slug when a folded edge carries one
+    #: (gr662069) — what the Considered group counts per verdict.
+    verdict: str | None = None
+
+
+def _why_parts(why: Any) -> tuple[str | None, str | None]:
+    """``(display text, verdict)`` of an edge's why as the bucket carries
+    it — a :class:`LinkWhy` from :func:`_edge_reasons_by_id`, or the bare
+    ``meta.reason`` string older call paths still pass."""
+    if isinstance(why, LinkWhy):
+        return (why.text or None), why.verdict
+    if isinstance(why, str) and why.strip():
+        return why, None
+    return None, None
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
@@ -1207,13 +1227,26 @@ def _more_hint_factory(
     The call re-reads the focus with ``q='<label>'``, which lists that whole
     group (:func:`_expand_first_hop`). For a memory whose group members share
     a ``section:<type>`` tag a scoped ``search`` is offered too."""
-    if not any(len(ns) > _NEIGHBOR_GROUP_CAP for ns in hop1.values()):
+    if not any(
+        len(ns)
+        > (_CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP)
+        for (group, _label), ns in hop1.items()
+    ):
         return None
     focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if focus is None:
         return None
     kind = str(getattr(focus, "kind", "") or "")
     handle = handle_registry.format_handle(kind, ref_id)
+    from precis.store._consideration_ops import CONSIDERATION_LEDGER_KINDS
+
+    if kind in CONSIDERATION_LEDGER_KINDS:
+        # The scope's own verdicts overflow into their ledger — current
+        # verdicts, the reopen queue and the judgment history — not into
+        # another ring page (gr662069).
+        ledger_hint = f" · get(kind={kind!r}, id={handle!r}, view='considerations')"
+    else:
+        ledger_hint = None
     space = None
     if kind == "memory":
         space = next(
@@ -1226,6 +1259,8 @@ def _more_hint_factory(
         )
 
     def hint(label: str, ns: list[_RingNeighbour]) -> str:
+        if label == "considered" and ledger_hint is not None:
+            return ledger_hint
         out = (
             f" · get(kind={kind!r}, id={handle!r}, extent='fisheye+1hop', q={label!r})"
         )
@@ -1470,20 +1505,28 @@ def _collapse_pairs(
     of one source and must render as one row, not N identical rows). A row
     is ``suspect`` when any folded edge's ``(ref, chunk)`` is in
     ``suspect``; its ``reasons`` are the folded edges' distinct non-empty
-    ``meta.reason`` values, first-seen order (gr626896)."""
-    acc: dict[int, tuple[int, list[int], bool, list[str]]] = {}
+    whys, first-seen order (gr626896); its ``verdict`` the first
+    ``considered`` verdict among them (gr662069)."""
+    acc: dict[int, tuple[int, list[int], bool, list[str], str | None]] = {}
     order: list[int] = []
     for oid, ck, why in pairs:
         slot = acc.get(oid)
         if slot is None:
-            acc[oid] = slot = (0, [], False, [])
+            acc[oid] = slot = (0, [], False, [], None)
             order.append(oid)
-        edges, chunks, sus, reasons = slot
-        acc[oid] = (edges + 1, chunks, sus or (oid, ck) in suspect, reasons)
+        edges, chunks, sus, reasons, verdict = slot
+        text, v = _why_parts(why)
+        acc[oid] = (
+            edges + 1,
+            chunks,
+            sus or (oid, ck) in suspect,
+            reasons,
+            verdict or v,
+        )
         if ck is not None and ck not in chunks:
             chunks.append(ck)
-        if isinstance(why, str) and why.strip() and why not in reasons:
-            reasons.append(why)
+        if text is not None and text not in reasons:
+            reasons.append(text)
     return [
         _RingNeighbour(
             oid,
@@ -1491,6 +1534,7 @@ def _collapse_pairs(
             passages=tuple((c, ords.get(c)) for c in acc[oid][1]),
             suspect=acc[oid][2],
             reasons=tuple(acc[oid][3]),
+            verdict=acc[oid][4],
         )
         for oid in order
     ]
@@ -1551,12 +1595,13 @@ def _first_hop(
             seen.add(cid)
             ord_, section, preview = entry
             label = f"quest log — {section}" if section else "quest log"
+            why_text = _why_parts(why)[0]
             out.setdefault((key[0], label), []).append(
                 _RingNeighbour(
                     oid,
                     passages=((cid, ord_),),
                     log_entry=(ord_, preview),
-                    reasons=(why,) if isinstance(why, str) and why.strip() else (),
+                    reasons=(why_text,) if why_text is not None else (),
                 )
             )
         if ordinary:
@@ -1678,23 +1723,38 @@ def _neighbourhood_edges(
     return edges
 
 
-def _edge_reasons_by_id(store: Store, link_ids: list[int]) -> dict[int, Any]:
-    """``{link_id: meta['reason']}`` for the listed edges in one query —
-    the value the ring appends to the neighbour row. A read failure
-    reads as no reasons, never a broken render."""
+def _edge_reasons_by_id(store: Store, link_ids: list[int]) -> dict[int, LinkWhy]:
+    """``{link_id: why}`` for the listed edges in one query — the value
+    the ring appends to the neighbour row: ``meta.reason`` for a plain
+    edge, the composed verdict line for a ``considered`` edge
+    (:func:`link_why`, gr662069). A read failure reads as no reasons,
+    never a broken render."""
     if not link_ids:
         return {}
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT link_id, meta->>'reason' FROM links "
-                "WHERE link_id = ANY(%s) AND meta ? 'reason'",
+                "SELECT link_id, meta->>'reason', meta->>'verdict', "
+                "meta->>'depth', meta->>'checked_at' FROM links "
+                "WHERE link_id = ANY(%s) AND (meta ? 'reason' OR meta ? 'verdict')",
                 (link_ids,),
             ).fetchall()
     except Exception:
         log.debug("link reason read failed", exc_info=True)
         return {}
-    return {int(r[0]): r[1] for r in rows}
+    out: dict[int, LinkWhy] = {}
+    for lid, reason, verdict, depth, checked in rows:
+        why = link_why(
+            {
+                "reason": reason,
+                "verdict": verdict,
+                "depth": depth,
+                "checked_at": checked,
+            }
+        )
+        if why is not None:
+            out[int(lid)] = why
+    return out
 
 
 def _live(refs: dict[int, Any], oid: int) -> bool:
@@ -1956,20 +2016,44 @@ def _render_first_hop(
                 f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
             )
             continue
-        lines.append(f"  {label} ({len(live_ids)}):")
-        for n in live_ids[:_NEIGHBOR_GROUP_CAP]:
+        # gr662069 / me626853: the scope's judged-out candidates are a
+        # count first and a short list second — they never spend the
+        # per-group row budget the useful rows get.
+        cap = _CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP
+        counts = _verdict_counts(live_ids) if group == "Considered" else ""
+        lines.append(f"  {label} ({len(live_ids)}{': ' + counts if counts else ''}):")
+        for n in live_ids[:cap]:
             lines.append(
                 f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
             )
-        if len(live_ids) > _NEIGHBOR_GROUP_CAP:
+        if len(live_ids) > cap:
             more = more_hint(label, live_ids) if more_hint is not None else ""
-            lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more{more}")
+            lines.append(f"    … +{len(live_ids) - cap} more{more}")
     if hub_handle is not None and heading is not None:
         lines.append(
             f"search within: search(kind='memory', q='<terms>', "
             f"args={{'under': '{hub_handle}'}})"
         )
     return "\n".join(lines) if heading is not None else ""
+
+
+#: Rows the Considered group lists before its ``… +N more`` line — the
+#: group is a count first (me626853: negative candidates must not exhaust
+#: the useful-row budget); the ledger (``view='considerations'``) is the
+#: expansion.
+_CONSIDERED_ROW_CAP = 3
+
+
+def _verdict_counts(ns: list[_RingNeighbour]) -> str:
+    """``"4 not useful · 1 uncertain"`` — the Considered group's header
+    tally, verdicts in severity order, zero counts omitted."""
+    tally = {v: 0 for v in ("not-useful", "uncertain", "useful")}
+    for n in ns:
+        if n.verdict in tally:
+            tally[n.verdict] += 1
+    return " · ".join(
+        f"{count} {CONSIDERED_VERDICT_LABELS[v]}" for v, count in tally.items() if count
+    )
 
 
 def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "", size: str = "") -> str:

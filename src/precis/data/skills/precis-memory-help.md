@@ -581,6 +581,101 @@ Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`).
 Relation vocabulary (`cites`, `disputes`, `contradicts`, `supports`,
 `derived-from`, …) lives in `precis-relations`.
 
+## Record a considered verdict on a source
+## Mark a checked source as not a match for this question
+
+`rel='considered'` is the durable "checked, does not fit for this
+question, at <UTC>, because <reason>" record (spec me626852). The scope
+is the memory (or quest) holding the question; the target is the judged
+source:
+
+```python
+link(
+    kind="memory",
+    id=73,
+    target="pa<id>",
+    rel="considered",
+    meta={
+        "verdict": "not-useful",   # useful | not-useful | uncertain
+        "reason": "lithium-only; the question is sodium",
+        "depth": "abstract",       # none|metadata|abstract|partial|fulltext|passages
+        "passages": ["pc<id>"],    # optional evidence pins
+        "model": "…", "run": "…",  # optional provenance
+    },
+)
+```
+
+Rules that bite:
+
+- `reason` is required and must be a real sentence — the verdict IS its
+  "not a match because …". `depth='none'` means the text was never
+  acquired: it pairs only with `verdict='uncertain'` and never excludes
+  the source anywhere.
+- Re-judging the same pair replaces the edge's verdict block (omitted
+  `passages`/`model`/`run` are dropped, not inherited) and appends one
+  history row per judgment — two runs never collapse.
+- The current verdict is one per scope/source pair, whatever chunk it
+  was grounded at: a later judgment at another endpoint supersedes the
+  earlier one (history keeps both), so chunk A not-useful then chunk B
+  useful no longer excludes the source.
+- A material edit to the scope or the source makes the verdict stale:
+  it stops excluding and shows up in the reopen queue. The scope pin
+  tracks the whole question — a retitle or an edit to any of its chunks
+  reopens review even when the verdict was grounded at one passage (a
+  quest's logbook entries do not count: the log records what was done,
+  it never changes the question); the source pin tracks the judged
+  endpoint. History is never cleared by an edit.
+- If a chunk-grounded edge dies with its chunk (body chunks are replaced
+  on re-ingest), the judgment is not lost: it sits in the reopen queue
+  as `edge-lost` until re-judged. Removing the edge through the link
+  door (`link(mode='remove')`) is a deliberate withdrawal instead — the
+  pair's history rows are stamped `withdrawn` and it leaves the queue,
+  even when the edge is already gone (an `edge-lost` orphan). A
+  re-judgment retires the older orphans of its pair, so withdrawing
+  later never resurrects them.
+- Canonical merges (dedup, supersede) reconcile the ledger: judgments
+  follow their pair onto the canonical refs and the merged pair's
+  current verdict is its LATEST judgment — whichever side it was judged
+  on. A verdict judged against different content goes stale on the
+  canonical ref (real reconsideration); an identical-content merge keeps
+  it valid. The garden apply doors are the exception: their undo
+  records snapshot links only, so a merge loser — or a retire /
+  supersede / split / compact-retire target or canonical pair —
+  carrying a live verdict is refused. Withdraw the pair's `considered`
+  edge first, or go through the unreviewed merge/delete door, which
+  reconciles the ledger. `garden undo` likewise refuses while a live
+  judgment names the retired scope.
+
+One paper can be `not-useful` for one scope and `useful` for another —
+exclusions are always scoped. Cheap triage never writes a verdict: only
+an explicit `rel='considered'` call records one. Writing the reason:
+[[precis-link-reason-help]].
+
+## Inspect what a scope judged out, and search past it
+## Where do I see the verdicts, and how does a search skip them?
+
+The ledger — current verdicts, the reopen queue, and the append-only
+judgment history (page it with `args={'limit': 20, 'offset': 20}`; each
+row shows its passages, prompt and revision pins):
+
+```python
+get(kind="memory", id=73, view="considerations")
+# a quest scope reads the same ledger:
+get(kind="quest", id="qu<N>", view="considerations")
+```
+
+A novelty search for the same scope consumes the valid `not-useful`
+verdicts across every leg and reports what it excluded:
+
+```python
+search(kind="paper", q="…", args={"novel_for": "me73"})
+```
+
+The quest lit-search tick holds a quest's valid `not-useful` verdicts out
+the same way. On the eye (`extent='fisheye+1hop'`) the verdicts are the
+`Considered` group — a count first, three rows, then this ledger
+([[precis-fisheye-help]]).
+
 ## Name another ref in the text — it auto-links
 ## Cite a paper / patent / memory inline so the connection is traceable
 

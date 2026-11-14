@@ -920,6 +920,8 @@ class MemoryHandler(NumericRefHandler):
         since: str | int | None = None,
         # ``view='members'``'s cursor args (``args={'offset': N,
         # 'depth': D}``) — declared so the extras gate accepts them.
+        # ``offset``/``limit`` also page ``view='considerations'``'s
+        # judgment history.
         offset: int | str | None = None,
         depth: int | str | None = None,
         limit: int | str | None = None,
@@ -953,17 +955,23 @@ class MemoryHandler(NumericRefHandler):
                 next="get(kind='memory', id=N, view='environment', args={'hops': 2})",
             )
         if offset is not None and (
-            view not in {"members", "log", "toc"} or q is not None
+            view not in {"members", "log", "toc", "considerations"} or q is not None
         ):
             raise BadInput(
-                "offset= can only apply to memory view='members', 'log' or 'toc'",
+                "offset= can only apply to memory view='members', 'log', "
+                "'toc' or 'considerations'",
                 next="get(kind='memory', id=N, view='log', args={'offset': 0})",
             )
-        if any(v is not None for v in (limit, event_id)) and (
-            view != "log" or q is not None
+        if limit is not None and (
+            view not in {"log", "considerations"} or q is not None
         ):
             raise BadInput(
-                "limit=/event_id= only apply to memory view='log'",
+                "limit= only applies to memory view='log' or 'considerations'",
+                next="get(kind='memory', id=N, view='log')",
+            )
+        if event_id is not None and (view != "log" or q is not None):
+            raise BadInput(
+                "event_id= only applies to memory view='log'",
                 next="get(kind='memory', id=N, view='log')",
             )
         if any(v is not None for v in (rel, of_kind, direction)) and (
@@ -1095,6 +1103,42 @@ class MemoryHandler(NumericRefHandler):
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
+        if view == "considerations" and concrete:
+            # gr662069 (me626852): the scope's verdict ledger — current
+            # judgments, the reopen queue and the judgment history (one
+            # page; ``args={'limit': N, 'offset': M}`` pages it).
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='considerations' requires one memory id",
+                    next="get(kind='memory', id=N, view='considerations')",
+                )
+            from precis.handlers._memory_considerations import (
+                render_considerations,
+            )
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+
+            def _page_int(value: Any, name: str, minimum: int) -> int:
+                try:
+                    parsed = int(str(value))
+                except (TypeError, ValueError):
+                    parsed = minimum - 1
+                if parsed < minimum:
+                    raise BadInput(
+                        f"{name}= must be an integer >= {minimum}, got {value!r}",
+                        next="get(kind='memory', id=N, view='considerations', "
+                        f"args={{{name!r}: <int>}})",
+                    )
+                return parsed
+
+            page_limit = 10 if limit is None else _page_int(limit, "limit", 1)
+            page_offset = 0 if offset is None else _page_int(offset, "offset", 0)
+            return render_considerations(
+                self.store,
+                ref,
+                history_limit=page_limit,
+                history_offset=page_offset,
+            )
         if concrete and is_eye_view(view):
             return self.eye(id=id, extent=view, q=q)
         if concrete and q is None and view == "body":
@@ -1118,6 +1162,7 @@ class MemoryHandler(NumericRefHandler):
             legal = [
                 "argument",
                 "body",
+                "considerations",
                 "environment",
                 "members",
                 "processing",

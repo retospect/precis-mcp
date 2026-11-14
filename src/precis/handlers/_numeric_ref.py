@@ -97,7 +97,7 @@ from precis.utils.link_tag_ops import (
     check_relation_constraints,
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
-    link_reason_suffix,
+    link_why_suffix,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -4917,11 +4917,9 @@ class NumericRefHandler(Handler):
             if ref.retired_at is not None:
                 target += " (deleted)"
         # gr626896: the edge's own why renders after the relation —
-        # ``meta.reason='.'`` (reviewed-obvious) prints as a bare period.
-        return (
-            f"{arrow} {target}  ({link.relation})"
-            f"{link_reason_suffix((link.meta or {}).get('reason'))}"
-        )
+        # ``meta.reason='.'`` (reviewed-obvious) prints as a bare period;
+        # a ``considered`` edge prints its verdict line (gr662069).
+        return f"{arrow} {target}  ({link.relation}){link_why_suffix(link.meta)}"
 
     # F8 rel-name → inbound-passive-form mapping (``_INVERSE_REL``) moved
     # to ``precis.handlers._links_render`` alongside the rest of

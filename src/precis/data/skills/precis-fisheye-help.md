@@ -167,6 +167,13 @@ Parallel edges to the **same** neighbour collapse into one row:
 `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`
 counts edges; the handles are passages to `get`.
 
+A row's why is composed: a link's `reason` appends ` — <reason>` (also in
+the Links table and `view='links'`); a `considered` edge appends its
+verdict, depth, date and reason. With more than one `considered` edge the
+label line is count-first, `considered (3: 2 not useful · 1 uncertain):`,
+then at most 3 rows and `… +K more · get(kind='memory', id='me<N>',
+view='considerations')` — the ledger. `precis-link-reason-help`.
+
 ## The ring groups — relation → heading
 
 | Ring | Relations | Worked example |
@@ -179,6 +186,7 @@ counts edges; the handles are passages to `get`.
 | **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
 | **Argument** | `entails`, `entailed-by`, `qualifies`, `qualified-by`, `derived-from`, `derived-into` | `get(kind='memory', id='me12', extent='fisheye+1hop')` → `Argument:` · `derived-from: me3 — …` (the proof tree itself: `view='argument'`, `precis-memory-help`) |
 | **Notes & links** | `related-to`, `see-also`, `supports`, `cites`, `generalises`, `corrects` | `get(kind='paper', id='pa5', extent='fisheye+1hop')` → `Notes & links:` · `related-to: me77 — Read this for the floppy modes`; a finding joins a quest by `serves` (a `supports` edge on a quest is refused), so it reads `served-by:` under `Roadmap` on the quest, listed after sub-quests and before papers |
+| **Considered** (listed last) | `considered` (an inbound edge reads `<-considered`) | `get(kind='memory', id='me42', extent='fisheye+1hop')` → `Considered:` · `considered: pa5 — <title> — not useful (abstract, 2026-11-14): lithium-only; question is sodium`; on `pa5` the same edge reads `<-considered: me42 — … — not useful (abstract, 2026-11-14): …` |
 
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
 structural and not in the ring; `view='links'` lists everything.
@@ -296,3 +304,4 @@ its immediate surroundings rendered around it.
 - [[precis-relations]] — link relation vocabulary (cites, see-also, …)
 - [[precis-taproot-help]] — the Claims group's claim hubs, evidence edges
 - [[precis-memory-help]] — the memory walk, view='argument'
+- [[precis-link-reason-help]] — the why on a ring row

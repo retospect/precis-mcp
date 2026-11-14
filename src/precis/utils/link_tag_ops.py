@@ -23,6 +23,7 @@ these helpers.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -132,7 +133,9 @@ def link_reason_suffix(reason: Any) -> str:
     every link-row surface (``_links_render``'s ``Links:`` table,
     ``NumericRefHandler``'s ``view='links'``, the eye's ring rows) so
     the reason renders identically everywhere — the reviewed-obvious
-    marker ``'.'`` prints as a bare period."""
+    marker ``'.'`` prints as a bare period. A ``considered`` edge's why
+    is composed first by :func:`link_why`; pass its ``.text`` here, or
+    call :func:`link_why_suffix` on the whole meta."""
     if not isinstance(reason, str):
         return ""
     text = " ".join(reason.split())
@@ -141,6 +144,66 @@ def link_reason_suffix(reason: Any) -> str:
     if len(text) > LINK_REASON_DISPLAY_CAP:
         text = text[: LINK_REASON_DISPLAY_CAP - 1].rstrip() + "…"
     return f" — {text}"
+
+
+#: How a ``considered`` edge's ``meta.verdict`` reads in a link row
+#: (``precis.store._consideration_ops.CONSIDER_VERDICTS``).
+CONSIDERED_VERDICT_LABELS: dict[str, str] = {
+    "not-useful": "not useful",
+    "uncertain": "uncertain",
+    "useful": "useful",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LinkWhy:
+    """An edge's displayed why. ``text`` is what the row appends after
+    `` — ``; ``verdict`` is set only for a ``considered`` edge (the raw
+    ``meta.verdict`` slug), so a ring can count verdicts per group
+    without re-reading the edge meta."""
+
+    text: str
+    verdict: str | None = None
+
+
+def link_why(meta: Any) -> LinkWhy | None:
+    """The why a link row shows for an edge's ``meta``, or ``None`` when
+    it carries none.
+
+    A plain edge shows ``meta.reason`` (gr626896). A ``considered`` edge
+    (gr662069, spec me626852) carries a verdict block instead of a bare
+    reason, and its row must show the verdict *as such* — an abstract-only
+    rejection reads differently from a full-text one — so the why is
+    composed: ``not useful (abstract, 2026-11-14): lithium-only; the
+    question is sodium``. ``depth='none'`` prints as ``no text`` (it is
+    acquisition state, never a rejection). The date is the UTC day of
+    ``meta.checked_at``; the composition is the one string every link
+    surface (links table, ``view='links'``, the eye's rings) appends.
+    """
+    m = meta if isinstance(meta, dict) else {}
+    verdict = m.get("verdict")
+    reason = m.get("reason")
+    if not isinstance(verdict, str) or not verdict.strip():
+        return LinkWhy(reason) if isinstance(reason, str) and reason.strip() else None
+    verdict = verdict.strip()
+    label = CONSIDERED_VERDICT_LABELS.get(verdict, verdict)
+    depth = m.get("depth")
+    qualifiers: list[str] = []
+    if isinstance(depth, str) and depth.strip():
+        qualifiers.append("no text" if depth.strip() == "none" else depth.strip())
+    checked = m.get("checked_at")
+    if isinstance(checked, str) and len(checked) >= 10:
+        qualifiers.append(checked[:10])
+    head = f"{label} ({', '.join(qualifiers)})" if qualifiers else label
+    because = " ".join(reason.split()) if isinstance(reason, str) else ""
+    return LinkWhy(f"{head}: {because}" if because else head, verdict=verdict)
+
+
+def link_why_suffix(meta: Any) -> str:
+    """:func:`link_reason_suffix` over :func:`link_why` — the one call a
+    link-row renderer makes on an edge's ``meta``."""
+    why = link_why(meta)
+    return link_reason_suffix(why.text) if why is not None else ""
 
 
 def _endpoint_kinds(store: Store, a_ref_id: int, b_ref_id: int) -> dict[int, str]:

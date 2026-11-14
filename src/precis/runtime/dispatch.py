@@ -2306,7 +2306,7 @@ class DispatchMixin(RuntimeShape):
         extras = args.get(_EXTRAS_KEY)
         if not isinstance(extras, dict):
             return
-        for key in ("uncited", "cited", "hubbed"):
+        for key in ("uncited", "cited", "hubbed", "novel_for"):
             if extras.get(key) is None:
                 continue
             if args.get(key) is not None:
@@ -2410,6 +2410,7 @@ class DispatchMixin(RuntimeShape):
             args.get("uncited") is not None
             or args.get("cited") is not None
             or args.get("hubbed") is not None
+            or args.get("novel_for") is not None
         ):
             self._reject_source_facet_unfiltered_shape(args)
             facet_note = self._resolve_source_facets(args)
@@ -2699,9 +2700,10 @@ class DispatchMixin(RuntimeShape):
         return Response(body="\n".join(lines))
 
     def _reject_source_facet_unfiltered_shape(self, args: dict[str, Any]) -> None:
-        """Refuse ``uncited=``/``cited=``/``hubbed=`` on the search shapes
-        that :meth:`_dispatch_inner_core` intercepts and returns from
-        *before* any ``exclude_ref_ids``/``include_ref_ids`` is consulted.
+        """Refuse ``uncited=``/``cited=``/``hubbed=``/``novel_for=`` on the
+        search shapes that :meth:`_dispatch_inner_core` intercepts and
+        returns from *before* any
+        ``exclude_ref_ids``/``include_ref_ids`` is consulted.
 
         ``view='dreamable'``, ``view='chase-queue'`` and
         the ``angle=``/``like=`` spray each pick their own seed and target
@@ -2714,7 +2716,11 @@ class DispatchMixin(RuntimeShape):
         this must fail loudly. Same stance as the ``UNCITED_UNSUPPORTED_KINDS``
         guard, for the same reason.
         """
-        facets = [f for f in ("uncited", "cited", "hubbed") if args.get(f) is not None]
+        facets = [
+            f
+            for f in ("uncited", "cited", "hubbed", "novel_for")
+            if args.get(f) is not None
+        ]
         if not facets:
             return
         view = str(args.get("view") or "").strip()
@@ -2791,6 +2797,8 @@ class DispatchMixin(RuntimeShape):
             notes.append(self._resolve_cited_include(args))
         if args.get("hubbed") is not None:
             notes.append(self._resolve_hubbed_facet(args))
+        if args.get("novel_for") is not None:
+            notes.append(self._resolve_novel_for_exclude(args))
         return "\n".join(notes) if notes else None
 
     def _resolve_uncited_exclude(self, args: dict[str, Any]) -> str:
@@ -2929,6 +2937,91 @@ class DispatchMixin(RuntimeShape):
         merged |= hubbed_ids
         args["exclude_ref_ids"] = sorted(merged)
         return f"_(hubbed=false: {n} hubbed paper{'s' if n != 1 else ''} excluded)_"
+
+    def _resolve_novel_for_exclude(self, args: dict[str, Any]) -> str:
+        """Resolve ``search(args={'novel_for': <scope>})`` into
+        ``args['exclude_ref_ids']`` — the novelty leg (gr662069,
+        spec me626852).
+
+        ``<scope>`` is a memory-or-question handle (any live ref — a quest
+        works for the lit-search consumer, gr592951). Sources carrying a
+        *valid* ``not-useful`` ``considered`` verdict for that scope are
+        merged into the shared exclusion channel every retrieval leg
+        reads, so a judged-out candidate never resurfaces for the same
+        question while staying reachable for every other scope. Verdicts
+        whose scope or source changed since judgment are NOT excluded —
+        they are reported as reopened for reconsideration, as are
+        ``edge-lost`` judgments whose ``considered`` edge died in a
+        chunk-replacement cascade — and ``depth='none'`` rows are
+        acquisition markers, never exclusions.
+        Refuses (never silently unfiltered) when the scope doesn't
+        resolve, so a typo can't make judged-out hits look "new".
+        """
+        from precis.store._consideration_ops import CONSIDERATION_LEDGER_KINDS
+        from precis.utils import handle_registry
+        from precis.utils.link_target import parse_link_target
+
+        token = args.pop("novel_for")
+        store = self.store
+        if store is None:
+            raise Unsupported("novel_for= needs a store-backed deployment")
+        try:
+            scope = parse_link_target(str(token), store=store)
+        except PrecisError as exc:
+            raise BadInput(
+                f"novel_for={token!r} does not resolve to a live scope ref ({exc})",
+                next="pass a memory/question handle, e.g. args={'novel_for': 'me<N>'}",
+            ) from exc
+        found = store.consideration_exclusions(scope.ref_id)
+        self._note_channel_value(args, "exclude_ref_ids")
+        self._note_facet_origin(args, "exclude_ref_ids", "novel_for", token)
+        merged: set[int] = set(args.get("exclude_ref_ids") or ())
+        merged |= found.excluded
+        args["exclude_ref_ids"] = sorted(merged)
+        scope_handle = (
+            handle_registry.try_format(scope.kind, scope.ref_id)
+            or f"{scope.kind}:{scope.ref_id}"
+        )
+        parts = [
+            f"{len(found.excluded)} considered-not-useful "
+            f"source{'s' if len(found.excluded) != 1 else ''} excluded"
+        ]
+        shown = [
+            handle_registry.try_format(v.dst_kind, v.dst_ref_id)
+            or f"{v.dst_kind}:{v.dst_ref_id}"
+            for v in found.verdicts
+            if v.verdict == "not-useful" and v.valid
+        ][:5]
+        if shown:
+            parts[0] += f" ({', '.join(shown)})"
+        if found.stale:
+            stale_handles = ", ".join(
+                (
+                    handle_registry.try_format(v.dst_kind, v.dst_ref_id)
+                    or f"{v.dst_kind}:{v.dst_ref_id}"
+                )
+                + f" — {v.stale}"
+                for v in found.stale[:3]
+            )
+            parts.append(
+                f"{len(found.stale)} verdict"
+                f"{'s' if len(found.stale) != 1 else ''} stale — "
+                f"reconsider ({stale_handles})"
+            )
+        if found.needs_text:
+            parts.append(
+                f"{len(found.needs_text)} awaiting text (acquisition, not rejection)"
+            )
+        inspect_hint = (
+            f"get(kind={scope.kind!r}, id={scope_handle!r}, view='considerations')"
+            if scope.kind in CONSIDERATION_LEDGER_KINDS
+            else f"get(kind={scope.kind!r}, id={scope_handle!r}, "
+            "view='links', args={'rel': 'considered', 'direction': 'out'})"
+        )
+        return (
+            f"_(novel_for={scope_handle}: {'; '.join(parts)} — "
+            f"inspect: {inspect_hint})_"
+        )
 
     @staticmethod
     def _intersect_include_ref_ids(args: dict[str, Any], ids: set[int]) -> None:

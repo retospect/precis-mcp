@@ -35,7 +35,11 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
   `docs/reference/schema.md`, not the hit list. Relations
   between refs are typed **links** (`link` verb; e.g. reparenting via a
   reserved `parent` relation; `requested`→job) — not
-  raw foreign-key columns.
+  raw foreign-key columns. An edge's *why* rides `links.meta.reason`; a
+  `considered` edge (scope memory/quest → a judged candidate source)
+  carries a verdict block instead, and every judgment also lands an
+  append-only `considerations` row (`store/_consideration_ops.py`) — the
+  edge shows the latest verdict, the table keeps them all.
 - **`chunks` — the body text, append-only.** Body rows (`ord >= 0`) are
   **never mutated in place**; only `ord < 0` card variants may be
   DELETE+INSERTed by a registered synthesis pass. Derived data cascades off
