@@ -1009,12 +1009,24 @@ def placement_requires(
     bin token when the job names its lane: ``meta.adapter`` (stamped by
     a prior submit) or a ``params.lane`` pin resolved through
     ``lane_adapters`` ({lane: adapter}, :func:`lane_adapter_map`; absent
-    or unresolved → the ``builder`` floor stands)."""
+    or unresolved → the ``builder`` floor stands).
+
+    A ``run_slice`` / ``land_slice`` job for a second repo
+    (``params.repo`` a non-empty name other than the default) also needs
+    that repo's ``repo_checkout_<name>`` token, so only a host holding a
+    clone claims it. A name with no profile still adds its token: no host
+    advertises it, so the job waits (fail closed)."""
+    from precis.plans import lanes
+
     job_type = meta.get("job_type")
     spec = SERVICES_BY_NAME.get(str(job_type)) if job_type else None
     if spec is None:
         return frozenset()
     tokens = set(spec.placement)
+    if str(job_type) in ("run_slice", "land_slice"):
+        repo = (meta.get("params") or {}).get("repo")
+        if isinstance(repo, str) and repo and repo != lanes.DEFAULT_REPO:
+            tokens.add(lanes.repo_checkout_token(repo))
     if str(job_type) != "run_slice" or "builder" not in tokens:
         return frozenset(tokens)
     adapter = meta.get("adapter")

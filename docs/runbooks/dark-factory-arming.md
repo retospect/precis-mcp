@@ -691,10 +691,14 @@ Opening a second repo, in order:
    `{"<repo>": "/path/to/clone"}`. The slice lane (playbook 20g) and the
    collapsed worker (20b, which also runs `job_ssh_node`) render it from
    the host var `precis_slice_repos` (a dict, set in the overlay for the
-   gateway; unset, the key is omitted). The builder-host lane (20i) does
-   not render it: a builder host that claims a second-repo slice fails
-   its submit. After the first deploy, read the rendered units and check
-   the value is valid JSON.
+   gateway; unset, the key is omitted). A host advertises
+   `repo_checkout_<name>` only when its heartbeating worker unit has
+   `PRECIS_SLICE_REPOS` naming an existing clone, and a second-repo
+   `run_slice` / `land_slice` job is placed only on such a host. With no
+   such host the job stays queued with the usual "no host advertises"
+   note. The builder-host lane (20i) does not render the variable, so
+   builder hosts do not take second-repo slices. After the first deploy,
+   read the rendered units and check the value is valid JSON.
 3. Prove the factory git token from that host against the repo:
    `git ls-remote` under the credential, plus one API read.
 4. The repo's profile must have a lander: `lanes.known_repos()` lists

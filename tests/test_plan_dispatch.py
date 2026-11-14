@@ -8400,11 +8400,11 @@ def test_queued_slice_with_no_capable_host_gets_a_note(store: Store) -> None:
     _backdate(store, job, 15)
     # Capabilities split across two hosts: neither can place the slice.
     _advertise(store, "node-a", {"repo_checkout": 1})
-    _advertise(store, "node-b", {"claude_bin": 1, "git": 1})
+    _advertise(store, "node-b", {"builder": 1, "claude_bin": 1, "git": 1})
     res = pd.run_pass(store)
     assert _unplaced_notes(res) == [
         f"td{task}: job jo{job} queued 15 min — no host advertises "
-        "{claude_bin, git, repo_checkout}"
+        "{builder, git, repo_checkout}"
     ]
     # A job still queued is no attempt: no ask, no second dispatch.
     assert (res.asks, res.dispatched) == (0, 0)
@@ -8422,7 +8422,9 @@ def test_queued_slice_with_a_capable_host_gets_no_note(store: Store) -> None:
     mint = _one_task_plan(store)
     job = _slice_job(store, mint.ids["task"], "run_slice", "queued")
     _backdate(store, job, 30)
-    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
     assert _unplaced_notes(pd.run_pass(store)) == []
 
 
@@ -8444,7 +8446,7 @@ def test_queued_slice_asks_after_thirty_minutes(store: Store) -> None:
     mark = _meta(store, task)[pd._UNPLACED_ASK_KEY]
     ask = int(mark["ask"])
     assert mark["job"] == job
-    assert mark["gap"] == ["claude_bin", "git", "repo_checkout"]
+    assert mark["gap"] == ["builder", "git", "repo_checkout"]
     ameta = _meta(store, ask)["ask"]
     assert ameta["kind"] == "ruling"
     assert ameta["blocks"] == f"td{task}"
@@ -8481,7 +8483,9 @@ def test_unplaced_ask_closes_done_when_the_gap_heals(store: Store) -> None:
     _backdate(store, job, 35)
     assert pd.run_pass(store).asks == 1
     ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
-    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
     pd.run_pass(store)
     assert _status(store, ask) == "done"
 

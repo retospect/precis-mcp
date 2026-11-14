@@ -40,6 +40,7 @@ from importlib.util import find_spec
 from pathlib import PurePosixPath
 
 from precis.embedder_wire import PATH_READY
+from precis.plans import lanes
 from precis.workers.registry import SERVICES
 
 log = logging.getLogger(__name__)
@@ -99,17 +100,27 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 LANE_BIN_TOKENS = frozenset({"claude_bin", "codex_bin", "kimi_bin", "devin_bin"})
 
 
+#: The per-repo checkout tokens a second-repo slice job asks for: no
+#: ServiceSpec declares them statically — ``placement_requires`` adds one
+#: per job from ``params.repo`` — but the heartbeat must still probe them
+#: so each host advertises the repos it holds a clone of. Built from every
+#: profile, with or without a lander.
+SECOND_REPO_TOKENS = frozenset(
+    lanes.repo_checkout_token(name) for name in lanes.REPO_PROFILES
+)
+
+
 def capability_vocabulary() -> frozenset[str]:
     """Every capability token any service declares via ``requires`` or
     ``placement`` (the check-only claim-gate tokens, td543917), plus the
     lane-bin tokens :data:`LANE_BIN_TOKENS` a lane-aware run_slice asks
-    for per job.
+    for per job and the per-repo checkout tokens :data:`SECOND_REPO_TOKENS`.
 
     The self-probe evaluates exactly this set, so a capability no host can
     provide still gets a definitive absent (deleted) row rather than being
     silently ignored.
     """
-    tokens: set[str] = set(LANE_BIN_TOKENS)
+    tokens: set[str] = set(LANE_BIN_TOKENS) | set(SECOND_REPO_TOKENS)
     for spec in SERVICES:
         tokens |= set(spec.requires) | set(spec.placement)
     return frozenset(tokens)
@@ -387,6 +398,30 @@ def _probe_repo_checkout() -> int | None:
     return 1 if root.is_dir() and (root / ".git").exists() else 0
 
 
+def _make_repo_probe(name: str) -> Callable[[], int | None]:
+    """The probe for ``repo_checkout_<name>``: ``run_slice.slice_root_for``
+    resolving to a directory that holds a ``.git`` entry. ``1`` present; ``0``
+    when it raises (``PRECIS_SLICE_REPOS`` unset, malformed or without an
+    entry) or the path is not such a directory; ``None`` on an unexpected
+    ``OSError`` (leave the row)."""
+
+    def probe() -> int | None:
+        from precis.workers.job_types import run_slice
+
+        try:
+            root = run_slice.slice_root_for(name)
+        except (RuntimeError, FileNotFoundError):
+            return 0
+        except (OSError, subprocess.SubprocessError):
+            log.warning(
+                "capability_probe: repo_checkout_%s probe failed", name, exc_info=True
+            )
+            return None
+        return 1 if root.is_dir() and (root / ".git").exists() else 0
+
+    return probe
+
+
 def _probe_autocatpath() -> int:
     """The ``autocatpath`` engine importable in THIS venv (gr543909) — 1/0,
     never unknown. ``find_spec`` locates the package without importing it
@@ -549,6 +584,10 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "autocatpath": _probe_autocatpath,
     "has_mace": _probe_has_mace,
     "latexmk": _probe_latexmk,
+    **{
+        lanes.repo_checkout_token(_n): _make_repo_probe(_n)
+        for _n in lanes.REPO_PROFILES
+    },
 }
 
 #: Vocabulary tokens already warned about as probe-less — the

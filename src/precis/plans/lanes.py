@@ -429,6 +429,14 @@ def repo_profile(name: str) -> RepoProfile | None:
     return REPO_PROFILES.get(name)
 
 
+def repo_checkout_token(name: str) -> str:
+    """The ``resource_slots`` capability a host advertises when it holds a
+    clone of repo ``name`` (``PRECIS_SLICE_REPOS`` names an existing one).
+    The default repo keeps the plain ``repo_checkout`` token; a second-repo
+    ``run_slice`` / ``land_slice`` job is placed only on a host with this one."""
+    return f"repo_checkout_{name}"
+
+
 def known_repos() -> tuple[str, ...]:
     """Repos ``run_slice`` can build end to end: the :data:`REPO_PROFILES`
     names whose profile has a ``lander``, in registry order. A ``repo:``

@@ -428,6 +428,71 @@ def test_placement_gap_reads_the_substituted_token() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("meta", "expected"),
+    [
+        (
+            {"job_type": "run_slice", "params": {"repo": "catpath"}},
+            {"repo_checkout", "builder", "git", "repo_checkout_catpath"},
+        ),
+        # Composes with the lane-bin substitution.
+        (
+            {"job_type": "run_slice", "params": {"repo": "catpath", "lane": "kimi"}},
+            {"repo_checkout", "kimi_bin", "git", "repo_checkout_catpath"},
+        ),
+        (
+            {"job_type": "land_slice", "params": {"repo": "catpath"}},
+            {"repo_checkout", "git", "repo_checkout_catpath"},
+        ),
+        # A repo with no profile still adds its token: fail closed.
+        (
+            {"job_type": "run_slice", "params": {"repo": "nope"}},
+            {"repo_checkout", "builder", "git", "repo_checkout_nope"},
+        ),
+        # The default repo, an empty or non-string value, and no repo at
+        # all keep the plain tokens.
+        (
+            {"job_type": "run_slice", "params": {"repo": "precis"}},
+            {"repo_checkout", "builder", "git"},
+        ),
+        (
+            {"job_type": "land_slice", "params": {"repo": "precis"}},
+            {"repo_checkout", "git"},
+        ),
+        (
+            {"job_type": "run_slice", "params": {"repo": ""}},
+            {"repo_checkout", "builder", "git"},
+        ),
+        ({"job_type": "land_slice", "params": {}}, {"repo_checkout", "git"}),
+    ],
+)
+def test_placement_requires_adds_the_second_repo_token(
+    meta: dict[str, Any], expected: set[str]
+) -> None:
+    """A second-repo slice job must require ``repo_checkout_<repo>``; if it
+    does not, any host with ``repo_checkout`` + ``git`` claims it and the job
+    fails at submit for want of a clone."""
+    from precis.workers.executors._common import placement_requires
+
+    assert placement_requires(meta, {"kimi": "kimi_tree"}) == frozenset(expected)
+
+
+def test_second_repo_job_needs_a_host_with_the_repo_token() -> None:
+    """A host advertising everything except ``repo_checkout_catpath`` fails
+    the gate and ``placement_gap`` names the token; breaking this lets a
+    builder host without a clone claim the job."""
+    from precis.workers.executors._common import _placement_ok, placement_gap
+
+    meta = {"job_type": "run_slice", "params": {"repo": "catpath"}}
+    base = {"repo_checkout", "builder", "git"}
+    full = base | {"repo_checkout_catpath"}
+    assert not _placement_ok(meta, {"h1": base}, "h1")
+    assert _placement_ok(meta, {"h1": full}, "h1")
+    assert placement_gap(meta, {"h1": base}) == frozenset(full)
+    assert placement_gap(meta, {"h1": base, "h2": full}) == frozenset()
+    assert placement_gap(meta, {}) == frozenset(full)
+
+
 def test_lane_adapter_map_reads_llm_account(store: Store) -> None:
     """``lane_adapter_map`` is the claim/sweeper/plan-tick lookup that
     turns ``params.lane`` into an adapter — it reads ``llm_account``

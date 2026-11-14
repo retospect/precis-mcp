@@ -7,6 +7,7 @@ never lets a broken probe escape (heartbeat liveness must survive it).
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -394,6 +395,48 @@ def test_probe_repo_checkout_unknown_when_git_times_out(
 
     monkeypatch.setattr(run_slice, "slice_root", _hang)
     assert cap._probe_repo_checkout() is None
+
+
+def test_vocabulary_carries_per_repo_checkout_tokens() -> None:
+    """Every repo profile has a ``repo_checkout_<name>`` token in the
+    vocabulary with a probe; without it no host could ever advertise the
+    token a second-repo job requires and that job would wait forever."""
+    assert cap.SECOND_REPO_TOKENS
+    assert "repo_checkout_catpath" in cap.SECOND_REPO_TOKENS
+    assert cap.capability_vocabulary() >= cap.SECOND_REPO_TOKENS
+    assert set(cap._PROBES) >= cap.SECOND_REPO_TOKENS
+
+
+def test_probe_second_repo_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A clone named by ``PRECIS_SLICE_REPOS`` with a ``.git`` advertises the
+    token; breaking this strands every second-repo slice on a host that has
+    the clone."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(tmp_path)}))
+    assert cap._PROBES["repo_checkout_catpath"]() == 1
+
+
+def test_probe_second_repo_absent_without_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``PRECIS_SLICE_REPOS`` reads 0: a host without the clone must not
+    claim a second-repo slice (it would fail at submit)."""
+    monkeypatch.delenv("PRECIS_SLICE_REPOS", raising=False)
+    assert cap._PROBES["repo_checkout_catpath"]() == 0
+
+
+def test_probe_second_repo_absent_without_dot_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A path that exists but holds no ``.git`` is not a clone."""
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(tmp_path)}))
+    assert cap._PROBES["repo_checkout_catpath"]() == 0
+    monkeypatch.setenv(
+        "PRECIS_SLICE_REPOS", json.dumps({"catpath": str(tmp_path / "missing")})
+    )
+    assert cap._PROBES["repo_checkout_catpath"]() == 0
 
 
 def test_probe_claude_bin_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
