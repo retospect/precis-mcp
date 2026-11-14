@@ -3334,8 +3334,8 @@ class SearchMixin(RuntimeShape):
                     # and its cancel_safe() could land AFTER the pool
                     # return, on the next borrower's unrelated statement
                     # (gr664970 review). The callback's own bounded send
-                    # caps this wait.
-                    watchdog.join()
+                    # caps this wait; the join's timeout states that bound.
+                    watchdog.join(timeout=2 * CROSS_KIND_PROBE_REAP_S)
         except Exception:
             log.exception("cross-kind ANN route probe failed; full fan-out kept")
             return []
