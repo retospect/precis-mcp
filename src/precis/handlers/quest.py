@@ -121,7 +121,10 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: best cited literature value — :func:`_check_demand_meta` /
 #: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``),
 #: ``reaction_config`` (the autocatpath config the compute lane dispatches —
-#: shallow-merged, :func:`_check_reaction_config`, gr489168).
+#: shallow-merged, :func:`_check_reaction_config`, gr489168),
+#: ``lit_gate`` (the lit-search term gate's host/reaction term lists —
+#: :data:`precis.quest.lit_gate.LIT_GATE_META_KEY`,
+#: :func:`_check_lit_gate`, gr592951).
 #: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
 #: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
 #: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
@@ -145,6 +148,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "operating_conditions",
         "environment_space",
         "reaction_config",
+        "lit_gate",
         *_FIDELITY_INT_KEYS,
     }
 )
@@ -213,6 +217,42 @@ def _reaction_config_allowed_keys() -> frozenset[str]:
     except ImportError:
         return _REACTION_CONFIG_KEYS
     return frozenset(f.name for f in dataclasses.fields(Config))
+
+
+_LIT_GATE_NEXT = (
+    "meta={'lit_gate': {'host': ['Pd', 'Pd(111)'], "
+    "'reaction': ['NO', 'NH3', 'nitric oxide reduction']}}"
+)
+
+
+def _check_lit_gate(meta: dict[str, Any]) -> None:
+    """Validate a ``meta.lit_gate`` patch — the lit-search term gate's
+    configuration (gr592951): a dict whose only keys are ``host`` and
+    ``reaction``, each a list of non-empty term strings. A candidate
+    paper's title+abstract must name ≥1 term from EACH list to link
+    ``serves``; an empty list clears that axis, an absent/absurd value
+    is refused rather than silently gating on nothing."""
+    if "lit_gate" not in meta:
+        return
+    value = meta["lit_gate"]
+    if not isinstance(value, dict) or set(value) - {"host", "reaction"}:
+        raise BadInput(
+            "meta.lit_gate must be a dict with only 'host' and/or "
+            f"'reaction' keys, got {value!r}",
+            next=_LIT_GATE_NEXT,
+        )
+    for field in ("host", "reaction"):
+        terms = value.get(field)
+        if terms is None:
+            continue
+        if not isinstance(terms, list) or not all(
+            isinstance(t, str) and t.strip() for t in terms
+        ):
+            raise BadInput(
+                f"meta.lit_gate.{field} must be a list of non-empty term "
+                f"strings (an empty list clears the axis), got {terms!r}",
+                next=_LIT_GATE_NEXT,
+            )
 
 
 def _check_reaction_config(meta: dict[str, Any]) -> None:
@@ -1784,7 +1824,8 @@ class QuestHandler(NumericRefHandler):
         ``meta=`` is a **closed allowlist**
         (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
         ``rubric_objectives``/``demand``/``supply``/
-        ``operating_conditions``/``environment_space``/``reaction_config``),
+        ``operating_conditions``/``environment_space``/``reaction_config``/
+        ``lit_gate``),
         patch-merged via
         ``store.stamp_ref_meta`` (existing keys outside the patch untouched —
         never a whole-dict clobber; ``reaction_config`` itself shallow-merges
@@ -1865,6 +1906,7 @@ class QuestHandler(NumericRefHandler):
             _check_environment_space(meta)
             _check_reaction_config(meta)
             _check_fidelity_meta(meta)
+            _check_lit_gate(meta)
             patch = dict(meta)
             # ``reaction_config`` is itself a dict: merge the patch into the
             # stored config rather than clobbering its sibling keys — a
@@ -1893,7 +1935,7 @@ class QuestHandler(NumericRefHandler):
                     "edit(kind='quest', mode='replace') requires text= "
                     "(or meta= to patch compute_lane/quest_body/"
                     "rubric_objectives/demand/supply/operating_conditions/environment_space/"
-                    "reaction_config)",
+                    "reaction_config/lit_gate)",
                     next=(
                         "edit(kind='quest', id=N, mode='replace', "
                         "text='new striving statement') or "

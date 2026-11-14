@@ -588,6 +588,41 @@ class TestRunSearchStepLocalFirst:
         assert step.papers_linked == 1
         assert "outside search failed" in self.entries[0]["text"]
 
+    def test_metadata_less_hit_is_not_linked(self) -> None:
+        """gr592951 (b): a candidate with neither title nor abstract is
+        never linked — the line names it ``(no title/abstract)``; its
+        titled sibling still links."""
+
+        class _MetaStore(_StepStore):
+            def __init__(self, refs: dict[int, Any]) -> None:
+                super().__init__(held_ids=[])
+                self._refs = refs
+
+            def get_ref(self, *, kind: str, id: int, **kw: Any) -> Any:
+                return self._refs.get(id) if kind == "paper" else None
+
+            def abstract_previews(self, ids: Any, **kw: Any) -> dict[int, str]:
+                return {}
+
+        store: Any = _MetaStore(
+            {
+                41: SimpleNamespace(id=41, title="", meta={}),
+                42: SimpleNamespace(id=42, title="NO reduction on Pd(111)", meta={}),
+            }
+        )
+        step = qsearch.run_search_step(
+            store,
+            7,
+            ["NO reduction"],
+            search_fn=lambda _s, _q, _e: [(41, 1.0), (42, 0.9)],
+        )
+
+        assert step.papers_linked == 1
+        assert [ln["src_ref_id"] for ln in store.links] == [42]
+        text = self.entries[0]["text"]
+        assert "seen, not linked" in text
+        assert "pa41 (no title/abstract)" in text
+
 
 # ── embedder-less local leg is flagged (lexical-only) ────────────────────
 

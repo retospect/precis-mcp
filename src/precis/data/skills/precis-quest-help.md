@@ -411,7 +411,10 @@ Semantic Scholar lit acquisition), `read` (full text of a held
 `fi`/`pa`/`pc`/`td` item or a `web:<id>` fetched page, next tick's context),
 `fetch` (`{"paper": …}` pulls a served stub's full text; `{"url": …}`
 fetches a live page through the `web` cache — vendor pricing, changelogs,
-announcements — serves-linked, rendered next tick), `proposals` /
+announcements — serves-linked, rendered next tick), `judgments`
+(`{"source": "<handle>", "verdict": "useful|not-useful|uncertain",
+"reason": "…", "depth": "…"}` — a reasoned `considered` verdict on a
+source it weighed), `proposals` /
 `reruns` (sim lanes), `dialectic_ops` + `ledger_ops` (structure).
 
 ## Directions — where attempts and ideas live
@@ -567,6 +570,25 @@ and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
 
+**Two filters sit between a hit and its `serves` edge** (gr592951). A
+candidate with neither a title nor an abstract is never linked. And when
+the quest carries `meta.lit_gate` term lists (`{"host": ["Pd", "Pd(111)"],
+"reaction": ["NO", "NH3", "nitric oxide reduction"]}` — set via
+`edit(kind='quest', meta={...})`; unset = no gate), a paper whose
+title+abstract names no term from a configured list is rejected. The
+logbook line names the verdict per candidate —
+`lit-search: "…" → linked pa1; seen, not linked: pa2 (no host term), pa3
+(no title/abstract)` — and every fifth rejected ref id links anyway,
+flagged `(sampled past gate)`, so cheap triage is not the only discovery
+path. A gate rejection is ephemeral; it records no durable verdict. The
+durable channel is the tick's `judgments` field (0–8/tick): a `not-useful`
+verdict writes a `considered` row that holds the source out of every
+later lit-search leg until the striving or the source changes — inspect
+it at `get(kind='quest', id=N, view='considerations')`. The weekly "new
+literature" line — the digest the weekly report renders once
+`view='literature'` ships (gr592952) — lists only acquisitions and
+gate-passing links, so a rejected candidate never reaches it.
+
 ## A research tick: compute and the frontier
 
 **Compute.** With `--compute`, each proposal that carries a
@@ -640,6 +662,14 @@ that's wedged.
   this switch since gr500282, and before that fix `compute_lane=off`
   silently starved a lit-only quest's searches). Any other value, or
   the key's absence, keeps lit-search on.
+- **`lit_gate`** — the lit-search term gate (gr592951):
+  `{'host': [...], 'reaction': [...]}`, each a list of terms a paper
+  candidate's title+abstract must name (at least one per configured
+  list) to link `serves`. Unset = no gate. Off-topic rejections are
+  named in the lit-search line's `seen, not linked:` tail; every fifth
+  links anyway as a `sampled past gate` probe. Write the lists from the
+  striving's own rubric — host metal/facet + dopants on one axis,
+  reaction family on the other.
 - **`quest_body`** — which tick body runs the loop. Unset (the default) is
   the catalyst/materials-discovery body above, unchanged. `"weave"` routes
   to the paper-writing body instead; see `mark_weave_quest`. `"inquiry"` is

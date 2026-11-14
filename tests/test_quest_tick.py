@@ -1533,6 +1533,65 @@ class TestQuestTick:
         assert ledger.count("- [") == 1
         assert "- [tried] identify the rate-limiting step" in ledger
 
+    def test_judgments_record_considered_verdicts(self, store: Any) -> None:
+        """The tick's `judgments` channel (gr592951): each entry becomes a
+        `considered` edge against the quest; a `not-useful` verdict is then
+        held out of the next search leg via judged_out."""
+        qid = _mk_quest(store, "NO electroreduction to NH3 on Pd(111)")
+        on = store.insert_ref(
+            kind="paper", slug="on-topic", title="NO reduction on Pd surfaces"
+        )
+        off = store.insert_ref(
+            kind="paper", slug="off-topic", title="Smoke adsorption on carbon"
+        )
+        reasonless = store.insert_ref(
+            kind="paper", slug="reasonless", title="Nanofluids"
+        )
+        payload = {
+            "logbook": [],
+            "judgments": [
+                {
+                    "source": f"pa{off.id}",
+                    "verdict": "not-useful",
+                    "reason": "smoke adsorption is not NO electroreduction",
+                },
+                {
+                    "source": f"pa{on.id}",
+                    "verdict": "useful",
+                    "reason": "directly on the striving's host and reaction",
+                },
+                {
+                    "source": f"pa{reasonless.id}",
+                    "verdict": "not-useful",
+                },
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        # The reasonless entry is dropped; the two reasoned ones recorded.
+        from precis.quest.search import judged_out
+
+        verdicts = store.scoped_considerations(qid)
+        assert {v.dst_ref_id for v in verdicts} == {off.id, on.id}
+        assert judged_out(store, qid) == {off.id}
+        texts = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("judgments: recorded 2" in t for t in texts)
+        assert any("judgment refused" in t and "no `reason`" in t for t in texts)
+
+    def test_judgments_bad_shape_never_crashes_the_tick(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "judgments": ["not a dict", {"verdict": "bogus"}, {"source": "pa999999"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert not store.scoped_considerations(qid)
+
 
 class TestNarrativeGrowthGate:
     """``narrative_budget.narrative_growth_gate`` — the pure accept/retry
