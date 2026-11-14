@@ -98,11 +98,6 @@ from typing import TYPE_CHECKING, Any
 
 from precis.utils import job_footprint
 from precis.workers.executors._common import (
-    _ERROR_META_CAP,
-    MAX_ATTEMPTS,
-    claim_executor_jobs,
-)
-from precis.workers.executors._common import (
     CANCEL_REQUESTED as _CANCEL_REQUESTED,
 )
 from precis.workers.executors._common import (
@@ -113,6 +108,11 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     JOB_EVENT_KIND as _JOB_EVENT_KIND,
+)
+from precis.workers.executors._common import (
+    MAX_ATTEMPTS,
+    _error_meta,
+    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
     RECLAIM_WHY_READOPT as _RECLAIM_WHY_READOPT,
@@ -879,7 +879,7 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                         conn,
                         ref_id,
                         failure_class="infra",
-                        error=repr(exc)[:_ERROR_META_CAP],
+                        error=_error_meta(repr(exc)),
                     )
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()
@@ -1434,7 +1434,10 @@ def _kill_and_terminalize(
             and getattr(spec, "deadline_kill_meta", None) is not None
         )
         if failure_class is not None:
-            marks: dict[str, Any] = {"failure_class": failure_class, "error": summary}
+            marks: dict[str, Any] = {
+                "failure_class": failure_class,
+                "error": _error_meta(summary),
+            }
             if deadline_verdict:
                 marks.update(getattr(spec, "deadline_kill_meta", None) or {})
             _set_meta(conn, ref_id, **marks)

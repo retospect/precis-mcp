@@ -194,7 +194,9 @@ Three inspection views work on the **numeric-ref kinds** (`todo`,
 `memory`, `gripe`, `finding`, `job`, `anki`, `citation`, `folder`,
 `alert`, `agentlog`, `message`): `view='links'` (the link graph),
 `view='log'` (the event trail), and `view='raw'` (the verbatim record
-— every column **plus the full `meta` JSON**). Reach for `raw` to
+— every column plus the `meta` JSON; a top-level meta value over 2000
+chars collapses to an elision note, and `args={'meta_key': '<key>'}`
+returns it whole). Reach for `raw` to
 debug behaviour the default render hides — e.g. a todo's
 `meta.executor` / `meta.schedule` / `meta.auto_check`. Slug/file/compute
 kinds (`paper`, `draft`, `cad`, `structure`, `pcb`, `tex`, `markdown`, …)

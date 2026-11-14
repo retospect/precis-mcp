@@ -53,10 +53,6 @@ from typing import TYPE_CHECKING, Any
 
 from precis.utils import job_footprint
 from precis.workers.executors._common import (
-    _ERROR_META_CAP,
-    claim_executor_jobs,
-)
-from precis.workers.executors._common import (
     FAILED as _FAILED,
 )
 from precis.workers.executors._common import (
@@ -64,6 +60,10 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     RUNNING as _RUNNING,
+)
+from precis.workers.executors._common import (
+    _error_meta,
+    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
@@ -287,7 +287,7 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                         conn,
                         ref_id,
                         failure_class="infra",
-                        error=repr(exc)[:_ERROR_META_CAP],
+                        error=_error_meta(repr(exc)),
                     )
                     _set_status(store, ref_id, _FAILED, conn=conn)
                     conn.commit()

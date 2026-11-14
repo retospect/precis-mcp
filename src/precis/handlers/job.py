@@ -4926,6 +4926,28 @@ class JobHandler(NumericRefHandler):
 
     # ── render: header + status + summary + recent events ──────────
 
+    def _render_raw(
+        self, ref: Ref, tags: list[Tag], *, meta_key: str | None = None
+    ) -> str:
+        """``view='raw'`` on a failed job leads with the reason
+        (gr635381): spliced between the ``# raw`` header and the scalar
+        block so the failure survives even when the meta dump runs
+        long. The line is :func:`_job_error_tail` — the reason's last
+        line, not the card's first-line head — because a
+        traceback-shaped ``meta.error`` opens with ``Traceback (most
+        recent call last):`` and the cause sits at the end. The card
+        already leads with ``error:`` — raw exists for the same debug
+        read and now answers it in the first line too."""
+        body = super()._render_raw(ref, tags, meta_key=meta_key)
+        if meta_key is None and _status_of(tags) in ("failed", "timed-out"):
+            reason = _job_error_tail(
+                ref.meta or {}, self.store.chunks.list_chunks_for_ref(ref.id)
+            )
+            if reason is not None:
+                head, sep, rest = body.partition("\n")
+                body = f"{head}\nfailure: {reason}{sep}{rest}"
+        return body
+
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         lines = [f"# job {ref.id}"]
         tag_status = _status_of(tags)
@@ -6800,42 +6822,68 @@ def _job_window_bound(value: Any, field: str) -> datetime | None:
         ) from None
 
 
-def _job_error_head(meta: dict[str, Any], blocks: list[Any]) -> str | None:
-    """The one-line failure reason a failed job's card leads with
-    (gr536316). ``meta.error`` wins — the ≤500-char breadcrumb
-    ``record_failure`` / the sweeper stamp on the row itself; when meta
-    stayed bare, the ``job_event`` chunk written at the failure
-    boundary stands in (every failure path writes one in the same
-    transaction as the terminal ``STATUS:`` flip, which is also what
-    stamps ``meta.finished_at``). "At the boundary" = ``created_at``
-    within :data:`_JOB_ERROR_EVENT_SKEW_S` of ``finished_at`` — the
-    event timeline mixes in progress notes and later comments, so the
+def _job_error_raw(meta: dict[str, Any], blocks: list[Any]) -> str:
+    """The reason text the error lines are cut from. ``meta.error``
+    wins — the ≤500-char breadcrumb ``record_failure`` / the sweeper
+    stamp on the row itself; when meta stayed bare, the ``job_event``
+    chunk written at the failure boundary stands in (every failure
+    path writes one in the same transaction as the terminal
+    ``STATUS:`` flip, which is also what stamps ``meta.finished_at``).
+    "At the boundary" = ``created_at`` within
+    :data:`_JOB_ERROR_EVENT_SKEW_S` of ``finished_at`` — the event
+    timeline mixes in progress notes and later comments, so the
     *newest* event alone can be unrelated to the failure (gr536316
-    fix round 1); no boundary, no line. First line only, whitespace
-    collapsed — unlike ``_norm_error_head`` the digits stay: this names
-    *this* job's attempts and quotas, not a folded failure family.
+    fix round 1); no boundary, no line.
     """
     raw = meta.get("error")
-    if not isinstance(raw, str) or not raw.strip():
-        raw = ""
-        finished = as_utc(meta.get("finished_at"))
-        if finished is not None:
-            for block in reversed(blocks):
-                at = as_utc(block.created_at)
-                if (
-                    block.chunk_kind == _JOB_EVENT_KIND
-                    and (block.text or "").strip()
-                    and at is not None
-                    and abs((at - finished).total_seconds()) <= _JOB_ERROR_EVENT_SKEW_S
-                ):
-                    raw = str(block.text)
-                    break
-    if not raw:
-        return None
-    line = _COUNT_HEAD_WS.sub(" ", raw.split("\n", 1)[0]).strip()
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    finished = as_utc(meta.get("finished_at"))
+    if finished is not None:
+        for block in reversed(blocks):
+            at = as_utc(block.created_at)
+            if (
+                block.chunk_kind == _JOB_EVENT_KIND
+                and (block.text or "").strip()
+                and at is not None
+                and abs((at - finished).total_seconds()) <= _JOB_ERROR_EVENT_SKEW_S
+            ):
+                return str(block.text)
+    return ""
+
+
+def _error_line(text: str) -> str:
+    """One display line: whitespace collapsed, capped at
+    :data:`_CARD_ERROR_CHARS`. Unlike ``_norm_error_head`` the digits
+    stay — this names *this* job's attempts and quotas, not a folded
+    failure family."""
+    line = _COUNT_HEAD_WS.sub(" ", text).strip()
     if len(line) > _CARD_ERROR_CHARS:
         line = line[: _CARD_ERROR_CHARS - 1] + "…"
-    return line or None
+    return line
+
+
+def _job_error_head(meta: dict[str, Any], blocks: list[Any]) -> str | None:
+    """The one-line failure reason a failed job's card leads with
+    (gr536316) — the FIRST line of :func:`_job_error_raw`."""
+    raw = _job_error_raw(meta, blocks)
+    if not raw:
+        return None
+    return _error_line(raw.split("\n", 1)[0]) or None
+
+
+def _job_error_tail(meta: dict[str, Any], blocks: list[Any]) -> str | None:
+    """The LAST non-empty line of :func:`_job_error_raw` — the raw
+    view's ``failure:`` line (gr635381). A traceback-shaped reason
+    (``record_failure``'s head-200 + ``" … "`` + tail-300
+    ``meta.error``, or the full ``job_event`` text) opens with
+    ``Traceback (most recent call last):`` and carries the actual
+    exception on its last line, so the head line alone would show no
+    cause. A one-line reason reads the same either way."""
+    for line in reversed(_job_error_raw(meta, blocks).splitlines()):
+        if line.strip():
+            return _error_line(line) or None
+    return None
 
 
 def _status_of(tags: list[Tag]) -> str | None:

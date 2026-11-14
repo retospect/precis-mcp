@@ -77,6 +77,10 @@ reason (`meta.error`, else the newest `job_event` head; `retry_after:`
 beside it when a transient backoff was stamped) — printed right under
 `status:` so the card cap can't cut it on jobs with long event
 timelines. The full reason stays in the `job_event` chunks below.
+`view='raw'` on a failed job leads with `failure:` — the reason's
+last line, so a traceback-shaped `meta.error` shows its actual
+exception rather than just "Traceback (most recent call last):" —
+before the scalar block.
 
 The `job_summary` chunk is the human-readable account ("Fix
 landed on main at <remote> as abc123 (squash of gripe_42 onto
@@ -89,7 +93,9 @@ proposal JSON) shows as a capped head on the card;
 `get(kind='job', id=<job>, view='result')` returns it in full.
 `view='transcript'` is the compact forensic read (one line per tool
 call + the final report); a paged full-transcript view is not
-implemented — `view='raw'` is the only uncapped transcript read today.
+implemented — `view='raw'` is the only full-record read today (a
+top-level meta value over 2000 chars elides behind
+`args={'meta_key': '<key>'}`).
 A guessed spelling with one obvious reading is accepted with an
 `interpreted:` line rather than refused (gr635827): `view='compute'`
 is the card itself — its compute lines (`footprint:`, `node:`,

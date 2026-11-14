@@ -104,7 +104,7 @@ get(kind='alert', id=42)               # one alert + tags
 get(kind='alert', id=42, view='detail')  # triage shape (below); 'full' is an alias
 get(kind='alert', id=42, view='context') # detail + worker_logs window (below)
 get(kind='alert', id=42, view='links')   # link graph to/from this alert
-get(kind='alert', id=42, view='raw')     # verbatim record — every meta key
+get(kind='alert', id=42, view='raw')     # verbatim record — every meta key (oversized values elide; args={'meta_key': '<key>'} → one whole)
 get(kind='alert', id=[42, 43, 44])       # several at once: one summary block per id (≤50)
 get(kind='alert', id=[42, 43], view='detail')  # the view maps over the batch (any single-id view)
 search(kind='alert', q='spin loop')    # lexical over titles

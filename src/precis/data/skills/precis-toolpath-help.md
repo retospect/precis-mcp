@@ -58,7 +58,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Deep async paper campaign | `search(kind='paper', q='...', good=True)` → poll the job handle | `precis-search-help` |
 | Which skill do I need? | `get(kind='skill', id='toc')` / `search(kind='skill', q='your goal')` | `precis-overview` |
 | Stumble into something new | `get(kind='random')` | `precis-random-help` |
-| Debug a ref's hidden state | `get(kind='todo', id=122, view='raw')` (dumps full `meta` JSON) | `precis-todo-help` |
+| Debug a ref's hidden state | `get(kind='todo', id=122, view='raw')` (dumps `meta`; oversized values elide) | `precis-todo-help` |
 | Inspect a ref's link graph | `get(kind='todo', id=122, view='links')` | `precis-relations` |
 | Read a ref's event trail | `get(kind='todo', id=122, view='log')` | — |
 

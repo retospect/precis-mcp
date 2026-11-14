@@ -2988,6 +2988,32 @@ def classify_transient_backoff_hours(reason: str) -> float | None:
 #: actionable without risking a huge traceback bloating ``refs.meta``.
 _ERROR_META_CAP = 500
 
+#: Head/tail spans :func:`_error_meta` keeps when a ``reason`` outgrows
+#: :data:`_ERROR_META_CAP` (gr635381): a traceback's cause is its LAST
+#: line, which a bare head-truncation always cut — head for context,
+#: the tail for the actual exception. 200 + " … " + 300 = 503 chars.
+_ERROR_META_HEAD = 200
+_ERROR_META_TAIL = 300
+
+
+def _error_meta(reason: str) -> str:
+    """The ``refs.meta.error`` breadcrumb for a failure ``reason`` —
+    the reason itself under :data:`_ERROR_META_CAP`; head
+    :data:`_ERROR_META_HEAD` + ``" … "`` + tail :data:`_ERROR_META_TAIL`
+    past it, so a long traceback's final line (the exception class and
+    message, the exit reason) survives the cap instead of being the
+    first thing dropped (gr635381). Every executor ``meta.error``
+    stamp routes through here — ``record_failure``, ``poison_guard``,
+    and the hand-rolled failure arms in ``claude_inproc``/
+    ``claude_docker``/``job_inproc``/``ssh_node``/``devin_api`` — so no
+    caller re-introduces a head-only cut. (The sweeper's own stamps are
+    short one-line reasons it composes itself, not captured text, so
+    they stay direct.)"""
+    if len(reason) <= _ERROR_META_CAP:
+        return reason
+    return f"{reason[:_ERROR_META_HEAD]} … {reason[-_ERROR_META_TAIL:]}"
+
+
 #: Park horizon when a window-scoped pause names no retry instant — the
 #: quota wording's own two-hour fallback
 #: (:data:`precis.utils.llm.failure.DEFAULT_HORIZON`).
@@ -3078,12 +3104,16 @@ def record_failure(
     physical/numeric failure) — stamped onto ``refs.meta.failure_class`` so a
     downstream harvest can tell "couldn't run" apart from "ran and failed"
     instead of laundering both into the same bare ``STATUS:failed``. When
-    ``failure_class`` is given, ``reason`` (truncated to
-    ``_ERROR_META_CAP``) is also stamped onto ``refs.meta.error`` alongside
-    it — the full, untruncated ``reason`` always lands in the ``job_event``
-    chunk either way; the meta copy exists so a downstream consumer that
-    only reads ``meta`` (e.g. an auto-filed infra gripe) isn't stuck with
-    a bare ``failure_class`` and no idea what actually happened.
+    ``failure_class`` is given, ``reason`` (through :func:`_error_meta`)
+    is also stamped onto ``refs.meta.error`` alongside it — the full,
+    untruncated ``reason`` always lands in the ``job_event`` chunk
+    either way; the meta copy exists so a downstream consumer that only
+    reads ``meta`` (e.g. an auto-filed infra gripe, or ``view='raw'``'s
+    leading ``failure:`` line — gr635381) isn't stuck with a bare
+    ``failure_class`` and no idea what actually happened. gr635381 made
+    the stamp unconditional: an unclassified failure deserves the same
+    visible reason, and past ``_ERROR_META_CAP`` the crumb keeps the
+    reason's *tail* — the actual exception — not just its head.
 
     ``open_tag`` (optional, parked-leaf-recovery,
     docs/backlog/parked-leaf-recovery.md) stamps an ``OPEN:<open_tag>`` tag
@@ -3109,13 +3139,13 @@ def record_failure(
             store.add_tag(ref_id, Tag.open(open_tag), set_by="system", conn=conn)
         append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
         set_status(store, ref_id, FAILED, conn=conn)
+        # gr635381: ``meta.error`` is stamped for EVERY failure, not only
+        # classified ones — a bare ``STATUS:failed`` with no breadcrumb
+        # forced the reader into the full job_event chunk for the cause.
+        meta_fields: dict[str, Any] = {"error": _error_meta(reason)}
         if failure_class is not None:
-            set_meta(
-                conn,
-                ref_id,
-                failure_class=failure_class,
-                error=reason[:_ERROR_META_CAP],
-            )
+            meta_fields["failure_class"] = failure_class
+        set_meta(conn, ref_id, **meta_fields)
         # Transient classification (docs/backlog/
         # todo-parked-transient-failures.md): a retryable cause stamps
         # ``meta.retry_after`` (ISO) on the job — the tag shape the bubble
@@ -3131,7 +3161,6 @@ def record_failure(
             }
             if failure_class is None:
                 transient_fields["failure_class"] = "transient"
-                transient_fields["error"] = reason[:_ERROR_META_CAP]
             set_meta(conn, ref_id, **transient_fields)
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
@@ -3224,7 +3253,7 @@ def poison_guard(
             f"last reclaim: {cause}) — failing"
         )
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
-    set_meta(conn, ref_id, failure_class="infra", error=reason[:_ERROR_META_CAP])
+    set_meta(conn, ref_id, failure_class="infra", error=_error_meta(reason))
     set_status(store, ref_id, FAILED, conn=conn)
     from precis.utils.job_bubble import bubble_job_failure
 
