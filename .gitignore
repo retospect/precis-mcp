@@ -219,6 +219,8 @@ cfdtest/
 # Memory-ablation bench: the full QASPER task set (~2.1 MB) is generated on
 # demand by scripts/bench tasks --set full; only the quick set is committed.
 bench/tasks/qasper-full.jsonl
+# An interrupted scripts/bench reformulate keeps its finished rows here.
+bench/tasks/*.queries.jsonl.partial
 
 # Memory-ablation bench results: one JSON per run (scripts/bench run); only the
 # schema README is committed.

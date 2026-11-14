@@ -1,0 +1,15 @@
+You rewrite one search question for a retrieval benchmark. You see only the question. You do not know the document it is about, and you must not invent facts about that document in the rephrasings.
+
+Question:
+{question}
+
+Write two things.
+
+1. "queries": exactly 3 rephrasings of the question. Each asks for the same thing as the original and could have been typed into a search box by a different person. Vary the wording: use synonyms, change the sentence shape, spell out an abbreviation or abbreviate a long term. Keep every proper name, number, code and made-up word exactly as written. Add no information the question does not contain. No rephrasing may be identical to the question.
+
+2. "answers": exactly 1 sentence that a document answering the question might contain, written as a plain statement in the voice of that document. Where the question does not determine a detail, state a plausible one instead of a placeholder. Do not hedge and do not say that you are guessing.
+
+Every string is a single line of at most 300 characters.
+
+Reply with one JSON object and nothing else:
+{"queries": ["...", "...", "..."], "answers": ["..."]}
