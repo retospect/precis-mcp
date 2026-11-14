@@ -900,6 +900,55 @@ def test_brief_parts_keeps_lander_handoff_over_brief() -> None:
     assert latest == "brief: the real brief"
 
 
+def test_brief_parts_keeps_review_handoff_over_brief() -> None:
+    """gr674785 review (td675373): a pre-land ``handoff: review:
+    FIX|REVERT`` verdict is the rebuild instruction the reopened todo
+    exists to act on, not a dead session's one-liner — while an
+    ``attempt:`` tag stands it must NOT be demoted to the older
+    ``brief:``; ``submit``'s rebuild check reads ``latest`` and a
+    demotion routed the rejected ahead branch back into the same open
+    review unbuilt. A review comment that is not a FIX/REVERT verdict
+    (the LAND the reviewer closed on) still loses to the brief."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=(
+            "brief: the real brief",
+            "handoff: built the widget, ready to land",
+            "handoff: review: FIX — the widget check is wrong",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == "handoff: review: FIX — the widget check is wrong"
+    store.add_todo(
+        43,
+        "Fix the widget",
+        body="Do X.",
+        comments=(
+            "brief: the real brief",
+            "handoff: review: REVERT — breaks the API",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 43)
+    assert latest == "handoff: review: REVERT — breaks the API"
+    store.add_todo(
+        44,
+        "Fix the widget",
+        body="Do X.",
+        comments=(
+            "brief: the real brief",
+            "handoff: review: LAND",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 44)
+    assert latest == "brief: the real brief"
+
+
 def test_generator_brief_creates_children_and_never_lands(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -5393,6 +5442,39 @@ def test_submit_review_handoff_still_launches_on_an_ahead_branch(
     assert handle is not None and ctx.failure is None
     assert seams["lands"] == [] and seams["push"] == []
     assert len(seams["launch"]) == 1
+
+
+def test_submit_attempt_tagged_review_handoff_still_launches(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr674785 review (td675373), the ``_brief_parts`` hole: while an
+    ``attempt:<n>`` tag stands, a newer ``handoff: review: FIX`` must
+    still reach ``submit`` — demoting it to the older ``brief:`` made
+    the rebuild check miss, so the rejected branch routed back into the
+    same open review unchanged (reject → reopen → route)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=(
+            "brief: the real brief",
+            "handoff: built the widget, ready to land",
+            "handoff: review: FIX — the widget check is wrong",
+        ),
+        tags=("attempt:2",),
+    )
+    tree = _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert seams["lands"] == [] and seams["push"] == []
+    assert len(seams["launch"]) == 1
+    # The retry's brief steers on the verdict, not the shadowed brief.
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "the widget check is wrong" in brief
 
 
 def test_submit_ahead_branch_route_failure_falls_back_to_launch(

@@ -307,7 +307,9 @@ _LANDER_HANDOFF_PREFIX = "handoff: lander:"
 #: for, so the handoff bypasses ``_route_ahead_branch``'s land route
 #: exactly like a lander handoff (gr674785 review, td675373 — without
 #: the bypass the ahead-branch route deferred the unchanged diff back
-#: into the same open review, an unbounded reject/reopen ping-pong).
+#: into the same open review, an unbounded reject/reopen ping-pong) —
+#: and ``_brief_parts`` keeps it winning over an older ``brief:`` while
+#: an ``attempt:`` tag stands, or ``submit`` never sees it.
 _REVIEW_REBUILD_RE = re.compile(
     r"^handoff:\s*review:\s*_*(?:FIX|REVERT)\b", re.IGNORECASE
 )
@@ -2239,10 +2241,14 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     a ``handoff:`` comment — a dead session's one-liner is not a brief,
     so while an ``attempt:<n>`` tag stands (the last run failed) the
     newest ``brief:`` wins over a newer builder ``handoff:`` that would
-    shadow the real instructions for the retry. A lander handoff
-    (:data:`_LANDER_HANDOFF_PREFIX`) is different: it is the failure
-    instruction the reopened todo exists to act on, so it keeps winning
-    by recency."""
+    shadow the real instructions for the retry. Two handoffs keep
+    winning by recency all the same: a lander handoff
+    (:data:`_LANDER_HANDOFF_PREFIX`) — the failure instruction the
+    reopened todo exists to act on — and a pre-land reviewer's
+    ``handoff: review: FIX|REVERT`` (:data:`_REVIEW_REBUILD_RE`, gr674785
+    review td675373): demoting it to the older brief hid the verdict
+    from ``submit``'s rebuild check, so the rejected ahead branch routed
+    back into the same open review unbuilt."""
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
@@ -2267,6 +2273,7 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
         and latest_ord > brief_ord
         and brief is not None
         and not latest.lower().startswith(_LANDER_HANDOFF_PREFIX)
+        and _REVIEW_REBUILD_RE.match(latest) is None
         and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
     ):
         latest = brief
