@@ -201,6 +201,7 @@ _RELEASE_LEG_TYPES_SQL = (
 FACTORY_PIPELINE_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
     "land_slice",
+    "repo_release",
     "release_cut",
     "release_deploy",
     "release_confirm",
@@ -1011,7 +1012,7 @@ def placement_requires(
     ``lane_adapters`` ({lane: adapter}, :func:`lane_adapter_map`; absent
     or unresolved → the ``builder`` floor stands).
 
-    A ``run_slice`` / ``land_slice`` job for a second repo
+    A ``run_slice`` / ``land_slice`` / ``repo_release`` job for a second repo
     (``params.repo`` a non-empty name other than the default) also needs
     that repo's ``repo_checkout_<name>`` token, so only a host holding a
     clone claims it. A name with no profile still adds its token: no host
@@ -1023,7 +1024,7 @@ def placement_requires(
     if spec is None:
         return frozenset()
     tokens = set(spec.placement)
-    if str(job_type) in ("run_slice", "land_slice"):
+    if str(job_type) in ("run_slice", "land_slice", "repo_release"):
         repo = (meta.get("params") or {}).get("repo")
         if isinstance(repo, str) and repo and repo != lanes.DEFAULT_REPO:
             tokens.add(lanes.repo_checkout_token(repo))

@@ -1074,6 +1074,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "devin_task",
     "run_slice",
     "land_slice",
+    "repo_release",
     "plan_dispatch",
     "factory_rescue_tick",
     "ci_watch",
@@ -1214,6 +1215,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "land_slice":
         # The lander: scripts/ship on a finished slice branch (run_slice mints it).
         from precis.workers.job_types.land_slice import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "repo_release":
+        # Mechanical release of a second repo (td659522 step 3): version
+        # bump, push, CI wait, tag. Refused until a profile names a releaser.
+        from precis.workers.job_types.repo_release import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

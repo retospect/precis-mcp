@@ -373,6 +373,28 @@ def _d_land_slice(
     return what
 
 
+def _d_repo_release(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    tid = _as_int(params.get("todo_id"))
+    repo = params.get("repo")
+    what = f"releasing {repo}" if repo else "releasing a repo"
+    if tid is not None:
+        what += f" (td{tid})"
+    if status == "failed" and error:
+        return f"{what}: failed — {_first_line(error)}"
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return _first_line(summary)
+    return what
+
+
 def _d_sandbox_run(
     *,
     params: dict[str, Any],
@@ -486,6 +508,7 @@ DESCRIBERS: dict[str, Callable[..., str]] = {
     "fix_gripe": _d_fix_gripe,
     "run_slice": _d_run_slice,
     "land_slice": _d_land_slice,
+    "repo_release": _d_repo_release,
     "sandbox_run": _d_sandbox_run,
     "devin_task": _d_devin_task,
     "paper_pull": _d_paper_pull,

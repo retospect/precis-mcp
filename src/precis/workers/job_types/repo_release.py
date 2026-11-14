@@ -12,10 +12,10 @@ edits and never by running a tool in the tree (no ``uv lock``, no ``uv
 version``), so the diff is exactly the version lines and each edit is checked
 by re-parsing both texts with ``tomllib``.
 
-Below them is the job, from submit through the push (td659522 step 3 R5; the
-CI wait, the tag and the registration are R6, and no job type is registered
-yet). It is :mod:`~precis.workers.repo_land`'s sibling and takes its shapes
-from it. Phases, in the handle's ``phase``:
+Below them is the job (td659522 step 3 R5 and R6), :mod:`~precis.workers.
+repo_land`'s sibling, which takes its shapes from it. It is registered, but
+every submit refuses until a profile names this job as its ``releaser``.
+Phases, in the handle's ``phase``:
 
 * ``lease`` (parked): :func:`submit` only guards and parks. :func:`poll`
   states the want, then takes the repo lease (``kind="release"``); taken, it
@@ -33,8 +33,21 @@ from it. Phases, in the handle's ``phase``:
   is stamped ``state: "pushed"`` and only then is the handle's sha pushed with
   :func:`~precis.workers.factory_git_mirror.push_cas`. A raced push prepares
   again on the new tip (at most :data:`MAX_ROUNDS` rounds per job).
-* ``ci`` (parked): a stub in this round. It keeps the job parked, the lease
-  held, and does nothing else.
+* ``ci`` (parked, the lease held): each due poll reads the workflow runs of
+  the pushed sha through :func:`_read_runs` and acts on :func:`ci_verdict`:
+  ``pending`` re-parks, ``green`` goes on to the tag, ``red`` stamps the
+  record ``red`` and fails charged, ``cancelled`` waits for the branch to be
+  quiet and re-runs the run (:func:`_rerun`, at most :data:`MAX_RERUNS`).
+  A failure that needs the coordinator (no run ever appeared, the re-runs are
+  spent, the token lacks Actions access) carries
+  :data:`COORDINATOR_ASK_KEY` in the job meta, which ``plan_dispatch``
+  reads (``_coordinator_hit``) to route the node's cap ask.
+* tag and record (same poll as the green verdict): admission and lease are
+  re-read, the annotated tag is created at the handle's sha with
+  :func:`~precis.workers.factory_git_mirror.push_tag_new`, the record becomes
+  ``tagged`` with its ``ci`` block, one ``released:`` comment is written, the
+  lease is released and the job succeeds. A resume that finds the tag
+  already at the recorded sha goes straight to the record.
 
 Failures use :func:`_fail`, not ``land_slice._fail``: a release node is a
 mechanical task, not a slice, so there is no claim, ``attempt:<n>`` tag or
@@ -57,6 +70,9 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.plans import pr_class as _pr_class
+from precis.plans import release as _release
+from precis.plans.nodes import node_kind
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _mirror
@@ -69,6 +85,7 @@ from precis.workers.job_types import run_slice as _rs
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "COORDINATOR_ASK_KEY",
     "DEADLINE_KILL_META",
     "DESCRIPTION",
     "MAX_ROUNDS",
@@ -76,6 +93,7 @@ __all__ = [
     "PARAMS_SCHEMA",
     "SPEC",
     "ReleaseError",
+    "api_base",
     "bump_version",
     "ci_verdict",
     "kill",
@@ -265,6 +283,33 @@ def set_lock_version(lock_text: str, package: str, new: str) -> str:
     return out
 
 
+_GITHUB_REMOTE = re.compile(
+    r"https://github\.com/([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9_.-]+?)(?:\.git)?/?"
+)
+_API_REPOS = "https://api.github.com/repos"
+
+
+def api_base(remote: str) -> str:
+    """The REST base of the repo at ``remote``: ``https://github.com/<owner>/
+    <repo>`` (an optional ``.git`` or trailing slash) becomes ``https://api.
+    github.com/repos/<owner>/<repo>``. Anything else (another host, ``http``,
+    userinfo, a port, a path below the repo) raises :class:`ReleaseError`: the
+    workflow reads and the re-run POST go to GitHub and nowhere else."""
+    m = _GITHUB_REMOTE.fullmatch(remote.strip())
+    if m is None or m[2] in (".", ".."):
+        raise ReleaseError(
+            "the remote is not a plain https://github.com/<owner>/<repo>"
+        )
+    return f"{_API_REPOS}/{m[1]}/{m[2]}"
+
+
+def _in_workflow(run: Mapping[str, Any], workflow: str) -> bool:
+    """Whether ``run`` is a run of the workflow file ``workflow`` (its
+    ``path`` is that name, or ends in ``/`` plus it)."""
+    path = run.get("path")
+    return isinstance(path, str) and (path == workflow or path.endswith("/" + workflow))
+
+
 def pick_run(
     runs: Sequence[Mapping[str, Any]], *, sha: str, workflow: str
 ) -> Mapping[str, Any] | None:
@@ -272,13 +317,7 @@ def pick_run(
     exactly ``sha`` of the workflow file ``workflow``; the highest
     ``run_attempt`` then the highest ``id`` when several match; ``None`` when
     none do."""
-    found = [
-        r
-        for r in runs
-        if r.get("head_sha") == sha
-        and isinstance(r.get("path"), str)
-        and (r["path"] == workflow or r["path"].endswith("/" + workflow))
-    ]
+    found = [r for r in runs if r.get("head_sha") == sha and _in_workflow(r, workflow)]
     if not found:
         return None
     return max(
@@ -346,8 +385,33 @@ DEADLINE_KILL_META: dict[str, Any] = {
 #: Handle phases besides :data:`repo_land.LEASE_PHASE`.
 CHECK_PHASE = "check"
 CI_PHASE = "ci"
-#: How long a parked CI wait sleeps between polls (the stub's only job).
+#: Seconds a parked CI wait sleeps between polls (one runs read per poll;
+#: the repo lease is held throughout, so the wait is kept short).
 CI_PARK_S = 120
+#: Seconds after ``pushed_at`` with no workflow run at all before the
+#: coordinator is asked (the push event was dropped; ci.yml has no
+#: workflow_dispatch to recover it).
+NO_RUN_CUTOFF_S = 1800
+#: Seconds of CI waiting (from the first ``ci`` poll of this job) before the
+#: job gives up attempt-free; the record stays ``pushed`` for the next one.
+CI_WALL_S = 6000
+#: Re-runs of a cancelled run before the coordinator is asked.
+MAX_RERUNS = 2
+#: Seconds GitHub may stay unreadable before the job gives up attempt-free.
+UNREADABLE_CAP_S = 1800
+#: Seconds a GitHub request may take (read or re-run).
+_HTTP_TIMEOUT_S = 20.0
+#: Run statuses that still hold the branch: a re-run beside one of them
+#: would cancel it or be cancelled by it.
+_ACTIVE_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "pending", "requested"}
+)
+
+#: ``job.meta`` key naming why a failed job needs the coordinator, not a
+#: blind retry. Restated from ``ci_red_digest.COORDINATOR_ASK_KEY`` (the
+#: same one-way import rule ``plan_dispatch`` follows); ``plan_dispatch.
+#: _coordinator_hit`` reads it off the node's newest failed attempt.
+COORDINATOR_ASK_KEY = "coordinator_ask"
 #: Prepare rounds per job: a raced push prepares again on the new tip.
 MAX_ROUNDS = 3
 
@@ -372,6 +436,9 @@ TAG_ORACLE_CLASS = "tag-oracle"
 TREE_CLASS = "release-tree"
 READ_CLASS = "release-read"
 RECORD_CLASS = "release-record"
+TAG_PUSH_CLASS = "tag-push"
+CI_UNREADABLE_CLASS = "github-unreadable"
+CI_WALL_CLASS = "ci-wall"
 
 _BODY_SUBJECTS = 100
 _BUMPS = frozenset({"auto", "minor", "patch"})
@@ -413,6 +480,10 @@ def _release_refusal(store: Any, params: dict[str, Any]) -> str | None:
             f"the profile for {repo!r} lacks a remote, a ci_workflow or a "
             "release check; next: release by hand"
         )
+    try:
+        api_base(profile.remote)
+    except ReleaseError as exc:
+        return lead + f"{exc} ({repo!r}); next: release by hand"
     if store is None:
         return None
     todo_id = params["todo_id"]
@@ -425,12 +496,118 @@ def _release_refusal(store: Any, params: dict[str, Any]) -> str | None:
     return None
 
 
+def _plan_rows(store: Any, root: int) -> list[dict[str, Any]]:
+    """``[{id, parent_id, kind}]`` of the plan subtree at ``root`` (seam)."""
+    from precis.todo.views import _fetch_subtree
+
+    return _fetch_subtree(store, root)
+
+
+def _is_slice_node(meta: Mapping[str, Any]) -> bool:
+    """A build node: no ``meta.op`` or a ``run_slice`` one, not a gate, loop,
+    generator or phase."""
+    if node_kind(dict(meta)) not in (None, "task"):
+        return False
+    op = meta.get("op")
+    if isinstance(op, Mapping):
+        op = op.get("type")
+    return not op or str(op).strip() == _rs.NAME
+
+
+def _is_reviewer_node(meta: Mapping[str, Any]) -> bool:
+    gen = meta.get("generate")
+    return (
+        node_kind(dict(meta)) == "generator"
+        and isinstance(gen, Mapping)
+        and gen.get("role") == "reviewer"
+    )
+
+
+def _blocked_edges(store: Any, ids: Sequence[int]) -> list[tuple[int, int]]:
+    """``(waiter, target)`` of every ``blocked-by`` link among ``ids`` (seam)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE relation = 'blocked-by' "
+            "AND src_ref_id = ANY(%s) AND dst_ref_id = ANY(%s)",
+            (list(ids), list(ids)),
+        ).fetchall()
+    return [(int(src), int(dst)) for src, dst in rows]
+
+
+def _waits_on(
+    todo_id: int,
+    edges: Sequence[tuple[int, int]],
+    parent_of: Mapping[int, int | None],
+) -> set[int]:
+    """The nodes that wait on ``todo_id``: ``blocked-by`` it, a child of a
+    node that is, and so on. A ``blocked-by`` on a phase gates its children,
+    so the walk follows both."""
+    found: set[int] = set()
+    frontier = {todo_id}
+    while frontier:
+        nxt = {src for src, dst in edges if dst in frontier}
+        nxt |= {nid for nid, parent in parent_of.items() if parent in frontier}
+        frontier = nxt - found - {todo_id}
+        found |= frontier
+    return found
+
+
+def _open_siblings(store: Any, todo_id: int, repo: str) -> tuple[int, list[int]]:
+    """``(plan root, ids)`` of the OPEN slice and reviewer nodes of ``repo``
+    under the plan root of ``todo_id``, other than the node itself, ask nodes,
+    phases (a node with child todos) and nodes that wait on this one (a later
+    batch ``blocked-by`` this release must not hold it). A node's repo is its
+    own ``repo:`` tag, else its nearest tagged ancestor's, else the default
+    repo."""
+    root = _release.plan_root(store, todo_id)
+    rows = [r for r in _plan_rows(store, root) if r.get("kind") == "todo"]
+    parent_of = {int(r["id"]): r.get("parent_id") for r in rows}
+    parents = set(parent_of.values())
+    after = _waits_on(todo_id, _blocked_edges(store, list(parent_of)), parent_of)
+    held: list[int] = []
+    for row in rows:
+        nid = int(row["id"])
+        if nid in (todo_id, root) or nid in after:
+            continue
+        ref = store.get_ref(kind="todo", id=nid)
+        if ref is None or _rs._terminal_status(store, nid) is not None:
+            continue
+        meta = ref.meta or {}
+        if isinstance(meta.get("ask"), Mapping) or any(
+            str(t).startswith("ask-user") for t in store.tags_for(nid)
+        ):
+            continue
+        if _is_reviewer_node(meta):
+            pass
+        elif nid in parents or not _is_slice_node(meta):
+            continue
+        if (",".join(_rs.slice_repos(store, nid)) or _lanes.DEFAULT_REPO) == repo:
+            held.append(nid)
+    return root, held
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
-    """Refuses everything :func:`_release_refusal` does."""
+    """Refuses everything :func:`_release_refusal` does, and holds (a
+    ``holding:`` refusal, so no job is minted) while an open slice or
+    reviewer node of the repo remains under the release node's plan root.
+    The batch backstop: a reviewer's FIX gates the release node itself, but
+    the fix's own reviewer is minted elsewhere with no edge to it."""
     del gripe_id
-    return _release_refusal(store, params)
+    refusal = _release_refusal(store, params)
+    if refusal is not None or store is None:
+        return refusal
+    repo = str(params["repo"]).strip()
+    root, held = _open_siblings(store, params["todo_id"], repo)
+    if not held:
+        return None
+    shown = ", ".join(f"td{i}" for i in held[:8]) + (", ..." if len(held) > 8 else "")
+    return (
+        f"holding: {len(held)} open slice or reviewer node(s) of {repo!r} remain "
+        f"under plan td{root} ({shown}); next: the release waits until they close"
+    )
 
 
 # ── Failures ───────────────────────────────────────────────────────
@@ -529,6 +706,15 @@ def _show(cwd: Path, rev: str, path: str) -> str | None:
         return proc.stdout.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def _object_dirs(root: Path) -> tuple[Path, ...] | None:
+    """The clone's object store, for the push helpers' scratch repo
+    alternates; ``None`` when git cannot say."""
+    common = _ls._git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    return (Path(common.stdout.strip()) / "objects",)
 
 
 def _is_ancestor(root: Path, ancestor: str, sha: str) -> bool:
@@ -646,6 +832,11 @@ def _ci_handle(
         "repo": profile.name,
         "phase": CI_PHASE,
         "rounds": rounds,
+        # This job's CI wait starts now (a resumed push may be hours old).
+        "ci_since": _ls._now().timestamp(),
+        "reruns": 0,
+        "rerun_attempt_before": 0,
+        "unreadable_since": None,
     }
     for key in (
         "package",
@@ -674,7 +865,8 @@ def _resume(
     this job's earlier round). ``(False, None)``: go on fresh (no usable
     record, or the push never happened and the record is cleared).
     ``(True, handle)``: a parked ``ci`` handle for the pushed sha.
-    ``(True, None)``: the job was failed here."""
+    ``(True, None)``: the job was driven terminal here (failed, or recorded
+    and succeeded when the tag was already at the pushed sha)."""
     todo_id = params["todo_id"]
     record = _stored_record(ctx.store, todo_id)
     if record is None or record.get("state") != "pushed":
@@ -710,9 +902,21 @@ def _resume(
             "moved; a human decides whether this version is spent.",
         )
         return True, None
-    if at == sha or _is_ancestor(root, sha, tip):
-        # The tag is there (R6 records it) or the commit is on the base: the
-        # push happened, so wait for its CI run rather than cut another.
+    if at == sha:
+        # CI was green and the tag landed before the earlier job could record
+        # it: record now, with the run's block when one read is cheap.
+        _conclude(
+            ctx,
+            profile,
+            root,
+            todo_id,
+            {**record, "sha": sha},
+            ci=_cheap_ci(profile, sha),
+        )
+        return True, None
+    if _is_ancestor(root, sha, tip):
+        # The commit is on the base but untagged: the push happened, so wait
+        # for its CI run rather than cut another.
         handle = _ci_handle(profile, {**record, "sha": sha}, rounds)
         _rl.park_until(ctx, handle, 0)
         ctx.append_chunk(
@@ -751,7 +955,43 @@ def _no_op(
         "job": _rl._job_id(ctx),
         "tagged_at": _ls._now().isoformat(),
     }
+    _conclude(
+        ctx,
+        profile,
+        root,
+        todo_id,
+        record,
+        text=f"released: {tag} {tip} (no-op: nothing landed since the last release)",
+    )
+
+
+def _conclude(
+    ctx: Any,
+    profile: _lanes.RepoProfile,
+    root: Path,
+    todo_id: int,
+    record: dict[str, Any],
+    *,
+    ci: dict[str, Any] | None = None,
+    text: str | None = None,
+) -> None:
+    """The success exit: stamp ``record`` (the tagged one), write the one
+    ``released:`` comment (never ``landed:``), drop any release tree, release
+    the lease and succeed the job. A refused stamp fails attempt-free: the
+    tag is already out, and the resume finds it and records."""
+    tag, sha = str(record.get("tag") or ""), str(record.get("sha") or "")
+    record = {
+        "tagged_at": _ls._now().isoformat(),
+        **record,
+        "state": "tagged",
+        "job": _rl._job_id(ctx),
+    }
+    if ci:
+        record["ci"] = ci
+    if text is None:
+        text = f"released: {tag} {sha}" + (f" (CI run {ci['run_id']})" if ci else "")
     if not _stamp_record(ctx, todo_id, record):
+        _drop_tree(root, todo_id)
         _fail(
             ctx,
             todo_id,
@@ -761,7 +1001,6 @@ def _no_op(
             attempt_free=RECORD_CLASS,
         )
         return
-    text = f"released: {tag} {tip} (no-op: nothing landed since the last release)"
     try:
         _rs._append_comment(ctx.store, todo_id, text)
     except Exception:  # pragma: no cover - the record is written; report it
@@ -772,7 +1011,7 @@ def _no_op(
     except Exception:  # pragma: no cover - the terminal status frees it anyway
         log.warning("repo_release: lease release for td%d failed", todo_id)
     ctx.set_meta(
-        exit_code=0, release_tag=tag, release_sha=tip, compute_handle_released=True
+        exit_code=0, release_tag=tag, release_sha=sha, compute_handle_released=True
     )
     ctx.append_chunk("job_summary", f"repo_release td{todo_id}: {text}")
     ctx.set_status("succeeded")
@@ -1299,8 +1538,8 @@ def _poll_green(
             "the release is retried.",
             RECORD_CLASS,
         )
-    common = _ls._git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
-    if common.returncode != 0 or not common.stdout.strip():
+    objects = _object_dirs(root)
+    if objects is None:
         _stamp_record(ctx, todo_id, None)  # nothing was pushed
         return free(
             "could not locate the clone's object store",
@@ -1314,7 +1553,7 @@ def _poll_green(
         tip,
         ops_parent=_mirror.mirror_root(_rs.slice_root()),
         env=_auth_env(),
-        object_dirs=(Path(common.stdout.strip()) / "objects",),
+        object_dirs=objects,
     )
     if outcome == "raced":
         _stamp_record(ctx, todo_id, None)
@@ -1358,13 +1597,467 @@ def _int(value: Any, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
-def _poll_ci(ctx: Any, handle: dict[str, Any]) -> bool:
-    """STUB (R5): keeps the job parked with the lease held and does nothing
-    else. R6 replaces it with the CI read, the re-run policy and the tag."""
-    if not _due(handle):
-        return False
+# ── CI: the runs read, the re-run, the tag ─────────────────────────
+
+
+class _RunsDenied(Exception):
+    """GitHub answered 404 to a runs read: the token cannot see Actions on
+    this repo."""
+
+
+class _RunsUnreadable(Exception):
+    """GitHub did not answer usefully (network, rate limit, 5xx, bad body)."""
+
+
+def _read_runs(url: str, params: dict[str, Any]) -> Any:
+    """Seam: one GET of ``url`` as parsed JSON, through
+    :func:`precis.plans.pr_class._get_json` (the SSRF-pinned client under the
+    ``github`` politeness policy; the token is in the ``Authorization``
+    header :func:`factory_git.github_api_headers` builds inside that call,
+    nowhere else). Raises ``pr_class.GitHubUnreadable`` whose text is the
+    status line, never a header."""
+    return _pr_class._get_json(url, params)
+
+
+def _runs(api: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``workflow_runs`` of ``GET <api>/actions/runs``. Raises
+    :class:`_RunsDenied` on a 404, :class:`_RunsUnreadable` otherwise."""
+    try:
+        payload = _read_runs(f"{api}/actions/runs", params)
+    except _pr_class.GitHubUnreadable as exc:
+        if str(exc).endswith("HTTP 404"):
+            raise _RunsDenied(str(exc)) from exc
+        raise _RunsUnreadable(str(exc)) from exc
+    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        raise _RunsUnreadable("the runs payload has no workflow_runs list")
+    return [r for r in runs if isinstance(r, dict)]
+
+
+def _rerun(api: str, run_id: int) -> tuple[bool, int]:
+    """``POST <api>/actions/runs/<id>/rerun``: ``(ok, http status)``, the
+    status ``0`` when no answer came. Never raises and never logs the
+    request headers. A non-GET goes through ``safe_stream`` (the same pinned
+    client as the reads) under ``with_backoff(idempotent=False)``: only a
+    connect failure or a 429 is retried, so a re-run is never sent twice by
+    the retry loop. 401/403 arrive as a ``VendorError`` carrying the
+    status; a 404 comes back as a response."""
+    from precis.utils.http import VendorError, http_client, with_backoff
+    from precis.utils.safe_fetch import safe_stream
+
+    url = f"{api}/actions/runs/{int(run_id)}/rerun"
+    headers = _factory_git.github_api_headers()
+
+    def send() -> Any:
+        with http_client(timeout=_HTTP_TIMEOUT_S, headers=headers) as client:
+            with safe_stream(client, "POST", url) as resp:
+                resp.read()
+                return resp
+
+    try:
+        resp = with_backoff(send, service="github", idempotent=False, url=url)
+    except VendorError as exc:
+        status = exc.status if isinstance(exc.status, int) else 0
+        log.info("repo_release: re-run POST %s refused (HTTP %s)", url, status or "-")
+        return False, status
+    except Exception as exc:
+        log.info("repo_release: re-run POST %s failed (%s)", url, type(exc).__name__)
+        return False, 0
+    status = int(resp.status_code)
+    return 200 <= status < 300, status
+
+
+def _ci_block(run: Mapping[str, Any]) -> dict[str, Any]:
+    """The record's ``ci`` block for a picked run."""
+    return {
+        "run_id": int(run.get("id") or 0),
+        "attempt": int(run.get("run_attempt") or 1),
+        "url": run.get("html_url"),
+        "conclusion": run.get("conclusion"),
+    }
+
+
+def _runs_params(profile: _lanes.RepoProfile, sha: str | None) -> dict[str, Any]:
+    params: dict[str, Any] = {"branch": profile.base, "event": "push", "per_page": 50}
+    if sha:
+        params["head_sha"] = sha
+    return params
+
+
+def _cheap_ci(profile: _lanes.RepoProfile, sha: str) -> dict[str, Any] | None:
+    """The ``ci`` block of the sha's run from one best-effort read, else
+    ``None`` (any trouble, or no run)."""
+    try:
+        runs = _runs(api_base(profile.remote), _runs_params(profile, sha))
+    except (ReleaseError, _RunsDenied, _RunsUnreadable):
+        return None
+    run = pick_run(runs, sha=sha, workflow=profile.ci_workflow or "")
+    return _ci_block(run) if run is not None else None
+
+
+def _record_of(
+    ctx: Any,
+    profile: _lanes.RepoProfile,
+    handle: Mapping[str, Any],
+    todo_id: int,
+    state: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    """The release record for ``state``: what the ``ci`` handle carries,
+    under the stored one (the push's own), with this job as ``job``."""
+    rec: dict[str, Any] = {"repo": profile.name, "base": profile.base}
+    for key in (
+        "package",
+        "version",
+        "tag",
+        "sha",
+        "prev_tag",
+        "prev_sha",
+        "pushed_at",
+    ):
+        rec[key] = handle.get(key)
+    rec.update(_stored_record(ctx.store, todo_id) or {})
+    rec.update(state=state, job=_rl._job_id(ctx), **extra)
+    return rec
+
+
+def _wait(
+    ctx: Any,
+    handle: dict[str, Any],
+    todo_id: int,
+    why: str,
+    *,
+    now: float,
+) -> bool:
+    """Park the ``ci`` handle for the next poll, or, past
+    :data:`CI_WALL_S` of waiting, fail attempt-free (the record stays
+    ``pushed``; the next job resumes the same sha). ``True`` when failed."""
+    since = handle.get("ci_since")
+    if isinstance(since, (int, float)) and now - float(since) > CI_WALL_S:
+        _fail(
+            ctx,
+            todo_id,
+            f"CI of {handle.get('tag')} not settled after {CI_WALL_S}s ({why})",
+            handoff=f"release FAILED: CI on {handle.get('tag')} did not settle in "
+            f"{CI_WALL_S}s ({why}); the pushed commit {str(handle.get('sha'))[:9]} "
+            "is kept and the release resumes it.",
+            attempt_free=CI_WALL_CLASS,
+        )
+        return True
     _rl.park_until(ctx, handle, CI_PARK_S)
     return False
+
+
+def _coordinator(ctx: Any, todo_id: int, why: str, handoff: str) -> bool:
+    """A charged failure the coordinator, not a blind retry, must answer:
+    :data:`COORDINATOR_ASK_KEY` is stamped on the job so ``plan_dispatch``
+    routes the node's cap ask to it. Always ``True`` (terminal)."""
+    ctx.set_meta(**{COORDINATOR_ASK_KEY: why})
+    _fail(ctx, todo_id, why, handoff=f"release FAILED: {handoff}")
+    return True
+
+
+def _poll_ci(
+    ctx: Any,
+    handle: dict[str, Any],
+    params: dict[str, Any],
+    profile: _lanes.RepoProfile,
+    root: Path,
+) -> bool:
+    """One due poll of the CI wait (``poll`` checked ``not_before``).
+    ``True`` when the job is terminal."""
+    todo_id = params["todo_id"]
+    sha = _rl._hex(handle.get("sha"))
+    now = _ls._now().timestamp()
+
+    def free(why: str, handoff: str, red_class: str) -> bool:
+        _fail(
+            ctx,
+            todo_id,
+            why,
+            handoff=f"release FAILED: {handoff}",
+            attempt_free=red_class,
+        )
+        return True
+
+    if not sha:
+        return free(
+            "the ci handle names no sha",
+            "the CI handle lost its commit (infrastructure); the release resumes "
+            "from the record.",
+            _rl.HANDLE_CLASS,
+        )
+    held = _repo_lease.holder(ctx.store, profile.name)
+    if held is None or held.get("job_id") != _rl._job_id(ctx):
+        by = f"job #{held.get('job_id')}" if held else "no job"
+        return free(
+            f"the {profile.name!r} lease is held by {by}, not this job; not waiting on CI",
+            "the repo lease was lost while CI ran; the release resumes the pushed "
+            "commit.",
+            _rl.HELD_CLASS,
+        )
+    try:
+        api = api_base(profile.remote)
+    except ReleaseError as exc:
+        return _coordinator(
+            ctx,
+            todo_id,
+            f"{profile.name}: {exc}",
+            f"{exc}; the profile's remote needs a human.",
+        )
+    denied = (
+        f"GitHub answered 404 to the workflow-run read on {profile.name}; the "
+        "factory token lacks Actions read on that repo"
+    )
+    try:
+        runs = _runs(api, _runs_params(profile, sha))
+    except _RunsDenied:
+        return _coordinator(
+            ctx,
+            todo_id,
+            denied,
+            f"{denied}. The commit {sha[:9]} is pushed; a human grants the token "
+            "Actions read.",
+        )
+    except _RunsUnreadable as exc:
+        return _unreadable(ctx, handle, todo_id, str(exc), now)
+    handle["unreadable_since"] = None
+    run = pick_run(runs, sha=sha, workflow=profile.ci_workflow or "")
+    verdict = ci_verdict(
+        run, rerun_attempt_before=_int(handle.get("rerun_attempt_before"), 0)
+    )
+    if run is None:
+        pushed = _pushed_ts(handle)
+        if now - pushed > NO_RUN_CUTOFF_S:
+            why = (
+                f"no CI run appeared for {sha[:9]} on {profile.name} "
+                f"{NO_RUN_CUTOFF_S}s after the push"
+            )
+            return _coordinator(
+                ctx,
+                todo_id,
+                why,
+                f"{why} (the push event was probably dropped; the workflow has "
+                "no manual trigger). The version is spent: a human decides.",
+            )
+        return _wait(ctx, handle, todo_id, "no run yet", now=now)
+    if verdict == "pending":
+        return _wait(ctx, handle, todo_id, "run pending", now=now)
+    if verdict == "green":
+        return _tag_and_record(ctx, handle, params, profile, root, run)
+    if verdict == "red":
+        block = _ci_block(run)
+        _stamp_record(
+            ctx, todo_id, _record_of(ctx, profile, handle, todo_id, "red", ci=block)
+        )
+        _fail(
+            ctx,
+            todo_id,
+            f"CI run {block['run_id']} on {sha[:9]} concluded {block['conclusion']}",
+            handoff=f"release FAILED: CI run {block['run_id']} ({block['conclusion']}) "
+            f"on the release commit {sha[:9]} is red: {block['url']}. No tag was "
+            f"cut; the commit stays on {profile.base} and the next try takes a "
+            "new version.",
+        )
+        return True
+    return _poll_cancelled(ctx, handle, todo_id, profile, api, run, now)
+
+
+def _pushed_ts(handle: Mapping[str, Any]) -> float:
+    """``pushed_at`` as a timestamp; this wait's start when unreadable."""
+    try:
+        return datetime.fromisoformat(str(handle["pushed_at"])).timestamp()
+    except (KeyError, ValueError):
+        since = handle.get("ci_since")
+        return (
+            float(since) if isinstance(since, (int, float)) else _ls._now().timestamp()
+        )
+
+
+def _unreadable(
+    ctx: Any, handle: dict[str, Any], todo_id: int, why: str, now: float
+) -> bool:
+    """GitHub could not be read: re-park, and past :data:`UNREADABLE_CAP_S` of
+    continuous silence fail attempt-free (the record stays ``pushed``)."""
+    since = handle.get("unreadable_since")
+    if not isinstance(since, (int, float)) or isinstance(since, bool):
+        since = now
+        handle["unreadable_since"] = since
+    if now - float(since) > UNREADABLE_CAP_S:
+        _fail(
+            ctx,
+            todo_id,
+            f"GitHub unreadable for {int(now - float(since))}s: {why}",
+            handoff="release FAILED: GitHub could not be read for "
+            f"{UNREADABLE_CAP_S}s (infrastructure); the release resumes the "
+            "pushed commit.",
+            attempt_free=CI_UNREADABLE_CLASS,
+        )
+        return True
+    return _wait(ctx, handle, todo_id, "GitHub unreadable", now=now)
+
+
+def _poll_cancelled(
+    ctx: Any,
+    handle: dict[str, Any],
+    todo_id: int,
+    profile: _lanes.RepoProfile,
+    api: str,
+    run: Mapping[str, Any],
+    now: float,
+) -> bool:
+    """A cancelled run: wait for the branch to be quiet, then re-run it, at
+    most :data:`MAX_RERUNS` times."""
+    sha = _rl._hex(handle.get("sha"))
+    reruns = _int(handle.get("reruns"), 0)
+    if reruns >= MAX_RERUNS:
+        why = (
+            f"CI run {run.get('id')} on {sha[:9]} was cancelled again after "
+            f"{reruns} re-runs on {profile.name}"
+        )
+        return _coordinator(
+            ctx,
+            todo_id,
+            why,
+            f"{why}: {run.get('html_url')}. The version is spent: a human decides.",
+        )
+    try:
+        branch = _runs(api, _runs_params(profile, None))
+    except _RunsDenied:
+        return _coordinator(
+            ctx,
+            todo_id,
+            f"GitHub answered 404 to the workflow-run read on {profile.name}; the "
+            "factory token lacks Actions read on that repo",
+            "the token lacks Actions read; a human grants it.",
+        )
+    except _RunsUnreadable as exc:
+        return _unreadable(ctx, handle, todo_id, str(exc), now)
+    busy = [
+        r
+        for r in branch
+        if _in_workflow(r, profile.ci_workflow or "")
+        and r.get("status") in _ACTIVE_STATUSES
+        and r.get("id") != run.get("id")
+    ]
+    if busy:
+        return _wait(ctx, handle, todo_id, "another run holds the branch", now=now)
+    ok, status = _rerun(api, int(run.get("id") or 0))
+    if ok:
+        handle["reruns"] = reruns + 1
+        handle["rerun_attempt_before"] = int(run.get("run_attempt") or 1)
+        ctx.append_chunk(
+            "job_event",
+            f"repo_release: {profile.name} CI run {run.get('id')} was cancelled; "
+            f"re-run {reruns + 1}/{MAX_RERUNS} requested",
+        )
+        return _wait(ctx, handle, todo_id, "re-run requested", now=now)
+    if status in (401, 403, 404):
+        why = (
+            f"GitHub refused the re-run of CI run {run.get('id')} on "
+            f"{profile.name} (HTTP {status}); the factory token lacks Actions write"
+        )
+        return _coordinator(
+            ctx,
+            todo_id,
+            why,
+            f"{why}. A human re-runs {run.get('html_url')} or "
+            "grants the token Actions write.",
+        )
+    return _wait(ctx, handle, todo_id, f"re-run POST failed (HTTP {status})", now=now)
+
+
+def _tag_and_record(
+    ctx: Any,
+    handle: dict[str, Any],
+    params: dict[str, Any],
+    profile: _lanes.RepoProfile,
+    root: Path,
+    run: Mapping[str, Any],
+) -> bool:
+    """CI is green: re-read the admission and the lease, create the tag at
+    the handle's sha, record, succeed. ``True`` when the job is terminal."""
+    todo_id = params["todo_id"]
+    sha, tag = _rl._hex(handle.get("sha")), str(handle.get("tag") or "")
+    block = _ci_block(run)
+
+    def free(why: str, handoff: str, red_class: str) -> bool:
+        _drop_tree(root, todo_id)
+        _fail(
+            ctx,
+            todo_id,
+            why,
+            handoff=f"release FAILED: {handoff}",
+            attempt_free=red_class,
+        )
+        return True
+
+    closed = _admission_gap(ctx, profile, params)
+    if closed is not None:
+        return free(
+            f"repo {profile.name!r} is no longer admitted ({closed}); not tagging",
+            "the repo was closed to the factory while CI ran; the release resumes "
+            "the pushed commit once it is open.",
+            _rl.CLOSED_CLASS,
+        )
+    held = _repo_lease.holder(ctx.store, profile.name)
+    if held is None or held.get("job_id") != _rl._job_id(ctx):
+        by = f"job #{held.get('job_id')}" if held else "no job"
+        return free(
+            f"the {profile.name!r} lease is held by {by}, not this job; not tagging",
+            "the repo lease was lost while CI ran; the release resumes the pushed "
+            "commit.",
+            _rl.HELD_CLASS,
+        )
+    objects = _object_dirs(root)
+    if objects is None:
+        return free(
+            "could not locate the clone's object store",
+            "the object store was not found (infrastructure); retried.",
+            TAG_PUSH_CLASS,
+        )
+    outcome, detail = _mirror.push_tag_new(
+        profile.remote,
+        tag,
+        sha,
+        message=tag,
+        tagger=RELEASE_IDENT,
+        ops_parent=_mirror.mirror_root(_rs.slice_root()),
+        env=_auth_env(),
+        object_dirs=objects,
+    )
+    if outcome == "exists":
+        _stamp_record(
+            ctx,
+            todo_id,
+            _record_of(ctx, profile, handle, todo_id, "tag-conflict", ci=block),
+        )
+        _drop_tree(root, todo_id)
+        _fail(
+            ctx,
+            todo_id,
+            f"tag {tag} already exists at {mask_secrets(detail)[:9]}, not at {sha[:9]}",
+            handoff=f"release FAILED: tag {tag} points at {mask_secrets(detail)[:9]}, "
+            f"not at the green release commit {sha[:9]} (someone released at the "
+            "same time). Tags are never moved; a human decides.",
+        )
+        return True
+    if outcome != "ok":
+        return free(
+            f"tagging {tag} at {sha[:9]} failed: {mask_secrets(detail)}",
+            "the tag could not be verified (infrastructure); the release resumes "
+            "the pushed commit and finds the tag if it landed.",
+            TAG_PUSH_CLASS,
+        )
+    _conclude(
+        ctx,
+        profile,
+        root,
+        todo_id,
+        _record_of(ctx, profile, handle, todo_id, "tagged"),
+        ci=block,
+    )
+    return True
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -1376,9 +2069,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     params = dict((ctx.meta or {}).get("params") or {})
     phase = handle.get("phase")
-    if phase == CI_PHASE:
-        return _poll_ci(ctx, handle)
-    if phase == _rl.LEASE_PHASE and not _due(handle):
+    if phase in (CI_PHASE, _rl.LEASE_PHASE) and not _due(handle):
         return False
     profile = _lanes.repo_profile(str(handle.get("repo") or ""))
     root = _rl._handle_root(handle)
@@ -1394,6 +2085,8 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     if phase == _rl.LEASE_PHASE:
         return _poll_lease(ctx, handle, params, profile, root)
+    if phase == CI_PHASE:
+        return _poll_ci(ctx, handle, params, profile, root)
     if phase == CHECK_PHASE:
         return _poll_check(ctx, handle, params, profile, root)
     ctx.record_failure(f"repo_release: unknown phase {phase!r}")

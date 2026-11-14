@@ -82,6 +82,7 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
     [
         ("run_slice", {"repo_checkout", "builder", "git"}),
         ("land_slice", {"repo_checkout", "git"}),
+        ("repo_release", {"repo_checkout", "git"}),
         ("release_cut", {"repo_checkout", "git"}),
         ("release_deploy", {"repo_checkout", "git"}),
         ("release_confirm", {"repo_checkout", "git"}),
@@ -442,6 +443,10 @@ def test_placement_gap_reads_the_substituted_token() -> None:
         ),
         (
             {"job_type": "land_slice", "params": {"repo": "catpath"}},
+            {"repo_checkout", "git", "repo_checkout_catpath"},
+        ),
+        (
+            {"job_type": "repo_release", "params": {"repo": "catpath"}},
             {"repo_checkout", "git", "repo_checkout_catpath"},
         ),
         # A repo with no profile still adds its token: fail closed.

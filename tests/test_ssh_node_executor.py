@@ -2267,7 +2267,7 @@ def test_poison_guard_releases_run_slice_todo_without_process_identity(
     monkeypatch.setenv("PRECIS_NODE", "spark")
     store.record_heartbeat("spark")
     store.sync_host_resource_slots(
-        "spark", {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+        "spark", {"repo_checkout": 1, "claude_bin": 1, "builder": 1, "git": 1}
     )
     store.record_heartbeat(
         "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}

@@ -1,10 +1,13 @@
-"""repo_release, the release job from submit through the push (td659522 step 3 R5).
+"""repo_release, the release job (td659522 step 3 R5 and R6).
 
 Built on ``test_repo_land``'s rig: a real "origin" bare repo and clone in tmp,
 the credentialed fetch replaced by a local fetch, the detached launch by a
-recorder, and the lease by ``FakeLease``. The tag oracle (``ls_remote_tag``)
-and ``push_cas`` are faked at the ``factory_git_mirror`` seam. Pyproject and
-lockfile contents are synthetic.
+recorder, and the lease by ``FakeLease``. The tag oracle (``ls_remote_tag``),
+``push_cas`` and ``push_tag_new`` are faked at the ``factory_git_mirror``
+seam; the workflow-runs read and the re-run POST at the module seam
+(``repo_release._read_runs`` / ``_rerun``), the plan subtree the batch
+backstop walks at ``_plan_rows``. Pyproject and lockfile contents are
+synthetic.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes
+from precis.plans.pr_class import GitHubUnreadable
 from precis.workers import factory_git_mirror, repo_land, repo_lease
 from precis.workers.job_types import land_slice, repo_release, run_slice
 from tests.test_land_slice import _Ctx, _Store
@@ -48,6 +52,9 @@ LOCK = (
 PARAMS = {"todo_id": 42, "repo": "catpath"}
 TS = "%Y-%m-%dT%H:%M:%SZ"
 CHECK_RED_LOG = "lock stale\n✖ gate check failed: uv lock --check\n"
+# What the rig puts in the credentialed env: no job output may ever carry it.
+TOKEN = "ghp_" + "".join(chr(65 + (i * 5) % 26) for i in range(36))
+RUN_URL = "https://github.com/retospect/catpath/actions/runs/500"
 
 
 class ReleaseLease(FakeLease):
@@ -94,6 +101,18 @@ class Rel:
     signals: list[tuple[int, int]] = field(default_factory=list)
     ctx: _Ctx | None = None
     base: str = ""
+    # the CI side: the runs a read of the sha returns, the runs of the whole
+    # branch (defaults to the same list), a failure to raise instead
+    runs: list[dict[str, Any]] = field(default_factory=list)
+    branch_runs: list[dict[str, Any]] | None = None
+    read_error: Exception | None = None
+    reads: list[dict[str, Any]] = field(default_factory=list)
+    rerun_results: list[tuple[bool, int]] = field(default_factory=list)
+    rerun_calls: list[int] = field(default_factory=list)
+    tag_outcomes: list[tuple[str, str]] = field(default_factory=list)
+    tag_calls: list[dict[str, Any]] = field(default_factory=list)
+    open_nodes: list[dict[str, Any]] = field(default_factory=list)
+    blocked: list[tuple[int, int]] = field(default_factory=list)
 
     def tree(self) -> Path:
         return self.rig.clone / ".claude" / "worktrees" / "release-td42"
@@ -165,6 +184,64 @@ def rel(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> Rel:  # noqa: F811
 
     monkeypatch.setattr(factory_git_mirror, "ls_remote_tag", ls_remote_tag)
     monkeypatch.setattr(factory_git_mirror, "push_cas", push_cas)
+
+    def push_tag_new(
+        url: str,
+        tag: str,
+        sha: str,
+        *,
+        message: str,
+        tagger: tuple[str, str],
+        ops_parent: Path,
+        env: Any,
+        object_dirs: tuple[Path, ...] = (),
+    ) -> tuple[str, str]:
+        r.events.append("tag")
+        r.tag_calls.append(
+            {
+                "url": url,
+                "tag": tag,
+                "sha": sha,
+                "message": message,
+                "tagger": tagger,
+                "env": dict(env),
+                "object_dirs": object_dirs,
+            }
+        )
+        if r.tag_outcomes:
+            return r.tag_outcomes.pop(0)
+        r.tags[tag] = sha
+        return ("ok", f"{tag} created")
+
+    monkeypatch.setattr(factory_git_mirror, "push_tag_new", push_tag_new)
+    monkeypatch.setattr(
+        repo_release, "_auth_env", lambda: {"PATH": "/bin", "GH_FAKE": TOKEN}
+    )
+
+    def read_runs(url: str, params: dict[str, Any]) -> Any:
+        r.reads.append({"url": url, **params})
+        if r.read_error is not None:
+            raise r.read_error
+        if "head_sha" in params or r.branch_runs is None:
+            return {"workflow_runs": r.runs}
+        return {"workflow_runs": r.branch_runs}
+
+    def rerun(api: str, run_id: int) -> tuple[bool, int]:
+        r.rerun_calls.append(run_id)
+        return r.rerun_results.pop(0) if r.rerun_results else (True, 201)
+
+    monkeypatch.setattr(repo_release, "_read_runs", read_runs)
+    monkeypatch.setattr(repo_release, "_rerun", rerun)
+    # the plan subtree the backstop walks (the real one is a SQL query)
+    monkeypatch.setattr(
+        repo_release,
+        "_plan_rows",
+        lambda store, root: [
+            {"id": 42, "parent_id": None, "kind": "todo"},
+            *r.open_nodes,
+        ],
+    )
+    monkeypatch.setattr(repo_release, "_blocked_edges", lambda store, ids: r.blocked)
 
     def launch(argv: list[str], **kw: Any) -> int:
         # What the handle held the moment the verifier started.
@@ -727,9 +804,9 @@ def test_green_stamps_the_record_before_the_push_then_parks_in_ci(rel: Rel) -> N
     ]
 
 
-def test_the_ci_phase_is_a_parked_stub(rel: Rel) -> None:
-    """If this fails the R5 stub does more than wait (R6 owns the CI read and
-    the tag), or lets go of the lease."""
+def test_a_ci_handle_not_yet_due_reads_nothing(rel: Rel) -> None:
+    """If this fails every poll tick of a parked CI wait hits GitHub, or lets
+    go of the lease."""
     ctx, handle = _prepared(rel)
     _finish(handle, 0)
     assert repo_release.poll(ctx, handle) is False
@@ -738,12 +815,7 @@ def test_the_ci_phase_is_a_parked_stub(rel: Rel) -> None:
     ctx.meta_set.clear()
     assert repo_release.poll(ctx, handle) is False  # not due: untouched
     assert handle == before and ctx.meta_set == {}
-    _due(handle)
-    assert repo_release.poll(ctx, handle) is False  # due: parked again
-    assert datetime.strptime(handle["not_before"], TS).replace(
-        tzinfo=UTC
-    ) > datetime.now(UTC)
-    assert rel.rig.lease.releases == [] and ctx.status is None
+    assert rel.reads == [] and rel.rig.lease.releases == [] and ctx.status is None
     assert len(rel.pushes) == 1
 
 
@@ -889,19 +961,38 @@ def _resumed(rel: Rel, record: dict[str, Any]) -> tuple[_Ctx, dict[str, Any], An
     return ctx, handle, repo_release.poll(ctx, handle)
 
 
-def test_a_pushed_record_with_its_tag_at_that_sha_resumes_in_ci(rel: Rel) -> None:
+@pytest.mark.parametrize("readable", [True, False])
+def test_a_pushed_record_with_its_tag_at_that_sha_records_without_waiting(
+    rel: Rel, readable: bool
+) -> None:
     """If this fails a job after an interrupted release cuts a second commit
-    for a version that is already pushed and tagged."""
+    for a version that is already pushed and tagged, waits for CI it does not
+    need, or loses the ci block when one cheap read has it (and fails when
+    that read does not)."""
     sha = "a" * 40
     rel.tags["v1.3.0"] = sha
+    if readable:
+        rel.runs = [_run(sha)]
+    else:
+        rel.read_error = GitHubUnreadable("GET u: HTTP 502")
     ctx, handle, done = _resumed(rel, _pushed_record(sha))
-    assert done is False and ctx.status is None
-    assert handle["phase"] == "ci" and handle["sha"] == sha
-    assert (handle["version"], handle["tag"]) == ("1.3.0", "v1.3.0")
-    assert handle["pushed_at"] == "2026-11-14T10:00:00+00:00"
-    assert rel.rig.launches == [] and rel.pushes == []
-    assert ctx.meta_set["compute_handle"] == handle
-    assert rel.record()["state"] == "pushed"
+    assert done is True and ctx.status == "succeeded" and ctx.failure is None
+    rec = rel.record()
+    assert rec["state"] == "tagged" and rec["sha"] == sha and rec["job"] == 901
+    assert rec["pushed_at"] == "2026-11-14T10:00:00+00:00" and rec["tagged_at"]
+    if readable:
+        assert rec["ci"] == {
+            "run_id": 500,
+            "attempt": 1,
+            "url": RUN_URL,
+            "conclusion": "success",
+        }
+        assert rel.store.comments(42) == [f"released: v1.3.0 {sha} (CI run 500)"]
+    else:
+        assert "ci" not in rec
+        assert rel.store.comments(42) == [f"released: v1.3.0 {sha}"]
+    assert rel.rig.launches == [] and rel.pushes == [] and rel.tag_calls == []
+    assert rel.rig.lease.releases == [("catpath", 901)]
 
 
 def test_a_pushed_record_with_the_tag_elsewhere_is_a_charged_tag_conflict(
@@ -991,3 +1082,613 @@ def test_commands_script_labels_the_failing_step(tmp_path: Path) -> None:
     )
     assert proc.returncode == 4
     assert proc.stdout.splitlines() == ["A", "✖ gate check failed: exit 4"]
+
+
+# ── ci: the runs read, the re-run, the tag ─────────────────────────
+
+
+def _run(sha: str, **over: Any) -> dict[str, Any]:
+    """One workflow run of the profile's ci.yml, green by default."""
+    return {
+        "id": 500,
+        "head_sha": sha,
+        "path": ".github/workflows/ci.yml",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "html_url": RUN_URL,
+        **over,
+    }
+
+
+def _in_ci(rel: Rel) -> tuple[_Ctx, dict[str, Any], str]:
+    """A job whose push just went out: parked in ``ci``, due now."""
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "ci"
+    _due(handle)
+    rel.events.clear()
+    return ctx, handle, handle["sha"]
+
+
+def _coordinator(ctx: _Ctx, store: _Store, needle: str) -> None:
+    """A charged failure that plan_dispatch's coordinator reader sees."""
+    _charged(ctx, store)
+    assert needle in ctx.meta_set[repo_release.COORDINATOR_ASK_KEY]
+    assert needle in (ctx.failure or "")
+
+
+def _clean(rel: Rel, ctx: _Ctx) -> None:
+    """Nothing the job wrote carries the credential the rig put in the env."""
+    written = [
+        repr(ctx.meta_set),
+        repr(ctx.chunks),
+        repr(ctx.failure),
+        repr(rel.store.comments(42)),
+        repr(rel.store.refs[42].meta),
+        repr(rel.events),
+        repr(rel.reads),
+    ]
+    assert not [w for w in written if TOKEN in w]
+
+
+def _parked(handle: dict[str, Any]) -> bool:
+    due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
+    return due > datetime.now(UTC)
+
+
+def test_green_run_tags_the_pushed_sha_and_records_it(rel: Rel) -> None:
+    """If this fails a green release is not tagged at the pushed sha, the
+    record lacks its ci block, a `landed:` line is written instead of the one
+    `released:` comment, the lease is kept, or the job does not succeed."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha), _run("e" * 40, id=499), _run(sha, id=498, path="other.yml")]
+    assert repo_release.poll(ctx, handle) is True, ctx.failure
+    assert ctx.status == "succeeded" and ctx.failure is None
+    (call,) = rel.tag_calls
+    assert (call["tag"], call["sha"], call["url"]) == (
+        "v1.3.0",
+        sha,
+        lanes.REPO_PROFILES["catpath"].remote,
+    )
+    assert call["tagger"] == repo_release.RELEASE_IDENT and call["message"] == "v1.3.0"
+    assert call["env"]["GH_FAKE"] == TOKEN  # the helper gets the credential env
+    assert call["object_dirs"] and call["object_dirs"][0].name == "objects"
+    (read,) = rel.reads
+    assert read["url"] == "https://api.github.com/repos/retospect/catpath/actions/runs"
+    assert (read["head_sha"], read["branch"], read["event"]) == (sha, "main", "push")
+    rec = rel.record()
+    assert rec["state"] == "tagged" and rec["sha"] == sha and rec["tag"] == "v1.3.0"
+    assert rec["tagged_at"] and rec["pushed_at"] and rec["job"] == 901
+    assert rec["ci"] == {
+        "run_id": 500,
+        "attempt": 1,
+        "url": RUN_URL,
+        "conclusion": "success",
+    }
+    comments = rel.store.comments(42)
+    assert [c for c in comments if c.startswith("released:")] == [
+        f"released: v1.3.0 {sha} (CI run 500)"
+    ]
+    assert not [c for c in comments if c.startswith("landed:")]
+    assert rel.rig.lease.releases == [("catpath", 901)]
+    assert "STATUS:done" not in rel.store.tag_strings(42)
+    assert ctx.meta_set["release_tag"] == "v1.3.0"
+    _clean(rel, ctx)
+
+
+def test_red_run_is_recorded_charged_and_never_tagged(rel: Rel) -> None:
+    """If this fails a red release gets a tag, is retried for free, leaves no
+    `red` record (the next try would resume a bad commit), or the handoff does
+    not name the run to look at."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="failure")]
+    assert repo_release.poll(ctx, handle) is True
+    _charged(ctx, rel.store)
+    assert rel.tag_calls == [] and rel.rig.lease.releases == []
+    rec = rel.record()
+    assert rec["state"] == "red" and rec["sha"] == sha
+    assert rec["ci"]["conclusion"] == "failure" and rec["ci"]["run_id"] == 500
+    handoff = rel.store.comments(42)[-1]
+    assert RUN_URL in handoff and "next try takes a new version" in handoff
+    assert repo_release.COORDINATOR_ASK_KEY not in ctx.meta_set
+    _clean(rel, ctx)
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [],
+        [{"id": 7, "head_sha": "e" * 40}],
+        [{"id": 8, "path": ".github/workflows/other.yml", "head_sha": "SHA"}],
+        [
+            {
+                "id": 9,
+                "path": ".github/workflows/ci.yml",
+                "head_sha": "SHA",
+                "status": "in_progress",
+            }
+        ],
+        [
+            {
+                "id": 9,
+                "path": ".github/workflows/ci.yml",
+                "head_sha": "SHA",
+                "status": "queued",
+            }
+        ],
+    ],
+)
+def test_pending_or_foreign_runs_re_park_the_wait(rel: Rel, runs: list[Any]) -> None:
+    """If this fails a run for another sha or another workflow is mistaken for
+    ours (tagging on someone else's green), or a run still going is judged."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [
+        {**r, "head_sha": sha if r.get("head_sha") == "SHA" else r.get("head_sha")}
+        for r in runs
+    ]
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert repo_release.poll(ctx, handle) is False
+    assert ctx.status is None and rel.tag_calls == [] and rel.rerun_calls == []
+    assert _parked(handle) and ctx.meta_set["compute_handle"] == handle
+    assert rel.record()["state"] == "pushed"
+
+
+def test_no_run_after_the_cutoff_is_the_coordinators_failure(rel: Rel) -> None:
+    """If this fails a push whose CI event was dropped waits forever, is
+    retried blindly, or does not reach the coordinator reader."""
+    ctx, handle, sha = _in_ci(rel)
+    assert repo_release.poll(ctx, handle) is False  # inside the cutoff: waits
+    _due(handle)
+    old = time.time() - repo_release.NO_RUN_CUTOFF_S - 60
+    handle["pushed_at"] = datetime.fromtimestamp(old, UTC).isoformat()
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "no CI run appeared")
+    assert rel.tag_calls == [] and rel.record()["state"] == "pushed"
+
+
+def test_ci_wall_is_attempt_free_and_keeps_the_pushed_record(rel: Rel) -> None:
+    """If this fails a CI that never settles holds the lease forever, or the
+    give-up is charged / drops the record (the next job must resume the sha)."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, status="in_progress", conclusion=None)]
+    handle["ci_since"] = time.time() - repo_release.CI_WALL_S - 60
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.CI_WALL_CLASS)
+    assert rel.record()["state"] == "pushed" and rel.tag_calls == []
+
+
+def test_cancelled_run_waits_for_quiet_then_reruns_once_and_remembers(
+    rel: Rel,
+) -> None:
+    """If this fails a cancelled run is re-run beside another run of the
+    branch (cancelling it or being cancelled), is re-run twice for one cancel,
+    the old completed attempt is judged again after the re-run, or the new
+    attempt's green is not tagged."""
+    ctx, handle, sha = _in_ci(rel)
+    cancelled = _run(sha, conclusion="cancelled")
+    rel.runs = [cancelled]
+    other = _run("f" * 40, id=777, status="in_progress", conclusion=None)
+    rel.branch_runs = [cancelled, other]
+    assert repo_release.poll(ctx, handle) is False  # another run holds the branch
+    assert rel.rerun_calls == [] and handle["reruns"] == 0 and _parked(handle)
+    rel.branch_runs = [cancelled]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False  # quiet: one re-run
+    assert rel.rerun_calls == [500]
+    assert handle["reruns"] == 1 and handle["rerun_attempt_before"] == 1
+    assert _parked(handle) and ctx.status is None
+    # the old attempt still reads completed/cancelled: pending, no second POST
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False
+    assert rel.rerun_calls == [500] and handle["reruns"] == 1
+    # the new attempt runs, then goes green: tagged
+    rel.runs = [_run(sha, run_attempt=2, status="in_progress", conclusion=None)]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False and rel.tag_calls == []
+    rel.runs = [_run(sha, run_attempt=2)]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is True and ctx.status == "succeeded"
+    assert rel.record()["ci"]["attempt"] == 2 and len(rel.tag_calls) == 1
+    _clean(rel, ctx)
+
+
+def test_the_third_cancel_is_the_coordinators_failure(rel: Rel) -> None:
+    """If this fails a run that keeps being cancelled is re-run forever."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="cancelled", run_attempt=3)]
+    handle["reruns"] = repo_release.MAX_RERUNS
+    handle["rerun_attempt_before"] = 2
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "cancelled again after 2 re-runs")
+    assert rel.rerun_calls == [] and rel.tag_calls == []
+
+
+def test_a_refused_rerun_is_the_coordinators_failure(rel: Rel) -> None:
+    """If this fails a token without Actions write retries a POST it can never
+    make, or hides that a human must re-run the run."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="cancelled")]
+    rel.rerun_results[:] = [(False, 403)]
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "Actions write")
+    assert rel.rerun_calls == [500] and rel.record()["state"] == "pushed"
+    _clean(rel, ctx)
+
+
+def test_a_failed_rerun_post_is_retried_on_the_next_poll(rel: Rel) -> None:
+    """If this fails a 5xx or a lost connection on the POST fails the job
+    instead of trying again, or counts as a re-run."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha, conclusion="cancelled")]
+    rel.rerun_results[:] = [(False, 502), (True, 201)]
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["reruns"] == 0 and _parked(handle) and ctx.status is None
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["reruns"] == 1 and rel.rerun_calls == [500, 500]
+
+
+def test_a_404_on_the_runs_read_is_the_coordinators_failure(rel: Rel) -> None:
+    """If this fails a token with no Actions read on a private repo is treated
+    as a passing outage and the release waits for nothing."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.read_error = GitHubUnreadable("GET u: HTTP 404")
+    assert repo_release.poll(ctx, handle) is True
+    _coordinator(ctx, rel.store, "lacks Actions read")
+    assert rel.tag_calls == []
+
+
+def test_an_unreadable_github_re_parks_then_gives_up_attempt_free(rel: Rel) -> None:
+    """If this fails one bad read fails the release, a long outage waits for
+    ever or is charged to the node, or a recovery does not reset the clock."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.read_error = GitHubUnreadable("GET u: HTTP 502")
+    assert repo_release.poll(ctx, handle) is False
+    assert _parked(handle) and handle["unreadable_since"] is not None
+    # recovery clears the outage clock
+    rel.read_error = None
+    rel.runs = [_run(sha, status="in_progress", conclusion=None)]
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["unreadable_since"] is None
+    # silent past the cap
+    rel.read_error = GitHubUnreadable("GET u: HTTP 502")
+    handle["unreadable_since"] = time.time() - repo_release.UNREADABLE_CAP_S - 30
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.CI_UNREADABLE_CLASS)
+    assert rel.record()["state"] == "pushed" and rel.tag_calls == []
+    assert repo_release.COORDINATOR_ASK_KEY not in ctx.meta_set
+
+
+def test_tag_exists_elsewhere_is_a_charged_tag_conflict(rel: Rel) -> None:
+    """If this fails a tag a human cut at another commit is retried for free
+    or left without a `tag-conflict` record."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha)]
+    rel.tag_outcomes[:] = [("exists", "d" * 40)]
+    assert repo_release.poll(ctx, handle) is True
+    _charged(ctx, rel.store)
+    rec = rel.record()
+    assert rec["state"] == "tag-conflict" and rec["sha"] == sha
+    assert rec["ci"]["run_id"] == 500
+    assert "released:" not in " ".join(rel.store.comments(42))
+    assert rel.rig.lease.releases == []
+
+
+def test_a_tag_error_is_attempt_free_and_the_record_stays_pushed(rel: Rel) -> None:
+    """If this fails a tag push that may have landed loses the record (the
+    next job would cut a second version), is charged, or leaks the token its
+    helper's error text carried."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha)]
+    rel.tag_outcomes[:] = [("error", f"push failed with {TOKEN}")]
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.TAG_PUSH_CLASS)
+    assert rel.record()["state"] == "pushed"
+    _clean(rel, ctx)
+
+
+@pytest.mark.parametrize("how", ["closed", "off", "lease-lost", "no-lease"])
+def test_a_closed_repo_or_lost_lease_before_the_tag_tags_nothing(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """If this fails a release tags after the operator closed the repo or
+    another job took the lease while CI ran."""
+    ctx, handle, sha = _in_ci(rel)
+    rel.runs = [_run(sha)]
+    red_class = repo_land.CLOSED_CLASS
+    if how == "closed":
+        monkeypatch.setattr(lanes, "open_repos", lambda store: frozenset({"precis"}))
+    elif how == "off":
+        monkeypatch.setenv("PRECIS_FACTORY", "off")
+    else:
+        rel.rig.lease.holder_job = 77 if how == "lease-lost" else None
+        red_class = repo_land.HELD_CLASS
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, red_class)
+    assert rel.tag_calls == [] and rel.record()["state"] == "pushed"
+
+
+def test_kill_on_a_ci_handle_does_not_raise(rel: Rel) -> None:
+    """If this fails the wall-clock or operator kill of a release parked in ci
+    raises and the row is never reaped."""
+    ctx, handle, _ = _in_ci(rel)
+    repo_release.kill(ctx, handle)
+    assert rel.signals == []
+
+
+# ── the API base ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("remote", "want"),
+    [
+        (
+            "https://github.com/retospect/catpath",
+            "https://api.github.com/repos/retospect/catpath",
+        ),
+        (
+            "https://github.com/retospect/catpath.git",
+            "https://api.github.com/repos/retospect/catpath",
+        ),
+        (
+            "https://github.com/retospect/cat.path/",
+            "https://api.github.com/repos/retospect/cat.path",
+        ),
+    ],
+)
+def test_api_base_of_a_plain_github_remote(remote: str, want: str) -> None:
+    """If this fails the workflow reads go to a different repo than the one
+    the profile releases."""
+    assert repo_release.api_base(remote) == want
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "",
+        "http://github.com/o/r",
+        "https://gitlab.com/o/r",
+        "https://user@github.com/o/r",
+        "https://user:" + "tok@github.com/o/r",  # split: the credential scan
+        "https://github.com:8443/o/r",
+        "https://github.com.evil.example/o/r",
+        "https://github.com/o",
+        "https://github.com/o/r/tree/main",
+        "https://github.com/o/..",
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r",
+    ],
+)
+def test_api_base_refuses_anything_but_a_plain_github_https_remote(
+    remote: str,
+) -> None:
+    """If this fails the GitHub token header can be aimed at another host, or
+    a credentialed URL is accepted."""
+    with pytest.raises(repo_release.ReleaseError):
+        repo_release.api_base(remote)
+
+
+def test_a_non_github_remote_is_refused_at_submit(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a profile with a non-GitHub remote gets a job that can
+    only fail after its push."""
+    monkeypatch.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], remote="https://example.org/o/r"),
+    )
+    assert "plain https://github.com" in (
+        repo_release.validate_submit(rel.store, params=PARAMS) or ""
+    )
+
+
+# ── the re-run POST ────────────────────────────────────────────────
+
+
+class _Resp:
+    def __init__(self, status: int) -> None:
+        self.status_code = status
+
+    def read(self) -> bytes:
+        return b""
+
+
+def _fake_http(monkeypatch: pytest.MonkeyPatch, status: int) -> dict[str, Any]:
+    """The pinned client and the stream replaced; records what a POST used."""
+    import contextlib
+
+    from precis.utils import http, safe_fetch
+    from precis.workers import factory_git
+
+    seen: dict[str, Any] = {}
+
+    @contextlib.contextmanager
+    def client(**kw: Any) -> Any:
+        seen["client_headers"] = dict(kw.get("headers") or {})
+        yield "client"
+
+    @contextlib.contextmanager
+    def stream(c: Any, method: str, url: str, /, **kw: Any) -> Any:
+        seen["call"] = (method, url, kw)
+        yield _Resp(status)
+
+    def backoff(send: Any, **kw: Any) -> Any:
+        seen["backoff"] = kw
+        return send()
+
+    monkeypatch.setattr(http, "http_client", client)
+    monkeypatch.setattr(safe_fetch, "safe_stream", stream)
+    monkeypatch.setattr(http, "with_backoff", backoff)
+    monkeypatch.setattr(
+        factory_git,
+        "github_api_headers",
+        lambda: {"Authorization": f"Bearer {TOKEN}"},
+    )
+    return seen
+
+
+API = "https://api.github.com/repos/retospect/catpath"
+
+
+def test_rerun_posts_through_safe_stream_non_idempotent_with_the_token_in_a_header(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If this fails the re-run is sent by a path that retries a POST that may
+    have committed, skips the SSRF-pinned client, or puts the token anywhere
+    but the client's headers."""
+    seen = _fake_http(monkeypatch, 201)
+    with caplog.at_level("DEBUG"):
+        assert repo_release._rerun(API, 500) == (True, 201)
+    method, url, kw = seen["call"]
+    assert (method, url) == ("POST", f"{API}/actions/runs/500/rerun") and kw == {}
+    assert seen["backoff"]["idempotent"] is False
+    assert seen["backoff"]["service"] == "github"
+    assert seen["client_headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert TOKEN not in url and TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize(("status", "ok"), [(404, False), (422, False), (200, True)])
+def test_rerun_reports_the_status(
+    monkeypatch: pytest.MonkeyPatch, status: int, ok: bool
+) -> None:
+    """If this fails a 404 on the POST (returned, not raised, by the backoff)
+    reads as success."""
+    _fake_http(monkeypatch, status)
+    assert repo_release._rerun(API, 500) == (ok, status)
+
+
+def test_rerun_never_raises_and_reports_a_refusal_status(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If this fails a 403 (a VendorError from the backoff) or a transport
+    error escapes the poll, or the log line carries more than the status."""
+    from precis.utils import http
+
+    _fake_http(monkeypatch, 201)
+
+    def refused(send: Any, **kw: Any) -> Any:
+        raise http.VendorError("github", "HTTP 403 - refused", status=403)
+
+    monkeypatch.setattr(http, "with_backoff", refused)
+    with caplog.at_level("DEBUG"):
+        assert repo_release._rerun(API, 500) == (False, 403)
+
+    def broken(send: Any, **kw: Any) -> Any:
+        raise RuntimeError(f"boom {TOKEN}")
+
+    monkeypatch.setattr(http, "with_backoff", broken)
+    with caplog.at_level("DEBUG"):
+        assert repo_release._rerun(API, 500) == (False, 0)
+    assert TOKEN not in caplog.text
+
+
+# ── the batch backstop ─────────────────────────────────────────────
+
+
+def _node(
+    rel: Rel,
+    nid: int,
+    *,
+    tags: tuple[str, ...] = ("repo:catpath",),
+    status: str = "open",
+    meta: dict[str, Any] | None = None,
+    parent: int | None = None,
+) -> None:
+    rel.store.add_todo(nid, status=status, tags=tags, meta=meta)
+    rel.open_nodes.append({"id": nid, "parent_id": parent, "kind": "todo"})
+
+
+REVIEWER = {"generate": {"role": "reviewer", "from": "td41"}}
+
+
+@pytest.mark.parametrize(
+    "meta", [{}, {"op": "run_slice"}, {"op": {"type": "run_slice"}}, REVIEWER]
+)
+def test_an_open_slice_or_reviewer_of_the_repo_holds_the_release(
+    rel: Rel, meta: dict[str, Any]
+) -> None:
+    """If this fails a release is minted while a slice or reviewer of its
+    batch is still open (a fix's reviewer has no edge to the release node)."""
+    _node(rel, 43, meta=meta)
+    refusal = repo_release.validate_submit(rel.store, params=PARAMS)
+    assert refusal is not None and refusal.startswith("holding: ")
+    assert "td43" in refusal and "catpath" in refusal
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "closed",
+        "ask-meta",
+        "ask-tag",
+        "other-repo",
+        "default-repo",
+        "phase",
+        "other-op",
+    ],
+)
+def test_nodes_that_do_not_hold_the_release(rel: Rel, case: str) -> None:
+    """If this fails a closed node, an ask, a node of another repo, a phase or
+    a mechanical node blocks a release for nothing."""
+    if case == "closed":
+        _node(rel, 43, status="done")
+    elif case == "ask-meta":
+        _node(rel, 43, meta={"ask": {"blocks": "td42"}})
+    elif case == "ask-tag":
+        _node(rel, 43, tags=("repo:catpath", "ask-user"))
+    elif case == "other-repo":
+        _node(rel, 43, tags=("repo:precis",))
+    elif case == "default-repo":
+        _node(rel, 43, tags=())
+    elif case == "phase":
+        _node(rel, 43)  # a catpath phase whose only child is another repo's
+        _node(rel, 44, tags=("repo:precis",), parent=43)
+    else:
+        _node(rel, 43, meta={"op": "repo_release"})
+    assert repo_release.validate_submit(rel.store, params=PARAMS) is None
+
+
+def test_a_slice_with_a_job_under_it_still_holds_the_release(rel: Rel) -> None:
+    """If this fails a slice that was dispatched once (its job row hangs under
+    it in the subtree) reads as a phase and the release goes out before it
+    closes."""
+    _node(rel, 43)
+    rel.open_nodes.append({"id": 900, "parent_id": 43, "kind": "job"})
+    refusal = repo_release.validate_submit(rel.store, params=PARAMS) or ""
+    assert refusal.startswith("holding: ") and "td43" in refusal
+
+
+def test_nodes_that_wait_on_the_release_do_not_hold_it(rel: Rel) -> None:
+    """If this fails a later batch blocked-by this release (directly, through
+    the pin-bump node, or as a child of a blocked phase) deadlocks it; or a
+    node the release itself waits on stops holding."""
+    _node(rel, 50, meta={"op": "pin_bump"}, tags=())  # blocked-by the release
+    _node(rel, 51)  # a later slice, blocked-by the pin bump
+    _node(rel, 52)  # a later phase, blocked-by the release
+    _node(rel, 53, parent=52)  # its child slice
+    rel.blocked.extend([(50, 42), (51, 50), (52, 42)])
+    assert repo_release.validate_submit(rel.store, params=PARAMS) is None
+    _node(rel, 54)  # upstream: the release is blocked-by it
+    rel.blocked.append((42, 54))
+    refusal = repo_release.validate_submit(rel.store, params=PARAMS) or ""
+    assert refusal.startswith("holding: 1 ") and "td54" in refusal
+
+
+def test_the_node_itself_and_nodes_inherit_the_nearest_tagged_ancestor(
+    rel: Rel,
+) -> None:
+    """If this fails the release node holds itself, or a child of a
+    repo-tagged parent with no tag of its own is read as the default repo."""
+    assert repo_release.validate_submit(rel.store, params=PARAMS) is None  # itself only
+    rel.store.add_todo(60, status="open", tags=("repo:catpath",))
+    rel.open_nodes.append({"id": 60, "parent_id": None, "kind": "todo"})
+    rel.store.add_todo(61, status="open", tags=())
+    setattr(rel.store.refs[61], "parent_id", 60)  # a field the fake ref lacks
+    rel.open_nodes.append({"id": 61, "parent_id": 60, "kind": "todo"})
+    refusal = repo_release.validate_submit(rel.store, params=PARAMS) or ""
+    assert refusal.startswith("holding: ") and "td61" in refusal

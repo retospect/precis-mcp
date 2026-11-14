@@ -1419,6 +1419,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="repo_release",
+        label="Repo release (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Release a second repo mechanically: version bump, push, "
+        "CI wait, tag (refused until a profile names a releaser).",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="release_cut",
         label="Release cut (job)",
         category="jobs",
