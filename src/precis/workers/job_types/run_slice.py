@@ -4575,7 +4575,7 @@ def _devin_acceptance_tests(
     if not paths:
         return False, None
     try:
-        proc = _run(["scripts/test", *paths], tree, timeout=_MOOT_TEST_TIMEOUT_S)
+        proc = _run(["scripts/test", *paths], tree, timeout=_ACCEPTANCE_TEST_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return True, f"Devin acceptance tests could not run: {exc}"
     if proc.returncode != 0:
@@ -4660,6 +4660,11 @@ _FIX_VERIFIED_GREEN_RE = re.compile(
 #: Bound on the moot fallback's clean-tree pytest run (gr638658): a cold
 #: ``uv`` env sync plus the named test files.
 _MOOT_TEST_TIMEOUT_S = 1200.0
+#: Bound on the Devin acceptance run (gr681385): a release fix node's
+#: acceptance set can span every file the release diff touches (69 files
+#: on r316), which outran 1200 s on a loaded builder host and discarded a
+#: finished fix. One hour stays well inside run_slice's wall deadline.
+_ACCEPTANCE_TEST_TIMEOUT_S = 3600.0
 
 
 def _moot_line(result: str | None) -> str | None:
