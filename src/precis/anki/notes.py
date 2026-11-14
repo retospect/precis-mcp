@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from precis.anki.cloze import space_adjacent_braces
+
 #: The deck every precis-authored card lands in. Adopted, not schema-changing.
 PRECIS_DECK = "Precis"
 
@@ -72,7 +74,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
     if meta.get("notetype", "Cloze") != "Cloze":
         return None
     fields_meta = meta.get("fields") or {}
-    text = fields_meta.get("Text") or ref.title
+    text, _ = space_adjacent_braces(fields_meta.get("Text") or ref.title)
     out: dict[str, str] = {"Text": text}
     extra = fields_meta.get("Back Extra")
     if extra:

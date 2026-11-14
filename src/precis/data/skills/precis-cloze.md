@@ -225,15 +225,9 @@ the **raw LaTeX** (what you'd type) at the highest index, hinted `::latex`.
   answer, not just the first. Delimiters work whether they sit inside or
   outside a cloze; put them *inside* (`{{c2::\(^\top\)::latex}}`) if you want
   the reveal itself to render the glyph rather than show the raw source.
-- **Gotcha — adjacent `}` truncates the cloze.** Anki (and precis) find a
-  cloze's end by scanning for the first literal `}}`. If your LaTeX answer's
-  own closing braces land next to each other — nested groups like
-  `\sqrt{x^{2}}` or `\frac{a}{b}`-style constructs — that inner `}}` is
-  indistinguishable from the cloze's own closer and the answer gets silently
-  truncated (confirmed: `{{c1::\sqrt{x^{2}}::latex}}` stores as
-  `\sqrt{x^{2` — a hint alone does **not** save you here, only the character
-  spacing does). Break up any `}}` inside the answer with a space or `\,`:
-  `\sqrt{x^{2} }` is safe, `\sqrt{x^{2}}` is not.
+- Nested LaTeX braces inside an answer are safe: `{{c1::\sqrt{x^{2}}::latex}}`
+  is stored with a space between the touching `}`, so Anki shows the whole
+  answer.
 
 ## See also
 

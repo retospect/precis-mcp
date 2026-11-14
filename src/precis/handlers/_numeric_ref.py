@@ -4188,6 +4188,12 @@ class NumericRefHandler(Handler):
                 )
             if link_target.kind == "part":
                 self._enqueue_part_datasheet(link_target.ref_id)
+            if relation == "served-by":
+                # Stored canonically as ``serves`` with the ends swapped
+                # (store.add_link); the ack names the row that exists.
+                return Response(
+                    body=f"linked {target} serves {self._sense()} id={ref_id}"
+                )
             return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
         # mode == "remove"
         n_removed = self.store.remove_link(
@@ -4196,6 +4202,13 @@ class NumericRefHandler(Handler):
             dst_pos=link_target.pos,
             relation=relation if rel is not None else None,
         )
+        if relation == "served-by":
+            return Response(
+                body=(
+                    f"unlinked {target} serves {self._sense()} id={ref_id} "
+                    f"({n_removed} edge{'s' if n_removed != 1 else ''} removed)"
+                )
+            )
         return Response(
             body=(
                 f"unlinked {self._sense()} id={ref_id} ↛ {target} "

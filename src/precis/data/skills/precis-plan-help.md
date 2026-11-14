@@ -114,8 +114,9 @@ this is the you-are-here node, else the status marker (`[open]` default /
 `[wip]` / `done:`) with a `?` / `⚠` belief prefix when set. The root
 title heading is the plan's *name*, not a todo, so it renders bare (`#`).
 (`view='toc'` is accepted and equals the default whole-tree render; any
-other `view=` errors. `extent=`/fisheye focus — `get(kind='draft', ...)`
-— isn't wired for plans yet; passing it here is silently ignored.)
+other `view=` errors. `extent=` works on a node, not on the plan:
+`get(kind='plan', id='pe<id>', extent='fisheye+1hop')`; with the plan's
+own id it is refused.)
 
 ## edit — text, move, markers, cursor
 

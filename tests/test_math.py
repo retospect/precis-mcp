@@ -196,6 +196,46 @@ def test_format_no_success_no_timeout() -> None:
     assert "no success status" in out
 
 
+# ── failures are not kept ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        _Doc(success=None, timedout="20.0"),
+        _Doc(success=None, timedout=None),
+        _Doc(success=False, didyoumeans={"#text": "population of Ireland"}),
+        _Doc(pods=[_Pod("Result", [])]),
+    ],
+    ids=["timeout", "no-status", "failed", "no-plaintext"],
+)
+def test_non_answer_is_not_cached(
+    handler: MathHandler, monkeypatch: pytest.MonkeyPatch, doc: _Doc
+) -> None:
+    calls = _patch_run_query(monkeypatch, doc)
+
+    handler.get(q="flaky query")
+    handler.get(q="flaky query")
+
+    assert calls == ["flaky query", "flaky query"]
+
+
+def test_answer_after_failure_is_cached(
+    handler: MathHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _patch_run_query(monkeypatch, _Doc(success=False))
+    handler.get(q="q1")
+
+    def _answer(app_id: str, expression: str) -> _Doc:
+        calls.append(expression)
+        return _Doc(pods=[_Pod("Result", ["7"])])
+
+    monkeypatch.setattr("precis.handlers.math._run_query", _answer)
+    handler.get(q="q1")
+    handler.get(q="q1")
+    assert calls == ["q1", "q1"]
+
+
 # ── env gating ───────────────────────────────────────────────────────
 
 

@@ -251,6 +251,20 @@ def test_folder_scoped_search_next_is_a_working_call(
     assert "search(kind='todo', q='x', status='open')" in out, out
 
 
+def test_folder_on_a_kind_without_folder_scope_names_folder(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A single kind that cannot join the folder-scoped merge is refused
+    for ``folder=``, not for "cross-kind" the caller never asked for."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "profile", "q": "x", "folder": 12}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "folder=" in out, out
+    assert "cross-kind" not in out, out
+    assert "search(kind='profile', q='...')" in out, out
+
+
 def test_source_search_next_is_a_working_call(
     runtime_with_store: PrecisRuntime,
 ) -> None:

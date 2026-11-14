@@ -67,11 +67,7 @@ search(kind="md", q="ship gate", scope="docs")  # restrict to one root
 search(kind="md", q="ship gate", scope="docs/backlog")  # restrict to a subtree or file
 ```
 
-`folder=` (the corpus-kind scoping kwarg) is **not supported here** —
-a single-kind `search(kind='md', ...)` never enters the cross-kind
-fan-out (only a comma-list or wildcard `kind=` does), so `folder=` is
-silently swallowed by `md`'s handler, not an error. Use `scope=`
-instead; it's `md`'s own root/subtree/file restriction, above.
+`folder=` is refused on `md`; use `scope=` (above).
 
 
 Hits are ranked; each carries its heading breadcrumb and a

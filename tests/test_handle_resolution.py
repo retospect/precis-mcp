@@ -172,6 +172,34 @@ def test_plan_node_handle_reads_back_through_dispatch(
     assert pe1 != pe2
 
 
+def test_plan_eye_takes_a_node_handle_and_refuses_the_plan(
+    runtime_with_store: PrecisRuntime, store: Store, hub
+) -> None:
+    """``extent=`` on a plan handle names the pe<id> form; on a pe<id> it
+    renders the eye."""
+    import re
+
+    from precis.handlers.plan import PlanHandler
+
+    plan = PlanHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    plan.put(id="p1", title="P", project=proj)
+    r1 = plan.put(id="p1", text="first step", at={"last": True})
+    m1 = re.search(r"pe\d+", r1.body)
+    assert m1 is not None
+    pe1 = m1.group(0)
+
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": pe1, "extent": "fisheye+1hop"}
+    )
+    assert not err and "first step" in out, out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": "p1", "extent": "fisheye"}
+    )
+    assert err and "pass a pe<id> handle" in out, out
+    assert "extent='fisheye+1hop'" in out, out
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_handle_list_mixed_kinds_refused(
     runtime_with_store: PrecisRuntime, store: Store

@@ -3261,6 +3261,7 @@ class DispatchMixin(RuntimeShape):
         # when a single ``kind=`` was named (it becomes a one-kind
         # "comma list").
         if verb == "search" and args.get("folder") is not None:
+            self._refuse_folder_on_unmergeable_kind(kind)
             return self._dispatch_cross_kind(
                 (
                     self._expand_kind_code(str(kind))
@@ -3470,6 +3471,24 @@ class DispatchMixin(RuntimeShape):
                 "kind='*' / kind='all' / kind='paper,memory' for cross-kind merge"
             ),
         )
+
+    def _refuse_folder_on_unmergeable_kind(self, kind: Any) -> None:
+        """A folder-scoped search naming one kind that cannot join the merge.
+
+        The caller asked for a single kind, so the generic "kind(s) do not
+        support cross-kind search" would name something they never asked
+        for; the cause is ``folder=``. Comma-lists, wildcards and aliases
+        keep the generic refusal.
+        """
+        if not isinstance(kind, str) or self._is_cross_kind_request(kind):
+            return
+        single = self._expand_kind_code(kind.strip())
+        if single in self.hub.kinds and single not in self._cross_kind_kinds():
+            raise BadInput(
+                f"search(kind={single!r}) has no folder scope: folder= does not "
+                "apply to this kind",
+                next=f"drop folder=: search(kind={single!r}, q='...')",
+            )
 
     def _expand_kind_code(self, kind: str) -> str:
         """Accept a 2-char handle code as ``kind=``.

@@ -9729,9 +9729,8 @@ class PcbHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this design to another ref
-        (gr485159 — a board could not ``serve`` the quest that owns it;
-        the quest-side ``served-by`` writes the edge backwards, so the
-        verb belongs here). The shared :func:`apply_link_ops` door —
+        (gr485159 — a board could not ``serve`` the quest that owns it,
+        so the verb belongs here). The shared :func:`apply_link_ops` door —
         the same one every other slug kind uses — carries the relation
         vocabulary, the constraint table (``serves`` is acyclic) and
         lazy target minting; ``rel=None`` adds ``related-to``."""

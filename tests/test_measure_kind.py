@@ -1974,7 +1974,9 @@ class TestPutEditThroughTheVerbs:
         self, store: Store, w: dict[str, Any], verbs: Any
     ) -> None:
         mid = _output_id(self._put(verbs, w))
-        out = self._text(verbs.edit(kind="measure", id=mid, review="model"))
+        out = self._text(
+            verbs.edit(kind="measure", id=mid, review="model", verdict="approved")
+        )
         assert "error" in out.lower(), out
         assert "a model review must name its model" in out
         assert store.reviews_for("measure", mid) == []
@@ -1996,13 +1998,14 @@ class TestPutEditThroughTheVerbs:
         (rv,) = store.reviews_for("measure", mid)
         assert (rv.actor, rv.model, rv.current) == ("reto", None, True)
         # no meta.actor: the single human identity, as for draft
-        verbs.edit(kind="measure", id=mid, review="human")
+        verbs.edit(kind="measure", id=mid, review="human", verdict="approved")
         assert store.reviews_for("measure", mid)[0].actor == "human"
         out = self._text(
             verbs.edit(
                 kind="measure",
                 id=mid,
                 review="human",
+                verdict="approved",
                 meta={"actor": "reto", "model": "opus-5"},
             )
         )
@@ -2049,29 +2052,44 @@ class TestReviewHandler:
 
         with revision_context("manual", actor="reto"):
             with pytest.raises(BadInput, match="a human review has no model"):
-                h.edit(id=mid, review="human", meta={"model": "x"})
+                h.edit(id=mid, review="human", verdict="approved", meta={"model": "x"})
             with pytest.raises(BadInput, match="a model review must name its model"):
-                h.edit(id=mid, review="model")
+                h.edit(id=mid, review="model", verdict="approved")
             with pytest.raises(BadInput, match="meta.actor names the person"):
-                h.edit(id=mid, review="model", meta={"model": "m", "actor": "reto"})
+                h.edit(
+                    id=mid,
+                    review="model",
+                    verdict="approved",
+                    meta={"model": "m", "actor": "reto"},
+                )
+
+    def test_a_review_without_a_verdict_is_refused(
+        self, store: Store, h: MeasureHandler, mid: int
+    ) -> None:
+        with pytest.raises(
+            BadInput, match="verdict='approved' or verdict='rejected'"
+        ) as excinfo:
+            h.edit(id=mid, review="model", meta={"model": "m"})
+        assert "verdict='approved'" in (excinfo.value.next or "")
+        assert store.reviews_for("measure", mid) == []
 
     def test_bad_verdicts_and_ids(self, h: MeasureHandler, mid: int) -> None:
         with pytest.raises(BadInput, match="approved or rejected"):
             h.edit(id=mid, review="model", verdict="retract", meta={"model": "m"})
         with pytest.raises(BadInput, match="'human' or 'model'"):
-            h.edit(id=mid, review="cites", meta={"model": "m"})
+            h.edit(id=mid, review="cites", verdict="approved", meta={"model": "m"})
         with pytest.raises(BadInput, match="needs id"):
-            h.edit(review="model", meta={"model": "m"})
+            h.edit(review="model", verdict="approved", meta={"model": "m"})
         with pytest.raises(NotFound, match="not found"):
-            h.edit(id=999999, review="model", meta={"model": "m"})
+            h.edit(id=999999, review="model", verdict="approved", meta={"model": "m"})
 
     def test_bad_review_meta_names_the_fix(self, h: MeasureHandler) -> None:
         """gr494831 M3: the append-only-review refusals carry ``next=``."""
         with pytest.raises(BadInput, match="non-empty model id") as excinfo:
-            h.edit(id=1, review="model", meta={"model": 5})
+            h.edit(id=1, review="model", verdict="approved", meta={"model": 5})
         assert "meta={'model'" in (excinfo.value.next or "")
         with pytest.raises(BadInput, match="non-empty name") as excinfo:
-            h.edit(id=1, review="human", meta={"actor": ""})
+            h.edit(id=1, review="human", verdict="approved", meta={"actor": ""})
         assert "meta={'actor'" in (excinfo.value.next or "")
 
 

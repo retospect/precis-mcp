@@ -347,7 +347,7 @@ edit(kind="measure", id="mx12", review="model", verdict="approved",
 ```
 
 - `review=` is the reviewer's kind, `human` or `model`; `verdict=` is `approved`
-  or `rejected` (it defaults to `approved`: always pass it); `text=` is the
+  or `rejected` (required, no default); `text=` is the
   note; `meta={'model': ...}` names the model (`version` optional).
 - The review is taken at the row's sha now: a later change to a fixed field
   makes it `STALE` in `get`. Reviews append; a second one never replaces the first.

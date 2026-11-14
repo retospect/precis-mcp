@@ -143,13 +143,16 @@ class MathHandler(CacheBackedHandler):
                 next="retry, or use kind='calc' for offline arithmetic",
             ) from exc
 
-        body = _format_doc(doc, key)
+        body, is_answer = _format_outcome(doc, key)
         return FetchResult(
             title=key,
             body_blocks=[ChunkInsert(ord=0, text=body)],
             model="wolfram-alpha-v2",
             cost_usd=self._COST_PER_CALL,
             meta={"input_query": key},
+            # A failed query is served but not kept: born-stale, so asking
+            # again calls Wolfram again.
+            cacheable=is_answer,
         )
 
     # ── response polish — append per-query deep-link to attribution ───
@@ -238,10 +241,17 @@ def _run_query(app_id: str, expression: str) -> Any:
 
 
 def _format_doc(res: Any, query: str) -> str:
+    """Body text of :func:`_format_outcome`."""
+    return _format_outcome(res, query)[0]
+
+
+def _format_outcome(res: Any, query: str) -> tuple[str, bool]:
     """Flatten Wolfram's pods into a markdown body.
 
     Doesn't include attribution — the base class appends that as a
-    footer. Returns the body text; sections are h2 ``## Title`` blocks.
+    footer. Returns ``(body, is_answer)``; ``is_answer`` is False for the
+    non-answer shapes below, which must not be cached. Sections are h2
+    ``## Title`` blocks.
 
     Handles three failure shapes from the Wolfram API:
 
@@ -257,9 +267,10 @@ def _format_doc(res: Any, query: str) -> str:
         if timed_out is not None:
             return (
                 f"Wolfram Alpha timed out internally for: {query!r}.\n"
-                "Try a more specific query."
+                "Try a more specific query.",
+                False,
             )
-        return f"Wolfram Alpha returned no success status for: {query!r}."
+        return f"Wolfram Alpha returned no success status for: {query!r}.", False
 
     if not success:
         tips: list[str] = []
@@ -270,7 +281,7 @@ def _format_doc(res: Any, query: str) -> str:
             suggestions = [d.get("#text", str(d)) for d in dym]
             tips.append(f"Did you mean: {', '.join(suggestions)}")
         hint = (" " + " ".join(tips)) if tips else ""
-        return f"Query failed for: {query!r}.{hint}"
+        return f"Query failed for: {query!r}.{hint}", False
 
     sections: list[str] = []
     for pod in res.pods:
@@ -296,6 +307,9 @@ def _format_doc(res: Any, query: str) -> str:
             sections.append(f"## {title}\n" + "\n".join(texts))
 
     if not sections:
-        return f"Query succeeded but returned no displayable text (for: {query!r})."
+        return (
+            f"Query succeeded but returned no displayable text (for: {query!r}).",
+            False,
+        )
 
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), True

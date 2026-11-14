@@ -40,7 +40,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers.anki import _CLOZE_RE, _split_extra, _strip_cloze
+from precis.anki.cloze import has_cloze, space_adjacent_braces
+from precis.handlers.anki import _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
     DEFAULT_MASTERY_THRESHOLD,
@@ -178,8 +179,9 @@ def author_card(
     stripped `card_combined` + the concept `represents` link — plus the pass's
     provenance meta. Raises ``ValueError`` on a body with no cloze deletion."""
     cloze_text, extra = _split_extra(text)
-    if not _CLOZE_RE.search(cloze_text):
+    if not has_cloze(cloze_text):
         raise ValueError("card body has no {{cN::…}} cloze deletion")
+    cloze_text, _spaced = space_adjacent_braces(cloze_text)
     fields: dict[str, str] = {"Text": cloze_text}
     if extra:
         fields["Back Extra"] = extra

@@ -224,6 +224,26 @@ def _reraise_link_fk_violation(
     )
 
 
+# Passive-side spellings stored as their active form with the ends swapped:
+# ``served-by`` A->B is the row ``serves`` B->A, so the quest-side and the
+# server-side call write the identical edge and the readers' inbound walk of
+# ``serves`` never sees a row whose src is the quest itself.
+_CANONICAL_FLIP = {"served-by": "serves"}
+
+
+def _canonical_edge(
+    relation: Any,
+    src_ref_id: int,
+    dst_ref_id: int,
+    src_pos: int | None,
+    dst_pos: int | None,
+) -> tuple[Any, int, int, int | None, int | None]:
+    active = _CANONICAL_FLIP.get(relation) if isinstance(relation, str) else None
+    if active is None:
+        return relation, src_ref_id, dst_ref_id, src_pos, dst_pos
+    return active, dst_ref_id, src_ref_id, dst_pos, src_pos
+
+
 # Standard SELECT projection for links: maps link_id back to id and
 # resolves chunk_id endpoints back to ord via LEFT JOIN against
 # chunks. Mirrors :func:`_row_to_link`'s tuple layout.
@@ -1222,6 +1242,9 @@ class LinksMixin:
         reviewed. A fresh INSERT still stamps the write-time sha.
         """
 
+        relation, src_ref_id, dst_ref_id, src_pos, dst_pos = _canonical_edge(
+            relation, src_ref_id, dst_ref_id, src_pos, dst_pos
+        )
         if relation == "rejects":
             reason = (meta or {}).get("reason")
             if not isinstance(reason, str) or not reason.strip():
@@ -1570,7 +1593,14 @@ class LinksMixin:
         Uses ``IS NOT DISTINCT FROM`` for the chunk_id predicates so
         ``None`` ↔ NULL matching aligns with the UNIQUE NULLS NOT
         DISTINCT semantics on the index.
+
+        ``relation='served-by'`` removes the canonical ``serves`` edge with
+        the ends swapped (see :func:`_canonical_edge`).
         """
+        if relation is not None:
+            relation, src_ref_id, dst_ref_id, src_pos, dst_pos = _canonical_edge(
+                relation, src_ref_id, dst_ref_id, src_pos, dst_pos
+            )
 
         def _do(c: Connection) -> int:
             src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)

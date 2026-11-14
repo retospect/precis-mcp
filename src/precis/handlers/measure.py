@@ -563,7 +563,7 @@ class MeasureHandler(Handler):
         *,
         id: str | int | None = None,
         review: str | None = None,
-        verdict: str = "approved",
+        verdict: str | None = None,
         text: str | None = None,
         meta: dict[str, Any] | None = None,
         **_kw: Any,
@@ -596,6 +596,13 @@ class MeasureHandler(Handler):
         if review not in ("human", "model"):
             raise BadInput(
                 f"review= names the reviewer's kind, 'human' or 'model', got {review!r}",
+                next="edit(kind='measure', id=N, review='model', verdict='approved', "
+                "meta={'model': '<model id>'})",
+            )
+        if verdict is None:
+            raise BadInput(
+                "a review needs verdict='approved' or verdict='rejected'; it has "
+                "no default",
                 next="edit(kind='measure', id=N, review='model', verdict='approved', "
                 "meta={'model': '<model id>'})",
             )

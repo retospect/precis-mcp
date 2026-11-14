@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from precis.anki.cloze import strip_cloze
 from precis.anki.notes import ref_id_from_guid
 from precis.store import Tag
 
@@ -32,13 +33,12 @@ from precis.store import Tag
 FOREIGN_SOURCE = "anki-foreign"
 FOREIGN_FLAG = "anki-foreign"
 
-_CLOZE_RE = re.compile(r"\{\{c\d+::(.+?)(?:::.+?)?\}\}", re.DOTALL)
 _HTML_RE = re.compile(r"<[^>]+>")
 
 
 def _plain(text: str) -> str:
     """Anki fields hold HTML + cloze markup; reduce to plain search text."""
-    t = _CLOZE_RE.sub(r"\1", text)
+    t = strip_cloze(text)
     t = _HTML_RE.sub(" ", t)
     t = t.replace("&nbsp;", " ").replace("&amp;", "&")
     return " ".join(t.split())
