@@ -1,11 +1,32 @@
 """``draft_export`` job_type — render a draft to LaTeX and compile a PDF.
 
 Deterministic, in-process work (no claude). Registered with a plugin
-``dispatch`` so ``claude_inproc`` runs it directly (the executor calls
-``spec.dispatch(ctx, spec)`` and skips the claude subprocess entirely):
-``export_draft`` → ``compile_pdf``, streaming each step as ``job_event``
-chunks so the run is followable on the todo page, and landing the PDF path
-in ``refs.meta`` + the ``job_summary``.
+``dispatch`` so ``claude_inproc`` or ``job_inproc`` runs it directly (the
+executor calls ``spec.dispatch(ctx, spec)`` and skips the claude
+subprocess entirely): ``export_draft`` → ``compile_pdf``, streaming each
+step as ``job_event`` chunks so the run is followable on the todo page,
+and landing the PDF path in ``refs.meta`` + the ``job_summary``.
+
+``default_executor='job_inproc'`` (gr592838): a PDF export needs no LLM,
+so ordinary puts — and the ``/drafts`` "export PDF" button, which omits
+``executor=`` — route off the agent lane; ``claude_inproc`` stays an
+explicit opt-in. Claims are held to hosts advertising ``latexmk`` (the
+``ServiceSpec.placement`` row in ``workers/registry.py``, check-only on
+every claim path): a TeX-less host leaves the row queued for a capable
+one, and when *no* live host advertises the toolchain the sweeper's
+unschedulable alert pages. As a second line, a claim that still finds
+``latexmk`` absent fails ``failure_class='infra'`` with the
+``infra:no-latexmk`` tag (bounded retry) instead of quietly exporting a
+PDF-less tree.
+
+The file-writing half runs under a per-draft advisory lock
+(:func:`_draft_lock`, gr592838): two ``draft_export`` jobs for one slug
+claimed in the same agentlane sweep ran ``latexmk`` in the same export
+dir and clobbered each other's aux/log files — the loser now queues
+behind the winner; a wait past ``_LOCK_WAIT_S`` fails infra with the
+``infra:lock-timeout`` open tag (the same bounded-retry classification
+as ``infra:no-latexmk`` — contention is an infra condition, not a
+content error, so the parent's ``child-failed:`` latch is not spent).
 
 Started from the ``/drafts`` "export PDF" button, or by an agent::
 
@@ -21,8 +42,13 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+import psycopg
 
 from precis.workers.job_types import JobTypeSpec
 
@@ -151,11 +177,69 @@ def _resolve_audience_out_dir(ctx: Any, slug: str, audience: str) -> tuple[Path,
     return out, in_workspace
 
 
+#: Per-draft export serialization budget (gr592838): a second export of
+#: the same slug waits on the lock up to this long before failing infra.
+_LOCK_WAIT_S = 600.0
+#: Poll interval while waiting on the per-draft lock.
+_LOCK_POLL_S = 2.0
+
+
+@contextmanager
+def _draft_lock(store: Any, slug: str) -> Iterator[bool]:
+    """Serialize concurrent exports of one draft; yield ``True`` once held.
+
+    ``pg_try_advisory_xact_lock(hashtext('draft_export:<slug>'))`` on a
+    dedicated (non-pool) connection — the same pgbouncer-safe shape
+    :func:`precis.store.advisory.try_xact_advisory_lock` enforces: an open
+    transaction pins one server backend for the lock's whole life, the
+    lock ends with the transaction, and a dead holder releases with its
+    connection. Reimplemented rather than reused because this caller
+    *waits*: poll every ``_LOCK_POLL_S`` until ``_LOCK_WAIT_S`` elapses,
+    then yield ``False`` (nothing held) instead of blocking forever on a
+    wedged sibling.
+
+    A store without a ``dsn`` (fakes in tests) yields ``True`` unguarded.
+    """
+    dsn = getattr(store, "dsn", None)
+    if not dsn:
+        yield True
+        return
+    conn = psycopg.connect(dsn)
+    try:
+        # The holder tx sits idle while the export runs on pool
+        # connections — lift prod's idle-in-transaction kill for THIS
+        # transaction only (SET LOCAL), same as advisory.py.
+        conn.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        conn.execute("SET LOCAL application_name = 'precis-draft-export-lock'")
+        deadline = time.monotonic() + _LOCK_WAIT_S
+        while True:
+            row = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s))",
+                (f"draft_export:{slug}",),
+            ).fetchone()
+            if row and row[0]:
+                break
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(_LOCK_POLL_S)
+        yield True
+    finally:
+        try:
+            conn.rollback()
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            # The server dropped the lock connection: the transaction
+            # ended with it, so the lock is already released.
+            log.warning("draft_export: lock connection lost before release")
+        finally:
+            conn.close()
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
-    """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job.
-    ``ctx`` is a :class:`~precis.workers.executors._context.DispatchContext`."""
-    from precis.export.compile import compile_pdf, have_latexmk
-    from precis.export.latex import export_draft
+    """Plugin dispatcher invoked by ``claude_inproc``/``job_inproc`` for a
+    claimed job. ``ctx`` is a
+    :class:`~precis.workers.executors._context.DispatchContext`."""
+    from precis.export.compile import have_latexmk
 
     params = (ctx.meta or {}).get("params") or {}
     slug = str(params.get("draft") or "").strip()
@@ -165,6 +249,24 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ref = ctx.store.get_ref(kind="draft", id=slug)
     if ref is None:
         ctx.record_failure(f"draft_export: no draft {slug!r}")
+        return
+
+    # A job_inproc claim exists to compile the PDF (gr592838): on a host
+    # without TeX the run could only produce the LaTeX tree, so fail
+    # infra instead of reporting a PDF-less "success". The
+    # ``infra:no-latexmk`` open tag joins job_bubble.INFRA_FAILURE_TAGS —
+    # the parent gets the bounded infra retry (no child-failed latch)
+    # and a TeX-carrying host picks the re-mint up. ``claude_inproc``
+    # keeps the historical export-and-skip path below.
+    if str((ctx.meta or {}).get("executor") or "") == "job_inproc" and (
+        not have_latexmk()
+    ):
+        ctx.record_failure(
+            "draft_export: claimed on job_inproc but latexmk is not "
+            "installed on this host — PDF cannot compile here",
+            failure_class="infra",
+            open_tag="infra:no-latexmk",
+        )
         return
 
     # Full link sync before the edge-reading gates below. Chunk-scoped
@@ -273,6 +375,40 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 "published) — see get(kind='draft', id=<slug>, "
                 "view='hygiene').",
             )
+
+    # Serialize the file-writing half per draft (gr592838): two exports
+    # of one slug claimed in the same sweep ran latexmk in the same
+    # export dir and clobbered each other's aux/log files. The lock
+    # loser queues behind the winner; past ``_LOCK_WAIT_S`` it fails
+    # infra rather than colliding.
+    with _draft_lock(ctx.store, slug) as held:
+        if not held:
+            ctx.record_failure(
+                f"draft_export: waited {_LOCK_WAIT_S:g}s for the "
+                f"per-draft export lock on {slug!r} — a sibling export "
+                "is still running or died holding it",
+                failure_class="infra",
+                # job_bubble classifies infra by open tag, not by
+                # failure_class — without this member of
+                # INFRA_FAILURE_TAGS the very first contention latches
+                # child-failed on the parent (review td677026).
+                open_tag="infra:lock-timeout",
+            )
+            return
+        _export_and_compile(ctx, ref, params, slug, withheld)
+
+
+def _export_and_compile(
+    ctx: Any,
+    ref: Any,
+    params: dict[str, Any],
+    slug: str,
+    withheld: frozenset[str],
+) -> None:
+    """Render + compile under the per-draft lock — the file-writing half
+    of ``_dispatch`` (everything after the read-only gates)."""
+    from precis.export.compile import compile_pdf, have_latexmk
+    from precis.export.latex import export_draft
 
     include_sources = bool(params.get("include_sources"))
     doc_type = _resolve_doc_type(ctx)
@@ -393,7 +529,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 SPEC = JobTypeSpec(
     name="draft_export",
     params_schema=_PARAMS_SCHEMA,
-    compatible_executors=frozenset({"claude_inproc"}),
+    # job_inproc too (gr592838): a PDF export needs no LLM — only a TeX
+    # toolchain; a TeX-less job_inproc claim fails infra (no-latexmk).
+    compatible_executors=frozenset({"claude_inproc", "job_inproc"}),
+    # …and it is the DEFAULT (gr592838 want (a)): puts omitting
+    # ``executor=`` — including the web export button — leave the agent
+    # lane alone. The ServiceSpec.placement row (``latexmk``) holds the
+    # claim on TeX-less hosts.
+    default_executor="job_inproc",
     requires=frozenset(),  # deterministic in-process — no executor capabilities
     description="Render a draft to LaTeX and compile a PDF (deterministic).",
     dispatch=_dispatch,

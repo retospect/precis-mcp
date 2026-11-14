@@ -27,6 +27,7 @@ _OVERRIDE_ENVS = (
     "PRECIS_FIX_WORK_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "PRECIS_SLICE_ROOT",
+    "PRECIS_LATEXMK_SLOTS",
 )
 
 
@@ -589,3 +590,36 @@ def test_claude_agent_capable_binary_or_verified_container_lane(
 
     _patch_container(monkeypatch, enabled=True, capable=True)
     assert cap.claude_agent_capable() is True  # the container lane carries it
+
+
+# ── latexmk (draft_export TeX toolchain, gr592838) ──────────────────────
+
+
+def test_latexmk_probe_follows_have_latexmk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe is the same predicate the dispatch gate reads — a host
+    without ``latexmk`` advertises 0 so ``draft_export``'s placement
+    holds its claims queued for a TeX-carrying host."""
+    import precis.export.compile as compile_mod
+
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    assert cap._probe_latexmk() == 1
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: False)
+    assert cap._probe_latexmk() == 0
+
+
+def test_latexmk_probe_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PRECIS_LATEXMK_SLOTS`` overrides the probe — the operator's way to
+    un-advertise TeX on a box whose toolchain is present but broken."""
+    import precis.export.compile as compile_mod
+
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    monkeypatch.setenv("PRECIS_LATEXMK_SLOTS", "0")
+    assert cap._probe_latexmk() == 0
+    monkeypatch.setenv("PRECIS_LATEXMK_SLOTS", "1")
+    assert cap._probe_latexmk() == 1
+
+
+def test_latexmk_probe_is_registered() -> None:
+    assert "latexmk" in cap._PROBES

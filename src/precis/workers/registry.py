@@ -1532,6 +1532,23 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # gr592838: a PDF export compiles through ``latexmk`` — a host
+        # capability, not an executor property. ``placement`` (check-only,
+        # td543917) holds the row queued on hosts whose heartbeat doesn't
+        # advertise ``latexmk`` — on EVERY claim path, so a
+        # ``claude_inproc`` claim on a TeX-less box waits for a capable
+        # one instead of producing a PDF-less run — and the sweeper's
+        # ``_alert_unschedulable_jobs`` pages when no live host offers it.
+        name="draft_export",
+        label="Draft export (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"latexmk"}),
+        one_line="Render a draft to LaTeX and compile a PDF — needs a TeX "
+        "toolchain (latexmk) on the claiming host.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="lane_health",
         label="Lane health probe (job)",
         category="jobs",

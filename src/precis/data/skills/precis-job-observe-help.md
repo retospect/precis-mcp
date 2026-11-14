@@ -238,8 +238,16 @@ Rows are `host process claimed=N succeeded=N failed=N running=N
 last_claim=<UTC>`, from the same lease stamps as `/builds`; hosts that
 heartbeat but claimed nothing show `claimed=0`. The trailer gives the queue
 depth now by executor. Read the two together: no claims beside an empty
-queue is a healthy idle; no claims beside queued work is the fault.
-Measurement only — no alert reads it; GPU busy fraction isn't measured.
+queue is a healthy idle; no claims beside queued work is the fault —
+an executor whose claimable queue has aged ~15m+ with no claim and nothing
+running shows as `lane alert: '<executor>' reads dark` there and on queued
+job cards, with `outage refs:` naming the open alert/gripe that owns the
+outage (or a prompt to file one). "Claimable" is what the lane's own claim
+would take — on a parent-gated executor (`ssh_node`, `claude_docker`,
+`devin_api`) a job behind a paused non-terminal parent counts for neither
+the dark read nor the queue evidence that ties a `lane-parked:<lane>`
+alert to the executor. Measurement only — no alert reads it;
+GPU busy fraction isn't measured.
 
 ## When does a cadence fire next?
 

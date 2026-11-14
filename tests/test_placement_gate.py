@@ -86,6 +86,9 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
         ("ci_verdict_poll", set()),
         ("release_poll", set()),
         ("gripe_validate", set()),
+        # gr592838: draft_export compiles through latexmk — a host
+        # capability, so a TeX-less claim waits for a capable host.
+        ("draft_export", {"latexmk"}),
     ],
 )
 def test_factory_job_types_declare_placement(name: str, placement: set[str]) -> None:

@@ -54,6 +54,15 @@ precis draft remarkable <slug> [--folder /Precis] [--dry-run]
 put(kind='job', job_type='draft_export', parent_id=<project-todo-id>, params={'draft': '<slug>', 'doi_links': True, 'library_links': True})
 ```
 
+The job needs no LLM: an `executor=`-less put lands on `job_inproc` by
+default (`executor='claude_inproc'` stays an explicit opt-in) and claims
+only on hosts advertising `latexmk` — on a fleet with no TeX toolchain
+it waits `STATUS:queued` (the sweeper's unschedulable alert pages)
+rather than failing. Concurrent exports of the same draft serialize on
+a per-slug advisory lock; a wait past the budget fails `infra` with the
+`infra:lock-timeout` open tag (bounded retry — the parent todo is not
+latched `child-failed`).
+
 Exports are one-way and disposable (re-export, never hand-edit). Resolves
 automatically: each block gets `\label{chunk:<handle>}`, `[dc<id>]`
 cross-refs become `\cref{chunk:h}`; each `[pc<id>]`/`[fi<id>]` citation

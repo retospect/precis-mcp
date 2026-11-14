@@ -82,10 +82,23 @@ log = logging.getLogger(__name__)
 #: dead pin. ``reaped:off-lane-pin`` (gr493226) is the same argument for a
 #: live host that stopped running the job's executor pass: nothing on that
 #: node can claim or reclaim the job.
+#: ``infra:no-latexmk`` (gr592838) is stamped by ``draft_export``'s plugin
+#: dispatch (``record_failure``'s ``open_tag=``) when a ``job_inproc``
+#: claim lands on a host without a TeX toolchain — the environment, not
+#: the task, failed; written synchronously by the claiming worker before
+#: it marks the job failed, the same safety argument as
+#: ``infra:child-killed``.
+#: ``infra:lock-timeout`` (gr592838, review td677026) is the same stamp
+#: for a dispatch that out-waited a bounded intra-job lock (the
+#: per-draft export serialization advisory lock): a wedged or slow
+#: sibling is an infra condition — the same synchronous writer, the same
+#: bounded-retry argument.
 INFRA_FAILURE_TAGS = frozenset(
     {
         "swept:claim-orphaned",
         "infra:child-killed",
+        "infra:lock-timeout",
+        "infra:no-latexmk",
         "reaped:dead-node-orphan",
         "reaped:dead-node-queued",
         "reaped:off-lane-pin",

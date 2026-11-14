@@ -293,6 +293,16 @@ class JobTypeSpec:
     #: ``"mace_mp"``, matching its ``params.get("model") or "mace_mp"``
     #: dispatch fallback exactly.
     default_model: str | None = None
+    #: Optional executor ``put`` resolves when the caller omits
+    #: ``executor=`` (gr592838). Must sit inside
+    #: ``compatible_executors`` (``__post_init__`` enforces) — it only
+    #: overrides the fleet-wide ``DEFAULT_EXECUTOR`` preference, never
+    #: widens the set. ``draft_export`` declares ``"job_inproc"``: a
+    #: deterministic LaTeX→PDF run needs no LLM lane, so ordinary puts
+    #: (and the web export button) route off ``claude_inproc``.
+    #: ``None`` (default) keeps the old pick: ``DEFAULT_EXECUTOR`` when
+    #: compatible, else the first compatible executor sorted.
+    default_executor: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".
@@ -316,6 +326,14 @@ class JobTypeSpec:
         fall through to "no submit/poll or dispatch" too — just less
         obviously than an outright missing pair.
         """
+        if self.default_executor is not None and (
+            self.default_executor not in self.compatible_executors
+        ):
+            raise ValueError(
+                f"job_type {self.name!r}: default_executor "
+                f"{self.default_executor!r} is not in compatible_executors "
+                f"({sorted(self.compatible_executors)})"
+            )
         if self.queue_ttl_exempt and self.queue_ttl_s is not None:
             raise ValueError(
                 f"job_type {self.name!r}: queue_ttl_exempt and queue_ttl_s "

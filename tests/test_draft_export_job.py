@@ -18,6 +18,7 @@ def test_draft_export_registered() -> None:
     assert spec is not None
     assert spec.dispatch is not None  # runs via plugin dispatch, not claude
     assert "claude_inproc" in spec.compatible_executors
+    assert spec.default_executor == "job_inproc"  # gr592838: off the LLM lane
     assert not spec.requires  # deterministic — no executor capabilities
     assert "draft_export" in known_job_types()
 
@@ -40,6 +41,23 @@ def test_submit_export_job_through_handler(hub: Hub) -> None:
         job_type="draft_export", parent_id=pid, params={"draft": slug}
     )
     assert "id=" in out.body  # a job row was created
+    # gr592838 want (a): an ``executor=``-less put — the shape the web
+    # export button and the gripe's own re-queue take — resolves the
+    # deterministic ``job_inproc`` lane off ``claude_inproc``.
+    jid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    job = hub.live_store.get_ref(kind="job", id=jid)
+    assert job is not None
+    assert job.meta["executor"] == "job_inproc"
+    # …and an explicit claude_inproc opt-in stays accepted.
+    out2 = JobHandler(hub=hub).put(
+        job_type="draft_export",
+        parent_id=pid,
+        executor="claude_inproc",
+        params={"draft": slug},
+    )
+    jid2 = int(out2.body.split("id=")[1].split()[0].rstrip(",.()"))
+    job2 = hub.live_store.get_ref(kind="job", id=jid2)
+    assert job2 is not None and job2.meta["executor"] == "claude_inproc"
     # bad params rejected at submit
     import pytest
 
@@ -47,6 +65,26 @@ def test_submit_export_job_through_handler(hub: Hub) -> None:
 
     with pytest.raises(BadInput, match="requires params.draft"):
         JobHandler(hub=hub).put(job_type="draft_export", parent_id=pid, params={})
+
+
+def test_default_executor_must_be_compatible() -> None:
+    """A ``default_executor`` outside ``compatible_executors`` would mint
+    rows no lane may claim — ``__post_init__`` refuses it at spec
+    build time (gr592838)."""
+    import pytest
+
+    from precis.workers.job_types import JobTypeSpec
+
+    with pytest.raises(ValueError, match="default_executor"):
+        JobTypeSpec(
+            name="bogus",
+            params_schema={},
+            compatible_executors=frozenset({"job_inproc"}),
+            requires=frozenset(),
+            description="bogus",
+            default_executor="claude_inproc",
+            dispatch=lambda ctx, spec: None,
+        )
 
 
 # ── plugin dispatch against a fake context ────────────────────────
@@ -72,8 +110,19 @@ class _FakeCtx:
     def set_meta(self, **kw: Any) -> None:
         self.meta_set.update(kw)
 
-    def record_failure(self, reason: str) -> None:
+    failure_classes: list[str | None] = field(default_factory=list)
+    open_tags: list[str | None] = field(default_factory=list)
+
+    def record_failure(
+        self,
+        reason: str,
+        *,
+        failure_class: str | None = None,
+        open_tag: str | None = None,
+    ) -> None:
         self.failures.append(reason)
+        self.failure_classes.append(failure_class)
+        self.open_tags.append(open_tag)
 
     def is_cancel_requested(self) -> bool:
         return False
@@ -558,3 +607,197 @@ def test_dispatch_targets_project_workspace(
     # main.tex written into the project workspace under PRECIS_ROOT
     assert (tmp_path / "projects" / "p1" / "main.tex").is_file()
     assert any("todo page" in t for _k, t in ctx.events)
+
+
+# ── per-draft export lock + job_inproc lane (gr592838) ─────────────
+
+
+def _job_ctx(hub: Hub, job_id: int) -> Any:
+    """A real ``DispatchContext`` for ``job_id`` — record_failure writes
+    through to the job row (STATUS/meta/tags/bubble), which the fake
+    can't see."""
+    from precis.workers.executors.claude_inproc import _build_dispatch_context
+
+    job = hub.live_store.get_ref(kind="job", id=job_id)
+    assert job is not None
+    return _build_dispatch_context(
+        hub.live_store, job.id, job.title, dict(job.meta or {})
+    )
+
+
+def test_second_export_waits_for_first_lock(hub: Hub, monkeypatch: Any) -> None:
+    """gr592838: two draft_export jobs for one draft claimed in the same
+    agentlane sweep ran latexmk in the same export dir and clobbered
+    each other's aux/log files. The per-draft advisory lock serializes
+    them: while a sibling holds it, dispatch must not reach
+    ``compile_pdf``; a wait outliving the budget fails infra instead of
+    colliding."""
+    import threading
+    from types import SimpleNamespace
+
+    import psycopg
+
+    import precis.export.compile as _compile
+    from precis.workers.job_types import draft_export
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: True)
+    monkeypatch.setattr(draft_export, "_LOCK_POLL_S", 0.05)
+    monkeypatch.setattr(draft_export, "_LOCK_WAIT_S", 30.0)
+
+    pid, slug = _make_project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="paragraph", text="prose.", at={"last": True}
+    )
+    jout = JobHandler(hub=hub).put(
+        job_type="draft_export", parent_id=pid, params={"draft": slug}
+    )
+    jid = int(jout.body.split("id=")[1].split()[0].rstrip(",.()"))
+    ctx = _job_ctx(hub, jid)
+
+    compiled = threading.Event()
+
+    def _fake_compile(out_dir: Any) -> Any:
+        compiled.set()
+        return SimpleNamespace(
+            ok=True, pdf=out_dir / "main.pdf", returncode=0, log_tail=""
+        )
+
+    monkeypatch.setattr(_compile, "compile_pdf", _fake_compile)
+
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+    dsn = hub.live_store.dsn
+    assert dsn is not None
+    holder = psycopg.connect(dsn)
+    try:
+        holder.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"draft_export:{slug}",),
+        )
+        worker = threading.Thread(target=spec.dispatch, args=(ctx, spec), daemon=True)
+        worker.start()
+        # Still queued behind the sibling's lock: no compile while held.
+        assert not compiled.wait(2.0)
+        holder.rollback()  # releases the lock
+    finally:
+        holder.close()
+    worker.join(timeout=30.0)
+    assert not worker.is_alive()
+    assert compiled.is_set()
+    job = hub.live_store.get_ref(kind="job", id=jid)
+    assert job is not None
+    assert job.meta.get("failure_class") is None
+
+    # Same contention past the wait budget → infra failure, not a clash.
+    monkeypatch.setattr(draft_export, "_LOCK_WAIT_S", 0.1)
+    jout2 = JobHandler(hub=hub).put(
+        job_type="draft_export", parent_id=pid, params={"draft": slug}
+    )
+    jid2 = int(jout2.body.split("id=")[1].split()[0].rstrip(",.()"))
+    ctx2 = _job_ctx(hub, jid2)
+    holder2 = psycopg.connect(dsn)
+    try:
+        holder2.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"draft_export:{slug}",),
+        )
+        spec.dispatch(ctx2, spec)
+    finally:
+        holder2.rollback()
+        holder2.close()
+    job2 = hub.live_store.get_ref(kind="job", id=jid2)
+    assert job2 is not None
+    assert job2.meta["failure_class"] == "infra"
+    assert "export lock" in str(job2.meta.get("error"))
+
+
+def test_job_inproc_accepted_and_no_latexmk_is_infra(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """gr592838: a PDF export needs no LLM, so ``executor='job_inproc'``
+    is accepted at put. A job_inproc claim on a TeX-less host can't
+    compile — it fails ``failure_class='infra'`` stamped
+    ``infra:no-latexmk`` (a job_bubble.INFRA_FAILURE_TAGS member), so the
+    first failure does NOT latch ``child-failed`` on the parent: the
+    bounded infra retry re-arms instead."""
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    pid, slug = _make_project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="paragraph", text="prose.", at={"last": True}
+    )
+
+    out = JobHandler(hub=hub).put(
+        job_type="draft_export",
+        parent_id=pid,
+        executor="job_inproc",
+        params={"draft": slug},
+    )
+    assert "id=" in out.body  # put accepted (was BadInput pre-fix)
+    jid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(_job_ctx(hub, jid), spec)
+
+    job = hub.live_store.get_ref(kind="job", id=jid)
+    assert job is not None
+    assert job.meta["failure_class"] == "infra"
+    job_tags = {str(t) for t in hub.live_store.tags_for(jid)}
+    assert "STATUS:failed" in job_tags
+    assert "infra:no-latexmk" in job_tags
+    parent_tags = {str(t) for t in hub.live_store.tags_for(pid)}
+    assert f"child-failed:{jid}" not in parent_tags
+
+
+def test_lock_timeout_stamps_infra_lock_timeout_tag(hub: Hub, monkeypatch: Any) -> None:
+    """gr592838 review td677026: ``job_bubble`` classifies infra by open
+    tag, not ``failure_class`` — a lock wait that outlives the budget is
+    contention, not content, so the failure must stamp the
+    ``infra:lock-timeout`` member of INFRA_FAILURE_TAGS and the first
+    lapse must NOT latch ``child-failed`` on the parent."""
+    import psycopg
+
+    import precis.export.compile as _compile
+    from precis.utils.job_bubble import INFRA_FAILURE_TAGS
+    from precis.workers.job_types import draft_export
+
+    assert "infra:lock-timeout" in INFRA_FAILURE_TAGS
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: True)
+    monkeypatch.setattr(draft_export, "_LOCK_POLL_S", 0.05)
+    monkeypatch.setattr(draft_export, "_LOCK_WAIT_S", 0.1)
+
+    pid, slug = _make_project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="paragraph", text="prose.", at={"last": True}
+    )
+    out = JobHandler(hub=hub).put(
+        job_type="draft_export", parent_id=pid, params={"draft": slug}
+    )
+    jid = int(out.body.split("id=")[1].split()[0].rstrip(",.()"))
+    ctx = _job_ctx(hub, jid)
+
+    dsn = hub.live_store.dsn
+    assert dsn is not None
+    holder = psycopg.connect(dsn)
+    try:
+        holder.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"draft_export:{slug}",),
+        )
+        spec = get_job_type("draft_export")
+        assert spec is not None and spec.dispatch is not None
+        spec.dispatch(ctx, spec)
+    finally:
+        holder.rollback()
+        holder.close()
+
+    job = hub.live_store.get_ref(kind="job", id=jid)
+    assert job is not None
+    assert job.meta["failure_class"] == "infra"
+    assert "export lock" in str(job.meta.get("error"))
+    job_tags = {str(t) for t in hub.live_store.tags_for(jid)}
+    assert "STATUS:failed" in job_tags
+    assert "infra:lock-timeout" in job_tags
+    parent_tags = {str(t) for t in hub.live_store.tags_for(pid)}
+    assert f"child-failed:{jid}" not in parent_tags

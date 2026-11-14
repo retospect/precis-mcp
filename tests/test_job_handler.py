@@ -1249,3 +1249,30 @@ class TestRunningJobCardBudget:
             status="succeeded",
         )
         assert "step_budget:" not in jobs.get(id=job_id).body
+
+
+def test_throughput_names_a_dark_lane(jobs: JobHandler, store: Store) -> None:
+    """gr592838 want (b): claimable work aged past the dark floor with no
+    claimer and nothing running renders as a ``lane alert:`` — raw queue
+    depth alone read the same for a busy lane and a dead one."""
+    jid = _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '20 minutes' "
+            "WHERE ref_id = %s",
+            (jid,),
+        )
+        conn.commit()
+
+    body = jobs.get(id="/throughput").body
+
+    assert "queued now by executor: ssh_node=1" in body
+    assert "lane alert: 'ssh_node' reads dark" in body
+    assert "no open alert or gripe names this lane" in body
+
+
+def test_throughput_fresh_queue_is_not_dark(jobs: JobHandler, store: Store) -> None:
+    _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    body = jobs.get(id="/throughput").body
+    assert "queued now by executor: ssh_node=1" in body
+    assert "lane alert" not in body

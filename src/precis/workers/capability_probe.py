@@ -399,6 +399,20 @@ def _probe_has_mace() -> int:
         return 0
 
 
+def _probe_latexmk() -> int:
+    """The TeX toolchain ``draft_export`` compiles through (gr592838) —
+    ``PRECIS_LATEXMK_SLOTS`` override, else 1 when ``latexmk`` resolves.
+    Presence, not correctness: the same ``have_latexmk()`` predicate the
+    dispatch gate reads at run time; a partial TeX tree still advertises
+    and the run path surfaces the compile failure."""
+    override = _env_slots("PRECIS_LATEXMK_SLOTS")
+    if override is not None:
+        return override
+    from precis.export.compile import have_latexmk
+
+    return 1 if have_latexmk() else 0
+
+
 def claude_bin_present() -> bool:
     """Public read of the ``claude_bin`` probe — whether THIS host can exec
     ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
@@ -474,6 +488,7 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "repo_checkout": _probe_repo_checkout,
     "autocatpath": _probe_autocatpath,
     "has_mace": _probe_has_mace,
+    "latexmk": _probe_latexmk,
 }
 
 #: Vocabulary tokens already warned about as probe-less — the

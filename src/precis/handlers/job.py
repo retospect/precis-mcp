@@ -2373,7 +2373,11 @@ class JobHandler(NumericRefHandler):
         depth counted every job ever retired mid-queue, gr638954), so
         "idle" is read next to "and there was nothing to do".
         Heartbeating hosts with no claim in the window are listed as
-        ``claimed=0``.
+        ``claimed=0``. An executor lane whose claimable work sits past
+        :data:`_LANE_DARK_MINUTES` with no claimer and nothing running is
+        rendered as ``lane alert:`` lines with the open alert/gripe that
+        names the outage (gr592838 — raw depth read the same for a busy
+        lane and a dead one).
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
         since_hours = _parse_logs_int(
@@ -2440,6 +2444,14 @@ class JobHandler(NumericRefHandler):
                 "SELECT host FROM host_heartbeat WHERE ts >= %s ORDER BY host",
                 (cutoff,),
             ).fetchall()
+            # gr592838 want (b): an executor with claimable work and no
+            # claimer for the dark floor is named outright — the queue
+            # depth alone read the same for a busy lane and a dead one.
+            dark_map = _lane_dark(conn)
+            lane_lines = {
+                executor: _lane_dark_lines(conn, executor, dark_map=dark_map)
+                for executor in sorted(dark_map)
+            }
 
         lines = [
             f"# fleet throughput — from job lease stamps, since={since_hours}h "
@@ -2466,6 +2478,8 @@ class JobHandler(NumericRefHandler):
         lines.append(f"{total} claim(s) across {len(rows)} host/process row(s).")
         depth = ", ".join(f"{e}={n}" for e, n in queued) or "none"
         lines.append(f"queued now by executor: {depth}")
+        for executor, dark_lines in lane_lines.items():
+            lines.extend(dark_lines)
         lines.append(
             "Idle beside an empty queue is healthy; idle beside queued work "
             "is the fault. Measurement only: no alert reads this."
@@ -5351,6 +5365,15 @@ class JobHandler(NumericRefHandler):
                 """,
                 (executor, STATUS_NAMESPACE, RUNNING),
             ).fetchall()
+            # gr592838 want (b): when the lane reads claimer-less the
+            # card says so and names the open alert/gripe owning the
+            # outage — the bare "nothing running" line left the reader
+            # to guess between a busy lane and a dead one.
+            lane_lines = (
+                _lane_dark_lines(conn, str(executor), job_id=ref.id)
+                if not running
+                else []
+            )
         (
             total,
             ahead,
@@ -5458,6 +5481,7 @@ class JobHandler(NumericRefHandler):
                 "no worker is claiming that executor (get(kind='job', "
                 "id='/throughput') shows which hosts are claiming)"
             )
+            lines.extend(f"queue: {line}" for line in lane_lines)
         pin = (meta.get("params") or {}).get("target_node")
         if pin:
             lines.append(f"queue: pinned to node {pin!r} — only a worker on it claims")
@@ -6911,12 +6935,345 @@ def _running_elapsed_s(meta: dict[str, Any]) -> float | None:
 
 def _default_executor_for(spec: Any) -> str:
     """Pick a default executor for ``spec`` when caller omits one."""
+    declared = getattr(spec, "default_executor", None)
+    if declared is not None and declared in spec.compatible_executors:
+        # The job_type named its own lane (gr592838): a non-LLM job_type
+        # like draft_export routes off the agent lane by default —
+        # ordinary puts and the web export button follow it.
+        return declared
     if DEFAULT_EXECUTOR in spec.compatible_executors:
         return DEFAULT_EXECUTOR
     # The spec is locally inconsistent if it lists no executors,
     # but the dispatcher in put() catches the empty-set case and
     # surfaces a clear error.
     return next(iter(sorted(spec.compatible_executors)), DEFAULT_EXECUTOR)
+
+
+#: How long a claimable executor lane sits queued with no claim and no
+#: running job before read surfaces call it "dark" (gr592838 want (b)):
+#: the job card and ``/throughput`` then name the outage instead of
+#: letting a dead lane read as ordinary backlog. Deliberately below the
+#: health-digest watchdog's 30m/1h pair (``health_checks.idle_lanes``
+#: defaults) — these lines are advisory reads, not pages; the page stays
+#: the watchdog's job.
+_LANE_DARK_MINUTES = 15.0
+
+
+def _lane_dark(conn: Any) -> dict[str, tuple[int, float, float | None]]:
+    """executor → (claimable queued, oldest minutes, last-claim gap
+    minutes | None) for lanes that read claimer-less.
+
+    The same three-part predicate ``health_checks.idle_lanes`` pages on —
+    claimable work aged past the floor, nothing running on the lane, no
+    ``meta.started_at`` inside the window — evaluated for EVERY executor
+    here: ``idle_lanes`` exempts ``claude_inproc`` only because the
+    nursery's dispatch-stall detector owns its page; a read surface names
+    the condition directly and points at whichever alert owns it.
+
+    "Claimable" is what the lane's claim would take, not just
+    ``STATUS:queued``/``yielded``: on a parent-gated executor
+    (``executors._common.PARENT_GATED_EXECUTORS``) a job whose parent
+    todo carries an open pause tag while not terminal — the shared
+    :func:`~precis.store._todo_sql.parent_gate_exclusion_sql` predicate,
+    with the gr575883 terminal-parent carve-out — waits on its parent,
+    not on a claimer, so it counts for neither the queue depth nor the
+    oldest mark (review td677026: a fleet of paused-parent jobs once
+    read a healthy idle lane as OUT). Lanes whose claim doesn't bind
+    the gate really can pick those rows up, so they still count there.
+    """
+    from precis.store._todo_sql import parent_gate_exclusion_sql
+    from precis.todo import TERMINAL_TODO_STATUSES
+    from precis.workers.executors._common import PARENT_GATED_EXECUTORS
+
+    rows = conn.execute(
+        f"""
+        WITH cand AS (
+          SELECT r.meta->>'executor' AS executor,
+                 rt.created_at,
+                 (r.meta->>'executor' = ANY(%s)
+                  AND {parent_gate_exclusion_sql("r")}) AS gated
+            FROM refs r
+            JOIN ref_tags rt ON rt.ref_id = r.ref_id
+            JOIN tags t ON t.tag_id = rt.tag_id
+           WHERE r.kind = 'job' AND r.retired_at IS NULL
+             AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+             AND r.meta->>'executor' IS NOT NULL
+        ),
+        q AS (
+          SELECT executor,
+                 count(*) FILTER (WHERE NOT gated)::int AS queued,
+                 min(created_at) FILTER (WHERE NOT gated) AS oldest
+            FROM cand
+           GROUP BY 1
+          HAVING min(created_at) FILTER (WHERE NOT gated)
+                 < now() - %s::float8 * interval '1 minute'
+        )
+        SELECT q.executor, q.queued,
+               extract(epoch FROM now() - q.oldest) / 60.0,
+               extract(epoch FROM now() - s.last_claim) / 60.0
+          FROM q
+          LEFT JOIN LATERAL (
+            SELECT max((r2.meta->>'started_at')::timestamptz) AS last_claim
+              FROM refs r2
+             WHERE r2.kind = 'job' AND r2.retired_at IS NULL
+               AND r2.meta->>'executor' = q.executor
+          ) s ON true
+         WHERE NOT EXISTS (
+               SELECT 1 FROM refs r3
+                 JOIN ref_tags rt3 ON rt3.ref_id = r3.ref_id
+                 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                WHERE r3.kind = 'job' AND r3.retired_at IS NULL
+                  AND t3.namespace = 'STATUS' AND t3.value = 'running'
+                  AND r3.meta->>'executor' = q.executor)
+        """,
+        (
+            list(PARENT_GATED_EXECUTORS),
+            sorted(TERMINAL_TODO_STATUSES),
+            list(CLAIMABLE),
+            _LANE_DARK_MINUTES,
+        ),
+    ).fetchall()
+    return {
+        str(executor): (int(queued), float(oldest), None if gap is None else float(gap))
+        for executor, queued, oldest, gap in rows
+        if gap is None or float(gap) >= _LANE_DARK_MINUTES
+    }
+
+
+#: Lane adapters whose credential an executor draws on directly — a
+#: ``lane-parked:<lane>`` alert on one of these is related to the
+#: executor's dark read even when its queued jobs name no lane (a
+#: ``claude_inproc`` job never carries ``meta.lane``; the outage that
+#: read dark in gr592838 was the ``claude_p`` subscription the lane
+#: probe's ``claude -p`` ping and the executor's claude subprocess
+#: share, and ``claude_docker`` mounts the same OAuth). Everything else
+#: attributes a parked lane only by claimable queue evidence
+#: (:func:`_related_parked_lanes`).
+_EXECUTOR_LANE_ADAPTERS: dict[str, frozenset[str]] = {
+    "claude_inproc": frozenset({"claude_p"}),
+    "claude_docker": frozenset({"claude_p"}),
+}
+
+
+def _related_parked_lanes(conn: Any, executor: str) -> list[str]:
+    """The lane names a ``lane-parked:<lane>`` alert may blame ``executor``
+    for — demonstrably related lanes only (review td677026 on gr592838).
+
+    Two legs. (a) The parked lane's adapter is one the executor itself
+    draws on (:data:`_EXECUTOR_LANE_ADAPTERS` — ``claude_p``'s
+    subscription IS the ``claude -p`` credential ``claude_inproc`` and
+    ``claude_docker`` jobs die without); lane names resolve through
+    ``llm_account``, the same table ``lanes.derive_lanes`` reads.
+    (b) Queue evidence: a claimable job queued on this executor names
+    the lane — ``meta.lane`` stamped at submit or ``params.lane`` pinned
+    at mint — which is direct evidence the park explains THIS lane's
+    backlog (a ``run_slice`` row waiting on ``ssh_node`` for the parked
+    lane's slot). Without the scope, every open ``lane-parked:*`` alert
+    hung on every dark executor — a parked kimi lane read as the reason
+    a claude queue stalled.
+
+    "Claimable" is the same claim the lane's own claim makes: on a
+    parent-gated executor (``executors._common.PARENT_GATED_EXECUTORS``)
+    a job behind a paused non-terminal parent is not claimable — the
+    shared :func:`~precis.store._todo_sql.parent_gate_exclusion_sql`
+    predicate — so it cannot be evidence the parked lane is what stalls
+    this one (review td677026, second pass: an old paused kimi job plus
+    unrelated eligible backlog still blamed kimi's park on the dark
+    ``ssh_node`` lane).
+    """
+    from precis.store._todo_sql import parent_gate_exclusion_sql
+    from precis.todo import TERMINAL_TODO_STATUSES
+    from precis.workers.executors._common import PARENT_GATED_EXECUTORS
+
+    lanes: set[str] = set()
+    adapters = _EXECUTOR_LANE_ADAPTERS.get(executor)
+    if adapters:
+        lanes.update(
+            str(name)
+            for (name,) in conn.execute(
+                "SELECT name FROM llm_account WHERE adapter = ANY(%s)",
+                (sorted(adapters),),
+            ).fetchall()
+        )
+    gate = (
+        f"AND NOT {parent_gate_exclusion_sql('r')}"
+        if executor in PARENT_GATED_EXECUTORS
+        else ""
+    )
+    binds: list[Any] = []
+    for _ in range(2):
+        binds += [list(CLAIMABLE), executor]
+        if gate:
+            binds.append(sorted(TERMINAL_TODO_STATUSES))
+    lanes.update(
+        str(lane)
+        for (lane,) in conn.execute(
+            f"""
+            SELECT lane FROM (
+              SELECT r.meta->>'lane' AS lane
+                FROM refs r
+                JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                JOIN tags t ON t.tag_id = rt.tag_id
+               WHERE r.kind = 'job' AND r.retired_at IS NULL
+                 AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+                 AND r.meta->>'executor' = %s
+                 {gate}
+              UNION
+              SELECT r.meta->'params'->>'lane'
+                FROM refs r
+                JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                JOIN tags t ON t.tag_id = rt.tag_id
+               WHERE r.kind = 'job' AND r.retired_at IS NULL
+                 AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+                 AND r.meta->>'executor' = %s
+                 {gate}
+            ) q
+            WHERE lane IS NOT NULL
+            """,
+            tuple(binds),
+        ).fetchall()
+    )
+    return sorted(lanes)
+
+
+def _lane_outage_refs(
+    conn: Any, executor: str, *, job_id: int | None = None
+) -> tuple[list[str], list[str]]:
+    """(alert handles, gripe handles) naming a dark lane's known outage.
+
+    gr592838 want (b): the card answers "which outage is this" instead of
+    leaving the reader to search. The alert set is the live registrations
+    this lane maps to — the starved-control watchdog
+    (``jobstarve/control:<executor>``), the nursery dispatch stall (the
+    ``claude_inproc`` lane's page owner), an unschedulable job
+    (``scheduler/unschedulable:<job>`` — a placement token no live host
+    offers), the off-lane-pin sweep
+    (``sweeper/off-lane-pin:<host>/<executor>``) and a lane-health
+    credential park (``lane_health/lane-parked:<lane>`` — the parked LLM
+    lane is why the claude lane read dark on 2026-11-08), but only for
+    lanes :func:`_related_parked_lanes` ties to this executor.
+    Gripes get searched by title/body for the executor name or a related
+    parked lane.
+    """
+    parked = [f"lane-parked:{lane}" for lane in _related_parked_lanes(conn, executor)]
+    rows = conn.execute(
+        """
+        SELECT r.ref_id,
+               COALESCE(r.alert_source, r.meta->>'alert_source') AS source,
+               COALESCE(r.fingerprint, r.meta->>'fingerprint') AS fp
+          FROM refs r
+         WHERE r.kind = 'alert' AND r.retired_at IS NULL
+           AND r.resolved_at IS NULL
+           AND EXISTS (
+               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                WHERE rt.ref_id = r.ref_id
+                  AND t.namespace = 'OPEN' AND t.value = 'alert-state:open')
+           AND (
+                (COALESCE(r.alert_source, r.meta->>'alert_source')
+                     = 'jobstarve'
+                 AND COALESCE(r.fingerprint, r.meta->>'fingerprint')
+                     = %(starve)s)
+             OR (COALESCE(r.alert_source, r.meta->>'alert_source')
+                     = 'nursery:dispatch-stall' AND %(is_agent)s)
+             OR (COALESCE(r.alert_source, r.meta->>'alert_source')
+                     = 'scheduler'
+                 AND COALESCE(r.fingerprint, r.meta->>'fingerprint')
+                     = %(unsched)s)
+             OR (COALESCE(r.alert_source, r.meta->>'alert_source')
+                     = 'sweeper'
+                 AND COALESCE(r.fingerprint, r.meta->>'fingerprint')
+                     LIKE 'off-lane-pin:%%'
+                 AND right(
+                     COALESCE(r.fingerprint, r.meta->>'fingerprint'),
+                     char_length(%(offlane)s)) = %(offlane)s)
+             OR (COALESCE(r.alert_source, r.meta->>'alert_source')
+                     = 'lane_health'
+                 AND COALESCE(r.fingerprint, r.meta->>'fingerprint')
+                     = ANY(%(parked)s))
+           )
+         ORDER BY r.ref_id
+         LIMIT 4
+        """,
+        {
+            "starve": f"control:{executor}",
+            "is_agent": executor == "claude_inproc",
+            "unsched": f"unschedulable:{job_id}" if job_id is not None else "",
+            "offlane": f"/{executor}",
+            "parked": parked,
+        },
+    ).fetchall()
+    alerts: list[str] = []
+    lanes: list[str] = []
+    for ref_id, source, fp in rows:
+        label = " (this job)" if source == "scheduler" else ""
+        alerts.append(f"al{ref_id} {source}/{fp}{label}")
+        if source == "lane_health" and isinstance(fp, str):
+            lane = fp.partition(":")[2]
+            if lane and lane not in lanes:
+                lanes.append(lane)
+    needles = sorted({executor, *lanes})
+    gripes = [
+        f"gr{ref_id} {title}"
+        for ref_id, title in conn.execute(
+            """
+            SELECT DISTINCT r.ref_id, r.title
+              FROM refs r
+             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t
+                        ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'STATUS'
+                      AND t.value IN ('done', 'wontfix'))
+               AND EXISTS (
+                   SELECT 1 FROM unnest(%(needles)s::text[]) AS n
+                   WHERE strpos(lower(r.title), lower(n)) > 0
+                      OR EXISTS (
+                          SELECT 1 FROM chunks c
+                           WHERE c.ref_id = r.ref_id
+                             AND strpos(lower(c.text), lower(n)) > 0))
+             ORDER BY r.ref_id
+             LIMIT 3
+            """,
+            {"needles": needles},
+        ).fetchall()
+    ]
+    return alerts, gripes
+
+
+def _lane_dark_lines(
+    conn: Any,
+    executor: str,
+    *,
+    job_id: int | None = None,
+    dark_map: dict[str, tuple[int, float, float | None]] | None = None,
+) -> list[str]:
+    """The lane-alert + outage-attribution lines for one dark executor —
+    shared by the job card (``job_id`` set) and ``/throughput`` (None).
+    ``dark_map`` lets a caller rendering several lanes share one
+    :func:`_lane_dark` aggregate."""
+    dark = (dark_map if dark_map is not None else _lane_dark(conn)).get(executor)
+    if dark is None:
+        return []
+    queued_n, oldest_m, gap_m = dark
+    since = (
+        f"last claim {gap_m:.0f}m ago" if gap_m is not None else "no claim on record"
+    )
+    lines = [
+        f"lane alert: {executor!r} reads dark — {queued_n} claimable "
+        f"job(s) queued, oldest {oldest_m:.0f}m, {since} (no claimer for "
+        f"≥{_LANE_DARK_MINUTES:g}m); the lane is likely OUT, not just "
+        "busy"
+    ]
+    alerts, gripes = _lane_outage_refs(conn, executor, job_id=job_id)
+    if alerts or gripes:
+        lines.append(f"  outage refs: {' · '.join(alerts + gripes)}")
+    else:
+        lines.append(
+            "  no open alert or gripe names this lane — file one: "
+            "put(kind='gripe', text='<lane> executor not claiming')"
+        )
+    return lines
 
 
 def _validate_params(

@@ -339,3 +339,282 @@ def test_release_leg_freezes_ageing_in_readout(store: Store) -> None:
     body = _body(store, bg)
     assert "queue: position 2 of 2" in body
     assert "aged up to" not in body
+
+
+# ── dark-lane callout + outage attribution (gr592838 want (b)) ──────────
+#
+# An executor whose claimable queue ages past the dark floor with no
+# claimer and nothing running is named as OUT on the card — with the open
+# alert and gripe that own the outage, so the reader isn't left matching
+# "nothing running" to the cause themselves.
+
+
+def test_dark_lane_is_called_out_and_attributed(store: Store) -> None:
+    from precis.alerts import raise_alert
+
+    job = _job(store, "queued")
+    _age_queued_tag(store, job, 1200)  # past the 15m dark floor
+    aid, _ = raise_alert(
+        store,
+        source="jobstarve",
+        fingerprint="control:job_inproc",
+        title="[jobstarve] job_inproc control starved",
+        detail="seeded",
+        severity="info",
+    )
+    from precis.handlers.gripe import GripeHandler
+
+    gout = GripeHandler(hub=Hub(store=store, embedder=None)).put(
+        text="job_inproc lane not claiming"
+    )
+    gid = int(gout.body.split("id=")[1].split()[0].rstrip(",.()"))
+    body = _body(store, job)
+    assert "queue: lane alert: 'job_inproc' reads dark" in body
+    assert f"al{aid} jobstarve/control:job_inproc" in body
+    assert f"gr{gid} job_inproc lane not claiming" in body
+
+
+def test_dark_lane_unfiled_outage_says_so(store: Store) -> None:
+    job = _job(store, "queued")
+    _age_queued_tag(store, job, 1200)
+    body = _body(store, job)
+    assert "queue: lane alert: 'job_inproc' reads dark" in body
+    assert "no open alert or gripe names this lane" in body
+
+
+def test_fresh_queue_is_not_dark(store: Store) -> None:
+    assert "lane alert" not in _body(store, _job(store, "queued"))
+
+
+def test_running_lane_is_not_dark(store: Store) -> None:
+    """A lane with work running has a claimer — queued age alone never
+    flags it."""
+    _job(store, "running", job_type="materialize")
+    job = _job(store, "queued")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert" not in _body(store, job)
+    assert "queue: running now on 'job_inproc': 1" in _body(store, job)
+
+
+def test_sibling_without_started_at_keeps_dark(store: Store) -> None:
+    """A finished sibling that never stamped ``meta.started_at`` is not
+    evidence the lane was claimed recently — the flag still fires."""
+    _job(store, "succeeded", job_type="materialize")
+    job = _job(store, "queued")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert" in _body(store, job)
+
+
+def test_started_at_inside_window_clears_dark(store: Store) -> None:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="t",
+        meta={
+            "job_type": "materialize",
+            "executor": "job_inproc",
+            "started_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", "succeeded"), set_by="agent")
+    job = _job(store, "queued")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert" not in _body(store, job)
+
+
+# ── dark read honours the parent gate (review td677026) ─────────────
+#
+# ``_lane_dark`` must count what the lane's claim would take — the shared
+# ``parent_gate_exclusion_sql`` predicate — not every ``STATUS:queued``
+# row: a job behind a paused (non-terminal) parent on a parent-gated
+# executor waits on its parent, never on a claimer, so a lane holding
+# only such rows is a healthy idle lane, not a dark one.
+
+
+def _paused_parent_todo(store: Store, *, terminal: bool = False) -> int:
+    """A live todo carrying the ``child-failed:`` pause tag — terminal on
+    request (the gr575883 carve-out: a done parent's stale tags gate
+    nothing)."""
+    ref = store.insert_ref(kind="todo", slug=None, title="paused parent", meta={})
+    store.add_tag(ref.id, Tag.open("child-failed:1"), set_by="agent")
+    if terminal:
+        store.add_tag(ref.id, Tag.closed("STATUS", "done"), set_by="agent")
+    return ref.id
+
+
+def _job_under(
+    store: Store,
+    parent_id: int,
+    *,
+    executor: str,
+    status: str = "queued",
+    lane: str | None = None,
+    params_lane: str | None = None,
+) -> int:
+    meta: dict[str, object] = {"job_type": "fake", "executor": executor}
+    if lane is not None:
+        meta["lane"] = lane
+    if params_lane is not None:
+        meta["params"] = {"lane": params_lane}
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="t",
+        parent_id=parent_id,
+        meta=meta,
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
+    return ref.id
+
+
+def test_paused_parent_queue_is_not_dark_on_gated_executor(
+    store: Store,
+) -> None:
+    """ssh_node's claim binds ``parent_not_paused``: a queue made only of
+    jobs behind a paused parent has no claimable work — the lane reads
+    neither dark nor claimer-less (the sweeper's parent-pause alert owns
+    the wait)."""
+    parent = _paused_parent_todo(store)
+    job = _job_under(store, parent, executor="ssh_node")
+    _age_queued_tag(store, job, 1200)
+    body = _body(store, job)
+    assert "lane alert" not in body
+
+
+def test_terminal_parent_stale_pause_tag_keeps_dark(store: Store) -> None:
+    """gr575883 carve-out: a ``done`` parent's leftover ``child-failed:``
+    tag gates nothing, so the job IS claimable — the dark read fires."""
+    parent = _paused_parent_todo(store, terminal=True)
+    job = _job_under(store, parent, executor="ssh_node")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert: 'ssh_node' reads dark" in _body(store, job)
+
+
+def test_mixed_queue_still_dark_on_claimable_head(store: Store) -> None:
+    """A paused sibling does not hide real backlog: the dark count names
+    only the claimable row."""
+    parent = _paused_parent_todo(store)
+    gated = _job_under(store, parent, executor="ssh_node")
+    _age_queued_tag(store, gated, 3600)
+    job = _job(store, "queued", executor="ssh_node")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert: 'ssh_node' reads dark — 1 claimable" in _body(store, job)
+
+
+def test_paused_parent_counts_on_ungated_executor(store: Store) -> None:
+    """job_inproc's claim does not bind the parent gate — the same row
+    there IS claimable work, so an unclaimed one still reads dark."""
+    parent = _paused_parent_todo(store)
+    job = _job_under(store, parent, executor="job_inproc")
+    _age_queued_tag(store, job, 1200)
+    assert "lane alert: 'job_inproc' reads dark" in _body(store, job)
+
+
+# ── parked-lane attribution is scoped to related lanes (review td677026)
+#
+# A ``lane-parked:<lane>`` alert may blame an executor only when the lane
+# demonstrably feeds it: the lane's adapter is the executor's own
+# credential family (``claude_p`` → ``claude_inproc``/``claude_docker``)
+# or a claimable job queued on the executor names the lane. Anything
+# else is an unrelated credential outage and must not attach.
+
+
+def _park_alert(store: Store, lane: str) -> int:
+    from precis.alerts import raise_alert
+
+    aid, _ = raise_alert(
+        store,
+        source="lane_health",
+        fingerprint=f"lane-parked:{lane}",
+        title=f"[lane_health] {lane}: lane parked on failed health probe",
+        detail="seeded",
+        severity="warn",
+    )
+    return aid
+
+
+def test_related_parked_lane_is_attributed(store: Store) -> None:
+    """gr592838's own shape: the ``claude-sub`` account sits on adapter
+    ``claude_p`` — the same subscription ``claude_inproc``'s subprocess
+    draws on — so its park names the dark claude lane."""
+    job = _job(store, "queued", executor="claude_inproc")
+    _age_queued_tag(store, job, 1200)
+    aid = _park_alert(store, "claude-sub")
+    body = _body(store, job)
+    assert "lane alert: 'claude_inproc' reads dark" in body
+    assert f"al{aid} lane_health/lane-parked:claude-sub" in body
+
+
+def test_unrelated_parked_lane_is_not_attributed(store: Store) -> None:
+    """The ``kimi`` account is adapter ``kimi_tree`` — nothing on
+    ``claude_inproc`` draws on it, so its park must not hang on the dark
+    claude lane."""
+    job = _job(store, "queued", executor="claude_inproc")
+    _age_queued_tag(store, job, 1200)
+    _park_alert(store, "kimi")
+    body = _body(store, job)
+    assert "lane alert: 'claude_inproc' reads dark" in body
+    assert "lane-parked" not in body
+
+
+def test_parked_lane_attributed_by_queue_evidence(store: Store) -> None:
+    """A claimable job on the dark executor that names the lane
+    (``params.lane`` pin — ``meta.lane`` is the same evidence) makes the
+    relation itself: a ``kimi`` slice queued on ``ssh_node`` is exactly
+    what a parked kimi lane explains."""
+    job = _job(store, "queued", executor="ssh_node", params={"lane": "kimi"})
+    _age_queued_tag(store, job, 1200)
+    aid = _park_alert(store, "kimi")
+    body = _body(store, job)
+    assert "lane alert: 'ssh_node' reads dark" in body
+    assert f"al{aid} lane_health/lane-parked:kimi" in body
+
+
+def test_parked_lane_without_evidence_is_not_attributed(
+    store: Store,
+) -> None:
+    """No job on ``ssh_node`` names the parked lane and no adapter map
+    covers it — the outage stays unattributed rather than guessed."""
+    job = _job(store, "queued", executor="ssh_node")
+    _age_queued_tag(store, job, 1200)
+    _park_alert(store, "kimi")
+    body = _body(store, job)
+    assert "lane alert: 'ssh_node' reads dark" in body
+    assert "lane-parked" not in body
+
+
+def test_gated_jobs_are_not_queue_evidence_for_parked_lane(
+    store: Store,
+) -> None:
+    """Review td677026 second pass on gr592838: on ``ssh_node`` — a
+    parent-gated executor — a queued job behind a paused parent is not
+    claimable, so neither its ``meta.lane`` nor its ``params.lane`` can
+    be the evidence that ties a parked lane to this executor. The mixed
+    queue (old paused kimi jobs + unrelated eligible backlog) still
+    reads dark on the eligible row, but kimi's park stays
+    unattributed."""
+    parent = _paused_parent_todo(store)
+    gated_a = _job_under(store, parent, executor="ssh_node", lane="kimi")
+    gated_b = _job_under(store, parent, executor="ssh_node", params_lane="kimi")
+    _age_queued_tag(store, gated_a, 7200)
+    _age_queued_tag(store, gated_b, 7200)
+    eligible = _job(store, "queued", executor="ssh_node")
+    _age_queued_tag(store, eligible, 1200)
+    _park_alert(store, "kimi")
+    body = _body(store, eligible)
+    assert "lane alert: 'ssh_node' reads dark" in body
+    assert "lane-parked" not in body
+
+
+def test_gated_job_is_evidence_on_ungated_executor(store: Store) -> None:
+    """The gate binds the executor's claim, not the tag: ``job_inproc``'s
+    claim ignores the parent gate, so the same paused-parent row there IS
+    claimable — and a lane it names remains queue evidence for the
+    park."""
+    parent = _paused_parent_todo(store)
+    job = _job_under(store, parent, executor="job_inproc", params_lane="kimi")
+    _age_queued_tag(store, job, 1200)
+    aid = _park_alert(store, "kimi")
+    body = _body(store, job)
+    assert "lane alert: 'job_inproc' reads dark" in body
+    assert f"al{aid} lane_health/lane-parked:kimi" in body

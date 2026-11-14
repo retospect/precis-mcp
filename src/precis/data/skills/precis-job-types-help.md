@@ -41,7 +41,7 @@ Agent and internal job types; the compute and sandbox types are in
 | `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo. Params: `model` (required), `timeout_s`, `decompose`, `select`, `envelope` — a named box (`'scout'`: WebSearch only, no MCP at all; the worker assembles its prompt and files its JSON reply); declared means required — an unknown name fails closed and a fenced tick is pinned to `claude_agent` — and `scout` (`{folder, quest}`, required with `envelope='scout'`) (see `precis-recurring-help` §Restricted tick) |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `money_refresh`     | `claude_inproc` | Refresh the `fx_rates` / `price_index` caches from the ECB and World Bank (deterministic; driven by a weekly recurring todo — minted by ops, never by hand) |
-| `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
+| `draft_export`      | `job_inproc` (default; `claude_inproc` opt-in) | Compile a draft to PDF/DOCX — deterministic, no LLM; claims only on hosts advertising `latexmk`, and serializes per draft slug on a pg advisory lock |
 | `elsevier_abstract_backfill` | `claude_inproc` | Re-arm an operator-confirmed Elsevier preview cohort for re-fetch (stamps the existing `markup_refetch`/`oa_requeued` pins; bodies, hashes and events stay until a validated replacement ingests). Params: explicit `ref_ids`, `expected_count` (must equal `len(ref_ids)`), `dry_run` (default `true`). No provider or model call; never derives the cohort from body length. |
 
 ## Campaign, deferred and external-agent job_types
