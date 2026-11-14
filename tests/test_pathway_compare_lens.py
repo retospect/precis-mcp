@@ -80,7 +80,9 @@ def test_compare_stale_cursor_refused(three_siblings: Any) -> None:
     """A cursor minted under one spec refuses a changed where."""
     h = three_siblings
     body = h.get(id="lens-pd", view="compare", args={"limit": 2}).body
-    cursor = re.search(r"'cursor': '([^']+)'", body).group(1)
+    m = re.search(r"'cursor': '([^']+)'", body)
+    assert m is not None
+    cursor = m.group(1)
     with pytest.raises(BadInput, match="different lens spec"):
         h.get(
             id="lens-pd",

@@ -1231,10 +1231,11 @@ class TestResultsLens:
 
         from precis.utils import handle_registry
 
-        handles = {
-            sid: handle_registry.try_format("structure", sid)
-            for sid in (good, bad, waiting)
-        }
+        handles = {}
+        for sid in (good, bad, waiting):
+            handle = handle_registry.try_format("structure", sid)
+            assert handle is not None
+            handles[sid] = handle
         h = QuestHandler(hub=Hub(store=store))
         alias = h.get(id=qid, view="results", args={"trusted": True}).body
         literal = h.get(id=qid, view="results", args={"where": {"trusted": "yes"}}).body
@@ -1310,6 +1311,7 @@ class TestResultsLens:
 
         zn_h = handle_registry.try_format("structure", zndex)
         cu_h = handle_registry.try_format("structure", cudex)
+        assert zn_h is not None and cu_h is not None
         assert zn_h in table_part and cu_h in table_part
         # Zn (0.6) sorts ahead of Cu (0.4)
         assert table_part.index(zn_h) < table_part.index(cu_h)
