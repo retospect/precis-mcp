@@ -275,7 +275,12 @@ def test_checkout_deadline_bounds_a_waiting_checkout(
     orig_getconn = store.pool.getconn
 
     def spy(timeout: float | None = None):
-        checkouts.append(timeout)
+        # The contract binds only checkouts requested under the
+        # deadline scope — boot's daemon reconcile threads
+        # (checklist_sync / oracle_sync) check out through the same
+        # pool on their own context, where no bound applies.
+        if POOL_CHECKOUT_DEADLINE.get() is not None:
+            checkouts.append(timeout)
         return orig_getconn(timeout=timeout)
 
     token = POOL_CHECKOUT_DEADLINE.set(time.monotonic() + 2.0)
