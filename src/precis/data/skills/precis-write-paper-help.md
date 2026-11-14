@@ -7,9 +7,9 @@ answers:
   - what's the quality bar for drafting scientific prose with proper citation density?
   - what output format should a paper-writing pass produce?
   - how does the verifier loop hand off after I finish a writing pass?
-applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
+applies-to: get/search (kind='paper'|'finding'|'memory'), put (kind='finding')
 tags: [drafting]
-kinds: [paper, memory, citation]
+kinds: [paper, finding, memory]
 status: active
 ---
 
@@ -49,8 +49,8 @@ doesn't survive a serious reader.
 
 4. **Quantify or quote.** A claim like "QY is improved in core/shell
    structures" is too soft. "Core/shell architectures raise QY from
-   ~25% (CdSe, Smith 2019 [cite:142]) to 60–80% (CdSe/ZnS, Liu 2024
-   [cite:143])" is publishable. Numbers, ranges, or verbatim quotes
+   ~25% (CdSe, Smith 2019 [fi142]) to 60–80% (CdSe/ZnS, Liu 2024
+   [fi143])" is publishable. Numbers, ranges, or verbatim quotes
    from cited sources.
 
 5. **Address counterarguments.** A serious section names the

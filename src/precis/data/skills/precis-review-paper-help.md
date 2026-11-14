@@ -82,9 +82,9 @@ inconsistency. This pass adds:
 Markdown, numbered findings. Each row:
 
 ```
-1. **BLOCKER** [cite:142 doesn't support the claim]
+1. **BLOCKER** [fi142 doesn't support the claim]
    The text states: "QY rises monotonically with shell thickness."
-   [cite:142] (Liu 2024) actually reports: "QY peaks at 2.0 ML and
+   [fi142] (Liu 2024) actually reports: "QY peaks at 2.0 ML and
    decreases beyond 2.5 ML." The cited source contradicts the claim;
    the text needs revision OR a different cite.
 

@@ -105,8 +105,9 @@ escape a literal dollar as `\$`.
 
 ## Cite by handle, not by arXiv id or DOI
 
-Do not type an arXiv id or DOI into prose: cite `[pa<id>]` / `[pc<id>]`
-and the export renders the identifier and link. A raw id never resolves,
+Do not type an arXiv id or DOI into prose: cite the claim's hub
+`[fi<id>]` (a software or dataset record: `[pa<id>]`) and the export
+renders the identifier and link. A raw id never resolves,
 joins the cite graph, or follows a preprint to its published version. A
 bare id trips a `⚠ bare identifier in prose` hint on write (a hint, not a
 refusal; ignore it when a chunk quotes an identifier format on purpose).

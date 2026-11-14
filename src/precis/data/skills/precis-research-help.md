@@ -8,9 +8,9 @@ answers:
   - how do I cast a wide retrieval net before I start reading?
   - what do I do when the corpus is thin on a topic?
   - when should I split a research task into sibling subtasks?
-applies-to: get/search (kind='paper'|'chunk'|'memory'|'citation'), put (kind='citation')
+applies-to: get/search (kind='paper'|'finding'|'memory'), put (kind='finding')
 tags: workflow, external-sources
-kinds: paper, memory, citation
+kinds: paper, finding, memory
 status: active
 ---
 
@@ -83,9 +83,9 @@ verify/widen → escalate → write back) is
    preprint claim can be included but should be flagged.
 
 8. **Citation density.** Each finding's claim is ≤2 sentences and
-   carries at least one `kind='citation'` ref with a verbatim
-   source quote (not a paraphrase). Multi-source findings carry one
-   citation per source.
+   carries at least one finding hub `[fi<id>]` grounded on the
+   chunk that states it (read the chunk, not a paraphrase).
+   Multi-source findings carry one supporter per source.
 
 ## Retrieval: cast a wide net before you read
 
@@ -115,22 +115,20 @@ Inside a planner tick, don't busy-poll: mint your other subtasks,
 let the tick end, and read the campaign result on a later tick (the
 job is durable). Details: `precis-search-help` → Broad retrieval.
 
-## Mint citations as you go
+## Mint hubs as you go
+
+Search hubs for the claim first; when none matches, mint one on the
+chunks you read ([[precis-citation-help]] has the four steps and the
+admissibility test for the sentence):
 
 ```python
-put(
-    kind="citation",
-    text="Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K",
-    source_handle="pc456",  # the paper-chunk handle, copied from search/get
-    source_quote="We measured a peak quantum yield of 68 ± 4 % across n=12 batches…",
-    verifier_confidence=0.95,
-    link="pa5",
-    rel="cites",
-)
+put(kind="finding",
+    title="Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K",
+    args={"supporters": [{"paper": "pa5", "source_handle": "pc456"}]})
+# → "claim hub fi<id> …" — cite it as [fi<id>]
 ```
 
-A finding without a `kind='citation'` ref is unsupported — don't
-include it in the output.
+A finding with no hub is unsupported: don't include it in the output.
 
 ## When the corpus is thin
 
