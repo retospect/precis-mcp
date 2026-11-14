@@ -2721,6 +2721,31 @@ def test_bare_citable_handle_in_code_and_math_not_cited() -> None:
     assert any(r.text == "pa57151" for r in code_runs)
 
 
+def test_adsorbate_star_and_escaped_star_not_italic() -> None:
+    """gr674905: ``*NO``/``H*`` adsorbate stars and the ``\\*`` escape are
+    literal in docx too — same rule as LaTeX (``utils/adsorbate_star``);
+    a real ``*word*`` still italicises."""
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        r"*NO + O* adsorbates, a *word* italic, and \*escaped\* stars.",
+        ctx,
+        para,
+    )
+    assert [r.text for r in para.runs if r.italic] == ["word"]
+    assert "*NO" in para.text and "O*" in para.text
+    assert "\\*" not in para.text and "*escaped*" in para.text
+
+
 def _back_matter_headings(draft: DraftHandler, hub: Hub, tmp_path: Path) -> list[str]:
     _seed_paper(hub.live_store, "bm1", "Back matter paper", 2020)
     pid = _new_draft_project(hub)

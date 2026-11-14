@@ -40,6 +40,7 @@ from typing import Any
 
 from precis.draft.chem_speak import speak_chemistry
 from precis.draft.verbalize import verbalize_text
+from precis.utils import adsorbate_star
 
 # Chunk kinds skipped for the ear (v1): structural containers, and
 # figures/tables/code/glossary that don't read aloud as prose.
@@ -64,7 +65,12 @@ _DISPLAY_MATH = re.compile(r"\$\$.+?\$\$", re.DOTALL)
 _INLINE_MATH = re.compile(r"\$[^$]+\$")
 _CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: Same shape as the export/linkify italic rule — a ``*`` touching an
+#: element symbol is adsorbate notation, not emphasis (gr674905).
+_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 _SUBSUP = re.compile(r"</?su[bp]>")
 # Stray backslashes that leak into prose — a LaTeX line-break ``\\``, a
 # control-space ``\ ``, an escaped char (``\%`` / ``\_``), or a leaked macro

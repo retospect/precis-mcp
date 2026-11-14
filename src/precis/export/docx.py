@@ -93,7 +93,7 @@ from precis.export.latex import (
     record_bib_type,
 )
 from precis.nanopub import pin_lint
-from precis.utils import handle_registry
+from precis.utils import adsorbate_star, handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.mentions import (
@@ -825,14 +825,18 @@ def _rstrip_last_run(paragraph: Any) -> None:
 # verbatim spans (math, code) are carved out before emphasis. The math
 # alternation is the LaTeX exporter's `_MATH` verbatim (an author-escaped
 # ``\$`` is a literal dollar, never a delimiter) so the two exporters
-# carve out the same spans and the write-path lint speaks for both.
+# carve out the same spans and the write-path lint speaks for both. The
+# italic arm is the LaTeX exporter's ``_MD_ITALIC`` verbatim too — an
+# author-escaped ``\*`` and the adsorbate star (``*NO``, ``H*`` —
+# ``utils/adsorbate_star``, gr674905) are literal in all three renderers.
 _SPAN = re.compile(
     rf"(?P<math>{_MATH.pattern})"
     r"|(?P<code>`[^`]+`)"
     r"|(?P<sub><sub>.+?</sub>)"
     r"|(?P<sup><sup>.+?</sup>)"
     r"|(?P<bold>\*\*.+?\*\*)"
-    r"|(?P<italic>(?<![\*\w])\*(?!\s)[^*]+?(?<!\s)\*(?!\w))",
+    rf"|(?P<italic>(?<![\*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"[^*]+?(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w))",
     re.DOTALL,
 )
 
@@ -925,11 +929,12 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     survives chunk reordering because it's computed here at export.
 
     An author-escaped ``\\$`` (the lint's advice for literal money
-    dollars) renders as the bare ``$`` — Word has no escape syntax.
+    dollars) renders as the bare ``$``; ``\\*`` (the lint's advice for a
+    literal star) renders as ``*`` — Word has no escape syntax.
 
     A bare internal handle in prose (``dr173020's``, ``td459589/…``)
     renders as its record's title (gr493181), see :func:`_bare_handle_text`."""
-    text = text.replace("\\$", "$")
+    text = text.replace("\\$", "$").replace("\\*", "*")
     text = _BARE_HANDLE.sub(lambda m: _bare_handle_text(m.group(0), ctx), text)
     if not text:
         return

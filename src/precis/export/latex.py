@@ -85,7 +85,7 @@ from precis.export._trust_marks import (
     unverified_claims_entries,
 )
 from precis.nanopub import pin_lint
-from precis.utils import handle_registry, mentions
+from precis.utils import adsorbate_star, handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.paper_links import doi_url, uol_url
@@ -278,8 +278,13 @@ _LATEX_SPECIALS_RE = re.compile("|".join(re.escape(k) for k in _LATEX_SPECIALS))
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 #: Single-``*`` emphasis → ``\emph`` (parity with docx ``_SPAN`` / the web
 #: reader). Applied AFTER bold, so a consumed ``**…**`` never reaches it; the
-#: guard excludes ``**bold**``, ``a*b``, and a spaced ``2 * 3`` multiplication.
-_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: guard excludes ``**bold**``, ``a*b``, a spaced ``2 * 3`` multiplication,
+#: an author-escaped ``\*`` (literal star) and the adsorbate star (``*NO``,
+#: ``H*`` — ``utils/adsorbate_star``, gr674905).
+_MD_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 _MD_CODE = re.compile(r"`([^`]+)`")
 _HTML_SUB = re.compile(r"<sub>(.+?)</sub>")
 _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
@@ -1080,6 +1085,10 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     #     LaTeX ``\$`` (renders "$") instead of letting step 4 escape the
     #     backslash separately into a visible ``\textbackslash{}\$``.
     s = re.sub(r"\\\$", lambda m: _stash(r"\$"), s)
+    # 2c. An author-escaped ``\*`` means a literal star — the escape the
+    #     lint's italic_star advice names (utils/house_style) — stashed as
+    #     ``\textasteriskcentered`` for the same reason as ``\$``.
+    s = re.sub(r"\\\*", lambda m: _stash(r"\textasteriskcentered{}"), s)
     # 3. sub/sup BEFORE escaping (the angle brackets must not be escaped).
     s = _HTML_SUB.sub(
         lambda m: _stash(f"\\textsubscript{{{_latex_escape(m.group(1))}}}"), s

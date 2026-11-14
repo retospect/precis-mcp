@@ -57,7 +57,7 @@ from html import escape
 
 from markupsafe import Markup
 
-from precis.utils import handle_registry
+from precis.utils import adsorbate_star, handle_registry
 from precis.utils.handles import is_handle as _is_handle
 
 # Grammar moved to ``precis.utils.mentions`` so the write-time
@@ -716,11 +716,17 @@ _MD_CODE = re.compile(r"`([^`]+)`")
 #: backticks whole; the single-backtick form mirrors ``_MD_CODE``.
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]+`", re.DOTALL)
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
-#: Single-``*`` emphasis — the exact guard docx uses (export/docx ``_SPAN``):
-#: no adjacent ``*``/word char (so ``**bold**`` and ``a*b`` are excluded) and
-#: no space just inside the stars (so a stray ``2 * 3`` multiplication is left
-#: alone). Applied AFTER bold, so a consumed ``**…**`` never reaches it.
-_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: Single-``*`` emphasis — the exact guard the exporters use
+#: (export/latex ``_MD_ITALIC`` = export/docx ``_SPAN``): no adjacent
+#: ``*``/word char (so ``**bold**`` and ``a*b`` are excluded), no space just
+#: inside the stars (so a stray ``2 * 3`` multiplication is left alone), no
+#: ``\*`` escape and no adsorbate star (``*NO``, ``H*`` —
+#: ``utils/adsorbate_star``, gr674905). Applied AFTER bold, so a consumed
+#: ``**…**`` never reaches it.
+_MD_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 #: ``$$…$$`` (display) before ``$…$`` (inline) — stashed verbatim for KaTeX.
 #: ``(?<!\\)`` guards: an escaped ``\$`` (``title_md``'s literal-dollar
 #: marker, gr515227) is a currency sign, not a math delimiter — without
@@ -775,6 +781,10 @@ def _md_inline(escaped: str) -> str:
     # Bold before italic so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
     s = _MD_ITALIC.sub(r"<em>\1</em>", s)
+    # An author-escaped \* is a literal star (the italic arm already refused
+    # it as a delimiter) — drop the backslash AFTER emphasis runs so
+    # ``\*word\*`` can't round-trip into real <em>.
+    s = s.replace("\\*", "*")
     s = _MD_SUB.sub(r"<sub>\1</sub>", s)
     s = _MD_SUP.sub(r"<sup>\1</sup>", s)
 

@@ -33,6 +33,13 @@ def test_dollar_not_math() -> None:
     assert title_md("The $100 Laptop") == "The \\$100 Laptop"
 
 
+def test_plain_escaped_star_is_literal() -> None:
+    # gr674905: ``\*`` is the author's literal-star escape — the plain
+    # view keeps the star (the ``\\.`` strip used to drop it whole).
+    assert title_plain(r"Adsorbed \*NO on Pt") == "Adsorbed *NO on Pt"
+    assert title_plain(r"\*NO dissociation to O\*") == "*NO dissociation to O*"
+
+
 def test_italic_and_bold() -> None:
     assert title_md("<i>in situ</i> study") == "*in situ* study"
     assert title_md("<b>key</b> result") == "**key** result"

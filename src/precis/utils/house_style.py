@@ -22,6 +22,12 @@ markup are masked to ``\\x00`` (newlines kept, so line/col stay true):
 
 ``_italic_`` is word-bounded, so ``snake_case`` never fires.
 
+Two ``*`` shapes are legal prose, not emphasis (gr674905): the adsorbate
+star of surface chemistry — ``*NO``, ``*H``, ``*OH``, ``*NO₃⁻`` leading and
+``H*``, ``O*``, ``Pd*`` trailing — and the author escape ``\*`` for a
+literal star anywhere else (``utils/adsorbate_star``). The exporters read
+``*`` the same way, so the lint's flags still predict the render.
+
 A sibling finder, :func:`find_sentence_start_identifiers`, covers the
 house-style rule a plain pattern cannot: a sentence that opens with a
 *known* lowercase identifier (``autocatpath``, a lowercase glossary
@@ -37,6 +43,8 @@ import re
 from collections.abc import Collection
 from dataclasses import dataclass
 
+from precis.utils import adsorbate_star
+
 _MASK = "\x00"
 
 _CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
@@ -46,8 +54,16 @@ _HANDLE_BRACKET = re.compile(r"\[\[?[^\[\]\s]+\]\]?")
 _LINK_TARGET = re.compile(r"(?<=\])\([^)\s]*\)")
 
 _BOLD = re.compile(r"\*\*(?=\S)[^\n]+?(?<=\S)\*\*")
+#: Single-``*`` emphasis — the same shape the exporters render
+#: (``export/latex._MD_ITALIC``), so a flag predicts a real mis-render.
+#: ``\\`` in the boundary classes keeps ``\*`` literal, and the
+#: adsorbate-star fragments (``utils/adsorbate_star``, gr674905) keep
+#: ``*NO``/``H*`` out — both are prose, not emphasis.
 _ITALIC_STAR = re.compile(
-    rf"(?<![*\w{_MASK}])\*(?=[^\s*])[^*\n]+?(?<=[^\s*])\*(?![*\w])"
+    rf"(?<![*\w{_MASK}\\])\*(?=[^\s*])"
+    rf"{adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"[^*\n]+?(?<=[^\s*\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}"
+    rf"\*(?![*\w])"
 )
 _ITALIC_UNDERSCORE = re.compile(r"(?<!\w)_(?=[^\s_])[^_\n]*?(?<=[^\s_])_(?!\w)")
 _DOUBLE_HYPHEN = re.compile(r"(?<=\w)--(?=\w)|(?<=\s)--(?=\s)")
@@ -63,7 +79,11 @@ RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
         "split the sentence, or use a colon, comma or parentheses",
     ),
     ("bold", _BOLD, "drop the asterisks: write the plain words"),
-    ("italic_star", _ITALIC_STAR, "drop the asterisks: write the plain word"),
+    (
+        "italic_star",
+        _ITALIC_STAR,
+        "drop the asterisks: write the plain word (or escape a literal star as \\*)",
+    ),
     (
         "italic_underscore",
         _ITALIC_UNDERSCORE,

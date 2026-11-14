@@ -29,6 +29,35 @@ def test_italics_flagged_and_bold_not_double_counted() -> None:
     assert [f.rule for f in flags] == ["italic_star", "italic_underscore", "bold"]
 
 
+def test_adsorbate_stars_not_flagged() -> None:
+    """gr674905: the five italic_star flags on the norr-her-survey hubs —
+    adsorbate notation is literal prose, not emphasis."""
+    text = "*NO₃⁻ dissociation to *NO₂⁻ + O* is more favorable"
+    assert find_style_flags(text) == []
+    for species in (
+        "*NO",
+        "*H",
+        "*OH",
+        "*NO2",
+        "*H2O",
+        "*CH4",
+        "*Au",
+        "H*",
+        "O*",
+        "Pd*",
+        "Au*",
+    ):
+        assert find_style_flags(species) == [], species
+
+
+def test_escaped_star_not_flagged() -> None:
+    assert find_style_flags(r"a \* literal and \*word\* too") == []
+    # A real italic still flags, and a trailing adsorbate star neither
+    # closes nor gets eaten by it.
+    flags = find_style_flags("a *word* and O* adsorbate")
+    assert [f.rule for f in flags] == ["italic_star"]
+
+
 def test_identifiers_handles_urls_code_do_not_fire() -> None:
     text = (
         "Use snake_case and my_var_name, cite [fi123] and [¶ab_12], see "

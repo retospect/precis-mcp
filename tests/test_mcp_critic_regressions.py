@@ -1579,6 +1579,33 @@ def test_bibtex_title_caret_hex_split_across_safe_span() -> None:
     assert out == r"\\^{}\^{}69nput{/etc/passwd} x"
 
 
+def test_bibtex_title_escaped_star_renders_literal() -> None:
+    """gr674905 review: ``\\*`` is the author's literal-star escape, but
+    in LaTeX ``\\*`` is a math-mode discretionary — passed through
+    verbatim it never renders the star (and can fault the compile). The
+    .bib gets ``\\textasteriskcentered``, the same command export/latex
+    stashes for the escape."""
+    from precis.handlers._paper_format import bibtex_title
+
+    out = bibtex_title(r"Adsorbed \*NO and \*H on Pt")
+    assert r"\*" not in out
+    assert out == (
+        r"Adsorbed \textasteriskcentered{}NO and \textasteriskcentered{}H on Pt"
+    )
+    # The escape is never an emphasis delimiter either — ``\*word\*``
+    # stays literal text, no \emph.
+    out = bibtex_title(r"A \*starred\* title")
+    assert r"\emph" not in out
+    assert out.count(r"\textasteriskcentered{}") == 2
+    # Adsorbate stars stay bare ``*`` — the species reading wins over
+    # emphasis, and a bare ``*`` is already a valid BibTeX glyph.
+    out = bibtex_title("*NO dissociation to *NO2 + O* on Pt")
+    assert r"\emph" not in out
+    assert "*NO" in out and "O*" in out
+    # Other glyph escapes still pass through untouched.
+    assert bibtex_title(r"50\% done") == r"50\% done"
+
+
 def test_render_citation_bibtex_url_emits_raw() -> None:
     """Opus review of gr515469: ``url`` goes to ``\\url{}``/hyperref —
     ``\\_``/``\\%`` escapes break the link, so the field emits the raw

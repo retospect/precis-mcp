@@ -272,7 +272,9 @@ literal `_` (collides with `$x_1$` math subscripts). No em-dashes (`—`)
 — split the sentence, or use a colon/comma/parens. Also no `--`.
 Math (`$P_5$`), backtick code, URLs and `[handles]` are exempt. A
 violation trips a `⚠ house style` hint on write, and `view='hygiene'`
-counts them per rule with example `dc` handles.
+counts them per rule with example `dc` handles. Two `*` forms stay
+literal: an adsorbate star touching an element symbol (`*NO`, `H*`) and
+the `\*` escape.
 
 **No sentence opens with a lowercase identifier** — `autocatpath`,
 `precis`, a lowercase glossary short ("autocatpath, the reaction
