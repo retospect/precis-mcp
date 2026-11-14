@@ -35,6 +35,8 @@ and nothing is tracked or pushed.
                                       the record and r<N+1> is cut at origin/main — a
                                       superseded head main already holds is deleted on
                                       origin (kept, never fatal, otherwise)
+                                      (cut and --supersede warn unless the factory release
+                                      pass set PRECIS_RELEASE_PASS — one cutter, gr675506)
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
                                       record, delete its origin branch when the head is
@@ -425,6 +427,100 @@ def _round_record(
     return row
 
 
+#: ``release_cut`` exports the pass todo id here when it launches the cut
+#: (gr675506, Reto 2026-11-14: exactly one cutter, the system).
+RELEASE_PASS_ENV = "PRECIS_RELEASE_PASS"
+
+#: Mirror of ``precis.plans.release._ROUND_STATE_RANK`` (this script cannot
+#: import precis): a publish never lowers the row's rank.
+_ROW_STATE_RANK = {
+    "cut": 0,
+    "gating": 0,
+    "fixing": 0,
+    "green": 0,
+    "deploying": 1,
+    "deployed": 2,
+    "confirmed": 3,
+    "superseded": 3,
+    "abandoned": 3,
+    "failed": 3,
+}
+
+
+def _release_pass() -> str:
+    """The factory release pass marker, else ``""``."""
+    return os.environ.get(RELEASE_PASS_ENV, "").strip()
+
+
+def _hand_cut_warning() -> str | None:
+    """A hand cut's warning, or None under the factory pass. A later
+    release turns this into a refusal (gr675506)."""
+    if _release_pass():
+        return None
+    return (
+        f"warning: {RELEASE_PASS_ENV} is unset — releases are cut only by the"
+        " factory release pass (Reto's ruling 2026-11-14, gr675506); this hand"
+        " cut will be refused in a later release"
+    )
+
+
+def _row_rank(row: dict[str, Any]) -> int | None:
+    """The row's lifecycle rank; a ``failed`` row whose rollout launched is
+    a live partial rollout, ``deploying``'s rank (as ``update_round``), so a
+    resumed deploy's write over it is a move forward."""
+    state = str(row.get("state") or "")
+    if state == "failed" and not _is_terminal(row):
+        return _ROW_STATE_RANK["deploying"]
+    return _ROW_STATE_RANK.get(state)
+
+
+def _same_owner(row_owner: Any, mine: Any) -> bool:
+    a = row_owner if isinstance(row_owner, dict) else {}
+    b = mine if isinstance(mine, dict) else {}
+    return a.get("checkout") == b.get("checkout") and a.get("host") == b.get("host")
+
+
+def _publish_refusal(new: dict[str, Any], cur: dict[str, Any]) -> str | None:
+    """Why ``new`` must not replace the shared row ``cur``, or None —
+    ``precis.plans.release.update_round``'s n / state-rank rule, mirrored
+    (gr675506). The owner advancing its own release (same n and branch)
+    never moves the state back, and only the owner retires it; any other
+    write never lowers ``n`` and never displaces a live release another
+    clone owns."""
+    n_new, n_cur = new.get("n"), cur.get("n")
+    if type(n_new) is not int or type(n_cur) is not int:
+        return "the row carries no n"
+    live = not _is_terminal(cur)
+    foreign = not _same_owner(cur.get("owner"), new.get("owner"))
+    label = f"r{n_cur} [{cur.get('state', '?')}]"
+    if n_new == n_cur and new.get("branch") == cur.get("branch"):
+        rank_new, rank_cur = _row_rank(new), _row_rank(cur)
+        if rank_new is None or rank_cur is None or rank_new < rank_cur:
+            return f"the row holds {label}, further along than this record"
+        if live and foreign and _is_terminal(new):
+            return f"the row holds {label}, owned by another clone"
+        return None
+    if n_cur > n_new:
+        return f"the row holds {label}, a higher n than r{n_new}"
+    if live and foreign:
+        return f"the row holds {label}, owned by another clone"
+    return None
+
+
+def _parse_row(out: str) -> tuple[str, dict[str, Any] | None]:
+    """``(status, row)`` for a ``settings get`` answer: ``ok`` with the
+    row, ``absent`` when no db row exists, ``unreadable`` when it is there
+    but not a JSON object."""
+    m = _ROUND_ROW_RE.search(out)
+    if m is None or m.group(2) != "db":
+        return "absent", None
+    try:
+        row = json.loads(m.group(1))
+    except ValueError:
+        return "unreadable", None
+    return ("ok", row) if isinstance(row, dict) else ("unreadable", None)
+
+
 def _publish_pending() -> None:
     """Publish the verb's final ``round.json`` write, once — called by
     ``main`` after the lifecycle lock releases."""
@@ -464,9 +560,27 @@ def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) 
             return
     send = transport or _prod_precis
     try:
-        rc, _out, err = send(
-            ["settings", "set", ROUND_KEY, json.dumps(row, separators=(",", ":"))]
-        )
+        # gr675506: read-compare-write — the row is the one shared record
+        # of what is in flight, so a stale local record never clobbers it.
+        rc, out, err = send(["settings", "get", ROUND_KEY])
+        if rc == 0:
+            status, cur_row = _parse_row(out)
+            refusal = None
+            if status == "unreadable":
+                refusal = f"{ROUND_KEY} is unreadable"
+            elif cur_row is not None:
+                refusal = _publish_refusal(row, cur_row)
+            if refusal:
+                print(
+                    f"round record not published: {refusal} — row left as is",
+                    file=sys.stderr,
+                )
+                _publish_dead = True
+                return
+            sent = {**row, "pass": _release_pass()} if _release_pass() else row
+            rc, _out, err = send(
+                ["settings", "set", ROUND_KEY, json.dumps(sent, separators=(",", ":"))]
+            )
     except Exception as exc:
         print(f"round record not published: {_error_detail(exc)}", file=sys.stderr)
         _publish_dead = True
@@ -1511,9 +1625,10 @@ def _apply_waiver(facts: dict[str, Any], head: str) -> None:
     # attempt, from the exact verdict) must be exactly that one. A newer
     # run or a rerun on the same head voids the waiver — its own verdict
     # governs — and so does a verdict that names no run.
-    if str(facts.get("run_id") or "") != w["run_id"] or facts.get("attempt") != w[
-        "attempt"
-    ]:
+    if (
+        str(facts.get("run_id") or "") != w["run_id"]
+        or facts.get("attempt") != w["attempt"]
+    ):
         print(
             f"scripts/round: the waiver gr{w['gripe']} on {head[:9]} was for run "
             f"{w['run_id']}#{w['attempt']}, the head's newest is "
@@ -2653,6 +2768,11 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     root = _root()
     if args.abandon:
         return _cut_abandon(root, state, args)
+    # gr675506: one cutter, the factory release pass. A dry-run changes
+    # nothing and says nothing.
+    hand = None if args.dry_run else _hand_cut_warning()
+    if hand:
+        print(f"scripts/round: {hand}", file=sys.stderr)
     cur = _require_round(state)
     n = cur["n"]
     records = _releases(cur)
@@ -2792,7 +2912,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     if existing is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")
     recorded = {r["branch"] for r in records}
-    main_tip = _ref(root, "refs/remotes/origin/main")
+    prod_tip = _ref(root, "refs/remotes/origin/prod")
     foreign = []
     for b in existing:
         if b in recorded:
@@ -2804,13 +2924,15 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             )
         if head and not _ref(root, f"{head}^{{commit}}"):
             _rgit(root, "fetch", "-q", "origin", f"refs/heads/{b}")
-        if head and main_tip and _ancestor(root, head, main_tip):
-            # gr544044: a leftover whose head main already contains (a
-            # superseded release Reto has not pruned, or a stale branch a
-            # stale record left) is retired — it must not stall the cut.
-            # Deleting it is the operator's call, so name the command.
+        if head and prod_tip and _ancestor(root, head, prod_tip):
+            # gr544044/gr675506: a leftover whose head prod already contains
+            # (a deployed release Reto has not pruned) is retired — it must
+            # not stall the cut. A head merely on main is NOT: every fresh
+            # cut is main's tip, so another cutter's live release passes
+            # that test. Deleting it is the operator's call, so name the
+            # command.
             print(
-                f"{b}: head on main, stale — ignored; "
+                f"{b}: head on prod, stale — ignored; "
                 f"delete with: git push origin --delete {b}"
             )
             continue

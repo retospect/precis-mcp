@@ -1168,23 +1168,32 @@ def _matching_refs(
     return refs if len(refs) <= cap else None
 
 
-def _merged_to_main(base: str, sha: str) -> bool:
-    """main already contains ``sha`` — the head is a stale ref (a
-    superseded re-cut's branch left on origin), not a release in flight
-    (gr585785). ``GET .../compare/<sha>...main`` answers ``identical`` or
-    ``ahead`` when main contains the head; any other verdict — behind,
-    diverged, an empty sha or an unreadable payload — keeps the block."""
-    if not sha:
+def _row_clears_litter(store: Any) -> bool:
+    """The shared ``release.round`` row does not hold a release open:
+    absent, or terminal. A head that reads in flight may clear on proof
+    that its pass ended or its commits are on main only then — a live
+    row (any other cutter's release, gr675506) keeps every unmerged-to-prod
+    head in flight, whatever else looks stale. An unreadable or unparsable
+    row answers ``False`` (when unsure, the head stays in flight)."""
+    try:
+        raw = _round_raw(store)
+    except Exception:
         return False
-    cmp_ = pr_class._get_json(f"{base}/compare/{sha}...main", {})
-    return isinstance(cmp_, dict) and cmp_.get("status") in ("identical", "ahead")
+    if not raw or not raw.strip():
+        return True
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(rec, dict) and _release.is_terminal(rec)
 
 
 def _pass_ended(store: Any, n: int) -> bool:
     """Every live ``release-pass`` todo claiming ``release/r<n>`` (its
     root's ``meta.release.rN``) is STATUS-terminal — the branch is the
     leftover of a pass that ended (a drop, a hand close), not a release
-    in flight (gr662045). ``False`` when no pass claims the round or any
+    in flight (gr662045); :func:`_in_flight` trusts it only while the
+    shared row is terminal or absent. ``False`` when no pass claims the round or any
     claimant is still live."""
     found = False
     for rid in _release_pass_ids(store):
@@ -1240,17 +1249,23 @@ def _patch_equivalent_on_main(n: int, sha: str) -> bool:
             return False
     except Exception:
         return False
-    return all(
-        line.startswith("-") for line in proc.stdout.splitlines() if line.strip()
-    )
+    verdicts = [line for line in proc.stdout.splitlines() if line.strip()]
+    # No commit unique to the head (empty verdict) is a head main already
+    # holds — a fresh cut sits at main's tip — not proof it is litter
+    # (gr675506): only a head that adds commits, every one cherry-picked,
+    # is the dropped branch this reads.
+    return bool(verdicts) and all(line.startswith("-") for line in verdicts)
 
 
 def _in_flight(store: Any, repo: str) -> str | None:
     """The first in-flight ``release/r<N>`` on origin (``release/r<N>``),
     else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`.
-    A head that reads in flight still clears when main holds it
-    (gr585785), every pass claiming the round is terminal, or its
-    commits are all patch-equivalent on main (gr662045)."""
+    A head that reads in flight stays so unless prod holds it (the
+    ``deployed/r<N>`` tag plus a prod compare). Main holding the head no
+    longer clears it (gr675506: a fresh cut is main's tip). With the
+    shared row terminal or absent, every pass claiming the round being
+    terminal, or all its commits patch-equivalent on main, still clear
+    it (gr662045)."""
     base = _API.format(repo=repo)
     heads_url = f"{base}/git/matching-refs/heads/release/"
     heads = _matching_refs(heads_url, _HEAD_RE, _HEAD_CAP)
@@ -1274,10 +1289,12 @@ def _in_flight(store: Any, repo: str) -> str | None:
             )
         if not branch_in_flight(has_tag, prod_has_head):
             continue
-        if (
-            _merged_to_main(base, sha)
-            or _pass_ended(store, n)
-            or _patch_equivalent_on_main(n, sha)
+        # gr675506: a head on main proves nothing — every fresh cut IS
+        # main's tip. Only prod containing the head retires it (above);
+        # litter proofs apply only while the shared row holds no live
+        # release.
+        if _row_clears_litter(store) and (
+            _pass_ended(store, n) or _patch_equivalent_on_main(n, sha)
         ):
             continue
         return f"release/r{n}"

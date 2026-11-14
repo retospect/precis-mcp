@@ -702,6 +702,28 @@ def _regate_if_stale(args: argparse.Namespace) -> int:
     return _wait_fresh_verdict(head, args)
 
 
+#: ``release_cut`` exports the pass todo id here when it launches the cut
+#: (gr675506, Reto 2026-11-14: exactly one cutter, the system).
+RELEASE_PASS_ENV = "PRECIS_RELEASE_PASS"
+
+
+def release_pass() -> str:
+    """The factory release pass marker, else ``""``."""
+    return os.environ.get(RELEASE_PASS_ENV, "").strip()
+
+
+def hand_cut_warning() -> str | None:
+    """A hand cut's warning, or None under the factory release pass. A
+    later release turns this into a refusal (gr675506)."""
+    if release_pass():
+        return None
+    return (
+        f"warning: {RELEASE_PASS_ENV} is unset — releases are cut only by the"
+        " factory release pass (Reto's ruling 2026-11-14, gr675506); this hand"
+        " cut will be refused in a later release"
+    )
+
+
 def next_line(sha: str) -> str:
     return (
         f"next: verify runtime, then scripts/round deploy --confirm-runtime {sha} "
@@ -711,14 +733,18 @@ def next_line(sha: str) -> str:
 
 
 def live_releases(
-    state: dict[str, Any], shared: dict[str, Any] | None = None
+    state: dict[str, Any],
+    shared: dict[str, Any] | None = None,
+    branches: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Non-terminal records; the shared ``release.round`` row adjudicates a
     forked clone's open records when it is readable (gr582590): an open
     record a higher-numbered row has moved past, or the same release the
     row names terminal or under another branch, is a leftover, not live.
-    The row only subtracts — a release this clone's record lacks shows on
-    origin's branches. A deploying/deployed record is never disputed: its
+    The row also adds (gr675506): given origin's release ``branches``, a
+    non-terminal row naming one of them that no live local record covers
+    is live too — a synthetic record tagged ``from_row`` — whatever this
+    clone's round.json says. A deploying/deployed record is never disputed: its
     journal is a live rollout a pipelined cut legitimately passes. Row
     terminality runs through the same predicate as the local record, so a
     row's `failed` counts only while its journal shows the rollout never
@@ -747,6 +773,17 @@ def live_releases(
         ):
             continue
         out.append(r)
+    if branches is not None and not db_terminal and db_branch in branches:
+        if db_branch not in {str(r.get("branch")) for r in out}:
+            out.append(
+                {
+                    "n": db_n,
+                    "branch": db_branch,
+                    "base": str(shared.get("base") or ""),
+                    "state": db_state,
+                    "from_row": True,
+                }
+            )
     return out
 
 
@@ -1918,7 +1955,8 @@ def run(args: argparse.Namespace) -> int:
                 if cp.returncode:
                     sys.stderr.write(cp.stderr)
                 cur = round_state() or cur
-        live = live_releases(cur, read_round_record())
+        shared = read_round_record()
+        live = live_releases(cur, shared)
         open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
         if (
             open_rel is not None
@@ -2019,6 +2057,25 @@ def run(args: argparse.Namespace) -> int:
         branches = release_branches()
         if branches is None:
             return die(1, "scripts/release: cannot read origin's branches")
+        # gr675506: the shared row adds as well as subtracts — a live row
+        # naming a branch on origin is in flight whatever round.json says.
+        for r in live_releases(cur, shared, branches):
+            b = str(r.get("branch"))
+            if not r.get("from_row") or b in {str(x.get("branch")) for x in live}:
+                continue
+            head = remote(f"refs/heads/{b}") or ""
+            if head and not rev(head):
+                git("fetch", "-q", "origin", f"refs/heads/{b}")
+            if head and prod and rev(head) and rev(prod) and ancestor(head, prod):
+                # A row stuck non-terminal on a release prod already holds
+                # is a stale row, not in-flight work: the same retire rule
+                # as an unrecorded branch below.
+                say(
+                    f"{b}: head on prod, shared row says {r.get('state')} — "
+                    f"stale row ignored; delete with: git push origin --delete {b}"
+                )
+                continue
+            live.append(r)
         recorded = {
             str(r["branch"]): str(r.get("state") or "")
             for r in cur.get("releases") or []
@@ -2041,12 +2098,14 @@ def run(args: argparse.Namespace) -> int:
                     "(cut by another checkout)"
                 )
                 foreign.append(b)
-            elif head and rev(head) and ancestor(head, "refs/remotes/origin/main"):
-                # gr544044: a terminal record's leftover branch, or a stale
-                # one predating the record fix, is retired — not in flight.
+            elif head and prod and rev(head) and rev(prod) and ancestor(head, prod):
+                # gr544044/gr675506: a leftover branch whose head origin/prod
+                # contains (deployed) is retired — not in flight. A head
+                # merely on main is NOT retired: every fresh cut is main's
+                # tip, so another cutter's live release passes that test.
                 # Deleting it is the operator's call, so name the command.
                 say(
-                    f"{b}: head on main, {recorded.get(b) or 'stale'} — ignored; "
+                    f"{b}: head on prod, {recorded.get(b) or 'stale'} — ignored; "
                     f"delete with: git push origin --delete {b}"
                 )
             elif b not in recorded:
@@ -2087,7 +2146,7 @@ def run(args: argparse.Namespace) -> int:
                 if has:
                     say(f"riding release {r['branch']} at {tip[:9]}: it ships {s9}")
                     return 0
-            for b in foreign:
+            for b in foreign + [str(r["branch"]) for r in live if r.get("from_row")]:
                 tip, has = head_containing(s, b, "")
                 if has:
                     say(f"riding release {b} at {tip[:9]}: it ships {s9}")
@@ -2263,6 +2322,11 @@ def cut_and_finish(
     if not branch:
         n = next_round_n() or (round_state() or {}).get("n")
         branch = f"release/r{n}"
+    # gr675506: every cut path, a re-cut too, passes here — one line each.
+    if warned := hand_cut_warning():
+        print(f"scripts/release: {warned}", file=sys.stderr, flush=True)
+    else:
+        say(f"cutting under release pass {release_pass()}")
     prod = remote("refs/heads/prod") or ""
     if prod and not rev(prod):
         git("fetch", "-q", "origin", "prod")

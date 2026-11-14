@@ -970,6 +970,27 @@ def validate_submit(
     return f"{NAME}: {refusal}" if refusal is not None else None
 
 
+#: The env marker ``scripts/release`` and ``scripts/round cut`` require
+#: before they cut (gr675506, Reto 2026-11-14: exactly one cutter, the
+#: factory release pass). Its value names the pass.
+RELEASE_PASS_ENV = "PRECIS_RELEASE_PASS"
+
+
+def pass_env(ctx: Any) -> dict[str, str]:
+    """``{PRECIS_RELEASE_PASS: td<pass root>}`` for the cut launch — the
+    same ``td<root>`` handle the round row's ``pass`` carries — else the
+    job's own ``jo<id>`` when the job names no todo. Never empty: an empty
+    marker would read as a hand session."""
+    todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
+    value = ""
+    if isinstance(todo_id, int) and not isinstance(todo_id, bool) and ctx.store:
+        try:
+            value = f"td{_release.plan_root(ctx.store, todo_id)}"
+        except Exception:
+            log.warning("%s: plan root lookup failed", NAME, exc_info=True)
+    return {RELEASE_PASS_ENV: value or f"jo{ctx.ref_id}"}
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
@@ -1041,7 +1062,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             if isinstance(handle, dict):
                 handle.update(phase="abandon_gone", n=gone, cut_argv=argv)
             return _handle_tooling(handle, tooling=tooling, added=added)
-    handle = launch_script(ctx, NAME, argv)
+    handle = launch_script(ctx, NAME, argv, env=pass_env(ctx))
     return _handle_tooling(handle, tooling=tooling, added=added)
 
 
@@ -1091,7 +1112,12 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
         return True
     note = note_t.format(n=n)
     tail = log_text.strip()[-300:]
-    fresh = launch_script(ctx, NAME, list(handle.get("cut_argv") or ["--cut-only"]))
+    fresh = launch_script(
+        ctx,
+        NAME,
+        list(handle.get("cut_argv") or ["--cut-only"]),
+        env=pass_env(ctx),
+    )
     ctx.append_chunk("job_event", f"{NAME}: {note}" + (f" — {tail}" if tail else ""))
     ctx.set_meta(**{meta_key: {"n": n}})
     if handle.get("phase") == "abandon_gone":
@@ -1268,6 +1294,7 @@ __all__ = [
     "kill",
     "launch_script",
     "origin_repo",
+    "pass_env",
     "poll",
     "run_host",
     "submit",

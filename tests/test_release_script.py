@@ -135,11 +135,12 @@ def test_superseded_release_kept_on_origin_does_not_block_a_new_cut(
     path.write_text(json.dumps(cur), encoding="utf-8")
     c4 = _commit(rig.root, "src/c4.py", "c4 code")
     _git(rig.root, "push", "-q", "origin", "main")
+    _push_branch(rig, "prod", rig.shas["c3"])  # deployed: prod holds r1's head
     out = _release(rig, "--cut-only", *FAST)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "rides the next cut" not in out.stdout
     assert (
-        "release/r1: head on main, superseded — ignored; "
+        "release/r1: head on prod, superseded — ignored; "
         "delete with: git push origin --delete release/r1" in out.stdout
     )
     assert f"RELEASE_CUT: r2 {c4}" in out.stdout.splitlines()
@@ -147,20 +148,236 @@ def test_superseded_release_kept_on_origin_does_not_block_a_new_cut(
     assert rig.origin_ref("release/r2") == c4
 
 
-def test_unrecorded_release_branch_on_main_is_retired(rig: Rig) -> None:
-    """gr544044: a release/* left on origin whose head main already contains
-    is stale — the cut proceeds and the line names the delete command."""
+def test_unrecorded_release_branch_on_prod_is_retired(rig: Rig) -> None:
+    """gr544044/gr675506 (e): a release/* left on origin whose head
+    origin/prod contains is stale — the cut proceeds and the line names the
+    delete command. (A head merely on main no longer retires it.)"""
     _push_branch(rig, "release/r7", rig.shas["c0"])
+    _push_branch(rig, "prod", rig.shas["c0"])
     out = _release(rig, "--cut-only", *FAST)
     assert out.returncode == 0, out.stdout + out.stderr
     assert (
-        "release/r7: head on main, stale — ignored; "
+        "release/r7: head on prod, stale — ignored; "
         "delete with: git push origin --delete release/r7" in out.stdout
     )
     # `open` numbers past the stale branch, so the cut mints r8.
     assert f"RELEASE_CUT: r8 {rig.shas['c3']}" in out.stdout.splitlines()
     assert rig.origin_ref("release/r7") == rig.shas["c0"]  # never deleted
     assert rig.origin_ref("release/r8") == rig.shas["c3"]
+
+
+def test_foreign_branch_with_head_on_main_is_in_flight(rig: Rig) -> None:
+    """gr675506 (b): another cutter's live release/r313 sits on main (its
+    head is main's tip when cut, an ancestor once main moves) and prod does
+    not contain it: the cut reports "release in flight" and creates no
+    branch. The old "head on main, stale — ignored" rule hid it."""
+    for head_key in ("c3", "c2"):  # main's tip, then an ancestor of it
+        _push_branch(rig, "release/r313", rig.shas[head_key])
+        out = _release(rig, "--cut-only", *FAST)
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "release in flight: release/r313" in out.stdout
+        assert "RELEASE_CUT:" not in out.stdout
+        assert "head on main" not in out.stdout
+        heads = _git(rig.root, "ls-remote", "--heads", "origin", "release/*")
+        assert [ln.split("\t")[1] for ln in heads.splitlines()] == [
+            "refs/heads/release/r313"
+        ]  # nothing was cut beside it
+        _git(rig.root, "push", "-q", "origin", "--delete", "release/r313")
+
+
+def test_hand_cut_without_the_release_pass_marker_warns_and_still_cuts(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506 (d), first release: `scripts/release` without the factory
+    pass marker still cuts and warns on stderr; with it, the cut log names
+    the pass. A dry-run says nothing."""
+    monkeypatch.delitem(rig.env, "PRECIS_RELEASE_PASS")
+    dry = _release(rig, "--dry-run", *FAST)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "would cut release/r1" in dry.stdout and "gr675506" not in dry.stderr
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "PRECIS_RELEASE_PASS is unset" in out.stderr and "gr675506" in out.stderr
+    assert "cutting under release pass" not in out.stdout
+    assert rig.origin_ref("release/r1") == rig.shas["c3"]
+    assert _release(rig, "--deploy-only", "r1", "--dry-run", *FAST).returncode == 0
+    assert _round_json(rig)["releases"][0]["state"] == "cut"
+    assert rig.round("cut", "--abandon").returncode == 0
+    out = _release(rig, "--cut-only", *FAST, PRECIS_RELEASE_PASS="td5")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "cutting under release pass td5" in out.stdout
+    assert "PRECIS_RELEASE_PASS is unset" not in out.stderr
+    assert any(ln.startswith("RELEASE_CUT: r") for ln in out.stdout.splitlines())
+
+
+def test_cut_and_finish_warns_once_per_cut_path_without_the_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The re-cut (`supersede=True`) and the pending-cut reconcile go
+    through `cut_and_finish`: one warning each, then `round cut` runs."""
+    mod = _load_release(tmp_path, monkeypatch)
+    monkeypatch.delenv("PRECIS_RELEASE_PASS")
+    called: list[tuple[str, ...]] = []
+
+    def _rnd(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        called.append(a)
+        return subprocess.CompletedProcess(a, 1, "", "boom")
+
+    monkeypatch.setattr(mod, "rnd", _rnd)
+    monkeypatch.setattr(mod, "remote", lambda ref: "")
+    args = mod.argparse.Namespace(adopt=False)
+    assert mod.cut_and_finish(args, "a" * 40, "release/r2") == 1
+    assert mod.cut_and_finish(args, "a" * 40, "release/r2", supersede=True) == 1
+    assert [c[0] for c in called] == ["cut", "cut"]
+    err = capsys.readouterr().err
+    assert err.count("PRECIS_RELEASE_PASS is unset") == 2 and "gr675506" in err
+
+
+def test_live_releases_adds_the_shared_rows_branch_when_origin_has_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506: a non-terminal row naming a branch on origin is live
+    whatever the local record says; a terminal row, a branch gone from
+    origin, or a branch a live local record already covers adds nothing."""
+    mod = _load_release(tmp_path, monkeypatch)
+    row = {"n": 313, "branch": "release/r313", "base": "c" * 40, "state": "cut"}
+    on_origin = ["release/r313"]
+    live = mod.live_releases({"releases": []}, row, on_origin)
+    assert [(r["branch"], r["state"], r.get("from_row")) for r in live] == [
+        ("release/r313", "cut", True)
+    ]
+    # a stale local record of an older release does not hide it
+    stale = {"releases": [{"n": 309, "branch": "release/r309", "state": "abandoned"}]}
+    assert [r["n"] for r in mod.live_releases(stale, row, on_origin)] == [313]
+    assert mod.live_releases({"releases": []}, row, []) == []  # gone from origin
+    assert mod.live_releases({"releases": []}, row) == []  # no branch list: as before
+    done = {**row, "state": "confirmed"}
+    assert mod.live_releases({"releases": []}, done, on_origin) == []
+    mine = {"releases": [{"n": 313, "branch": "release/r313", "state": "cut"}]}
+    live = mod.live_releases(mine, row, on_origin)
+    assert [r.get("from_row") for r in live] == [None]  # the local one, not doubled
+
+
+def test_cut_only_refuses_when_the_shared_row_names_a_branch_on_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr675506: this clone's round.json is empty, the shared row holds a
+    live r313 and origin has release/r313 (prod lacks it): the cut says
+    "release in flight: release/r313" and cuts nothing."""
+    mod = _load_release(tmp_path, monkeypatch)
+    prod, head = "b" * 40, "c" * 40
+    r313 = "e" * 40
+    cur = {"open": False, "n": 0, "releases": []}
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: {"origin/main": head}.get(name, name))
+    monkeypatch.setattr(mod, "git", lambda *a: head)
+    monkeypatch.setattr(
+        mod,
+        "remote",
+        lambda ref: {"refs/heads/prod": prod, "refs/heads/release/r313": r313}.get(
+            ref, ""
+        ),
+    )
+    monkeypatch.setattr(mod, "ancestor", lambda older, newer: False)
+    monkeypatch.setattr(mod, "round_state", lambda: cur)
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "release_branches", lambda: ["release/r313"])
+    monkeypatch.setattr(mod, "head_containing", lambda *a: ("", False))
+    monkeypatch.setattr(
+        mod,
+        "read_round_record",
+        lambda: {"n": 313, "branch": "release/r313", "base": head, "state": "cut"},
+    )
+
+    def _no_rnd(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        pytest.fail(f"round must not run: {a}")
+
+    monkeypatch.setattr(mod, "rnd", _no_rnd)
+    cuts: list[str] = []
+
+    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+        cuts.append(s)
+        return 0
+
+    monkeypatch.setattr(mod, "cut_and_finish", _cut_and_finish)
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha="",
+        adopt=False,
+        dry_run=False,
+        cut_only=True,
+        ci_timeout=0.0,
+        poll=0.0,
+    )
+    assert mod.run(args) == 0
+    assert "release in flight: release/r313" in capsys.readouterr().out
+    assert cuts == []
+
+
+def test_a_stuck_row_whose_branch_prod_holds_does_not_block_the_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr675506 review: the row adds a branch to `live` only while prod
+    lacks its head. A row stuck non-terminal (`deployed`) on a release
+    origin/prod already contains is a stale row — warned about, never a
+    blocker."""
+    mod = _load_release(tmp_path, monkeypatch)
+    prod, head, r313 = "b" * 40, "c" * 40, "e" * 40
+    cur = {"open": False, "n": 0, "releases": []}
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: {"origin/main": head}.get(name, name))
+    monkeypatch.setattr(mod, "git", lambda *a: head)
+    monkeypatch.setattr(
+        mod,
+        "remote",
+        lambda ref: {"refs/heads/prod": prod, "refs/heads/release/r313": r313}.get(
+            ref, ""
+        ),
+    )
+    monkeypatch.setattr(
+        mod, "ancestor", lambda older, newer: (older, newer) == (r313, prod)
+    )
+    monkeypatch.setattr(mod, "round_state", lambda: cur)
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "release_branches", lambda: ["release/r313"])
+    monkeypatch.setattr(mod, "head_containing", lambda *a: ("", False))
+    monkeypatch.setattr(
+        mod,
+        "read_round_record",
+        lambda: {"n": 313, "branch": "release/r313", "base": r313, "state": "deployed"},
+    )
+    monkeypatch.setattr(
+        mod,
+        "rnd",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""),
+    )
+    cuts: list[str] = []
+
+    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+        cuts.append(s)
+        return 0
+
+    monkeypatch.setattr(mod, "cut_and_finish", _cut_and_finish)
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha="",
+        adopt=False,
+        dry_run=False,
+        cut_only=True,
+        ci_timeout=0.0,
+        poll=0.0,
+    )
+    assert mod.run(args) == 0
+    out = capsys.readouterr().out
+    assert "release in flight" not in out
+    assert "release/r313: head on prod, shared row says deployed" in out
+    assert cuts == [head]
 
 
 def test_unrecorded_release_branch_off_main_still_blocks(rig: Rig) -> None:
@@ -1280,6 +1497,8 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
         )
     mod = load_script("release_script", copy)
     monkeypatch.setattr(mod, "marker_path", lambda: tmp_path / ".release-owner")
+    # In-process runs stand in for the factory release pass (gr675506).
+    monkeypatch.setenv("PRECIS_RELEASE_PASS", "td1")
     return mod
 
 

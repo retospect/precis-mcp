@@ -276,7 +276,6 @@ def test_skips_on_an_in_flight_branch(
         f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
     ]
     # head + tag, prod contains the head: not in flight, mints
     calls = _fake_github(
@@ -318,42 +317,62 @@ def test_branch_in_flight_case_tag_prod_lacks_head() -> None:
     assert rp.branch_in_flight(True, True) is False
 
 
-def test_a_stale_head_on_main_does_not_block(
+def test_a_head_on_main_is_still_in_flight(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr585785: a superseded release head left on origin — all its
-    commits already on main — is a stale ref, not a release in flight."""
-    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "ahead"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
-    assert calls == [
-        f"{API}/compare/prod...{MAIN_SHA}",
-        f"{API}/git/matching-refs/heads/release/",
-        f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
-    ]
-    _close(store, res.minted)
-    # identical to main's tip clears the same way (main moved: new sha)
-    _GIT_PIN[0] = "e" * 40
-    _fake_github(
-        monkeypatch,
-        heads=[_head(7)],
-        main_cmp={"status": "identical"},
+    """gr675506 (c): every fresh cut IS main's tip, so a head main holds
+    proves nothing — it reads in flight with no row, a terminal row (the
+    abandon that retired an older release), and an empty cherry verdict
+    (no commit unique to the head is not litter proof). The main compare
+    is never asked."""
+    calls = _fake_github(
+        monkeypatch, heads=[_head(7)], main_cmp={"status": "identical"}
     )
     res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
-    _close(store, res.minted)
-    # a head whose commits main does not contain still blocks
-    _GIT_PIN[0] = MAIN_SHA
-    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "behind"})
+    assert res.blocker == "release/r7 is in flight" and res.minted is None
+    assert not any(c.endswith("...main") for c in calls)
+    psettings.set_setting("release.round", _round_row("abandoned", n=5), store=store)
+    _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "ahead"})
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == "release/r7 is in flight" and res.minted is None
-    assert calls == [
-        f"{API}/compare/prod...{MAIN_SHA}",
-        f"{API}/git/matching-refs/heads/release/",
-        f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
-    ]
+    # the real cherry seam: nothing unique to the head answers False
+    monkeypatch.setattr(
+        rs,
+        "_git",
+        lambda *a: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", "/tmp/slice-root")
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is False
+    assert rp._in_flight(store, REPO) == "release/r7"
+
+
+def test_in_flight_with_a_main_tip_head_and_a_terminal_row_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506 (c), direct: ``_in_flight`` on a main-tip head with a
+    terminal row (the stale r309 abandon's shape) still names it."""
+    psettings.set_setting("release.round", _round_row("abandoned", n=309), store=store)
+    _fake_github(monkeypatch, heads=[_head(313)], main_cmp={"status": "identical"})
+    assert rp._in_flight(store, REPO) == "release/r313"
+
+
+def test_a_live_row_keeps_a_dropped_pass_branch_in_flight(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506: the ended-pass and patch-equivalent litter proofs hold
+    only while the shared row is terminal or absent — a live row means a
+    release is in flight, and an unreadable one keeps the block."""
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(root, {"release": {"rN": "r7", "sha": HEAD_SHA}})
+    _drop(store, root)
+    monkeypatch.setattr(rp, "_patch_equivalent_on_main", lambda n, sha: True)
+    _fake_github(monkeypatch, heads=[_head(7)])
+    psettings.set_setting("release.round", _round_row("cut", n=7), store=store)
+    assert rp._in_flight(store, REPO) == "release/r7"
+    psettings.set_setting("release.round", _round_row("confirmed", n=7), store=store)
+    assert rp._in_flight(store, REPO) is None
+    psettings.set_setting("release.round", "not json", store=store)
+    assert rp._in_flight(store, REPO) == "release/r7"
 
 
 def test_a_dropped_pass_branch_does_not_block(
@@ -383,7 +402,6 @@ def test_a_dropped_pass_branch_does_not_block(
         f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
     ]
 
 
@@ -402,7 +420,6 @@ def test_a_branch_no_pass_claims_still_blocks_without_proof(
         f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
     ]
 
 
@@ -420,7 +437,6 @@ def test_a_patch_equivalent_branch_does_not_block(
         f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
-        f"{API}/compare/{HEAD_SHA}...main",
     ]
 
 

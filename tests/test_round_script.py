@@ -42,6 +42,8 @@ def _env() -> dict[str, str]:
             "GIT_COMMITTER_EMAIL": "t@example.invalid",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
+            # The rigs stand in for the factory release pass (gr675506).
+            "PRECIS_RELEASE_PASS": "td1",
         }
     )
     env.pop("PRECIS_ROUND_PEER", None)

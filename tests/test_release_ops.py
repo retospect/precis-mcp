@@ -1162,6 +1162,9 @@ def test_release_cut_runs_cut_only_and_stamps_the_plan(
     assert checkout["argv"] == [
         [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
     ]
+    # gr675506: the cut runs under the pass marker — the ``td<root>`` handle
+    # the shared row's ``pass`` carries — or scripts/release refuses it.
+    assert checkout["env"] == [{"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}]
     assert handle["root"] == str(checkout["root"])
     assert rc.poll(ctx, handle) is False  # still running
     _exit(
@@ -1184,6 +1187,17 @@ def test_release_cut_runs_cut_only_and_stamps_the_plan(
     assert rel["rN"] == "r7"
     assert (rel["host"], rel["checkout"]) == ("node-a", str(checkout["root"]))
     assert _meta(store, mint.ids["gate"])["gate"]["args"]["range"] == RNG
+
+
+def test_release_cut_marker_is_never_empty(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr675506: a job that names no todo still carries a non-empty marker
+    (its own job id) — an empty one would read as a hand session."""
+    ctx = Ctx(store, {})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and ctx.failures == []
+    assert checkout["env"] == [{"PRECIS_RELEASE_PASS": "jo4242"}]
 
 
 @pytest.mark.parametrize(
@@ -1905,6 +1919,8 @@ def test_release_cut_abandons_a_dead_open_round(
         "--cut-only",
     ]
     assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
+    # the swapped-in cut carries the pass marker (the retire phase does not cut)
+    assert checkout["env"][-1] == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
 
     _exit(checkout, 0, _cut_log())
