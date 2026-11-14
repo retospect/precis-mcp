@@ -71,8 +71,9 @@ Private study activity is a non-ref exception to the corpus model:
 events in dedicated tables, outside chunks, embeddings and public graph
 search. `user_context` binds stable authenticated account IDs; `mcp_identity`
 stores revocable per-user bearer digests. The `learning` handler and web page
-share that store. `runtime.learning` bypasses shared payload ledgers and
-continuation caches; learning events record engagement, never concept mastery.
+share that store. `runtime.private` routes the kinds in the `private_kinds`
+registry (learning today) around shared payload ledgers and continuation
+caches; learning events record engagement, never concept mastery.
 
 `precis.oauth` adds independently revocable user/app grants backed by the same
 account IDs. Web routes own consent and token exchange; `oauth_transport`

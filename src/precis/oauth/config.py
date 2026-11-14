@@ -10,7 +10,12 @@ from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl
 
-KNOWN_SCOPES = frozenset({"learning", "mcp:full"})
+from precis.private_kinds import PRIVATE_KINDS
+
+#: Every private kind's OAuth grant scope, in name order; ``mcp:full`` is
+#: the always-available full-access grant on top.
+_PRIVATE_SCOPES = tuple(sorted(entry.oauth_scope for entry in PRIVATE_KINDS.values()))
+KNOWN_SCOPES = frozenset(_PRIVATE_SCOPES) | {"mcp:full"}
 _CLIENT_ID = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
 
 
@@ -66,7 +71,9 @@ class OAuthConfig:
         if not urlsplit(self.resource).path.endswith("/mcp"):
             raise ValueError("OAuth resource must be the canonical HTTPS /mcp endpoint")
         if not self.scopes or not set(self.scopes) <= KNOWN_SCOPES:
-            raise ValueError("OAuth scopes must be learning or mcp:full")
+            raise ValueError(
+                "OAuth scopes must be " + " or ".join((*_PRIVATE_SCOPES, "mcp:full"))
+            )
         if not self.clients or len(self.clients) > 100:
             raise ValueError("OAuth needs between one and 100 registered clients")
         for key, client in self.clients.items():

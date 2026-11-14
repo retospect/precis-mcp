@@ -66,6 +66,15 @@ def _user_line(store: Store, user_id: int) -> str:
     return f"user: {user.abbrev} (login: {user.login}, id: {user.id})"
 
 
+def _private_permission_line() -> str:
+    """The scoped-permission summary, derived from the private-kind registry."""
+    from precis import private_kinds
+
+    kinds = ", ".join(private_kinds.PRIVATE_KINDS)
+    helps = ", ".join(f"{kind} help" for kind in private_kinds.PRIVATE_KINDS)
+    return f"permission: {kinds} calls, {helps}, whoami"
+
+
 def _credential_lines(store: Store, owner: Principal) -> list[str]:
     """The credential + permission lines for a bound principal."""
     oauth = owner.oauth
@@ -82,7 +91,7 @@ def _credential_lines(store: Store, owner: Principal) -> list[str]:
             (
                 "permission: full MCP (all verbs)"
                 if "mcp:full" in oauth.scopes
-                else "permission: learning calls, learning help, whoami"
+                else _private_permission_line()
             ),
         ]
     if owner.token_id is not None:
@@ -93,7 +102,7 @@ def _credential_lines(store: Store, owner: Principal) -> list[str]:
         return [
             f"credential: personal MCP token {owner.token_id}"
             + (f" '{token_label}'" if token_label else " (label unavailable)"),
-            "permission: learning calls, learning help, whoami",
+            _private_permission_line(),
         ]
     return ["credential: account-bound session (no token detail)"]
 
