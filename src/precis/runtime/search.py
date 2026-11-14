@@ -1705,8 +1705,8 @@ class SearchMixin(RuntimeShape):
                     "for a filtered listing",
                     next=[
                         "search(kind='paper,patent', q='mof co2', sort='recency')",
-                        "search(kind='paper', since='2026-01-01', "
-                        "args={'serves': 'quest:<id>'})",
+                        "search(kind='paper', args={'since': '2026-01-01', "
+                        "'serves': 'quest:<id>'})",
                     ],
                 )
             ranking_only = [
