@@ -49,7 +49,7 @@ def test_pc_cite_hints_grounded_hub(draft: DraftHandler, hub: Hub) -> None:
         hub.live_store,
         sentence="Top-gated 9-atom AGNR FETs reach Ion/Ioff ~1e5.",
         scope={"material": "AGNR"},
-        supporters=[{"paper": paper}],
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk_id}"}],
     )
 
     proj = _proj(hub)
@@ -80,7 +80,7 @@ def test_pc_cite_hint_via_edit(draft: DraftHandler, hub: Hub) -> None:
         hub.live_store,
         sentence="Top-gated 9-atom AGNR FETs reach Ion/Ioff ~1e5.",
         scope={},
-        supporters=[{"paper": paper}],
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk_id}"}],
     )
 
     proj = _proj(hub)
@@ -117,13 +117,13 @@ def test_pc_cite_many_to_many_lists_both_hubs(draft: DraftHandler, hub: Hub) -> 
         hub.live_store,
         sentence="Pd/C catalyzes Suzuki coupling at room temperature.",
         scope={"material": "Pd/C"},
-        supporters=[{"paper": paper}],
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk_id}"}],
     )
     out_b = seed_claim_hub(
         hub.live_store,
         sentence="Nickel foam electrodes reduce overpotential in alkaline OER.",
         scope={"material": "Ni foam"},
-        supporters=[{"paper": paper}],
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk_id}"}],
     )
 
     proj = _proj(hub)
@@ -158,6 +158,7 @@ def test_pc_cite_hint_clean_hub_has_no_posture_marker(
         supporters=[
             {
                 "paper": paper,
+                "source_handle": f"pc{chunk_id}",
                 "support": "yes",
                 "support_reason": "direct measurement",
                 "verified_by": "test",
@@ -199,6 +200,7 @@ def test_pc_cite_hint_marks_refuted_hub(draft: DraftHandler, hub: Hub) -> None:
         supporters=[
             {
                 "paper": paper,
+                "source_handle": f"pc{chunk_id}",
                 "support": "no",
                 "support_reason": "the passage does not carry the claim",
                 "verified_by": "test",
@@ -239,7 +241,7 @@ def test_pc_cite_hint_marks_disputed_hub(draft: DraftHandler, hub: Hub) -> None:
         store,
         sentence="Disputed claim: Z accelerates W.",
         scope={"material": "Z"},
-        supporters=[{"paper": paper}],
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk_id}"}],
     )
     attach_evidence(
         store,
@@ -283,6 +285,65 @@ def test_pc_cite_no_hub_emits_no_hint(draft: DraftHandler, hub: Hub) -> None:
 
     assert "taproot" not in r.body
     assert "grounds claim hub" not in r.body
+
+
+def test_pc_cite_only_hubs_pinned_to_that_chunk(draft: DraftHandler, hub: Hub) -> None:
+    """gr553454: a ``[pc<id>]`` cite is steered only to hubs whose edge
+    pins that exact chunk — a chunk the paper never grounded a hub at
+    yields no nudge, and a ``[pa<id>]`` whole-paper cite yields every
+    hub (worded ``paper [pa..] grounds claim hub``)."""
+    store = hub.live_store
+    paper = seed_ref(store, title="Two-passage paper", kind="paper")
+    chunk1 = seed_chunk(store, ref_id=paper, text="passage one", ord=0)
+    chunk2 = seed_chunk(store, ref_id=paper, text="passage two", ord=1)
+    chunk3 = seed_chunk(store, ref_id=paper, text="passage three", ord=2)
+
+    out_a = seed_claim_hub(
+        store,
+        sentence="Claim A rests on passage one.",
+        scope={},
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk1}"}],
+    )
+    out_b = seed_claim_hub(
+        store,
+        sentence="Claim B rests on passage two.",
+        scope={},
+        supporters=[{"paper": paper, "source_handle": f"pc{chunk2}"}],
+    )
+    hub_a = handle_registry.format_handle("finding", out_a["hub_ref_id"])
+    hub_b = handle_registry.format_handle("finding", out_b["hub_ref_id"])
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Claim from passage one [pc{chunk1}].",
+        at={"after": "¶" + th},
+    )
+    assert f"pc{chunk1} grounds claim hub [{hub_a}]" in r.body
+    assert f"[{hub_b}]" not in r.body
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Claim from passage three [pc{chunk3}].",
+        at={"after": "¶" + th},
+    )
+    assert "taproot" not in r.body
+    assert "grounds claim hub" not in r.body
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Claim from the whole paper [pa{paper}].",
+        at={"after": "¶" + th},
+    )
+    assert f"paper [pa{paper}] grounds claim hub" in r.body
+    assert f"[{hub_a}]" in r.body
+    assert f"[{hub_b}]" in r.body
 
 
 # ── Deliverable 3: draft-level scoreboard ────────────────────────────────

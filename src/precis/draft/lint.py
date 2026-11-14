@@ -355,6 +355,15 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     ``hub_ref_id`` — a paper grounding the same hub via two cite
     tokens in one chunk gets one nudge line.
 
+    Chunk-aware steering (gr553454): a ``[pc<id>]``/``[pk<id>]``
+    chunk cite names a *passage*, so it is steered only to hubs whose
+    evidence edge pins that exact chunk (``links.src_chunk_id``) —
+    never to every hub the paper grounds (one mis-pinned edge — an ASE
+    passage on a graphene hub — used to misdirect every draft citing
+    any ASE chunk). A ref-level ``[pa<id>]``/``[pt<id>]`` cite keeps
+    the whole-paper read and renders ``paper [pa<id>] grounds …`` so
+    the line doesn't pretend a passage was named.
+
     Each line also carries the hub's posture (:func:`_hub_posture_marker`)
     when it's ``refuted``/``disputed``/``drifted`` — steering a writer onto
     a bad-posture hub at the exact moment of citing would otherwise be
@@ -370,22 +379,38 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     decoration from an advisory hint, so degrading to "no posture shown"
     is honest, not a masked correctness bug. Do not "fix" this to raise."""
     from precis.taproot.lookup import hubs_grounded_by_paper
-    from precis.utils.mentions import resolve_handle_target
 
     seen_hub_ref_ids: set[int] = set()
-    hits: list[tuple[str, int, str, str]] = []
+    hits: list[tuple[str, str, int, str, str, str]] = []
     for tok in find_paper_cite_tokens(text):
-        target = resolve_handle_target(store, tok)
-        if target is None:
+        try:
+            resolved = store.resolve_handle(tok)
+        except Exception:  # advisory — a resolve hiccup never blocks a write
+            log.debug(
+                "pc_cite_claim_hub_hint: resolve_handle failed for %r",
+                tok,
+                exc_info=True,
+            )
             continue
-        for hub in hubs_grounded_by_paper(store, target.dst_ref_id):
+        if resolved is None:
+            continue
+        if resolved.chunk_id is not None:
+            src_label, pin_label = tok, "this passage"
+        else:
+            src_label, pin_label = (
+                f"{resolved.kind} [{tok}]",
+                f"this {resolved.kind}",
+            )
+        for hub in hubs_grounded_by_paper(
+            store, resolved.ref_id, chunk_id=resolved.chunk_id
+        ):
             hub_ref_id = hub["hub_ref_id"]
             if hub_ref_id in seen_hub_ref_ids:
                 continue
             seen_hub_ref_ids.add(hub_ref_id)
             claim = hub["claim"] or ""
             hub_handle = handle_registry.format_handle("finding", hub_ref_id)
-            hits.append((tok, hub_ref_id, hub_handle, claim))
+            hits.append((src_label, tok, hub_ref_id, hub_handle, claim, pin_label))
     if not hits:
         return ""
 
@@ -400,14 +425,14 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
         log.warning("pc_cite_claim_hub_hint: posture read failed", exc_info=True)
 
     lines: list[str] = []
-    for tok, hub_ref_id, hub_handle, claim in hits:
+    for src_label, tok, hub_ref_id, hub_handle, claim, pin_label in hits:
         marker = _hub_posture_marker(postures.get(hub_ref_id))
         lines.append(
-            f"\n\n◆ taproot: {tok} grounds claim hub [{hub_handle}] "
+            f"\n\n◆ taproot: {src_label} grounds claim hub [{hub_handle}] "
             f'("{claim}")'
             f"{marker}"
             f" — cite [{hub_handle}] for living "
-            f"resolution, or [{hub_handle}>{tok}] to pin this passage."
+            f"resolution, or [{hub_handle}>{tok}] to pin {pin_label}."
         )
     return "".join(lines)
 
