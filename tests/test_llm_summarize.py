@@ -34,6 +34,7 @@ from precis.workers.llm_summarize import (
     _Claimed,
     _mark_failed,
     _reject_reason,
+    _RungHealth,
     build_messages,
     claim_chunks_without_summary,
     fetch_cited_identifiers,
@@ -896,6 +897,230 @@ def test_run_pass_escalation_unexpected_error_fails_only_that_chunk() -> None:
     assert conn.leases == {1: 1}
     (_sql, params), *_ = conn.writes
     assert params[2] == "g\n\nd."
+
+
+# --------------------------------------------------------------------------
+# length overruns (gr576133): skip repairs, escalate, learn the cooldown
+# --------------------------------------------------------------------------
+
+#: A candidate whose BRIEF is far past the word budget — trips
+#: ``_reject_reason`` as "brief grossly over budget (40 words)".
+_BRIEF_OVERRUN_REPLY = (
+    "BRIEF: " + " ".join(f"word{i}" for i in range(40)) + "\nDETAIL: d."
+)
+
+
+def test_length_overrun_skips_repairs_and_escalates() -> None:
+    """gr576133: a first candidate rejected as "brief grossly over
+    budget" is a capability miss — the rung cannot compress to the gist
+    budget, so repair turns re-bill the same failure. With a bigger rung
+    wired the verdict escalates immediately: the primary is called once,
+    the escalate client once, and the escalate's summary is stored."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient([_BRIEF_OVERRUN_REPLY] * 3)
+    big = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."])
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
+    assert len(small.calls) == 1  # the overrun skips both repair turns
+    assert len(big.calls) == 1  # the bigger rung answered once
+    (_sql, params), *_ = conn.writes
+    assert params[2] == "g\n\nd."  # the escalate rung's summary is stored
+
+
+def test_non_overrun_rejections_still_get_their_repairs() -> None:
+    """The skip is overrun-only: a leaked-reasoning candidate still gets
+    its GIST_REPAIR_ATTEMPTS repair turns before escalating."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _GateRecordingDispatchClient(
+        [_LEAKED_REASONING] * (1 + GIST_REPAIR_ATTEMPTS)
+    )
+    big = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."])
+
+    result = run_llm_summarize_pass(
+        store, client=small, escalate_client=big, batch_size=10
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
+    assert len(small.calls) == 1 + GIST_REPAIR_ATTEMPTS
+    assert len(big.calls) == 1
+
+
+def test_summarize_skips_overrunning_model_for_cooldown() -> None:
+    """_RungHealth: once a rung's measured length-reject rate clears the
+    threshold over min_samples outcomes, the pass sends chunks straight
+    to the bigger rung for the cooldown — then probes the primary again.
+    With no escalate_client nothing is skipped: there is no bigger rung
+    to defer to."""
+    now = [0.0]
+    health = _RungHealth(
+        min_samples=20, rate=0.5, cooldown_s=600.0, clock=lambda: now[0]
+    )
+    small = _GateRecordingDispatchClient([_BRIEF_OVERRUN_REPLY] * 40)
+    small.model = "small-model"
+    big = _GateRecordingDispatchClient(["BRIEF: g\nDETAIL: d."] * 40)
+    big.model = "big-model"
+
+    conn = _FakeConn(
+        claim_rows=[_claim_row(chunk_id=i) for i in range(1, 23)],
+        card_text="Title: x",
+    )
+    result = run_llm_summarize_pass(
+        _FakeStore(conn),
+        client=small,
+        escalate_client=big,
+        batch_size=25,
+        rung_health=health,
+    )
+
+    # Chunks 1-20 bill the primary once each (each overrun skips its
+    # repairs and escalates); chunks 21-22 never reach it — the rung is
+    # cooled after the 20th recorded overrun.
+    assert result == {"claimed": 22, "ok": 22, "failed": 0, "rejected": 20}
+    assert len(small.calls) == 20
+    assert len(big.calls) == 22
+
+    # The cooldown lapsed → the next chunk probes the primary again (its
+    # fresh overrun re-arms the cooldown).
+    now[0] += 601
+    conn2 = _FakeConn(claim_rows=[_claim_row(chunk_id=30)], card_text="Title: x")
+    run_llm_summarize_pass(
+        _FakeStore(conn2),
+        client=small,
+        escalate_client=big,
+        batch_size=10,
+        rung_health=health,
+    )
+    assert len(small.calls) == 21
+
+    # No escalate_client → the primary is still billed and its repairs
+    # still run; there is nowhere else to send the chunk.
+    solo = _GateRecordingDispatchClient([_BRIEF_OVERRUN_REPLY] * 5)
+    conn3 = _FakeConn(claim_rows=[_claim_row(chunk_id=40)], card_text="Title: x")
+    run_llm_summarize_pass(
+        _FakeStore(conn3), client=solo, batch_size=10, rung_health=health
+    )
+    assert len(solo.calls) == 1 + GIST_REPAIR_ATTEMPTS
+
+
+def test_contract_warnings_name_the_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr576133: the per-candidate rejection and the terminal refusal
+    WARNINGs carry ``model=`` so the overrunning backend is identifiable
+    in worker_logs — the prod rows named no model or provider."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    # LlmConfig() pins model="summarizer" — the name the warnings carry.
+    client = LlmClient(LlmConfig(), transport=_FakeTransport(_LEAKED_REASONING))
+
+    with caplog.at_level(logging.WARNING):
+        run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if "candidate rejected" in r.getMessage() or "gist refused" in r.getMessage()
+    ]
+    assert warnings
+    for msg in warnings:
+        assert "model=" in msg
+        assert "model=summarizer" in msg
+
+
+class _ModelledDispatchClient(DispatchClient):
+    """Serves canned replies each stamped with its own model name — a
+    router that serves a different rung mid-sequence (the misattribution
+    the repair/refusal logs must not inherit from the first result)."""
+
+    def __init__(self, replies: list[tuple[str, str]]) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        extra_body: dict[str, Any] | None = None,
+        accept: Any = None,
+    ) -> Any:
+        self.calls += 1
+        text, model = (
+            self._replies.pop(0)
+            if self._replies
+            else ("BRIEF: g\nDETAIL: d.", "served")
+        )
+        return SimpleNamespace(text=text, total_tokens=None, model=model)
+
+
+def test_repair_and_refusal_warnings_name_each_attempts_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr576133 review: a router can switch rungs mid-sequence, so each
+    repair-rejection WARNING and the terminal refusal name the model that
+    produced THAT candidate — _gen used to log the first result's model
+    on all of them. The health record keeps first-candidate attribution
+    (``first_reason`` is the first candidate's verdict)."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    client = _ModelledDispatchClient(
+        [
+            (_LEAKED_REASONING, "small-a"),
+            (_LEAKED_REASONING, "small-b"),
+            (_LEAKED_REASONING, "small-c"),
+        ]
+    )
+    health = _RungHealth()
+
+    with caplog.at_level(logging.WARNING):
+        run_llm_summarize_pass(store, client=client, batch_size=10, rung_health=health)
+
+    rejected = [
+        r.getMessage() for r in caplog.records if "candidate rejected" in r.getMessage()
+    ]
+    refused = [
+        r.getMessage() for r in caplog.records if "gist refused" in r.getMessage()
+    ]
+    assert len(rejected) == 2  # first candidate + first repair's rejection
+    assert "model=small-a" in rejected[0]
+    assert "model=small-b" in rejected[1]
+    assert len(refused) == 1
+    assert "model=small-c" in refused[0]
+    # Health attribution stays with the first candidate's model — the
+    # rung key is the client's type name (no model/source pinned).
+    assert health._rung_models["_ModelledDispatchClient"] == "small-a"
+
+
+def test_escalated_refusal_names_the_escalate_attempts_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same attribution on the bigger rung: when the chunk escalates and
+    the escalate rung's last repair is what fails, the refusal names that
+    model — not the small rung's."""
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    small = _ModelledDispatchClient([(_LEAKED_REASONING, "small-a")] * 3)
+    big = _ModelledDispatchClient(
+        [
+            (_LEAKED_REASONING, "big-x"),
+            (_LEAKED_REASONING, "big-y"),
+            (_LEAKED_REASONING, "big-z"),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        run_llm_summarize_pass(store, client=small, escalate_client=big, batch_size=10)
+
+    refused = [
+        r.getMessage() for r in caplog.records if "gist refused" in r.getMessage()
+    ]
+    assert len(refused) == 1
+    assert "model=big-z" in refused[0]
 
 
 # --------------------------------------------------------------------------

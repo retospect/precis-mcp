@@ -67,6 +67,18 @@ bigger rung of the same run, not an invisible same-model retry
 escalation itself stays this chunk's outcome (a paused one backs off,
 a genuine one fails the chunk) — never an escape that aborts the batch
 before its outcomes persist.
+
+**Learning the overrun** (gr576133): a first candidate rejected as
+``brief grossly over budget`` is a *capability* miss — the rung cannot
+compress to the gist budget, so repair turns re-bill the same failure
+(61% of the pass's WARNINGs on prod). With an ``escalate_client``
+wired, that verdict skips the repair turns and escalates immediately,
+and :class:`_RungHealth` keeps a rolling per-model record of
+first-candidate verdicts: once a rung's length-reject rate clears the
+threshold over ``min_samples`` outcomes, the pass sends chunks straight
+to the bigger rung for ``cooldown_s``, then probes the primary again.
+The per-chunk WARNINGs name ``model=`` so the overrunning backend is
+identifiable in worker_logs.
 """
 
 from __future__ import annotations
@@ -76,7 +88,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections import defaultdict, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -1561,6 +1575,15 @@ def _reject_reason(
 #: ``scripts/gist-cleanup`` repair sweep find it.
 GIST_REPAIR_ATTEMPTS = 2
 
+#: The length-overrun rejection :func:`_reject_reason` returns
+#: (``f"brief grossly over budget ({n} words)"``). It means the rung
+#: cannot compress to the gist budget — a capability miss, not a
+#: wording slip — so re-prompting the same model re-bills the same
+#: failure. With a bigger rung wired the first such verdict skips the
+#: repair turns and escalates straight away (gr576133), and
+#: :class:`_RungHealth` counts it toward the per-model cooldown.
+_BRIEF_OVERRUN_PREFIX = "brief grossly over budget"
+
 
 class GistRejectedError(ValueError):
     """Every repair attempt still failed the output contract.
@@ -1811,18 +1834,156 @@ def _complete_gated(
     return client.complete(messages)
 
 
+def _result_model(client: Any, result: Any) -> str | None:
+    """The model name a completion result carries, for logs and health.
+
+    Preference order: the router's ``LlmResult.model`` (the booked model
+    of the rung that actually ran), the wire-observed ``response_model``
+    / ``observed.model`` (what the backend says served it), then the
+    client's own configured model. ``None`` when nothing reports one —
+    the caller logs ``model=unreported`` rather than guessing.
+    """
+    for attr in ("model", "response_model"):
+        m = getattr(result, attr, None)
+        if isinstance(m, str) and m:
+            return m
+    observed = getattr(result, "observed", None)
+    if isinstance(observed, dict):
+        m = observed.get("model")
+        if isinstance(m, str) and m:
+            return m
+    if isinstance(client, LlmClient):
+        return client._config.model
+    m = getattr(client, "model", None)
+    return m if isinstance(m, str) and m else None
+
+
+def _rung_key(client: Any) -> str:
+    """A stable per-rung key for :class:`_RungHealth`: the client's
+    pinned/configured model, else its dispatch ``source``, else its
+    type. The health record also maps this key to the model name a
+    result reports, so a ``model=None`` dispatch client still cools the
+    model its chain actually served."""
+    if isinstance(client, LlmClient):
+        return client._config.model
+    m = getattr(client, "model", None)
+    if isinstance(m, str) and m:
+        return m
+    s = getattr(client, "source", None)
+    if isinstance(s, str) and s:
+        return s
+    return type(client).__name__
+
+
+class _RungHealth:
+    """Rolling per-model first-candidate outcomes → a measured cooldown.
+
+    Fed by each ``_gen`` first-candidate verdict (:meth:`record`): a
+    clean candidate, or the contract's trip reason. Once a rung has at
+    least ``min_samples`` outcomes in its rolling ``window`` and at
+    least ``rate`` of them are length rejections
+    (:data:`_BRIEF_OVERRUN_PREFIX` — the model cannot compress to the
+    gist budget, so repairs and retries re-bill the same failure),
+    :meth:`cooling` is true for ``cooldown_s``: the pass sends chunks
+    straight to the bigger rung instead of paying the primary for a
+    measured-bad sample (gr576133). The lapse clears the flag — the
+    next chunk probes the primary again, and a still-overrunning rung
+    re-arms on the recorded verdict.
+
+    Thread-safe: the completion phase runs in a thread pool. Clock is
+    injectable for tests.
+    """
+
+    def __init__(
+        self,
+        *,
+        min_samples: int = 20,
+        rate: float = 0.5,
+        window: int = 40,
+        cooldown_s: float = 600.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._min_samples = min_samples
+        self._rate = rate
+        self._cooldown_s = cooldown_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._samples: dict[str, deque[bool]] = defaultdict(
+            lambda: deque(maxlen=window)
+        )
+        self._cooling_until: dict[str, float] = {}
+        #: rung key → last model name its results reported, so a
+        #: ``model=None`` dispatch client maps onto the model its chain
+        #: actually served.
+        self._rung_models: dict[str, str] = {}
+
+    def record(self, rung: str, model: str | None, verdict: str | None) -> None:
+        """One first-candidate verdict for ``rung``: ``verdict=None``
+        is clean, a contract reason is a rejection — a
+        :data:`_BRIEF_OVERRUN_PREFIX` reason counts toward the cooldown.
+        ``model`` is the name the result reported, kept as the samples
+        key so the learning follows the model, not the client."""
+        key = model or rung
+        with self._lock:
+            if model:
+                self._rung_models[rung] = model
+            samples = self._samples[key]
+            samples.append(
+                verdict is not None and verdict.startswith(_BRIEF_OVERRUN_PREFIX)
+            )
+            if len(samples) >= self._min_samples and key not in self._cooling_until:
+                overrun_rate = sum(samples) / len(samples)
+                if overrun_rate >= self._rate:
+                    self._cooling_until[key] = self._clock() + self._cooldown_s
+                    log.warning(
+                        "llm_summarize: model=%s length-reject rate %.0f%% over "
+                        "%d samples; sending chunks straight to escalate for %ds",
+                        key,
+                        overrun_rate * 100,
+                        len(samples),
+                        int(self._cooldown_s),
+                    )
+
+    def cooling(self, rung: str) -> bool:
+        """True while ``rung``'s model is inside its measured cooldown.
+        A lapsed cooldown clears — the next call is the probe."""
+        with self._lock:
+            key = self._rung_models.get(rung, rung)
+            until = self._cooling_until.get(key)
+            if until is None:
+                return False
+            if self._clock() >= until:
+                del self._cooling_until[key]
+                return False
+            return True
+
+
+#: The pass-level default — learning persists across passes in the
+#: worker process (a batch can be smaller than ``min_samples``). Tests
+#: inject their own instance (and clock) via ``rung_health=``.
+_RUNG_HEALTH = _RungHealth()
+
+
 @dataclass
 class _Gen:
     """One rung's gated generation sequence (first candidate + repair
     turns): the passing candidate, or the terminal rejection with its
     first + last trip reasons. ``drained`` marks a mid-sequence SIGTERM
-    stop — the lease stays for the reaper."""
+    stop — the lease stays for the reaper. ``model`` is the name the
+    FIRST result reported (``_result_model``) — the rung
+    ``first_reason``'s verdict belongs to, so ``_RungHealth`` attributes
+    the overrun to the model that produced it. ``last_model`` is the
+    name the terminal-rejection result reported — a router can serve a
+    different model on a repair turn mid-sequence, and the refusal log
+    must name the model that actually failed, not the first."""
 
     summary: str | None = None
     total_tokens: int | None = None
     first_reason: str | None = None
     reason: str | None = None
     drained: bool = False
+    model: str | None = None
+    last_model: str | None = None
 
 
 def _gen(
@@ -1831,32 +1992,58 @@ def _gen(
     *,
     claim: _Claimed,
     gate: Callable[[Any], bool | str],
+    may_escalate: bool = False,
 ) -> _Gen:
     """One rung's generation sequence: the first candidate plus up to
     :data:`GIST_REPAIR_ATTEMPTS` repair turns, each dispatched under
     ``gate`` so its attempt's row records the verdict. Returns the
-    passing candidate, ``drained``, or the terminal rejection reason."""
+    passing candidate, ``drained``, or the terminal rejection reason.
+
+    ``may_escalate`` says the caller has a bigger rung wired: a first
+    candidate rejected as :data:`_BRIEF_OVERRUN_PREFIX` then skips the
+    repair turns and returns the rejection — the rung cannot compress
+    to the gist budget, so re-prompting it re-bills the same failure
+    (gr576133) and the caller escalates instead. ``False`` keeps the
+    repair loop exactly as before."""
     result = _complete_gated(client, messages, gate=gate)
+    model = _result_model(client, result)
+    # The model that produced the candidate under review — refreshed per
+    # repair turn so each warning names its own attempt's model, while
+    # ``model`` stays the first result's for ``_RungHealth`` attribution
+    # (a router can switch rungs mid-sequence).
+    attempt_model = model
     summary = parse_summary(result.text)
     reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
     if reason is None:
-        return _Gen(summary=summary, total_tokens=result.total_tokens)
+        return _Gen(summary=summary, total_tokens=result.total_tokens, model=model)
     first_reason = reason
+    log.warning(
+        "llm_summarize: chunk_id=%s candidate rejected (%s) model=%s: %r",
+        claim.chunk_id,
+        reason,
+        attempt_model or "unreported",
+        summary[:80],
+    )
+    if may_escalate and reason.startswith(_BRIEF_OVERRUN_PREFIX):
+        return _Gen(reason=reason, first_reason=first_reason, model=model)
     convo = list(messages)
     for _repair in range(GIST_REPAIR_ATTEMPTS):
-        log.warning(
-            "llm_summarize: chunk_id=%s candidate rejected (%s): %r",
-            claim.chunk_id,
-            reason,
-            summary[:80],
-        )
+        if _repair:
+            log.warning(
+                "llm_summarize: chunk_id=%s candidate rejected (%s) model=%s: %r",
+                claim.chunk_id,
+                reason,
+                attempt_model or "unreported",
+                summary[:80],
+            )
         if drain_requested():
-            return _Gen(drained=True, first_reason=first_reason)
+            return _Gen(drained=True, first_reason=first_reason, model=model)
         convo += [
             {"role": "assistant", "content": result.text},
             _repair_message(reason),
         ]
         result = _complete_gated(client, convo, gate=gate)
+        attempt_model = _result_model(client, result)
         summary = parse_summary(result.text)
         reason = _reject_reason(summary, claim.text, cited_ids=claim.cited_ids)
         if reason is None:
@@ -1864,8 +2051,14 @@ def _gen(
                 summary=summary,
                 total_tokens=result.total_tokens,
                 first_reason=first_reason,
+                model=model,
             )
-    return _Gen(reason=reason, first_reason=first_reason)
+    return _Gen(
+        reason=reason,
+        first_reason=first_reason,
+        model=model,
+        last_model=attempt_model,
+    )
 
 
 def run_llm_summarize_pass(
@@ -1876,6 +2069,7 @@ def run_llm_summarize_pass(
     summarizer: str = SUMMARIZER_NAME,
     batch_size: int = 16,
     concurrency: int = 1,
+    rung_health: _RungHealth | None = None,
 ) -> dict[str, int]:
     """One pass over the LLM-summary queue.
 
@@ -1909,14 +2103,26 @@ def run_llm_summarize_pass(
        re-claims.
 
     ``escalate_client`` (optional — ``PRECIS_SUMMARIZE_ESCALATE_MODEL``):
-    a DISTINCT client bound to a bigger rung. When the small rung's
-    repairs still trip the contract, the chunk escalates to it inside the
-    same router run — attempt N+1 on a bigger rung (gr595543), mirroring
-    classify's gate/escalate shape. ``None`` keeps the terminal refusal.
+    a DISTINCT client bound to a bigger rung. A first ``brief grossly
+    over budget`` verdict escalates immediately — the rung cannot
+    compress to the gist budget, so repairs re-bill the same failure
+    (gr576133); any other contract trip escalates once the repair turns
+    exhaust, inside the same router run — attempt N+1 on a bigger rung
+    (gr595543), mirroring classify's gate/escalate shape. While
+    ``rung_health`` has the rung cooled for measured overrunning, chunks
+    bypass it entirely. ``None`` keeps the terminal refusal.
+
+    ``rung_health`` (optional — :data:`_RUNG_HEALTH`): the rolling
+    per-model verdict record. A rung measured to keep overrunning the
+    brief budget is skipped for its cooldown — chunks go straight to
+    the bigger rung — then probed again. Meaningful only with an
+    ``escalate_client`` wired; without one there is nowhere else to
+    send the chunk and the primary is always billed.
     """
     # Clamp before anything else — mirrors classify.py's run_classify_pass
     # (see MAX_CONCURRENCY_ENV above).
     concurrency = max(1, min(concurrency, _max_concurrency()))
+    health = rung_health if rung_health is not None else _RUNG_HEALTH
 
     if drain_requested():
         # A draining worker takes no new work (gr575071): every dispatch a
@@ -1961,6 +2167,7 @@ def run_llm_summarize_pass(
         empty_exc: EmptySummaryError | None = None
         busy_exc: DispatchError | None = None
         gate = _contract_gate(claim)
+        rkey = _rung_key(client)
         # One chunk's whole attempt *sequence* — first candidate, repair
         # turns, escalation — is one router run (gr595543): every dispatch
         # a routed client makes in here shares its run_id with ascending
@@ -1983,14 +2190,36 @@ def run_llm_summarize_pass(
                         empty_exc or busy_exc,
                         drained=empty_exc is None and busy_exc is None,
                     )
+                # A rung measured to keep overrunning the brief budget is
+                # skipped for its cooldown: the chunk goes straight to the
+                # bigger rung instead of re-billing the primary for a
+                # measured-bad sample (gr576133).
+                cooled = escalate_client is not None and health.cooling(rkey)
                 try:
-                    gen = _gen(client, messages, claim=claim, gate=gate)
+                    if cooled:
+                        gen = _gen(escalate_client, messages, claim=claim, gate=gate)
+                        health.record(
+                            _rung_key(escalate_client), gen.model, gen.first_reason
+                        )
+                    else:
+                        gen = _gen(
+                            client,
+                            messages,
+                            claim=claim,
+                            gate=gate,
+                            may_escalate=escalate_client is not None,
+                        )
+                        health.record(rkey, gen.model, gen.first_reason)
                     # Fail-closed output contract (gr338215, gist guard
                     # 2026-10-13): never store a candidate that reads like
                     # leaked reasoning or names an identifier the chunk
-                    # does not carry. Each rejection goes back to the model
+                    # does not carry. A rejection goes back to the model
                     # with the specific reason for up to
-                    # GIST_REPAIR_ATTEMPTS repairs; still failing, the
+                    # GIST_REPAIR_ATTEMPTS repairs — except a first
+                    # "brief grossly over budget" verdict, which skips
+                    # repairs outright (the rung cannot compress to the
+                    # gist budget, so re-prompting re-bills the same
+                    # failure, gr576133). Still failing, the
                     # chunk escalates to the wired bigger rung
                     # (escalate_client — attempt N+1 on this same run),
                     # and only a rung-2 refusal refuses the write — the
@@ -2016,7 +2245,12 @@ def run_llm_summarize_pass(
                             gen.first_reason,
                         )
                     refused = gen.reason
-                    if escalate_client is not None:
+                    # The refusal names the model that produced the LAST
+                    # rejected candidate — a router may serve another
+                    # model mid-sequence; ``gen.model`` stays the first
+                    # candidate's for the health record above.
+                    refused_model = gen.last_model or gen.model
+                    if not cooled and escalate_client is not None:
                         if drain_requested():
                             return _Outcome(
                                 claim,
@@ -2032,6 +2266,9 @@ def run_llm_summarize_pass(
                         # rung, not a new run and not another same-model
                         # retry (gr576133).
                         esc = _gen(escalate_client, messages, claim=claim, gate=gate)
+                        health.record(
+                            _rung_key(escalate_client), esc.model, esc.first_reason
+                        )
                         if esc.drained:
                             return _Outcome(
                                 claim,
@@ -2052,12 +2289,14 @@ def run_llm_summarize_pass(
                                 gen.first_reason,
                             )
                         refused = esc.reason or refused
+                        refused_model = esc.last_model or esc.model or refused_model
                     log.warning(
                         "llm_summarize: chunk_id=%s gist refused after %d repairs "
-                        "(%s); keeping existing summary",
+                        "(%s) model=%s; keeping existing summary",
                         claim.chunk_id,
                         GIST_REPAIR_ATTEMPTS,
                         refused,
+                        refused_model or "unreported",
                     )
                     return _Outcome(
                         claim,
@@ -2079,11 +2318,21 @@ def run_llm_summarize_pass(
                     # that rejection IS the escalation trigger (gr595543):
                     # attempt N+1 on the same run, not another invisible
                     # same-model retry that never reaches the escalation
-                    # (gr576133).
-                    if escalate_client is not None and not drain_requested():
+                    # (gr576133). A ``cooled`` attempt already ran the
+                    # bigger rung — its own miss stands, no second bill.
+                    if (
+                        escalate_client is not None
+                        and not cooled
+                        and not drain_requested()
+                    ):
                         try:
                             esc = _gen(
                                 escalate_client, messages, claim=claim, gate=gate
+                            )
+                            health.record(
+                                _rung_key(escalate_client),
+                                esc.model,
+                                esc.first_reason,
                             )
                         except EmptySummaryError:
                             esc = None  # the bigger rung missed too

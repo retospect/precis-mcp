@@ -150,8 +150,10 @@ def _make_summarize_runner() -> _PassRunner:
     """A ``Tier.SMALL`` (local-only) summarize runner + optional escalation
     rung — mirrors the client wiring ``cli/_worker_passes.py`` builds for
     the standing ``llm_summarize`` pass (``PRECIS_SUMMARIZE_ESCALATE_MODEL``):
-    when the small rung's repair turns still trip the gist contract, the
-    chunk escalates to the bigger rung instead of refusing the write."""
+    a first "brief grossly over budget" verdict escalates immediately and a
+    rung measured to keep overrunning is bypassed for its cooldown; other
+    contract trips escalate once the repair turns exhaust, instead of
+    refusing the write (gr576133)."""
     from precis.utils.llm.router import DispatchClient, Tier
     from precis.workers.llm_summarize import SUMMARIZER_NAME, run_llm_summarize_pass
 

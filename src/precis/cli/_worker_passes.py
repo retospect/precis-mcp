@@ -690,10 +690,14 @@ def build_ref_passes(
             # this only raises the cap.
             max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS,
         )
-        # Escalation (gr595543): when the small rung's repair turns still
-        # trip the gist contract, the chunk escalates to a bigger rung —
-        # attempt N+1 on the SAME router run, ending the same-model retry
-        # loop gr576133 reported. A *distinct* client bound to the
+        # Escalation (gr595543): a first "brief grossly over budget"
+        # verdict escalates immediately — the rung cannot compress to the
+        # gist budget, so repairs re-bill the same failure — and any
+        # other contract trip escalates once the repair turns exhaust;
+        # while _RungHealth has the rung cooled for measured overrunning,
+        # chunks bypass it entirely (gr576133). Escalation is attempt N+1
+        # on the SAME router run, ending the same-model retry loop
+        # gr576133 reported. A *distinct* client bound to the
         # env-pinned model (mirrors classify's gate/escalate shape below;
         # a registered op source would silently re-run the small chain).
         _sum_escalate_model = os.environ.get("PRECIS_SUMMARIZE_ESCALATE_MODEL") or None
