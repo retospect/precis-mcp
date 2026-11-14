@@ -1,4 +1,4 @@
-"""Submit half of the second-repo lander (td659522 step 2, catpath).
+"""The second-repo lander, submit and poll halves (td659522 step 2, catpath).
 
 ``land_slice`` lands precis slices through the tree's own ``scripts/ship``.
 A repo described by a :class:`~precis.plans.lanes.RepoProfile` has no such
@@ -6,8 +6,9 @@ script, so this module lands its slice branch from the profile's constants
 alone: fetch the base tip, cut a throwaway *land tree* on it, squash the
 slice branch in as ONE commit, refuse what the profile denies, and launch
 the profile's setup, lint and test commands against that commit detached.
-Not wired yet: nothing in production calls :func:`submit` until
-``land_slice`` dispatches to it.
+``land_slice`` keeps the job type and hands :func:`submit`, :func:`poll`
+and :func:`kill` a job whose repo is not the default, once
+``land_slice._repo_refusal`` admits it.
 
 Trust boundary. The gate runs builder-written code on the host, so it
 gets no credential: :func:`gate_env` is the scrubbed land env minus the
@@ -19,12 +20,22 @@ clone's config).
 Every other git call is :func:`~precis.workers.job_types.land_slice._git`
 (scrubbed env, hooks off). The gate commands come from the registry
 constant, never from the tree. The squash sha and the tip it was cut on
-ride the job handle, never a file the builder can write: the poll half
-(next round) pushes only a sha that is a child of that tip.
+ride the job handle, never a file the builder can write.
 
-Failures use ``land_slice``'s recorders: a conflict, a deny-path hit or a
-version change is a charged attempt with a ``handoff:`` for the next
-builder; an unreachable origin is attempt-free (not the builder's fault).
+Push boundary. A green gate is followed by exactly one credentialed call,
+:func:`~precis.workers.factory_git_mirror.push_cas`: a plain fast-forward
+push (no ``+`` refspec, force or lease) from a fresh ops gitdir outside the
+clone, checked to descend from the handle's ``tip`` before the network is
+touched and reconciled against the ``ls-remote`` oracle afterwards. The
+handle's ``sha`` is the only thing ever pushed; no ref or file in the clone
+is read to decide what to push, and the poll first re-confirms that
+``sha^`` is ``tip`` and that the diff still clears the deny paths.
+
+Failures use ``land_slice``'s recorders: a conflict, a deny-path hit, a
+version change or a red gate is a charged attempt with a ``handoff:`` for
+the next builder; an unreachable or raced origin, a killed gate and a
+setup failure that no dependency file explains are attempt-free (not the
+builder's fault), which makes the dispatcher mint the land again.
 """
 
 from __future__ import annotations
@@ -34,12 +45,16 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.utils.secret_scan import mask_secrets
+from precis.workers import factory_git as _factory_git
+from precis.workers import factory_git_mirror as _mirror
 from precis.workers.job_types import land_slice as _ls
 from precis.workers.job_types import run_slice as _rs
 
@@ -150,8 +165,13 @@ def _squash(land_tree: Path, branch: str, ident: list[str]) -> tuple[str, str]:
     proc = _ls._git([*ident, "merge", "--squash", f"refs/heads/{branch}"], land_tree)
     if proc.returncode == 0:
         return "ok", ""
-    lines = _CONFLICT_LINE_RE.findall(proc.stdout or "")
-    if lines:
+    # The index, not git's (localised) prose, says whether it was a conflict.
+    unmerged = _read(land_tree, ["diff", "--name-only", "-z", "--diff-filter=U"])
+    paths = sorted({p for p in (unmerged or "").split("\0") if p})
+    if paths:
+        lines = _CONFLICT_LINE_RE.findall(proc.stdout or "") or [
+            f"CONFLICT (content): Merge conflict in {p}" for p in paths
+        ]
         return "conflict", "\n".join(lines)
     return "error", ((proc.stderr or "") + (proc.stdout or "")).strip()[-500:]
 
@@ -254,6 +274,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     if profile is None or not profile.remote:
         ctx.record_failure(f"repo_land: no build profile with a remote for {repo!r}")
         return None
+    if not any(getattr(profile, field) for _phase, field in _PHASES):
+        # An empty script exits 0: a profile with no gate would land ungated.
+        ctx.record_failure(f"repo_land: the profile for {repo!r} has no gate commands")
+        return None
     try:
         root = _rs.slice_root_for(profile.name)
     except RuntimeError as exc:
@@ -298,8 +322,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         if state == "conflict":
             refuse(
                 f"merge conflict squashing {branch} onto origin/{profile.base}\n{text}",
-                f"land FAILED: {branch} conflicts with origin/{profile.base}; "
-                f"rebase on origin/{profile.base} and resolve:\n{text}",
+                f"land FAILED: {branch} {_rs.LANDER_CONFLICT_MARK}{profile.base}; "
+                f"run `git merge origin/{profile.base}`, resolve the conflicts "
+                f"and commit:\n{text}",
             )
         else:
             refuse(
@@ -406,7 +431,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         "repo": profile.name,
         "pid": pid,
         "pgid": pid,
-        "worktree": str(land_tree),
+        "worktree": slice_tree,
         "land_tree": str(land_tree),
         "slice_tree": slice_tree,
         "branch": branch,
@@ -433,3 +458,382 @@ def submit(ctx: Any, spec: Any) -> Any:
         f"in {land_tree}",
     )
     return handle
+
+
+# ── Poll ───────────────────────────────────────────────────────────
+
+_GATE_FAIL_RE = re.compile(r"^✖ gate (\w+) failed: (.*)$", re.MULTILINE)
+
+#: Files whose change in the diff makes a failed ``setup`` the branch's.
+_DEP_FILES: frozenset[str] = frozenset({"pyproject.toml", "uv.lock"})
+
+#: ``red_class`` of the attempt-free failures (``meta.attempt_free ==
+#: "infra-land"``, so ``plan_dispatch._reland_params`` mints the land again).
+RACED_CLASS = "origin-raced"
+PUSH_ERROR_CLASS = "origin-push"
+HANDLE_CLASS = "land-handle"
+CLOSED_CLASS = "repo-closed"
+GATE_INFRA_CLASS = "gate infrastructure"
+SETUP_INFRA_CLASS = "gate setup"
+TIMED_OUT_CLASS = "timed-out"
+
+
+def _drop_slice(root: Path, slice_tree: Path, branch: str) -> list[str]:
+    """Remove the slice worktree (only one under the repo's worktrees dir)
+    and delete the local slice branch; one note per step."""
+    notes: list[str] = []
+    if slice_tree.parent == _rs.worktrees_dir(root) and slice_tree.exists():
+        proc = _ls._git(["worktree", "remove", "--force", str(slice_tree)], root)
+        notes.append("worktree remove: " + ("ok" if proc.returncode == 0 else "FAILED"))
+        shutil.rmtree(slice_tree, ignore_errors=True)
+        _ls._git(["worktree", "prune"], root)
+    if branch:
+        proc = _ls._git(["branch", "-D", branch], root)
+        notes.append("branch -D: " + ("ok" if proc.returncode == 0 else "FAILED"))
+    return notes
+
+
+def _cleanup(root: Path, slice_tree: Path, land_tree: Path, branch: str) -> list[str]:
+    """The green path's tidy-up: the land tree, the slice worktree and the
+    local slice branch (never pushed, so no origin delete). Best effort:
+    never raises."""
+    notes: list[str] = []
+    try:
+        _drop_land_tree(root, land_tree)
+        notes.append("land tree dropped")
+        notes += _drop_slice(root, slice_tree, branch)
+    except Exception as exc:  # pragma: no cover - cleanup is best effort
+        log.warning("repo_land: cleanup failed", exc_info=True)
+        notes.append(f"cleanup FAILED ({exc})")
+    return notes
+
+
+def _hex(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if re.fullmatch(r"[0-9a-f]{40}", text) else ""
+
+
+def _pid(value: Any) -> int:
+    """A handle's pid field as an int; 0 for anything that is not one."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _signal_gate(handle: dict[str, Any]) -> None:
+    """SIGTERM the gate's process group, never the worker's own (td652194)."""
+    pgid = _pid(handle.get("pgid")) or _pid(handle.get("pid"))
+    own = {os.getpid(), os.getpgrp()}
+    if pgid in own or _pid(handle.get("pid")) in own:
+        log.warning("repo_land: kill refused - handle names the worker (%d)", pgid)
+    elif pgid > 1:
+        try:
+            _rs._signal_group(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+def _handle_root(handle: dict[str, Any]) -> Path | None:
+    try:
+        return _rs.slice_root_for(str(handle.get("repo") or ""))
+    except RuntimeError:
+        return None
+
+
+def _red_handoff(
+    phase: str, command: str, exit_code: int | None, masked_log: str
+) -> tuple[str, str]:
+    """``(what failed, handoff)`` for a red gate: the phase, the failing
+    command, the failing test ids and the scrubbed error lines or excerpt."""
+    where = f"gate {phase} failed: {command}" if phase else "gate failed"
+    code = "unknown" if exit_code is None else str(exit_code)
+    handoff = (
+        f"land FAILED: {where} (exit {code}). Fix it on the branch, commit, "
+        "leave the tree clean; the lander re-squashes and re-runs the gate."
+    )
+    ids = _ls.failed_test_ids(masked_log)
+    if ids:
+        handoff += "\n\nFailing tests: " + ", ".join(ids[:20])
+    errors = _ls.gate_error_lines(masked_log)
+    detail = errors or _ls.gate_red_excerpt(masked_log)
+    if errors:
+        handoff += f"\n\nThe gate's error lines:\n{errors}"
+    elif detail:
+        handoff += f"\n\nThe gate's output before the verdict:\n{detail}"
+    return where, handoff
+
+
+def _poll_red(
+    ctx: Any,
+    handle: dict[str, Any],
+    root: Path,
+    exit_code: int | None,
+    todo_id: int,
+    lane: Any,
+) -> bool:
+    """The non-zero-exit path. Attempt-free when the host, not the branch,
+    is at fault: a killed gate (exit 137 or a kill line) or a ``setup``
+    failure with no dependency file in the diff; charged otherwise."""
+    masked = mask_secrets(_rs._read_log(handle)) or ""
+    found = _GATE_FAIL_RE.findall(masked)
+    phase, command = found[-1] if found else ("", "")
+    where, handoff = _red_handoff(phase, command, exit_code, masked)
+    red_class: str | None = None
+    if (
+        # No exit file: the launcher never got to write one, so the gate was
+        # killed from outside (a worker restart, a reboot), not failed.
+        exit_code is None
+        or exit_code == 137
+        or _ls.gate_kill_line(masked, exit_code) is not None
+    ):
+        red_class = GATE_INFRA_CLASS
+    elif phase == "setup":
+        paths = _changed_paths(root, str(handle["tip"]), str(handle["sha"]))
+        if paths is not None and not _DEP_FILES.intersection(paths):
+            red_class = SETUP_INFRA_CLASS
+    ctx.set_meta(exit_code=exit_code)
+    tail = masked[-_ls._TAIL_CAP :].strip()
+    ctx.append_chunk(
+        "job_summary",
+        f"repo_land td{todo_id}: RED - {where}\nsubject: {handle.get('subject')}",
+    )
+    _drop_land_tree(root, _land_tree_path(root, todo_id))
+    _ls._fail(
+        ctx,
+        todo_id,
+        lane,
+        f"gate of td{todo_id} red: {where}"
+        + (f"\n--- log tail ---\n{tail}" if tail else ""),
+        handoff=handoff,
+        attempt_free=red_class,
+    )
+    return True
+
+
+def _poll_green(
+    ctx: Any,
+    handle: dict[str, Any],
+    root: Path,
+    profile: _lanes.RepoProfile,
+    todo_id: int,
+    lane: Any,
+) -> bool:
+    """Exit 0: re-check the handle's sha, push it, record the land."""
+    sha, tip = _hex(handle.get("sha")), _hex(handle.get("tip"))
+    land_tree = _land_tree_path(root, todo_id)
+
+    def free(why: str, handoff: str, red_class: str) -> bool:
+        _drop_land_tree(root, land_tree)
+        _ls._fail(ctx, todo_id, lane, why, handoff=handoff, attempt_free=red_class)
+        return True
+
+    parent = _read(root, ["rev-parse", f"{sha}^"]) if sha and tip else None
+    if parent is None or parent.strip() != tip:
+        return free(
+            f"squash {sha[:9] or '?'} is not a child of {tip[:9] or '?'}; not pushing",
+            "land FAILED: the squash commit no longer sits on the base tip it "
+            "was gated against (infrastructure); the land is retried.",
+            HANDLE_CLASS,
+        )
+    paths = _changed_paths(root, tip, sha)
+    if paths is None:
+        return free(
+            "changed-path enumeration failed before the push; failing closed",
+            "land FAILED: git could not enumerate the changed paths "
+            "(infrastructure); the land is retried.",
+            HANDLE_CLASS,
+        )
+    deny = (
+        profile.deny_paths
+        if profile.deny_paths is not None
+        else _lanes.deny_paths_for(ctx.store)
+    )
+    denied = _rs.deny_violations(paths, deny)
+    if denied:
+        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        _drop_land_tree(root, land_tree)
+        _ls._fail(
+            ctx,
+            todo_id,
+            lane,
+            "branch touches deny path(s): " + ", ".join(denied[:50]),
+            handoff="land FAILED: the branch touches deny path(s): "
+            + ", ".join(f"`{p}`" for p in denied[:50])
+            + " - no lane may write them.",
+        )
+        return True
+    # Admission is re-read at the last moment before the one outward write:
+    # the factory switch, and everything ``land_slice._repo_refusal`` asks at
+    # submit (the profile's lander, ``factory.open_repos``, the todo's repo
+    # tag against the job's param). A repo closed or a todo retagged while
+    # the gate ran is not pushed to.
+    params = dict((ctx.meta or {}).get("params") or {})
+    closed = (
+        "the factory is off"
+        if _rs.factory_off()
+        else f"the handle's repo is not the job's ({_rs.job_repo(params)!r})"
+        if _rs.job_repo(params) != profile.name
+        else _ls._repo_refusal(ctx.store, params)
+    )
+    if closed is not None:
+        return free(
+            f"repo {profile.name!r} is no longer admitted ({closed}); not pushing",
+            "land FAILED: the repo was closed to the factory while the gate ran "
+            "(not the branch); the land is retried once it is open.",
+            CLOSED_CLASS,
+        )
+    # Stamped BEFORE the push: once the sha can be on the other repo's
+    # main, every reader of this todo's ``landed:`` line must be able to
+    # tell it is not a precis sha, whatever fails afterwards.
+    try:
+        ctx.store.stamp_ref_meta(todo_id, {_lanes.LANDED_REPO_KEY: profile.name})
+    except Exception as exc:
+        log.warning("repo_land: landed_repo stamp on td%d failed", todo_id)
+        return free(
+            f"could not stamp {_lanes.LANDED_REPO_KEY} on td{todo_id} ({exc}); "
+            "not pushing",
+            "land FAILED: the todo could not be marked before the push "
+            "(infrastructure); the land is retried.",
+            PUSH_ERROR_CLASS,
+        )
+    common = _ls._git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if common.returncode != 0 or not common.stdout.strip():
+        return free(
+            "could not locate the clone's object store",
+            "land FAILED: the object store was not found (infrastructure); "
+            "the land is retried.",
+            PUSH_ERROR_CLASS,
+        )
+    env = _factory_git.git_auth_env(base=_ls.land_env())
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    outcome, detail = _mirror.push_cas(
+        profile.remote,
+        profile.base,
+        sha,
+        tip,
+        ops_parent=_mirror.mirror_root(_rs.slice_root()),
+        env=env,
+        object_dirs=(Path(common.stdout.strip()) / "objects",),
+    )
+    if outcome == "raced":
+        return free(
+            f"origin/{profile.base} moved during the gate: {detail}",
+            f"land FAILED: origin/{profile.base} moved while the gate ran "
+            "(not the branch); the land re-squashes onto the new tip.",
+            RACED_CLASS,
+        )
+    if outcome != "ok":
+        return free(
+            f"push of {sha[:9]} to origin/{profile.base} failed: {detail}",
+            "land FAILED: the push could not be verified (infrastructure, not "
+            "the branch); the land is retried.",
+            PUSH_ERROR_CLASS,
+        )
+    subject = str(handle.get("subject") or "")
+    summary = [f"repo_land td{todo_id}: landed {sha[:9]} - {subject}"]
+    try:
+        wrote = _ls._record_land(ctx.store, todo_id, sha, subject)
+        summary.append("todo: " + ", ".join(wrote) + " written")
+    except Exception as exc:  # pragma: no cover - the land is real; report it
+        log.warning("repo_land: land record on td%d failed", todo_id, exc_info=True)
+        summary.append(f"todo: land record FAILED ({exc})")
+    cleanup = _cleanup(
+        root,
+        Path(str(handle.get("slice_tree") or "")),
+        land_tree,
+        str(handle.get("branch") or ""),
+    )
+    summary += cleanup
+    ctx.set_meta(exit_code=0, land_subject=subject, landed_sha=sha, cleanup=cleanup)
+    ctx.append_chunk("job_summary", "\n".join(summary))
+    ctx.set_status("succeeded")
+    return True
+
+
+def _poll_no_land(ctx: Any, handle: dict[str, Any], todo_id: int) -> bool:
+    """A branch with nothing new: the nothing-new record, done, no push."""
+    root = _handle_root(handle)
+    summary = [f"repo_land td{todo_id}: {_ls.NO_DIFF_NOTE}"]
+    try:
+        wrote = _ls._record_land(ctx.store, todo_id, None, "")
+        summary.append("todo: " + ", ".join(wrote) + " written")
+    except Exception as exc:  # pragma: no cover - reported, the job still ends
+        log.warning("repo_land: no-diff record on td%d failed", todo_id, exc_info=True)
+        summary.append(f"todo: no-diff record FAILED ({exc})")
+    cleanup: list[str] = []
+    if root is not None:
+        cleanup = _cleanup(
+            root,
+            Path(str(handle.get("worktree") or "")),
+            _land_tree_path(root, todo_id),
+            str(((ctx.meta or {}).get("params") or {}).get("branch") or ""),
+        )
+    ctx.set_meta(exit_code=0, landed_sha=None, cleanup=cleanup)
+    ctx.append_chunk("job_summary", "\n".join(summary + cleanup))
+    ctx.set_status("succeeded")
+    return True
+
+
+def poll(ctx: Any, handle: Any) -> bool:
+    """Detached poll half with ``land_slice.poll``'s contract: ``False``
+    while the gate runs; ``True`` once the job is terminal (succeeded after
+    the push and the land record, or failed through ``land_slice._fail``)."""
+    if not isinstance(handle, dict):
+        ctx.record_failure(f"repo_land: malformed handle {handle!r}")
+        return True
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    lane = params.get("lane")
+    if handle.get("no_land"):
+        ctx.set_meta(compute_handle_released=True)
+        return _poll_no_land(ctx, handle, todo_id)
+    exit_code = _rs._read_exit(handle)
+    root = _handle_root(handle)
+    if exit_code is None and _ls._process_alive(_pid(handle.get("pid"))):
+        deadline = handle.get("deadline")
+        past = (
+            isinstance(deadline, (int, float))
+            and not isinstance(deadline, bool)
+            and _ls._now().timestamp() > float(deadline)
+        )
+        if not past:
+            ctx.set_meta(compute_handle=handle, compute_handle_released=False)
+            return False
+        _signal_gate(handle)
+        if root is not None:
+            _drop_land_tree(root, _land_tree_path(root, todo_id))
+        # land_slice's wall verdict (DEADLINE_KILL_META): attempt-free, and
+        # parked at the ask rather than re-landed on its own.
+        ctx.set_meta(compute_handle_released=True, land_again_cap=True)
+        _ls._fail(
+            ctx,
+            todo_id,
+            lane,
+            f"gate of td{todo_id} passed its wall deadline and was killed",
+            handoff="land FAILED: the gate passed its wall-clock deadline "
+            "(infrastructure, not the branch).",
+            attempt_free=TIMED_OUT_CLASS,
+        )
+        return True
+    ctx.set_meta(compute_handle_released=True)
+    profile = _lanes.repo_profile(str(handle.get("repo") or ""))
+    if root is None or profile is None or not profile.remote:
+        ctx.record_failure(f"repo_land: no root or profile for {handle.get('repo')!r}")
+        return True
+    if exit_code == 0:
+        return _poll_green(ctx, handle, root, profile, todo_id, lane)
+    return _poll_red(ctx, handle, root, exit_code, todo_id, lane)
+
+
+def kill(ctx: Any, handle: Any) -> None:
+    """Wall-clock / operator kill: SIGTERM the gate's process group (never
+    the worker's own) and drop the land tree. The slice tree and branch
+    stay: nothing of the slice was pushed."""
+    if not isinstance(handle, dict):
+        return
+    _signal_gate(handle)
+    params = (getattr(ctx, "meta", None) or {}).get("params") or {}
+    root = _handle_root(handle)
+    if root is not None:
+        _drop_land_tree(root, _land_tree_path(root, int(params.get("todo_id") or 0)))

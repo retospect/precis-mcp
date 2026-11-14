@@ -895,6 +895,24 @@ def test_post_land_write_fill_heals_the_gate(store: Store) -> None:
     assert comment == f"sha: a1b2c3d — landed by td{build} (stall-pass fill)"
 
 
+def test_post_land_write_fill_skips_a_second_repo_sha(store: Store) -> None:
+    """td659522 step 2: a build landed in another repo (``meta.landed_repo``)
+    left a sha the precis ``sha-in-prod`` gate can never see; the pass must
+    not fill the gate with it, and it falls through to the rescue."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _comment(store, build, "landed: a1b2c3d — the fix")
+    store.stamp_ref_meta(build, {"landed_repo": "catpath"})
+    gate = _gate(store, root, PENDING_SHA, blocked_by=build)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(gate, "post-land-write", "idle")]
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == PENDING_SHA
+
+
 def test_post_land_write_nothing_new_still_rescues(store: Store) -> None:
     """A no-diff land's ``landed: nothing`` note carries no sha — the gate
     stays pending and the pass rescues the GATE, class

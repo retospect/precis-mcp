@@ -1993,12 +1993,14 @@ def _todo_rejection(store: Any, params: dict[str, Any]) -> str | None:
 
 
 def _repo_refusal(store: Any, params: dict[str, Any]) -> str | None:
-    """td659522 step 1: this lander runs the tree's ``scripts/ship`` and
-    lands on precis main, so it lands the default repo only, whatever a
-    profile's ``lander`` field says. Another repo's lander is step 2.
-    A job without ``params.repo`` (a hand mint, a re-land) is held to the
-    todo's own ``repo:`` tag: a todo tagged for another repo never lands
-    here."""
+    """Why this job may not land (td659522), or ``None``. The default repo
+    lands here through the tree's ``scripts/ship``. Another repo is admitted
+    (and ``submit``/``poll``/``kill`` hand it to ``repo_land``) only when
+    the job's own ``params.repo`` names it, its profile's ``lander`` is
+    ``land_slice``, ``factory.open_repos`` lists it, and the todo's
+    ``repo:`` tag agrees with the param. A job with no ``params.repo`` (a
+    hand mint, a pre-profile job) whose todo is tagged for another repo
+    stays refused: it must never run ``scripts/ship``."""
     todo_id = params.get("todo_id")
     names = [params["repo"]] if params.get("repo") is not None else []
     if store is not None and isinstance(todo_id, int):
@@ -2006,11 +2008,18 @@ def _repo_refusal(store: Any, params: dict[str, Any]) -> str | None:
     other = [str(n) for n in names if n != _lanes.DEFAULT_REPO]
     if not other:
         return None
-    return (
-        f"land_slice: repo {other[0]!r} cannot be landed here: the lander for "
-        "it does not exist yet (td659522 step 2); next: land the slice by hand "
-        "or wait for that lander"
-    )
+    lead = f"land_slice: repo {other[0]!r} cannot be landed here: "
+    repo = params.get("repo")
+    if not isinstance(repo, str) or not repo.strip():
+        return lead + "the job has no params.repo; next: land the slice by hand"
+    repo = repo.strip()
+    profile = _lanes.repo_profile(repo)
+    if profile is None or profile.lander != "land_slice":
+        return lead + "its profile has no lander yet; next: land the slice by hand"
+    if repo not in _lanes.open_repos(store):
+        return lead + "factory.open_repos does not list it; next: land it by hand"
+    mismatch = _rs._repo_param_rejection(store, todo_id, repo)
+    return mismatch.replace("run_slice:", "land_slice:", 1) if mismatch else None
 
 
 def validate_submit(
@@ -2246,7 +2255,6 @@ def _fail(
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half: launch ship. Returns the handle, or ``None``
     after driving the job terminal."""
-    del spec
     params = dict((ctx.meta or {}).get("params") or {})
     todo_id = params.get("todo_id")
     if _rs.factory_off():
@@ -2256,6 +2264,11 @@ def submit(ctx: Any, spec: Any) -> Any:
     if wrong_repo is not None:
         ctx.record_failure(wrong_repo)
         return None
+    if _rs.job_repo(params) != _lanes.DEFAULT_REPO:
+        from precis.workers import repo_land
+
+        return repo_land.submit(ctx, spec)
+    del spec
     reason = _todo_rejection(ctx.store, params)
     if reason is not None:
         ctx.record_failure(reason.replace("run_slice:", "land_slice:", 1))
@@ -4728,9 +4741,26 @@ def _land_without_main_reds(
     return False
 
 
+def _repo_handle(ctx: Any, handle: Any) -> bool:
+    """Whether ``handle`` (or the job's params) belongs to ``repo_land``:
+    its ``lander`` says so, or the handle's or the job's ``repo`` is not
+    the default (the no-land handle carries ``repo`` but no ``lander``)."""
+    if isinstance(handle, dict):
+        if handle.get("lander") == "repo_land":
+            return True
+        if handle.get("repo") not in (None, _lanes.DEFAULT_REPO):
+            return True
+    meta = getattr(ctx, "meta", None) or {}
+    return _rs.job_repo(meta) != _lanes.DEFAULT_REPO
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while ship runs; then the land record
     and cleanup (green) or the red path."""
+    if _repo_handle(ctx, handle):
+        from precis.workers import repo_land
+
+        return repo_land.poll(ctx, handle)
     if not isinstance(handle, dict):
         ctx.record_failure(f"land_slice: malformed handle {handle!r}")
         return True
@@ -5264,6 +5294,10 @@ def kill(ctx: Any, handle: Any) -> None:
     land leaves neither behind. A handle naming the worker's own pid or
     process group is never signaled (td652194: a pre-launch stamp once
     carried the worker's pid into an adopted handle)."""
+    if _repo_handle(ctx, handle):
+        from precis.workers import repo_land
+
+        return repo_land.kill(ctx, handle)
     if isinstance(handle, dict):
         verify = handle.get("verify")
         live = verify if isinstance(verify, dict) else handle

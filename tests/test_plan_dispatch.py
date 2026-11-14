@@ -1478,6 +1478,70 @@ def test_infra_red_land_relands_without_a_builder(
     assert any("infra-land" in n and "not an attempt" in n for n in res.notes)
 
 
+def _open_catpath(store: Store, monkeypatch: pytest.MonkeyPatch, task: int) -> None:
+    """Stand catpath as a landable, opened repo and tag ``task`` for it."""
+    from dataclasses import replace
+
+    from precis.plans import lanes
+
+    profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    store.add_tag(task, Tag.open("repo:catpath"), set_by="system")
+
+
+def test_infra_red_second_repo_land_relands_with_the_repo_param(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 2: the failed second-repo land is re-minted from its own
+    params, so ``params.repo`` rides along and the re-land stays in that repo."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _open_catpath(store, monkeypatch, task)
+    _slice_job(store, task, "run_slice", "succeeded", params={"todo_id": task})
+    land_params = {
+        "todo_id": task,
+        "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+        "branch": f"slice/{task}",
+        "repo": "catpath",
+    }
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "infra-land", "red_class": "origin-raced"},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["params"] == land_params and meta["params"]["repo"] == "catpath"
+    assert meta["idem_key"] == f"land_slice:td{task}"
+
+
+def test_succeeded_second_repo_land_closes_the_task(store: Store) -> None:
+    """The close path reads only the job type and status, so a succeeded land
+    of another repo closes the task the way a precis land does."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "succeeded",
+        params={"todo_id": task, "repo": "catpath"},
+        meta={"landed_sha": "a" * 40},
+    )
+    res = pd.run_pass(store)
+    assert _status(store, task) == "done"
+    assert any(f"task td{task} closed: land_slice" in n for n in res.notes)
+
+
 def test_ordinary_red_land_still_rebuilds(store: Store) -> None:
     """A land red on the diff itself (a lint ✖, a merge conflict — no infra
     mark, no ``attempt_free``) is still one real attempt: the tick rebuilds,

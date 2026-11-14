@@ -110,6 +110,11 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     ".github/**",
     # the factory's own modules
     "src/precis/plans/**",
+    # the second-repo lander and its credential boundary (td659522): the
+    # factory must not rewrite the code that holds or scrubs the token
+    "src/precis/workers/repo_land.py",
+    "src/precis/workers/factory_git.py",
+    "src/precis/workers/factory_git_mirror.py",
     "src/precis/workers/job_types/run_slice.py",
     "src/precis/workers/job_types/plan_dispatch.py",
     "src/precis/workers/job_types/gripe_validate.py",
@@ -409,6 +414,11 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         lander=None,
     ),
 }
+
+
+#: ``meta`` key a second-repo land stamps on the todo (``repo_land``): the
+#: ``landed:`` sha of that todo is a sha of THAT repo, not of precis.
+LANDED_REPO_KEY = "landed_repo"
 
 
 def repo_profile(name: str) -> RepoProfile | None:

@@ -2188,24 +2188,52 @@ _ALWAYS_DENIED_TEXT = (
 )
 
 
+#: The words of ``repo_land``'s conflict handoff that mark it; the brief's
+#: one merge carve-out keys on them (``_repo_rules_lines``).
+LANDER_CONFLICT_MARK = "conflicts with origin/"
+
+
+def _lander_conflict(latest: str | None) -> bool:
+    """Whether the newest brief/handoff is a lander merge-conflict handoff."""
+    text = (latest or "").lstrip().lower()
+    return text.startswith(_LANDER_HANDOFF_PREFIX) and LANDER_CONFLICT_MARK in text
+
+
 def _repo_rules_lines(
-    profile: _lanes.RepoProfile, todo_id: int, devin: bool
+    profile: _lanes.RepoProfile,
+    todo_id: int,
+    devin: bool,
+    latest: str | None = None,
 ) -> list[str]:
     """The rules section of a non-default repo's brief. It binds over the
     task text: task bodies written for precis still say to rebase on
-    ``origin/main``, bump the version or open a pull request."""
+    ``origin/main``, bump the version or open a pull request. The one
+    merge it allows is ``git merge origin/<base>`` after a lander conflict
+    handoff (``latest``), to resolve that conflict."""
     base = f"origin/{profile.base}"
     finish = (
         "Leave your edits in the working tree: the harness commits them."
         if devin
         else f"Commit your work on this branch (`{slice_branch(todo_id)}`) and stop."
     )
+    if _lander_conflict(latest):
+        sync = (
+            f"- This worktree is current with `{base}`. Do not `git fetch`, "
+            f"`git pull` or rebase. The latest handoff says the lander found a "
+            f"merge conflict: run `git merge {base}` (the local ref, no fetch) "
+            "once, resolve the conflicts, and commit the merge. Never merge "
+            "anything else."
+        )
+    else:
+        sync = (
+            f"- This worktree is already current with `{base}`. Do not `git fetch`, "
+            "`git pull`, rebase or merge from origin."
+        )
     return [
         "",
         f"## Rules for this repo ({profile.name}); they win over the task text",
         "",
-        f"- This worktree is already current with `{base}`. Do not `git fetch`, "
-        "`git pull`, rebase or merge from origin.",
+        sync,
         "- Do not push.",
         "- Do not bump the version, edit the version line in `pyproject.toml`, "
         "tag or release: a mechanical release job does that.",
@@ -2294,7 +2322,7 @@ def _render_repo_brief(
         )
     if profile.mcp and not mcp:
         lines += _no_mcp_lines(read_mcp)
-    lines += _repo_rules_lines(profile, todo_id, devin)
+    lines += _repo_rules_lines(profile, todo_id, devin, latest)
     lines += _repo_check_lines(profile)
     deny = profile.deny_paths
     if deny is None:
@@ -5026,11 +5054,13 @@ def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     fixes are not this slice's (renames split into delete + add) plus
     every working-tree change, untracked files included. ``None`` when git
     cannot answer (the deny check then fails closed)."""
-    diff = _git(["diff", "--name-only", "--no-renames", f"{base}...HEAD"], tree)
+    # -z on both: without it git C-quotes a path holding a non-ASCII byte, a
+    # tab or a quote, and the quoted form matches no deny glob.
+    diff = _git(["diff", "--name-only", "-z", "--no-renames", f"{base}...HEAD"], tree)
     status = _git(["status", "--porcelain", "-z", "--untracked-files=all"], tree)
     if diff.returncode != 0 or status.returncode != 0:
         return None
-    paths = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+    paths = {p for p in diff.stdout.split("\0") if p}
     entries = status.stdout.split("\0")
     i = 0
     while i < len(entries):

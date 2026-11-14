@@ -1099,8 +1099,18 @@ def _landed_sha(store: Store, plan: Any, gate: Any) -> tuple[int, str] | None:
     gate's ``blocked-by`` targets names — the write land_slice owed the
     gate (gr576154); ``None`` when no landed comment parses to a sha.
     Comments older than the reset/rearm boundary are skipped
-    (:func:`_landed_lines`, td626034)."""
+    (:func:`_landed_lines`, td626034). A build landed in another repo
+    (``meta.landed_repo``) names a sha that repo owns, never one the
+    precis ``sha-in-prod`` gate waits on: it is skipped."""
+    from precis.plans import lanes as _lanes
+
     for bid, line in _landed_lines(store, plan, gate):
+        ref = store.get_ref(kind="todo", id=bid)
+        other = ((ref.meta or {}) if ref is not None else {}).get(
+            _lanes.LANDED_REPO_KEY
+        )
+        if other not in (None, "", _lanes.DEFAULT_REPO):
+            continue
         m = _LANDED_SHA_RE.match(line)
         if m is not None and m.group(1).lower() != PENDING_SHA:
             return bid, m.group(1).lower()

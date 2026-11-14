@@ -33,6 +33,7 @@ from precis import settings as psettings
 from precis.plans import lanes
 from precis.store import Store
 from precis.store.types import Tag
+from precis.workers.job_types import run_slice
 from tests._policy_scan import (
     ScanIncomplete,
     gitignore_matcher,
@@ -147,6 +148,25 @@ def test_deny_set_is_human_only_union_interim(store: Store) -> None:
         )
     finally:
         psettings.clear_setting("factory.deny_relaxed", store=store)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/precis/workers/repo_land.py",
+        "src/precis/workers/factory_git.py",
+        "src/precis/workers/factory_git_mirror.py",
+    ],
+)
+def test_second_repo_lander_and_credential_modules_are_factory_denied(
+    path: str,
+) -> None:
+    """td659522: the lander and the credential boundary code are listed, and
+    a slice touching one is a deny violation under the strict set."""
+    assert path in lanes.FACTORY_DENY_WRITE_PATHS
+    assert (_REPO_ROOT / path).is_file()
+    assert path in lanes.STRICT_DENY
+    assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
 
 
 @pytest.mark.db

@@ -121,6 +121,10 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Rig:
     monkeypatch.setattr(factory_git_mirror, "fetch_ref_into", fake_fetch)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "slice_root_for", lambda repo: clone)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: clone)
+    # The repo is admitted for the rig (land_slice's own tests cover the
+    # admission rules); the closed cases patch this again.
+    monkeypatch.setattr(land_slice, "_repo_refusal", lambda store, params: None)
     monkeypatch.setattr(factory_git, "factory_git_token", lambda: None)
     monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
@@ -191,8 +195,10 @@ def test_gate_env_drops_host_reach_and_credentials(
     monkeypatch.setenv("GH_CONFIG_DIR", "/tmp/gh")
     monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "t")
     monkeypatch.setenv("UV_INDEX_URL", "https://example.invalid/simple")
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", "/tmp/ops")
     profile = lanes.REPO_PROFILES["catpath"]
     env = repo_land.gate_env(profile)
+    assert not [k for k in env if k.startswith("PRECIS_")]
     for name in ("SSH_AUTH_SOCK", "DOCKER_HOST", "GH_CONFIG_DIR"):
         assert name not in env
     assert not [k for k in env if land_slice._LAND_ENV_SECRET_RE.search(k)]
@@ -214,6 +220,12 @@ def test_merge_conflict_is_a_charged_failure_with_conflict_lines(rig: Rig) -> No
     assert rig.launches == [] and not rig.land_tree().exists()
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
     assert "CONFLICT (content)" in store.comments(42)[-1]
+    # the handoff tells the builder to merge the local ref, not to rebase
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith(run_slice._LANDER_HANDOFF_PREFIX)
+    assert "`git merge origin/main`" in handoff and "rebase" not in handoff
+    assert run_slice.LANDER_CONFLICT_MARK in handoff
+    assert run_slice._lander_conflict(handoff)
 
 
 def test_github_dir_change_is_refused_and_stamped_human_only(rig: Rig) -> None:
@@ -389,3 +401,381 @@ def test_version_changed_table(
     tip_text: str | None, sha_text: str | None, expected: bool
 ) -> None:
     assert repo_land.version_changed(tip_text, sha_text) is expected
+
+
+# ── poll / kill ────────────────────────────────────────────────────
+
+PROFILE = lanes.REPO_PROFILES["catpath"]
+TEST_RED_LOG = (
+    "collected 3 items\n"
+    "=== short test summary info ===\n"
+    "FAILED tests/test_x.py::test_a - assert 1 == 2\n"
+    "✖ gate test failed: uv run pytest -q\n"
+)
+
+
+@dataclass
+class PushCall:
+    url: str
+    ref: str
+    sha: str
+    tip: str
+    ops_parent: Path
+    object_dirs: tuple[Path, ...]
+
+
+def _fake_push(
+    monkeypatch: pytest.MonkeyPatch, outcome: tuple[str, str] = ("ok", "main")
+) -> list[PushCall]:
+    calls: list[PushCall] = []
+
+    def push_cas(
+        url: str,
+        ref: str,
+        sha: str,
+        tip: str,
+        *,
+        ops_parent: Path,
+        env: Any,
+        object_dirs: tuple[Path, ...],
+    ) -> tuple[str, str]:
+        calls.append(PushCall(url, ref, sha, tip, ops_parent, object_dirs))
+        return outcome
+
+    monkeypatch.setattr(factory_git_mirror, "push_cas", push_cas)
+    return calls
+
+
+def _gated(
+    rig: Rig,
+    *,
+    exit_code: int | None,
+    log_text: str = "",
+    files: dict[str, str] | None = None,
+) -> tuple[_Ctx, dict[str, Any], _Store]:
+    """A submitted land whose gate has finished with ``exit_code``."""
+    rig.commit_on_branch(files or {"src/a.py": "x = 2\n"})
+    slice_tree = rig.clone / ".claude" / "worktrees" / "slice-td42"
+    _g(rig.clone, "worktree", "add", "-q", str(slice_tree), "slice/42")
+    ctx, handle, store = _submit(rig)
+    assert isinstance(handle, dict) and "sha" in handle
+    Path(handle["log"]).write_text(log_text, encoding="utf-8")
+    if exit_code is not None:
+        Path(handle["exit_file"]).write_text(f"{exit_code}\n", encoding="utf-8")
+    return ctx, handle, store
+
+
+def _branches(rig: Rig) -> str:
+    return _g(rig.clone, "branch", "--list", "slice/42")
+
+
+def _attempt_free(ctx: _Ctx, store: _Store, red_class: str) -> None:
+    assert ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    assert ctx.meta_set["red_class"] == red_class
+    assert not [t for t in store.tag_strings(42) if t.startswith("attempt:")]
+    assert "STATUS:done" not in store.tag_strings(42)
+
+
+def test_a_repo_closed_during_the_gate_is_not_pushed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission (``land_slice._repo_refusal``: the lander, the open set,
+    the todo's tag) is re-read right before the push, so closing the repo or
+    retagging the todo while the gate runs stops the land."""
+    calls = _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    monkeypatch.setattr(
+        land_slice, "_repo_refusal", lambda store, params: "land_slice: closed"
+    )
+    assert repo_land.poll(ctx, handle) is True
+    assert calls == []
+    _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
+    assert _branches(rig).strip()  # the slice branch is kept
+    assert lanes.LANDED_REPO_KEY not in store.refs[42].meta
+
+
+def test_a_dead_gate_with_no_exit_file_is_attempt_free(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No exit file means the gate was killed from outside (a worker
+    restart, a reboot), not that the branch failed."""
+    calls = _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=None)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: False)
+    assert repo_land.poll(ctx, handle) is True
+    assert calls == []
+    _attempt_free(ctx, store, repo_land.GATE_INFRA_CLASS)
+
+
+def test_a_handle_for_another_repo_than_the_jobs_is_not_pushed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    ctx.meta["params"] = {**ctx.meta["params"], "repo": "precis"}
+    assert repo_land.poll(ctx, handle) is True
+    assert calls == []
+    _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
+
+
+def test_the_factory_switch_off_during_the_gate_is_not_pushed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    assert repo_land.poll(ctx, handle) is True
+    assert calls == []
+    _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
+
+
+def test_submit_handle_worktree_is_the_slice_tree(rig: Rig) -> None:
+    _, handle, _ = _gated(rig, exit_code=None)
+    assert handle["worktree"] == handle["slice_tree"]
+    assert handle["worktree"] != handle["land_tree"]
+
+
+def test_green_pushes_the_handle_sha_and_records_the_land(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=0)
+    pushes = _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    assert len(pushes) == 1
+    call = pushes[0]
+    assert (call.url, call.ref) == (PROFILE.remote, PROFILE.base)
+    assert (call.sha, call.tip) == (handle["sha"], handle["tip"])
+    assert call.object_dirs == (rig.clone / ".git" / "objects",)
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert ctx.meta_set["landed_sha"] == handle["sha"]
+    # the landed: sha is catpath's: the todo says so for the precis readers
+    assert store.refs[42].meta[lanes.LANDED_REPO_KEY] == "catpath"
+    assert (
+        store.comments(42)[-1] == f"landed: {handle['sha'][:9]} — {handle['subject']}"
+    )
+    assert "STATUS:done" in store.tag_strings(42)
+    assert not [t for t in store.tag_strings(42) if t.startswith("attempt:")]
+    assert [k for k, _ in ctx.chunks if k != "job_summary"] == ["job_event"]
+    assert not rig.land_tree().exists()
+    assert not Path(handle["slice_tree"]).exists()
+    assert _branches(rig) == ""
+
+
+def test_push_uses_the_handle_sha_after_the_clone_refs_were_rewritten(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, _ = _gated(rig, exit_code=0)
+    pushes = _fake_push(monkeypatch)
+    seed = _g(rig.clone, "rev-parse", "refs/heads/main")
+    _g(rig.clone, "update-ref", "refs/heads/slice/42", seed)
+    _g(rig.clone, "update-ref", "refs/remotes/origin/main", handle["sha"])
+    assert repo_land.poll(ctx, handle) is True
+    assert [(c.sha, c.tip) for c in pushes] == [(handle["sha"], handle["tip"])]
+    assert ctx.status == "succeeded"
+
+
+def test_real_push_cas_fast_forwards_the_local_origin(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        lanes,
+        "repo_profile",
+        lambda name: replace(PROFILE, remote=str(rig.origin)),
+    )
+    ctx, handle, _ = _gated(rig, exit_code=0)
+    assert repo_land.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failure
+    assert _g(rig.origin, "rev-parse", "refs/heads/main") == handle["sha"]
+    assert _g(rig.origin, "rev-parse", f"{handle['sha']}^") == handle["tip"]
+
+
+def test_raced_is_attempt_free_and_keeps_the_slice(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=0)
+    _fake_push(monkeypatch, ("raced", "main moved"))
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.RACED_CLASS)
+    assert not rig.land_tree().exists()
+    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+
+
+def test_push_error_is_attempt_free_and_keeps_the_slice(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=0)
+    _fake_push(monkeypatch, ("error", "unreadable"))
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.PUSH_ERROR_CLASS)
+    assert not rig.land_tree().exists()
+    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+
+
+def test_a_sha_that_is_not_a_child_of_the_tip_is_never_pushed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=0)
+    pushes = _fake_push(monkeypatch)
+    handle["tip"] = handle["sha"]  # tampered: sha^ is not sha
+    assert repo_land.poll(ctx, handle) is True
+    assert pushes == []
+    _attempt_free(ctx, store, repo_land.HANDLE_CLASS)
+    assert not rig.land_tree().exists()
+
+
+def test_a_deny_path_in_the_diff_is_refused_before_the_push(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=0)
+    pushes = _fake_push(monkeypatch)
+    monkeypatch.setattr(
+        lanes, "repo_profile", lambda name: replace(PROFILE, deny_paths=("src/**",))
+    )
+    assert repo_land.poll(ctx, handle) is True
+    assert pushes == [] and ctx.status == "failed"
+    assert "deny path" in (ctx.failure or "")
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_red_test_phase_is_charged_with_a_handoff_naming_phase_and_command(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=1, log_text=TEST_RED_LOG)
+    pushes = _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    assert pushes == [] and ctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff:")
+    assert "gate test failed: uv run pytest -q" in handoff
+    assert "tests/test_x.py::test_a" in handoff
+    assert not rig.land_tree().exists()
+    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+
+
+def test_red_log_is_scrubbed_before_it_reaches_the_todo(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "ghp_" + "".join(chr(97 + (i * 7) % 26) for i in range(36))
+    log_text = f"token {secret}\n" + TEST_RED_LOG
+    ctx, handle, store = _gated(rig, exit_code=1, log_text=log_text)
+    _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    assert secret not in store.comments(42)[-1]
+    assert secret not in (ctx.failure or "")
+
+
+def test_red_setup_without_a_dependency_file_is_attempt_free(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(
+        rig, exit_code=2, log_text="✖ gate setup failed: uv sync\n"
+    )
+    _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.SETUP_INFRA_CLASS)
+    assert not rig.land_tree().exists()
+
+
+def test_red_setup_with_pyproject_in_the_diff_is_charged(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deps = PYPROJECT.replace("dependencies = []", 'dependencies = ["nope"]')
+    ctx, handle, store = _gated(
+        rig,
+        exit_code=2,
+        log_text="✖ gate setup failed: uv sync\n",
+        files={"pyproject.toml": deps},
+    )
+    _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    assert ctx.status == "failed" and "attempt:1" in store.tag_strings(42)
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert "gate setup failed: uv sync" in store.comments(42)[-1]
+
+
+def test_exit_137_is_attempt_free(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, handle, store = _gated(rig, exit_code=137, log_text="Killed\n")
+    _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    _attempt_free(ctx, store, repo_land.GATE_INFRA_CLASS)
+    assert not rig.land_tree().exists()
+
+
+def test_a_running_gate_returns_not_finished(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=None)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: True)
+    pushes = _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is False
+    assert pushes == [] and ctx.status is None
+    assert ctx.meta_set["compute_handle_released"] is False
+    assert ctx.meta_set["compute_handle"] is handle
+    assert rig.land_tree().is_dir()
+
+
+def test_past_the_deadline_the_gate_is_killed_and_the_land_fails_free(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, store = _gated(rig, exit_code=None)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: True)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        run_slice, "_signal_group", lambda pgid, sig: signals.append((pgid, int(sig)))
+    )
+    handle["deadline"] = 1.0
+    assert repo_land.poll(ctx, handle) is True
+    assert signals == [(4242, 15)]
+    _attempt_free(ctx, store, repo_land.TIMED_OUT_CLASS)
+    assert ctx.meta_set["land_again_cap"] is True
+    assert not rig.land_tree().exists()
+
+
+def test_no_land_handle_records_nothing_new_and_never_pushes(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slice_tree = rig.clone / ".claude" / "worktrees" / "slice-td42"
+    _g(rig.clone, "worktree", "add", "-q", str(slice_tree), "slice/42")
+    ctx, handle, store = _submit(rig)
+    assert isinstance(handle, dict) and handle["no_land"] is True
+    pushes = _fake_push(monkeypatch)
+    assert repo_land.poll(ctx, handle) is True
+    assert pushes == [] and ctx.status == "succeeded"
+    assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
+    assert "STATUS:done" in store.tag_strings(42)
+    assert ctx.meta_set["landed_sha"] is None
+    assert lanes.LANDED_REPO_KEY not in store.refs[42].meta
+
+
+def test_kill_signals_the_gate_group_and_drops_the_land_tree(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, handle, _ = _gated(rig, exit_code=None)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        run_slice, "_signal_group", lambda pgid, sig: signals.append((pgid, int(sig)))
+    )
+    repo_land.kill(ctx, handle)
+    assert signals == [(4242, 15)]
+    assert not rig.land_tree().exists()
+    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+
+
+def test_kill_never_signals_the_workers_own_pid_or_group(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    ctx, handle, _ = _gated(rig, exit_code=None)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        run_slice, "_signal_group", lambda pgid, sig: signals.append((pgid, int(sig)))
+    )
+    for own in (os.getpid(), os.getpgrp()):
+        handle["pid"] = handle["pgid"] = own
+        repo_land.kill(ctx, handle)
+    assert signals == []
+    assert not rig.land_tree().exists()

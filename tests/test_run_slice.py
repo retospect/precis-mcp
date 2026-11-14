@@ -19,7 +19,7 @@ import threading
 import time
 import types
 import urllib.error
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -237,7 +237,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         if args[:2] == ["status", "--porcelain"] and "-z" in args:
             return _proc(calls.get("porcelain_z", ""), rc=calls.get("status_rc", 0))
         if args[:2] == ["diff", "--name-only"]:
-            return _proc(calls.get("diff", ""))
+            names = calls.get("diff", "")
+            if "-z" in args:
+                # Tests give one path per line; git -z ends each with NUL.
+                names = "".join(p + "\0" for p in names.splitlines())
+            return _proc(names)
         if args[:2] == ["diff", "--quiet"]:
             # rc 0 = no net diff vs origin/main (the declared-moot
             # probe); rc 1 = a real diff, rc >1 = git failed.
@@ -5062,6 +5066,7 @@ def test_poll_round_two_release_fixer_with_no_commit_is_no_commit(
     assert [
         "diff",
         "--name-only",
+        "-z",
         "--no-renames",
         "origin/release/r7...HEAD",
     ] in git_cmds
@@ -10361,6 +10366,64 @@ def test_repo_brief_for_catpath(variant: str) -> None:
     assert "precis MCP" not in brief
 
 
+_CONFLICT_HANDOFF = (
+    "handoff: lander: land FAILED: slice/42 conflicts with origin/main; run "
+    "`git merge origin/main`, resolve the conflicts and commit:\nCONFLICT (content)"
+)
+
+
+@pytest.mark.parametrize("variant", sorted(_VARIANTS))
+def test_repo_brief_allows_one_merge_after_a_lander_conflict(variant: str) -> None:
+    profile = lanes.REPO_PROFILES["catpath"]
+    brief = run_slice.render_brief(
+        **_repo_brief_kw(**_VARIANTS[variant], latest=_CONFLICT_HANDOFF),
+        profile=profile,
+    )
+    assert "run `git merge origin/main`" in brief
+    assert "Never merge anything else" in brief
+    assert "Do not `git fetch`, `git pull` or rebase" in brief
+    assert "rebase or merge from origin" not in brief
+    assert "Do not push." in brief
+
+
+@pytest.mark.parametrize(
+    "latest",
+    [
+        "brief: use the 0.1 eV tolerance",
+        "handoff: lander: land FAILED: gate lint failed: uv run ruff check",
+        "handoff: attempt FAILED, conflicts with origin/main",
+        None,
+    ],
+)
+def test_repo_brief_still_forbids_merges_without_a_lander_conflict(
+    latest: str | None,
+) -> None:
+    brief = run_slice.render_brief(
+        **_repo_brief_kw(latest=latest), profile=lanes.REPO_PROFILES["catpath"]
+    )
+    assert "rebase or merge from origin" in brief
+    assert "git merge origin" not in brief
+
+
+def test_precis_brief_ignores_the_lander_conflict_carve_out() -> None:
+    kw = _repo_brief_kw()
+    plain = run_slice.render_brief(**kw)
+    conflict = run_slice.render_brief(**{**kw, "latest": _CONFLICT_HANDOFF})
+    assert "Rules for this repo" not in conflict
+    assert "Never merge anything else" not in conflict
+    assert plain.replace(str(kw["latest"]), "") == conflict.replace(
+        _CONFLICT_HANDOFF, ""
+    )
+
+
+def test_repo_land_conflict_handoff_is_the_one_the_brief_keys_on() -> None:
+    assert run_slice.LANDER_CONFLICT_MARK in _CONFLICT_HANDOFF
+    assert run_slice._lander_conflict(_CONFLICT_HANDOFF)
+    assert not run_slice._lander_conflict(
+        _CONFLICT_HANDOFF.replace("handoff: lander:", "handoff:")
+    )
+
+
 def test_repo_brief_uses_the_profile_base_and_deny_list() -> None:
     profile = replace(
         lanes.REPO_PROFILES["catpath"], base="dev", deny_paths=("a/**", "b.txt")
@@ -10675,6 +10738,7 @@ def _cat_poll(
     diff: str = "",
     porcelain_z: str = "",
     ahead: str = "",
+    after_submit: Callable[[], None] | None = None,
 ) -> tuple[_Ctx, _Store, dict[str, Any]]:
     store = _Store()
     store.add_todo(42, "t", tags=("repo:catpath",))
@@ -10683,6 +10747,8 @@ def _cat_poll(
     else:
         ctx, handle = _submit(store, seams, repo="catpath")
     assert ctx.failure is None and handle["repo"] == "catpath"
+    if after_submit is not None:
+        after_submit()
     seams.update(diff=diff, porcelain_z=porcelain_z, ahead=ahead)
     _finish(handle, 0, json.dumps({"is_error": False, "result": result}) + "\n")
     pctx = _poll_ctx(store, ctx)
@@ -10802,13 +10868,51 @@ def test_poll_catpath_moot_fails_closed(
     assert seams["lands"] == []
 
 
+def test_poll_catpath_land_is_admitted_and_minted_with_the_repo(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a lander on the profile and the repo open, ``poll``'s pre-check
+    admits the land and mints it; the params it asked about carry ``repo``."""
+    asked: list[dict[str, Any]] = []
+    real = land_slice.validate_submit
+
+    def spy(store: Any, *, gripe_id: int | None = None, params: dict[str, Any]) -> Any:
+        asked.append(dict(params))
+        return real(store, gripe_id=gripe_id, params=params)
+
+    monkeypatch.setattr(land_slice, "validate_submit", spy)
+    _cat_sentinels(monkeypatch)
+    pctx, _store, handle = _cat_poll(
+        seams,
+        monkeypatch,
+        "Done.\ntests: ran",
+        diff="widget.py\n",
+        ahead="def5678 feat(x): thing (td42)\n",
+    )
+    [params] = asked
+    assert params["repo"] == "catpath" and params["todo_id"] == 42
+    assert pctx.failure is None and pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+
+
 def test_poll_catpath_land_params_carry_the_repo_and_the_refusal_is_legible(
     seams: dict[str, Any],
     catpath_build: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mint runs no ``validate_submit``, so ``poll`` asks the lander:
-    this lander refuses catpath, and that is the attempt's failure."""
+    a profile without a lander is refused, and that is the attempt's
+    failure."""
+
+    def lose_the_lander() -> None:
+        monkeypatch.setitem(
+            lanes.REPO_PROFILES,
+            "catpath",
+            replace(lanes.REPO_PROFILES["catpath"], lander=None),
+        )
+
     asked: list[dict[str, Any]] = []
     real = land_slice.validate_submit
 
@@ -10824,6 +10928,7 @@ def test_poll_catpath_land_params_carry_the_repo_and_the_refusal_is_legible(
         "Done.\ntests: ran",
         diff="widget.py\n",
         ahead="def5678 feat(x): thing (td42)\n",
+        after_submit=lose_the_lander,
     )
     [params] = asked
     assert params["repo"] == "catpath" and params["todo_id"] == 42
@@ -10831,11 +10936,11 @@ def test_poll_catpath_land_params_carry_the_repo_and_the_refusal_is_legible(
     assert seams["lands"] == [] and "land_job" not in pctx.meta_set
     assert pctx.status == "failed" and pctx.failure is not None
     assert "land_slice mint failed" in pctx.failure
-    assert "'catpath'" in pctx.failure and "td659522 step 2" in pctx.failure
+    assert "'catpath'" in pctx.failure and "no lander" in pctx.failure
     assert "attempt:1" in pctx.failure
     note = store.comments(42)[-1]
     assert note.startswith(run_slice._LANDER_HANDOFF_PREFIX)
-    assert "land FAILED" in note and "td659522 step 2" in note
+    assert "land FAILED" in note and "no lander" in note
     assert "STATUS:open" in store.tag_strings(42)
 
 
@@ -11017,3 +11122,19 @@ def test_git_keeps_the_hosts_global_identity_and_ignores(
     )
     tracked = run_slice._git(["ls-files"], repo).stdout.split()
     assert tracked == ["a.txt"]  # the global excludes file still applies
+
+
+def test_changed_paths_returns_a_non_ascii_path_unquoted(tmp_path: Path) -> None:
+    """Without ``-z`` git C-quotes a path holding a non-ASCII byte, and the
+    quoted form matches no deny glob: a slice could have committed a
+    workflow file past the ``.github/**`` deny."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _rg(repo, "init", "-q", "-b", "main")
+    _commit(repo, "a.txt")
+    _rg(repo, "checkout", "-q", "-b", "slice/1")
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    _commit(repo, ".github/workflows/dø.yml", "on: push\n")
+    paths = run_slice.changed_paths(repo, base="main")
+    assert paths == [".github/workflows/dø.yml"]
+    assert run_slice.deny_violations(paths, lanes.FACTORY_DENY_WRITE_PATHS) == paths
