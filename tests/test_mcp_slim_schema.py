@@ -519,6 +519,35 @@ def test_count_view_page_arg_reaches_dispatch(
     assert seen["__extras__"]["page"] == 3
 
 
+def test_reto_queue_page_arg_reaches_dispatch(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr673370: ``view='reto-queue'`` windows under ``page_size=`` via
+    ``args={'page': N}`` — a bounded enumeration cursor like the memory
+    listings, so the slim gate lets it through (nested and top-level,
+    with or without q)."""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call(
+        "search",
+        {"kind": "todo", "view": "reto-queue", "args": {"page": 2}},
+    )
+    assert out == "ok"
+    assert seen["__extras__"]["page"] == 2
+    out = _call(
+        "search",
+        {"kind": "todo", "view": "reto-queue", "q": "ruling", "page": 3},
+    )
+    assert out == "ok"
+    assert seen["__extras__"]["page"] == 3
+
+
 def test_memory_index_listing_page_still_refused_with_a_query(
     mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -477,6 +477,86 @@ def test_an_unclaimed_waiting_for_reto_row_is_in_the_queue(
     assert t["plain"] in {r.ref_id for r in asks_view.reto_queue(store)}
 
 
+# ── gr673370: q= / page_size= / page= on view='reto-queue' ────────
+
+
+def test_reto_queue_q_narrows_on_the_row_text(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr673370: ``q=`` used to be dropped at the view dispatch — the
+    full queue came back regardless. Every whitespace term must hit the
+    row's rendered text (title, ask fields, class, reasons, handle)."""
+    gripe_h = GripeHandler(hub=hub)
+    ruling = id_of(gripe_h.put(text="Pick a database.", tags=["for-reto:ruling"]).body)
+    spec = id_of(gripe_h.put(text="Spec the lane rule.", tags=["for-reto:spec"]).body)
+
+    # the class vocabulary narrows — 'ruling' names the for-reto answer,
+    # not any title text
+    assert [r.ref_id for r in asks_view.reto_queue(store, q="ruling")] == [ruling]
+    # title terms AND across the haystack
+    assert [r.ref_id for r in asks_view.reto_queue(store, q="lane rule")] == [spec]
+    # AND over terms: no row carries both
+    assert asks_view.reto_queue(store, q="ruling lane") == []
+    # a handle narrows to its own row
+    assert [r.ref_id for r in asks_view.reto_queue(store, q=f"gr{spec}")] == [spec]
+
+    body = handler.search(view="reto-queue", q="ruling").body
+    assert f"gr{ruling}" in body
+    assert f"gr{spec}" not in body
+    assert "(q='ruling')" in body
+    empty = handler.search(view="reto-queue", q="no such text anywhere").body
+    assert empty.startswith("# reto-queue — nothing matching q=")
+
+
+def test_reto_queue_q_matches_the_ask_question(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """The ask's question/context/options are searchable — they carry
+    the decision, the title needn't repeat them."""
+    t = _tree(handler, store, hub)
+    ask = _ask(handler, text="Cut on red?")
+    # the ask-user:<question> tag's resolved text is searchable
+    assert [r.ref_id for r in asks_view.reto_queue(store, q="which database")] == [
+        t["asking"]
+    ]
+    # so are meta.ask's context and options
+    assert [r.ref_id for r in asks_view.reto_queue(store, q="gate went red")] == [ask]
+    assert [r.ref_id for r in asks_view.reto_queue(store, q="warn only")] == [ask]
+
+
+def test_reto_queue_pages_under_page_size(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr673370: ``page_size=`` caps the window and ``page=`` walks it —
+    the only way past a flooded head of the queue."""
+    gripe_h = GripeHandler(hub=hub)
+    for i in range(3):
+        gripe_h.put(text=f"Ruling {i}?", tags=["for-reto:ruling"])
+
+    one = handler.search(view="reto-queue", page_size=2).body
+    assert one.startswith("# reto-queue — 2 of 3 waiting")
+    assert (
+        "… 1 more — search(kind='todo', view='reto-queue', page_size=2, args={'page': 2})"
+        in one
+    )
+
+    two = handler.search(view="reto-queue", page_size=2, page=2).body
+    assert two.startswith("# reto-queue — rows 3-3 of 3 waiting")
+
+    past = handler.search(view="reto-queue", page_size=2, page=9).body
+    assert "page 9 is past the end" in past
+
+
+def test_reto_queue_refuses_a_bad_page_and_stray_under(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    with pytest.raises(BadInput) as exc:
+        handler.search(view="reto-queue", page_size=2, page=0)
+    assert exc.value.next
+    with pytest.raises(BadInput):
+        handler.search(view="reto-queue", args={"under": 5})
+
+
 def test_a_resolved_alert_leaves_the_model(hub: Hub, store: Store) -> None:
     """td648492: ``resolved_at`` set with no STATUS tag — a tagged resolved
     alert would sit on the asks list and the queue forever."""

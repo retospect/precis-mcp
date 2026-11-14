@@ -62,7 +62,9 @@ quest then thread — ``ask-user`` todos, ``waiting-for:reto``, gripes
 tagged ``needs:ruling`` or ``discussion`` (:mod:`precis.todo.asks_view`);
 the web ``/asks`` shows the same. A row tagged ``for-reto:<ruling|spec|
 review|other>`` waits on Reto specifically; ``view='reto-queue'`` lists
-those and the asks flat, most blocked first, then oldest (gr648249). A question for the owner is a todo
+those and the asks flat, most blocked first, then oldest (gr648249),
+narrowed by ``q=`` on the row text and windowed by ``page_size=`` +
+``args={'page': N}`` (gr673370). A question for the owner is a todo
 tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 ``context``; validated on put and edit, ``blocks='td<id>'`` writes a
 blocked-by link from that slice and makes the row a showstopper); answer
@@ -411,7 +413,9 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
     TodoView.ASKS: lambda store, args, ps: asks_view.render_asks(store),
-    TodoView.RETO_QUEUE: lambda store, args, ps: asks_view.render_reto_queue(store),
+    TodoView.RETO_QUEUE: lambda store, args, ps: asks_view.render_reto_queue(
+        store, page_size=ps
+    ),
     TodoView.RESCUE: lambda store, args, ps: views.render_rescue(store),
 }
 
@@ -962,6 +966,23 @@ class TodoHandler(NumericRefHandler):
                 # tags= — the table's 3-arg signature has no channel
                 # for it, so it dispatches here with the raw tags.
                 return _view_doable(self.store, args, page_size, tags=tags)
+            if view_enum is TodoView.RETO_QUEUE:
+                # gr673370: the queue honours q= (row-text narrowing),
+                # page_size= and page= — the table's 3-arg signature has
+                # no q/page channel, so it dispatches here like DOABLE.
+                # args={'under'} is declared for doable; refuse it here
+                # rather than drop it.
+                if args is not None and args.get("under") is not None:
+                    raise BadInput(
+                        "under= requires view='doable' on todo search",
+                        next="search(kind='todo', view='doable', under='<todo id>')",
+                    )
+                return asks_view.render_reto_queue(
+                    self.store,
+                    q=q,
+                    page_size=page_size,
+                    page=_kw.get("page", 1),
+                )
             return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
         return super().search(q=q, tags=tags, page_size=page_size, **_kw)
 

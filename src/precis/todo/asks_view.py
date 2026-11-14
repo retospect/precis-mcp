@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
 from precis.response import Response
 from precis.todo import blocker_terminal_sql
 from precis.utils import handle_registry
@@ -569,16 +570,51 @@ def render_asks(store: Store) -> Response:
 # ── the Reto queue ────────────────────────────────────────────────
 
 
-def reto_queue(store: Store) -> list[AskRow]:
+def _q_haystack(r: AskRow) -> str:
+    """The text ``q`` narrows a queue row on — every field the render
+    shows plus the classification vocabulary (handle, title, ask
+    question/context/options, ``for-reto:`` answer, class, reasons,
+    thread/quest), not ``refs.title`` alone, so ``q='ruling'`` keeps the
+    ``for-reto:ruling`` rows (gr673370)."""
+    return " ".join(
+        str(p)
+        for p in (
+            r.handle,
+            r.answer or r.ask_kind or "decision",
+            r.title,
+            r.question,
+            r.context,
+            r.klass,
+            r.kind,
+            r.ask_kind,
+            r.answer,
+            r.thread,
+            r.quest_title,
+            *r.reasons,
+            *r.options,
+        )
+        if p
+    ).lower()
+
+
+def reto_queue(store: Store, *, q: str | None = None) -> list[AskRow]:
     """Everything that waits on Reto (showstoppers and asks across todos,
     gripes and alerts — plus a bare ``waiting-for:reto`` row, a DECISION
     ``default_rows()`` drops while Reto is exactly who it waits on), most
-    blocked first, then oldest first."""
+    blocked first, then oldest first.
+
+    ``q=`` narrows the set before ordering: every whitespace-split term
+    must appear in :func:`_q_haystack` — the same every-term-must-match
+    reading ``websearch_to_tsquery`` gives the ref-level ``q=``, as a
+    case-insensitive substring check over the fields this view renders."""
     rows = [
         r
         for r in asks_model(store).rows
         if r.klass == SHOWSTOPPER or r.is_ask or "waiting-for:reto" in r.reasons
     ]
+    if q and q.strip():
+        terms = q.lower().split()
+        rows = [r for r in rows if all(t in _q_haystack(r) for t in terms)]
     rows.sort(
         key=lambda r: (
             -r.blocked,
@@ -589,17 +625,82 @@ def reto_queue(store: Store) -> list[AskRow]:
     return rows
 
 
-def render_reto_queue(store: Store) -> Response:
+def render_reto_queue(
+    store: Store,
+    *,
+    q: str | None = None,
+    page_size: Any = None,
+    page: Any = 1,
+) -> Response:
     """``search(kind='todo', view='reto-queue')`` — the prioritized queue,
-    read top to bottom: context, options (recommended first), impact."""
-    rows = reto_queue(store)
+    read top to bottom: context, options (recommended first), impact.
+
+    ``q=`` narrows the queue (:func:`reto_queue`), ``page_size=`` caps the
+    window and ``page=`` (via ``args={'page': N}``) walks it — all three
+    were silently dropped at the view dispatch (gr673370), which is what
+    made a flooded head of the queue unreachable past the render cap."""
+    try:
+        size = int(page_size) if page_size is not None else 0
+        page_n = int(page)
+    except (TypeError, ValueError):
+        raise BadInput(
+            "page/page_size must be positive integers, got "
+            f"page={page!r}, page_size={page_size!r}",
+            next="search(kind='todo', view='reto-queue', page_size=40)",
+        ) from None
+    if page_n < 1 or size < 0:
+        raise BadInput(
+            "page/page_size must be positive integers, got "
+            f"page={page!r}, page_size={page_size!r}",
+            next="search(kind='todo', view='reto-queue', page_size=40)",
+        )
+    if page_n > 1 and not size:
+        raise BadInput(
+            "page= needs page_size= to bound the window",
+            next="search(kind='todo', view='reto-queue', "
+            "page_size=40, args={'page': 2})",
+        )
+    rows = reto_queue(store, q=q)
+    total = len(rows)
+    offset = (page_n - 1) * size
+    window = rows[offset : offset + size] if size else rows
+    if not rows:
+        body = (
+            f"# reto-queue — nothing matching q={q!r} waits on you"
+            if q and q.strip()
+            else "# reto-queue — nothing waits on you"
+        )
+        body += render_next_section(
+            [("search(kind='todo', view='reto-queue')", "the unfiltered queue")]
+            if q and q.strip()
+            else []
+        )
+        return Response(body=body, result_count=0)
+    if not window:
+        body = f"# reto-queue — page {page_n} is past the end ({total} waiting)"
+        body += render_next_section(
+            [
+                (
+                    "search(kind='todo', view='reto-queue', "
+                    f"page_size={size}, args={{'page': 1}})",
+                    "back to the head of the queue",
+                )
+            ]
+        )
+        return Response(body=body, result_count=0)
+    shown = len(window)
+    if page_n > 1:
+        frag = f"rows {offset + 1}-{offset + shown} of {total}"
+    elif shown < total:
+        frag = f"{shown} of {total}"
+    else:
+        frag = str(total)
     out = [
-        f"# reto-queue — {len(rows)} waiting, most blocked first"
-        if rows
-        else "# reto-queue — nothing waits on you"
+        f"# reto-queue — {frag} waiting, most blocked first"
+        + (f" (q={q!r})" if q and q.strip() else "")
     ]
     now = datetime.now(UTC)
-    for i, r in enumerate(rows, 1):
+    for i, r in enumerate(window, offset + 1):
         needs = r.answer or r.ask_kind or "decision"
         out.append("")
         out.append(f"{i}. {r.handle} [{needs}] — {r.title}")
@@ -611,6 +712,14 @@ def render_reto_queue(store: Store) -> Response:
             out.append(f"   option {n}{' (recommended)' if n == 1 else ''}: {opt}")
         age = f"{(now - r.created_at).days}d old" if r.created_at else "age unknown"
         out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}")
+    remaining = total - offset - shown
+    if remaining > 0:
+        q_frag = f", q={q!r}" if q and q.strip() else ""
+        out += [
+            "",
+            f"… {remaining} more — search(kind='todo', view='reto-queue'"
+            f"{q_frag}, page_size={size}, args={{'page': {page_n + 1}}})",
+        ]
     body = "\n".join(out)
     body += render_next_section(
         [
@@ -618,4 +727,8 @@ def render_reto_queue(store: Store) -> Response:
             ("search(kind='todo', view='asks')", "the same rows grouped by quest"),
         ]
     )
-    return Response(body=body)
+    return Response(
+        body=body,
+        result_count=shown,
+        result_ids=[r.ref_id for r in window if r.ref_id is not None],
+    )

@@ -174,12 +174,14 @@ def _removed_search_arg_error(
         # view='count' pages its facet groups the same way (gr592971) —
         # the other:-tail next: call is issued with the same filters
         # plus args={'page': N+1} (td595880). The sort=/since=/until=
-        # source-search primitive pages the same way (gr608577).
+        # source-search primitive pages the same way (gr608577), and so
+        # does the todo reto-queue window (gr673370).
         count_view = str(kwargs.get("view") or args.get("view") or "").strip() == (
             "count"
         )
         if (
             count_view
+            or _reto_queue_call(kind, kwargs, args)
             or _memory_listing_call(kind, kwargs, args)
             or _source_search_call(kwargs, args)
         ):
@@ -202,6 +204,18 @@ def _removed_search_arg_error(
                 )
             )
     return None
+
+
+def _reto_queue_call(kind: Any, kwargs: dict[str, Any], args: dict[str, Any]) -> bool:
+    """True for ``search(kind='todo', view='reto-queue')``.
+
+    The queue is a bounded enumeration ordered most-blocked-first —
+    ``args={'page': N}`` walks it under the ``page_size`` cap, with or
+    without a ``q`` narrowing (gr673370).
+    """
+    if not (isinstance(kind, str) and kind.strip().lower() == "todo"):
+        return False
+    return str(kwargs.get("view") or args.get("view") or "").strip() == "reto-queue"
 
 
 def _memory_listing_call(
