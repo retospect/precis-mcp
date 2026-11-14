@@ -704,7 +704,9 @@ Opening a second repo, in order:
 4. The repo's profile must have a lander: `lanes.known_repos()` lists
    only those and the setting cannot open any other. catpath's `lander`
    is `land_slice`, so it is openable.
-5. List the repo in the DB-only setting `factory.open_repos`
+5. If the profile has a `releaser` (catpath does), prove the token's
+   Actions read and write as "How a second-repo release is cut" says.
+6. List the repo in the DB-only setting `factory.open_repos`
    (`lanes.open_repos`: the setting intersected with `known_repos()`).
 
 catpath is openable but closed by default: it builds and lands only once
@@ -740,12 +742,107 @@ an exit code, a setup failure with no dependency file in the diff, a repo
 closed or a todo retagged during the gate, and the wall deadline.
 
 The lander never force-pushes, opens a pull request, resolves a gripe,
-changes the version, cuts a release or tags. Those are later steps of
-td659522.
+changes the version, cuts a release or tags. A release is the separate
+`repo_release` node below.
 
 Kill switches: remove the repo from `factory.open_repos`, or set
 `PRECIS_FACTORY=off`. Both are re-read right before the push, so a land
 whose gate is running is not pushed.
+
+How a second-repo release is cut (`src/precis/workers/job_types/repo_release.py`):
+
+A release node is one mechanical todo per batch, minted with
+`templates.mint_repo_release(store, plan_root, repo, blocked_by=[reviewer
+ids], bump=None)` under the plan root: tagged `plan:<root>` and
+`repo:<repo>`, `blocked-by` each reviewer, `meta.retries = 1` (a blind retry
+would spend a version; submit refuses any other value). It never carries
+the `release-pass` tag, so the precis release pass never sees it. It
+refuses a repo whose profile names no `releaser` (catpath's is
+`repo_release`), an empty `blocked_by` and a `bump` outside
+`auto`/`minor`/`patch`.
+
+It dispatches when all hold: the reviewers are done; no open slice or
+reviewer node of the repo remains under the plan root (a `holding: N open
+slice or reviewer node(s)` note names them, and nodes that wait on the
+release, directly or through a phase, do not hold it); the repo is in
+`factory.open_repos`; a host advertises `repo_checkout_<repo>`.
+
+In order:
+
+1. Take the repo lease as kind `release`. Lands of the repo queue behind
+   it, and a waiting release outranks new lands.
+2. Pick the version: bump `[project].version` by minor when a `feat`
+   commit landed since the previous tag, else patch, never major; the
+   `bump` param overrides. A tip that is already tagged is a no-op
+   success (`released: ... (no-op: ...)`).
+3. Edit `pyproject.toml` and the project's `uv.lock` entry as text (one
+   line each), commit in a detached release tree.
+4. Run the profile's `release_check_cmds` (catpath: `uv lock --check`)
+   under an env with no credential.
+5. Stamp `meta.repo_release` `state: pushed`, then push the commit as a
+   plain fast-forward. A raced push prepares again on the new tip, at most
+   3 rounds.
+6. Wait for the profile's `ci_workflow` (catpath: `ci.yml`) run on that
+   exact commit: one read every 120 s; the wait ends attempt-free after
+   6000 s; GitHub unreadable for 1800 s ends it too.
+7. A cancelled run is re-run, at most 2 times, only once no other run of
+   the workflow is active on the branch.
+8. Green: create the annotated tag `<tag_prefix><version>` (catpath
+   `v`), write the `released: <tag> <sha> (CI run <id>)` comment and
+   `meta.repo_release` with `state: tagged`, free the lease.
+
+Failures, as the operator sees them (the node's `handoff:` comment has the
+reason):
+
+- Red CI: no tag. The commit stays on main. The record is `red`; the node
+  asks; the next try takes a new version.
+- The tag exists elsewhere (`tag-conflict`): tags are never moved, a human
+  decides whether the version is spent.
+- No CI run appeared 1800 s after the push (the push event was dropped;
+  `ci.yml` has no manual trigger), or the re-runs are spent (a third
+  cancel): the version is spent, a human decides.
+- The token lacks Actions access (404 on the run read, 401/403/404 on the
+  re-run): a human grants it. These three carry `meta.coordinator_ask`,
+  so the node's cap ask goes to the coordinator.
+- Attempt-free infrastructure (`meta.attempt_free = infra-release`,
+  retried by itself) by `red_class`: `origin-fetch`, `tag-oracle`,
+  `release-tree`, `release-read`, `release-record`, `tag-push`,
+  `github-unreadable`, `ci-wall`, `batch-open`, plus the land classes it
+  shares: `origin-raced`, `origin-push`, `land-handle`, `repo-closed`,
+  `repo-held`, `gate infrastructure`, `gate setup`, `timed-out`.
+
+Record states: `pushed` (committed and pushed, not tagged: the next job
+resumes it, waits on the same commit and tags it; never recut), `red`
+(CI failed; the next job starts fresh at a new version), `tag-conflict`
+(a human), `tagged` (done). A resumed `pushed` record whose tag already
+sits at its sha is recorded and closed.
+
+Before listing a repo in `factory.open_repos`, prove from the slice host,
+as the worker's user and with the factory git token, that the token can
+read and re-run the repo's Actions runs. The read half:
+
+    uv run python -c "import httpx
+    from precis.workers import factory_git as g
+    u = 'https://api.github.com/repos/<owner>/<repo>/actions/runs?per_page=1'
+    print(httpx.get(u, headers=g.github_api_headers()).status_code)"
+
+It must print 200; 404 means the token has no Actions read on the repo
+(GitHub hides what it cannot read). The helper reads the token itself:
+nothing prints it, keep it that way. The write half can only be proven by
+re-running a real cancelled or completed run of the repo (the "Re-run"
+button's API call as the same token: `POST .../actions/runs/<id>/rerun`);
+there is no dry run. Without Actions read a release can never tag; without
+write a cancelled run needs a human.
+
+Known limits:
+
+- A release job that dies between its push and its tag frees the lease. A
+  land may then push and cancel the release commit's CI run; the next
+  release job resumes the `pushed` record and spends one re-run.
+- The check and the gate run as the worker's OS user: no credential, not
+  sandboxed.
+- `v*` tags cannot be deleted or moved on the remote, so a wrong tag
+  cannot be fixed.
 
 Known limits:
 

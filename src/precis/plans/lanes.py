@@ -426,9 +426,9 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         # type (td659522 step 2). Openable, and closed until the operator
         # lists it in ``factory.open_repos``.
         lander="land_slice",
-        # ``releaser`` stays None until the last round of td659522 step 3
-        # registers the release job type and sets it here.
-        releaser=None,
+        # Released by ``workers/job_types/repo_release.py`` (td659522 step 3);
+        # the node comes from ``templates.mint_repo_release``.
+        releaser="repo_release",
         release_check_cmds=("uv lock --check",),
         ci_workflow="ci.yml",
         tag_prefix="v",

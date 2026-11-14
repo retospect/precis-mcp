@@ -854,3 +854,170 @@ def test_preland_reviewer_brief_requires_docs_and_one_hop_review() -> None:
     brief = _PRELAND_REVIEWER_BRIEF_TAIL
     assert "without the matching documentation" in brief
     assert "callers and callees" in brief
+
+
+# -- repo-release node (td659522 step 3 R8) ----------------------------------
+
+
+def _release_batch(store: Store) -> tuple[int, list[int]]:
+    """A plan root with two built slices and a reviewer over each."""
+    from precis.plans import templates as T
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Batch", {"auto_close": True})
+
+    root = T._run(store, None, build).root_id
+    reviewers = [
+        T.mint_reviewer(store, root, T.mint_plan_task(store, root, f"Slice {i}", "x"))
+        for i in range(2)
+    ]
+    return root, reviewers
+
+
+def test_mint_repo_release_node_shape(store: Store) -> None:
+    """The node is a plain mechanical task: op, retries, repo tag, plan tag,
+    blocked-by each reviewer, and nothing the precis release pass reads; if
+    this fails the dispatcher or the job refuses the minted node."""
+    from precis.plans.templates import mint_repo_release
+
+    root, reviewers = _release_batch(store)
+    rel = mint_repo_release(store, root, "catpath", blocked_by=reviewers)
+    meta = _meta(store, rel)
+    assert {k: meta[k] for k in ("op", "retries")} == {
+        "op": "repo_release",
+        "retries": 1,
+    }
+    assert set(meta) <= {"op", "retries", "filed_by"}
+    assert validate_plan_meta(meta) == []
+    tags = {t.value for t in store.tags_for(rel)}
+    assert {f"plan:{root}", "repo:catpath"} <= tags
+    assert not [t for t in tags if t.startswith(("release-pass", "release-main"))]
+    ref = store.get_ref(kind="todo", id=rel)
+    assert ref is not None and ref.parent_id == root
+    assert ref.title == f"Release catpath (batch of td{root})"
+    assert "Mechanical" in _body(store, rel)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id, relation FROM links WHERE src_ref_id = %s", (rel,)
+        ).fetchall()
+    assert sorted(rows) == sorted((r, "blocked-by") for r in reviewers)
+
+
+@pytest.mark.parametrize("bump", [None, "auto", "minor", "patch"])
+def test_mint_repo_release_op_is_seen_by_the_dispatcher(
+    store: Store, bump: str | None
+) -> None:
+    """``_is_repo_release`` recognises the node and the params the
+    dispatcher stamps pass the job's schema, with and without ``bump``."""
+    from datetime import UTC, datetime
+
+    from precis.plans.templates import mint_repo_release
+    from precis.workers.job_types import plan_dispatch as pd
+    from precis.workers.job_types import repo_release
+
+    root, reviewers = _release_batch(store)
+    rel = mint_repo_release(store, root, "catpath", blocked_by=reviewers, bump=bump)
+    node = pd._Node(
+        id=rel,
+        kind="todo",
+        parent_id=root,
+        title="",
+        meta=_meta(store, rel),
+        status="open",
+        created_at=datetime.now(UTC),
+        prio=None,
+        depth=1,
+        root=root,
+    )
+    assert pd._is_repo_release(node)
+    job_type, params = pd._resolve_op(node)
+    assert job_type == "repo_release"
+    params["repo"] = "catpath"
+    params.setdefault("todo_id", rel)
+    assert ("bump" in params) == (bump is not None)
+    assert pd._params_problem(repo_release.PARAMS_SCHEMA, params) is None
+
+
+@pytest.mark.parametrize(
+    ("repo", "blocked", "bump", "needle"),
+    [
+        ("nosuchrepo", True, None, "no releasable"),
+        (lanes.DEFAULT_REPO, True, None, "no releasable"),
+        ("catpath", False, None, "blocked_by is empty"),
+        ("catpath", True, "major", "bump 'major'"),
+    ],
+)
+def test_mint_repo_release_refusals(
+    store: Store, repo: str, blocked: bool, bump: str | None, needle: str
+) -> None:
+    from precis.plans.templates import mint_repo_release
+
+    root, reviewers = _release_batch(store)
+    with pytest.raises(BadInput, match=needle):
+        mint_repo_release(
+            store, root, repo, blocked_by=reviewers if blocked else [], bump=bump
+        )
+
+
+def test_the_release_job_admits_a_minted_node_and_holds_on_its_open_batch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job's own submit check against real rows (its subtree walk and
+    blocked-by query are SQL): it holds on the open slices and reviewers of
+    the repo, not on a node that waits on the release, and admits the node
+    once they close. If this fails the minted node is refused for its shape,
+    or a release is cut around an open batch."""
+    from precis.plans import templates as T
+    from precis.store.types import Tag
+    from precis.workers.job_types import repo_release
+
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda store: frozenset({"precis", "catpath"})
+    )
+    root, reviewers = _release_batch(store)
+    with store.pool.connection() as conn:
+        slices = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'todo' "
+                "AND NOT (ref_id = ANY(%s)) ORDER BY ref_id",
+                (root, reviewers),
+            ).fetchall()
+        ]
+    batch = [*slices, *reviewers]
+    for nid in batch:
+        store.add_tag(nid, Tag.open("repo:catpath"), set_by="system")
+    rel = T.mint_repo_release(store, root, "catpath", blocked_by=reviewers)
+    later = T.mint_plan_task(store, root, "Later slice", "x")
+    store.add_tag(later, Tag.open("repo:catpath"), set_by="system")
+    store.add_link(src_ref_id=later, dst_ref_id=rel, relation="blocked-by")
+    params = {"todo_id": rel, "repo": "catpath"}
+
+    refusal = repo_release.validate_submit(store, params=params) or ""
+    assert refusal.startswith(f"holding: {len(batch)} "), refusal
+    assert all(f"td{nid}" in refusal for nid in batch)
+    assert f"td{later}" not in refusal and f"td{rel}," not in refusal
+
+    for nid in batch:
+        store.add_tag(
+            nid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+    assert repo_release.validate_submit(store, params=params) is None
+
+
+def test_mint_repo_release_refuses_a_profile_without_a_releaser(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from precis.plans.templates import mint_repo_release
+
+    root, reviewers = _release_batch(store)
+    monkeypatch.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], releaser=None),
+    )
+    with pytest.raises(BadInput, match="no releasable"):
+        mint_repo_release(store, root, "catpath", blocked_by=reviewers)

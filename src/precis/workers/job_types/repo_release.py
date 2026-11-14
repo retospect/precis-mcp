@@ -13,8 +13,9 @@ version``), so the diff is exactly the version lines and each edit is checked
 by re-parsing both texts with ``tomllib``.
 
 Below them is the job (td659522 step 3 R5 and R6), :mod:`~precis.workers.
-repo_land`'s sibling, which takes its shapes from it. It is registered, but
-every submit refuses until a profile names this job as its ``releaser``.
+repo_land`'s sibling, which takes its shapes from it. Submit refuses a repo
+whose profile does not name this job as its ``releaser`` (catpath's does)
+and one ``factory.open_repos`` does not list.
 Phases, in the handle's ``phase``:
 
 * ``lease`` (parked): :func:`submit` only guards and parks. :func:`poll`

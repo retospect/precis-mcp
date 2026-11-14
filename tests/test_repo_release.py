@@ -328,14 +328,14 @@ def test_ci_verdict(run: dict[str, Any] | None, before: int, want: str) -> None:
 
 
 def test_catpath_profile_release_fields() -> None:
-    """The catpath profile carries the release data, and nothing can release
-    it until the last round of step 3 sets a releaser."""
+    """The catpath profile carries the release data and names the releaser;
+    it is the only releasable repo."""
     p = lanes.REPO_PROFILES["catpath"]
     assert p.release_check_cmds == ("uv lock --check",)
     assert p.ci_workflow == "ci.yml"
     assert p.tag_prefix == "v"
-    assert p.releaser is None
-    assert lanes.releasable_repos() == ()
+    assert p.releaser == "repo_release"
+    assert lanes.releasable_repos() == ("catpath",)
     default = lanes.REPO_PROFILES[lanes.DEFAULT_REPO]
     assert (default.releaser, default.release_check_cmds, default.ci_workflow) == (
         None,

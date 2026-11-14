@@ -9160,3 +9160,39 @@ def test_verdict_line_never_closes_a_release_node(
     pd.run_pass(store)
     assert _status(store, rel) != "done"
     assert _status(store, mint.ids["pin"]) == "done"
+
+
+def test_minted_repo_release_node_dispatches_for_its_repo(
+    store: Store, release_op: Any
+) -> None:
+    """The node ``templates.mint_repo_release`` mints (own ``repo:`` tag,
+    blocked-by the batch's done reviewer) dispatches one ``repo_release`` job
+    with ``params.repo == 'catpath'``; if this fails R8's node is not the
+    shape the dispatcher reads."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Batch", {"auto_close": True})
+
+    root = T._run(store, None, build).root_id
+    slice_ = T.mint_plan_task(store, root, "Slice", "Build it.")
+    review = T.mint_reviewer(store, root, slice_)
+    _job(store, slice_, lane="claude-sub")
+    _slice_job(store, slice_, "land_slice", "succeeded")
+    _todo_comment(store, slice_, "landed: abc1234 — the slice")
+    _mark_done(store, slice_)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, "review: LAND")
+    _todo_comment(store, review, "handoff: reviewed the squash diff")
+    rel = T.mint_repo_release(store, root, "catpath", blocked_by=[review])
+    res = pd.run_pass(store)
+    if not _jobs_under(store, rel):
+        res = pd.run_pass(store)
+    assert _jobs_under(store, rel), (res.notes, _status(store, review))
+    ((_jid, meta),) = _jobs_under(store, rel)
+    assert meta["job_type"] == "repo_release"
+    assert meta["params"] == {"todo_id": rel, "repo": "catpath"}
+    assert any(f"td{rel}: dispatched repo_release" in n for n in res.notes)

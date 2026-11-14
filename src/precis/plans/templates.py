@@ -26,11 +26,12 @@ loop's own ``plan:<root>``.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from precis.errors import BadInput, NotFound, Upstream
+from precis.plans import lanes as _lanes
 from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.plans.gates import resolve_board
@@ -399,6 +400,74 @@ def mint_plan_task(
         m.node("task", title, _task(op), body=body)
 
     return _run_body(store, plan_root, plan_root, build).ids["task"]
+
+
+_RELEASE_BUMPS = ("auto", "minor", "patch")
+
+
+def mint_repo_release(
+    store: Store,
+    plan_root: int,
+    repo: str,
+    *,
+    blocked_by: Sequence[int],
+    bump: str | None = None,
+) -> int:
+    """Mint the mechanical release node of a second repo directly under
+    ``plan_root``, tagged ``plan:<plan_root>`` and ``repo:<repo>``, blocked-by
+    each of ``blocked_by`` (the batch's reviewer nodes). Returns its id.
+
+    ``meta.op`` is the ``repo_release`` job type (``bump``, when given, rides
+    as its param; the dispatcher adds ``todo_id`` and ``repo``) and
+    ``meta.retries = 1`` (the job's submit refuses any other). The node
+    never carries the ``release-pass`` tag: the precis release pass
+    (``release_poll``, ``release_cut``) must not see it. Refuses a repo
+    without a profile naming a ``releaser``, the default repo, an empty
+    ``blocked_by`` (a release with no reviewer behind it) and an unknown
+    ``bump`` (td659522 step 3 R8)."""
+    profile = _lanes.repo_profile(repo)
+    if repo == _lanes.DEFAULT_REPO or profile is None or profile.releaser is None:
+        raise BadInput(
+            f"repo-release: {repo!r} has no releasable second-repo profile",
+            next="release a second repo with a releaser: "
+            + (", ".join(_lanes.releasable_repos()) or "none is configured"),
+        )
+    if not blocked_by:
+        raise BadInput(
+            "repo-release: blocked_by is empty; a release needs the batch's "
+            "reviewer nodes behind it",
+            next="pass the reviewer todo ids of the batch as blocked_by",
+        )
+    if bump is not None and bump not in _RELEASE_BUMPS:
+        raise BadInput(
+            f"repo-release: bump {bump!r} is not one of {', '.join(_RELEASE_BUMPS)}",
+            next="pass bump=auto, minor or patch, or leave it out",
+        )
+    op: Any = (
+        {"type": profile.releaser, "params": {"bump": bump}}
+        if bump is not None
+        else profile.releaser
+    )
+
+    def build(m: _Minter) -> None:
+        rid = m.node(
+            "release",
+            f"Release {repo} (batch of td{plan_root})",
+            {**_task(op), "retries": 1},
+            body=(
+                f"Mechanical: no slice brief, no LLM. Once the batch's "
+                f"reviewers are done, the {profile.releaser} job bumps the "
+                f"version of {repo}, pushes, waits for CI on that commit and "
+                "tags it. The node closes when the tag is on the remote."
+            ),
+        )
+        _tag(m, rid, f"repo:{repo}")
+        for dep in blocked_by:
+            m.store.add_link(
+                src_ref_id=rid, dst_ref_id=dep, relation="blocked-by", conn=m.conn
+            )
+
+    return _run_body(store, plan_root, plan_root, build).ids["release"]
 
 
 def mint_merge_back_resolver(

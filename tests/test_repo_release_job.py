@@ -154,7 +154,7 @@ def rel(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> Rel:  # noqa: F811
         stamp(ref_id, updates)
 
     monkeypatch.setattr(store, "stamp_ref_meta", stamped)
-    # catpath gets a releaser (no profile has one yet) and is open.
+    # catpath is open here, with its releaser pinned.
     profile = replace(lanes.REPO_PROFILES["catpath"], releaser="repo_release")
     monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
     monkeypatch.setattr(
@@ -394,14 +394,16 @@ def test_a_repo_that_may_not_be_released_is_refused_at_submit(
     assert rel.rig.fetches == [] and rel.rig.lease.acquires == []
 
 
-def test_real_catpath_profile_has_no_releaser_so_every_submit_refuses(
+def test_real_catpath_profile_names_the_releaser(
     rel: Rel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If this fails the job can be submitted before R8 gives a profile a
-    releaser."""
+    """If this fails the real profile no longer names this job, and the
+    release refusal for a repo with no releaser is the only answer."""
     monkeypatch.undo()  # the real REPO_PROFILES
-    assert lanes.REPO_PROFILES["catpath"].releaser is None
-    assert "names no releaser" in (repo_release._release_refusal(None, PARAMS) or "")
+    assert lanes.REPO_PROFILES["catpath"].releaser == repo_release.NAME
+    assert "names no releaser" not in (
+        repo_release._release_refusal(None, PARAMS) or ""
+    )
 
 
 def test_a_todo_tagged_for_another_repo_or_closed_is_refused(rel: Rel) -> None:
