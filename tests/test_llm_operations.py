@@ -615,3 +615,23 @@ def test_resolve_op_chain_non_registered_is_none(
         )
         is None
     )
+
+
+# ── taproot:dedup quota fallback (gr639347) ─────────────────────────────
+
+
+def test_taproot_dedup_wants_quota_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POLICY (gr639347): the dedup judge opts into the router's
+    subscription-pause escape — a tripped claude quota window must walk
+    the chain to the next non-subscription rung, not pause EVERY finding
+    mint behind it (a 2026-11-11 window deferred 21 puts ~17 h). A live
+    ``llm.op.taproot:dedup`` ``{"quota_fallback": false}`` still turns the
+    escape off."""
+    _bind(monkeypatch, {})
+    assert operations.wants_quota_fallback("taproot:dedup") is True
+
+    _set_op_override(monkeypatch, "taproot:dedup", {"quota_fallback": False})
+    live_config.bust_cache()
+    assert operations.wants_quota_fallback("taproot:dedup") is False

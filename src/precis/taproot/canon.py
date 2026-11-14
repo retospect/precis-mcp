@@ -36,7 +36,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Upstream
@@ -214,6 +214,14 @@ class Verdict(TypedDict):
     verdict: Verdict3 | Literal["error"]
     confidence: float
     rationale: str
+    #: ``"<rung transport>:<model>"`` — the chain rung that judged the
+    #: verdict, stamped by :func:`dedup_judge` off the dispatch result
+    #: (``LlmResult.rung_transport``/``model``), so a dedup decision can be
+    #: audited back to the wire that produced it (gr639347 — the judge's
+    #: quota fallback can land the call on a different rung than rung 0).
+    #: Unset on ``"error"`` verdicts (nothing judged) and on
+    #: :func:`merge_confirm` outcomes.
+    judge: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -1526,6 +1534,13 @@ def dedup_judge(a: str, b: str) -> Verdict:
     "different" silently switched dedup off. A non-empty but unparseable
     reply stays "different": the model did answer, just not in a shape we
     can read, and the bias is toward not merging.
+
+    A judged verdict records the rung that produced it: ``judge`` is
+    ``"<rung transport>:<model>"`` off the dispatch result, and the same
+    marker is appended to ``rationale`` as `` [judge: <judge>]`` so a
+    persisted rationale names its judge — the audit trail for the
+    ``taproot:dedup`` quota fallback (gr639347), which can land the call
+    on a different rung than rung 0.
     """
     prompt = _DEDUP_PROMPT.format(claim_a=a, claim_b=b)
     res = route(
@@ -1550,7 +1565,19 @@ def dedup_judge(a: str, b: str) -> Verdict:
         log.warning("taproot: dedup_judge got an empty model reply")
         return Verdict(verdict="error", confidence=0.0, rationale="empty model reply")
     data = res.data or _parse_json_object(res.text)
-    return _coerce_verdict(data, default_rationale="unparseable model output")
+    v = _coerce_verdict(data, default_rationale="unparseable model output")
+    # Stamp the rung that judged it — ``rung_transport`` names the wire the
+    # failover walk actually landed (``None`` when no ladder stamped it);
+    # ``model`` the rung's own model. ``getattr`` tolerates a partial
+    # result stub; an absent field reads "?". Error verdicts above return
+    # early and carry no judge — nothing judged.
+    judge = (
+        f"{getattr(res, 'rung_transport', None) or '?'}:"
+        f"{getattr(res, 'model', None) or '?'}"
+    )
+    v["judge"] = judge
+    v["rationale"] = f"{v['rationale']} [judge: {judge}]"
+    return v
 
 
 # Prod MEDIUM dedup runs cloud haiku over the ``claude_p`` transport: one

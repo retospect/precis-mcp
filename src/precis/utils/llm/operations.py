@@ -296,6 +296,18 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
         model=None,
         label="Taproot dedup judgment",
         description="Deduplicate taproot claims via the `taproot:dedup` operation.",
+        note=(
+            "quota_fallback because a paused judge pauses EVERY mint, not "
+            "just one cast: during the 2026-11-11 norr-her-survey update the "
+            "claude subscription quota window tripped mid-pass and the "
+            "judge returned a pause on every candidate, deferring 21 puts "
+            "for ~17 hours (gr639347). A mint that lands on the chain's "
+            "next non-subscription rung (Opus via OpenRouter, then whatever "
+            "the operator's `llm.op.taproot:dedup` chain offers) beats a "
+            "deferred hub — the dedup prompt already biases toward "
+            "'different', so a weaker rung errs on the recoverable side."
+        ),
+        quota_fallback=True,
     ),
     "taproot:merge-confirm": OpDefault(
         tier=Tier.BIG,

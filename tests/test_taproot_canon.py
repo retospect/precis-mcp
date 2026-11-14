@@ -48,9 +48,20 @@ def _result(
     text: str = "",
     error: str | None = None,
     stop_reason: str | None = None,
+    rung_transport: Any = "claude_p",
+    model: str = "stub-model",
 ) -> Any:
-    """A stand-in carrying the extraction fields of ``LlmResult``."""
-    return SimpleNamespace(text=text, data=data, error=error, stop_reason=stop_reason)
+    """A stand-in carrying the ``LlmResult`` fields the call sites read —
+    ``rung_transport``/``model`` included so ``dedup_judge`` can stamp the
+    judging rung (gr639347)."""
+    return SimpleNamespace(
+        text=text,
+        data=data,
+        error=error,
+        stop_reason=stop_reason,
+        rung_transport=rung_transport,
+        model=model,
+    )
 
 
 def _verdict(v: canon.Verdict3, confidence: float, rationale: str = "") -> Verdict:
@@ -803,7 +814,12 @@ def test_dedup_judge_parses_a_same_verdict(monkeypatch: pytest.MonkeyPatch) -> N
         ),
     )
     v = dedup_judge("claim A", "claim B")
-    assert v == {"verdict": "same", "confidence": 0.92, "rationale": "identical fact"}
+    assert v == {
+        "verdict": "same",
+        "confidence": 0.92,
+        "rationale": "identical fact [judge: claude_p:stub-model]",
+        "judge": "claude_p:stub-model",
+    }
 
 
 def test_dedup_judge_flags_dispatch_error_not_different(
@@ -850,6 +866,37 @@ def test_dedup_judge_clamps_confidence_to_unit_interval(
     )
     v = dedup_judge("a", "b")
     assert v["confidence"] == 1.0
+
+
+def test_dedup_judge_records_rung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr639347: a judged verdict names the rung that judged it — ``judge``
+    is ``"<rung transport>:<model>"`` off the dispatch result, and the same
+    marker is appended to ``rationale`` so a persisted rationale shows it.
+    Error verdicts carry neither — nothing judged."""
+    monkeypatch.setattr(
+        canon,
+        "route",
+        lambda req: _result(
+            data={
+                "verdict": "different",
+                "confidence": 0.7,
+                "rationale": "distinct scopes",
+            },
+            rung_transport="openai_compat",
+            model="anthropic/claude-opus",
+        ),
+    )
+    v = dedup_judge("claim A", "claim B")
+    assert v["judge"] == "openai_compat:anthropic/claude-opus"
+    assert v["rationale"] == (
+        "distinct scopes [judge: openai_compat:anthropic/claude-opus]"
+    )
+
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="boom"))
+    v = dedup_judge("claim A", "claim B")
+    assert v["verdict"] == "error"
+    assert "judge" not in v
+    assert v["rationale"] == "dispatch error: boom"
 
 
 def test_merge_confirm_degrades_to_different_on_dispatch_error(
