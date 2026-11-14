@@ -74,6 +74,13 @@ memory delete door with the same links-only snapshot, so the apply
 refuses live judgments naming the target or a canonical pair the
 migration would collapse onto, and the undo refuses live judgments
 naming the recorded scope.
+
+The rewrite-style replays (``undo_rewrite``, ``undo_compact``'s edit
+restores, the ``keep`` split undo) take the opposite tack: their edge
+deletes are transient — the matching restore revives each edge
+verbatim — so they bypass the ``delete_links`` withdrawal stamp. A
+replay delete is not a removal; stamping it would strand a live
+``considered`` edge over dead history.
 """
 
 from __future__ import annotations

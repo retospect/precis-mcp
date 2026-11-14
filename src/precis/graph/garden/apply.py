@@ -76,6 +76,13 @@ would stamp verdicts the successor already carried). The undo side
 guards too: ``undo_retirement`` and the compact replay refuse while a
 live judgment names the recorded scope — the links-only snapshot can
 neither re-pin a migrated judgment nor un-withdraw a verdict.
+
+The rewrite-style replays keep the ledger instead of guarding it:
+``undo_rewrite``, ``undo_compact``'s edit restores and the ``keep``
+split undo replay edges verbatim, so their transient delete bypasses
+``store.delete_links`` (``_delete_replay_links``) — an explicit
+withdrawal stamp would leave a live ``considered`` edge over dead
+history, excluding while a later cascade queued nothing.
 """
 
 from __future__ import annotations
@@ -1722,6 +1729,26 @@ def _restore_memory_link(
     return legacy
 
 
+def _delete_replay_links(conn: Any, link_ids: list[int]) -> int:
+    """Delete link rows an undo is about to replay — never through
+    ``store.delete_links`` (review td662210, gr662069).
+
+    That door's explicit-removal contract stamps ``withdrawn_at`` on a
+    deleted ``considered`` pair's judgments, but the replay restores the
+    edge verbatim right after: a live ``considered`` edge would come back
+    over dead history — still excluding sources while a later cascade
+    loss queued no reconsideration. The replay delete is no withdrawal,
+    so a raw delete keeps the ledger untouched and the edge returns with
+    its judgments live; a row the record does not restore leaves its
+    judgments ``edge-lost``, the honest signal for a verdict whose
+    carrier vanished.
+    """
+    if not link_ids:
+        return 0
+    cur = conn.execute("DELETE FROM links WHERE link_id = ANY(%s)", (list(link_ids),))
+    return cur.rowcount or 0
+
+
 def _resolve_memory_apply(
     store: Store,
     conn: Any,
@@ -1924,9 +1951,9 @@ def undo_rewrite(store: Store, rewrite_id: str, *, actor: str) -> dict[str, int]
         # cannot reinsert with the same trust version. Chunk replacements
         # below only cascade edges whose anchors changed during apply.
         prior_links = {link["link_id"]: link for link in rec["links"]}
-        deleted = store.delete_links(
+        deleted = _delete_replay_links(
+            conn,
             [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
-            conn=conn,
         )
         reason = f"garden:undo:{rewrite_id}"
         with revision_context(reason, actor=actor):
@@ -3174,9 +3201,9 @@ def _restore_compact_body(
             "reconcile changed endpoints before retrying garden undo",
         )
     prior_links = {link["link_id"]: link for link in rec["links"]}
-    deleted = store.delete_links(
+    deleted = _delete_replay_links(
+        conn,
         [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
-        conn=conn,
     )
     store.chunks.replace_body_chunk(
         target,
@@ -3967,9 +3994,9 @@ def undo_split(store: Store, split_id: str, *, actor: str) -> dict[str, int]:
             raise MergeRefused("stale", "memory or links changed after the split")
         deleted_children = _retire_split_children(store, conn, rec["children"])
         prior_links = {link["link_id"]: link for link in rec["links"]}
-        deleted = store.delete_links(
+        deleted = _delete_replay_links(
+            conn,
             [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
-            conn=conn,
         )
         reason = f"garden:undo:{split_id}"
         with revision_context(reason, actor=actor):

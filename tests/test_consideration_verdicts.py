@@ -16,8 +16,12 @@ from precis.graph.garden import apply as doors
 from precis.graph.garden.apply import apply_merge
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
+from precis.store.revision_context import revision_context
 from precis.utils import handle_registry
 from tests.test_garden_memory_apply import _apply
+from tests.test_garden_memory_apply import _proposal as _rewrite_proposal
+from tests.test_garden_memory_compact import _dispositions
+from tests.test_garden_memory_compact import _proposal as _compact_proposal
 from tests.test_garden_memory_retirement_undo import (
     _propose as _garden_proposal,
 )
@@ -1488,3 +1492,143 @@ def test_garden_retirement_undo_refuses_migrated_judgments(
     # The migrated edge still carries the verdict — no silent ledger loss.
     edges = store.links_for(successor, relation="considered", direction="out")
     assert len(edges) == 1 and edges[0].meta["verdict"] == "not-useful"
+
+
+# ── review td662210 FIX: the garden memory replay keeps the ledger ────
+#
+# ``undo_rewrite``, ``undo_compact``'s edit restores and the ``keep``
+# split undo replay edges verbatim: a ``considered`` edge the apply
+# remapped onto a replacement chunk is deleted, then restored. The
+# delete must not take the ``delete_links`` withdrawal door — a stamped
+# ``withdrawn_at`` would leave the restored edge carrying a verdict
+# whose history reads dead: it would still exclude sources while a
+# later cascade loss queued no reconsideration.
+
+
+def test_garden_rewrite_undo_restores_remapped_verdict(store: Store) -> None:
+    """``undo_rewrite``'s replay delete is not a withdrawal: the
+    ``considered`` edge remapped onto the rewritten body chunk comes
+    back with its judgment live — a ``delete_links`` withdrawal would
+    strand a live edge over dead history (review td662210)."""
+    prop = _rewrite_proposal(store, "rewrite")
+    target = prop.target
+    src = _mk_paper(store, slug="cv-ur1", title="UR1", text=f"{_Q} ur1.")
+    with revision_context(
+        "judged scope chunk",
+        actor="fixture",
+        trust_origin="generated",
+        trust_actor_type="agent",
+    ):
+        store.add_link(
+            src_ref_id=target,
+            src_pos=0,
+            dst_ref_id=src,
+            relation="considered",
+            meta={
+                "verdict": "not-useful",
+                "depth": "abstract",
+                "reason": "off the question's axis",
+            },
+        )
+    rec = _apply(store, prop)
+    # Apply remapped the edge onto the new body chunk; the judgment
+    # stayed live through the chunk cascade (no door deleted it) and
+    # the material scope change queues the verdict for reconsideration.
+    assert _history(store, target)[0]["withdrawn_at"] is None
+    queue = store.consideration_reconsiderations(scope_ref_id=target)
+    assert [v.stale for v in queue] == ["scope"]
+
+    doors.undo_rewrite(store, rec.rewrite_id, actor="operator")
+
+    hist = _history(store, target)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+    found = store.scoped_considerations(target)
+    assert [(v.verdict, v.valid) for v in found] == [("not-useful", True)]
+    assert src in store.consideration_exclusions(target).excluded
+    # …and a later cascade loss still queues the reconsideration the
+    # stamped withdrawal would have swallowed.
+    with revision_context(
+        "re-ingest replaces the body chunk",
+        actor="fixture",
+        trust_origin="generated",
+        trust_actor_type="agent",
+    ):
+        store.chunks.replace_body_chunk(
+            target,
+            "Replacement body after the undo.",
+            chunk_kind="memory_body",
+            source="fixture",
+        )
+    assert [v.stale for v in store.scoped_considerations(target)] == ["edge-lost"]
+
+
+def test_garden_rewrite_undo_keeps_ref_level_verdict(store: Store) -> None:
+    """A ref-level ``considered`` edge never enters the replay set:
+    apply leaves it in place, the undo touches nothing, and the verdict
+    rides stale-on-scope at apply back to valid after undo."""
+    prop = _rewrite_proposal(store, "rewrite")
+    target = prop.target
+    src = _mk_paper(store, slug="cv-ur2", title="UR2", text=f"{_Q} ur2.")
+    _judge(store, target, src, reason="off the question's axis")
+    rec = _apply(store, prop)
+    assert _history(store, target)[0]["withdrawn_at"] is None
+    doors.undo_rewrite(store, rec.rewrite_id, actor="operator")
+    hist = _history(store, target)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+    found = store.scoped_considerations(target)
+    assert [(v.verdict, v.valid) for v in found] == [("not-useful", True)]
+    assert src in store.consideration_exclusions(target).excluded
+
+
+def test_garden_compact_undo_restores_remapped_verdict(store: Store) -> None:
+    """The compact undo replays the same edit snapshot
+    (``_restore_compact_body``): a ``considered`` edge the shell's
+    keep-summary edit remapped survives the undo with its judgment —
+    the same transient-delete rule as ``undo_rewrite``."""
+    target, review_id, _ = _compact_proposal(
+        store,
+        "Live claim one.\nLive claim two.\n",
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=lambda c: {
+            "edits": [],
+            "puts": [],
+            "sentences": _dispositions(
+                c,
+                {"disposition": "keep"},
+                {"disposition": "keep"},
+            ),
+            "shell": {
+                "fate": "keep",
+                "summary": "Live state: kept.\nOwner: ops.",
+                "expires_days": 14,
+            },
+        },
+    )
+    src = _mk_paper(store, slug="cv-ur3", title="UR3", text=f"{_Q} ur3.")
+    with revision_context(
+        "judged scope chunk",
+        actor="fixture",
+        trust_origin="generated",
+        trust_actor_type="agent",
+    ):
+        store.add_link(
+            src_ref_id=target,
+            src_pos=0,
+            dst_ref_id=src,
+            relation="considered",
+            meta={
+                "verdict": "not-useful",
+                "depth": "abstract",
+                "reason": "off the question's axis",
+            },
+        )
+    rec = doors.apply_compact(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    assert _history(store, target)[0]["withdrawn_at"] is None
+    doors.undo_compact(store, rec["compact_id"], actor="fixture")
+    hist = _history(store, target)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+    found = store.scoped_considerations(target)
+    assert [(v.verdict, v.valid) for v in found] == [("not-useful", True)]
+    assert src in store.consideration_exclusions(target).excluded

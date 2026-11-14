@@ -2603,6 +2603,9 @@ class LinksMixin:
         # RETURNING feeds the ``considered`` withdrawal stamp (review
         # td662210): a prune through this door is an explicit withdrawal,
         # not a cascade loss — the pair's judgments leave the queue.
+        # Garden undo replays deliberately bypass this door — their
+        # delete is transient, the restored edge revives with its
+        # judgments (``_delete_replay_links`` in garden apply).
         rows = conn.execute(
             "DELETE FROM links WHERE link_id = ANY(%s) "
             "RETURNING src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
