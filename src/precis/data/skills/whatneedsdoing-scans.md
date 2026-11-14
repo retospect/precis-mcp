@@ -24,6 +24,8 @@ delegates to a named agent (`test-runner`), do that step yourself or run
 it in your runtime's background when no subagent runtime exists; Kimi maps
 commands via `/skill:<name>`.
 
+Host names are not kept in the repo: find them with `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
+
 Live scan preview at invocation (migration collisions ⋅ code anchors ⋅
 memory index ⋅ skill-eval diff ⋅ backlog done-gunk ⋅ the cadence reviews ⋅
 nightly build ⋅ main on CI):
@@ -117,7 +119,7 @@ nightly build ⋅ main on CI):
   caller, not an index; an unindexed fleet-wide GC = single-flight + index),
   file findings as backlog items / gripes, then
   `scripts/db-thrash-review --stamp "<note>"`. Inside the 14-day window it's
-  quiet — skip it. (This cadence exists because an unindexed GC pegged caspar for
+  quiet — skip it. (This cadence exists because an unindexed GC pegged the database host for
   hours unnoticed; migs 0077/0078.)
 - **Skill-search cadence** (`scripts/skill-search-review`) — on **DUE** (last
   pass >30 days ago) run the skill-search discoverability audit: reconstruct
@@ -150,8 +152,8 @@ nightly build ⋅ main on CI):
   all slip past it — see the runbook.)
 - **FDA-grant cadence** (`scripts/fda-grant-review`) — on **DUE** (last pass
   >30 days ago) audit the macOS Full-Disk-Access grants that let each Mac's
-  launchd/cron daemons reach the NAS: per host (melchior/balthazar/caspar;
-  spark is Linux → immune), resolve every venv interpreter and confirm it
+  launchd/cron daemons reach the NAS: per host (each macOS worker host;
+  the Linux GPU node → immune), resolve every venv interpreter and confirm it
   is still a python.org framework build (Developer-ID signed) and its
   resolved path is granted (`auth_value=2`). Re-grant (System Settings →
   Full Disk Access — TCC can't be set from CLI) + `launchctl kickstart -k`
@@ -161,8 +163,8 @@ nightly build ⋅ main on CI):
   `nas-denied` detector is the real-time backstop (alerts in minutes when a
   host is *actually* locked out — the script also prints any open count);
   this cadence is the proactive drift catch. (This exists because a
-  `brew upgrade python` cdhash bump silently broke melchior's grant and
-  dark-ingested for days; see the runbook + the backlog item on melchior's
+  `brew upgrade python` cdhash bump silently broke the agent-worker host's grant and
+  dark-ingested for days; see the runbook + the backlog item on the agent-worker host's
   daemon NAS lockout.)
 - **Credential-check cadence** (`scripts/secrets-check-review`) — on **DUE**
   (last check >7 days ago) run `scripts/prod-precis secret check`: the

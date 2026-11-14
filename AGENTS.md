@@ -246,7 +246,9 @@ point: the `se-design` skill. Missing one → gripe.
 - **No cluster addresses anywhere — the repo is PUBLIC.** Tailnet/LAN IPs
   and vault blobs are gated across the *whole* tree
   (`tests/test_deploy_tree_no_secrets.py`); real node hostnames are gated
-  under `deploy/` only (there they mean an un-parameterised role). Prod
+  under `deploy/`, the packaged skills and the `.claude/` prompt files:
+  write the role or a placeholder, the names live in repo-dev memory. The
+  rule is none anywhere; the rest of the tree is not yet clean. Prod
   coordinates come from the gitignored overlay via
   `scripts/lib/pgb-host.sh` — use `scripts/prod-psql`, never a literal.
   Genuine ranges/samples take a `secret-gate: allow — <reason>` marker.

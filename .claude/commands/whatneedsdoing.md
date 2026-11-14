@@ -7,6 +7,8 @@ allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migrati
 Work lives in **two different substrates** — do not merge them into one flat
 list, that is the trap this view exists to avoid. Optional focus: `$ARGUMENTS`.
 
+Host names are not kept in the repo: find them with `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
+
 - **Repo dev work** — the `docs/backlog/` backlog + the `gripe` bug tracker.
   These are about *this codebase / product*: MCP-surface bugs, features, infra
   fixes. You act on them by **editing code in a worktree → `/go`**. "Inert"
@@ -180,7 +182,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      caller, not an index; an unindexed fleet-wide GC = single-flight + index),
      file findings to `docs/backlog/`/gripes, then
      `scripts/db-thrash-review --stamp "<note>"`. Inside the 14-day window it's
-     quiet — skip it. (This cadence exists because an unindexed GC pegged caspar for
+     quiet — skip it. (This cadence exists because an unindexed GC pegged the database host for
      hours unnoticed; migs 0077/0078.)
    - **Skill-search cadence** (`scripts/skill-search-review`) — on **DUE** (last
      pass >30 days ago) run the skill-search discoverability audit: reconstruct
@@ -209,8 +211,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      see the runbook.)
    - **FDA-grant cadence** (`scripts/fda-grant-review`) — on **DUE** (last pass
      >30 days ago) audit the macOS Full-Disk-Access grants that let each Mac's
-     launchd/cron daemons reach the NAS: per host (melchior/balthazar/caspar;
-     spark is Linux → immune), resolve every venv interpreter and confirm it
+     launchd/cron daemons reach the NAS: per host (each macOS worker host;
+     the Linux GPU node → immune), resolve every venv interpreter and confirm it
      is still a python.org framework build (Developer-ID signed) and its
      resolved path is granted (`auth_value=2`). Re-grant (System Settings →
      Full Disk Access — TCC can't be set from CLI) + `launchctl kickstart -k`
@@ -219,8 +221,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      migration. Inside the 30-day window it's quiet — skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
      in minutes when a host is *actually* locked out — the script also prints any
      open count); this cadence is the proactive drift catch. (This exists because
-     a `brew upgrade python` cdhash bump silently broke melchior's grant and
-     dark-ingested for days; see the runbook + the `docs/backlog/` melchior
+     a `brew upgrade python` cdhash bump silently broke the agent-worker host's grant and
+     dark-ingested for days; see the runbook + the `docs/backlog/` agent-worker-host
      daemon-NAS-lockout item.)
    - **Credential-check cadence** (`scripts/secrets-check-review`) — on **DUE**
      (last check >7 days ago) run `scripts/prod-precis secret check`: the
@@ -307,7 +309,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    substrate — it is the human's list, the factory never dispatches it.
 5. **Prod system health — worker-log err/warn (is the fleet solid?).** The
    `/status` page footer shows a per-host `N err/warn 24h` count
-   (`spark · … · 106`, `melchior · … · 7134`, …); this is the same signal, read
+   (`<host-a> · … · 106`, `<host-b> · … · 7134`, …); this is the same signal, read
    from the `worker_logs` table. It is a **system-health** read, not a work
    queue — but a broken pass here is often the *root cause* of stalled todos in
    step 4 (the bridge), so mine it. **Read the latest doctor report first**:
@@ -331,7 +333,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    GROUP BY host, level ORDER BY host, level;
    ```
    **Read it by ratio, not absolute count.** A host an order of magnitude above
-   its peers is the signal (e.g. melchior 7000+ ERROR vs ~4 on the others).
+   its peers is the signal (e.g. one host with thousands of ERROR lines against a handful on its peers).
    Drill the outlier down to the offending pass + message shape:
    ```sql
    SELECT pass, level, count(*) FROM worker_logs

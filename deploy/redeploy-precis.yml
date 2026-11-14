@@ -1119,7 +1119,7 @@
 
 # ── 2e. Sandbox worker lane (agent_sandbox_lane) ──
 # The job_claude_docker claimant on hosts whose system worker doesn't run
-# the collapsed profile (castor is serving/heartbeat-only) — see the
+# the collapsed profile (the LLM host is serving/heartbeat-only) — see the
 # playbook header. Runs on agent_sandbox_hosts plus any Linux host with the
 # unit already installed (gr485861), and asserts the bounced lane runs the
 # deployed build. No-op when neither exists.

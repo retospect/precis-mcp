@@ -8,14 +8,17 @@ they have deliberately different scopes:
   public git push is forever (a later delete does not unpublish it). These are
   scanned across the **whole repo** — ``docs/``, ``scripts/``, ``src/``,
   ``tests/``, everything.
-* **Real node hostnames, ``deploy/`` only.** This is an *architecture* check,
-  not a disclosure one. ``deploy/`` ships as a portable, cluster-agnostic
-  provisioning tree, so its roles must reference inventory groups and
-  variables — a literal node name there means an un-parameterised role, which
-  is the defect the migration exists to eliminate. Elsewhere the node names are
-  load-bearing domain vocabulary (``llm_catalog``'s default serving host, the
-  DB log handler, incident references in docstrings) across ~180 files;
-  scrubbing those would rename the system's own vocabulary, not close a leak.
+* **Real node hostnames, scoped.** Covered: ``deploy/`` (a portable,
+  cluster-agnostic provisioning tree: a literal node name there means an
+  un-parameterised role), ``src/precis/data/skills/`` (the packaged skills
+  served to every MCP client) and the prompt files under ``.claude/agents/``,
+  ``.claude/commands/`` and ``.claude/skills/`` (tracked files only;
+  ``.claude/worktrees/`` stays out). Write a role ("the database host") or a
+  placeholder (``<db-host>``) instead; the names live in repo-dev memory. The
+  failure message names ``path:line`` only. **The rest of the tree is not yet
+  covered**: docs, tests and src code defaults still carry node names as
+  domain vocabulary (``llm_catalog``'s default serving host, the DB log
+  handler, incident references in docstrings) and are a later cleanup.
 
 ``deploy/inventory/`` is the LIVE per-cluster overlay (real ``hosts.yml``,
 ``group_vars/all/vault.yml`` …). It is **gitignored + local-only** and is
@@ -131,10 +134,36 @@ _ALLOW_MARKER = public_scan.ALLOW_MARKER
 # ── Tree-wide: cluster addresses. Disclosure, scanned everywhere. ────────────
 _FORBIDDEN_ANYWHERE: list[tuple[str, re.Pattern[str]]] = public_scan.ADDRESS_PATTERNS
 
-# ── deploy/ only: real node hostnames. Parameterisation, not disclosure. ─────
-_FORBIDDEN_IN_DEPLOY: list[tuple[str, re.Pattern[str]]] = (
-    public_scan.NODE_HOSTNAME_PATTERNS
+# ── Scoped: real node hostnames (see the module docstring for the scope). ────
+#: The two DGX node names are repo-gate only: the shared publication pattern
+#: also scans exported artifacts, where one of them is an ordinary chemistry
+#: word and would false-positive.
+_FORBIDDEN_IN_DEPLOY: list[tuple[str, re.Pattern[str]]] = [
+    *public_scan.NODE_HOSTNAME_PATTERNS,
+    ("real hostname (dgx node)", re.compile(r"\b(?:castor|pollux)\b", re.IGNORECASE)),
+]
+
+#: Repo-relative directories the hostname check covers (tracked files only).
+_HOSTNAME_SCOPES = (
+    "deploy",
+    "src/precis/data/skills",
+    ".claude/agents",
+    ".claude/commands",
+    ".claude/skills",
 )
+
+#: TEMPORARY expected-failure list: files whose hostname hits are known and
+#: being cleaned by someone else. path -> why. Hits in a listed file are not
+#: reported; ``test_hostname_pending_cleanup_has_no_stale_entries`` fails once
+#: the file is clean. Remove when the file is clean.
+_HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
+    "src/precis/data/skills/precis-gardener-memory-help.md": (
+        "two hits, cleaned in a parallel change"
+    ),
+}
+
+#: A line the hostname check must flag (also the self-test's planted sample).
+_HOSTNAME_SAMPLE = "when: inventory_hostname == 'melchior'"
 
 # Binary / non-text suffixes we don't scan.
 _BINARY_SUFFIXES = public_scan.BINARY_SUFFIXES
@@ -373,13 +402,67 @@ def test_repo_carries_no_cluster_addresses() -> None:
     )
 
 
-def test_deploy_tree_is_cluster_agnostic() -> None:
-    """No literal node hostname under ``deploy/`` — roles use inventory vars."""
-    hits = _scan(_DEPLOY, _FORBIDDEN_IN_DEPLOY)
+def _hostname_hits() -> list[str]:
+    """``path:line`` of every node hostname in the covered scopes, content
+    never included."""
+    hits: list[str] = []
+    for scope in _HOSTNAME_SCOPES:
+        root = _REPO_ROOT / scope
+        if root.is_dir():
+            hits += [h.split(": ", 1)[0] for h in _scan(root, _FORBIDDEN_IN_DEPLOY)]
+    return hits
+
+
+def test_scoped_trees_carry_no_node_hostnames() -> None:
+    """No literal node hostname in ``deploy/``, the packaged skills or the
+    ``.claude/`` prompt files — name the role or use a placeholder."""
+    hits = [
+        h
+        for h in _hostname_hits()
+        if h.rsplit(":", 1)[0] not in _HOSTNAME_PENDING_CLEANUP
+    ]
     assert not hits, (
-        "real hostname(s) in the portable deploy/ tree — reference an inventory "
-        "group or variable instead:\n" + "\n".join(hits)
+        "node hostname(s) in deploy/, packaged skills or .claude/ prompts — "
+        'write the role instead ("the database host", "a worker host") or a '
+        "placeholder (<db-host>); real names are not kept in the repo, they "
+        "live in repo-dev memory (search(kind='memory', tags=['SPACE:repo-dev'], "
+        "q='cluster roster hosts')). Locations only:\n" + "\n".join(hits)
     )
+
+
+def test_hostname_pending_cleanup_has_no_stale_entries() -> None:
+    """An entry in the temporary expected-failure list must still have hits."""
+    hit_files = {h.rsplit(":", 1)[0] for h in _hostname_hits()}
+    stale = sorted(set(_HOSTNAME_PENDING_CLEANUP) - hit_files)
+    assert not stale, f"clean now, remove from _HOSTNAME_PENDING_CLEANUP: {stale}"
+
+
+@pytest.mark.parametrize("scope", _HOSTNAME_SCOPES)
+def test_hostname_check_bites_in_every_scope(
+    scope: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A planted hostname in each covered scope is reported as ``path:line``
+    and nothing else (the sample text is never echoed)."""
+    (tmp_path / scope).mkdir(parents=True)
+    (tmp_path / scope / "planted.md").write_text(
+        _HOSTNAME_SAMPLE + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(f"{__name__}._REPO_ROOT", tmp_path)
+    assert _hostname_hits() == [f"{scope}/planted.md:1"]
+
+
+@pytest.mark.parametrize(
+    "outside", [".claude/worktrees/other/skills/x.md", "docs/x.md", ".claude/x.md"]
+)
+def test_hostname_check_ignores_out_of_scope_paths(
+    outside: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worktree checkouts and the not-yet-covered tree are not scanned."""
+    target = tmp_path / outside
+    target.parent.mkdir(parents=True)
+    target.write_text(_HOSTNAME_SAMPLE + "\n", encoding="utf-8")
+    monkeypatch.setattr(f"{__name__}._REPO_ROOT", tmp_path)
+    assert _hostname_hits() == []
 
 
 def test_gate_patterns_actually_match() -> None:
@@ -390,7 +473,8 @@ def test_gate_patterns_actually_match() -> None:
         "ansible-vault blob": "$ANSIBLE_VAULT;1.1;AES256",  # secret-gate: allow
         "tailscale ip (CGNAT)": "ansible_host: 100.126.0.1",  # secret-gate: allow
         "lan ip (192.168.x)": "lan_ip: 192.168.0.1",  # secret-gate: allow
-        "real hostname / tailnet": "when: inventory_hostname == 'melchior'",
+        "real hostname / tailnet": _HOSTNAME_SAMPLE,
+        "real hostname (dgx node)": "hosts: castor",
     }
     by_label = {label: pat for label, pat in _FORBIDDEN_ANYWHERE}
     by_label.update({label: pat for label, pat in _FORBIDDEN_IN_DEPLOY})

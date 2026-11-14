@@ -52,7 +52,7 @@ signal.
 **Why the randomness — p-hacking, made honest.** The oracle runs the
 mechanic that's *fraud* in statistics: roll a random provocation, keep
 the one that lights up. It's honest here because the roll is only the
-**prompt**, never the finding — the entry is a spark to react to, not a
+**prompt**, never the finding — the entry is a nudge to react to, not a
 conclusion, and anything it sparks still has to be verified downstream.
 Same move, made legitimate by putting the check *after* the roll.
 

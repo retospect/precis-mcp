@@ -765,7 +765,7 @@ put(
 )
 put(
     kind="gripe",
-    text="decouple spark embedder from the compute GPU",
+    text="decouple the GPU-node embedder from the compute GPU",
     link="gripe:50906",
     rel="supersedes",
 )

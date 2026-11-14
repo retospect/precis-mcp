@@ -25,9 +25,9 @@ Live state of the agent fleet. Not embedded, not searchable.
 
 ```
 get(kind='fleet')                    # EXCEPTIONS / READY / SHIPPING / WAITING / AGENTS / QUOTA
-get(kind='fleet', args={'project': 'precis-mcp', 'host': 'melchior'})
+get(kind='fleet', args={'project': 'precis-mcp', 'host': 'node-a'})
 get(kind='fleet', args={'state': 'all'})   # AGENTS incl. dead / quiet >24h rows (default hides them, with a count)
-get(kind='fleet', id='claude:melchior:precis-mcp:main')   # one row by key
+get(kind='fleet', id='claude:node-a:precis-mcp:main')   # one row by key
 get(kind='fleet', id='fl123')                  # one row by handle
 ```
 
@@ -92,7 +92,7 @@ renamed or moved tree gets a new key; the old row goes `dead` and is retired
 ## Write
 
 ```
-put(kind='fleet', mode='report', args={'host': 'melchior', 'report': <fleet-report --json>})
+put(kind='fleet', mode='report', args={'host': 'node-a', 'report': <fleet-report --json>})
 edit(kind='fleet', id='fl123', mode='replace', args={'assigned': 'gr12345', 'note': 'blocked on review'})
 ```
 

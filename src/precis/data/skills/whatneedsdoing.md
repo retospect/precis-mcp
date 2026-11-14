@@ -153,7 +153,7 @@ Live state at invocation:
 ## Prod system health — worker-log err/warn
 
 5. **Is the fleet solid?** The `/status` page footer shows a per-host
-   `N err/warn 24h` count (`spark · … · 106`, `melchior · … · 7134`, …); this
+   `N err/warn 24h` count (`<host-a> · … · 106`, `<host-b> · … · 7134`, …); this
    is the same signal, read from the `worker_logs` table. It is a
    **system-health** read, not a work queue — but a broken pass here is often
    the *root cause* of stalled todos in step 4 (the bridge), so mine it.
@@ -178,7 +178,7 @@ Live state at invocation:
    GROUP BY host, level ORDER BY host, level;
    ```
    **Read it by ratio, not absolute count.** A host an order of magnitude above
-   its peers is the signal (e.g. melchior 7000+ ERROR vs ~4 on the others).
+   its peers is the signal (e.g. one host with thousands of ERROR lines against a handful on its peers).
    Drill the outlier down to the offending pass + message shape:
    ```sql
    SELECT pass, level, count(*) FROM worker_logs

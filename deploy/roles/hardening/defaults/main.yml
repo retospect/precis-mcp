@@ -49,7 +49,7 @@ hardening_os_update_timeout: "{{ 75 - (hardening_os_update_offset_min | int) }}m
 # The swap leg (`earlyoom_swap_args`): earlyoom fires only when BOTH memory and
 # free swap are under threshold. On GB10 hosts (the compute group) the NVIDIA
 # driver holds unified-memory pages that cannot swap, so RAM runs out while
-# most of swap stays free — at the gr491506 pollux OOM swap sat at 65% and the
+# most of swap stays free — at the gr491506 DGX-node OOM swap sat at 65% and the
 # swap leg gated the kill. There `-s 100,100` keeps the swap condition always
 # satisfied, so `-m` alone gates. Other hosts keep `-s 10,5`, which still
 # catches swap-thrash before sshd starves.

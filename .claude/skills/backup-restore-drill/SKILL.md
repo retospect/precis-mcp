@@ -9,10 +9,12 @@ A backup nobody has restored is a hope. This drill restores one real nightly
 dump end to end and compares it with prod, so the answer to "how long to get
 back, and what would be missing" is a measured number with a date on it.
 
-**Never on caspar** (the prod DB node): its disk filled to 100% once
+Host names are not kept in the repo: find them with `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
+
+**Never on the database host** (the prod DB node): its disk filled to 100% once
 (2026-08-04) and a 90 GB restore there would do it again. **Not on
-melchior** either: it runs the prod workers and the in-process agent lane and
-is memory-fragile. Use an idle DGX node (castor or pollux: Docker, ~3 TB free,
+the agent-worker host** either: it runs the prod workers and the in-process agent lane and
+is memory-fragile. Use an idle DGX node (either one: Docker, ~3 TB free,
 121 GB RAM). Never write to prod; the drill only reads the dump files.
 
 ## Prerequisites — check these FIRST, they blocked the 2026-10-01 attempt
@@ -20,19 +22,19 @@ is memory-fragile. Use an idle DGX node (castor or pollux: Docker, ~3 TB free,
 A drill that discovers these at step 2 wastes an hour. Verify all three before
 staging anything:
 
-1. **A fast path from the dump to the restore host.** As of 2026-10-01 castor
-   has none: the NAS is not mounted there, `ssh caspar` from castor/pollux
+1. **A fast path from the dump to the restore host.** As of 2026-10-01 the restore host
+   has none: the NAS is not mounted there, `ssh <db-host>` from the DGX nodes
    fails (host-key verification, then publickey), and `/mnt/cluster` (NFS from
-   caspar) hangs — `ls` times out at 60 s on both DGX nodes
+   the database host) hangs — `ls` times out at 60 s on both DGX nodes
    (`caspar_nfs_lockd_wedge` is the candidate). Relaying through an operator
-   Mac (`ssh caspar cat | ssh castor zstd -dc | tar -x`) measured ~3 MB/s, so
+   Mac (`ssh <db-host> cat | ssh <restore-host> zstd -dc | tar -x`) measured ~3 MB/s, so
    the 21 GB NAS tarball would take ~2 hours. Fix one of: key access
-   castor→caspar, the NFS mount, or pre-stage the dump out of band.
+   <restore-host>→<db-host>, the NFS mount, or pre-stage the dump out of band.
 2. **The Postgres image, already on the host.** `docker pull
-   pgvector/pgvector:pg17` fails on castor and pollux with a TLS handshake
+   pgvector/pgvector:pg17` fails on both DGX nodes with a TLS handshake
    timeout to registry-1.docker.io, and neither node caches it. Mirror it:
    `docker save` on the Mac → `docker load` on the restore host.
-3. **Scratch space, by its real path.** There is no `/scratch` on castor — one
+3. **Scratch space, by its real path.** There is no `/scratch` on the restore host — one
    root NVMe at `/` (3.7 TB). Pick a directory under a volume you have
    confirmed with `df -h`, and create it as `deploy`.
 
@@ -40,7 +42,7 @@ staging anything:
 
 | Copy | Location | Kept | Format |
 |---|---|---|---|
-| Local | caspar `/opt/shared/backups/postgres/precis_prod_<YYYYMMDD>_033000/` | ~3 days | `pg_dump -Fd`, 4 jobs, zlib 6 |
+| Local | the database host `/opt/shared/backups/postgres/precis_prod_<YYYYMMDD>_033000/` | ~3 days | `pg_dump -Fd`, 4 jobs, zlib 6 |
 | NAS | `/opt/nas/botshome/backups/postgres/precis_prod_<YYYY-MM-DD>.tar.zst` | 90 days | the directory dump, tar + zstd |
 | Offsite | B2 bucket `openclaw-backups`, prefix `backups/postgres/` | 7 days | synced by `b2_sync.sh` 04:30 UTC |
 
@@ -49,9 +51,9 @@ Local retention is deliberately short — `pg_backup.sh.j2` prunes at
 ~21 GB. Three local dumps is correct, not a prune bug; depth comes from the
 NAS copy.
 
-Schedule: caspar reboots 03:00 UTC, `pg_dump` 03:30–~04:20, NAS copy and B2
-sync after. Don't start a drill copy from caspar inside that window. Config:
-`deploy/roles/backups/`. Logs on caspar: `/opt/shared/logs/backup-pg.log`,
+Schedule: the database host reboots 03:00 UTC, `pg_dump` 03:30–~04:20, NAS copy and B2
+sync after. Don't start a drill copy from the database host inside that window. Config:
+`deploy/roles/backups/`. Logs on the database host: `/opt/shared/logs/backup-pg.log`,
 `backup-b2.log` — **read both first**; a drill that only proves the local copy
 says nothing about the offsite one. **The B2 copy does not exist right now**
 (gr460347, prio 1): `b2_sync.sh` line 16 has logged `b2: command not found`
@@ -67,7 +69,7 @@ at drill time (step 1) — they grow.
 
 ## Steps
 
-Prefer the **NAS copy**: it is the one you would restore from if caspar died.
+Prefer the **NAS copy**: it is the one you would restore from if the database host died.
 Every few drills, restore the B2 copy instead.
 
 1. **Baseline from prod (read-only).** Through `scripts/prod-psql`:
@@ -76,10 +78,10 @@ Every few drills, restore the B2 copy instead.
    migration from the migration ledger table (see
    `docs/reference/schema.md`). Note the dump's timestamp — prod has moved on
    since, so counts on the restore should be ≤ prod and close.
-2. **Stage on the restore host** (castor). Scratch dir
+2. **Stage on the restore host**. Scratch dir
    `/scratch/restore-drill-<YYYYMMDD>` on the big volume. Unpack the NAS
    tarball there (`zstd -dc … | tar -x`), or `rsync` the local dump dir from
-   caspar. Time it.
+   the database host. Time it.
 3. **Start a throwaway server:** `docker run -d --name restore-drill
    --shm-size=8g -e POSTGRES_PASSWORD=<random> -v <scratch>/pgdata:/var/lib/postgresql/data
    -v <scratch>/dump:/dump:ro pgvector/pgvector:pg17` (must be PG 17 and a
