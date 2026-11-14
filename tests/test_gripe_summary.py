@@ -382,6 +382,210 @@ class TestFoldCoverage:
         assert "through comment 0 · current" in handler.get(id=rid).body
 
 
+# ── the scrub: each claim once, under the right label (gr673911) ────
+
+
+class TestSummaryScrub:
+    def _comments(self, handler: GripeHandler, rid: int) -> list:
+        return gs.ledger(handler.store.chunks.list_chunks_for_ref(rid))
+
+    def test_relabels_recommend_entries(self, handler: GripeHandler) -> None:
+        """gr673911: a ``recommend:`` entry cited as ``ruled out:``
+        takes the ENTRY's label — the ledger's word beats the
+        model's."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: Bulk-close the batch")
+        handler.put(id=rid, text="recommend: PRIO:high")
+        out = gs.scrub_summary(
+            "ruled out: Bulk-close the batch, see entry 1\n"
+            "ruled out: PRIO:high, see entry 2",
+            self._comments(handler, rid),
+        )
+        assert "recommend: Bulk-close the batch, see entry 1" in out
+        assert "recommend: PRIO:high, see entry 2" in out
+        assert "ruled out" not in out
+
+    def test_inner_label_behind_a_stage_tag(self, handler: GripeHandler) -> None:
+        """``triage: suspected cause - …`` carries its claim label one
+        level in — a tag alone is provenance, not a label."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="triage: suspected cause - devin first")
+        out = gs.scrub_summary(
+            "ruled out: devin first, see entry 1",
+            self._comments(handler, rid),
+        )
+        assert out == "suspected cause: devin first, see entry 1"
+
+    def test_dedupe_merges_entry_pointers(self, handler: GripeHandler) -> None:
+        """gr673911's ~50 alternating lines: a claim listed once per
+        citing entry collapses to one line citing them all."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="triage: suspected cause - devin first")
+        handler.put(
+            id=rid,
+            text="triage: memory gripe on me477673 — routed to the gardener",
+        )
+        handler.put(id=rid, text="devin first")
+        out = gs.scrub_summary(
+            "ruled out: devin first, see entry 1\n"
+            "ruled out: memory me477673, see entry 2\n"
+            "ruled out: devin first, see entry 3",
+            self._comments(handler, rid),
+        )
+        assert out.count("devin first") == 1
+        # the merged claim relabels from entry 1's inner label and
+        # cites every entry that stated it
+        assert "suspected cause: devin first, see entries 1, 3" in out
+        # a tag-only entry with no inner claim label keeps the model's
+        # label — there is no ledger word to take
+        assert "ruled out: memory me477673, see entry 2" in out
+
+    def test_later_unlabelled_verdict_keeps_ruled_out(
+        self, handler: GripeHandler
+    ) -> None:
+        """Regression (review td674237): ``recommend: retry`` then
+        ``test: retry failed`` — the disproof is the ledger's latest
+        verdict on the claim. The scrub must not resurrect the older
+        ``recommend:`` just because the test entry's label is not a
+        claim label."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry")
+        handler.put(id=rid, text="test: retry failed")
+        out = gs.scrub_summary(
+            "ruled out: retry, see entries 1, 2",
+            self._comments(handler, rid),
+        )
+        assert out == "ruled out: retry, see entries 1, 2"
+
+    def test_merge_label_follows_newest_cited_entry(
+        self, handler: GripeHandler
+    ) -> None:
+        """The merged line keeps the label of the occurrence citing
+        the NEWEST entry — a ``recommend:`` re-listed after the
+        ``ruled out:`` disproof cannot restore it (review td674237)."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry")
+        handler.put(id=rid, text="test: retry failed")
+        out = gs.scrub_summary(
+            "ruled out: retry, see entry 2\nrecommend: retry, see entry 1",
+            self._comments(handler, rid),
+        )
+        assert out == "ruled out: retry, see entries 1, 2"
+
+    def test_restatement_needs_the_whole_entry(self, handler: GripeHandler) -> None:
+        """Regression (review td674237): a verdict entry whose FIRST
+        line restates the claim but whose body goes on (``test: retry``
+        + ``retry failed``) is not a bare restatement — the disproof
+        stands and the older ``recommend:`` is not resurrected."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry")
+        handler.put(id=rid, text="test: retry\nretry failed")
+        out = gs.scrub_summary(
+            "ruled out: retry, see entries 1, 2",
+            self._comments(handler, rid),
+        )
+        assert out == "ruled out: retry, see entries 1, 2"
+
+    def test_bare_restatement_defers_to_older_label(
+        self, handler: GripeHandler
+    ) -> None:
+        """A citing entry that only REPEATS the claim carries no
+        verdict — the older labelled entry still supplies the
+        label."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry the coil swap")
+        handler.put(id=rid, text="retry the coil swap")
+        out = gs.scrub_summary(
+            "suspect: retry the coil swap, see entries 1, 2",
+            self._comments(handler, rid),
+        )
+        assert out == "recommend: retry the coil swap, see entries 1, 2"
+
+    def test_label_scopes_to_the_head_claim(self, handler: GripeHandler) -> None:
+        """Regression (review td674237): an entry whose label heads a
+        DIFFERENT claim does not label this one — ``recommend: replace
+        coil`` with ``retry failed`` in the body is a disproof of
+        ``retry``, so a ``ruled out: retry`` line citing it keeps its
+        label instead of resurrecting entry 1's ``recommend:``."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry")
+        handler.put(id=rid, text="recommend: replace coil\nretry failed")
+        out = gs.scrub_summary(
+            "ruled out: retry, see entries 1, 2",
+            self._comments(handler, rid),
+        )
+        assert out == "ruled out: retry, see entries 1, 2"
+
+    def test_label_applies_when_head_claim_matches(self, handler: GripeHandler) -> None:
+        """The scope check's positive arm: the head claim containing the
+        claim (``recommend: retry the coil swap`` for ``retry the coil
+        swap``) still takes the entry's label, even alongside a
+        disproof of something else in the body."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: retry the coil swap\nreplace failed")
+        out = gs.scrub_summary(
+            "ruled out: retry the coil swap, see entry 1",
+            self._comments(handler, rid),
+        )
+        assert out == "recommend: retry the coil swap, see entry 1"
+
+    def test_unlabelled_claim_lines_dedupe(self, handler: GripeHandler) -> None:
+        rid = _gripe(handler)
+        handler.put(id=rid, text="one")
+        handler.put(id=rid, text="two")
+        out = gs.scrub_summary(
+            "still suspect an7, see entry 1\nstill suspect an7, see entry 2",
+            self._comments(handler, rid),
+        )
+        assert out == "still suspect an7, see entries 1, 2"
+
+    def test_real_ruled_out_keeps_its_label(self, handler: GripeHandler) -> None:
+        """A tag-only entry is not a claim label — a dead end the model
+        reports stays ``ruled out:``."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="test: coil eliminated under load")
+        out = gs.scrub_summary(
+            "ruled out: coil, see entry 1", self._comments(handler, rid)
+        )
+        assert out == "ruled out: coil, see entry 1"
+
+    def test_fold_scrubs_the_reply(
+        self, handler: GripeHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The persisted text is the scrubbed one — mislabels and
+        repeats never land even when the model emits them."""
+        monkeypatch.setattr(
+            gs,
+            "route_small",
+            _fake_llm(
+                "ruled out: Bulk-close the batch, see entry 1\n"
+                "ruled out: PRIO:high, see entry 2\n"
+                "ruled out: Bulk-close the batch, see entry 1"
+            ),
+        )
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: Bulk-close the batch")
+        handler.put(id=rid, text="recommend: PRIO:high")
+        out = handler.edit(id=rid, mode="summary").body
+        assert "summary rebuilt through comment 2" in out
+        view = handler.get(id=rid, view="summary").body
+        assert "recommend: Bulk-close the batch, see entry 1" in view
+        assert "recommend: PRIO:high, see entry 2" in view
+        assert "ruled out" not in view
+
+    def test_manual_write_is_not_scrubbed(self, handler: GripeHandler) -> None:
+        """``args={'summary': …}`` is the writer's vetted text — the
+        scrub binds model output only."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="recommend: keep it")
+        handler.edit(
+            id=rid,
+            mode="summary",
+            summary="ruled out: keep it, see entry 1",
+        )
+        assert "ruled out: keep it" in handler.get(id=rid, view="summary").body
+
+
 # ── the gate ─────────────────────────────────────────────────────────
 
 
@@ -423,6 +627,17 @@ class TestGate:
         problems = gs.gate_summary("see entry 9, maybe an8", comments)
         assert any("entry 9" in p for p in problems)
         assert any("anchor an8" in p for p in problems)
+
+    def test_gate_catches_plural_entry_refs(self, handler: GripeHandler) -> None:
+        """``see entries 1, 9`` cites ords the same as the singular —
+        a dead pointer may not hide behind the plural spelling (the
+        scrub's merged pointers emit it)."""
+        rid = _gripe(handler)
+        handler.put(id=rid, text="one entry")
+        comments = gs.ledger(handler.store.chunks.list_chunks_for_ref(rid))
+        problems = gs.gate_summary("ruled out: X, see entries 1, 9", comments)
+        assert any("entry 9" in p for p in problems)
+        assert gs.gate_summary("ruled out: X, see entries 1", comments) == []
 
     def test_gate_refuses_raw_locations(self, handler: GripeHandler) -> None:
         """A summary naming a raw ``path``/``path::qual`` refuses even

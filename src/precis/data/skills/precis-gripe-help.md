@@ -459,7 +459,14 @@ has no ledger. After the entry commits, the put rewrites the gripe's
 recording which comment it was rebuilt through (the card marks it
 `STALE` once newer entries exist). Dead ends survive in it as one line
 each — `ruled out: X, see entry N` — so the next agent doesn't
-re-investigate. Code locations in entries and the summary are
+re-investigate. Each claim appears once, under the label the newest
+ledger entry mentioning it carries — scoped to the claim: the entry's
+label must head that claim's own text (`recommend: retry` labels
+`retry`; `recommend: replace coil` with `retry failed` in the body is
+a verdict, not a `recommend:` for `retry`), and a mention under no
+claim label (a later `test: X failed`) keeps `ruled out:` rather than
+resurrecting the `recommend:`. A claim several entries repeat cites
+them all — `see entries 1, 3`. Code locations in entries and the summary are
 code-anchor handles (`an<N>`) only, never paths or snippets — a
 stage `put` whose text still names a raw `path`/`path::qual` refuses:
 mint the handle first, then write the entry naming it. The
