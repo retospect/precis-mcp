@@ -185,9 +185,7 @@ def test_echo_args_canonicalises_the_continuation() -> None:
     }
     # ascending keys echo as explicit [col, 'asc'] pairs, never the bare
     # 'col' string a measure-sense view would re-read (td678021 review)
-    asc = lens_echo_args(
-        {}, parse_lens_args({"sort": [["name", "asc"]]}), preserve=()
-    )
+    asc = lens_echo_args({}, parse_lens_args({"sort": [["name", "asc"]]}), preserve=())
     assert asc["sort"] == [["name", "asc"]]
     assert parse_sort(asc["sort"]) == (("name", True),)
 

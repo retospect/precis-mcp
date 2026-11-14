@@ -1382,7 +1382,7 @@ class PathwayHandler(Handler):
             raise BadInput(
                 f"args lens keys {sorted(lens_args)!r} apply to view='compare' only",
                 next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
-                "args={'where': {'gate': 'pass'}, 'limit': 20})",
+                "args={'gate': 'pass', 'limit': 20})",
             )
         U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
