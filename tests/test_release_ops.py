@@ -3293,6 +3293,33 @@ def test_a_red_in_two_files_mints_two_fix_nodes_on_the_release_branch(
     )
 
 
+def test_cluster_brief_uses_marker(store: Store) -> None:
+    """gr661597: each cluster brief carries ``OTHER_CLUSTERS_MARKER``
+    once, after its own failing ids — run_slice's acceptance harvest
+    stops there, so a slice is gated on its own cluster only."""
+    mint = _cut(store)
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    clusters = [
+        ("tests/test_alpha.py", ["tests/test_alpha.py::test_one"]),
+        ("tests/test_beta.py", ["tests/test_beta.py::test_two"]),
+    ]
+    posted = crd._cluster_briefs(
+        ctx, it["digest"], [it["fix"]], clusters, "brief: head", "digest text"
+    )
+    assert len(posted) == 2 and posted[0][0] == it["fix"]
+    for own_ids, (_tid, brief) in zip(
+        ("tests/test_alpha.py::test_one", "tests/test_beta.py::test_two"),
+        posted,
+        strict=True,
+    ):
+        assert brief.count(crd.OTHER_CLUSTERS_MARKER) == 1
+        own, siblings = brief.split(crd.OTHER_CLUSTERS_MARKER)
+        assert own_ids in own
+        assert "fix only these failing ids:" in own
+        assert siblings.strip().endswith(".")
+
+
 def test_test_files_failing_on_one_src_module_are_one_cluster() -> None:
     """T1 review: three test files red on the same module's import are one
     fix; an unrelated file stays its own cluster."""

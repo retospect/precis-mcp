@@ -1153,6 +1153,13 @@ def _digest_done(
     return True
 
 
+#: Opens a cluster brief's sibling list (gr661597): everything after it
+#: names clusters other fix nodes own, so run_slice's acceptance-test
+#: harvest (:func:`run_slice._acceptance_paths`) stops at it. One per
+#: scope line, after the node's own ids.
+OTHER_CLUSTERS_MARKER = "leave them alone:"
+
+
 def _cluster_briefs(
     ctx: Any,
     digest_id: int,
@@ -1197,7 +1204,7 @@ def _cluster_briefs(
         scope = (
             f"cluster {i}/{len(clusters)}: {key} — fix only these failing "
             f"ids: {', '.join(ids)}. The other clusters are fixed in "
-            f"parallel by their own nodes — leave them alone: {others}."
+            f"parallel by their own nodes — {OTHER_CLUSTERS_MARKER} {others}."
         )
         out.append(
             (

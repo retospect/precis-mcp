@@ -6510,6 +6510,29 @@ def test_devin_submit_snapshots_only_supplied_tests(
     assert "--sandbox" not in argv and kw["cwd"] == tree
 
 
+def test_acceptance_paths_skip_sibling_clusters() -> None:
+    """gr661597: a cluster brief's sibling list — everything after
+    ``ci_red_digest.OTHER_CLUSTERS_MARKER`` — is another node's scope,
+    not this slice's acceptance tests."""
+    latest = (
+        "brief: release r7 is red at c0ffee111 (range 999..c0f), run 31\n"
+        "cluster 1/3: tests/test_a.py — fix only these failing ids: "
+        "tests/test_a.py::test_one. The other clusters are fixed in "
+        "parallel by their own nodes — leave them alone: "
+        "tests/test_b.py (td2), tests/test_c.py (td3).\n"
+        "== test-linux ==\n"
+        "  FAILED tests/test_b.py::test_two - assert 1 == 2\n"
+        "  FAILED tests/test_c.py::test_three - KeyError: 'x'\n"
+    )
+    assert run_slice._acceptance_paths("Fix the failures it names.", latest) == [
+        "tests/test_a.py"
+    ]
+    # No marker: the harvest is exactly as before — every path counts.
+    assert run_slice._acceptance_paths(
+        "fix tests/test_a.py", "handoff: also tests/test_b.py"
+    ) == ["tests/test_a.py", "tests/test_b.py"]
+
+
 @pytest.mark.parametrize("setting,enabled", [(None, False), ("0", False), ("1", True)])
 def test_devin_sandbox_requires_opt_in(
     seams: dict[str, Any],

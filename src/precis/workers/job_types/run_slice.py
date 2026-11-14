@@ -4005,9 +4005,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
         brief_path.write_text(brief, encoding="utf-8")
-        acceptance_tests = sorted(
-            set(_MOOT_TEST_RE.findall(body + "\n" + (latest or "")))
-        )
+        acceptance_tests = _acceptance_paths(body, latest)
         missing_tests = [p for p in acceptance_tests if not _slice_test_exists(tree, p)]
         ops = run_dir(todo_id)
         log_path = ops / "run_slice.log"
@@ -4369,6 +4367,20 @@ def _commit_for_session(
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
     return f"{WORKER_COMMITTED} the session's working tree with {source}"
+
+
+def _acceptance_paths(body: str, latest: str | None) -> list[str]:
+    """The slice's worker-run acceptance tests, harvested from the node
+    body and its latest comment (gr661597): a release-fix cluster brief
+    names the sibling clusters other fix nodes own after
+    ``ci_red_digest.OTHER_CLUSTERS_MARKER`` — text from the marker on is
+    another node's scope, not this slice's."""
+    from precis.workers.job_types import ci_red_digest as _crd
+
+    text = "\n".join(
+        part.split(_crd.OTHER_CLUSTERS_MARKER, 1)[0] for part in (body, latest or "")
+    )
+    return sorted(set(_MOOT_TEST_RE.findall(text)))
 
 
 def _acceptance_artifacts_rejection(value: Any) -> str | None:
