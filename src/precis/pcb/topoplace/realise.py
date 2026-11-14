@@ -94,7 +94,12 @@ from precis.pcb.topoplace.crossings import (
     resolve_crossings,
     seg_dist,
 )
-from precis.pcb.topoplace.design import _COPPER_ZONE_SAG_MM, TopoDesign, TopoZone
+from precis.pcb.topoplace.design import (
+    _COPPER_ZONE_SAG_MM,
+    TopoDesign,
+    TopoZone,
+    _net_pin_force,
+)
 from precis.pcb.topoplace.masks import BoardMasks, corridor_score
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
@@ -5793,6 +5798,43 @@ def _plane_trees(
     return tree_tracks, tree_vias, ok
 
 
+def _sides_at_pose(d: TopoDesign, pose: np.ndarray, n_layers: int) -> TopoDesign:
+    """``d`` with every SMD pad's ``pin_side`` / ``pad_extra_side`` read
+    off ``pose`` — the face the routed pose mounts the part on. The
+    design's sides are baked from the IR at build time, so a part the
+    placer flipped kept its authored face here while the mesh's pads
+    (:func:`~precis.pcb.topoplace.mesh.world_pads`) and the DRC sat it
+    on the other one: the search seeded its pads on the wrong layer and
+    the terminal forcing pinned them there (usbc_attiny's bottom-side
+    R1.2 under J1.5 stranded GND, td637902). Drilled pads stay drilled;
+    a pose that flips nothing returns ``d`` itself."""
+    pose_a = np.asarray(pose, dtype=np.float64)
+    if pose_a.ndim != 2 or pose_a.shape[1] < 4 or not len(pose_a):
+        return d
+    bottom = (pose_a[:, 3] >= 0.5).astype(np.int8)
+
+    def posed(side: np.ndarray, part: np.ndarray) -> np.ndarray:
+        side = np.asarray(side, dtype=np.int8)
+        part = np.asarray(part, dtype=np.int64)
+        ok = (side != 2) & (part >= 0) & (part < len(bottom))
+        out = side.copy()
+        out[ok] = bottom[part[ok]]
+        return out
+
+    pin_side = posed(d.pin_side, d.pin_part)
+    extra_side = posed(d.pad_extra_side, d.pad_extra_part)
+    if np.array_equal(pin_side, d.pin_side) and np.array_equal(
+        extra_side, d.pad_extra_side
+    ):
+        return d
+    return dataclasses.replace(
+        d,
+        pin_side=pin_side,
+        pad_extra_side=extra_side,
+        net_pin_force=_net_pin_force(tuple(d.net_pins), pin_side, n_layers),
+    )
+
+
 def _route_design_once(
     d: TopoDesign,
     ir: Any,
@@ -5824,6 +5866,8 @@ def _route_design_once(
     (:func:`_plane_pours`). Without plane nets this is
     :func:`_route_signals` verbatim; see it for ``pose``, ``net_rules``,
     ``event``, ``masks`` and ``hv_weight``."""
+    if pose is not None:
+        d = _sides_at_pose(d, pose, int(ir.n_layers))
     kw: dict[str, Any] = dict(
         pose=pose,
         net_rules=net_rules,

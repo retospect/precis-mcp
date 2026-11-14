@@ -3,25 +3,32 @@
 Measured baseline: 2026-11-05, main 99de0fedb, effort=20000, seed=1.
 usbc_attiny re-measured 2026-11-06 on td569573 (the cutcap share);
 esp32c3/usbc_attiny re-measured 2026-11-07 on td569571 (the rule
-ladder). Seconds cover local.route (including placement); boards were
-built first. Boards were measured concurrently in separate local
+ladder); every board but sanity/blinky_led (unchanged) re-measured
+2026-11-14 on td637902 (pad sides read off the routed pose), the nano
+rows on a loaded host (load ~40-70), each against the same-load
+pre-fix route. Seconds cover local.route (including placement); boards
+were built first. Boards were measured concurrently in separate local
 processes.
 
 board           routable  routed  failed  drc_errors  seconds  cause
 sanity                20      20       0           0    4.644  complete
 blinky_led             1       1       0           0    0.617  complete; 1 dangling
-usbc_attiny            8       6       2          18   23.398  walled-off power pins; short/connectivity guards
-esp32c3               11       8       3           8   44.890  walled-off pins; short/connectivity guards
-nano                  64      45      19          18 1947.002  walled-off pins; short/connectivity guards
-nano_usb_pd           64      45      19          18 1936.141  walled-off pins; short/connectivity guards
-nano_usb_pd_r2        72      32      40          38 2192.916  walled-off pins; short/connectivity guards
+usbc_attiny            8       6       2          14   30.400  3V3/GND legalise spacing; no walled-off pins
+esp32c3               11       9       2           3  238.900  walled-off GND; VCC3V3 legalise spacing
+nano                  64      61       3          87 2396.000  GND/V5/VBUS (pre-fix 45/64, DRC 81)
+nano_usb_pd           64      61       3          87 2449.000  GND/V5/VBUS (pre-fix 45/64, DRC 81)
+nano_usb_pd_r2        72      41      31          60 5371.000  signal + power nets (pre-fix 44/72, DRC 64)
 
 For usbc_attiny, routable counts authored nets with at least two pins.
 Through main 99de0fedb its placement overflowed the GND corridor and the
 route stage raised LocalError/CorridorOverflow before returning any
 routing or DRC counts. td569573's cutcap share cleared that pre-route
 refusal; the board now routes 5/8 and fails like esp32c3 on walled-off
-power nets (3V3/GND/VBUS). The numbers document the baseline; the
+power nets (3V3/GND/VBUS). td637902 found usbc_attiny's GND "walled off"
+was a placer-flipped R1 whose R1.2 the router still seeded on its
+authored F.Cu face, under J1.5's pad: the route now reads every SMD
+pad's side off the routed pose, VBUS routes and GND/3V3 fail on
+legalise spacing instead. The numbers document the baseline; the
 assertion always targets complete routing at DRC 0. Strict xfails turn a
 completed board into a loud XPASS.
 """
@@ -51,9 +58,10 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "6/8 routed, 2 failed, DRC 18: GND/VBUS power nets walled off "
-                "(td569571's ladder recovered 3V3). td569573's cutcap "
-                "share cleared the pre-route CorridorOverflow (GND demand 2 > cap 1)"
+                "6/8 routed, 2 failed, DRC 14: 3V3/GND legalise spacing inside "
+                "the move caps (td637902 posed the flipped R1.2 that walled GND; "
+                "VBUS routes). td569573's cutcap share cleared the pre-route "
+                "CorridorOverflow (GND demand 2 > cap 1)"
             ),
         ),
     ],
@@ -63,8 +71,8 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "8/11 routed, 3 failed, DRC 8: VCC3V3/GND/SDA — walled pins and "
-                "copper withdrawn by short/connectivity guards"
+                "9/11 routed, 2 failed, DRC 3: GND walled pins, VCC3V3 legalise "
+                "spacing inside the move caps"
             ),
         ),
     ],
@@ -76,8 +84,8 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "45/64 routed, 19 failed, DRC 18: 9 nets have walled-off pins; "
-                "other copper withdrawn by short/connectivity guards"
+                "61/64 routed, 3 failed (GND/V5/VBUS), DRC 87 since td637902 "
+                "read pad sides off the routed pose"
             ),
         ),
     ],
@@ -89,8 +97,8 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "45/64 routed, 19 failed, DRC 18: 9 nets have walled-off pins; "
-                "other copper withdrawn by short/connectivity guards"
+                "61/64 routed, 3 failed (GND/V5/VBUS), DRC 87 since td637902 "
+                "read pad sides off the routed pose"
             ),
         ),
     ],
@@ -102,7 +110,7 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "32/72 routed, 40 failed, DRC 38: 15 nets have walled-off pins; "
+                "41/72 routed, 31 failed, DRC 60: walled-off pins; "
                 "short/connectivity guards withdraw copper"
             ),
         ),

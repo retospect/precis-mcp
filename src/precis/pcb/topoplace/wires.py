@@ -3521,7 +3521,10 @@ def _pin_layers(d: TopoDesign, pin: int, n_layers: int, cand_mask: int) -> int:
     """The candidate layers a wire may leave or reach ``pin`` on without
     a via: an SMD pad's own face, every layer for a drilled pad. A pad
     face outside the net's candidates binds nothing here (the terminal
-    stub the plan mints is :func:`realise._fix_terminals`' business)."""
+    stub the plan mints is :func:`realise._fix_terminals`' business).
+    ``d.pin_side`` must be the ROUTED pose's face — the mesh walls a pad
+    where the pose puts it; ``realise._sides_at_pose`` re-reads it for
+    a part the placer flipped (td637902)."""
     return _pin_mask(int(d.pin_side[pin]), n_layers) & cand_mask or cand_mask
 
 
