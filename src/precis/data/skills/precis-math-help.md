@@ -42,10 +42,10 @@ never asked before returns nothing. Use `get` to compute.
 
 `get(kind='math', id='/recent')` lists the most recently cached
 queries, newest first — same cache-backed shape as `perplexity-*`.
-A **failed** Wolfram call (timeout, no-parse, empty result) still
-caches its own failure text as the row's body, so it shows up in
-`/recent` and in `search` right alongside a real answer — a hit
-there isn't evidence the query actually resolved; read the row.
+A **failed** Wolfram call (timeout, no-parse, empty result) is stored
+as a stale row holding the failure text, so it shows in `/recent` and
+in `search` beside real answers until the same query succeeds: a hit
+there isn't evidence the query resolved; read the row.
 
 ## When to use math vs calc
 
@@ -71,12 +71,10 @@ Math results are pinned (deterministic for a fixed query), so
 `get` never re-fetches on its own. To force a fresh call:
 
 ```python
-delete(kind="math", id="<canonicalised-query>")
-get(kind="math", q="<query>")
+get(kind="math", q="<query>", args={"refresh": True})
 ```
 
-The canonicalised id is the lowercased, whitespace-collapsed query
-text.
+The stored row is overwritten in place; `math` takes no `delete`.
 
 ## When math fails
 
@@ -97,8 +95,7 @@ get(kind="math", id="/recent")
 ```
 
 The generic cache-backed listing (`CacheBackedHandler`, shared with
-`web`/`youtube`) — most recent cached queries first, including
-pinned failures (above).
+`web`/`youtube`) — most recent cached queries first.
 
 ## Required env
 

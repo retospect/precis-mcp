@@ -250,8 +250,8 @@ without `PERPLEXITY_API_KEY`.
 get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 ```
 
-`perplexity-research` is pinned by default; `perplexity-reasoning` has
-a 30-day TTL; `websearch` has 7 days. See `precis-cache` for the full
+`perplexity-research` and `perplexity-reasoning` are pinned by default;
+`websearch` has 7 days. See `precis-cache` for the full
 TTL table and the `CACHE:fresh` / `CACHE:stale` / `CACHE:pinned` axis.
 
 ## Bulk-import a directory of reports

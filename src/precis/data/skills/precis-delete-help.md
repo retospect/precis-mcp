@@ -176,7 +176,8 @@ delete(kind="web", id="<url>")  # raises Unsupported
 
 Papers, patents, and cache-backed kinds (`calc`, `math`, `web`,
 `youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`) reject `delete`. Cache
-entries expire on TTL or via `tag(... add=['CACHE:stale'])`. To
+entries expire on TTL; to re-fetch one now, pass `args={'refresh': True}`
+on the `get` ([[precis-cache]]). To
 remove an ingested paper, work at the SQL layer or re-fetch by id
 to overwrite the local copy.
 
