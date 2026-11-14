@@ -114,6 +114,7 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     # factory must not rewrite the code that holds or scrubs the token
     "src/precis/workers/repo_land.py",
     "src/precis/workers/repo_lease.py",
+    "src/precis/workers/job_types/repo_release.py",
     "src/precis/workers/factory_git.py",
     "src/precis/workers/factory_git_mirror.py",
     "src/precis/workers/job_types/run_slice.py",
@@ -373,7 +374,12 @@ class RepoProfile:
     line for the repo's commands (``None``: the worker's own). ``mcp`` is
     true when the tree carries the precis ``.mcp.json``. ``lander`` is the
     job type that lands a slice of this repo; ``None`` means the repo is
-    not buildable end to end.
+    not buildable end to end. ``releaser`` is the job type that may cut a
+    release of this repo; ``None`` means the factory cannot release it.
+    ``release_check_cmds`` are run credential-free in the release tree
+    before it pushes. ``ci_workflow`` is the workflow file whose run on the
+    release commit must be green before the tag. ``tag_prefix`` starts the
+    release tag (``v`` plus the version).
     """
 
     name: str
@@ -390,6 +396,10 @@ class RepoProfile:
     uv_python: str | None = None
     mcp: bool = False
     lander: str | None = None
+    releaser: str | None = None
+    release_check_cmds: tuple[str, ...] = ()
+    ci_workflow: str | None = None
+    tag_prefix: str = "v"
 
 
 #: Build profiles by repo name, in registry order. A profile without a
@@ -416,6 +426,12 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         # type (td659522 step 2). Openable, and closed until the operator
         # lists it in ``factory.open_repos``.
         lander="land_slice",
+        # ``releaser`` stays None until the last round of td659522 step 3
+        # registers the release job type and sets it here.
+        releaser=None,
+        release_check_cmds=("uv lock --check",),
+        ci_workflow="ci.yml",
+        tag_prefix="v",
     ),
 }
 
@@ -443,6 +459,12 @@ def known_repos() -> tuple[str, ...]:
     names whose profile has a ``lander``, in registry order. A ``repo:``
     value outside this tuple is refused however the setting reads."""
     return tuple(n for n, p in REPO_PROFILES.items() if p.lander is not None)
+
+
+def releasable_repos() -> tuple[str, ...]:
+    """Repos the factory can cut a release of: the :data:`REPO_PROFILES`
+    names whose profile has a ``releaser``, in registry order."""
+    return tuple(n for n, p in REPO_PROFILES.items() if p.releaser is not None)
 
 
 _REPO_TAG = "repo:"

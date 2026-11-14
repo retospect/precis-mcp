@@ -155,6 +155,7 @@ def test_deny_set_is_human_only_union_interim(store: Store) -> None:
     [
         "src/precis/workers/repo_land.py",
         "src/precis/workers/repo_lease.py",
+        "src/precis/workers/job_types/repo_release.py",
         "src/precis/workers/factory_git.py",
         "src/precis/workers/factory_git_mirror.py",
     ],
