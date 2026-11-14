@@ -3553,6 +3553,138 @@ def test_push_branch_runs_in_the_ops_repo_not_the_tree(
         assert cwd != tree and tree not in cwd.parents
 
 
+class _FakeOrigin:
+    """A scripted origin for the slice-branch push (gr665602): answers
+    ``ls-remote`` from ``tips`` and applies a push's ``--force-with-lease``
+    the way git does — refused as ``stale info`` when the expectation is
+    not the current tip (empty = the ref must be absent)."""
+
+    def __init__(self, tips: dict[str, str]) -> None:
+        self.tips = dict(tips)
+        self.pushes: list[list[str]] = []
+        #: ``ref -> sha`` applied between the ls-remote read and the push.
+        self.move_before_push: dict[str, str] = {}
+
+    def run(
+        self, args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if "ls-remote" in args:
+            out = "".join(
+                f"{sha}\trefs/heads/{ref}\n"
+                for ref, sha in self.tips.items()
+                if f"refs/heads/{ref}" in args
+            )
+            self.tips.update(self.move_before_push)
+            return _proc(out)
+        if "push" not in args:
+            return _proc()  # the ops repo's init / alternates plumbing
+        self.pushes.append(list(args))
+        spec = next(a for a in args if ":refs/heads/" in a and "=" not in a)
+        new, _, dest = spec.partition(":")
+        ref = dest.removeprefix("refs/heads/")
+        lease = next((a for a in args if a.startswith("--force-with-lease=")), None)
+        if lease is None:
+            held = self.tips.get(ref)
+            # Plain push: only a fast-forward; the rebased sha is not one.
+            if held is not None and held != new:
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr=f"! [rejected] {ref} -> {ref} (non-fast-forward)",
+                )
+        else:
+            name, _, expect = lease.removeprefix("--force-with-lease=").partition(":")
+            assert name == dest
+            if self.tips.get(ref, "") != expect:
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr=f"! [rejected] {ref} -> {ref} (stale info)",
+                )
+        self.tips[ref] = new
+        return _proc()
+
+
+def _slice_push_rig(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    origin: _FakeOrigin,
+    sha: str,
+) -> Path:
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", origin.run)
+    real_git = land_slice._git
+    monkeypatch.setattr(
+        land_slice,
+        "_git",
+        lambda args, cwd: (
+            _proc(sha + "\n") if args[:1] == ["rev-parse"] else real_git(args, cwd)
+        ),
+    )
+    return Path(seams["tree"])
+
+
+def test_push_branch_rebased_slice_overwrites_its_own_earlier_push(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr665602: a slice already on origin and then rebased (a rebase
+    conflict brief, a re-arm onto newer main) is pushed under a lease on
+    the tip origin holds, so the rebased history lands instead of the
+    non-fast-forward rejection that burned the retry ladder."""
+    old, new = "a" * 40, "b" * 40
+    origin = _FakeOrigin({"slice/42": old})
+    tree = _slice_push_rig(seams, monkeypatch, origin, new)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note == "branch push of slice/42: on origin"
+    assert origin.tips["slice/42"] == new
+    assert f"--force-with-lease=refs/heads/slice/42:{old}" in origin.pushes[0]
+
+
+def test_push_branch_first_push_expects_the_ref_absent(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _FakeOrigin({})
+    tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
+    assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
+    assert "--force-with-lease=refs/heads/slice/42:" in origin.pushes[0]
+    assert origin.tips["slice/42"] == "c" * 40
+
+
+def test_push_branch_lease_refused_when_someone_else_moved_the_branch(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr665602: the branch moves between the tip read and the push — the
+    lease refuses, the note still carries FAILED (run_slice raises on it)
+    and origin keeps the other writer's tip."""
+    old, theirs, new = "a" * 40, "d" * 40, "b" * 40
+    origin = _FakeOrigin({"slice/42": old})
+    origin.move_before_push = {"slice/42": theirs}
+    tree = _slice_push_rig(seams, monkeypatch, origin, new)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note.startswith("branch push of slice/42: FAILED (lease refused")
+    assert old[:9] in note
+    assert origin.tips["slice/42"] == theirs
+
+
+def test_push_branch_unreadable_origin_falls_back_to_the_plain_push(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _FakeOrigin({})
+    tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env: None
+    )
+    assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
+    assert not any(a.startswith("--force-with-lease") for a in origin.pushes[0])
+
+
 def test_poll_before_not_before_does_nothing(
     seams: dict[str, Any], clock: dict[str, datetime]
 ) -> None:

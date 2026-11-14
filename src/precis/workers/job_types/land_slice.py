@@ -5153,8 +5153,20 @@ def _push_branch(tree: Path, branch: str) -> str:
     ``url.insteadOf`` redirect would meet the token (review td660513
     finding 2) — the push runs in a fresh ops repo that borrows the
     object store by alternates. One note for the job event; never
-    raises."""
+    raises.
+
+    The push is lease-guarded (gr665602, after gr658662): a slice branch
+    is factory-owned with one writer, so a rebased re-push of a slice
+    already on origin must overwrite our own earlier push — a plain push
+    is rejected non-fast-forward and burned the whole retry ladder. No
+    launch tip of ``slice/<id>`` is recorded anywhere (the mirror's launch
+    tips cover the land refs, not the slice branch), so the lease names
+    the tip ``ls-remote`` reads immediately before the push: an empty
+    expectation when the branch is not on origin yet. A move between that
+    read and the push is refused (``lease refused``) and still fails the
+    caller; an unreadable origin falls back to the plain push."""
     ops: Path | None = None
+    remote: dict[str, str] | None = None
     try:
         root = _rs.slice_root()
         url = _github_url(root)
@@ -5172,6 +5184,10 @@ def _push_branch(tree: Path, branch: str) -> str:
         )
         if ops is None:
             return f"branch push of {branch}: FAILED (no ops repo)"
+        remote = _factory_git_mirror.ls_remote(url, (branch,), env=env)
+        lease: list[str] = []
+        if remote is not None:
+            lease = [f"--force-with-lease=refs/heads/{branch}:{remote.get(branch, '')}"]
         proc = _factory_git_mirror._run(
             [
                 "git",
@@ -5181,6 +5197,7 @@ def _push_branch(tree: Path, branch: str) -> str:
                 "push",
                 url,
                 f"{sha}:refs/heads/{branch}",
+                *lease,
             ],
             cwd=ops,
             env=_factory_git_mirror.trusted_env(env),
@@ -5193,6 +5210,12 @@ def _push_branch(tree: Path, branch: str) -> str:
     if proc.returncode == 0:
         return f"branch push of {branch}: on origin"
     err = (proc.stderr or proc.stdout or "").strip()[:200]
+    if "stale info" in err:
+        seen = (remote or {}).get(branch, "absent")[:9]
+        return (
+            f"branch push of {branch}: FAILED (lease refused — {branch} moved "
+            f"on origin since {seen}: {err})"
+        )
     return f"branch push of {branch}: FAILED ({err})"
 
 
