@@ -12,10 +12,22 @@ from __future__ import annotations
 import pytest
 
 from precis.errors import BadInput
+from precis.graph.garden import apply as doors
 from precis.graph.garden.apply import apply_merge
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
+from tests.test_garden_memory_apply import _apply
+from tests.test_garden_memory_retirement_undo import (
+    _propose as _garden_proposal,
+)
+from tests.test_garden_memory_retirement_undo import (
+    _record as _retirement_record,
+)
+from tests.test_garden_memory_retirement_undo import (
+    _successor,
+    _thread,
+)
 
 _Q = "consideration candidate topic"
 
@@ -1340,3 +1352,139 @@ def test_garden_merge_winner_side_judgments_untouched(store: Store) -> None:
     # material change to either pinned revision.
     found = store.consideration_exclusions(scope)
     assert found.excluded == frozenset({surv})
+
+
+# ── review td662210 FIX: garden retirement doors refuse judged refs ────
+#
+# ``apply_supersede`` / ``apply_retire`` / a split or compact retire all
+# reach the memory delete door — ``migrate_links`` →
+# ``migrate_considerations`` — from ``_retirement_snapshot``. The
+# ``garden_retirement`` record snapshots links only: a re-pointed pin, a
+# resolved pair, or a ``withdrawn_at`` the undo's ``delete_links``
+# stamps on a migrated ``considered`` edge cannot be replayed. The
+# apply refuses live judgments on the target or a canonical pair; the
+# undo refuses live judgments naming the recorded scope.
+
+
+def test_garden_retire_refuses_scope_with_live_verdict(store: Store) -> None:
+    """A live judgment naming the retirement target refuses the apply
+    (review td662210): the links-only snapshot could not replay the
+    re-pointed pin or a withdrawn verdict."""
+    target = _thread(store)
+    src = _mk_paper(store, slug="cv-rt1", title="RT1", text=f"{_Q} rt1.")
+    _judge(store, target, src, verdict="not-useful", reason="off-axis")
+    prop = _garden_proposal(store, target, "retire")
+    with pytest.raises(doors.MergeRefused, match="consideration") as exc:
+        _apply(store, prop)
+    assert exc.value.reason == "apply_refused"
+    assert _live(store, target)
+    edges = store.links_for(target, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].meta["verdict"] == "not-useful"
+    hist = _history(store, target)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+
+
+def test_garden_retire_refuses_judged_source(store: Store) -> None:
+    """The source pin is symmetric: a memory judged AS a source refuses
+    — the scope's verdict would strand on the tombstone."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    target = _thread(store)
+    _judge(store, scope, target, reason="off-axis")
+    prop = _garden_proposal(store, target, "retire")
+    with pytest.raises(doors.MergeRefused, match="consideration"):
+        _apply(store, prop)
+    assert _live(store, target)
+
+
+def test_garden_supersede_refuses_judged_loser(store: Store) -> None:
+    """The supersede door runs the same snapshot: the delete migrates the
+    loser's edges onto the successor, so a live verdict on the loser
+    refuses before any ledger reconcile runs."""
+    successor = _successor(store)
+    target = _thread(store, successor=successor)
+    src = _mk_paper(store, slug="cv-rt2", title="RT2", text=f"{_Q} rt2.")
+    _judge(store, target, src, reason="off-axis")
+    prop = _garden_proposal(store, target, "supersede")
+    with pytest.raises(doors.MergeRefused, match="consideration"):
+        _apply(store, prop)
+    assert _live(store, target)
+
+
+def test_garden_supersede_refuses_canonical_pair_verdict(store: Store) -> None:
+    """The successor side: a migrated ``considered`` copy lands in the
+    undo record's ``removed`` set, and deleting it through the door
+    withdraws the WHOLE canonical pair — including verdicts the
+    successor already carried. A live judgment on a pair the migration
+    would collapse onto refuses (review td662210)."""
+    successor = _successor(store)
+    target = _thread(store, successor=successor)
+    src = _mk_paper(store, slug="cv-rt3", title="RT3", text=f"{_Q} rt3.")
+    # A live considered edge whose judgments are all withdrawn — the
+    # residue a garden undo leaves when it restores the edge row but
+    # cannot un-stamp history — carries no live verdict on the target.
+    _judge(store, target, src, verdict="not-useful", reason="stale marker")
+    with store.pool.connection() as c:
+        c.execute("UPDATE considerations SET withdrawn_at = now()")
+    _judge(store, successor, src, reason="the canonical pair was judged")
+    prop = _garden_proposal(store, target, "supersede")
+    with pytest.raises(doors.MergeRefused, match="consideration"):
+        _apply(store, prop)
+    assert _live(store, target)
+    # The successor's own verdict is untouched.
+    hist = _history(store, successor)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+
+
+def test_garden_retire_allows_withdrawn_verdicts(store: Store) -> None:
+    """Withdrawn judgments are terminal history: withdraw first and the
+    retirement applies; the undo restores the node while the stamped
+    rows keep their honest pins."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    target = _thread(store)
+    src = _mk_paper(store, slug="cv-rt5", title="RT5", text=f"{_Q} rt5.")
+    _judge(store, scope, target, reason="off-axis")
+    store.remove_link(src_ref_id=scope, dst_ref_id=target, relation="considered")
+    prop = _garden_proposal(store, target, "retire")
+    _apply(store, prop)
+    assert not _live(store, target)
+    hist = _history(store, scope)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is not None
+    record = _retirement_record(store, prop)
+    doors.undo_retirement(store, record["retirement_id"], actor="operator")
+    assert _live(store, target)
+
+
+def test_garden_retirement_undo_refuses_migrated_judgments(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The undo side of the review's FIX: a record written with live
+    judgments (pre-guard, or raced past it) has the delete's
+    ``migrate_considerations`` re-point them onto the successor. The
+    replay cannot un-pin them, and deleting the migrated ``considered``
+    edge would stamp the pair withdrawn — ``undo_retirement`` refuses
+    rather than corrupt the ledger."""
+    successor = _successor(store)
+    target = _thread(store, successor=successor)
+    src = _mk_paper(store, slug="cv-rt4", title="RT4", text=f"{_Q} rt4.")
+    _judge(store, target, src, reason="off-axis")
+    prop = _garden_proposal(store, target, "supersede")
+    # Simulate a pre-guard record: the apply migrates the judgment.
+    monkeypatch.setattr(doors, "_guard_retirement_considerations", lambda *a, **k: None)
+    _apply(store, prop)
+    monkeypatch.undo()
+    record = _retirement_record(store, prop)
+    # Sanity: the migrate re-pointed the judgment onto the successor.
+    hist = _history(store, successor)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+    with pytest.raises(BadInput, match="consideration"):
+        doors.undo_retirement(store, record["retirement_id"], actor="operator")
+    # Nothing was replayed: the target stays retired, the judgment
+    # stays unwithdrawn on the canonical pair — not silently withdrawn.
+    tomb = store.get_ref(kind="memory", id=target, include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+    hist = _history(store, successor)
+    assert len(hist) == 1 and hist[0]["withdrawn_at"] is None
+    # The migrated edge still carries the verdict — no silent ledger loss.
+    edges = store.links_for(successor, relation="considered", direction="out")
+    assert len(edges) == 1 and edges[0].meta["verdict"] == "not-useful"

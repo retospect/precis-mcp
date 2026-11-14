@@ -67,7 +67,13 @@ pair collapse to one — the write door's ref-pair granularity carried
 across dedup (review td662210). The garden merge
 (:mod:`precis.graph.garden.apply`) is a different door — its undo
 record snapshots links only, so until it grows an undo-safe reconcile
-it refuses a loser carrying a live judgment outright.
+it refuses a loser carrying a live judgment outright. The garden
+retirement doors (supersede, retire, split's retire fate, a compact
+shell retire) share the rule: they reach ``migrate_links`` through the
+memory delete door with the same links-only snapshot, so the apply
+refuses live judgments naming the target or a canonical pair the
+migration would collapse onto, and the undo refuses live judgments
+naming the recorded scope.
 """
 
 from __future__ import annotations
@@ -496,7 +502,11 @@ class ConsiderationMixin:
         the same pass, ``apply_merge`` refuses a loser carrying a live
         (unwithdrawn) judgment outright rather than strand it on the
         retired endpoint or let a collapsed edge keep the wrong twin's
-        verdict.
+        verdict. The garden retirement doors (supersede, retire,
+        split/compact shell retire) take the same stance in
+        ``_retirement_snapshot``, and ``undo_retirement`` refuses while
+        a live judgment names the recorded scope — the snapshot cannot
+        replay a migrated pin or an un-withdrawn verdict.
         """
         legacy = {
             (int(s), int(d))

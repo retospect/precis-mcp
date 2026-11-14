@@ -633,10 +633,13 @@ Rules that bite:
   current verdict is its LATEST judgment — whichever side it was judged
   on. A verdict judged against different content goes stale on the
   canonical ref (real reconsideration); an identical-content merge keeps
-  it valid. The garden merge apply door is the exception: its undo
-  record has no judgment reconcile yet, so it refuses a merge loser
-  carrying a live verdict — withdraw the pair's `considered` edge
-  first, or merge through the dedup/supersede door.
+  it valid. The garden apply doors are the exception: their undo
+  records snapshot links only, so a merge loser — or a retire /
+  supersede / split / compact-retire target or canonical pair —
+  carrying a live verdict is refused. Withdraw the pair's `considered`
+  edge first, or go through the unreviewed merge/delete door, which
+  reconciles the ledger. `garden undo` likewise refuses while a live
+  judgment names the retired scope.
 
 Inspect the ledger — current verdicts, the reopen queue, and the
 append-only judgment history (page it with `args={'limit': 20,

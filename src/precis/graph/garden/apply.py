@@ -65,6 +65,17 @@ record snapshots links only, so judgments re-pointed or re-resolved here
 could not be replayed on ``undo_merge`` — and the paper body move's pin
 re-anchor would already have moved them. Withdrawn rows are terminal
 history and may keep the honest pre-merge pin.
+
+The retirement doors share the rule: supersede, retire, split's retire
+fate and a compact shell retire all reach the memory delete door —
+``migrate_links`` → ``migrate_considerations`` — through
+``_retirement_snapshot``, which refuses while an unwithdrawn judgment
+names the target, or sits on a canonical pair a migrated ``considered``
+edge would collapse onto (``undo_retirement``'s door-withdrawal blast
+would stamp verdicts the successor already carried). The undo side
+guards too: ``undo_retirement`` and the compact replay refuse while a
+live judgment names the recorded scope — the links-only snapshot can
+neither re-pin a migrated judgment nor un-withdraw a verdict.
 """
 
 from __future__ import annotations
@@ -188,17 +199,17 @@ def _check_reviewed_merge(
             )
 
 
-def _live_consideration_count(conn: Any, ref_id: int) -> int:
-    """Unwithdrawn ``considerations`` rows naming ``ref_id`` on either
-    pin — the live verdict state a merge would strand or mis-carry.
-    Withdrawn rows are terminal history: their pre-merge pin stays
-    honest provenance, the same way the merge record keeps
-    ``prior_ref_id`` (review td662210)."""
+def _live_consideration_count(conn: Any, ref_ids: list[int]) -> int:
+    """Unwithdrawn ``considerations`` rows naming any of ``ref_ids`` on
+    either pin — the live verdict state a merge or retirement would
+    strand or mis-carry. Withdrawn rows are terminal history: their
+    pre-merge pin stays honest provenance, the same way the merge
+    record keeps ``prior_ref_id`` (review td662210)."""
     row = conn.execute(
         "SELECT count(*) FROM considerations "
-        "WHERE (scope_ref_id = %(r)s OR source_ref_id = %(r)s) "
+        "WHERE (scope_ref_id = ANY(%(r)s) OR source_ref_id = ANY(%(r)s)) "
         "  AND withdrawn_at IS NULL",
-        {"r": ref_id},
+        {"r": ref_ids},
     ).fetchone()
     return int(row[0]) if row else 0
 
@@ -319,7 +330,7 @@ def apply_merge(
         # judgments are untouched by the repoint and need none. Re-checked
         # before the retire below so a judgment raced in mid-merge rolls
         # the whole transaction back instead of stranding.
-        n_considerations = _live_consideration_count(conn, loser_id)
+        n_considerations = _live_consideration_count(conn, [loser_id])
         if n_considerations:
             raise BadInput(
                 f"ref {loser_id} carries {n_considerations} live "
@@ -513,7 +524,7 @@ def apply_merge(
         # in mid-merge is visible under READ COMMITTED now — refuse and
         # roll the whole transaction back rather than strand it on the
         # ref the retire below tombstones.
-        if _live_consideration_count(conn, loser_id):
+        if _live_consideration_count(conn, [loser_id]):
             raise BadInput(
                 f"ref {loser_id} gained a live consideration judgment "
                 "mid-merge; retry the merge"
@@ -2072,6 +2083,108 @@ def _retirement_chunks(conn: Any, links: list[dict[str, Any]]) -> list[dict[str,
     ]
 
 
+def _guard_retirement_considerations(
+    conn: Any, target: int, successor: int | None, links: list[dict[str, Any]]
+) -> None:
+    """Refuse the delete route while a live judgment rides it (review
+    td662210, gr662069).
+
+    The ``garden_retirement`` snapshot records links only. When the
+    delete resolves a successor, ``migrate_links`` →
+    ``migrate_considerations`` re-points every judgment onto the
+    canonical refs, and ``undo_retirement`` removes the migrated edges
+    through the withdrawal door — moved pins and ``withdrawn_at``
+    stamps a links-only replay cannot restore. Without a successor the
+    raw link delete orphans live judgments under a retired scope — a
+    withdrawal the door should take deliberately instead. So an
+    unwithdrawn judgment naming the target refuses outright, and — with
+    a successor resolved — so does one sitting on a canonical pair a
+    migrated ``considered`` edge would collapse onto: the undo's
+    ref-pair withdrawal would stamp verdicts the successor already
+    carried. Withdrawn rows and unrelated successor verdicts are
+    undisturbed and need no refusal.
+    """
+    if _live_consideration_count(conn, [target]):
+        raise MergeRefused(
+            "apply_refused",
+            f"me{target} carries live consideration judgment(s); a "
+            "retirement's undo record snapshots links only — re-pointed "
+            "or withdrawn verdicts cannot be replayed",
+            next="withdraw the pair's 'considered' edges (the removal "
+            "stamps each judgment) and retry, or delete through the "
+            "unreviewed memory door, which reconciles the ledger via "
+            "store.migrate_links",
+        )
+    if successor is None:
+        return
+    sources = sorted(
+        int(link["dst_ref_id"])
+        for link in links
+        if link["relation"] == "considered" and int(link["src_ref_id"]) == target
+    )
+    scopes = sorted(
+        int(link["src_ref_id"])
+        for link in links
+        if link["relation"] == "considered" and int(link["dst_ref_id"]) == target
+    )
+    n = 0
+    if sources:
+        # target→X edges migrate onto successor→X; the undo's pair
+        # withdrawal would stamp the successor's own judgments on each
+        # such pair — verdicts this retirement never touched.
+        n += int(
+            conn.execute(
+                "SELECT count(*) FROM considerations "
+                "WHERE scope_ref_id = %(s)s AND source_ref_id = ANY(%(f)s) "
+                "  AND withdrawn_at IS NULL",
+                {"s": successor, "f": sources},
+            ).fetchone()[0]
+        )
+    if scopes:
+        # X→target edges migrate onto X→successor — the same blast on
+        # the pairs where the successor is the judged source.
+        n += int(
+            conn.execute(
+                "SELECT count(*) FROM considerations "
+                "WHERE source_ref_id = %(s)s AND scope_ref_id = ANY(%(f)s) "
+                "  AND withdrawn_at IS NULL",
+                {"s": successor, "f": scopes},
+            ).fetchone()[0]
+        )
+    if n:
+        raise MergeRefused(
+            "apply_refused",
+            f"me{successor} carries {n} live consideration judgment(s) on "
+            "pairs migrated 'considered' edges would collapse onto; "
+            "undo's withdrawal stamp cannot be replayed",
+            next="withdraw the canonical pair's 'considered' edge first, "
+            "or delete through the unreviewed memory door, which "
+            "reconciles the ledger via store.migrate_links",
+        )
+
+
+def _guard_undo_considerations(conn: Any, rec: dict[str, Any]) -> None:
+    """Refuse the replay while a live judgment sits in the retired scope.
+
+    The ``garden_retirement`` snapshot restores links only: judgments
+    the delete's ``migrate_considerations`` re-pointed keep their moved
+    pins, and a verdict the migrated ``considered`` edges' door-deletion
+    withdrew stays withdrawn — neither is replayable. ``rec['scope']``
+    is the recorded {target, successor} set; an unwithdrawn judgment
+    naming either side refuses (review td662210).
+    """
+    n = _live_consideration_count(conn, [int(r) for r in rec["scope"]])
+    if n:
+        raise BadInput(
+            f"{n} live consideration judgment(s) name a ref in this "
+            "retirement's scope; the links-only snapshot cannot restore "
+            "a migrated pin or an un-withdrawn verdict",
+            next="inspect the ledger (view='considerations' on the scope "
+            "refs) and withdraw or re-judge the verdicts before retrying "
+            "garden undo",
+        )
+
+
 def _retirement_snapshot(
     store: Store,
     conn: Any,
@@ -2119,6 +2232,7 @@ def _retirement_snapshot(
     links = _retirement_links(conn, scope)
     affected = [l for l in links if target in (l["src_ref_id"], l["dst_ref_id"])]
     _guard_memory_link_measures(conn, affected)
+    _guard_retirement_considerations(conn, target, resolved, links)
     endpoints = sorted(
         {*scope, *(l[k] for l in links for k in ("src_ref_id", "dst_ref_id"))}
     )
@@ -2241,6 +2355,7 @@ def undo_retirement(store: Store, retirement_id: str, *, actor: str) -> dict[str
                 next=f"inspect me{target} and its garden_retirement snapshot; "
                 "reconcile changed endpoints before retrying garden undo",
             )
+        _guard_undo_considerations(conn, rec)
         _guard_memory_link_measures(conn, removed)
         deleted = store.delete_links(
             [l["link_id"] for l in removed],
@@ -3149,6 +3264,7 @@ def _restore_compact_retirement(
             next=f"inspect me{target} and its garden_compact snapshot; "
             "reconcile changed endpoints before retrying garden undo",
         )
+    _guard_undo_considerations(conn, rec)
     _guard_memory_link_measures(conn, removed)
     deleted = store.delete_links([l["link_id"] for l in removed], conn=conn)
     restamped: list[int] = []
