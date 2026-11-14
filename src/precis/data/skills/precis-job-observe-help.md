@@ -210,22 +210,19 @@ where. Each row is
 `host process version@sha jobs=N last=<UTC>`.
 
 The stamp is taken at claim time — `/builds` shows what a process ran
-on its last claim, not what it runs now; an idle lane keeps its
-pre-restart build and `last=` still moves (polls update old jobs). An
-old build is "no claim since the restart", not "deploy did not land" —
-the deploy's post-bounce check (playbook 43) is the authority there.
+on its last claim, not what it runs now. An old build is "no claim
+since the restart", not "deploy did not land" — the deploy's
+post-bounce check (playbook 43) is the authority there.
 
-A fix is live on a process when that process's newest build sha is the fix
-or a descendant of it. Do not judge that by eye: pass the fix's commit as
-`args={'sha': ...}` (or `id='/builds?sha=...'`) and git answers per row —
-`contains_sha=yes` (the build is that commit or descends from it), `no`
-(it does not), or `unknown` when no checkout is reachable, a
-commit was never fetched, or the row has no build sha. `unknown` is
-"cannot tell", never evidence either way. Read per **process**, not per
-host (a host can run several units — the `process=` caution above);
-two builds in the window is a restart boundary — read the newest.
-`precis-status` answers a different question (your own process's build,
-which in a container is not the fleet's).
+A fix is live on a process when that process's newest build sha is the
+fix or descends from it. Judge with `args={'sha': ...}` (or
+`id='/builds?sha=...'`), not by eye: per-row `contains_sha=yes` (that
+commit or a descendant), `no`, or `unknown` (no reachable checkout, sha
+never fetched, or no build sha — "cannot tell", never evidence either
+way). Read per **process**, not per host; two builds in the window is a
+restart boundary — read the newest. `precis-status` answers a different
+question (your own process's build, which in a container is not the
+fleet's).
 
 ## Is the fleet working or idle?
 
