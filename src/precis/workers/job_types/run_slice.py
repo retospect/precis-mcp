@@ -1728,11 +1728,13 @@ class RepoReviewTarget:
     """What a reviewer of a second-repo slice judges (td659522 step 5):
     ``shas`` are the landed commits (7-40 hex as the ``landed:`` comments
     name them, one per landed target, ascending by todo id), ``title`` the
-    targets' ``td<N>: <title>`` lines and ``brief`` their briefs, capped."""
+    targets' ``td<N>: <title>`` lines and ``brief`` their briefs, capped.
+    ``ids`` are the target todo ids, in the order of ``shas``."""
 
     shas: tuple[str, ...]
     title: str
     brief: str
+    ids: tuple[int, ...] = ()
 
 
 _LANDED_SHA_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
@@ -1814,8 +1816,28 @@ def _review_target_repo(
             text = text[:_TARGET_CAP].rstrip() + "\n\n[brief cut here]"
         briefs.append(f"td{tid}:\n\n{text}" if len(ids) > 1 else text)
     return RepoReviewTarget(
-        shas=tuple(shas), title="; ".join(titles), brief="\n\n".join(briefs)
+        shas=tuple(shas),
+        title="; ".join(titles),
+        brief="\n\n".join(briefs),
+        ids=tuple(ids),
     )
+
+
+def _review_sha(store: Any, target: RepoReviewTarget, tip: str) -> str:
+    """The commit a second-repo reviewer's tree is cut at. Several landed
+    commits: the fetched base tip, which has them all as ancestors. One: the
+    target todo's ``meta.landed_sha`` when it is 40 hex and starts with the
+    ``landed:`` comment's sha, else the comment's own (the lander writes
+    nine hex)."""
+    if len(target.shas) != 1:
+        return tip
+    sha = target.shas[0]
+    if target.ids:
+        ref = store.get_ref(kind="todo", id=target.ids[0])
+        full = str(((getattr(ref, "meta", None) or {}).get("landed_sha")) or "").lower()
+        if re.fullmatch(r"[0-9a-f]{40}", full) and full.startswith(sha):
+            return full
+    return sha
 
 
 def _ensure_review_tree(
@@ -1947,6 +1969,69 @@ def _render_repo_review_brief(
         "not tag this todo done: the dispatcher closes it on your verdict.",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _cut_review_tree(
+    store: Any,
+    todo: Any,
+    todo_id: int,
+    profile: _lanes.RepoProfile,
+    root: Path,
+    brief_kwargs: dict[str, Any],
+) -> tuple[Path, str | None]:
+    """The launch half of a second-repo reviewer, after
+    :func:`_prepare_repo`: the fetched base tip, the review target again
+    (it may have changed since the submit-time check), the sha to review
+    (:func:`_review_sha`) and the detached tree at it. Fills
+    ``brief_kwargs["review"]`` for :func:`render_brief`. Returns the tree
+    and its head sha. Every refusal is a :class:`_ReviewRefusal`."""
+    tip = fetch_base_tip(profile, root)
+    if tip is None:
+        raise _ReviewRefusal(
+            f"git fetch origin {profile.base} (or its oracle check) failed for "
+            f"the '{profile.name}' repo; next: check the network and the "
+            "factory git token"
+        )
+    target = _review_target_repo(store, todo.meta, profile)
+    if isinstance(target, str):
+        raise _ReviewRefusal(target)
+    sha = _review_sha(store, target, tip)
+    tree = _ensure_review_tree(profile, root, todo_id, sha, tip)
+    if isinstance(tree, str):
+        raise _ReviewRefusal(tree)
+    brief_kwargs["review"] = dict(
+        sha=sha,
+        tip=tip,
+        target_title=target.title,
+        target_brief=target.brief,
+        shas=target.shas,
+    )
+    head = _git(["rev-parse", "HEAD"], tree)
+    full = head.stdout.strip() if head.returncode == 0 else ""
+    return tree, full if re.fullmatch(r"[0-9a-f]{40}", full) else None
+
+
+def _drop_review_tree(handle: dict[str, Any]) -> None:
+    """Remove a second-repo reviewer's detached tree after its run, whatever
+    the outcome: ``git worktree remove --force`` through the trusted
+    :func:`_git`, then a prune. Only a ``slice-td<N>`` directory under the
+    repo's own worktrees dir is touched. A failure is logged, not raised."""
+    try:
+        repo = str(handle.get("repo") or "")
+        tree = Path(str(handle.get("worktree") or ""))
+        root = slice_root_for(repo)
+        if tree.parent != worktrees_dir(root) or not tree.name.startswith("slice-td"):
+            log.warning("run_slice: review tree %s is not under %s", tree, root)
+            return
+        if tree.exists():
+            gone = _git(["worktree", "remove", "--force", str(tree)], root)
+            if gone.returncode != 0 or tree.exists():
+                shutil.rmtree(tree, ignore_errors=True)
+        _git(["worktree", "prune"], root)
+        if tree.exists():
+            log.warning("run_slice: review tree %s was not removed", tree)
+    except Exception:
+        log.warning("run_slice: review tree drop failed", exc_info=True)
 
 
 #: The lint the land runs on the whole tree before it merges, in the
@@ -2253,13 +2338,16 @@ def render_brief(
     adapter: str | None = None,
     base: str = "main",
     profile: _lanes.RepoProfile | None = None,
+    review: Mapping[str, Any] | None = None,
 ) -> str:
     """The prompt a slice session starts from. ``base`` is the branch the
     worktree is cut from (``main``, or a release fix's ``release/r<N>``).
     ``profile`` (td659522) names the repo: ``None`` or the default repo's
     profile renders the precis brief below; any other profile renders
     :func:`_render_repo_brief` (builder and Devin variants only — a
-    generator brief for another repo raises ``ValueError``).
+    generator brief for another repo raises ``ValueError``, except the
+    reviewer of a profile whose ``reviewer`` is set: its brief is
+    :func:`_render_repo_review_brief` over the ``review`` keywords).
     Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
@@ -2274,6 +2362,13 @@ def render_brief(
     the scope's: ``reader`` reads only, ``triage`` also names its write
     set (gr574082)."""
     if profile is not None and profile.name != _lanes.DEFAULT_REPO:
+        if generator and role == "reviewer" and profile.reviewer:
+            if review is None:
+                raise ValueError(
+                    "render_brief: a repo reviewer's brief needs review=; "
+                    f"none for repo {profile.name!r}"
+                )
+            return _render_repo_review_brief(profile, todo_id=todo_id, **review)
         if generator:
             raise ValueError(
                 "render_brief: generator briefs are precis-only; "
@@ -2702,10 +2797,28 @@ def _slice_deny(store: Any, repo: str, lane: _lanes.Lane) -> tuple[str, ...]:
     return lane.deny_write_paths
 
 
-def _repo_param_rejection(store: Any, todo_id: Any, repo: str) -> str | None:
+def _repo_reviewer(profile: _lanes.RepoProfile | None, meta: Any) -> bool:
+    """A reviewer node of a non-default repo whose profile admits one
+    (td659522 step 5; ``RepoProfile.reviewer``)."""
+    return (
+        profile is not None
+        and profile.name != _lanes.DEFAULT_REPO
+        and profile.reviewer
+        and node_kind(meta) == "generator"
+        and _generate_role(meta) == "reviewer"
+    )
+
+
+def _repo_param_rejection(
+    store: Any, todo_id: Any, repo: str, *, target: bool = True
+) -> str | None:
     """td659522 step 1: ``params.repo`` must name a profile, equal the repo
     the todo resolves to (:func:`slice_repos`; no tag is the default), and a
-    non-default repo takes no generator node. ``store=None`` checks only
+    non-default repo takes no generator node, except the reviewer of a
+    profile that sets ``reviewer`` (step 5): it also needs a review target
+    that resolves (:func:`_review_target_repo`; the refusal ends in
+    ``next:``), unless ``target`` is false (``submit`` checks it again at
+    launch, where a refusal burns no attempt). ``store=None`` checks only
     that the repo is known."""
     if _lanes.repo_profile(repo) is None:
         return (
@@ -2731,6 +2844,15 @@ def _repo_param_rejection(store: Any, todo_id: Any, repo: str) -> str | None:
         and ref is not None
         and node_kind(ref.meta) == "generator"
     ):
+        profile = _lanes.repo_profile(repo)
+        if _repo_reviewer(profile, ref.meta):
+            assert profile is not None
+            if not target:
+                return None
+            got = _review_target_repo(store, ref.meta, profile)
+            if isinstance(got, str):
+                return f"run_slice: todo {todo_id}: {got}"
+            return None
         return (
             f"run_slice: todo {todo_id}: generator and reviewer nodes are "
             "precis-only until the repo reviewer exists (td659522 step 5); "
@@ -2813,6 +2935,17 @@ def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
         raise RuntimeError(
             f"git branch -m {legacy} {branch} failed: {move.stderr.strip()}"
         )
+
+
+#: ``meta.attempt_free`` of a second-repo reviewer that could not launch (the
+#: repo, its review target or its tree was not ready): no attempt is spent.
+REVIEW_WAIT_KEY = "review-wait"
+
+
+class _ReviewRefusal(RuntimeError):
+    """A second-repo reviewer's pre-launch refusal (td659522 step 5); the
+    text is a one-sentence reason ending in ``next:``. Submit gives the
+    lease back with ``meta.attempt_free = "review-wait"``."""
 
 
 class _IndexLockWait(RuntimeError):
@@ -3894,7 +4027,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     # refusals above.
     repo = job_repo(params)
     reason = _repo_rejection(store, todo_id) or _repo_param_rejection(
-        store, todo_id, repo
+        store, todo_id, repo, target=False
     )
     if reason is not None:
         ctx.record_failure(reason)
@@ -4274,12 +4407,16 @@ def submit(ctx: Any, spec: Any) -> Any:
             + "\n".join(f"- `{path}`" for path in sorted(artifacts))
         )
     is_generator = node_kind(todo.meta) == "generator"
+    # td659522 step 5: a reviewer of a second-repo slice reads the landed
+    # commit in a detached tree of that repo's clone, with no MCP of either
+    # kind (its verdict is the first line of its final message).
+    repo_review = _repo_reviewer(profile, todo.meta)
     # The scoped read grant is a code-class affordance of the read lanes
     # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
     # scope to mint, anything else is today's no-MCP launch (ships dark).
     # A repo whose tree carries no precis ``.mcp.json`` (profile.mcp false)
     # gets no MCP of either kind.
-    use_mcp = adapter.mcp and (profile is None or profile.mcp)
+    use_mcp = adapter.mcp and (profile is None or profile.mcp) and not repo_review
     read_scope = (
         _read_mcp_scope()
         if adapter.read_mcp
@@ -4301,7 +4438,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         mcp=use_mcp,
         deny_paths=_slice_deny(store, repo, lane),
         lane_models=lane.models,
-        target=_review_target(store, todo.meta),
+        target=None if repo_review else _review_target(store, todo.meta),
         adapter=adapter.name,
     )
     # release-train T1: a release fix branches from the release it lands on.
@@ -4324,17 +4461,26 @@ def submit(ctx: Any, spec: Any) -> Any:
             repo_root = slice_root_for(repo)
             not_ready = _prepare_repo(profile, repo_root)
             if not_ready is not None:
-                raise RuntimeError(not_ready)
-        _clear_slice_index_lock(
-            ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
-        )
-        if profile is None:
-            tree = _ensure_worktree(
-                slice_root(), todo_id, *(() if base == "main" else (base,))
+                raise (_ReviewRefusal if repo_review else RuntimeError)(not_ready)
+        review_head: str | None = None
+        if repo_review:
+            assert profile is not None and repo_root is not None
+            tree, review_head = _cut_review_tree(
+                store, todo, todo_id, profile, repo_root, brief_kwargs
             )
         else:
-            assert repo_root is not None
-            tree = _ensure_worktree(repo_root, todo_id, base=profile.base, fetched=True)
+            _clear_slice_index_lock(
+                ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
+            )
+            if profile is None:
+                tree = _ensure_worktree(
+                    slice_root(), todo_id, *(() if base == "main" else (base,))
+                )
+            else:
+                assert repo_root is not None
+                tree = _ensure_worktree(
+                    repo_root, todo_id, base=profile.base, fetched=True
+                )
         governed: tuple[str, ...] | None = ()
         if profile is None:
             # gr657066: governs:factory skills join the lane's deny set —
@@ -4351,7 +4497,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         deny = _slice_deny(store, repo, lane) + governed
         brief_kwargs["deny_paths"] = deny
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
-        _install_acceptance_tests(tree, artifacts, deny)
+        if not repo_review:
+            _install_acceptance_tests(tree, artifacts, deny)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
@@ -4481,6 +4628,16 @@ def submit(ctx: Any, spec: Any) -> Any:
         _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
         ctx.record_failure(f"run_slice: {exc}")
         return None
+    except _ReviewRefusal as exc:
+        # A reviewer has no work to burn an attempt on: the repo, the
+        # target or the tree is not ready. Same give-back as the lock wait;
+        # a sustained identical run is plan_dispatch's ask.
+        _drop_submit_key(ctx)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: REVIEW_WAIT_KEY})
+        ctx.record_failure(f"run_slice: td{todo_id} review not launched: {exc}")
+        return None
     except _IndexLockWait as exc:
         # gr650484: a live git's index.lock in the reused tree is a wait,
         # not the build's failure — the lease goes back unburned and
@@ -4546,6 +4703,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     if profile is not None:
         # Later phases read the repo off the handle, never the tag again.
         handle["repo"] = repo
+    if repo_review:
+        # The poll judges the read-only brief against this head and drops
+        # the detached tree when the run ends.
+        handle["review"] = {"head": review_head}
     if atif_path is not None:
         handle["atif"] = str(atif_path)
     if adapter.name == "devin_tree" and not is_generator:
@@ -5998,7 +6159,40 @@ def _release_mint_holds(ctx: Any, handle: dict[str, Any], todo_id: int) -> list[
 
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
-    exited, the handoff, the branch state and the terminal status."""
+    exited, the handoff, the branch state and the terminal status. A
+    second-repo reviewer's detached tree (``handle["review"]``) is removed
+    once the run is over, whatever its outcome (td659522 step 5)."""
+    done = _poll_session(ctx, handle)
+    if done and isinstance(handle, dict) and isinstance(handle.get("review"), dict):
+        _drop_review_tree(handle)
+    return done
+
+
+def _review_violation(
+    tree: Path, review: dict[str, Any], dirty: int | None, commits: list[str]
+) -> str | None:
+    """Why a second-repo reviewer broke its read-only brief, else ``None``:
+    it moved the detached tree's ``HEAD`` (a commit, a checkout), left
+    commits ahead of the base, or left uncommitted paths."""
+    parts: list[str] = []
+    want = review.get("head")
+    now = _git(["rev-parse", "HEAD"], tree)
+    head = now.stdout.strip() if now.returncode == 0 else ""
+    if want and head and head != want:
+        parts.append(f"HEAD moved to {head[:12]}")
+    if commits:
+        parts.append(f"{len(commits)} commit(s) ahead of the base")
+    if dirty:
+        parts.append(f"{dirty} uncommitted path(s)")
+    if not parts:
+        return None
+    return (
+        "the review session left " + ", ".join(parts) + " in its detached "
+        "tree, against a read-only brief; nothing is landed"
+    )
+
+
+def _poll_session(ctx: Any, handle: Any) -> bool:
     if not isinstance(handle, dict):
         _drop_submit_key(ctx)
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
@@ -6233,18 +6427,34 @@ def poll(ctx: Any, handle: Any) -> bool:
     if unscrubbed:
         commits = [ln for ln in commits if not any(n in ln for n in _KIMI_ENV_NAMES)]
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
+    # A second-repo reviewer has no branch and no commits to land; its tree
+    # is the landed commit, read-only. A session that changed it is noted
+    # and still posts its verdict (posted above); a generator never lands.
+    review = handle.get("review")
+    review_note = (
+        _review_violation(tree, review, dirty, commits)
+        if isinstance(review, dict) and not vanished
+        else None
+    )
     vendor = "claude" if adapter.name == "claude_p" else adapter.name
     error_note = (
         f", {vendor} reported an error" if is_error and result is not None else ""
+    )
+    tree_label = (
+        "Detached review tree"
+        if isinstance(review, dict)
+        else f"Branch {slice_branch(todo_id)}"
     )
     summary = [
         f"run_slice td{todo_id} on lane {lane}: exit "
         f"{'unknown (process gone, no exit status)' if exit_code is None else exit_code}"
         f"{error_note}.",
-        f"Branch {slice_branch(todo_id)} in {tree}: "
+        f"{tree_label} in {tree}: "
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
         f"{len(commits)} commit(s) ahead of {base}.",
     ]
+    if review_note:
+        summary.append(f"Read-only violation: {review_note}.")
     if denied:
         summary.append(f"Deny check: {denied}.")
     if budget_note is not None:
@@ -6846,6 +7056,8 @@ def release(ctx: Any, handle: Any) -> None:
             _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         except Exception:  # pragma: no cover — the lease still releases
             log.warning("run_slice: slice-token revoke on release failed")
+    if isinstance(handle, dict) and isinstance(handle.get("review"), dict):
+        _drop_review_tree(handle)
     lane = meta.get("lane")
     if lane and f"claimed-by:lane-{lane}" not in _open_tag_values(ctx.store, todo_id):
         return

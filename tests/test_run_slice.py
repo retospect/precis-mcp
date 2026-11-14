@@ -11474,3 +11474,424 @@ def test_changed_paths_returns_a_non_ascii_path_unquoted(tmp_path: Path) -> None
     paths = run_slice.changed_paths(repo, base="main")
     assert paths == [".github/workflows/dø.yml"]
     assert run_slice.deny_violations(paths, lanes.FACTORY_DENY_WRITE_PATHS) == paths
+
+
+# ── Second-repo reviewer, submit and poll wiring (td659522 step 5, R3) ──
+
+_REVIEW_TIP = "c" * 40
+_REVIEW_FULL = _SHA9 + "d" * 31
+
+
+@pytest.fixture
+def cat_reviewer(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+) -> dict[str, Any]:
+    """``catpath`` with ``reviewer=True`` on a patched profile (no real
+    profile sets it), the fetch and the tree cut stubbed; ``order`` records
+    the launch steps in the order they ran."""
+    profile = replace(catpath_build["profile"], reviewer=True)
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    state: dict[str, Any] = {
+        "profile": profile,
+        "root": catpath_build["root"],
+        "order": [],
+        "ensure": [],
+        "tip": _REVIEW_TIP,
+        "tree_refusal": None,
+        "prepare_refusal": None,
+        "real_ensure": run_slice._ensure_review_tree,
+    }
+    stub_prepare = run_slice._prepare_repo
+
+    def prepare(prof: Any, where: Path) -> str | None:
+        state["order"].append("prepare")
+        catpath_build["refusal"] = state["prepare_refusal"]
+        return stub_prepare(prof, where)
+
+    def fetch(prof: Any, where: Path) -> str | None:
+        state["order"].append("tip")
+        tip: str | None = state["tip"]
+        return tip
+
+    def ensure(prof: Any, root: Path, todo_id: int, sha: str, tip: str) -> Path | str:
+        state["order"].append("ensure")
+        state["ensure"].append((prof, root, todo_id, sha, tip))
+        if state["tree_refusal"] is not None:
+            return str(state["tree_refusal"])
+        tree = root / ".claude" / "worktrees" / f"slice-td{todo_id}"
+        tree.mkdir(parents=True, exist_ok=True)
+        return tree
+
+    monkeypatch.setattr(run_slice, "_prepare_repo", prepare)
+    monkeypatch.setattr(run_slice, "fetch_base_tip", fetch)
+    monkeypatch.setattr(run_slice, "_ensure_review_tree", ensure)
+    return state
+
+
+def _reviewer_store(
+    *,
+    comments: tuple[str, ...] = (f"landed: {_SHA9} — add grid",),
+    meta: dict[str, Any] | None = None,
+) -> _Store:
+    """td7 landed in catpath, td42 its catpath-tagged reviewer."""
+    store = _Store()
+    store.add_todo(
+        7,
+        "Widen the grid",
+        body="Add the Pd row to the grid.",
+        status="done",
+        comments=comments,
+        meta={"landed_repo": "catpath"} if meta is None else meta,
+    )
+    store.add_todo(42, "review td7", tags=("repo:catpath",), meta=_REVIEWER_META)
+    return store
+
+
+def _review_submit(
+    store: _Store, seams: dict[str, Any], **params: Any
+) -> tuple[_Ctx, Any]:
+    return _submit(store, seams, repo="catpath", effort="medium", **params)
+
+
+def test_reviewer_of_a_second_repo_launches_in_a_detached_tree(
+    seams: dict[str, Any], cat_reviewer: dict[str, Any]
+) -> None:
+    """If this fails, a second-repo reviewer is not launched in its repo's
+    detached tree at the landed sha with the read-only review brief, or it
+    got an MCP config, a token or a grant."""
+    store = _reviewer_store()
+    ctx, handle = _review_submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    root = cat_reviewer["root"]
+    tree = root / ".claude" / "worktrees" / "slice-td42"
+    assert cat_reviewer["order"] == ["prepare", "tip", "ensure"]
+    [(prof, where, todo_id, sha, tip)] = cat_reviewer["ensure"]
+    assert prof is cat_reviewer["profile"] and where == root and todo_id == 42
+    assert (sha, tip) == (_SHA9, _REVIEW_TIP)
+    assert handle["worktree"] == str(tree) and handle["repo"] == "catpath"
+    assert handle["review"] == {"head": None}
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert f"detached checkout at the landed commit `{_SHA9}`" in brief
+    assert "Add the Pd row to the grid." in brief and "scripts/test" not in brief
+    [(argv, kw)] = seams["launch"]
+    assert kw["cwd"] == tree
+    assert not any("mcp" in a.lower() for a in argv[:-1])
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert not any(k.startswith("PRECIS_MCP") for k in kw["env"])
+    assert "slice_token_dir" not in handle and "agentlog_id" not in handle
+    assert kw["env"]["UV_PYTHON"] == "3.12"
+    # Not a branch: the builder's cut and the precis review target are skipped.
+    assert not any(a[:2] == ["worktree", "add"] for a, _c in seams["git"])
+    assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
+
+
+@pytest.mark.parametrize(
+    ("landed_sha", "want"),
+    [
+        (_REVIEW_FULL, _REVIEW_FULL),
+        (_REVIEW_FULL.upper(), _REVIEW_FULL),
+        ("e" * 40, _SHA9),
+        (_REVIEW_FULL[:20], _SHA9),
+        (None, _SHA9),
+    ],
+)
+def test_reviewer_prefers_a_matching_full_landed_sha(
+    seams: dict[str, Any],
+    cat_reviewer: dict[str, Any],
+    landed_sha: str | None,
+    want: str,
+) -> None:
+    """If this fails, the tree is cut at the comment's short sha although the
+    todo's ``meta.landed_sha`` names it in full, or at a full sha that is not
+    the comment's commit."""
+    meta: dict[str, Any] = {"landed_repo": "catpath"}
+    if landed_sha is not None:
+        meta["landed_sha"] = landed_sha
+    ctx, handle = _review_submit(_reviewer_store(meta=meta), seams)
+    assert ctx.failure is None and handle is not None
+    assert cat_reviewer["ensure"][0][3] == want
+
+
+def test_reviewer_of_several_landed_slices_detaches_at_the_tip(
+    seams: dict[str, Any], cat_reviewer: dict[str, Any]
+) -> None:
+    """If this fails, a reviewer of a phase with several landed children is
+    cut at one child's commit instead of the fetched base tip."""
+    store = _reviewer_store(comments=())
+    store.refs[7].meta.pop("landed_repo")
+    for tid, sha in ((8, "aaaaaaaaa"), (9, "bbbbbbbbb")):
+        store.add_todo(
+            tid,
+            f"Slice {tid}",
+            status="done",
+            comments=(f"landed: {sha} — x",),
+            meta={"landed_repo": "catpath", "landed_sha": sha * 4 + "0000"},
+            parent_id=7,
+        )
+    ctx, handle = _review_submit(store, seams)
+    assert ctx.failure is None and handle is not None
+    assert cat_reviewer["ensure"][0][3:] == (_REVIEW_TIP, _REVIEW_TIP)
+    brief = (Path(handle["worktree"]) / "scratch" / "brief.md").read_text(
+        encoding="utf-8"
+    )
+    assert "- `aaaaaaaaa`" in brief and "- `bbbbbbbbb`" in brief
+
+
+@pytest.mark.parametrize("refusal", ["prepare", "tip", "target", "tree"])
+def test_reviewer_launch_refusals_fail_without_an_attempt(
+    seams: dict[str, Any], cat_reviewer: dict[str, Any], refusal: str
+) -> None:
+    """If this fails, a second-repo reviewer that cannot launch (clone not
+    ready, no tip, target not landed in this repo, tree not cut) either
+    launches anyway or burns an attempt on the todo."""
+    meta: dict[str, Any] = {"landed_repo": "catpath"}
+    if refusal == "prepare":
+        cat_reviewer["prepare_refusal"] = "the clone is wrong; next: fix it"
+    elif refusal == "tip":
+        cat_reviewer["tip"] = None
+    elif refusal == "target":
+        meta = {"landed_repo": "precis"}
+    else:
+        cat_reviewer["tree_refusal"] = "commit abc is not on the tip; next: wait"
+    store = _reviewer_store(meta=meta)
+    ctx, handle = _review_submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert "next:" in str(ctx.failure) and "review not launched" in str(ctx.failure)
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == run_slice.REVIEW_WAIT_KEY
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert not any(t.startswith("claimed-by:") for t in tags)
+    assert seams["launch"] == []
+    if refusal == "prepare":
+        assert cat_reviewer["order"] == ["prepare"]
+    if refusal == "target":
+        assert "ensure" not in cat_reviewer["order"]
+
+
+def test_validate_submit_checks_the_reviewer_target(
+    seams: dict[str, Any], cat_reviewer: dict[str, Any]
+) -> None:
+    """If this fails, a reviewer whose target did not land in this repo can
+    be submitted, or a resolvable one is refused."""
+    cat = {"todo_id": 42, "repo": "catpath"}
+    assert run_slice.validate_submit(_reviewer_store(), params=cat) is None
+    for meta, needle in (
+        ({"landed_repo": "precis"}, "landed in 'precis'"),
+        ({}, "landed in None"),
+    ):
+        why = run_slice.validate_submit(_reviewer_store(meta=meta), params=cat)
+        assert why is not None and needle in why and "next:" in why
+        assert why.startswith("run_slice: todo 42:")
+    why = run_slice.validate_submit(_reviewer_store(comments=()), params=cat)
+    assert why is not None and "no `landed:` comment" in why
+
+
+def test_other_generators_and_an_off_profile_stay_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    cat_reviewer: dict[str, Any],
+    catpath_build: dict[str, Any],
+) -> None:
+    """If this fails, the narrowing admitted a non-reviewer generator for a
+    second repo, or a reviewer on a profile whose ``reviewer`` is false."""
+    cat = {"todo_id": 42, "repo": "catpath"}
+    for role in ("triage", "analyst", "brief", None):
+        store = _reviewer_store()
+        store.refs[42].meta = {"generate": {"role": role, "from": "td7"}}
+        why = run_slice.validate_submit(store, params=cat)
+        assert why is not None and "precis-only until the repo reviewer exists" in why
+        ctx, handle = _review_submit(store, seams)
+        assert handle is None and "precis-only" in str(ctx.failure)
+        assert ctx.meta_set == {}
+    assert seams["launch"] == [] and cat_reviewer["order"] == []
+    off = replace(cat_reviewer["profile"], reviewer=False)
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", off)
+    store = _reviewer_store()
+    why = run_slice.validate_submit(store, params=cat)
+    assert why is not None and "precis-only until the repo reviewer exists" in why
+    ctx, handle = _review_submit(store, seams)
+    assert handle is None and "precis-only" in str(ctx.failure)
+    assert seams["launch"] == [] and cat_reviewer["order"] == []
+    # And the real profile is still off.
+    assert catpath_build["profile"].reviewer is False
+
+
+def test_render_brief_admits_only_the_reviewer_of_an_on_profile(
+    cat_reviewer: dict[str, Any],
+) -> None:
+    """If this fails, ``render_brief`` renders a repo review brief for a role
+    or profile it should refuse, or raises for the admitted reviewer."""
+    review = dict(
+        sha="a" * 40,
+        tip="b" * 40,
+        target_title="td7: t",
+        target_brief="the brief",
+        shas=("a" * 40,),
+    )
+    kw = _repo_brief_kw()
+    on = cat_reviewer["profile"]
+    brief = run_slice.render_brief(
+        **kw, generator=True, role="reviewer", profile=on, review=review
+    )
+    assert "detached checkout at the landed commit" in brief
+    with pytest.raises(ValueError, match="needs review="):
+        run_slice.render_brief(**kw, generator=True, role="reviewer", profile=on)
+    with pytest.raises(ValueError, match="precis-only"):
+        run_slice.render_brief(
+            **kw, generator=True, role="triage", profile=on, review=review
+        )
+    with pytest.raises(ValueError, match="precis-only"):
+        run_slice.render_brief(
+            **kw,
+            generator=True,
+            role="reviewer",
+            profile=replace(on, reviewer=False),
+            review=review,
+        )
+
+
+def _review_poll(
+    seams: dict[str, Any],
+    store: _Store,
+    result: str,
+    *,
+    exit_code: int = 0,
+    **git: Any,
+) -> tuple[_Ctx, dict[str, Any], Path]:
+    ctx, handle = _review_submit(store, seams)
+    assert ctx.failure is None and handle is not None
+    tree = Path(handle["worktree"])
+    assert tree.is_dir()
+    seams.update({"diff": "", "porcelain_z": "", "ahead": "", **git})
+    log = json.dumps({"is_error": False, "result": result}) + "\n"
+    _finish(handle, exit_code, log)
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    return pctx, handle, tree
+
+
+def test_reviewer_poll_posts_the_verdict_mints_no_land_and_drops_the_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    cat_reviewer: dict[str, Any],
+) -> None:
+    """If this fails, a second-repo reviewer's verdict is not posted as the
+    ``handoff:`` comment, a land is minted for it, or its tree is left."""
+    _cat_sentinels(monkeypatch)
+    store = _reviewer_store()
+    pctx, _handle, tree = _review_poll(
+        seams, store, "review: LAND\n\nChecked the diff against the brief."
+    )
+    assert pctx.status == "succeeded", pctx.failure
+    assert store.comments(42)[-1].startswith("handoff: review: LAND")
+    assert pd.parse_verdict(store.comments(42)[-1]) is not None
+    assert seams["lands"] == [] and "land_job" not in pctx.meta_set
+    root = cat_reviewer["root"]
+    remove = ["worktree", "remove", "--force", str(tree)]
+    assert (remove, root) in seams["git"]
+    assert (["worktree", "prune"], root) in seams["git"]
+    assert not tree.exists()
+    summary = next(t for k, t in pctx.chunks if k == "job_summary")
+    assert "Detached review tree" in summary and "violation" not in summary
+
+
+def test_reviewer_poll_keeps_the_tree_while_running_and_drops_it_on_failure(
+    seams: dict[str, Any], cat_reviewer: dict[str, Any]
+) -> None:
+    """If this fails, the tree is removed under a live session, or left
+    behind by a run that failed."""
+    store = _reviewer_store()
+    ctx, handle = _review_submit(store, seams)
+    tree = Path(handle["worktree"])
+    assert run_slice.poll(_poll_ctx(store, ctx), handle) is False and tree.is_dir()
+    seams.update(diff="", porcelain_z="", ahead="", alive=False)
+    _finish(handle, 1, json.dumps({"is_error": True, "result": "boom"}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and seams["lands"] == []
+    assert not tree.exists()
+
+
+def test_reviewer_that_committed_lands_nothing_and_is_noted(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    cat_reviewer: dict[str, Any],
+) -> None:
+    """If this fails, a review session that changed its read-only tree gets
+    its work landed or committed, loses its verdict, or goes unnoted."""
+    _cat_sentinels(monkeypatch)
+    store = _reviewer_store()
+    pctx, _handle, tree = _review_poll(
+        seams,
+        store,
+        "review: FIX — a.py drops the Pd row",
+        ahead="def5678 feat(x): thing\n",
+        porcelain=" M a.py\n",
+        staged=True,
+    )
+    assert pctx.status == "succeeded"
+    assert store.comments(42)[-1].startswith("handoff: review: FIX")
+    assert seams["lands"] == [] and "land_job" not in pctx.meta_set
+    assert not any(a[:1] == ["commit"] for a, _c in seams["git"])
+    summary = next(t for k, t in pctx.chunks if k == "job_summary")
+    assert "Read-only violation" in summary
+    assert "1 commit(s) ahead of the base" in summary
+    assert "1 uncommitted path(s)" in summary
+    assert not tree.exists()
+
+
+def test_review_violation_reads_a_real_tree(tmp_path: Path) -> None:
+    """If this fails, ``_review_violation`` misses a moved ``HEAD``, a dirty
+    path or a commit in a real detached tree, or flags a clean one."""
+    w = _review_world(tmp_path)
+    profile = lanes.REPO_PROFILES["catpath"]
+    tree = run_slice._ensure_review_tree(profile, w["root"], 42, w["landed"], w["tip"])
+    assert isinstance(tree, Path)
+    review = {"head": w["landed"]}
+    assert run_slice._review_violation(tree, review, 0, []) is None
+    dirty = run_slice._review_violation(tree, review, 1, [])
+    assert dirty is not None and "1 uncommitted path(s)" in dirty
+    (tree / "grid.txt").write_text("changed", encoding="utf-8")
+    _rg(tree, "commit", "-qam", "m")
+    why = run_slice._review_violation(tree, review, 0, [])
+    assert why is not None and "HEAD moved to" in why and "read-only" in why
+
+
+def test_reviewer_end_to_end_on_a_real_clone(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    cat_reviewer: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """If this fails, the real detached tree of a second-repo reviewer is
+    not at the landed commit, is dirty before the session, or survives the
+    run."""
+    monkeypatch.setattr(run_slice, "_git", seams["real_git"])
+    monkeypatch.setattr(run_slice, "_ensure_review_tree", cat_reviewer["real_ensure"])
+    _origin, root = _repo_with_origin(tmp_path, "cat2")
+    landed = _commit(root, "grid.txt", "pd")
+    tip = _commit(root, "later.txt", "z")
+    _rg(root, "update-ref", "refs/remotes/origin/main", tip)
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(root)}))
+    run_slice._ensure_info_exclude(root, cat_reviewer["profile"].exclude)
+    monkeypatch.setattr(run_slice, "fetch_base_tip", lambda _p, _r: tip)
+    store = _reviewer_store(comments=(f"landed: {landed[:9]} — add grid",))
+    ctx, handle = _review_submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    tree = Path(handle["worktree"])
+    assert tree == root.resolve() / ".claude" / "worktrees" / "slice-td42"
+    assert _tree_head(tree) == landed and handle["review"] == {"head": landed}
+    assert _rg(tree, "branch", "--show-current") == ""
+    assert _rg(tree, "status", "--porcelain") == ""
+    assert (tree / "scratch" / "brief.md").is_file()
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "review: LAND"}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert store.comments(42)[-1] == "handoff: review: LAND"
+    assert not tree.exists()
+    assert str(tree) not in _rg(root, "worktree", "list")
+    assert seams["lands"] == []
