@@ -106,6 +106,12 @@ all:
           # launch on the shared token and a service account sees 401
           # (gr571617). Write the real path in the gitignored overlay.
           # precis_mcp_slice_token_dir: /Users/<operator>/.cache/precis-mcp-http/slice-tokens
+          # A second repo the factory builds (playbooks 20b/20g): repo name
+          # -> absolute path of its clone on this host, rendered as the JSON
+          # env PRECIS_SLICE_REPOS. No default; unset, the repo cannot build
+          # here. Clone it first, https origin, no credentials in the URL.
+          # precis_slice_repos:
+          #   <repo>: /Users/deploy/<repo>-slice-repo
         node-worker:
           ansible_host: 203.0.113.11
           lan_ip: 192.0.2.11

@@ -571,6 +571,64 @@ def test_collapsed_worker_slice_token_dir_renders_only_when_the_host_var_is_set(
     )
 
 
+def _render_collapsed_worker_slice_repos_env(
+    *, gateway: bool, **extra: object
+) -> dict[str, str]:
+    """Render 20b's ``_l_b_slice_repos_env`` (a second repo's clone path) —
+    same stub idiom as :func:`_render_collapsed_worker_slice_token_env`, plus
+    a stand-in for Ansible's ``to_json`` filter."""
+    import json
+
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    play_vars = plays[0]["vars"]
+    assert "combine(_l_b_slice_repos_env)" in play_vars["_l_b_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    env.filters["to_json"] = json.dumps
+    rendered = env.from_string(play_vars["_l_b_slice_repos_env"]).render(
+        inventory_hostname="host-a",
+        groups={"gateway": ["host-a"] if gateway else ["host-b"]},
+        **extra,
+    )
+    assert isinstance(rendered, dict), (
+        f"_l_b_slice_repos_env rendered to {type(rendered)}"
+    )
+    return rendered
+
+
+def test_collapsed_worker_slice_repos_render_only_when_the_host_var_is_set() -> None:
+    """``PRECIS_SLICE_REPOS`` is the JSON object ``run_slice.slice_root_for``
+    parses (repo name -> absolute clone path). The collapsed worker runs
+    ``job_ssh_node`` in its rotation, so a second-repo slice it claims needs
+    the same value 20g renders (td659522). The clone is the operator's to
+    place, so there is no default: unset or empty, or off the gateway, the
+    key is omitted."""
+    import json
+
+    repos = {"catpath": "/Users/deploy/catpath"}
+    rendered = _render_collapsed_worker_slice_repos_env(
+        gateway=True, precis_slice_repos=repos
+    )
+    assert json.loads(rendered["PRECIS_SLICE_REPOS"]) == repos
+    assert _render_collapsed_worker_slice_repos_env(gateway=True) == {}
+    assert (
+        _render_collapsed_worker_slice_repos_env(gateway=True, precis_slice_repos={})
+        == {}
+    )
+    assert (
+        _render_collapsed_worker_slice_repos_env(
+            gateway=False, precis_slice_repos=repos
+        )
+        == {}
+    )
+
+
 def _seed_loop_enabled(service: str, **render_vars: object) -> bool:
     """Render the ``enabled`` expression of one entry of the precis_worker
     role's §L ``service seed`` loop (the task that mirrors a host's arming

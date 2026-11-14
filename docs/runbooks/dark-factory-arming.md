@@ -688,12 +688,13 @@ Opening a second repo, in order:
    userinfo.
 2. Set `PRECIS_SLICE_REPOS` in the worker's environment: a JSON object,
    repo name to absolute clone path on that host, e.g.
-   `{"<repo>": "/path/to/clone"}`. The slice lane (playbook 20g) renders
-   it from the host var `precis_slice_repos` (a dict, set in the overlay
-   for the gateway; unset, the key is omitted). The collapsed worker
-   (20b) also runs `job_ssh_node` and does not render it yet, so until it
-   does a second-repo slice it claims fails its submit. After the first
-   deploy, read the rendered unit and check the value is valid JSON.
+   `{"<repo>": "/path/to/clone"}`. The slice lane (playbook 20g) and the
+   collapsed worker (20b, which also runs `job_ssh_node`) render it from
+   the host var `precis_slice_repos` (a dict, set in the overlay for the
+   gateway; unset, the key is omitted). The builder-host lane (20i) does
+   not render it: a builder host that claims a second-repo slice fails
+   its submit. After the first deploy, read the rendered units and check
+   the value is valid JSON.
 3. Prove the factory git token from that host against the repo:
    `git ls-remote` under the credential, plus one API read.
 4. The repo's profile must have a lander: `lanes.known_repos()` lists
