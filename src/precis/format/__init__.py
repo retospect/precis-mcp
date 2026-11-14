@@ -21,6 +21,11 @@ Public surface
   ``PRECIS_AGENT_TABLE_FORMAT`` (default ``"toon"``) to pick the
   backend — flip the env var and every MCP-facing list switches
   format in one go.
+- :mod:`precis.format.table_lens` — the shared server-side table
+  protocol (``where/sort/columns/limit/cursor``, hidden-row
+  aggregates, exact ``next:`` continuation) that tabular MCP views
+  apply BEFORE rendering, so the transport budget never cuts
+  positionally (gr592637).
 - :func:`register` — add a new format at runtime. Tests use it;
   operators can too.
 

@@ -492,7 +492,9 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         conn.execute(
             "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (candidates[3].id,)
         )
-    args = {"class": "kinetics_method=no v2 solve", "page_size": 1}
+    # gr592637: the quest surface speaks the lens 'where' — the legacy
+    # 'class' selector stays only at the library level (pathway keeps it).
+    args = {"where": {"kinetics_method": "no v2 solve"}, "page_size": 1}
     handler = QuestHandler(hub=Hub(store=store))
     counts = _counts(handler.get(id=quest.id, view="kinetics-summary").body)
     assert all(sum(values.values()) == 4 for values in counts.values())
@@ -500,7 +502,19 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         handler.get(view="kinetics-summary")
     body = handler.get(id=quest.id, view="kinetics-summary", args=args).body
     assert body == kinetics_summary(store, quest_id=quest.id, args=args)
+    class_body = kinetics_summary(
+        store,
+        quest_id=quest.id,
+        args={"class": "kinetics_method=no v2 solve", "page_size": 1},
+    )
+    assert _ids(body) == _ids(class_body)
     assert f"id='qu{quest.id}'" in body
+    with pytest.raises(BadInput, match="gone from quest get"):
+        handler.get(
+            id=quest.id,
+            view="kinetics-summary",
+            args={"class": "kinetics_method=no v2 solve"},
+        )
     ids = _ids(
         kinetics_summary(
             store, quest_id=quest.id, args={"class": "kinetics_method=no v2 solve"}

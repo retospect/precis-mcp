@@ -2382,6 +2382,10 @@ def leaderboard(
                 "name": c.name,
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": band,
+                # carried but NOT in the schema — the table lens's
+                # where={'trusted': …} (gr592637) filters on it; a caller
+                # must name it in columns= to see it.
+                "trusted": {True: "yes", False: "no", None: "-"}[candidate_trusted(c)],
             }
             for key in col_keys:
                 v = c.measures.get(key)
@@ -2423,6 +2427,7 @@ def leaderboard(
                 "name": c.name,
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": "provisional",
+                "trusted": {True: "yes", False: "no", None: "-"}[candidate_trusted(c)],
             }
             for key in col_keys:
                 v = pc.measures.get(key)

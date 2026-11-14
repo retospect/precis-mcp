@@ -187,18 +187,30 @@ def _label(axis: str, value: str) -> str:
 def kinetics_summary(
     store: Store, *, quest_id: int | None = None, args: dict[str, Any] | None = None
 ) -> str:
-    """Count live pathways, page an axis's values, or list a selected class."""
-    args = args or {}
-    unknown = sorted(set(args) - {"axis", "class", "page_size", "offset"})
+    """Count live pathways, page an axis's values, or list a selected class.
+
+    The class selector accepts two spellings (gr592637): the legacy
+    ``args={'class': '<axis>=<value>'}`` (pathway-side callers) and the
+    table-lens ``args={'where': {'<axis>': '<value>'|[<values>]}}`` — the
+    same selection, ANDed across axes when several are given."""
+    args = dict(args or {})
+    unknown = sorted(set(args) - {"axis", "class", "where", "page_size", "offset"})
     if unknown:
         raise BadInput(
             f"kinetics-summary does not accept args keys: {', '.join(unknown)}",
-            options=["axis", "class", "page_size", "offset"],
-            next="use args={'class': 'failed_observables=yes', 'page_size': 20, 'offset': 0}",
+            options=["axis", "class", "where", "page_size", "offset"],
+            next="use args={'where': {'failed_observables': 'yes'}, 'page_size': 20, 'offset': 0}",
         )
     page_size = _page_arg(args, "page_size", 20, 100)
     offset = _page_arg(args, "offset", 0, 2**63 - 1)
     selector = args.get("class")
+    where = args.get("where")
+    if where is not None and not isinstance(where, dict):
+        raise BadInput(
+            f"kinetics-summary where must be a dict {{axis: value|[values]}}, "
+            f"got {where!r}",
+            next="use args={'where': {'failed_observables': 'yes'}}",
+        )
     axis_arg = args.get("axis")
     if "axis" in args:
         if not isinstance(axis_arg, str) or axis_arg not in _VALUES:
@@ -207,11 +219,16 @@ def kinetics_summary(
                 options=list(_VALUES),
                 next="use args={'axis': 'environment_basis', 'offset': 0}",
             )
-        if "class" in args:
+        if "class" in args or "where" in args:
             raise BadInput(
-                "kinetics-summary axis and class are mutually exclusive",
+                "kinetics-summary axis and class/where are mutually exclusive",
                 next="use args={'axis': 'environment_basis', 'offset': 0}",
             )
+    if "class" in args and "where" in args:
+        raise BadInput(
+            "kinetics-summary class and where are mutually exclusive",
+            next="use args={'where': {'failed_observables': 'yes'}}",
+        )
     with store.pool.connection() as conn:
         cursor = conn.execute(
             _PROJECTION.format(scope=_QUEST_SCOPE if quest_id is not None else ""),
@@ -237,43 +254,74 @@ def kinetics_summary(
         if quest_id is not None
         else "get(kind='pathway', view='kinetics-summary'"
     )
-    if "class" in args:
-        selected_values: set[str] = set()
-        axis, value = "", ""
-        if isinstance(selector, str):
-            axis, _, value = selector.partition("=")
+    if "class" in args or "where" in args:
+        # selector_map: {axis: {accepted values}} — the legacy class string
+        # is one axis=value; the lens where is {axis: value|[values]}
+        # ANDed (gr592637).
+        selector_map: dict[str, set[str]] = {}
+        label = ""
+        if "class" in args:
+            axis, value = "", ""
+            if isinstance(selector, str):
+                axis, _, value = selector.partition("=")
+            selected: set[str] = set()
             if selector in valid:
-                selected_values.add(value)
+                selected.add(value)
             elif axis == "environment_basis" and len(value) == 12:
-                selected_values.update(
+                selected.update(
                     basis
                     for basis in counts[axis]
                     if basis not in {_MISSING, _NO_V2} and basis.startswith(value)
                 )
-        if not selected_values:
+            selector_map[axis] = selected
+            label = str(selector)
+        else:
+            for w_axis, cond in (where or {}).items():
+                vals = (
+                    list(cond)
+                    if isinstance(cond, (list, tuple, set, frozenset))
+                    else [cond]
+                )
+                selected = set()
+                for v in vals:
+                    if f"{w_axis}={v}" in valid:
+                        selected.add(str(v))
+                    elif w_axis == "environment_basis":
+                        selected.update(
+                            basis
+                            for basis in counts[w_axis]
+                            if basis not in {_MISSING, _NO_V2}
+                            and basis.startswith(str(v))
+                        )
+                selector_map[str(w_axis)] = selected
+            label = f"where={where!r}"
+        empty = [a for a, vs in selector_map.items() if not vs]
+        if empty:
             raise BadInput(
-                f"unknown kinetics-summary class {selector!r}; valid values: "
+                f"unknown kinetics-summary selector {label!r} — no valid "
+                f"values on axis {empty[0]!r}; valid axis=value pairs: "
                 + ", ".join(valid),
                 options=valid,
-                next=f"{call}, args={{'class': {valid[0]!r}}})",
+                next=f"{call}, args={{'where': {{'failed_observables': 'yes'}}}})",
             )
         matches = [
-            ref_id for ref_id, classes in classified if classes[axis] in selected_values
+            ref_id
+            for ref_id, classes in classified
+            if all(classes.get(ax) in vs for ax, vs in selector_map.items())
         ]
         page = matches[offset : offset + page_size]
         lines = [
             header,
-            f"{selector}: {len(matches)} total; {len(page)} shown; offset {offset}",
+            f"{label}: {len(matches)} total; {len(page)} shown; offset {offset}",
             "",
             "pathway",
         ]
         lines.extend(f"pw{ref_id}" for ref_id in page)
         if offset + len(page) < len(matches):
-            next_args = {
-                "class": selector,
-                "page_size": page_size,
-                "offset": offset + page_size,
-            }
+            next_args = dict(
+                {"class": selector} if "class" in args else {"where": where}
+            )
+            next_args.update({"page_size": page_size, "offset": offset + page_size})
             lines += ["", f"next: {call}, args={next_args!r})"]
         return "\n".join(lines)
 
@@ -304,7 +352,7 @@ def kinetics_summary(
 
     lines = [
         header,
-        "Each axis totals the population; copy a value into args={'class': '<axis>=<value>'}.",
+        "Each axis totals the population; copy a value into args={'where': {'<axis>': '<value>'}}.",
     ]
     for axis, values in counts.items():
         ranked = sorted(values.items(), key=lambda item: (-item[1], item[0]))

@@ -538,7 +538,7 @@ def fit_rows_to_budget(
 
     working = list(rows)
     keep_ids = {
-        r["ref_id"]
+        r.get("ref_id", 0)
         for r in sorted(rows, key=lambda r: r.get("ref_id", 0), reverse=True)[
             :_KEEP_NEWEST
         ]

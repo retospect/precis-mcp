@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
+from precis.format.table_lens import LENS_KEYS
 from precis.handlers._mode_help import require_mode
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
@@ -252,6 +253,15 @@ class PathwayHandler(Handler):
                 "class",
                 "page_size",
                 "offset",
+                # view='compare' row filter (gr592278) + table lens
+                # (gr592637) — gate was read undeclared via point_args;
+                # where/sort/columns/limit/cursor page the TOON table.
+                "gate",
+                "where",
+                "sort",
+                "columns",
+                "limit",
+                "cursor",
                 # view='bundle-plan'/'export' seed-job selector
                 "job",
             }
@@ -1348,7 +1358,9 @@ class PathwayHandler(Handler):
                     next="get(kind='pathway', view='kinetics-summary') or "
                     "get(kind='quest', id='qu…', view='kinetics-summary')",
                 )
-            return Response(body=kinetics_summary(store, args=args))
+            # dict() unwraps the dispatch ArgsView — the census owns its
+            # own arg validation and must not hit the declared-key gate.
+            return Response(body=kinetics_summary(store, args=dict(args or {})))
         if id is None:
             # A bare get lists. Search is unsupported on this kind, so until
             # 2026-10-01 an agent that did not already hold a slug had no way
@@ -1359,11 +1371,18 @@ class PathwayHandler(Handler):
             k: val for k, val in (args or {}).items() if k not in ("environment", "job")
         }
         gate = _gate_arg(point_args)
+        lens_args = {k: point_args.pop(k) for k in LENS_KEYS if k in point_args}
         if gate is not None and (view or "").lower() != "compare":
             raise BadInput(
                 f"args={{'gate': {gate!r}}} applies to view='compare' only",
                 next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
                 f"args={{'gate': {gate!r}}})",
+            )
+        if lens_args and (view or "").lower() != "compare":
+            raise BadInput(
+                f"args lens keys {sorted(lens_args)!r} apply to view='compare' only",
+                next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
+                "args={'where': {'gate': 'pass'}, 'limit': 20})",
             )
         U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
@@ -1393,7 +1412,15 @@ class PathwayHandler(Handler):
                 self._get_step(store, ref, step_label)
                 if sep
                 else self._get_view(
-                    store, ref, id=id, view=view, args=args, U=U, pH=pH, gate=gate
+                    store,
+                    ref,
+                    id=id,
+                    view=view,
+                    args=args,
+                    U=U,
+                    pH=pH,
+                    gate=gate,
+                    lens=lens_args or None,
                 )
             )
         # gr553326: every read carries the pw<id> handle + the web reader
@@ -1525,6 +1552,7 @@ class PathwayHandler(Handler):
         pH: float | None,
         gate: str | None = None,
         environment: Environment | None = None,
+        lens: dict[str, Any] | None = None,
     ) -> Response:
         """The per-view dispatch behind :meth:`get` — resolved ref in,
         the view's body out. ``get`` wraps it in the ``pw<id> ·
@@ -1594,7 +1622,9 @@ class PathwayHandler(Handler):
 
             return Response(body=objective_text(store, ref))
         if v == "compare":
-            return Response(body=self._compare(store, ref, meta, U=U, gate=gate))
+            return Response(
+                body=self._compare(store, ref, meta, U=U, gate=gate, lens=lens, id=id)
+            )
         if v == "staircase":
             return Response(
                 # U alone is the plain re-tilt (the structure view always
@@ -1890,6 +1920,8 @@ class PathwayHandler(Handler):
         *,
         U: float | None = None,
         gate: str | None = None,
+        lens: dict[str, Any] | None = None,
+        id: str | int | None = None,
     ) -> str:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table. With
@@ -1903,11 +1935,24 @@ class PathwayHandler(Handler):
         view='trust' headlines (td625117 review: the footnote pointing at
         view='trust' supplied no anchor and cost a lookup per row).
         ``gate='pass'|'blocked'`` filters rows by that verdict; ``n/a``
-        rows (pre-trust-schema) never survive a filter."""
+        rows (pre-trust-schema) never survive a filter.
+
+        The **table lens** (gr592637) pages the table:
+        ``args={'where': {col: v|[vs]|{min,max}}, 'sort': '-col'|[…],
+        'columns': […], 'limit': N, 'cursor': tok}`` — the footer carries
+        shown/matched/total + hidden-row aggregates + the exact
+        continuing call."""
+        from precis.format import render_agent_table
+        from precis.format.table_lens import (
+            apply_lens,
+            lens_echo_args,
+            parse_lens_args,
+            render_lens_page,
+        )
         from precis.utils import reaction_graph as analysis
         from precis.utils import trust_gate
 
-        from .toon_views import compare_toon, gate_verdict, row_anchor
+        from .toon_views import compare_parts, gate_verdict, row_anchor
 
         r = meta.get("results", {})
         substrate, target = r.get("substrate"), r.get("target")
@@ -2019,7 +2064,28 @@ class PathwayHandler(Handler):
                 "compare yet. Run variants (different surface/dopant) to build a "
                 "leaderboard."
             )
-        return compare_toon(candidates, U=U)
+        head, cmp_rows, schema, tails = compare_parts(candidates, U=U)
+        spec = parse_lens_args(lens or {})
+        page = apply_lens(cmp_rows, spec, schema=schema)
+
+        def render(rs: list[dict[str, Any]]) -> str:
+            return render_agent_table(rs, schema=page.columns)
+
+        echo_in = dict(lens or {})
+        if gate is not None:
+            echo_in["gate"] = gate
+        if U is not None:
+            echo_in["U"] = U
+        body = render_lens_page(
+            page,
+            args=lens_echo_args(echo_in, spec, preserve=("gate", "U")),
+            call=lambda a: (
+                f"get(kind='pathway', id={id!r}, view='compare', args={a!r})"
+            ),
+            render=render,
+            byte_cap=24000,
+        )
+        return "\n".join([*head, body, *tails])
 
     # -- staircase (SPSO slice 3, the che_affine read) --------------------
     def _staircase(

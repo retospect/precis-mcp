@@ -453,7 +453,12 @@ def test_kinetics_summary_views_and_args_are_declared() -> None:
     assert "kinetics-summary" in PathwayHandler.spec.views
     assert "kinetics-summary" in _QUEST_CONCRETE_VIEWS
     for handler in (PathwayHandler, QuestHandler):
-        assert {"axis", "class", "page_size", "offset"} <= handler.ARGS["get"].keys
+        assert {"axis", "page_size", "offset"} <= handler.ARGS["get"].keys
+    # gr592637: 'class' stays declared only on the pathway side, where
+    # kinetics-summary still accepts the legacy axis=value selector; quest
+    # dropped it — the lens 'where' dict is the one spelling there.
+    assert "class" in PathwayHandler.ARGS["get"].keys
+    assert "class" not in QuestHandler.ARGS["get"].keys
 
 
 @pytest.mark.parametrize("in_args", [False, True])

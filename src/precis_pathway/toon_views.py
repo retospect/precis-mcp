@@ -1865,25 +1865,17 @@ _CONF_LEGEND = (
 )
 
 
-def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
-    """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
-    anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
-    gr592665) is the ``st<N> <title>`` cell naming the structure the
-    pathway ran on — '-' when unstamped; ``gate`` (optional, gr592278) is
-    the row's trust-gate verdict cell ('n/a' when the caller supplies
-    none); ``anchor`` (optional, td625117 review) is the row's credit
-    anchor cell — gates credited + seed set, or 'no credit (…)' — the
-    same anchor view='trust' headlines ('n/a' when the caller supplies
-    none). When they share a network, columns interleave state(rel eV) +
-    ‡(barrier Eₐ) along the reaction coordinate; always: gate, anchor,
-    RATE (max step), SPAN, conf. Sorted by RATE ascending (best first).
-    With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
-    that potential and the table ranks by SPAN at U instead (RATE is
-    U-independent); a candidate without ``n_H`` stays unshifted and is
-    named in the header."""
-    if not candidates:
-        return "no computed candidates to compare."
+def compare_parts(
+    candidates: list[dict[str, Any]], *, U: float | None = None
+) -> tuple[list[str], list[dict[str, Any]], list[str], list[str]]:
+    """The compare table as PARTS — ``(head_lines, rows, schema, tail_lines)``.
 
+    Same semantics :func:`compare_toon` documents; split so the table lens
+    (gr592637) can filter/order/page the ROWS while the caller keeps the
+    head notes + legends. ``rows`` arrive in the canonical order (RATE
+    asc, or SPAN-at-U when levered) — the lens re-orders only on an
+    explicit ``args={'sort': …}``.
+    """
     notes: list[str] = []
     if U is not None:
         levered: list[dict[str, Any]] = []
@@ -1913,7 +1905,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     def _cand_cell(c: dict[str, Any]) -> str:
         # gr553326: the pw<id> handle beside the slug — a bare slug never
         # reached the ref id the /refs/pathway/<id> reader keys on. Bare
-        # slug when the caller supplied no ref_id (unit-level compares).
+        # slug when the caller supplies no ref_id (unit-level compares).
         ref_id = c.get("ref_id")
         if ref_id is None:
             return str(c["slug"])
@@ -1942,34 +1934,24 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         return (ea is None, float(ea) if ea is not None else 0.0)
 
     profiles.sort(key=_sort_key)
-    prefix = "".join(n + "\n" for n in notes)
+    tails = [_GATE_LEGEND, _ANCHOR_LEGEND, _CONF_LEGEND]
 
     if not aligned:
-        rows = [_row_scalars(p) for p in profiles]
-        note = "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)\n"
-        return (
-            prefix
-            + note
-            + toon.dump(
-                rows,
-                schema=[
-                    "cand",
-                    "candidate",
-                    "gate",
-                    "anchor",
-                    "lever",
-                    "RATE",
-                    "SPAN",
-                    "conf",
-                ],
-            )
-            + "\n"
-            + _GATE_LEGEND
-            + "\n"
-            + _ANCHOR_LEGEND
-            + "\n"
-            + _CONF_LEGEND
-        )
+        head = [
+            *notes,
+            "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)",
+        ]
+        schema = [
+            "cand",
+            "candidate",
+            "gate",
+            "anchor",
+            "lever",
+            "RATE",
+            "SPAN",
+            "conf",
+        ]
+        return head, [_row_scalars(p) for p in profiles], schema, tails
 
     # aligned: build interleaved columns from the shared coordinate.
     template = profiles[0]["cols"]
@@ -1991,16 +1973,36 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
             )
         rows.append(row)
 
-    head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
+    head = [
+        *notes,
+        "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend),
+    ]
+    return head, rows, schema, tails
+
+
+def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
+    """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
+    anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
+    gr592665) is the ``st<N> <title>`` cell naming the structure the
+    pathway ran on — '-' when unstamped; ``gate`` (optional, gr592278) is
+    the row's trust-gate verdict cell ('n/a' when the caller supplies
+    none); ``anchor`` (optional, td625117 review) is the row's credit
+    anchor cell — gates credited + seed set, or 'no credit (…)' — the
+    same anchor view='trust' headlines ('n/a' when the caller supplies
+    none). When they share a network, columns interleave state(rel eV) +
+    ‡(barrier Eₐ) along the reaction coordinate; always: gate, anchor,
+    RATE (max step), SPAN, conf. Sorted by RATE ascending (best first).
+    With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
+    that potential and the table ranks by SPAN at U instead (RATE is
+    U-independent); a candidate without ``n_H`` stays unshifted and is
+    named in the header. Built on :func:`compare_parts`."""
+    if not candidates:
+        return "no computed candidates to compare."
+    head, rows, schema, tails = compare_parts(candidates, U=U)
     return (
-        prefix
-        + head
+        "\n".join(head)
         + "\n"
         + toon.dump(rows, schema=schema)
         + "\n"
-        + _GATE_LEGEND
-        + "\n"
-        + _ANCHOR_LEGEND
-        + "\n"
-        + _CONF_LEGEND
+        + "\n".join(tails)
     )

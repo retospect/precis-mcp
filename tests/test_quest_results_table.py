@@ -498,29 +498,41 @@ class TestViewBudget:
         ]
         return qid, sids
 
-    def test_results_view_defaults_to_the_tick_budget_and_reports_drops(
+    def test_results_view_budget_drops_whole_rows_and_pages(self, store: Any) -> None:
+        """gr592637: the byte guard drops WHOLE rows only, the footer
+        reports shown/matched/total + hidden aggregates and names the
+        exact continuing call — the old ``(+K omitted)`` positional cut
+        and its newest-ten carve-out are gone; a cursor reaches every row."""
+        qid, _sids = self._fifteen(store)
+        h = QuestHandler(hub=Hub(store=store))
+        tight = h.get(id=qid, view="results", args={"budget": 100}).body
+        m = re.search(r"(\d+) shown · 15 matched · 15 total", tight)
+        assert m, tight
+        assert 0 < int(m.group(1)) < 15
+        assert "hidden:" in tight
+        assert "next: get(kind='quest'" in tight
+        assert "'cursor':" in tight
+        # a budget so tight nothing fits is honest about it — no
+        # mid-row fragment, no self-loop cursor
+        starved = h.get(id=qid, view="results", args={"budget": 1}).body
+        assert "byte budget" in starved
+        assert "'cursor':" not in starved
+        wide = h.get(id=qid, view="results", args={"budget": 100_000}).body
+        assert all(r["handle"] in wide for r in build_results_rows(store, qid))
+
+    def test_frontier_view_lens_footer_replaces_the_omitted_cut(
         self, store: Any
     ) -> None:
-        qid, sids = self._fifteen(store)
-        h = QuestHandler(hub=Hub(store=store))
-        body = h.get(id=qid, view="results", args={"budget": 1}).body
-        assert "of 15 rows omitted for the 1-token budget" in body
-        rows = build_results_rows(store, qid)
-        newest_ten = set(sorted(sids, reverse=True)[:10])
-        for r in rows:
-            present = r["handle"] in body
-            assert present == (r["ref_id"] in newest_ten), r["handle"]
-        wide = h.get(id=qid, view="results", args={"budget": 100_000}).body
-        assert "rows omitted" not in wide
-        assert all(r["handle"] in wide for r in rows)
-
-    def test_frontier_view_trims_tail_band_first(self, store: Any) -> None:
+        """gr592637: the frontier's old band-tail ``(+K omitted)`` is the
+        lens footer now — shown/matched/total, hidden aggregates, next call."""
         qid, _sids = self._fifteen(store)
         h = QuestHandler(hub=Hub(store=store))
         full = h.get(id=qid, view="frontier").body
         assert "omitted" not in full
-        tight = h.get(id=qid, view="frontier", args={"budget": 30}).body
-        assert "omitted — args={'budget': N} widens" in tight
+        tight = h.get(id=qid, view="frontier", args={"budget": 60}).body
+        assert "15 matched · 15 total" in tight
+        assert "hidden:" in tight or "byte budget" in tight
+        assert "omitted" not in tight
         assert tight.startswith("# frontier — quest")
         assert len(tight) < len(full)
 
@@ -1037,9 +1049,12 @@ class TestTrustedSortViews:
         handles = {name: self._handle(sid) for name, sid in sids.items()}
         body = h.get(id=qid, view="results", args={"trusted": True}).body
         assert "filter: trusted only" in body
-        assert handles["good"] in body
-        assert handles["bad"] not in body
-        assert handles["waiting"] not in body  # "-" rows are not "yes"
+        # gr592637: filtered rows are named only in the footer's
+        # hidden-row aggregates — assert on the visible table part.
+        table_part = body.split(" shown ·")[0]
+        assert handles["good"] in table_part
+        assert handles["bad"] not in table_part
+        assert handles["waiting"] not in table_part  # "-" rows are not "yes"
 
     def test_trusted_filter_applies_to_all_views(self, store: Any) -> None:
         qid, sids = self._mixed_quest(store)
@@ -1048,9 +1063,10 @@ class TestTrustedSortViews:
         bad_h = self._handle(sids["bad"])
         for view in ("frontier", "leaderboard"):
             body = h.get(id=qid, view=view, args={"trusted": True}).body
+            table_part = body.split(" shown ·")[0]
             assert "trusted only" in body, view
-            assert good_h in body, view
-            assert bad_h not in body, view
+            assert good_h in table_part, view
+            assert bad_h not in table_part, view
 
     def test_all_filtered_out_says_why(self, store: Any) -> None:
         qid = _mk_quest(store)
@@ -1138,3 +1154,229 @@ class TestTrustedSortViews:
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
         assert f"barrier ×1 (trusted: {self._handle(a)})" in body
         assert "U_L_abs ×1 (trusted: none)" in body
+
+
+# ── the shared table lens (gr592637) ─────────────────────────────────────
+#
+# The candidate views page through ``args={'where': {col: v|[vs]|
+# {min,max}}, 'sort': '-col'|[…], 'columns': […], 'limit': N,
+# 'cursor': tok}`` — positional truncation is gone; the footer carries
+# shown/matched/total + hidden-row aggregates + the literal next call.
+
+
+class TestResultsLens:
+    def test_results_cursor_reaches_all_rows(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spec slice 2: a 300-row results table pages to the end —
+        following the footer's literal ``next:`` call visits every row
+        exactly once, the newest included."""
+        from precis.quest import results_table as rt
+
+        qid = _mk_quest(store, "A 300-row lens striving")
+        rows = [
+            {
+                "ref_id": 900000 + i,
+                "handle": f"st{900000 + i}",
+                "name": f"cand-{i}",
+                "band": "frontier",
+                "dopant": "Ag",
+                "n_dopant": 1,
+                "site": "adatom",
+                "coads": "-",
+                "tier": "-",
+                "seeds": "-",
+                "energy": f"{-1.0 - i * 0.001:g}",
+                "barrier": f"{0.5 + i * 0.001:g}",
+                "trusted": "yes" if i % 2 == 0 else "no",
+                "blockers": "-",
+            }
+            for i in range(300)
+        ]
+        monkeypatch.setattr(rt, "build_results_rows", lambda *a, **k: rows)
+        h = QuestHandler(hub=Hub(store=store))
+
+        seen: list[str] = []
+        args: dict[str, Any] = {"limit": 30, "budget": 100_000}
+        first = True
+        for _ in range(30):
+            body = h.get(id=qid, view="results", args=args).body
+            if first:
+                # the footer names the LITERAL continuing call (gr592637)
+                assert "next: get(kind='quest'" in body
+                assert "view='results'" in body
+                first = False
+            table_part = body.split(" shown ·")[0]  # above the footer
+            seen += re.findall(r"st9\d{5}", table_part)
+            m = re.search(r"'cursor': '([^']+)'", body)
+            if m is None:
+                break
+            args = {"limit": 30, "budget": 100_000, "cursor": m.group(1)}
+        assert len(seen) == 300
+        assert len(set(seen)) == 300  # visited once each — none dropped
+        assert rows[-1]["handle"] in seen  # the newest is reachable
+        assert "(cursor exhausted" in body
+
+    def test_results_trusted_alias_equals_where(self, store: Any) -> None:
+        """``args={'trusted': true}`` is the alias of
+        ``where={'trusted': 'yes'}`` — the same rows, the same spec."""
+        qid = _mk_quest(store)
+        good = _mk_candidate(store, qid, "Ag good", _dopant_ops("Ag", 1))
+        _converge(store, good)
+        store.stamp_ref_meta(good, {"barrier": 0.4, "barrier_trusted": True})
+        bad = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
+        _converge(store, bad)
+        store.stamp_ref_meta(bad, {"barrier": 0.3, "barrier_trusted": False})
+        waiting = _mk_candidate(store, qid, "Zn wait", _dopant_ops("Zn", 1))
+
+        from precis.utils import handle_registry
+
+        handles = {
+            sid: handle_registry.try_format("structure", sid)
+            for sid in (good, bad, waiting)
+        }
+        h = QuestHandler(hub=Hub(store=store))
+        alias = h.get(id=qid, view="results", args={"trusted": True}).body
+        literal = h.get(id=qid, view="results", args={"where": {"trusted": "yes"}}).body
+        # the alias and the literal where are the SAME spec — same rows,
+        # same counts, same continuation, byte-identical output
+        assert alias == literal
+        table_part = alias.split(" shown ·")[0]
+        assert handles[good] in table_part
+        # filtered rows are named only in the footer's hidden-row
+        # aggregates — never in the visible table
+        assert handles[bad] not in table_part
+        assert handles[waiting] not in table_part
+        assert "1 matched · 3 total" in alias
+        # the alias composed with an identical literal stays consistent
+        both = h.get(
+            id=qid,
+            view="results",
+            args={"trusted": True, "where": {"trusted": "yes"}},
+        ).body
+        assert "1 matched · 3 total" in both
+
+    def test_class_arg_refused(self, store: Any, runtime_with_store: Any) -> None:
+        """``args={'class': …}`` left the quest vocabulary (gr592637 slice
+        2): dispatch refuses the undeclared key; ``where`` absorbs the
+        kinetics-summary selector."""
+        qid = _mk_quest(store)
+        body = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "quest",
+                "id": qid,
+                "view": "results",
+                "args": {"class": "failed_observables=yes"},
+            },
+        )
+        assert "[error" in body
+        assert "class" in body
+
+    def test_lens_where_sort_columns_on_results(self, store: Any) -> None:
+        """The generic lens spellings work on the view: a where range, an
+        explicit '-col' sort, and a column projection."""
+        qid = _mk_quest(store)
+        for i, el in enumerate(("Ag", "Cu", "Zn")):
+            sid = _mk_candidate(store, qid, f"{el} c", _dopant_ops(el, 1))
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.2 + 0.2 * i, "barrier_trusted": True}
+            )
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid,
+            view="results",
+            args={
+                "where": {"barrier": {"min": 0.3}},
+                "sort": "-barrier",
+                "columns": ["handle", "barrier", "trusted"],
+                "budget": 100_000,
+            },
+        ).body
+        assert "sorted by barrier (desc)" in body
+        assert "2 matched · 3 total" in body
+        table_part = body.split(" shown ·")[0]
+        # "Ag c" (barrier 0.2) is filtered out of the table; 'name' is not
+        # a projected column so it surfaces nowhere at all here
+        assert "Zn c" not in table_part and "Cu c" not in table_part
+        zndex = next(
+            r["ref_id"] for r in build_results_rows(store, qid) if r["name"] == "Zn c"
+        )
+        cudex = next(
+            r["ref_id"] for r in build_results_rows(store, qid) if r["name"] == "Cu c"
+        )
+        from precis.utils import handle_registry
+
+        zn_h = handle_registry.try_format("structure", zndex)
+        cu_h = handle_registry.try_format("structure", cudex)
+        assert zn_h in table_part and cu_h in table_part
+        # Zn (0.6) sorts ahead of Cu (0.4)
+        assert table_part.index(zn_h) < table_part.index(cu_h)
+
+    def test_frontier_provisional_paging(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spec slice 3: 284 provisional rows page via cursor — every one
+        reachable, none repeated, the band header names the matched total."""
+        import precis.quest.frontier as frontier_mod
+        from precis.quest.frontier import (
+            Candidate,
+            FrontierResult,
+            ProvisionalCandidate,
+        )
+
+        qid = _mk_quest(store, "A 284-provisional striving")
+        provs = [
+            ProvisionalCandidate(
+                candidate=Candidate(
+                    ref_id=900000 + i,
+                    handle=f"st9{i:05d}",
+                    name=f"prov-{i}",
+                    measures={},
+                    converged=True,
+                ),
+                measures={"barrier": 0.3 + i * 0.001},
+                untrusted_keys=frozenset({"barrier"}),
+                reasons=["untrusted barrier"],
+            )
+            for i in range(284)
+        ]
+        fr = FrontierResult(objectives=[("barrier", "min")], provisional=provs)
+        monkeypatch.setattr(frontier_mod, "quest_frontier", lambda *a, **k: fr)
+
+        h = QuestHandler(hub=Hub(store=store))
+        seen: list[str] = []
+        args: dict[str, Any] = {"limit": 60, "budget": 100_000}
+        for _ in range(12):
+            body = h.get(id=qid, view="frontier", args=args).body
+            assert "provisional (measured, unconfirmed) (284)" in body
+            table_part = body.split(" shown ·")[0]
+            seen += re.findall(r"st9\d{5}", table_part)
+            m = re.search(r"'cursor': '([^']+)'", body)
+            if m is None:
+                break
+            args = {"limit": 60, "budget": 100_000, "cursor": m.group(1)}
+        assert len(seen) == 284
+        assert len(set(seen)) == 284  # none unreachable, none repeated
+
+    def test_frontier_lens_where_band(self, store: Any) -> None:
+        """``band`` is a first-class lens column — ``where={'band':
+        'provisional'}`` pages just that band."""
+        qid = _mk_quest(store)
+        good = _mk_candidate(store, qid, "Ag good", _dopant_ops("Ag", 1))
+        _converge(store, good)
+        store.stamp_ref_meta(good, {"barrier": 0.4, "barrier_trusted": True})
+        prov = _mk_candidate(store, qid, "Cu prov", _dopant_ops("Cu", 1))
+        _converge(store, prov)
+        store.stamp_ref_meta(prov, {"barrier": 0.5, "barrier_trusted": False})
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid, view="frontier", args={"where": {"band": "provisional"}}
+        ).body
+        assert "1 matched" in body
+        table_part = body.split(" shown ·")[0]
+        assert "Cu prov" in table_part and "Ag good" not in table_part
+        # an empty-frontier under a band filter is a lens answer, not the
+        # "none evaluated" explanation
+        assert "(none converged yet)" not in body
