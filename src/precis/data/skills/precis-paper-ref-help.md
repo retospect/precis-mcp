@@ -23,6 +23,8 @@ answers:
   - how do I undo a drop_body or rebuild a ref from its dump?
   - a worker stamped a paper done/failed — how do I re-run it?
   - how do I attach a legal PDF to a body-less stub?
+  - the published version is held — how do I retire the preprint ref?
+  - every fetch leg failed on a paywalled paper — how does its PDF get in?
 applies-to: get/edit/put (kind='paper')
 status: active
 tags: [workflow]
@@ -267,6 +269,23 @@ edit(kind="paper", id="pa560323", args={"retire": False, "reason": "undo retirem
 Undo restores the whole ref with its retained content and logs a
 `restored` event. Force does not bypass the merged-alias or merge-tombstone
 guards, and only modifies `retire=True`. It never purges files or chunks.
+
+The same force door retires a preprint once the corpus holds the
+published version of record *with its body* (arXiv, ChemRxiv,
+Research Square and kin):
+
+```python
+edit(kind="paper", id="pa601234", args={"retire": True, "force": True, "reason": "preprint of pa602345, published version held"})
+```
+
+Never `merge_into` the pair instead — a preprint and its version of
+record differ in title, byline and text, so the merge gates rightly
+refuse. Until the published body lands keep both live and point the
+preprint at the published ref:
+
+```python
+link(kind="paper", id="pa601234", target="pa602345", rel="related-to")
+```
 
 ## A ref holds the wrong paper's body — how do I detach or re-home it?
 
@@ -515,6 +534,29 @@ is another paper (check the title it quotes), `preview_suspected` means a
 publisher preview (find the full text elsewhere); `identity_unchecked` on a
 `dropped` record means the stub had no usable title or DOI, so check the
 folded body yourself. The folded paper keeps the URL as `meta.source_url`.
+
+No legal copy to fetch at all — every leg of the daily fetch failed
+(no open version, publisher 403, body-less markup)? Re-queueing does
+nothing: ask the person to download the PDF and hand-drop the PDF in
+the papers inbox. A body-less stub folds a plain drop in by DOI;
+naming the file `pa<id>.pdf`, or a sidecar naming `ref_id`, makes the
+fold deterministic. Only PDF and markup files trigger ingest — confirm
+the landing with `search(kind='paper', view='status', args={'ids':
+['pa<id>']})`.
+
+A paper that already has a body — a thin publisher-preview body
+counts — is not a fold target: the drop parks under duplicates or
+mints a twin. Clear the body first, then drop with a sidecar naming
+the ref:
+
+```python
+edit(kind="paper", id="pa123", args={"drop_body": True, "reason": "preview body; hand-dropped full text replaces it"})
+```
+
+The sidecar sits beside the PDF as `<name>.pdf.precis-fetch.json`
+(`{"ref_id": <ref_id>}`; a supplement adds `"role": "supplement"` and
+names the parent's `ref_id`). Write the sidecar first, then place the
+PDF.
 
 ## A datasheet/manual was ingested as a paper — how do I convert it?
 
