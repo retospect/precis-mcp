@@ -53,6 +53,7 @@ import shutil
 import signal
 import sys
 import tomllib
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -111,18 +112,25 @@ def gate_env(profile: _lanes.RepoProfile) -> dict[str, str]:
     return {k: v for k, v in env.items() if not _ls._LAND_ENV_SECRET_RE.search(k)}
 
 
-def gate_script(profile: _lanes.RepoProfile) -> str:
-    """A POSIX shell script running the profile's setup, lint and test
-    commands in order. The first failure prints ``✖ gate <phase> failed:
-    <command>`` and exits with that command's status. Commands are the
-    registry's constants, each run in a subshell."""
+def commands_script(steps: Iterable[tuple[str, str]]) -> str:
+    """A POSIX shell script running ``(label, command)`` steps in order. The
+    first failure prints ``✖ gate <label> failed: <command>`` and exits with
+    that command's status. Commands are the registry's constants, each run
+    in a subshell. ``repo_release`` runs its verifier through this too."""
     lines = ["#!/bin/sh"]
-    for phase, field in _PHASES:
-        for cmd in getattr(profile, field):
-            msg = shlex.quote(f"✖ gate {phase} failed: {cmd}")
-            lines.append(f"( {cmd}\n) || {{ rc=$?; printf '%s\\n' {msg}; exit $rc; }}")
+    for label, cmd in steps:
+        msg = shlex.quote(f"✖ gate {label} failed: {cmd}")
+        lines.append(f"( {cmd}\n) || {{ rc=$?; printf '%s\\n' {msg}; exit $rc; }}")
     lines.append("exit 0")
     return "\n".join(lines) + "\n"
+
+
+def gate_script(profile: _lanes.RepoProfile) -> str:
+    """A POSIX shell script running the profile's setup, lint and test
+    commands in order (:func:`commands_script`, labelled by phase)."""
+    return commands_script(
+        (phase, cmd) for phase, field in _PHASES for cmd in getattr(profile, field)
+    )
 
 
 def version_changed(tip_text: str | None, sha_text: str | None) -> bool:
@@ -332,26 +340,51 @@ def _slice_names(params: dict[str, Any], root: Path, todo_id: int) -> tuple[str,
     return branch, slice_tree
 
 
-def _park(ctx: Any, handle: dict[str, Any], blocker: dict[str, Any]) -> None:
-    """Park ``handle`` for :data:`LEASE_PARK_S` behind ``blocker`` (the shape
-    of ``land_slice._defer_to_main``): ``not_before`` on the handle, no
+def park_until(ctx: Any, handle: dict[str, Any], seconds: float) -> datetime:
+    """Park ``handle`` for ``seconds`` (the shape of
+    ``land_slice._defer_to_main``): ``not_before`` on the handle, no
     process, the deadline re-armed so parked time does not eat the wall
-    clock. One job event per change of blocker, not one per retry."""
-    due = _ls._now() + timedelta(seconds=LEASE_PARK_S)
+    clock, all persisted to ``meta.compute_handle``. Returns the due time.
+    ``repo_release`` parks its lease and CI waits through this."""
+    due = _ls._now() + timedelta(seconds=seconds)
     handle["not_before"] = due.strftime(_ls._TS_FMT)
-    if handle.get("blocker") != blocker.get("job_id"):
-        handle["blocker"] = blocker.get("job_id")
-        ctx.append_chunk(
-            "job_event",
-            f"repo_land: {handle.get('repo')} lease {blocker.get('reason')} by "
-            f"{blocker.get('kind')} job #{blocker.get('job_id')}; parked, "
-            f"trying again after {due:%H:%M}Z",
-        )
     deadline = due.timestamp() + _ls.wall_seconds()
     handle["deadline"] = deadline
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
+    return due
+
+
+def _park(ctx: Any, handle: dict[str, Any], blocker: dict[str, Any]) -> None:
+    """Park ``handle`` for :data:`LEASE_PARK_S` behind ``blocker``
+    (:func:`park_until`). One job event per change of blocker, not one per
+    retry; the event is named for the handle's ``op`` (a release handle) or
+    ``repo_land``."""
+    changed = handle.get("blocker") != blocker.get("job_id")
+    handle["blocker"] = blocker.get("job_id")  # before the persist in park_until
+    due = park_until(ctx, handle, LEASE_PARK_S)
+    if changed:
+        ctx.append_chunk(
+            "job_event",
+            f"{handle.get('op') or 'repo_land'}: {handle.get('repo')} lease "
+            f"{blocker.get('reason')} by {blocker.get('kind')} job "
+            f"#{blocker.get('job_id')}; parked, trying again after {due:%H:%M}Z",
+        )
+
+
+def stamp_identity(handle: dict[str, Any], pid: int) -> None:
+    """Put ``pid``'s process identity on ``handle`` (``boot_id`` and
+    ``start_time`` from ``/proc``, ``ps_identity`` on Darwin) so ssh_node's
+    reaper matches it before any kill."""
+    identity = _rs._process_identity(pid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
+    ps_identity = (
+        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+    )
+    if ps_identity is not None:
+        handle["ps_identity"] = ps_identity
 
 
 def _start(
@@ -519,14 +552,7 @@ def _start(
         "started_at": launched.strftime(_ls._TS_FMT),
         "deadline": launched.timestamp() + _ls.wall_seconds(),
     }
-    identity = _rs._process_identity(pid)
-    if identity is not None:
-        handle["boot_id"], handle["start_time"] = identity
-    ps_identity = (
-        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
-    )
-    if ps_identity is not None:
-        handle["ps_identity"] = ps_identity
+    stamp_identity(handle, pid)
     ctx.set_meta(land_subject=subject)
     ctx.append_chunk(
         "job_event",

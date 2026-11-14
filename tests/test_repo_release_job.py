@@ -1,0 +1,993 @@
+"""repo_release, the release job from submit through the push (td659522 step 3 R5).
+
+Built on ``test_repo_land``'s rig: a real "origin" bare repo and clone in tmp,
+the credentialed fetch replaced by a local fetch, the detached launch by a
+recorder, and the lease by ``FakeLease``. The tag oracle (``ls_remote_tag``)
+and ``push_cas`` are faked at the ``factory_git_mirror`` seam. Pyproject and
+lockfile contents are synthetic.
+"""
+
+from __future__ import annotations
+
+import copy
+import sys
+import time
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from precis.plans import lanes
+from precis.workers import factory_git_mirror, repo_land, repo_lease
+from precis.workers.job_types import land_slice, repo_release, run_slice
+from tests.test_land_slice import _Ctx, _Store
+from tests.test_repo_land import FakeLease, Rig, _g, rig  # noqa: F401
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: the verifier script runs under sh"
+)
+
+PYPROJECT = '[project]\nname = "demo"\nversion = "1.2.0"\ndependencies = []\n'
+LOCK = (
+    "version = 1\n"
+    'requires-python = ">=3.10"\n'
+    "\n"
+    "[[package]]\n"
+    'name = "demo"\n'
+    'version = "1.2.0"\n'
+    'source = { editable = "." }\n'
+    "dependencies = []\n"
+    "\n"
+    "[[package]]\n"
+    'name = "other"\n'
+    'version = "2.0.0"\n'
+    'source = { registry = "https://pypi.org/simple" }\n'
+)
+PARAMS = {"todo_id": 42, "repo": "catpath"}
+TS = "%Y-%m-%dT%H:%M:%SZ"
+CHECK_RED_LOG = "lock stale\n✖ gate check failed: uv lock --check\n"
+
+
+class ReleaseLease(FakeLease):
+    """``FakeLease`` that also records the order of ``want`` and ``acquire``."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+        self.wants: list[tuple[str, int]] = []
+
+    def want(self, store: Any, repo: str, *, job_id: int) -> None:
+        self.events.append("want")
+        self.wants.append((repo, job_id))
+
+    def acquire(
+        self, store: Any, repo: str, *, job_id: int, kind: str
+    ) -> dict[str, Any] | None:
+        self.events.append("acquire")
+        return super().acquire(store, repo, job_id=job_id, kind=kind)
+
+
+@dataclass
+class Push:
+    url: str
+    ref: str
+    sha: str
+    tip: str
+    record: dict[str, Any] | None  # the todo's repo_release record at call time
+
+
+@dataclass
+class Rel:
+    rig: Rig
+    store: _Store
+    lease: ReleaseLease
+    events: list[str]
+    tags: dict[str, str] = field(default_factory=dict)
+    unreadable: set[str] = field(default_factory=set)
+    oracle_calls: list[str] = field(default_factory=list)
+    pushes: list[Push] = field(default_factory=list)
+    outcomes: list[tuple[str, str]] = field(default_factory=list)
+    on_push: Any = None
+    snapshots: list[dict[str, Any]] = field(default_factory=list)
+    signals: list[tuple[int, int]] = field(default_factory=list)
+    ctx: _Ctx | None = None
+    base: str = ""
+
+    def tree(self) -> Path:
+        return self.rig.clone / ".claude" / "worktrees" / "release-td42"
+
+    def commit(self, subject: str, files: dict[str, str] | None = None) -> str:
+        """A commit on the clone's main, pushed to origin; its sha."""
+        name = f"f{time.monotonic_ns()}.txt"
+        for fname, text in (files or {name: "x\n"}).items():
+            (self.rig.clone / fname).write_text(text, encoding="utf-8")
+        _g(self.rig.clone, "add", "-A")
+        _g(self.rig.clone, "commit", "-q", "-m", subject)
+        _g(self.rig.clone, "push", "-q", "origin", "main")
+        return _g(self.rig.clone, "rev-parse", "HEAD")
+
+    def tip(self) -> str:
+        return _g(self.rig.origin, "rev-parse", "refs/heads/main")
+
+    def record(self) -> Any:
+        return self.store.refs[42].meta.get("repo_release")
+
+
+@pytest.fixture
+def rel(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> Rel:  # noqa: F811
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    events: list[str] = []
+    lease = ReleaseLease(events)
+    r = Rel(rig, store, lease, events)
+    r.rig.lease = lease
+    monkeypatch.setattr(repo_lease, "acquire", r.rig.lease.acquire)
+    monkeypatch.setattr(repo_lease, "holder", r.rig.lease.holder)
+    monkeypatch.setattr(repo_lease, "release", r.rig.lease.release)
+    monkeypatch.setattr(repo_lease, "want", lease.want)
+    stamp = store.stamp_ref_meta
+
+    def stamped(ref_id: int, updates: dict[str, Any]) -> None:
+        rec = updates.get("repo_release")
+        r.events.append(f"stamp:{rec['state'] if rec else 'clear'}")
+        stamp(ref_id, updates)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", stamped)
+    # catpath gets a releaser (no profile has one yet) and is open.
+    profile = replace(lanes.REPO_PROFILES["catpath"], releaser="repo_release")
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda store: frozenset({"precis", "catpath"})
+    )
+
+    def ls_remote_tag(url: str, tag: str, *, env: Any) -> str | None:
+        r.oracle_calls.append(tag)
+        return None if tag in r.unreadable else r.tags.get(tag, "")
+
+    def push_cas(
+        url: str,
+        ref: str,
+        sha: str,
+        tip: str,
+        *,
+        ops_parent: Path,
+        env: Any,
+        object_dirs: tuple[Path, ...],
+    ) -> tuple[str, str]:
+        r.events.append("push")
+        rec = store.refs[42].meta.get("repo_release")
+        r.pushes.append(Push(url, ref, sha, tip, copy.deepcopy(rec)))
+        if r.on_push is not None:
+            r.on_push()
+        return r.outcomes.pop(0) if r.outcomes else ("ok", ref)
+
+    monkeypatch.setattr(factory_git_mirror, "ls_remote_tag", ls_remote_tag)
+    monkeypatch.setattr(factory_git_mirror, "push_cas", push_cas)
+
+    def launch(argv: list[str], **kw: Any) -> int:
+        # What the handle held the moment the verifier started.
+        assert r.ctx is not None
+        r.snapshots.append(
+            {
+                "handle": copy.deepcopy(r.ctx.meta_set.get("compute_handle")),
+                "head": _g(kw["cwd"], "rev-parse", "HEAD"),
+            }
+        )
+        r.rig.launches.append((argv, kw))
+        return 4242
+
+    monkeypatch.setattr(run_slice, "_launch", launch)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(
+        run_slice, "_signal_group", lambda pgid, sig: r.signals.append((pgid, int(sig)))
+    )
+    # The base the release is cut on: synthetic version files at origin's tip.
+    r.base = r.commit(
+        "chore: release files", {"pyproject.toml": PYPROJECT, "uv.lock": LOCK}
+    )
+    return r
+
+
+def _ctx(rel: Rel, **params: Any) -> _Ctx:
+    ctx = _Ctx(rel.store, {**PARAMS, **params})
+    rel.ctx = ctx
+    return ctx
+
+
+def _due(handle: dict[str, Any]) -> None:
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+
+
+def _submitted(rel: Rel, **params: Any) -> tuple[_Ctx, dict[str, Any]]:
+    ctx = _ctx(rel, **params)
+    handle = repo_release.submit(ctx, None)
+    assert isinstance(handle, dict), ctx.failure
+    return ctx, handle
+
+
+def _prepared(rel: Rel, **params: Any) -> tuple[_Ctx, dict[str, Any]]:
+    """A job past submit and the lease: poll once and it is in ``check``."""
+    ctx, handle = _submitted(rel, **params)
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "check", (handle, ctx.failure)
+    return ctx, handle
+
+
+def _finish(handle: dict[str, Any], code: int, log_text: str = "") -> None:
+    Path(handle["log"]).write_text(log_text, encoding="utf-8")
+    Path(handle["exit_file"]).write_text(f"{code}\n", encoding="utf-8")
+
+
+def _attempt_free(ctx: _Ctx, store: _Store, red_class: str) -> None:
+    assert ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-release"
+    assert ctx.meta_set["red_class"] == red_class
+    # a release node is not a slice: its claim, status and tags are untouched
+    assert store.tag_strings(42) == {"STATUS:doing", "repo:catpath"}
+
+
+def _charged(ctx: _Ctx, store: _Store) -> None:
+    assert ctx.status == "failed"
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert store.tag_strings(42) == {"STATUS:doing", "repo:catpath"}
+    assert store.comments(42)[-1].startswith("handoff: release FAILED:")
+
+
+def _no_pushed_record(rel: Rel) -> None:
+    rec = rel.record()
+    assert rec is None or rec.get("state") != "pushed"
+
+
+# ── submit and admission ───────────────────────────────────────────
+
+
+def test_submit_writes_nothing_and_returns_a_parked_lease_handle(rel: Rel) -> None:
+    """If this fails submit fetches, takes the lease or writes the todo before
+    the worker polls, or its parked handle is not the shape poll and kill read."""
+    ctx, handle = _submitted(rel)
+    assert handle["op"] == "repo_release" and handle["repo"] == "catpath"
+    assert handle["phase"] == "lease"
+    due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
+    assert abs((due - datetime.now(UTC)).total_seconds()) < 5
+    assert "pid" not in handle and "sha" not in handle
+    assert ctx.meta_set["compute_handle"] is handle
+    assert ctx.meta_set["compute_handle_released"] is False
+    assert ctx.meta_set["deadline"] == handle["deadline"] > time.time()
+    assert ctx.failure is None and ctx.status is None and ctx.chunks == []
+    assert rel.rig.fetches == [] and rel.rig.launches == []
+    assert rel.rig.lease.acquires == [] and rel.events == []
+    assert rel.oracle_calls == [] and rel.pushes == []
+    assert rel.store.comments(42) == [] and rel.record() is None
+    assert not rel.tree().exists()
+
+
+def _no_releaser(m: pytest.MonkeyPatch) -> str:
+    m.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], releaser=None),
+    )
+    return "names no releaser"
+
+
+def _closed(m: pytest.MonkeyPatch) -> str:
+    m.setattr(lanes, "open_repos", lambda store: frozenset({"precis"}))
+    return "open_repos"
+
+
+def _factory_off(m: pytest.MonkeyPatch) -> str:
+    m.setenv("PRECIS_FACTORY", "off")
+    return "factory is off"
+
+
+def _no_ci(m: pytest.MonkeyPatch) -> str:
+    m.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], ci_workflow=None),
+    )
+    return "ci_workflow"
+
+
+def _no_check(m: pytest.MonkeyPatch) -> str:
+    m.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], release_check_cmds=()),
+    )
+    return "release check"
+
+
+@pytest.mark.parametrize(
+    "how", [_no_releaser, _closed, _factory_off, _no_ci, _no_check]
+)
+def test_a_repo_that_may_not_be_released_is_refused_at_submit(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch, how: Any
+) -> None:
+    """If this fails a job for a repo with no releaser, a closed repo, a
+    profile without CI or a release check, or a factory switched off, gets a
+    lease and a release tree (admission is the only gate before the push)."""
+    needle = how(monkeypatch)
+    ctx = _ctx(rel)
+    assert repo_release.submit(ctx, None) is None
+    assert ctx.status == "failed" and needle in (ctx.failure or "")
+    assert repo_release.validate_submit(rel.store, params=PARAMS) == ctx.failure
+    assert rel.rig.fetches == [] and rel.rig.lease.acquires == []
+
+
+def test_real_catpath_profile_has_no_releaser_so_every_submit_refuses(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the job can be submitted before R8 gives a profile a
+    releaser."""
+    monkeypatch.undo()  # the real REPO_PROFILES
+    assert lanes.REPO_PROFILES["catpath"].releaser is None
+    assert "names no releaser" in (repo_release._release_refusal(None, PARAMS) or "")
+
+
+def test_a_todo_tagged_for_another_repo_or_closed_is_refused(rel: Rel) -> None:
+    """If this fails a release job can run against a node of another repo or
+    one a ruling already closed."""
+    other = _Store()
+    other.add_todo(42, tags=("repo:precis",))
+    assert "resolves to repo" in (
+        repo_release.validate_submit(other, params=PARAMS) or ""
+    )
+    done = _Store()
+    done.add_todo(42, status="done", tags=("repo:catpath",))
+    assert "is closed" in (repo_release.validate_submit(done, params=PARAMS) or "")
+
+
+# ── the lease ──────────────────────────────────────────────────────
+
+
+def test_a_blocked_lease_re_parks_and_want_comes_before_acquire(rel: Rel) -> None:
+    """If this fails a release waiting for the lease does not state its want
+    first (lands then overtake it forever), or starts work while blocked."""
+    ctx, handle = _submitted(rel)
+    rel.rig.lease.blocker = {"job_id": 77, "kind": "land", "reason": "held"}
+    assert repo_release.poll(ctx, handle) is False
+    assert rel.events == ["want", "acquire"]
+    assert rel.rig.lease.acquires == [("catpath", 901, "release")]
+    assert rel.lease.wants == [("catpath", 901)]
+    assert handle["phase"] == "lease" and rel.rig.fetches == []
+    due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
+    assert due > datetime.now(UTC)
+    assert ctx.meta_set["deadline"] > time.time() + repo_land.LEASE_PARK_S
+    events = [t for k, t in ctx.chunks if k == "job_event"]
+    assert len(events) == 1
+    assert "repo_release: catpath lease held by land job #77" in events[0]
+
+
+def test_a_poll_before_not_before_asks_for_nothing(rel: Rel) -> None:
+    """If this fails every poll tick hits the lease table."""
+    ctx, handle = _submitted(rel)
+    handle["not_before"] = "2999-01-01T00:00:00Z"
+    assert repo_release.poll(ctx, handle) is False
+    assert rel.events == [] and rel.rig.fetches == []
+
+
+def test_the_lease_wait_cap_fails_attempt_free(rel: Rel) -> None:
+    """If this fails a release behind a wedged holder waits forever, or its
+    failure is charged to the node."""
+    ctx, handle = _submitted(rel)
+    rel.rig.lease.blocker = {"job_id": 77, "kind": "land", "reason": "held"}
+    handle["lease_since"] = time.time() - repo_land.LEASE_WAIT_CAP_S - 60
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_land.HELD_CLASS)
+    assert rel.rig.fetches == []
+
+
+def test_a_parked_release_waking_to_a_closed_repo_takes_no_lease(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a release that waited takes the lease after the operator
+    closed the repo."""
+    ctx, handle = _submitted(rel)
+    monkeypatch.setattr(lanes, "open_repos", lambda store: frozenset({"precis"}))
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_land.CLOSED_CLASS)
+    assert rel.events == []
+
+
+# ── prepare ────────────────────────────────────────────────────────
+
+
+def test_prepare_commits_the_two_version_lines_on_the_tip_and_launches_the_verifier(
+    rel: Rel,
+) -> None:
+    """If this fails the release commit is not a one-line-each child of the
+    tip, carries the wrong identity or subject, is not in the handle before
+    the verifier runs, or the verifier can see a credential."""
+    rel.commit("chore: later")
+    tip = rel.tip()
+    ctx, handle = _prepared(rel)
+    sha = handle["sha"]
+    clone = rel.rig.clone
+    assert handle["tip"] == tip and len(sha) == 40 and sha != tip
+    assert _g(clone, "rev-parse", f"{sha}^") == tip
+    assert (handle["version"], handle["tag"]) == ("1.3.0", "v1.3.0")
+    assert handle["package"] == "demo" and handle["prev_sha"] is None
+    changed = _g(clone, "diff", "--name-only", tip, sha).splitlines()
+    assert changed == ["pyproject.toml", "uv.lock"]
+    numstat = _g(clone, "diff", "--numstat", tip, sha).splitlines()
+    assert sorted(numstat) == ["1\t1\tpyproject.toml", "1\t1\tuv.lock"]
+    assert '+version = "1.3.0"' in _g(clone, "diff", tip, sha, "--", "pyproject.toml")
+    lock = _g(clone, "show", f"{sha}:uv.lock")
+    assert lock.count('version = "1.3.0"') == 1 and 'version = "2.0.0"' in lock
+    assert _g(clone, "log", "-1", "--format=%s", sha) == "chore(release): v1.3.0 (td42)"
+    assert _g(clone, "log", "-1", "--format=%an <%ae>", sha) == (
+        "precis factory <factory-release@users.noreply.github.com>"
+    )
+    assert _g(clone, "log", "-1", "--format=%cn <%ce>", sha) == (
+        "precis factory <factory-release@users.noreply.github.com>"
+    )
+    # the tree is the detached release tree on the commit
+    assert handle["release_tree"] == str(rel.tree()) and rel.tree().is_dir()
+    # the sha was on the persisted handle, and the tree at it, when the
+    # verifier started
+    assert len(rel.snapshots) == 1
+    snap = rel.snapshots[0]
+    assert snap["head"] == sha
+    for key, want in (
+        ("tip", tip),
+        ("sha", sha),
+        ("version", "1.3.0"),
+        ("tag", "v1.3.0"),
+    ):
+        assert snap["handle"][key] == want
+    assert "pid" not in snap["handle"]
+    # detached launch: cwd the release tree, scrubbed env, the profile's check
+    argv, kw = rel.rig.launches[0]
+    assert kw["cwd"] == rel.tree()
+    script = Path(argv[1]).read_text(encoding="utf-8")
+    assert "uv lock --check" in script and "✖ gate check failed" in script
+    env = kw["env"]
+    assert not [k for k in env if land_slice._LAND_ENV_SECRET_RE.search(k)]
+    for name in ("SSH_AUTH_SOCK", "GH_CONFIG_DIR", "DOCKER_HOST"):
+        assert name not in env
+    assert env["UV_PYTHON"] == "3.12" and not [
+        k for k in env if k.startswith("PRECIS_")
+    ]
+    assert handle["pid"] == handle["pgid"] == 4242
+    assert ctx.meta_set["compute_handle"] == handle
+    assert rel.rig.lease.holder_job == 901 and rel.rig.fetches
+    assert rel.pushes == [] and rel.record() is None
+
+
+@pytest.mark.parametrize(
+    ("subject", "bump", "version"),
+    [
+        ("feat(x): widget", "auto", "1.3.0"),
+        ("feat!: break", "auto", "1.3.0"),
+        ("fix(x): bug", "auto", "1.2.1"),
+        ("chore: tidy", "auto", "1.2.1"),
+        ("feat(x): widget", "patch", "1.2.1"),
+        ("fix(x): bug", "minor", "1.3.0"),
+    ],
+)
+def test_the_bump_is_picked_from_subjects_since_the_previous_tag(
+    rel: Rel, subject: str, bump: str, version: str
+) -> None:
+    """If this fails an auto release bumps minor without a feat (or patch with
+    one), or params.bump is ignored."""
+    rel.tags["v1.2.0"] = rel.base
+    rel.commit(subject)
+    ctx, handle = _prepared(rel, bump=bump)
+    assert handle["version"] == version and handle["tag"] == f"v{version}"
+    assert (handle["prev_tag"], handle["prev_sha"]) == ("v1.2.0", rel.base)
+    body = _g(rel.rig.clone, "log", "-1", "--format=%b", handle["sha"])
+    assert "Since v1.2.0:" in body and f"- {subject}" in body
+
+
+def test_an_old_feat_before_the_previous_tag_does_not_bump_minor(rel: Rel) -> None:
+    """If this fails the subject scan reads past the previous tag."""
+    rel.commit("feat: old")
+    rel.tags["v1.2.0"] = rel.commit("fix: tagged")
+    rel.commit("fix: after")
+    _, handle = _prepared(rel)
+    assert handle["version"] == "1.2.1"
+
+
+def test_no_previous_tag_bumps_minor(rel: Rel) -> None:
+    """If this fails the first release of a repo with no tag goes patch."""
+    rel.commit("fix: only a fix")
+    _, handle = _prepared(rel)
+    assert handle["version"] == "1.3.0"
+    assert handle["prev_tag"] is None and handle["prev_sha"] is None
+
+
+def test_a_previous_tag_off_the_base_bumps_minor(rel: Rel) -> None:
+    """If this fails a tag that is not an ancestor of the tip is read as
+    history (its subjects are not the base's)."""
+    clone = rel.rig.clone
+    _g(clone, "checkout", "-q", "-b", "side", rel.base)
+    (clone / "side.txt").write_text("s\n", encoding="utf-8")
+    _g(clone, "add", "-A")
+    _g(clone, "commit", "-q", "-m", "fix: on a side branch")
+    rel.tags["v1.2.0"] = _g(clone, "rev-parse", "HEAD")
+    _g(clone, "checkout", "-q", "main")
+    rel.commit("fix: on main")
+    _, handle = _prepared(rel)
+    assert handle["version"] == "1.3.0"
+    assert handle["prev_sha"] == rel.tags["v1.2.0"]
+
+
+def test_the_previous_tag_at_the_tip_is_a_no_op_success(rel: Rel) -> None:
+    """If this fails a release with nothing new commits and pushes a version
+    anyway, or the no-op leaves no record the batch can read."""
+    tip = rel.tip()
+    rel.tags["v1.2.0"] = tip
+    commits = _g(rel.rig.clone, "rev-list", "--all", "--count")
+    ctx, handle = _submitted(rel)
+    assert repo_release.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    rec = rel.record()
+    assert rec["state"] == "tagged" and rec["no_op"] is True
+    assert (rec["version"], rec["tag"], rec["sha"]) == ("1.2.0", "v1.2.0", tip)
+    assert rec["repo"] == "catpath" and rec["package"] == "demo" and rec["job"] == 901
+    assert rel.store.comments(42) == [
+        f"released: v1.2.0 {tip} (no-op: nothing landed since the last release)"
+    ]
+    assert rel.pushes == [] and rel.rig.launches == [] and not rel.tree().exists()
+    assert _g(rel.rig.clone, "rev-list", "--all", "--count") == commits
+    assert rel.rig.lease.releases == [("catpath", 901)]
+    assert "STATUS:done" not in rel.store.tag_strings(42)  # the dispatcher closes it
+
+
+def test_a_new_tag_already_on_the_remote_is_charged_and_pushes_nothing(
+    rel: Rel,
+) -> None:
+    """If this fails a version that already has a tag is released again."""
+    rel.tags["v1.3.0"] = "c" * 40
+    ctx, handle = _submitted(rel)
+    assert repo_release.poll(ctx, handle) is True
+    _charged(ctx, rel.store)
+    assert "v1.3.0 already exists" in (ctx.failure or "")
+    assert rel.pushes == [] and rel.rig.launches == [] and not rel.tree().exists()
+    _no_pushed_record(rel)
+
+
+@pytest.mark.parametrize("unreadable", ["v1.3.0", "v1.2.0"])
+def test_an_unreadable_tag_oracle_is_attempt_free(rel: Rel, unreadable: str) -> None:
+    """If this fails a remote that cannot be read is charged to the node, or
+    worse, read as "no tag" and released."""
+    rel.unreadable.add(unreadable)
+    ctx, handle = _submitted(rel)
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.TAG_ORACLE_CLASS)
+    assert rel.pushes == [] and rel.rig.launches == []
+
+
+def test_an_unreadable_base_fetch_is_attempt_free(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails an unreachable remote is charged to the node."""
+    monkeypatch.setattr(factory_git_mirror, "fetch_ref_into", lambda *a, **k: None)
+    ctx, handle = _submitted(rel)
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.FETCH_CLASS)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"uv.lock": 'version = 1\n\n[[package]]\nname = "other"\nversion = "1.0.0"\n'},
+        {"pyproject.toml": '[project]\nname = "demo"\nversion = "1.2"\n'},
+    ],
+)
+def test_a_base_the_text_helpers_refuse_is_charged(
+    rel: Rel, files: dict[str, str]
+) -> None:
+    """If this fails a lockfile without the project's block, or a version that
+    is not X.Y.Z, is released by some other route than the pure edits."""
+    rel.commit("chore: break it", files)
+    ctx, handle = _submitted(rel)
+    assert repo_release.poll(ctx, handle) is True
+    _charged(ctx, rel.store)
+    assert rel.pushes == [] and rel.rig.launches == [] and not rel.tree().exists()
+
+
+def test_a_stale_release_tree_is_replaced(rel: Rel) -> None:
+    """If this fails a leftover tree from a killed job breaks the next one."""
+    stale = rel.tree()
+    stale.mkdir(parents=True)
+    (stale / "junk").write_text("x", encoding="utf-8")
+    _, handle = _prepared(rel)
+    assert not (stale / "junk").exists() and handle["sha"]
+
+
+# ── check ──────────────────────────────────────────────────────────
+
+
+def test_a_running_verifier_keeps_waiting(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a verifier still running is judged, or its tree dropped."""
+    ctx, handle = _prepared(rel)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: True)
+    assert repo_release.poll(ctx, handle) is False
+    assert ctx.status is None and rel.tree().is_dir() and rel.pushes == []
+    assert ctx.meta_set["compute_handle_released"] is False
+
+
+def test_past_its_deadline_the_verifier_is_killed_attempt_free(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a wedged verifier holds the repo lease until the row is
+    reaped."""
+    ctx, handle = _prepared(rel)
+    monkeypatch.setattr(land_slice, "_process_alive", lambda pid: True)
+    handle["deadline"] = 1.0
+    assert repo_release.poll(ctx, handle) is True
+    assert rel.signals == [(4242, 15)]
+    _attempt_free(ctx, rel.store, repo_land.TIMED_OUT_CLASS)
+    assert not rel.tree().exists()
+
+
+def test_a_red_verifier_pushes_nothing_and_is_charged_with_a_relock_handoff(
+    rel: Rel,
+) -> None:
+    """If this fails a red lockfile check pushes, leaves a pushed record,
+    spends the attempt-free path, or tells the next worker nothing."""
+    secret = "ghp_" + "".join(chr(97 + (i * 7) % 26) for i in range(36))
+    ctx, handle = _prepared(rel)
+    _finish(handle, 1, f"token {secret}\n{CHECK_RED_LOG}")
+    assert repo_release.poll(ctx, handle) is True
+    _charged(ctx, rel.store)
+    assert rel.pushes == [] and not rel.tree().exists()
+    _no_pushed_record(rel)
+    handoff = rel.store.comments(42)[-1]
+    assert "uv lock --check" in handoff and "relock" in handoff
+    assert "no version was spent" in handoff
+    assert secret not in handoff and secret not in (ctx.failure or "")
+    assert "stamp:pushed" not in rel.events
+
+
+@pytest.mark.parametrize("how", ["137", "gone"])
+def test_a_killed_verifier_is_attempt_free(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """If this fails a verifier killed from outside (exit 137, or a process
+    that vanished without an exit file) is charged to the node."""
+    ctx, handle = _prepared(rel)
+    if how == "137":
+        _finish(handle, 137, "Killed\n")
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_land.GATE_INFRA_CLASS)
+    assert rel.pushes == [] and not rel.tree().exists()
+    _no_pushed_record(rel)
+
+
+def test_a_verifier_that_rewrites_the_tree_does_not_change_the_pushed_sha(
+    rel: Rel,
+) -> None:
+    """If this fails repo-controlled code run by the verifier can change what
+    is pushed (the sha must come from the handle, never from the tree)."""
+    ctx, handle = _prepared(rel)
+    sha, tip = handle["sha"], handle["tip"]
+    tree = rel.tree()
+    # a hostile verifier: rewrite the files, add a commit and move HEAD
+    (tree / "pyproject.toml").write_text("# pwned\n", encoding="utf-8")
+    (tree / "evil.py").write_text("x = 1\n", encoding="utf-8")
+    _g(tree, "add", "-A")
+    _g(tree, "commit", "-q", "-m", "evil")
+    assert _g(tree, "rev-parse", "HEAD") != sha
+    _finish(handle, 0)
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert [(p.sha, p.tip) for p in rel.pushes] == [(sha, tip)]
+    assert handle["phase"] == "ci" and handle["sha"] == sha
+
+
+def test_green_stamps_the_record_before_the_push_then_parks_in_ci(rel: Rel) -> None:
+    """If this fails a push can happen with no record on the node (a later
+    failure then spends the version with nothing to resume), or the job ends
+    instead of waiting for CI with the lease held."""
+    rel.tags["v1.2.0"] = rel.base
+    rel.commit("feat: thing")
+    ctx, handle = _prepared(rel)
+    sha, tip = handle["sha"], handle["tip"]
+    _finish(handle, 0)
+    rel.events.clear()
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert rel.events == ["stamp:pushed", "push"]
+    (push,) = rel.pushes
+    assert (push.url, push.ref, push.sha, push.tip) == (
+        lanes.REPO_PROFILES["catpath"].remote,
+        "main",
+        sha,
+        tip,
+    )
+    stamped = push.record
+    assert stamped is not None
+    assert stamped["state"] == "pushed" and stamped["sha"] == sha
+    assert (stamped["version"], stamped["tag"]) == ("1.3.0", "v1.3.0")
+    assert (stamped["prev_tag"], stamped["prev_sha"]) == ("v1.2.0", rel.base)
+    assert (stamped["repo"], stamped["package"], stamped["base"]) == (
+        "catpath",
+        "demo",
+        "main",
+    )
+    assert stamped["job"] == 901 and stamped["pushed_at"]
+    assert rel.record() == stamped
+    assert "landed_repo" not in rel.store.refs[42].meta
+    # parked in ci, the lease still held, the tree gone, the comment written
+    assert (
+        handle["phase"] == "ci" and handle["sha"] == sha and handle["tag"] == "v1.3.0"
+    )
+    due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
+    assert 60 < (due - datetime.now(UTC)).total_seconds() <= 125
+    assert ctx.meta_set["compute_handle"] == handle
+    assert ctx.status is None and rel.rig.lease.releases == []
+    assert not rel.tree().exists()
+    assert rel.store.comments(42) == [
+        f"release commit pushed: v1.3.0 {sha}; waiting for CI"
+    ]
+
+
+def test_the_ci_phase_is_a_parked_stub(rel: Rel) -> None:
+    """If this fails the R5 stub does more than wait (R6 owns the CI read and
+    the tag), or lets go of the lease."""
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+    assert repo_release.poll(ctx, handle) is False
+    assert handle["phase"] == "ci"
+    before = copy.deepcopy(handle)
+    ctx.meta_set.clear()
+    assert repo_release.poll(ctx, handle) is False  # not due: untouched
+    assert handle == before and ctx.meta_set == {}
+    _due(handle)
+    assert repo_release.poll(ctx, handle) is False  # due: parked again
+    assert datetime.strptime(handle["not_before"], TS).replace(
+        tzinfo=UTC
+    ) > datetime.now(UTC)
+    assert rel.rig.lease.releases == [] and ctx.status is None
+    assert len(rel.pushes) == 1
+
+
+# ── the push: raced, error, admission ──────────────────────────────
+
+
+def test_a_raced_push_prepares_again_on_the_new_tip(rel: Rel) -> None:
+    """If this fails a push that lost the race fails the job, or is retried
+    on the old tip, or leaves the first round's record behind."""
+    ctx, handle = _prepared(rel)
+    first = handle["sha"]
+    _finish(handle, 0)
+    rel.outcomes[:] = [("raced", "main moved"), ("ok", "main")]
+    new_tip: list[str] = []
+    rel.on_push = lambda: new_tip.append(rel.commit("fix: raced ahead"))
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "check" and handle["rounds"] == 2
+    assert handle["tip"] == new_tip[0] and handle["sha"] != first
+    assert _g(rel.rig.clone, "rev-parse", f"{handle['sha']}^") == new_tip[0]
+    assert rel.events.count("stamp:clear") == 1 and rel.record() is None
+    assert len(rel.rig.launches) == 2 and rel.rig.lease.acquires == [
+        ("catpath", 901, "release")
+    ]
+    assert ctx.meta_set["compute_handle"] == handle and ctx.status is None
+    rel.on_push = None
+    Path(handle["exit_file"]).unlink(missing_ok=True)
+    _finish(handle, 0)
+    assert repo_release.poll(ctx, handle) is False, ctx.failure
+    assert handle["phase"] == "ci"
+    assert [p.sha for p in rel.pushes][0] == first
+    assert rel.pushes[1].tip == new_tip[0] and rel.pushes[1].sha != first
+    assert rel.record()["state"] == "pushed"
+
+
+def test_three_raced_rounds_end_attempt_free(rel: Rel) -> None:
+    """If this fails a base that moves on every try loops forever, or the
+    exhausted job is charged to the node."""
+    rel.outcomes[:] = [("raced", "main moved")] * 3
+    rel.on_push = lambda: rel.commit("fix: raced again")
+    ctx, handle = _prepared(rel)
+    for expect_rounds in (1, 2, 3):
+        assert handle["rounds"] == expect_rounds
+        Path(handle["exit_file"]).unlink(missing_ok=True)
+        _finish(handle, 0)
+        done = repo_release.poll(ctx, handle)
+        assert done is (expect_rounds == 3)
+    _attempt_free(ctx, rel.store, repo_land.RACED_CLASS)
+    assert len(rel.pushes) == 3 and len(rel.rig.launches) == 3
+    assert not rel.tree().exists()
+    _no_pushed_record(rel)
+
+
+def test_a_push_error_is_attempt_free_and_leaves_the_record_for_the_resume(
+    rel: Rel,
+) -> None:
+    """If this fails a push that may have happened loses its record (the next
+    job would cut a second release commit for the same version)."""
+    rel.outcomes[:] = [("error", "unreadable after the push")]
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_land.PUSH_ERROR_CLASS)
+    assert rel.record()["state"] == "pushed" and rel.record()["sha"] == handle["sha"]
+    assert not rel.tree().exists()
+
+
+@pytest.mark.parametrize("how", ["closed", "off", "lease-lost", "no-lease"])
+def test_a_repo_closed_or_lease_lost_during_the_check_is_never_pushed(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """If this fails a release pushes after the operator closed the repo or
+    another job took the lease while the verifier ran."""
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+    red_class = repo_land.CLOSED_CLASS
+    if how == "closed":
+        monkeypatch.setattr(lanes, "open_repos", lambda store: frozenset({"precis"}))
+    elif how == "off":
+        monkeypatch.setenv("PRECIS_FACTORY", "off")
+    else:
+        rel.rig.lease.holder_job = 77 if how == "lease-lost" else None
+        red_class = repo_land.HELD_CLASS
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, red_class)
+    assert rel.pushes == [] and not rel.tree().exists()
+    _no_pushed_record(rel)
+    assert "stamp:pushed" not in rel.events
+
+
+def test_a_failed_stamp_means_no_push(
+    rel: Rel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a push goes out with the record unwritten."""
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+
+    def broken(ref_id: int, updates: dict[str, Any]) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(rel.store, "stamp_ref_meta", broken)
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_release.RECORD_CLASS)
+    assert rel.pushes == []
+
+
+@pytest.mark.parametrize("field_name", ["sha", "tip"])
+def test_a_handle_whose_commit_is_not_a_child_of_its_tip_is_never_pushed(
+    rel: Rel, field_name: str
+) -> None:
+    """If this fails a tampered or stale handle pushes a commit that was not
+    verified against the tip."""
+    ctx, handle = _prepared(rel)
+    _finish(handle, 0)
+    handle[field_name] = rel.base if field_name == "sha" else handle["sha"]
+    assert repo_release.poll(ctx, handle) is True
+    _attempt_free(ctx, rel.store, repo_land.HANDLE_CLASS)
+    assert rel.pushes == []
+
+
+# ── resume ─────────────────────────────────────────────────────────
+
+
+def _pushed_record(sha: str, **over: Any) -> dict[str, Any]:
+    return {
+        "repo": "catpath",
+        "package": "demo",
+        "version": "1.3.0",
+        "tag": "v1.3.0",
+        "sha": sha,
+        "base": "main",
+        "prev_tag": None,
+        "prev_sha": None,
+        "state": "pushed",
+        "job": 800,
+        "pushed_at": "2026-11-14T10:00:00+00:00",
+        **over,
+    }
+
+
+def _resumed(rel: Rel, record: dict[str, Any]) -> tuple[_Ctx, dict[str, Any], Any]:
+    rel.store.refs[42].meta["repo_release"] = record
+    ctx, handle = _submitted(rel)
+    return ctx, handle, repo_release.poll(ctx, handle)
+
+
+def test_a_pushed_record_with_its_tag_at_that_sha_resumes_in_ci(rel: Rel) -> None:
+    """If this fails a job after an interrupted release cuts a second commit
+    for a version that is already pushed and tagged."""
+    sha = "a" * 40
+    rel.tags["v1.3.0"] = sha
+    ctx, handle, done = _resumed(rel, _pushed_record(sha))
+    assert done is False and ctx.status is None
+    assert handle["phase"] == "ci" and handle["sha"] == sha
+    assert (handle["version"], handle["tag"]) == ("1.3.0", "v1.3.0")
+    assert handle["pushed_at"] == "2026-11-14T10:00:00+00:00"
+    assert rel.rig.launches == [] and rel.pushes == []
+    assert ctx.meta_set["compute_handle"] == handle
+    assert rel.record()["state"] == "pushed"
+
+
+def test_a_pushed_record_with_the_tag_elsewhere_is_a_charged_tag_conflict(
+    rel: Rel,
+) -> None:
+    """If this fails a tag that points at another commit than the one this
+    node pushed is built on, or the conflict is retried for free."""
+    rel.tags["v1.3.0"] = "d" * 40
+    ctx, handle, done = _resumed(rel, _pushed_record("a" * 40))
+    assert done is True
+    _charged(ctx, rel.store)
+    assert rel.record()["state"] == "tag-conflict"
+    assert "tag v1.3.0 exists at" in (ctx.failure or "")
+    assert rel.pushes == [] and rel.rig.launches == []
+
+
+def test_a_pushed_record_with_no_tag_and_its_sha_on_main_resumes_in_ci(
+    rel: Rel,
+) -> None:
+    """If this fails a release commit that reached main but was not tagged yet
+    is released a second time."""
+    sha = rel.base  # an ancestor of the tip
+    rel.commit("fix: after")
+    ctx, handle, done = _resumed(rel, _pushed_record(sha))
+    assert done is False and handle["phase"] == "ci" and handle["sha"] == sha
+    assert rel.rig.launches == []
+
+
+def test_a_pushed_record_whose_sha_never_reached_main_starts_fresh(rel: Rel) -> None:
+    """If this fails a push that never happened leaves the version stuck on a
+    commit nobody has."""
+    ctx, handle, done = _resumed(rel, _pushed_record("b" * 40))
+    assert done is False and handle["phase"] == "check"
+    assert handle["sha"] != "b" * 40 and handle["version"] == "1.3.0"
+    assert rel.record() is None
+    assert len(rel.rig.launches) == 1
+
+
+def test_a_pushed_record_with_an_unreadable_tag_is_attempt_free(rel: Rel) -> None:
+    """If this fails an unreadable remote is read as "no tag" and the record
+    is dropped."""
+    rel.unreadable.add("v1.3.0")
+    ctx, _, done = _resumed(rel, _pushed_record("a" * 40))
+    assert done is True
+    _attempt_free(ctx, rel.store, repo_release.TAG_ORACLE_CLASS)
+    assert rel.record()["state"] == "pushed"
+
+
+# ── kill ───────────────────────────────────────────────────────────
+
+
+def test_kill_on_a_parked_handle_does_not_raise(rel: Rel) -> None:
+    """If this fails the wall-clock or operator kill of a parked release
+    raises (no pid, no tree) and the row is never reaped."""
+    ctx, handle = _submitted(rel)
+    repo_release.kill(ctx, handle)
+    ci = {"op": "repo_release", "repo": "catpath", "phase": "ci", "sha": "a" * 40}
+    repo_release.kill(ctx, ci)
+    repo_release.kill(ctx, "garbage")
+    repo_release.kill(ctx, None)
+    assert rel.signals == []
+
+
+def test_kill_on_a_live_verifier_signals_its_group_and_drops_the_tree(
+    rel: Rel,
+) -> None:
+    """If this fails a killed release leaves its verifier running and its tree
+    in the clone."""
+    ctx, handle = _prepared(rel)
+    assert rel.tree().is_dir()
+    repo_release.kill(ctx, handle)
+    assert rel.signals == [(4242, 15)]
+    assert not rel.tree().exists()
+
+
+def test_commands_script_labels_the_failing_step(tmp_path: Path) -> None:
+    """If this fails the verifier's failure line is not the one poll parses."""
+    script = tmp_path / "s.sh"
+    script.write_text(
+        repo_land.commands_script([("check", "echo A"), ("check", "exit 4")]),
+        encoding="utf-8",
+    )
+    import subprocess
+
+    proc = subprocess.run(
+        ["sh", str(script)], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert proc.returncode == 4
+    assert proc.stdout.splitlines() == ["A", "✖ gate check failed: exit 4"]
