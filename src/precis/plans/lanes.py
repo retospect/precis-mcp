@@ -113,6 +113,7 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     # the second-repo lander and its credential boundary (td659522): the
     # factory must not rewrite the code that holds or scrubs the token
     "src/precis/workers/repo_land.py",
+    "src/precis/workers/repo_lease.py",
     "src/precis/workers/factory_git.py",
     "src/precis/workers/factory_git_mirror.py",
     "src/precis/workers/job_types/run_slice.py",

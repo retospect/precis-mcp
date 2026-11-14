@@ -844,6 +844,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "lane probes again after the backoff, and a launch resolves this.",
     ),
     AlertRule(
+        "repo_lease",
+        "stale-holder:{repo}/{job_id}",
+        "A job still holds a second repo's land/release lease but its "
+        "deadline passed over 15 minutes ago; the lease is ignored.",
+        "warn",
+        "land_slice",
+        triage="get(kind='job', id=<job_id>): cancel or reap the dead job; "
+        "its terminal status clears the lease row for good.",
+    ),
+    AlertRule(
         "lane_health",
         "lane-parked:{lane}",
         "A lane has been parked on a failed health probe for over six hours.",

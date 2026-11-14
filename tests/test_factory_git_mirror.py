@@ -1426,3 +1426,237 @@ def test_push_cas_is_ok_without_a_push_when_the_sha_is_already_there(
     calls = _record_real(monkeypatch)
     assert _cas(remote, dest, sha, tip, tmp_path) == ("ok", "main")
     assert _pushes(calls) == []
+
+
+# ── ls_remote_tag / push_tag_new (second-repo release tags) ────────
+
+
+def _tagged(tmp_path: Path) -> tuple[Path, Path, str]:
+    remote, dest, _tip = _lander_repos(tmp_path)
+    sha = _commit(dest, "two")
+    _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    return remote, dest, sha
+
+
+def _mk_tag(remote: Path, dest: Path, tag: str, sha: str, *, annotated: bool) -> None:
+    if annotated:
+        _git(dest, *_IDENT, "tag", "-a", "-m", "m", tag, sha)
+    else:
+        _git(dest, "tag", tag, sha)
+    _git(dest, "push", "-q", str(remote), f"refs/tags/{tag}")
+
+
+def _push_tag(
+    remote: Path,
+    dest: Path,
+    tag: str,
+    sha: str,
+    tmp_path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    return fgm.push_tag_new(
+        str(remote),
+        tag,
+        sha,
+        message="release v1",
+        tagger=("Rel Bot", "bot@example.invalid"),
+        ops_parent=tmp_path / "ops",
+        env=env or _real_env(),
+        object_dirs=(dest / ".git" / "objects",),
+    )
+
+
+def _ops_clean(tmp_path: Path) -> bool:
+    ops = tmp_path / "ops"
+    return not ops.exists() or list(ops.iterdir()) == []
+
+
+def test_ls_remote_tag_annotated_returns_the_commit_not_the_tag_object(
+    tmp_path: Path,
+) -> None:
+    """An annotated tag read as its tag-object sha would never equal the
+    release commit, so every 'already tagged' check would misfire."""
+    remote, dest, sha = _tagged(tmp_path)
+    _mk_tag(remote, dest, "v1", sha, annotated=True)
+    assert _git(remote, "rev-parse", "refs/tags/v1") != sha
+    assert fgm.ls_remote_tag(str(remote), "v1", env=_real_env()) == sha
+
+
+def test_ls_remote_tag_lightweight_returns_the_commit(tmp_path: Path) -> None:
+    """A lightweight tag has no peeled line; the direct sha must answer."""
+    remote, dest, sha = _tagged(tmp_path)
+    _mk_tag(remote, dest, "v1", sha, annotated=False)
+    assert fgm.ls_remote_tag(str(remote), "v1", env=_real_env()) == sha
+
+
+def test_ls_remote_tag_absent_is_empty_and_unreachable_is_none(
+    tmp_path: Path,
+) -> None:
+    """'No such tag' (safe to create) must differ from 'cannot read'
+    (never create blind)."""
+    remote, _dest, _sha = _tagged(tmp_path)
+    assert fgm.ls_remote_tag(str(remote), "v9", env=_real_env()) == ""
+    missing = str(tmp_path / "missing.git")
+    assert fgm.ls_remote_tag(missing, "v9", env=_real_env()) is None
+
+
+@pytest.mark.parametrize("tag", ["-x", "a b", "a..b", "", ".v1", "a:b", "a/b"])
+def test_ls_remote_tag_unsafe_names_never_run_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tag: str
+) -> None:
+    """A tag name is argv/refspec material; an option-shaped or
+    ref-escaping name must be refused before git sees it."""
+    calls = _record_real(monkeypatch)
+    assert fgm.ls_remote_tag(str(tmp_path), tag, env=_real_env()) is None
+    assert calls == []
+
+
+def test_push_tag_new_creates_an_annotated_tag_with_message_and_tagger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The release tag must be annotated, carry the message and tagger,
+    and peel to the release commit, and nothing may be left in the ops dir."""
+    remote, dest, sha = _tagged(tmp_path)
+    _record_real(monkeypatch)
+    outcome, detail = _push_tag(remote, dest, "v1", sha, tmp_path)
+    assert outcome == "ok", detail
+    assert _git(remote, "cat-file", "-t", "refs/tags/v1") == "tag"
+    assert _git(remote, "rev-parse", "refs/tags/v1^{}") == sha
+    body = _git(remote, "cat-file", "-p", "refs/tags/v1")
+    assert "tagger Rel Bot <bot@example.invalid>" in body
+    assert body.endswith("release v1")
+    assert _ops_clean(tmp_path)
+
+
+def test_push_tag_new_same_sha_is_ok_without_a_push(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rerun after a successful tag must be a no-op, not a rejected push."""
+    remote, dest, sha = _tagged(tmp_path)
+    _mk_tag(remote, dest, "v1", sha, annotated=True)
+    calls = _record_real(monkeypatch)
+    assert _push_tag(remote, dest, "v1", sha, tmp_path)[0] == "ok"
+    assert _pushes(calls) == []
+
+
+def test_push_tag_new_other_sha_is_exists_and_the_tag_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A tag already on another commit must never be moved."""
+    remote, dest, sha = _tagged(tmp_path)
+    other = _commit(dest, "three")
+    _mk_tag(remote, dest, "v1", sha, annotated=True)
+    before = _git(remote, "rev-parse", "refs/tags/v1")
+    calls = _record_real(monkeypatch)
+    assert _push_tag(remote, dest, "v1", other, tmp_path) == ("exists", sha)
+    assert _git(remote, "rev-parse", "refs/tags/v1") == before
+    assert _pushes(calls) == []
+
+
+def test_push_tag_new_never_forces_or_pushes_all_tags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Create-only: no argv of any git call may force, lease, push
+    --tags, or use a '+' refspec."""
+    remote, dest, sha = _tagged(tmp_path)
+    calls = _record_real(monkeypatch)
+    assert _push_tag(remote, dest, "v1", sha, tmp_path)[0] == "ok"
+    pushes = _pushes(calls)
+    assert len(pushes) == 1
+    assert "refs/tags/v1:refs/tags/v1" in pushes[0]
+    for args, _cwd, _env in calls:
+        for arg in args:
+            assert not arg.startswith("--force"), arg
+            assert arg != "--tags", arg
+            assert not arg.startswith("+"), arg
+
+
+def test_push_tag_new_tag_call_carries_no_credential_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """git tag runs in a repo-local context that spawns config-named
+    children; the token must reach only the push and the oracle reads."""
+    remote, dest, sha = _tagged(tmp_path)
+    env = _real_env()
+    env.update({"GH_TOKEN": "ghp", "GIT_CONFIG_KEY_0": "k", "GIT_CONFIG_VALUE_0": "v"})
+    calls = _record_real(monkeypatch)
+    assert _push_tag(remote, dest, "v1", sha, tmp_path, env=env)[0] == "ok"
+    tag_calls = [(a, e) for a, _c, e in calls if _sub(a) == "tag"]
+    assert len(tag_calls) == 1
+    tag_args, tag_env = tag_calls[0]
+    assert "-a" in tag_args and "--no-sign" in tag_args
+    assert tag_env["GIT_COMMITTER_NAME"] == "Rel Bot"
+    assert tag_env["GIT_COMMITTER_EMAIL"] == "bot@example.invalid"
+    for name in _CRED_NAMES:
+        assert name not in tag_env, name
+    push_env = [e for a, _c, e in calls if _sub(a) == "push"][0]
+    assert push_env["PRECIS_FACTORY_GIT_TOKEN"] == "tok"
+    assert push_env["GH_TOKEN"] == "ghp"
+    for a, _c, e in calls:
+        if _sub(a) in ("cat-file", "tag"):
+            assert "PRECIS_FACTORY_GIT_TOKEN" not in e, a
+
+
+def test_push_tag_new_unreadable_remote_is_error_and_creates_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If the oracle cannot answer, creating blind could duplicate or
+    shadow a tag; nothing may be built or pushed."""
+    _remote, dest, sha = _tagged(tmp_path)
+    calls = _record_real(monkeypatch)
+    missing = tmp_path / "missing.git"
+    outcome, _detail = _push_tag(missing, dest, "v1", sha, tmp_path)
+    assert outcome == "error"
+    assert _pushes(calls) == []
+    assert not missing.exists()
+    assert _ops_clean(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "bad", ["abc1234", "A" * 40, "f" * 40], ids=["short", "uppercase", "unknown"]
+)
+def test_push_tag_new_bad_sha_is_error_and_drops_the_ops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str
+) -> None:
+    """A malformed or unknown commit must fail closed, create no tag,
+    and still clean up the ops dir."""
+    remote, dest, _sha = _tagged(tmp_path)
+    calls = _record_real(monkeypatch)
+    outcome, _detail = _push_tag(remote, dest, "v1", bad, tmp_path)
+    assert outcome == "error"
+    assert _pushes(calls) == []
+    assert _git(remote, "tag", "-l") == ""
+    assert _ops_clean(tmp_path)
+
+
+def test_push_tag_new_unsafe_tag_is_error_without_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An option-shaped tag name must never reach argv."""
+    remote, dest, sha = _tagged(tmp_path)
+    calls = _record_real(monkeypatch)
+    assert _push_tag(remote, dest, "--tags", sha, tmp_path)[0] == "error"
+    assert calls == []
+
+
+def test_push_tag_new_rejected_push_with_no_remote_tag_is_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The push's exit status is not the answer: a failed push leaving no
+    tag on the remote is an error, and the ops dir is still dropped."""
+    remote, dest, sha = _tagged(tmp_path)
+    real = fgm._run
+
+    def run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == "push":
+            return subprocess.CompletedProcess(args, 1, "", "denied")
+        return real(args, cwd=cwd, env=env, timeout=timeout)
+
+    monkeypatch.setattr(fgm, "_run", run)
+    outcome, _detail = _push_tag(remote, dest, "v1", sha, tmp_path)
+    assert outcome == "error"
+    assert _git(remote, "tag", "-l") == ""
+    assert _ops_clean(tmp_path)

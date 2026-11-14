@@ -806,6 +806,160 @@ def push_cas(
         _drop_ops(ops)
 
 
+_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _safe_tag(tag: str) -> bool:
+    """A tag name that cannot be read as an option or a ref escape: no
+    leading ``-``, no whitespace or ref metacharacters, no ``..``."""
+    return bool(_TAG_RE.fullmatch(tag)) and ".." not in tag
+
+
+def ls_remote_tag(url: str, tag: str, *, env: Mapping[str, str]) -> str | None:
+    """The oracle for one tag: ``git ls-remote`` from a non-repo cwd under
+    :func:`trusted_env`, asking for ``refs/tags/<tag>`` and its peeled
+    ``^{}`` line. The commit the tag resolves to — the peeled sha of an
+    annotated tag, the direct sha of a lightweight one — ``""`` when the
+    remote has no such tag, ``None`` when it cannot be read (or ``tag`` is
+    not a safe name, in which case git never runs)."""
+    if not _safe_tag(tag):
+        return None
+    ref = f"refs/tags/{tag}"
+    try:
+        cp = _run(
+            ["git", *TRUSTED_ARGS, "ls-remote", url, ref, f"{ref}^{{}}"],
+            cwd=Path(tempfile.gettempdir()),
+            env=trusted_env(env),
+            timeout=60.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    direct = ""
+    peeled = ""
+    for line in (cp.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not _SHA_RE.fullmatch(parts[0]):
+            return None
+        if parts[1] == ref:
+            direct = parts[0]
+        elif parts[1] == f"{ref}^{{}}":
+            peeled = parts[0]
+        else:
+            return None
+    return peeled or direct
+
+
+def push_tag_new(
+    url: str,
+    tag: str,
+    sha: str,
+    *,
+    message: str,
+    tagger: tuple[str, str],
+    ops_parent: Path,
+    env: Mapping[str, str],
+    object_dirs: tuple[Path, ...] = (),
+) -> tuple[str, str]:
+    """Create annotated tag ``tag`` at commit ``sha`` on ``url``,
+    create-only, from a fresh ops gitdir whose alternates hold
+    ``object_dirs`` (the clone's object store). The tag object is made
+    under :func:`local_env` (no credential names) with ``tagger`` as the
+    identity; only the push runs under :func:`trusted_env`. The push is a
+    plain ``refs/tags/<tag>`` refspec — never ``+``, ``--force`` or
+    ``--tags`` — so an existing tag is never moved. The :func:`ls_remote_tag`
+    oracle brackets the push and the push's own exit status is not
+    trusted: the answer is what the remote serves. ``("ok", detail)`` when
+    the remote tag peels to ``sha`` (already there or created),
+    ``("exists", sha)`` when it peels elsewhere, ``("error", detail)``
+    otherwise. Never raises."""
+    if not _safe_tag(tag):
+        return ("error", f"{tag!r}: not a safe tag name")
+    if not _SHA_RE.fullmatch(sha):
+        return ("error", f"{tag}: {sha!r} is not a full lowercase sha")
+    before = ls_remote_tag(url, tag, env=env)
+    if before is None:
+        return ("error", f"{tag}: remote unreadable before the push")
+    if before == sha:
+        return ("ok", f"{tag} already at {sha[:9]}")
+    if before:
+        return ("exists", before)
+    local = local_env(env)
+    ops = _ops_repo(ops_parent, *object_dirs, env=local)
+    if ops is None:
+        return ("error", f"{tag}: no scratch for the tag ops repo")
+    try:
+        have = _run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "-C",
+                str(ops),
+                "cat-file",
+                "-e",
+                f"{sha}^{{commit}}",
+            ],
+            cwd=ops,
+            env=local,
+            timeout=30.0,
+        )
+        if have.returncode != 0:
+            return ("error", f"{tag}: commit {sha[:9]} not found in the clone")
+        name, email = tagger
+        made = _run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "-C",
+                str(ops),
+                "tag",
+                "-a",
+                "--no-sign",
+                "-m",
+                message,
+                tag,
+                sha,
+            ],
+            cwd=ops,
+            env={**local, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email},
+            timeout=30.0,
+        )
+        if made.returncode != 0:
+            return ("error", f"{tag}: could not create the tag object")
+        try:
+            _run(
+                [
+                    "git",
+                    *TRUSTED_ARGS,
+                    "-C",
+                    str(ops),
+                    "push",
+                    url,
+                    f"refs/tags/{tag}:refs/tags/{tag}",
+                ],
+                cwd=ops,
+                env=trusted_env(env),
+                timeout=SYNC_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # the oracle below is the verdict
+        after = ls_remote_tag(url, tag, env=env)
+        if after is None:
+            return ("error", f"{tag}: remote unreadable after the push")
+        if after == sha:
+            return ("ok", f"{tag} at {sha[:9]}")
+        if after:
+            return ("exists", after)
+        return ("error", f"{tag}: push left no tag on the remote")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return ("error", f"{tag}: git did not answer ({type(exc).__name__})")
+    finally:
+        _drop_ops(ops)
+
+
 def sync(
     mirror: Path,
     cache: Path | None,
@@ -1259,10 +1413,12 @@ __all__ = [
     "launch_tips_path",
     "local_env",
     "ls_remote",
+    "ls_remote_tag",
     "mirror_dir",
     "mirror_root",
     "mirror_ship_env",
     "populate",
+    "push_tag_new",
     "read_launch_tips",
     "repair_origin",
     "ship_git_shim",
