@@ -796,7 +796,7 @@ def _node_signals(
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
     comment chunk, its newest event, per child job its created_at,
-    STATUS stamp, newest chunk, session-log mtime
+    STATUS stamp, newest chunk, newest event, session-log mtime
     (:func:`_job_log_at`) and park relaunch instant
     (:func:`_job_parked_until`, gr643076), and ``unblocked_at`` — when its
     newest ``blocked-by`` predecessor finished (the idle clock starts
@@ -820,6 +820,8 @@ def _node_signals(
             signals.append((f"job jo{j.id} status set", jrow[1]))
         if jrow is not None and jrow[2] is not None:
             signals.append((f"job jo{j.id} newest comment", jrow[2]))
+        if jrow is not None and jrow[3] is not None:
+            signals.append((f"job jo{j.id} newest event", jrow[3]))
         log_at = _job_log_at(j)
         if log_at is not None:
             signals.append((f"job jo{j.id} log mtime", log_at))
@@ -1700,7 +1702,14 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # to retry (every such ask came back "won't do"), so the pass closes
 # the node ``STATUS:won't-do`` with one note and files no ask — a
 # bounded batch of ``ORPHAN_BATCH`` closes per pass, so an old orphan
-# backlog drains in a few ticks instead of one ask a tick. A rescued
+# backlog drains in a few ticks instead of one ask a tick. The same
+# bounded close applies to an already-old rescue (gr666159): a node
+# whose last real signal predates ``STALE_ASK_AFTER`` is dead work —
+# one ask per LIVE node, so the stale node closes ``won't-do`` and any
+# ask still open on it is superseded with it, never a flood — but a
+# nonterminal child job defers the close even when every signal
+# predates the bound (the orphan path's live-job guard, td673697
+# review): the job may still land. A rescued
 # gripe is skipped with a note (``meta.ask.blocks`` takes a todo handle
 # only). Read-only while the factory is switched off; ``dry_run`` lists
 # ``would`` and writes nothing.
@@ -1746,6 +1755,13 @@ _ASK_WHY_CAP = 60
 #: (gr576258): a closed-root backlog drains at this many nodes a tick —
 #: no longer one ask a tick — without one pass writing unbounded.
 ORPHAN_BATCH = 20
+
+#: A rescued node whose last real signal is older than this is
+#: "already-old" (gr666159): the stall it reports is ancient — every
+#: ask filed on one came back "drop it", and ~62 of them flooded the
+#: queue in one night. One ask per LIVE node: stale nodes close
+#: ``won't-do`` in the bounded batch like orphans, never a showstopper.
+STALE_ASK_AFTER = timedelta(hours=24)
 
 _DIAGNOSIS_RE = re.compile(
     r"rescue:\s*(REARM|NOFIX)\b[\s:]*(?:[—–-]+\s*)?(.*)",
@@ -2578,6 +2594,28 @@ def _ask_node(
     stamp ``meta.rescue`` (an existing ``n`` kept; ``n=1`` when a
     diagnose ran this episode) and comment the node. Returns the ask's
     id, or ``None`` read-only / when a racer filed first."""
+    # gr666159, the same rule on every ask path — the diagnose branches
+    # reach here without ``_judge_rescued``'s stale check: never mint an
+    # ask on a node whose last real signal is already old; it closes
+    # ``won't-do`` in the bounded batch instead — and like every close,
+    # never under a live child job (the orphan path's guard, td673697
+    # review).
+    last_at = _stall_activity_at(store, plan, n)
+    if now - last_at > STALE_ASK_AFTER:
+        if any(j.status not in pd._JOB_TERMINAL for j in plan.jobs(n)):
+            # The orphan path's live-job guard (td673697 review): a
+            # nonterminal child job may still land — every one of its
+            # signals can predate the bound while it runs — so deferring
+            # beats closing won't-do under it.
+            res.waiting += 1
+            res.notes.append(f"td{n.id}: live job with stale signals; not closed")
+            return None
+        if len(res.closed) >= ORPHAN_BATCH:
+            res.waiting += 1
+            res.notes.append(f"td{n.id}: stale; close batch full this pass")
+        else:
+            _close_stale(store, now, res, n, cls, last_at)
+        return None
     if res.dry_run:
         res.would.append((n.id, "ask"))
         res.notes.append(f"td{n.id}: would ask ({_line1(why)})")
@@ -2810,24 +2848,62 @@ def _rearm_answered(
     res.notes.append(f"td{n.id}: re-armed (ask td{ask} already answered){suffix}")
 
 
-def _close_orphan(
+def _stall_activity_at(store: Store, plan: Any, n: Any) -> datetime:
+    """The node's last real activity. On the node itself every signal
+    counts except the rescue pass's own bookkeeping — the OPEN
+    ``rescue:*`` tag rows and comment chunks opening ``rescue:`` (the
+    evidence comment and every note the pass leaves; the
+    ``_newest_comment(…, "rescue:")`` convention) — so a human comment,
+    a re-armed ``brief:`` or a fresh STATUS after the tag keeps the
+    node live instead of reading as silence (gr666159 review). A child
+    job's signals are unfiltered — a job still claimed or still logging
+    means the node is live regardless — and a nonterminal job defers
+    the stale close even when every one of its signals predates the
+    bound (the guard both stale paths share with the orphan path,
+    td673697 review)."""
+    jobs = plan.jobs(n)
+    ids = [n.id, *[j.id for j in jobs]]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.created_at,
+                   (SELECT max(rt.created_at) FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND (r.kind = 'job' OR t.namespace <> 'OPEN'
+                            OR t.value NOT LIKE 'rescue:%%')),
+                   (SELECT max(c.created_at) FROM chunks c
+                     WHERE c.ref_id = r.ref_id
+                       AND (r.kind = 'job'
+                            OR c.chunk_kind
+                               NOT IN ('todo_comment', 'gripe_comment')
+                            OR c.text NOT LIKE 'rescue:%%')),
+                   (SELECT max(e.ts) FROM ref_events e
+                     WHERE e.ref_id = r.ref_id)
+              FROM refs r WHERE r.ref_id = ANY(%s)
+            """,
+            (ids,),
+        ).fetchall()
+    signals = {int(r[0]): tuple(r[1:]) for r in rows}
+    newest, _label, _lines = _node_signals(
+        n, jobs, signals, _unblocked_at(store, plan, n)
+    )
+    return newest
+
+
+def _close_wont_do(
     store: Store,
     now: datetime,
     res: RescuePassResult,
     n: Any,
     cls: str,
-    term: tuple[int, str],
+    note: str,
 ) -> None:
-    """Close the orphan ``STATUS:won't-do`` — there is nothing to retry
-    under a done or won't-do root, and every ask the pass filed on one
-    came back "won't do" (gr576258): one note, ``meta.rescue`` stamped
-    (an existing ``n`` kept — the count is about re-arms, not closes),
-    and every live ask on the node closed with it so none is left
-    orphaned. The ``rescue:<cls>`` tag stays — the record of why the
-    node died."""
-    aid, astatus = term
-    label = "root" if aid == _plan_root_of(n) else "ancestor"
-    note = f"{label} td{aid} is {astatus}; closed by the watchdog"
+    """The won't-do close shared by the orphan and stale paths: STATUS +
+    one audit comment + ``meta.rescue`` stamped (an existing ``n`` kept
+    — the count is about re-arms, not closes), and every live ask on
+    the node closed with it so none is left orphaned. The
+    ``rescue:<cls>`` tag stays — the record of why the node died."""
     if res.dry_run:
         res.would.append((n.id, "close"))
         res.notes.append(f"td{n.id}: would close won't-do ({note})")
@@ -2876,6 +2952,47 @@ def _close_orphan(
     root = _plan_root_of(n)
     if root is not None:
         log_plan_event(store, n.id, note, root=root)
+
+
+def _close_orphan(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    term: tuple[int, str],
+) -> None:
+    """Close the orphan ``STATUS:won't-do`` — there is nothing to retry
+    under a done or won't-do root, and every ask the pass filed on one
+    came back "won't do" (gr576258)."""
+    aid, astatus = term
+    label = "root" if aid == _plan_root_of(n) else "ancestor"
+    _close_wont_do(
+        store, now, res, n, cls, f"{label} td{aid} is {astatus}; closed by the watchdog"
+    )
+
+
+def _close_stale(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    last_at: datetime,
+) -> None:
+    """Close the stale rescue ``STATUS:won't-do`` — the node's last real
+    signal predates ``STALE_ASK_AFTER``, so the stall it reports is
+    already-old work with nothing left to rule on (gr666159)."""
+    hours = int(STALE_ASK_AFTER.total_seconds() // 3600)
+    _close_wont_do(
+        store,
+        now,
+        res,
+        n,
+        cls,
+        f"silent since {_iso(last_at)} (> {hours}h); stale rescue "
+        "closed by the watchdog",
+    )
 
 
 def _close_diagnose(
@@ -3214,9 +3331,12 @@ def _judge_rescued(
     the ``terminal-root`` class, or a ``won't-do`` anywhere up the
     node's own parent chain — → close won't-do, no ask (gr576258, a
     bounded ``ORPHAN_BATCH`` closes a pass); an ask already filed
-    this episode → skip; a diagnose task → judge it; an engine class,
-    an unknown class or a second rescue → the ask directly; else mint
-    the diagnose task."""
+    this episode → skip; a diagnose task → judge it; an already-old
+    rescue with none of those live — the last real signal older than
+    ``STALE_ASK_AFTER`` — → the same bounded close, one ask per live
+    node (gr666159), deferred while a child job is nonterminal
+    (td673697 review); an engine class, an unknown class or a second
+    rescue → the ask directly; else mint the diagnose task."""
     plan = _subtree_plan(store, ref_id)
     n = plan.nodes.get(ref_id)
     if n is None:
@@ -3267,6 +3387,34 @@ def _judge_rescued(
         return
     if task_id is not None:
         _judge_diagnose(store, now, res, plan, n, cls, tag_at, task_id, pd)
+        return
+    # gr666159: one ask per LIVE node — a stall whose last real signal
+    # is already older than ``STALE_ASK_AFTER`` has nothing left to rule
+    # on (every ask on an already-old node comes back "drop it"). Close
+    # it won't-do in the same bounded batch as orphans, before any new
+    # diagnose or ask is minted — but never under a live child job: its
+    # signals can all predate the bound while it still runs, and the job
+    # may still land (the orphan path's guard, td673697 review). Live
+    # engagement — an episode ask, an open same-class ask, an in-flight
+    # diagnose — was judged above and keeps its own path.
+    last_at = _stall_activity_at(store, plan, n)
+    if now - last_at > STALE_ASK_AFTER:
+        if any(j.status not in pd._JOB_TERMINAL for j in plan.jobs(n)):
+            # The orphan path's live-job guard (td673697 review): a
+            # nonterminal child job may still land — every one of its
+            # signals can predate the bound while it runs — so deferring
+            # beats closing won't-do under it.
+            res.waiting += 1
+            res.notes.append(f"td{ref_id}: live job with stale signals; not closed")
+            return
+        if len(res.closed) >= ORPHAN_BATCH:
+            res.waiting += 1
+            res.notes.append(
+                f"td{ref_id}: stale close batch full "
+                f"({ORPHAN_BATCH} this pass); next tick"
+            )
+            return
+        _close_stale(store, now, res, n, cls, last_at)
         return
     bound = BOUNDS.get(cls)
     if bound is None or bound.engine:
@@ -3355,6 +3503,7 @@ __all__ = [
     "DIAGNOSE_TASK_CLASS",
     "ORPHAN_BATCH",
     "STAGE_DEADLINES",
+    "STALE_ASK_AFTER",
     "TICK_SILENT_AFTER",
     "Bound",
     "RescueEvidence",

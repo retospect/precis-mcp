@@ -435,7 +435,22 @@ ancestor (gr576258): a `terminal-root` rescue, or any class with a
 closes the node `STATUS:won't-do` with one note (`root td<N> is
 <state>; closed by the watchdog`), closes any live ask blocking it,
 and files no ask; a bounded batch of `ORPHAN_BATCH` (20) closes a pass
-drains an old backlog in a few ticks.
+drains an old backlog in a few ticks. The same bounded close — drawing
+the same batch — applies to an already-old rescue (gr666159): a node
+whose last real signal (its own tags/comments/events other than the
+rescue pass's `rescue:` bookkeeping — a human comment or a `brief:`
+update after the tag keeps it live — plus every child job's claims,
+events and log stamps, a live job keeps it live) predates
+`STALE_ASK_AFTER` (24h) is dead work, so
+it closes `won't-do` (`silent since <ts> (> 24h); stale rescue closed
+by the watchdog`) instead of minting a diagnose or filing an ask —
+one ask per LIVE node, no stale-ask flood. Live engagement is never
+closed over: a node with an episode ask, an open same-class ask or an
+in-flight diagnose keeps its own path — and so does a node with a
+nonterminal child job: every one of the job's signals can predate the
+bound while it still runs, and the job may still land, so the stale
+close (like the orphan close) defers until the job is terminal
+(td673697 review).
 
 The session replies on the task with one first line: `rescue: REARM —
 <corrected brief>` or `rescue: NOFIX — <why>` (a `handoff:` prefix
