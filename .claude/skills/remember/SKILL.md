@@ -87,6 +87,11 @@ same section. This recipe supplies repo-dev filing conventions after judgment.
    per memory hub plus Projects & quests for nicknames. A rename makes the
    old name an alias; a retired term is deleted.
 
+8a. **A spec is not a memory fact.** Specifications live under the
+   Specifications hub me568215 (programme roots, then spec roots); write
+   one with `get(kind='skill', id='precis-spec-help')`, not this recipe
+   (gr568183).
+
 9. **With evidence edit, on suspicion gripe.** A recalled node is wonky,
    inconsistent or unclear → first file `put(kind='gripe',
    args={'project': 'memory'}, link='meN', rel='raises-concern-about',
