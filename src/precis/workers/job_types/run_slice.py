@@ -31,7 +31,19 @@ that holds the lane's credentials with ``params.target_node``):
   ``index.lock`` there is reaped by land_slice's keep-on-doubt rule; a
   live one is waited out briefly, then fails the submit
   ``attempt_free`` (:func:`_clear_slice_index_lock`, gr650484, gr662077)
-  — writes
+  — a reused branch holding commits ahead of ``origin/<base>`` is
+  judged before the brief is written (:func:`_route_ahead_branch`,
+  gr674785 — td665126 burned all five rungs re-finding a fix a sibling
+  had landed): a change already patch-equivalent on the base
+  (:func:`_carried_on_base` — a cherry-picked, merged or squash-carried
+  land) closes the node done with the landing sha, the job ending
+  ``attempt_free`` "already-on-main"; commits ahead with novel work go
+  to the land — the pre-land reviewer when one gates it, else a
+  ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
+  ``handoff: lander:`` brief skips that second arm since the branch is
+  mid-fix by design; the submit-time ``branch_tip``/``branch_ahead``
+  the job records is the poll arm's evidence for the same ruling —
+  writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -159,7 +171,13 @@ that holds the lane's credentials with ``params.target_node``):
   way when the branch carries no net diff against ``origin/main``
   (:func:`_fix_declared`, gr648125 — the empty branch is itself the
   proof nothing is left to land; a ``no_commit`` stamp would only
-  climb the ladder into a rescue the work never needed). Otherwise
+  climb the ladder into a rescue the work never needed). Before the
+  ``no_commit`` stamp the poll also re-judges the branch the run
+  INHERITED (gr674785): the submit-time ``branch_tip`` already
+  patch-equivalent on the base (:func:`_carried_on_base` — a session
+  that rebases its branch onto main drops the carried commits and then
+  reports "nothing left") closes done tagged ``verdict:moot`` with the
+  landing sha, the same close a verified claim lands. Otherwise
   (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
   with the log tail and releases the lease; a deny hit on a
@@ -3910,6 +3928,49 @@ def submit(ctx: Any, spec: Any) -> Any:
         else:
             assert repo_root is not None
             tree = _ensure_worktree(repo_root, todo_id, base=profile.base, fetched=True)
+        # gr674785 (td665126 spent its whole ladder on a fix a sibling
+        # had landed): judge the branch the retry reused BEFORE a
+        # session spends a rung. The recorded tip is the poll-side arm's
+        # evidence when the session rewrites the branch out from under
+        # it (a rebase that drops carried commits reads "nothing left").
+        # A git hiccup stamps nothing — the launch proceeds as before.
+        tip_now: subprocess.CompletedProcess[str] | None = None
+        ahead_now: subprocess.CompletedProcess[str] | None = None
+        try:
+            tip_now = _git(["rev-parse", "HEAD"], tree)
+            ahead_now = _git(["log", "--oneline", f"origin/{base}..HEAD"], tree)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        tip_sha = ""
+        if tip_now is not None and tip_now.returncode == 0:
+            parts = tip_now.stdout.strip().splitlines()
+            tip_sha = parts[0] if parts else ""
+        ahead_n = (
+            len([ln for ln in ahead_now.stdout.splitlines() if ln.strip()])
+            if ahead_now is not None and ahead_now.returncode == 0
+            else 0
+        )
+        if tip_sha:
+            ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
+        if (
+            ahead_n
+            and not is_generator
+            and _no_commit_kind(store, todo_id) is None
+            and (profile is not None or not _fix_node(store, todo_id))
+            and _route_ahead_branch(
+                ctx,
+                todo_id,
+                tree,
+                f"origin/{base}",
+                lane.name,
+                other_repo=profile is not None,
+                lander=(latest or "")
+                .lstrip()
+                .lower()
+                .startswith(_LANDER_HANDOFF_PREFIX),
+            )
+        ):
+            return None
         governed: tuple[str, ...] | None = ()
         if profile is None:
             # gr657066: governs:factory skills join the lane's deny set —
@@ -4873,6 +4934,216 @@ def _fix_declared(
             out["sha"] = cand
             break
     return out
+
+
+#: Commits of upstream history a carried-check scans for the landing sha
+#: — bounded so an old branch's ``git log -p | git patch-id`` stays
+#: cheap; a carry the scan cannot name still reports (the equivalence
+#: is the proof, the sha the record).
+_CARRIED_SCAN_CAP = 600
+
+
+def _patch_id(diff_text: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """``git patch-id --stable`` reading ``diff_text`` on stdin — the
+    consumer half of the ``git log -p``/``git diff`` pipes the carried
+    check runs (:func:`_patch_id_table`, :func:`_diff_patch_id`). Never
+    raises on a non-zero exit."""
+    return subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=diff_text,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=120,
+    )
+
+
+def _patch_id_table(tree: Path, *log_args: str) -> dict[str, str] | None:
+    """``{patch-id: sha}`` of every commit ``git log -p <log_args>``
+    selects — the upstream carriers :func:`_carried_on_base` names.
+    ``None`` when either half of the pipe fails (the caller treats
+    unjudged like unproven); the ``setdefault`` keeps the NEWEST
+    duplicate carrier, log order being newest-first."""
+    proc = _git(["log", "-p", "--format=commit %H", *log_args], tree)
+    if proc.returncode != 0:
+        return None
+    ids = _patch_id(proc.stdout, tree)
+    if ids.returncode != 0:
+        return None
+    table: dict[str, str] = {}
+    for ln in ids.stdout.splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and parts[1] != "0" * 40:
+            table.setdefault(parts[0], parts[1])
+    return table
+
+
+def _diff_patch_id(tree: Path, spec: str) -> str | None:
+    """The stable patch-id of ``git diff <spec>`` as one patch — the net
+    diff a squash land reproduces. ``None`` on a git error or an empty
+    diff (an empty diff carries nothing)."""
+    proc = _git(["diff", spec], tree)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    ids = _patch_id(proc.stdout, tree)
+    if ids.returncode != 0:
+        return None
+    for ln in ids.stdout.splitlines():
+        parts = ln.split()
+        if parts and parts[0] != "0" * 40:
+            return parts[0]
+    return None
+
+
+def _carried_on_base(
+    tree: Path, base: str, tip: str = "HEAD"
+) -> dict[str, str | None] | None:
+    """``{"how", "sha"}`` when ``tip``'s change already sits on ``base``
+    (gr674785): every commit ahead patch-equivalent to an upstream one
+    (``git cherry`` all ``-`` — a cherry-picked or merged land), or the
+    branch's NET diff patch-identical to a single upstream commit (the
+    squash land — invisible to per-commit equivalence, so the combined
+    ``<mb>..<tip>`` patch-id is matched against the bounded upstream
+    scan). ``tip`` wholly contained in ``base`` carries by ``"ancestor"``
+    with ``sha`` = ``tip`` itself. ``sha`` is the landing commit the
+    scan found — ``None`` when it did not (a ``git cherry``-proved carry
+    needs no scan to stand). ``None`` when ``tip`` holds novel work or
+    git cannot judge — the caller's own ruling then decides."""
+    _fetch_main(tree, base)
+    cherry = _git(["cherry", base, tip], tree)
+    if cherry.returncode != 0:
+        return None
+    lines = [ln for ln in cherry.stdout.splitlines() if ln.strip()]
+    if not lines:
+        anc = _git(["merge-base", "--is-ancestor", tip, base], tree)
+        if anc.returncode != 0:
+            return None
+        rev = _git(["rev-parse", tip], tree)
+        tip_sha = rev.stdout.strip() if rev.returncode == 0 else tip
+        return {"how": "ancestor", "sha": tip_sha}
+    merge = _git(["merge-base", base, tip], tree)
+    if merge.returncode != 0 or not merge.stdout.strip():
+        return None
+    mb = merge.stdout.splitlines()[0].strip()
+    upstream = (
+        _patch_id_table(
+            tree, "--first-parent", f"-n{_CARRIED_SCAN_CAP}", f"{mb}..{base}"
+        )
+        or {}
+    )
+    combined = _diff_patch_id(tree, f"{mb}..{tip}")
+    if any(not ln.startswith("-") for ln in lines):
+        # Novel per-commit work: a carry stands only when the branch's
+        # NET diff is patch-identical to one upstream commit — the
+        # squash land per-commit equivalence cannot see.
+        if combined is not None and combined in upstream:
+            return {"how": "squash", "sha": upstream[combined]}
+        return None
+    sha: str | None = upstream.get(combined) if combined else None
+    if sha is None:
+        own = _patch_id_table(tree, "-n1", tip) or {}
+        sha = next((upstream[pid] for pid in own if pid in upstream), None)
+    return {"how": "cherry", "sha": sha}
+
+
+def _route_ahead_branch(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    base: str,
+    lane: str | None,
+    *,
+    other_repo: bool = False,
+    lander: bool = False,
+) -> bool:
+    """Judge the branch a retry reuses BEFORE a session spends a rung
+    re-discovering its state (gr674785 — td665126 burned all five rungs
+    handing off "nothing left" on a fix a sibling had landed).
+    ``base`` is the ``origin/<target>`` ref the land measures against.
+
+    ``True`` when the node was disposed of without a launch: a change
+    already on ``base`` (:func:`_carried_on_base`) closes the node done
+    tagged ``verdict:moot`` with the landing sha on the job — the same
+    close ``poll``'s verified-moot arm lands — and commits ahead with
+    novel work go to their land (the pre-land reviewer when one gates
+    it, gr570506; else a ``land_slice`` mint) — either way the job ends
+    ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
+    when the branch is empty, git cannot judge, the route could not be
+    taken (the session's own poll then mints the land as before), or a
+    lander handoff stands — a branch mid-fix by design wants the
+    session the lander asked for."""
+    try:
+        _fetch_main(tree, base)
+        cherry = _git(["cherry", base, "HEAD"], tree)
+        if cherry.returncode != 0:
+            return False
+        lines = [ln for ln in cherry.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return False
+        carried = _carried_on_base(tree, base)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if carried is not None:
+        sha = str(carried.get("sha") or "")
+        line = f"{slice_branch(todo_id)}'s change is already on {base}" + (
+            f" — patch-equivalent to {sha[:12]}" if sha else ""
+        )
+        try:
+            close_todo(ctx.store, todo_id, lane, tags=(MOOT_TAG,))
+            _append_comment(ctx.store, todo_id, f"moot: {line}")
+        except Exception:  # the job still ends; the close may have landed
+            log.warning("run_slice: carried close on td%d failed", todo_id)
+        ctx.set_meta(
+            **{
+                MOOT_VERIFIED_KEY: {"sha": sha, "line": line[:300]},
+                ATTEMPT_FREE_KEY: "already-on-main",
+            }
+        )
+        ctx.record_failure(
+            f"run_slice: {line}; td{todo_id} closed done — "
+            "no build attempt burned (gr674785)"
+        )
+        return True
+    if lander:
+        return False
+    try:
+        if other_repo:
+            from precis.workers.job_types import land_slice as _ls
+
+            refused = _ls.validate_submit(
+                ctx.store,
+                params=_land_params(ctx, todo_id, tree, lane, True),
+            )
+            if refused:
+                _append_comment(
+                    ctx.store,
+                    todo_id,
+                    f"{_LANDER_HANDOFF_PREFIX} land FAILED: {refused}",
+                )
+                raise RuntimeError(refused)
+        preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
+        if preland is not None:
+            note = _defer_land_for_review(ctx, todo_id, tree, lane, True, preland)
+            ctx.set_meta(preland_review=preland)
+            what = f"held for the pre-land review td{preland} ({note})"
+        else:
+            land_job = _mint_land(ctx, todo_id, tree, lane, checked=True)
+            ctx.set_meta(land_job=land_job)
+            what = f"land_slice job:{land_job} minted"
+    except Exception:
+        log.warning(
+            "run_slice: ahead-branch route for td%d failed", todo_id, exc_info=True
+        )
+        return False
+    ctx.set_meta(**{ATTEMPT_FREE_KEY: "branch-ahead"})
+    ctx.record_failure(
+        f"run_slice: {slice_branch(todo_id)} already holds "
+        f"{len(lines)} commit(s) ahead of {base} — {what}; "
+        "the land, not another session, is next (gr674785)"
+    )
+    return True
 
 
 def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
@@ -5990,6 +6261,28 @@ def poll(ctx: Any, handle: Any) -> bool:
             if fix_node and fix_moot is None and norepro is None
             else None
         )
+        # gr674785 (td665126 burned all five rungs on this): before the
+        # arms below rule on what the session SAID, re-judge the branch
+        # it INHERITED — the submit-time ``branch_tip``/``branch_ahead``
+        # the job meta recorded. A session that rebases its slice branch
+        # onto main drops the already-carried commits itself; the tree
+        # then reads empty and its "nothing left" is the carry, not a
+        # failure. Patch-equivalence of that tip on the base is the same
+        # proof the verified-moot arm lands.
+        tip = str((ctx.meta or {}).get("branch_tip") or "")
+        ahead = (ctx.meta or {}).get("branch_ahead")
+        carried_tip = (
+            _carried_on_base(tree, base, tip)
+            if (
+                tip
+                and isinstance(ahead, int)
+                and not isinstance(ahead, bool)
+                and ahead > 0
+                and no_commit is None
+                and not vanished
+            )
+            else None
+        )
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
             # on main and named a sha the worker could verify. That is a
@@ -6130,6 +6423,49 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
                 f"td{todo_id} "
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+            )
+        elif carried_tip is not None:
+            # gr674785: the work this run inherited was already on the
+            # base — the session's rebase dropped the carried commits,
+            # so its "nothing left" was the carry, not a failure. The
+            # verified close: done + tag + the landing sha for
+            # ``_step_moot`` to resolve the gripe on, exactly like the
+            # verified-moot arm — no attempt, no ask, no rescue. A
+            # release-fix node takes the same close UNTAGGED like its
+            # other rulings: the release plan is not moot.
+            land = False
+            sha = str(carried_tip.get("sha") or "")
+            line_ = (
+                f"{slice_branch(todo_id)}'s pre-session tip is already "
+                f"on {base}" + (f" — patch-equivalent to {sha[:12]}" if sha else "")
+            )
+            close_todo(
+                ctx.store,
+                todo_id,
+                str(lane) if lane else None,
+                tags=() if fix_node else (MOOT_TAG,),
+            )
+            try:
+                _append_comment(ctx.store, todo_id, f"moot: {line_}")
+            except Exception:  # pragma: no cover — the close still stands
+                log.warning("run_slice: carried-moot note on td%d failed", todo_id)
+            if fix_node:
+                ctx.set_meta(
+                    **{
+                        FIX_VERIFIED_KEY: {
+                            "kind": "carried",
+                            "sha": sha,
+                            "line": line_[:300],
+                        }
+                    }
+                )
+            else:
+                ctx.set_meta(**{MOOT_VERIFIED_KEY: {"sha": sha, "line": line_[:300]}})
+            summary.append(
+                f"Land: none — {line_} ({carried_tip['how']}); "
+                f"td{todo_id} closed"
+                + ("" if fix_node else " and tagged for the tick to close the plan")
+                + " (gr674785)."
             )
         elif no_commit is not None:
             # gr570534 / jo570327: a brief-writer (or any node whose
