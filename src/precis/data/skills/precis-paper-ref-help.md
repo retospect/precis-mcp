@@ -186,7 +186,8 @@ tokens (`{DFT}`).
 
 Two *live* refs holding the same `doi`/`arxiv` is a duplicate-paper pair —
 `edit`/`set_ref_identifier` raises `BadInput` rather than silently
-stealing the other ref's claim. The fix is a merge, not a retry.
+stealing the other ref's claim. The fix is `merge_into` (below) — the
+error's `next=` line is the paste-ready `dry_run` call — not a retry.
 
 ## Fold a confirmed duplicate pair — `merge_into`
 ## Two live refs are the same paper — how do I merge them?
@@ -210,8 +211,15 @@ already merged (re-point with `redirect_to`, below) or plain-retired
 itself-merged target names the chain end to aim at); and a pair that
 fails the shared title gate — trigram similarity ≥ 0.85, ≥ 5 distinctive
 title tokens, known years within ±1 (a missing year needs near-identical
-titles), agreeing first-author family. On a gate refusal that is still
-the same paper, fix the disagreeing field with `edit` and retry.
+titles), agreeing first-author family. A title under the token floor
+that is *identical* on both sides still merges, but only when both carry
+a known year and a matching first author — a refusal names the missing
+leg, so `edit` that field on the named record and retry. Below the
+waiver's 2-content-token floor (`Editorial`, `In Memoriam`) even an
+identical title can't merge this way — the refusal names the human
+merge door; `retire` is not a substitute (it folds nothing and leaves
+no redirect). On any other gate refusal that is still the same paper,
+fix the disagreeing field with `edit` and retry.
 
 ## A merged stub resolves to the wrong paper — how do I re-point the redirect?
 

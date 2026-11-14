@@ -151,7 +151,13 @@ from precis.utils.search_merge import (
 )
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.text import excerpt as _excerpt
-from precis.utils.title_merge import title_merge_refusal
+from precis.utils.title_merge import (
+    _MIN_IDENTICAL_TITLE_TOKENS,
+    _first_family,
+    _title_identity_key,
+    content_tokens,
+    title_merge_refusal,
+)
 from precis.utils.title_views import title_md, title_plain
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
@@ -6534,7 +6540,10 @@ class PaperHandler(Handler):
         names), a target equal to the loser, a missing ``reason``, and a
         title-gate failure naming the refusal (``short-title`` /
         ``year-unknown`` / ``year-mismatch`` / ``author-mismatch`` /
-        low similarity) — fix the disagreeing field and retry.
+        low similarity) — fix the disagreeing field and retry. A
+        ``short-title`` refusal on titles identical after normalisation
+        also names the identical-title waiver leg that failed
+        (:meth:`_identical_title_waiver_gap`, gr634191).
         """
         from precis.ingest.dedup import merge_duplicate
 
@@ -6617,14 +6626,24 @@ class PaperHandler(Handler):
             sim=sim,
             unknown_year_min_sim=_MERGE_UNKNOWN_YEAR_SIM,
         )
+        gap = (
+            self._identical_title_waiver_gap(loser, winner, loser_h, winner_h)
+            if refusal == "short-title"
+            else None
+        )
         if sim < _MERGE_TITLE_SIM_FLOOR or refusal is not None:
             raise BadInput(
                 f"{loser_h} and {winner_h} fail the merge title gate "
-                f"({refusal or 'low-similarity'}; sim {sim:.2f})",
-                next=f"if they are the same paper, fix the disagreeing "
-                f"field first (edit(kind='{kind}', id='{loser_h}', "
-                "title=/year=/authors=[...])) then retry the merge_into "
-                "call",
+                f"({refusal or 'low-similarity'}; sim {sim:.2f})"
+                + (f" — {gap[0]}" if gap else ""),
+                next=(
+                    gap[1]
+                    if gap
+                    else f"if they are the same paper, fix the disagreeing "
+                    f"field first (edit(kind='{kind}', id='{loser_h}', "
+                    "title=/year=/authors=[...])) then retry the merge_into "
+                    "call"
+                ),
             )
         if dry:
             return Response(
@@ -6661,6 +6680,69 @@ class PaperHandler(Handler):
                 "'duplicate_merged' / 'soft_deleted_duplicate' logged). "
                 f"{loser_h} now resolves to {winner_h}."
             )
+        )
+
+    def _identical_title_waiver_gap(
+        self, loser: Ref, winner: Ref, loser_h: str, winner_h: str
+    ) -> tuple[str, str] | None:
+        """Name the missing identical-title waiver leg (gr634191).
+
+        :func:`title_merge_refusal` collapses every identical-title
+        waiver miss into ``short-title``, so a confirmed pair with a
+        two-word title (the td658522 wedge — sim 1.00, same DOI) refused
+        with no hint which leg to fix. When the normalised titles ARE
+        identical, name the failing leg and the ``edit`` that supplies
+        it. ``(detail, next_hint)`` or ``None`` when the refusal isn't
+        the identical-title case — the caller keeps the generic hint.
+        Below the waiver's token floor no field edit lifts the gate:
+        the hint then describes the limitation and the human merge
+        door, never ``retire`` (a retire folds nothing and writes no
+        supersede redirect, and the stub-retire guards refuse a ref
+        that still carries identifiers, body or inbound cites).
+        """
+        key = _title_identity_key(loser.title)
+        if key == "" or key != _title_identity_key(winner.title):
+            return None
+        kind = self.spec.kind
+        if len(content_tokens(key)) < _MIN_IDENTICAL_TITLE_TOKENS:
+            return (
+                "identical title but under the identical-title waiver's "
+                f"{_MIN_IDENTICAL_TITLE_TOKENS}-content-token floor — too "
+                "generic to collapse on title alone; no field edit lifts "
+                "the floor",
+                "the title gate cannot confirm this pair — a human merges "
+                "it (the paper page's duplicate-resolver merge door)",
+            )
+        gaps: list[str] = []
+        fixes: list[str] = []
+        yearless = [
+            h for h, r in ((loser_h, loser), (winner_h, winner)) if r.year is None
+        ]
+        if yearless:
+            gaps.append(f"year unknown on {' and '.join(yearless)}")
+            fixes.extend(
+                f"edit(kind='{kind}', id='{h}', year=<pub year>)" for h in yearless
+            )
+        a, b = _first_family(loser.authors), _first_family(winner.authors)
+        authorless = [h for h, fam in ((loser_h, a), (winner_h, b)) if fam == ""]
+        if authorless:
+            gaps.append(f"no first author on {' and '.join(authorless)}")
+            fixes.extend(
+                f"edit(kind='{kind}', id='{h}', authors=['Family, Given'])"
+                for h in authorless
+            )
+        elif a != b:
+            gaps.append(f"first authors disagree ({a!r} vs {b!r})")
+            fixes.append(
+                f"correct the byline on the wrong side: edit(kind='{kind}', "
+                "id=<handle>, authors=['Family, Given'])"
+            )
+        if not gaps:
+            return None
+        return (
+            "identical title but " + "; ".join(gaps),
+            "add the missing field(s) then retry the merge_into call: "
+            + "; ".join(fixes),
         )
 
     def _retire_stub(
@@ -9475,13 +9557,27 @@ class PaperHandler(Handler):
                 continue
             owner_id = self.store.find_ref_by_identifier(scheme, str(value))
             if owner_id is not None and owner_id != ref_id:
+                # gr634191: same merge_into pointer the real write's
+                # set_ref_identifier collision names — the session MCP
+                # can fold the pair, no web-UI detour.
+                owner = self.store.fetch_refs_by_ids(
+                    [owner_id], include_deleted=True
+                ).get(owner_id)
+                owner_h = (
+                    _pa(owner)
+                    if owner is not None
+                    else handle_registry.format_handle(self.spec.kind, owner_id)
+                )
+                this_h = handle_registry.format_handle(self.spec.kind, ref_id)
                 raise BadInput(
                     f"{scheme}={str(value).strip()!r} already belongs to ref id={owner_id}",
                     next=(
-                        "a merge_duplicate cleanup is needed — see "
-                        "get(kind='skill', id='precis-paper-help') §resolving "
-                        "a duplicate ref; prefer the ref with chunks/body as "
-                        "the survivor"
+                        f"preview the merge: edit(kind='{self.spec.kind}', "
+                        f"id='{this_h}', args={{'merge_into': "
+                        f"'{owner_h}', 'reason': '<why>'}}, "
+                        "dry_run=True) — the ref with chunks/body and "
+                        "inbound citations should be the survivor; "
+                        f"flip the pair if that is {this_h}"
                     ),
                 )
         lines: list[str] = []

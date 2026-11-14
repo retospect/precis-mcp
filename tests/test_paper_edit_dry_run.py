@@ -56,11 +56,13 @@ def test_paper_edit_dry_run_reports_doi_collision(hub: Hub) -> None:
     with pytest.raises(BadInput, match=rf"belongs to ref id={owner_id}") as exc_info:
         h.edit(id=victim_id, doi="10.1234/owned.doi", dry_run="full")
 
-    # gr450133: the next= hint must name the concrete remedy, not just
-    # say "resolve the duplicate" with no pointer to how.
-    next_hint = exc_info.value.next
-    assert next_hint is not None and "merge_duplicate" in next_hint
-    assert "precis-paper-help" in next_hint
+    # gr450133 / gr634191: the next= hint must name the concrete remedy —
+    # the paste-ready merge_into dry-run call with the owner's handle —
+    # not just "resolve the duplicate" with no pointer to how.
+    next_hint = str(exc_info.value.next)
+    assert "merge_into" in next_hint
+    assert f"pa{owner_id}" in next_hint
+    assert "web" not in next_hint
 
     # dry_run must never write, collision or not.
     ids = hub.live_store.identifiers_for_refs([victim_id])[victim_id]

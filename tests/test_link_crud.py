@@ -528,16 +528,18 @@ class TestStoreMergeRefs:
         self, store: Store
     ) -> None:
         """gr450133: the collision's ``next=`` must name the concrete
-        remedy (``merge_duplicate`` + the skill section), not just say
-        "resolve the duplicate" with no pointer to how."""
+        remedy — since gr634191 that is the paste-ready ``merge_into``
+        dry-run call carrying the owner's handle, not just "resolve the
+        duplicate" with no pointer to how."""
         owner = _seed_paper(store, slug="alive2025a")
         other = _seed_paper(store, slug="alive2025b")
         store.set_ref_identifier(owner, "doi", "10.1234/live.2025")
         with pytest.raises(BadInput, match="already belongs to ref") as exc_info:
             store.set_ref_identifier(other, "doi", "10.1234/live.2025")
-        next_hint = exc_info.value.next
-        assert next_hint is not None and "merge_duplicate" in next_hint
-        assert "precis-paper-help" in next_hint
+        next_hint = str(exc_info.value.next)
+        assert "merge_into" in next_hint
+        assert f"pa{owner}" in next_hint
+        assert "web" not in next_hint
 
     def test_merge_into_self_rejected(self, store: Store) -> None:
         a = _seed_paper(store, slug="self2023")

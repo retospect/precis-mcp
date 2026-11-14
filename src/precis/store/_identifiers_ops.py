@@ -73,6 +73,8 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.utils import handle_registry
+
 if TYPE_CHECKING:
     from psycopg import Connection
     from psycopg_pool import ConnectionPool
@@ -730,7 +732,7 @@ class IdentifiersMixin:
                 )
                 return False
             owner = c.execute(
-                "SELECT ri.ref_id, r.retired_at IS NOT NULL "
+                "SELECT ri.ref_id, r.retired_at IS NOT NULL, r.kind "
                 "FROM ref_identifiers ri "
                 "JOIN refs r ON r.ref_id = ri.ref_id "
                 "WHERE ri.id_kind = %s AND ri.id_value = %s",
@@ -741,13 +743,24 @@ class IdentifiersMixin:
                 if owner_id == ref_id:
                     return False  # already ours — nothing to do
                 if not owner_deleted:
+                    # gr634191: point at the merge door itself — the
+                    # session MCP can fold the pair now, no web-UI detour.
+                    owner_h = handle_registry.format_handle(str(owner[2]), owner_id)
+                    kind_row = c.execute(
+                        "SELECT kind FROM refs WHERE ref_id = %s",
+                        (ref_id,),
+                    ).fetchone()
+                    this_kind = str(kind_row[0]) if kind_row else str(owner[2])
+                    this_h = handle_registry.format_handle(this_kind, ref_id)
                     raise BadInput(
                         f"{s}={v!r} already belongs to ref id={owner_id}",
                         next=(
-                            "a merge_duplicate cleanup is needed — see "
-                            "get(kind='skill', id='precis-paper-help') §resolving "
-                            "a duplicate ref; prefer the ref with chunks/body as "
-                            "the survivor"
+                            f"preview the merge: edit(kind='{this_kind}', "
+                            f"id='{this_h}', args={{'merge_into': "
+                            f"'{owner_h}', 'reason': '<why>'}}, "
+                            "dry_run=True) — the ref with chunks/body and "
+                            "inbound citations should be the survivor; "
+                            f"flip the pair if that is {this_h}"
                         ),
                     )
                 # Orphan from a soft-deleted ref — reclaim it. The PK is
