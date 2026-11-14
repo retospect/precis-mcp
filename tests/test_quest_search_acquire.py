@@ -803,3 +803,38 @@ class TestForceExternal:
         assert rep.external_error is not None
         assert rep.external_error.startswith(("ImportError", "ModuleNotFoundError"))
         assert "outside search failed" in qsearch._sources_clause(rep)
+
+
+# ── gr592951 slice 1: a metadata-less hit is never linked ────────────────
+
+
+def test_metadata_less_hit_is_not_linked(store: Any) -> None:
+    """A candidate with neither title nor abstract is never linked: the
+    lit-search line names the handle + reason, and a titled sibling on the
+    same query still links. Real store (PG) so the serves edge and the
+    logbook line are the real rows."""
+    quest = store.insert_ref(kind="quest", slug=None, title="the striving").id
+    bare = store.insert_ref(kind="paper", slug="meta-less", title="").id
+    titled = store.insert_ref(kind="paper", slug="titled-one", title="A title").id
+
+    qsearch.run_search_step(
+        store,
+        quest,
+        ["surface chemistry"],
+        search_fn=lambda _s, _q, _ex: [(bare, 1.0), (titled, 0.9)],
+    )
+
+    serving = {
+        ln.src_ref_id
+        for ln in store.links_for(quest, direction="in", relation="serves")
+    }
+    assert titled in serving
+    assert bare not in serving
+    log = " ".join(
+        b.text
+        for b in store.chunks.list_chunks_for_ref(quest)
+        if b.chunk_kind == "quest_log"
+    )
+    assert f"pa{bare} (no title/abstract)" in log
+    # Cheap triage is not a judgment: no considered verdict was written.
+    assert store.links_for(quest, direction="out", relation="considered") == []

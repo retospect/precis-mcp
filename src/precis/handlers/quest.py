@@ -121,7 +121,10 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: best cited literature value — :func:`_check_demand_meta` /
 #: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``),
 #: ``reaction_config`` (the autocatpath config the compute lane dispatches —
-#: shallow-merged, :func:`_check_reaction_config`, gr489168).
+#: shallow-merged, :func:`_check_reaction_config`, gr489168),
+#: ``lit_gate`` (the lit-search relevance gate's term lists —
+#: ``{"host": [...], "reaction": [...]}``,
+#: :func:`_check_lit_gate`, :mod:`precis.quest.lit_gate`, gr592951).
 #: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
 #: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
 #: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
@@ -145,6 +148,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "operating_conditions",
         "environment_space",
         "reaction_config",
+        "lit_gate",
         *_FIDELITY_INT_KEYS,
     }
 )
@@ -243,6 +247,43 @@ def _check_reaction_config(meta: dict[str, Any]) -> None:
             f"got {value['network_her']!r}",
             next=_REACTION_CONFIG_NEXT,
         )
+
+
+_LIT_GATE_NEXT = (
+    "meta={'lit_gate': {'host': ['Pd', 'Pd(111)'], "
+    "'reaction': ['NO', 'NH3', 'nitric oxide reduction']}}"
+)
+
+
+def _check_lit_gate(meta: dict[str, Any]) -> None:
+    """Reject a ``meta.lit_gate`` patch that isn't a term-list dict the
+    lit-search gate can read: ``{"host": [...], "reaction": [...]}`` —
+    each value a list of strings. Unknown keys are typos the read side
+    would silently ignore, so the write door refuses them (the gate
+    stays off until a good config lands — the conservative default,
+    gr592951)."""
+    if "lit_gate" not in meta:
+        return
+    value = meta["lit_gate"]
+    if not isinstance(value, dict):
+        raise BadInput(
+            f"meta.lit_gate must be a dict of term lists, got {type(value).__name__}",
+            next=_LIT_GATE_NEXT,
+        )
+    allowed = {"host", "reaction"}
+    unknown = sorted(set(value) - allowed, key=str)
+    if unknown:
+        raise BadInput(
+            f"meta.lit_gate key(s) {unknown} are not gate term lists — "
+            f"allowed: {sorted(allowed)}",
+            next=_LIT_GATE_NEXT,
+        )
+    for key, terms in value.items():
+        if not isinstance(terms, list) or not all(isinstance(t, str) for t in terms):
+            raise BadInput(
+                f"meta.lit_gate.{key} must be a list of term strings, got {terms!r}",
+                next=_LIT_GATE_NEXT,
+            )
 
 
 _DEMAND_ENTRY_KEYS: frozenset[str] = frozenset({"value", "source", "reason"})
@@ -1883,6 +1924,7 @@ class QuestHandler(NumericRefHandler):
             _check_operating_conditions(meta)
             _check_environment_space(meta)
             _check_reaction_config(meta)
+            _check_lit_gate(meta)
             _check_fidelity_meta(meta)
             patch = dict(meta)
             # ``reaction_config`` is itself a dict: merge the patch into the

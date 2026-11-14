@@ -4347,6 +4347,70 @@ def _mk_paper_body(store: Any, title: str, sections: list[tuple[str, int]]) -> i
     return pid
 
 
+class TestJudgmentsField:
+    """gr592951 slice 5 — the tick's ``judgments`` channel is the write
+    door for explicit ``considered`` verdicts: a ``not-useful`` on a
+    served source lands the ledger edge + history row and holds the
+    source out of later lit-searches. Cheap triage (the lit_gate
+    omissions) never writes here — only an entry the model issued."""
+
+    def test_judgments_record_considered_verdicts(self, store: Any) -> None:
+        from precis.quest import search as qsearch
+
+        qid = _mk_quest(store, "A quest judging its literature")
+        pid = _mk_paper_stub(store, "Smoke adsorption on carbon")
+        _serve(store, pid, qid)
+        payload = {
+            "logbook": [],
+            "judgments": [
+                {
+                    "source": f"pa{pid}",
+                    "verdict": "not-useful",
+                    "reason": "smoke adsorption — no bearing on NO→NH3 on Pd(111)",
+                    "depth": "abstract",
+                },
+                # Reasonless entries are dropped — a verdict IS its reason.
+                {"source": f"pa{pid}", "verdict": "useful"},
+                # An unresolvable source refuses cleanly, never crashes.
+                {"source": "pa999999999", "verdict": "useful", "reason": "x"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+
+        assert out.judgments_recorded == 1
+        edges = store.links_for(qid, direction="out", relation="considered")
+        assert [ln.dst_ref_id for ln in edges] == [pid]
+        edge_meta = edges[0].meta or {}
+        assert edge_meta["verdict"] == "not-useful"
+        assert edge_meta["depth"] == "abstract"
+        # …and the exclusion side works immediately.
+        assert pid in qsearch.judged_out(store, qid)
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("recorded 1 considered verdict" in t for t in texts)
+        assert any("reasonless verdict dropped" in t for t in texts)
+        assert any("does not resolve" in t for t in texts)
+
+    def test_judgments_over_cap_is_refused(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest over-judging")
+        pids = [_mk_paper_stub(store, f"candidate {i}") for i in range(9)]
+        payload = {
+            "logbook": [],
+            "judgments": [
+                {
+                    "source": f"pa{pid}",
+                    "verdict": "uncertain",
+                    "reason": "needs a read",
+                }
+                for pid in pids
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+
+        assert out.judgments_recorded == 8
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("over the per-tick cap" in t for t in texts)
+
+
 class TestReadSelectors:
     """gr505186 / gr507189 — a bare read only reached the body's front page;
     ``section`` and ``page`` target deeper content."""

@@ -67,6 +67,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis.quest import lit_gate
 from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
 from precis.quest.tagging import quest_tag_value
@@ -99,6 +100,11 @@ LOCAL_KINDS = ("paper", "finding", "draft", "concept", "memory")
 #: still count toward :data:`LOCAL_ENOUGH` (they answer the query) — they just
 #: are not linked.
 LINKABLE_KINDS = frozenset({"paper", "finding", "concept"})
+
+#: Cap on the per-query "seen not linked" enumeration in the lit-search
+#: logbook line (gr592951): every gated-out candidate is named with the
+#: gate's reason, up to this many; the rest collapse into a "+N more".
+_SEEN_CLAUSE_CAP = 12
 
 
 def _acquire_per_query() -> int:
@@ -520,6 +526,37 @@ def _sources_clause(report: QueryReport | None) -> str:
     return f" [local {report.local}, acquired {report.acquired}; {tail}]"
 
 
+def _candidate_refs(store: Store, ref_ids: list[int]) -> dict[int, Any]:
+    """Best-effort ``fetch_refs_by_ids`` over a query's link candidates —
+    ``{}`` when the store can't serve it (a test double with no such
+    method). An unfetchable candidate is UNKNOWN, not metadata-less: the
+    "no title/abstract" rule fires only on a ref positively read."""
+    if not ref_ids:
+        return {}
+    try:
+        return dict(store.fetch_refs_by_ids(list(ref_ids)))
+    except Exception:
+        return {}
+
+
+def _seen_clause(not_linked: list[tuple[int, str]], kinds: dict[int, str]) -> str:
+    """``; seen not linked: pa1 (no host term), pa2 (no title/abstract)`` —
+    the per-candidate verdict list gr592951 asks the lit-search line to
+    carry, capped at :data:`_SEEN_CLAUSE_CAP` with a "+N more" tail."""
+    if not not_linked:
+        return ""
+    shown = not_linked[:_SEEN_CLAUSE_CAP]
+    parts = [
+        f"{_handle(kinds.get(rid, 'paper'), rid)} ({reason})" for rid, reason in shown
+    ]
+    tail = (
+        f", +{len(not_linked) - len(shown)} more"
+        if len(not_linked) > len(shown)
+        else ""
+    )
+    return "; seen not linked: " + ", ".join(parts) + tail
+
+
 def run_search_step(
     store: Store,
     quest_id: int,
@@ -568,6 +605,16 @@ def run_search_step(
     (:func:`judged_out`) are passed to every leg as exclusions and
     skipped by the link loop, so a candidate a prior run rejected is
     never re-linked; the step's notes say how many were held out.
+
+    **Relevance gate** (gr592951): before each ``serves`` link, a
+    candidate carrying neither title nor abstract is dropped outright
+    ("no title/abstract"), and :func:`precis.quest.lit_gate.gate_verdict`
+    checks the rest against the quest's ``meta.lit_gate`` term lists —
+    a failure is logged "seen, not linked" with the gate's reason (every
+    ``ref_id % 5 == 0`` rejection still links, flagged "sampled past
+    gate", so cheap triage is never the only discovery path). Neither
+    drop writes a ``considered`` row: only an explicit judgment — the
+    tick's ``judgments`` channel, :func:`apply_judgments` — records one.
     """
     search = search_fn or _default_paper_search
     quest_tag = Tag.open(quest_tag_value(quest_id, store))
@@ -634,12 +681,39 @@ def run_search_step(
             r for r in above_floor if kinds.get(r, "paper") in LINKABLE_KINDS
         ]
         hits = above_floor[:MAX_LINK_PER_QUERY]
-        linked: list[int] = []
+        candidate_refs = _candidate_refs(store, hits)
+        gate_terms = lit_gate.gate_terms(store, quest_id)
+        linked: list[tuple[int, str | None]] = []
+        not_linked: list[tuple[int, str]] = []
         for rid in hits:
             # A search_fn that ignores its exclude list (a legacy test
             # double, a stale cache) must still not re-serve a judged-out
             # candidate.
             if rid in existing or rid in rejected:
+                continue
+            ref = candidate_refs.get(rid)
+            cand_text = lit_gate.candidate_text(store, ref) if ref is not None else ""
+            # Slice 1 (gr592951): a record positively read with neither
+            # title nor abstract is NEVER linked — nothing to judge
+            # relevance from — and the sampling below does not apply to it.
+            # An UNFETCHABLE candidate is unknown, not metadata-less.
+            if ref is not None and not cand_text:
+                not_linked.append((rid, "no title/abstract"))
+                continue
+            # Slice 2: the term gate — off (every candidate passes) when the
+            # quest declares no lit_gate lists; an unreadable candidate's
+            # empty text fails a configured gate exactly like
+            # ``lit_gate.gate_verdict``'s fetch-failure path.
+            if terms := gate_terms:
+                ok, gate_reason = lit_gate.verdict_for_text(terms, cand_text)
+            else:
+                ok, gate_reason = True, ""
+            # Slice 4: cheap triage must not be the only discovery path —
+            # every fifth gate rejection is linked anyway and flagged, so
+            # a bad term list costs recall at 4/5, not 5/5.
+            sampled = not ok and rid % 5 == 0
+            if not ok and not sampled:
+                not_linked.append((rid, gate_reason))
                 continue
             store.add_link(
                 src_ref_id=rid,
@@ -649,36 +723,43 @@ def run_search_step(
             )
             store.add_tag(rid, quest_tag, set_by="system")
             existing.add(rid)
-            linked.append(rid)
+            linked.append((rid, "sampled past gate" if sampled else None))
         linked_total += len(linked)
         sources = _sources_clause(report)
+        seen_text = _seen_clause(not_linked, kinds)
         if linked:
-            handles = ", ".join(_handle(kinds.get(rid, "paper"), rid) for rid in linked)
+            handles = ", ".join(
+                _handle(kinds.get(rid, "paper"), rid) + (f" ({flag})" if flag else "")
+                for rid, flag in linked
+            )
             append_entry(
                 store,
                 quest_id,
                 text=(
                     f'lit-search: "{query[:80]}" → linked {len(linked)} '
-                    f"source(s): {handles}{sources}"
+                    f"source(s): {handles}{seen_text}{sources}"
                 ),
                 entry_type="result",
                 by=by,
                 extra_meta={"signal": "lit-search"},
             )
-            notes.append(f"{query[:40]}: +{len(linked)}")
+            note = f"{query[:40]}: +{len(linked)}"
         else:
             append_entry(
                 store,
                 quest_id,
                 text=(
                     f'lit-search: "{query[:80]}" → nothing new linked'
-                    f"{sources or ' (acquisition needed)'}"
+                    f"{seen_text}{sources or ' (acquisition needed)'}"
                 ),
                 entry_type="observation",
                 by=by,
                 extra_meta={"signal": "lit-search"},
             )
-            notes.append(f"{query[:40]}: 0")
+            note = f"{query[:40]}: 0"
+        if not_linked:
+            note += f" ({len(not_linked)} seen, not linked)"
+        notes.append(note)
 
     return SearchStep(queries_run=queries_run, papers_linked=linked_total, notes=notes)
 
@@ -1189,6 +1270,122 @@ def apply_fetches(
     return made
 
 
+#: Per-tick cap on ``judgments`` entries — the model's channel for
+#: recording an explicit ``considered`` verdict on a source (gr592951
+#: slice 5). A verdict is a real write (a ``considered`` edge + a judgment
+#: history row), so a looping payload must not fan out unboundedly —
+#: same bounding spirit as ``MAX_READS_PER_TICK``/``MAX_FETCHES_PER_TICK``.
+MAX_JUDGMENTS_PER_TICK = 8
+
+
+def apply_judgments(
+    store: Store,
+    quest_id: int,
+    entries: Any,
+    *,
+    cap: int = MAX_JUDGMENTS_PER_TICK,
+    by: str = "agent",
+) -> int:
+    """Apply a tick payload's ``judgments`` — the write side of the
+    considered-verdict ledger (gr592951, spec me626852).
+
+    Each entry ``{"source": "<handle>", "verdict":
+    "useful|not-useful|uncertain", "reason": "...", "depth": "..."}``
+    lands one ``rel='considered'`` edge quest→source through
+    ``store.add_link`` — the general write door that validates the
+    verdict vocabulary, pins both endpoint revision shas and appends the
+    append-only judgment row. A ``not-useful`` verdict then holds the
+    source out of every later lit-search leg via :func:`judged_out`.
+
+    ``source`` resolves like a ``read`` ref: any universal handle —
+    ``pa<id>``/``fi<id>`` for the ref, ``pc<id>`` to ground the verdict
+    at that chunk's revision. ``reason`` is required (a verdict IS its
+    reason; reasonless entries are dropped per the spec). ``depth``
+    defaults to ``metadata`` — what the lit-search line itself showed.
+    Refusals (unresolvable source, bad verdict/depth — the door's own
+    ``BadInput``) land as ``observation`` notes, never a tick failure.
+    Returns the number of verdicts recorded.
+    """
+    if not isinstance(entries, list):
+        return 0
+    recorded = 0
+    refused: list[str] = []
+    over_cap = 0
+    for e in entries:
+        if recorded >= cap:
+            over_cap += 1
+            continue
+        if not isinstance(e, dict):
+            refused.append("malformed entry (not an object)")
+            continue
+        source = str(e.get("source") or "").strip()
+        verdict = str(e.get("verdict") or "").strip()
+        reason = str(e.get("reason") or "").strip()
+        depth = str(e.get("depth") or "").strip() or "metadata"
+        if not source:
+            refused.append("entry has no usable `source`")
+            continue
+        if not reason:
+            refused.append(
+                f"{source}: reasonless verdict dropped — a verdict IS its reason"
+            )
+            continue
+        try:
+            resolved = store.resolve_handle(source)
+        except Exception:
+            resolved = None
+        if resolved is None:
+            refused.append(f"{source}: does not resolve to a held ref")
+            continue
+        meta: dict[str, Any] = {
+            "verdict": verdict,
+            "reason": reason,
+            "depth": depth,
+            "actor": by,
+        }
+        try:
+            store.add_link(
+                src_ref_id=quest_id,
+                dst_ref_id=resolved.ref_id,
+                dst_pos=getattr(resolved, "chunk_ord", None),
+                relation="considered",
+                meta=meta,
+                set_by="agent",
+            )
+        except Exception as exc:
+            refused.append(f"{source}: {str(exc)[:160]}")
+            continue
+        recorded += 1
+    if over_cap:
+        refused.append(f"{over_cap} entr(ies) over the per-tick cap of {cap}")
+    if recorded:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"judgments: recorded {recorded} considered verdict(s) "
+                    "— inspect: view='considerations'"
+                )[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_judgments: logbook note failed", exc_info=True)
+    for note in refused:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=f"judgment refused: {note}"[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning("apply_judgments: logbook note failed", exc_info=True)
+    return recorded
+
+
 def requested_fetches(store: Store, quest_id: int) -> set[int]:
     """Paper ref ids this quest has already asked full text for — the
     ``lit-fetch:`` marker lines :func:`apply_fetches` writes. Read by the
@@ -1284,6 +1481,7 @@ __all__ = [
     "LINKABLE_KINDS",
     "LOCAL_ENOUGH",
     "LOCAL_KINDS",
+    "MAX_JUDGMENTS_PER_TICK",
     "MAX_LINK_PER_QUERY",
     "MAX_QUERIES",
     "PENDING_READS_META_KEY",
@@ -1294,6 +1492,7 @@ __all__ = [
     "SearchQuery",
     "SearchStep",
     "apply_fetches",
+    "apply_judgments",
     "apply_reads",
     "file_unrun_searches",
     "make_acquiring_search",

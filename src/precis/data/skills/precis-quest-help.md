@@ -530,6 +530,21 @@ and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
 
+**A relevance gate stands before each link** (gr592951). A candidate
+carrying neither title nor abstract is NEVER linked — the line says
+`pa<id> (no title/abstract)`. The rest are checked against the quest's
+`meta.lit_gate` term lists (below): a miss is logged `seen not linked:
+pa<id> (no host term|no reaction term)` — a per-candidate verdict, capped
+at 12 names per line — and every `ref_id % 5 == 0` rejection links anyway,
+flagged `(sampled past gate)`, so cheap triage is never the only discovery
+path. Neither drop writes a `considered` verdict: the tick's `judgments`
+channel (0–8 entries `{source, verdict, reason, depth}` — `reason`
+required) is the door that records an explicit `useful`/`not-useful`/
+`uncertain` on a source, and a `not-useful` verdict holds the source out
+of every later leg (`view='considerations'` is the ledger). When
+`view='literature'` lands (gr592952) the weekly "new literature" line
+reads it — acquisitions and gate-passing links only.
+
 ## A research tick: compute and the frontier
 
 **Compute.** When compute is on, each proposal that carries a
@@ -595,6 +610,14 @@ they parse, so `true`/`[...]` land typed — `off` stays the plain string
   this switch since gr500282, and before that fix `compute_lane=off`
   silently starved a lit-only quest's searches). Any other value, or
   the key's absence, keeps lit-search on.
+- **`lit_gate`** — the lit-search relevance gate's term lists:
+  `{"host": ["Pd", "Pd(111)", "<dopant names>"], "reaction": ["NO",
+  "NH3", "nitric oxide reduction"]}` — a dict with those two keys only,
+  each a list of term strings matched case-insensitively as whole tokens
+  against a candidate's title+abstract. Unset or malformed means the gate
+  is OFF (every candidate passes): the lists are chemistry judgment, so
+  set them deliberately — an absent/empty list skips that side of the
+  check. See the gate paragraph under "searches and compute" above.
 - **`quest_body`** — which tick body runs the loop. Unset (the default) is
   the catalyst/materials-discovery body above, unchanged. `"weave"` routes
   to the paper-writing body instead. `"inquiry"` is
