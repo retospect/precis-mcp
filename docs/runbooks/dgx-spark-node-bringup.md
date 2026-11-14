@@ -15,9 +15,10 @@ Addresses live in the gitignored overlay; none appear here.
 
 ## 1. Factory access
 
-The image ships a login for the owner (uid 1000, in `sudo`) whose
-`authorized_keys` already holds the cluster key, so
-`ssh -i ~/.ssh/cluster <owner>@<node>` works out of the box (the cluster key —
+The image ships a login for the owner — the first-boot factory account
+`reto` on our units (uid 1000, in `sudo`) — whose `authorized_keys`
+already holds the cluster key, so `ssh -i ~/.ssh/cluster reto@<node>`
+works out of the box (the cluster key —
 despite the `.pub` name it is *not* the melchior key). That login's `sudo`
 needs a password until the deploy account exists. "Too many authentication
 failures" = the agent offered too many keys → add `-o IdentitiesOnly=yes -o
