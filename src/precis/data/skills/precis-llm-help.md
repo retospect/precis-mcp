@@ -89,13 +89,13 @@ put(
     kind="llm",
     id="claude-opus-5-5",
     text="excellent at SQL-migration reasoning",
-    entry="agent-review",
-    by="agent",
+    args={"entry": "agent-review", "by": "agent"},
 )
 ```
 
-Appends one WORM review entry. `entry=` is one of `agent-review` (a subjective
-observation), `measured-eval`, `observed-telemetry`, or `published-benchmark`.
+Appends one WORM review entry. `args={'entry': …}` is one of `agent-review`
+(a subjective observation), `measured-eval`, `observed-telemetry`, or
+`published-benchmark`.
 
 ## Which model should the policy pick for my task?
 

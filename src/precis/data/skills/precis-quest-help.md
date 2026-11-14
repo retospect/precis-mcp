@@ -178,25 +178,28 @@ A quest keeps an **append-only, dated logbook** (like a lab notebook):
 what happened, when, immutable. Append an entry with a type:
 
 ```python
-put(kind="quest", id=7, text="Try Fe–N₄ single-atom sites", entry="hypothesis")
-put(kind="quest", id=7, text="Second PCET barrier too high", entry="dead-end")
-put(kind="quest", id=7, text="Dual-metal site clears both barriers", entry="milestone")
-put(kind="quest", id=7, text="relax batch A", entry="result", by="agent", cost=1.5)
+put(kind="quest", id=7, text="Try Fe–N₄ single-atom sites", args={"entry": "hypothesis"})
+put(kind="quest", id=7, text="Second PCET barrier too high", args={"entry": "dead-end"})
+put(kind="quest", id=7, text="Dual-metal site clears both barriers", args={"entry": "milestone"})
+put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "agent", "cost": 1.5})
 ```
 
-- `entry=` is one of **note · observation · hypothesis · result ·
-  decision · dead-end · milestone · reflection · cost** (default
-  `note`).
+- `args={'entry': …}` is one of **note · observation · hypothesis ·
+  result · decision · dead-end · milestone · reflection · cost**
+  (default `note`).
 - A **`milestone` is a deed** — the honest, medieval sense of progress.
   The deed ledger is a filtered view of the log, not a separate store.
 - **`dead-end` is first-class** — recording *what failed and why* stops
   the whole system re-treading it.
-- `by=` is **human · agent · dream** (default `human`).
-- `cost=` records spend; the **tote** (lifetime spend sunk into the
-  quest) is just a sum over the dated log — no separate cost store.
+- `args={'by': …}` is **human · agent · dream** (default `human`).
+- `args={'cost': …}` records spend; the **tote** (lifetime spend sunk
+  into the quest) is just a sum over the dated log — no separate cost
+  store.
 
-The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
-`link()` on the quest itself for status and the serves-graph.
+The append path takes only `text` plus the `args` keys
+`entry`/`by`/`cost` (top-level `entry=`/`by=`/`cost=` still run but
+answer with a deprecation note); use `tag()` / `link()` on the quest
+itself for status and the serves-graph.
 
 ## Read a quest
 

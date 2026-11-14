@@ -28,7 +28,7 @@ A protocol, not a ban — new sections are allowed, but earn their place.
 4. **A new TOP-LEVEL section is a structural change to the document** — do
    not create it directly. Propose it first as a logbook entry on the
    draft's owning quest (`put(kind='quest', id=<quest-id>, text='propose:
-   new top-level section — …', entry='decision')`) and let the operator or
+   new top-level section — …', args={'entry': 'decision'})`) and let the operator or
    a later pass confirm before it lands.
 5. **Never duplicate.** Search the draft for existing coverage before
    inserting: `search(kind='draft', scope='<slug>', q='…')`.

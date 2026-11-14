@@ -52,16 +52,16 @@ cases:
     expect:
       calls:
         - {verb: put, kind: quest, args: {text: 're:(?i).*molecular computer.*'}}
-        - {verb: put, kind: quest, args: {entry: milestone}}
+        - {verb: put, kind: quest, args: {args: {entry: milestone}}}
       record: {kind: quest}
     fake:
       calls:
         - {verb: put, kind: quest, args: {text: "A self-assembling molecular computer"}}
-        - {verb: put, kind: quest, args: {id: 7, text: "first NAND gate assembled", entry: milestone}}
+        - {verb: put, kind: quest, args: {id: 7, text: "first NAND gate assembled", args: {entry: milestone}}}
       record: {kind: quest}
       answer: >
-        put(kind='quest', id=<qu>, text=…, entry='milestone') appends the
-        deed to the WORM logbook — a milestone is a deed.
+        put(kind='quest', id=<qu>, text=…, args={'entry': 'milestone'})
+        appends the deed to the WORM logbook — a milestone is a deed.
 
   - id: pause-quest
     subtasks: 2

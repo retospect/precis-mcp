@@ -21,7 +21,7 @@ The **logbook** hangs off the quest as append-only ``quest_log`` chunks (the
 chunks *are* the ledger, the fisheye's body slot reads :func:`quest_gist`
 (statement + rubric) instead; the logbook stays at ``view='logbook'``. Append
 idiom mirrors gripe's comment append, with an entry type:
-``put(kind='quest', id=N, text='…', entry='hypothesis')``. A ``milestone`` entry
+``put(kind='quest', id=N, text='…', args={'entry': 'hypothesis'})``. A ``milestone`` entry
 is a **deed** (the honest medieval sense of progress); an entry carrying a
 ``cost`` feeds the **tote** (lifetime spend = a query over the dated log, no
 separate cost store). Dead-ends are first-class — recording what failed stops the
@@ -1072,7 +1072,7 @@ class QuestHandler(NumericRefHandler):
             "pulls subtasks + knowledge acquisition into its service. Never "
             "`done` — lifecycle is active/dormant/abandoned. Body is the "
             "striving statement (+ criteria). Append logbook entries with "
-            "put(id=N, text=…, entry='hypothesis'); rewrite the founding "
+            "put(id=N, text=…, args={'entry': 'hypothesis'}); rewrite the founding "
             "statement in place with edit(id=N, mode='replace', text=…) "
             "(logbook/links/tags untouched); mark serving work with "
             "link(target='quest:N', rel='serves'). search(view='roots') (or "
@@ -1293,7 +1293,7 @@ class QuestHandler(NumericRefHandler):
                     "requires text=",
                     next=(
                         f"put(kind={self.kind!r}, id={id}, text='what happened', "
-                        "entry='observation')"
+                        "args={'entry': 'observation'})"
                     ),
                 )
             # Tags / mode belong on tag() against the ref, not the append
@@ -1777,7 +1777,7 @@ class QuestHandler(NumericRefHandler):
         logbook entries, same ``serves``/``served-by`` links — only the
         statement text changes. The old wording lands in ``ref_events`` as a
         ``body_replaced`` row (``view='log'`` for the diff). Distinct from
-        the logbook append (``put(id=N, text=…, entry=…)``), which never
+        the logbook append (``put(id=N, text=…, args={'entry': …})``), which never
         touches the founding text; this is the "wordsmith the striving,
         keep everything else" verb (gripe 169979).
 
@@ -3224,7 +3224,7 @@ class QuestHandler(NumericRefHandler):
                             ),
                             (
                                 f"put(kind={self.kind!r}, id={ref.id}, text='…', "
-                                "entry='observation')",
+                                "args={'entry': 'observation'})",
                                 "record a logbook entry",
                             ),
                         ]
@@ -3535,7 +3535,7 @@ class QuestHandler(NumericRefHandler):
                     "put a project/goal in its service",
                 ),
                 (
-                    f"put(kind={self.kind!r}, id={ref_id}, text='…', entry='hypothesis')",
+                    f"put(kind={self.kind!r}, id={ref_id}, text='…', args={{'entry': 'hypothesis'}})",
                     "add a logbook entry",
                 ),
                 (

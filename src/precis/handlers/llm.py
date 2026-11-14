@@ -551,7 +551,7 @@ class LlmHandler(NumericRefHandler):
         # write carries no id= at all.
         if args is not None and "account" in args:
             return self._put_account(args["account"])
-        # ``put(id=…, text=…, entry=…)`` appends a WORM review entry to a card —
+        # ``put(id=…, text=…, args={'entry': …})`` appends a WORM review entry to a card —
         # the quest-logbook idiom (the ledger layer). The base create-only guard
         # rejects id-presence, so we intercept before delegating.
         if id is not None:
@@ -560,7 +560,7 @@ class LlmHandler(NumericRefHandler):
                     f"appending a review to an {self._sense()} requires text=",
                     next=(
                         f"put(kind={self.kind!r}, id={id!r}, text='...', "
-                        "entry='measured-eval', by='agent')"
+                        "args={'entry': 'measured-eval', 'by': 'agent'})"
                     ),
                 )
             review_type = (entry or llm_catalog.DEFAULT_REVIEW_TYPE).strip().lower()

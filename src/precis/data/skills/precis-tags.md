@@ -48,7 +48,7 @@ On the workflow kinds (`todo` / `gripe` / `quest`) `PRIO:` is an
 `low`→8, lower = hotter — or the number itself, `PRIO:3` → `prio=3`):
 translated on write and stripped, so priority lives in one sortable
 place. The direct kwarg is the same axis —
-`tag(kind='todo', id=48, prio=3)` / `put(..., prio=3)`. Don't filter
+`tag(kind='todo', id=48, prio=3)` / `put(..., args={'prio': 3})`. Don't filter
 by `tags=['PRIO:...']`; nothing stores it.
 
 Closed prefixes are **kind-gated** — `PRIO:` applies to workflow kinds;

@@ -2044,7 +2044,7 @@ def put(
     status: str | None = None,
     error: str | None = None,
     # quest logbook (see precis-quest-help): append a dated WORM entry —
-    # put(kind='quest', id=N, text='…', entry='hypothesis'[, by='agent', cost=…]).
+    # put(kind='quest', id=N, text='…', args={'entry': 'hypothesis'[, 'by': 'agent', 'cost': …]}).
     # entry= is the type (note/observation/hypothesis/result/decision/dead-end/
     # milestone/reflection/cost — a milestone is a deed); cost= feeds the tote.
     entry: str | None = None,
