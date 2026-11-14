@@ -837,3 +837,92 @@ def test_factory_op_loses_only_the_reserved_pick(
     )
     run = _job(store, origin="background", prio=5, job_type="run_slice")
     assert _claim(store, limit=2) == [seed, run]
+
+
+def _set_started(store: Store, ref_id: int, ago_s: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('started_at',"
+            " to_char((now() - make_interval(secs => %s)) AT TIME ZONE 'UTC',"
+            ' \'YYYY-MM-DD"T"HH24:MI:SS"Z"\')) WHERE ref_id = %s',
+            (ago_s, ref_id),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(secs => %s)"
+            " WHERE ref_id = %s",
+            (ago_s, ref_id),
+        )
+
+
+def test_deficit_favours_lane_served_least_over_window(store: Store) -> None:
+    """gr595541: a lane that held the host for the window but is idle now
+    loses to a lane that got nothing — an instantaneous fewest-running
+    count reads both as 0 running."""
+    hog = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    _set_started(store, hog, 1800)
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (hog,),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '60 seconds' "
+            "WHERE ref_id = %s",
+            (hog,),
+        )
+    _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    starved = _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [starved]
+
+
+def test_deficit_outside_window_is_forgotten(store: Store) -> None:
+    """Service older than the window no longer counts: ordering falls back
+    to the aged order."""
+    old = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (old,),
+        )
+    _set_started(store, old, 20000)
+    oldest = _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [oldest]
+
+
+def test_deficit_weight_scales_share(store: Store) -> None:
+    """A lane weighted 3:1 is owed three batch claims per one of its peer."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    big = [
+        _job(store, origin="background", prio=8, queued_s_ago=100 - i, job_type="big")
+        for i in range(4)
+    ]
+    small = _job(store, origin="background", prio=8, queued_s_ago=50, job_type="small")
+    got = _claim(store, limit=4)
+    assert got[0] == big[0]
+    assert small in got and got.index(small) >= 1
+
+
+def test_deficit_pre_limit_order_keeps_the_owed_lane(store: Store) -> None:
+    """td655978 review of gr595541: the pre-LIMIT SQL order must rank by
+    the same deficit the re-rank applies. With zero window usage and 1:3
+    weights every lane's ``frac`` is 0, so a ``frac/weight`` key tied —
+    three older weight-1 rows filled the ``limit=1`` overfetch window and
+    the weight-3 lane owed 75% never reached the Python re-rank."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    smalls = [
+        _job(store, origin="background", prio=8, queued_s_ago=300 - i, job_type="small")
+        for i in range(3)
+    ]
+    big = _job(store, origin="background", prio=8, job_type="big")
+    got = _claim(store, limit=1)
+    assert got == [big]
+    assert all(s not in got for s in smalls)
