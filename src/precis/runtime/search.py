@@ -25,6 +25,15 @@ intersects the resolved domain's ``kinds`` (``runtime.scope``), the
 footer names the skipped count and the door. An explicit ``kind=`` or
 comma list outside the domain still runs; ``'all'`` is byte-identical
 to the unfenced fan-out.
+
+Fan-out isolation (gr664954): the wildcard fan-out shares one call
+deadline across ~34 kinds on a capped worker pool, so a slow kind must
+not starve the queue — every pool checkout a worker makes is bounded
+by :data:`~precis.store.pool.CHECKOUT_BUDGET` (the wait itself and,
+server-side, every statement, not just the ANN leg), and a kind
+dequeued inside the min-start floor still gets a lexical-only attempt
+rather than a bare TimeoutError. Degraded kinds are named in a footer;
+errored ones in the errored tip.
 """
 
 from __future__ import annotations
@@ -223,10 +232,21 @@ _PAGE_TOLERATED: dict[str, tuple[Any, ...]] = {"page": (1,)}
 #: cancel (ANN_STATEMENT_TIMEOUT_MS) has a shipped regression test.
 CROSS_KIND_MAX_WORKERS = 4
 #: A kind dequeued with less budget than this (or <10% of the whole
-#: deadline, whichever is smaller) cannot finish even the fastest leg —
-#: report the timeout instead of spending a pooled connection and a query
-#: Postgres will cancel anyway.
+#: deadline, whichever is smaller) cannot finish the full hybrid legs —
+#: it falls to the lexical floor below rather than reporting the
+#: timeout outright (gr664954).
 CROSS_KIND_MIN_START_MS = 1_500
+#: Smaller floor for a lexical-only attempt (gr664954). A kind dequeued
+#: inside ``CROSS_KIND_MIN_START_MS`` still answers a lexical leg in far
+#: less budget — the 2026-11-13 collapse starved cheap kinds (skill,
+#: todo) to TimeoutError purely on queue position while early kinds
+#: held the workers, and the merge lost hits a small retry slice would
+#: have found. Applies on the default expansion only, and only when
+#: the call's mode is the default/``'hybrid'``: an explicit kind list
+#: and any explicit ``mode=`` (``'semantic'``, or the exact-term
+#: ``'verbatim'``/``'literal'`` a lexical rewrite would silently
+#: broaden) are caller intent and keep the timeout.
+CROSS_KIND_LEXICAL_MIN_START_MS = 500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
@@ -2791,8 +2811,18 @@ class SearchMixin(RuntimeShape):
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
+        # gr664954: on the default expansion (same gate as the up-front
+        # skip — an explicit kind list is caller intent), a kind a
+        # worker can only reach inside the deadline's last slice runs
+        # lexical-only instead of timing out. The set collects those
+        # kinds so the footer below can name the degrade.
+        lexical_fallback: set[str] | None = set() if default_expansion else None
         fanned = self._cross_kind_fan_out(
-            kinds, base_kwargs, kind_overrides, deadline_at=deadline_at
+            kinds,
+            base_kwargs,
+            kind_overrides,
+            deadline_at=deadline_at,
+            lexical_fallback=lexical_fallback,
         )
         for k in kinds:
             if k not in fanned:
@@ -2990,6 +3020,34 @@ class SearchMixin(RuntimeShape):
                 result_count=response.result_count,
                 result_ids=response.result_ids,
             )
+
+        # gr664954: kinds that only got a worker inside the deadline's
+        # last slice ran lexical-only — their hits stay merged, but the
+        # semantic leg they skipped must not read as fully searched.
+        # (Kinds that errored anyway are already named by the errored
+        # tip; don't name them twice.)
+        if lexical_fallback:
+            fell_back = sorted(lexical_fallback - set(errored))
+            if fell_back:
+                tip = (
+                    "_(semantic leg skipped for "
+                    + ", ".join(fell_back)
+                    + " — the fan-out deadline left too little for the "
+                    "full hybrid legs, so they ran lexical-only this "
+                    "turn; search each kind explicitly for the full "
+                    "leg)_"
+                )
+                lines = response.body.splitlines()
+                if lines:
+                    lines.insert(1, tip)
+                else:
+                    lines.append(tip)
+                response = Response(
+                    body="\n".join(lines),
+                    cost=response.cost,
+                    result_count=response.result_count,
+                    result_ids=response.result_ids,
+                )
 
         # The domain fence's skipped-kinds footer (gr572720) — the same
         # ``_(…)_`` convention as the errored/excluded trailers, naming
@@ -3347,6 +3405,7 @@ class SearchMixin(RuntimeShape):
         kind_overrides: dict[str, dict[str, Any]] | None = None,
         *,
         deadline_at: float | None = None,
+        lexical_fallback: set[str] | None = None,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
         :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
@@ -3373,10 +3432,31 @@ class SearchMixin(RuntimeShape):
         :meth:`_dispatch_cross_kind` passes the deadline its ANN route
         probe already drew from, so probe and fan-out together fit the
         one budget (td649559).
+
+        gr664954: two isolations keep one slow kind from starving the
+        queue. :data:`~precis.store.pool.CHECKOUT_BUDGET` bounds every
+        pool checkout the kind makes — the wait itself and every
+        statement server-side, not just the ANN leg — so a stalled
+        checkout or an uncapped query can no longer hold a worker past
+        the call deadline. And a kind dequeued inside
+        :data:`CROSS_KIND_MIN_START_MS` but above the smaller
+        :data:`CROSS_KIND_LEXICAL_MIN_START_MS` floor runs lexical-only
+        instead of timing out: ``lexical_fallback``, when a set is
+        passed (the default expansion — an explicit kind list is
+        caller intent and keeps the timeout), collects those kinds so
+        the caller can name the degrade. The degrade itself only
+        applies to the default/``'hybrid'`` mode: an explicit
+        ``mode='semantic'`` or an exact-term mode (``'verbatim'``,
+        ``'literal'``) would have its match semantics silently changed
+        by a lexical rewrite, so those keep the timeout too.
         """
         from concurrent.futures import wait
 
-        from precis.store.pool import _PINNED, POOL_CHECKOUT_DEADLINE
+        from precis.store.pool import (
+            _PINNED,
+            CHECKOUT_BUDGET,
+            POOL_CHECKOUT_DEADLINE,
+        )
 
         jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
         out: dict[str, list[SearchHit] | Exception] = {}
@@ -3395,10 +3475,36 @@ class SearchMixin(RuntimeShape):
             POOL_CHECKOUT_DEADLINE.set(deadline_at)
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
             min_start = min(CROSS_KIND_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100))
+            kw = (
+                {**base_kwargs, **kind_overrides[k]}
+                if kind_overrides is not None and k in kind_overrides
+                else base_kwargs
+            )
             if remaining_ms < min_start:
-                return TimeoutError(
-                    f"fan-out deadline left {remaining_ms}ms — too late to start"
+                mode = str(kw.get("mode") or "").strip().lower()
+                lexical_floor = min(
+                    CROSS_KIND_LEXICAL_MIN_START_MS,
+                    int(CROSS_KIND_DEADLINE_S * 100),
                 )
+                if (
+                    lexical_fallback is not None
+                    and mode in ("", "hybrid")
+                    and remaining_ms >= lexical_floor
+                ):
+                    # Too late for the full legs but not for a
+                    # lexical-only attempt — a merged lexical result
+                    # beats an omitted kind (gr664954). Only the
+                    # default/hybrid mode degrades: an exact-term mode
+                    # ('verbatim', 'literal') or 'semantic' is caller
+                    # intent a lexical rewrite would silently change.
+                    kw = {**kw, "mode": "lexical"}
+                    lexical_fallback.add(k)
+                elif not (mode == "lexical" and remaining_ms >= lexical_floor):
+                    return TimeoutError(
+                        f"fan-out deadline left {remaining_ms}ms — too late to start"
+                    )
+                # An already-lexical kind needs no degrade — the smaller
+                # floor still fits its legs.
             # Postgres cancels the ANN scan at the deadline; the client-side
             # wait alone would leave it running. The per-kind cap (gr519679)
             # stops a single runaway query from holding its worker for the
@@ -3406,11 +3512,10 @@ class SearchMixin(RuntimeShape):
             ANN_STATEMENT_TIMEOUT_MS.set(
                 min(remaining_ms, int(CROSS_KIND_PER_KIND_S * 1000))
             )
-            kw = (
-                {**base_kwargs, **kind_overrides[k]}
-                if kind_overrides is not None and k in kind_overrides
-                else base_kwargs
-            )
+            # gr664954: the same bound on every pool checkout this kind
+            # makes — a saturated pool or an uncapped non-ANN statement
+            # can no longer hold a worker past the call deadline.
+            CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
             return self._cross_kind_invoke_search_hits(handler, k, kw)
 
         pool = _cross_kind_executor()

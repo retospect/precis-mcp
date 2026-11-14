@@ -129,6 +129,48 @@ def _vec_param(query_vec: list[float] | Vector) -> Vector:
     return query_vec if isinstance(query_vec, Vector) else Vector(query_vec)
 
 
+def _ann_statement_cap_ms() -> int | None:
+    """The tightest ``statement_timeout`` (ms) for a statement on an ANN
+    leg starting *now*.
+
+    Two bounds may apply: ``ANN_STATEMENT_TIMEOUT_MS`` — the fan-out's
+    per-kind cap, written at dequeue — and, inside a bounded-call scope,
+    :func:`~precis.store.pool.checkout_budget_cap_ms`, the fresher
+    ``min(per-statement cap, budget remaining)``. The smaller wins;
+    ``None`` = unbounded.
+    """
+    timeout_ms = ANN_STATEMENT_TIMEOUT_MS.get()
+    # gr664954: both bounds age after they are computed — the dequeue-
+    # time cap and the checkout's own SET LOCAL. The freshest bound is
+    # the scope's remaining budget *now*; take the tightest so a
+    # statement that starts late cannot outlive the call deadline.
+    from precis.store.pool import checkout_budget_cap_ms
+
+    cap_ms = checkout_budget_cap_ms()
+    if cap_ms is not None:
+        timeout_ms = cap_ms if timeout_ms is None else min(timeout_ms, cap_ms)
+    return timeout_ms
+
+
+def _apply_ann_statement_cap(conn: Connection) -> None:
+    """Write :func:`_ann_statement_cap_ms` as this transaction's
+    ``statement_timeout``. No-op unbounded.
+
+    SET LOCAL semantics (``is_local=true``), like the GUCs
+    :func:`_prepare_filtered_ann` writes: pgbouncer transaction mode must
+    not see it leak to another client. The value freezes at write time,
+    so every further statement on the checkout needs its own call — a
+    probe or GUC write that spends budget leaves the next statement
+    holding a stale bound (gr664954, review td674196).
+    """
+    timeout_ms = _ann_statement_cap_ms()
+    if timeout_ms is not None:
+        conn.execute(
+            "SELECT set_config('statement_timeout', %s, true)",
+            (str(max(int(timeout_ms), 1)),),
+        )
+
+
 def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     """Make a *filtered* HNSW nearest-neighbour query return its full LIMIT.
 
@@ -144,7 +186,11 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     Call on the query's own connection immediately before the ANN
     statement. ``set_config(..., true)`` is ``SET LOCAL``: it lasts for the
     current transaction only, which is what pgbouncer's transaction mode
-    needs (a plain SET would leak to another client).
+    needs (a plain SET would leak to another client). Every statement on
+    that checkout — the version probe, the GUC write — runs under a cap
+    derived at its own start, and the last re-cap is the bound the
+    caller's ANN statement inherits (a value frozen at entry would let a
+    statement starting late outlive the call deadline — gr664954).
 
     Version guard: pgvector < 0.8 has no such GUCs and a ``SET`` of them
     errors (poisoning the transaction), so the installed extension version
@@ -153,14 +199,12 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     connection would COMMIT on exit and discard the ``SET LOCAL``.)
     """
     global _ann_iterative_supported
-    timeout_ms = ANN_STATEMENT_TIMEOUT_MS.get()
-    if timeout_ms is not None:
-        # SET LOCAL semantics (is_local=true), like the GUCs below: pgbouncer
-        # transaction mode must not see it leak to another client.
-        conn.execute(
-            "SELECT set_config('statement_timeout', %s, true)",
-            (str(max(int(timeout_ms), 1)),),
-        )
+    # gr664954 (review td674196): every statement here — the version
+    # probe, the GUC write — gets a cap derived *now*, and the last
+    # re-cap is the bound the caller's ANN statement inherits: a value
+    # frozen at entry would let a statement starting late outlive the
+    # call deadline.
+    _apply_ann_statement_cap(conn)
     if _ann_iterative_supported is None:
         row = conn.execute(
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
@@ -173,18 +217,21 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
             except ValueError:
                 supported = False
         _ann_iterative_supported = supported
-    if not _ann_iterative_supported:
-        return
-    ef = min(
-        _ANN_EF_SEARCH_MAX,
-        max(_ANN_EF_SEARCH_MIN, _ANN_EF_SEARCH_PER_LIMIT * max(int(limit), 1)),
-    )
-    conn.execute(
-        "SELECT set_config('hnsw.iterative_scan', 'strict_order', true), "
-        "       set_config('hnsw.max_scan_tuples', %s, true), "
-        "       set_config('hnsw.ef_search', %s, true)",
-        (str(_ANN_MAX_SCAN_TUPLES), str(ef)),
-    )
+    if _ann_iterative_supported:
+        # The probe above spent the budget the entry cap measured — the
+        # GUC write is bounded by what remains *now*.
+        _apply_ann_statement_cap(conn)
+        ef = min(
+            _ANN_EF_SEARCH_MAX,
+            max(_ANN_EF_SEARCH_MIN, _ANN_EF_SEARCH_PER_LIMIT * max(int(limit), 1)),
+        )
+        conn.execute(
+            "SELECT set_config('hnsw.iterative_scan', 'strict_order', true), "
+            "       set_config('hnsw.max_scan_tuples', %s, true), "
+            "       set_config('hnsw.ef_search', %s, true)",
+            (str(_ANN_MAX_SCAN_TUPLES), str(ef)),
+        )
+    _apply_ann_statement_cap(conn)
 
 
 #: Kinds the global HNSW index serves well on its own: they dominate it, so
@@ -350,6 +397,12 @@ def _ann_kind_state(conn: Connection) -> _AnnState:
     index_of = dict((row[1] if row else None) or {})
     marked: frozenset[str] = frozenset()
     if row and row[2]:
+        # Second statement on this checkout — re-derive the remaining
+        # budget or the marker read inherits the stale bound the
+        # catalogue probe ran under (gr664954, review td674196).
+        from precis.store.pool import apply_checkout_budget
+
+        apply_checkout_budget(conn)
         marked = frozenset(
             str(r[0]) for r in conn.execute(f"SELECT kind FROM {_ANN_KIND_READY_TABLE}")
         )
@@ -1035,13 +1088,18 @@ class ChunkStore:
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"
         )
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
                 # Mirror the OR retry in search_chunks_lexical —
                 # this count IS that leg's universe for the "N of K"
-                # header, so it must count the same rows.
+                # header, so it must count the same rows. Re-derive
+                # the remaining budget first — the retry would
+                # otherwise inherit the checkout-time cap (gr664954).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
@@ -1198,12 +1256,16 @@ class ChunkStore:
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"
         )
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
                 # Same OR retry as search_chunks_lexical — the
                 # notice counts the universe the leg actually searched.
+                # Re-derive the remaining budget first (gr664954).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
@@ -1374,6 +1436,8 @@ class ChunkStore:
                 "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
             )
 
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             rows = conn.execute(
                 _sql("websearch_to_tsquery('english', %s)"), params
@@ -1392,6 +1456,10 @@ class ChunkStore:
                 # unscoped guard runs.
                 strict_empty = offset == 0
                 if not strict_empty:
+                    # The checkout's statement_timeout froze at checkout
+                    # — re-derive the remaining budget or this probe
+                    # inherits the stale cap (gr664954, td665127).
+                    apply_checkout_budget(conn)
                     probe = conn.execute(
                         "SELECT EXISTS(SELECT 1 FROM chunks c "
                         "JOIN refs r ON r.ref_id = c.ref_id, "
@@ -1402,6 +1470,9 @@ class ChunkStore:
                     assert probe is not None
                     strict_empty = not probe[0]
                 if strict_empty:
+                    # Same re-derive before the retry itself — the AND
+                    # leg (and the probe) already spent budget.
+                    apply_checkout_budget(conn)
                     rows = conn.execute(
                         _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
                     ).fetchall()
@@ -1953,9 +2024,15 @@ class ChunkStore:
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
         or_leg = _or_retry(q, scope_ref_id)
+        from precis.store.pool import apply_checkout_budget
+
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
             if or_leg and scope_ref_id is None:
+                # Second statement on this checkout (the gate read ran
+                # first) — re-derive the remaining budget or it
+                # inherits the checkout-time cap (gr664954, td665127).
+                apply_checkout_budget(conn)
                 row = conn.execute(
                     "SELECT EXISTS(SELECT 1 FROM chunks c "
                     "JOIN refs r ON r.ref_id = c.ref_id, "

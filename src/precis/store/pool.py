@@ -250,6 +250,64 @@ POOL_CHECKOUT_DEADLINE: ContextVar[float | None] = ContextVar(
     "precis_pool_checkout_deadline", default=None
 )
 
+#: Bounded-call scope for pool use inside one request — the cross-kind
+#: fan-out sets it per worker — as ``(deadline_monotonic_s,
+#: per_statement_cap_ms)``. While set, a :meth:`PrecisPool.connection`
+#: checkout that did not name its own ``timeout`` waits at most the
+#: remaining budget (instead of the pool's unbounded default, which let
+#: a saturated pool hold a fan-out worker for the whole call), and every
+#: statement the checkout runs is capped server-side by a
+#: transaction-local ``statement_timeout`` — a non-ANN straggler
+#: statement dies at the call deadline like the ANN scan already did
+#: (gr664954). The cap is frozen at the value each ``set_config`` wrote:
+#: a checkout that issues a *further* statement (a probe or retry after
+#: the first query) must re-apply via :func:`apply_checkout_budget` or
+#: the later statement inherits the stale checkout-time bound and can
+#: outlive the deadline. ``None`` = unbounded, the default everywhere
+#: else.
+CHECKOUT_BUDGET: ContextVar[tuple[float, float] | None] = ContextVar(
+    "precis_checkout_budget", default=None
+)
+
+
+def checkout_budget_cap_ms() -> int | None:
+    """The per-statement cap (ms) the active :data:`CHECKOUT_BUDGET`
+    scope allows a statement starting *now*, or ``None`` unbounded.
+
+    ``min(per_statement_cap_ms, remaining_ms)``, floored at 1: an
+    expired deadline must still yield a 1 ms cap —
+    ``statement_timeout = 0`` would *disable* the limit and let a
+    statement that should never have started run uncapped.
+    """
+    budget = CHECKOUT_BUDGET.get()
+    if budget is None:
+        return None
+    return max(1, int(min(budget[1], (budget[0] - time.monotonic()) * 1000)))
+
+
+def apply_checkout_budget(conn: Connection) -> None:
+    """Cap this transaction's ``statement_timeout`` at the
+    :data:`CHECKOUT_BUDGET` scope's tightest bound *now*. No-op outside
+    a scope.
+
+    :meth:`PrecisPool.connection` runs this at checkout. A caller that
+    issues a further statement on the same checkout (the lexical AND
+    leg's probe / OR retry, a gate read before the real query) must
+    call it again first — the server keeps the value each
+    ``set_config`` wrote, so a statement started late would otherwise
+    inherit the checkout-time cap and hold a bounded-call worker past
+    the call deadline (gr664954, review td665127). Transaction-local
+    (``is_local=true``), like ``SET LOCAL ROLE``: pgbouncer transaction
+    mode must not see it leak to another client.
+    """
+    cap_ms = checkout_budget_cap_ms()
+    if cap_ms is None:
+        return
+    conn.execute(
+        "SELECT set_config('statement_timeout', %s, true)",
+        (str(cap_ms),),
+    )
+
 
 @contextmanager
 def pin_connection(conn: Connection) -> Iterator[None]:
@@ -299,7 +357,24 @@ class PrecisPool(ConnectionPool):
                 timeout if timeout is not None else self.timeout,
                 max(deadline - time.monotonic(), 0.0),
             )
+        budget = CHECKOUT_BUDGET.get()
+        if timeout is None and budget is not None:
+            # The scope's deadline, not the pool's unbounded wait — a
+            # saturated pool must not hold a bounded call's worker
+            # hostage (gr664954).
+            timeout = max(0.0, budget[0] - time.monotonic())
         with super().connection(timeout=timeout) as conn:
+            if budget is not None:
+                # Transaction-local (is_local=true), like the SET LOCAL
+                # ROLE below — pgbouncer transaction mode must not see
+                # it leak to another client. Capped at the smaller of
+                # the scope's per-statement cap and its remaining
+                # budget, so a checkout taken late in the call cannot
+                # overrun the deadline on this first statement. A
+                # caller issuing a *further* statement on this checkout
+                # must re-apply — the value is frozen here (gr664954,
+                # review td665127).
+                apply_checkout_budget(conn)
             # Tier-2: ``SET LOCAL ROLE`` opens the transaction the caller's
             # statements then run in — same seam apply_revision_context uses.
             # Runs BEFORE the context so the writes after it are already
