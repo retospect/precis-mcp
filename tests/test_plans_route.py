@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.plans import route, templates
+from precis.plans import lanes, route, templates
 
 _DENY = (
     "scripts/ship",
@@ -417,3 +417,156 @@ def test_body_and_brief_keep_separate_deny_path_scopes(
     # An iterable deny set must remain available for both documents.
     why = route.coordinator_route(body, iter(_DENY), brief=brief)
     assert (why is not None) is routes
+
+
+# --- gr663138 / gr658931: run invocations, rescue evidence, checkout paths ---
+#
+# The fixtures are real prod texts, trimmed to the lines that tripped the
+# router (the irrelevant middle cut, cluster addresses kept out).
+
+#: td675895: gr665602's rescue report. ``scripts/test`` appears only inside
+#: the log tail, as the command the dead builder ran.
+_RESCUE_REPORT = """\
+rescue class: builder
+signature key: ! [rejected] slice/# -> slice/# (non-fast-forward)
+first node: td664398
+job: jo665497
+step: retry cap 5: the lane ladder is spent (5 attempts; rungs tried: None/default → devin/swe-2-high → claude-sub/claude-opus-5-5)
+branch: slice/664398
+head: e47a116ad
+
+log tail:
+run_slice: session for td664398 exited clean but the pre-land defer failed (branch push of slice/664398: FAILED (To https://example.invalid/org/repo
+ ! [rejected]            slice/664398 -> slice/664398 (non-fast-forward)
+hint: U)); todo back to open, attempt:5
+--- log tail ---
+- **Tests:** new cases in `tests/test_run_slice.py`. I never ran `scripts/test tests/test_pla…`.
+- **Step 14:** `scripts/test` on `tests/test_run_slice.py`, `tests/test_land_slice.py` gave 819 passed, 1 failed.
+"""
+
+#: td665622/td666424: a diagnose brief naming the slice's checkout path.
+_DIAGNOSE_BRIEF = """\
+You are a read-only diagnosis of td664398, rescued under class builder.
+
+## The rescued todo
+td664398: Build the fix for gr663909
+Fix gr663909 directly: no triage and no brief ran. Touch nothing under the lane's deny paths. The land (land_slice, `scripts/ship --quick`) squash-merges onto main.
+
+## Its newest brief:/handoff: comment
+brief: rebase on origin/main and resolve tests/test_land_slice.py, keeping main's side for others' changes — mechanical red on jo665010: ✖ rebase conflict onto origin/main — resolve in /Users/deploy/precis-fix-repo/.claude/worktrees/slice-td664398, then 'git add -A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship
+
+## The rescue evidence
+rescue: builder
+job: jo665497
+step: retry cap 5: the lane ladder is spent
+branch: slice/664398 @ e47a116ad
+log tail:
+run_slice: session for td664398 exited clean but the pre-land defer failed
+--- log tail ---
+w goes ahead only on that machine-set `done`.
+
+## The signature gripe
+gr665602: [rescue] builder: ! [rejected] slice/# -> slice/# (non-fast-forward)
+rescue class: builder
+log tail:
+run_slice: session for td664398 exited clean
+
+## What you may do
+Read through the precis MCP and run read-only git.
+"""
+
+#: td663618: gr663138's own text, which names the harness only as examples
+#: of commands to run.
+_GR663138 = """\
+deny-path router trips on the factory's own brief text: any brief that says "run scripts/test" routes to the coordinator
+Observed 2026-11-13 (coordinator): td663028 routed td662214 to a coordinator showstopper because its rescue brief says "Run `scripts/test tests/…`" — a command to run, not a path to edit. Same false positive on open asks td659029, td652980, td647766 ("names deny path scripts/test"), and the .claude/worktrees variant gr658931.
+Goal: the router matches only paths the brief asks to EDIT (diff targets, "edit/modify/change <path>"), never paths named as commands to run (`scripts/test`, `scripts/ship`) or quoted in logs; a test pins "Run scripts/test tests/x.py" as not routed. Related: router fix 2c191a6ff (td647766), gr658931, gr645163.
+"""
+
+#: td674827: gr663864 — the hand pre-land check runs the tree's own harness.
+_GR663864 = """\
+Skills: re-land-a-slice runbook lives in memory
+
+New skill `reland-slice` (trigger: a land_slice job is red with no assertion):
+- Local pre-land check: bundle `origin/main..slice/<id>`, fetch it into a scratch branch, add a worktree, run the branch tests plus the schema-baseline and dispatch ratchet tests through that tree's own `scripts/test`; edit through EnterWorktree(path=…); then quick-ship with the todo handle in the subject.
+- A new `args` verb must also be listed in the dispatch passthrough roster test.
+"""
+
+#: td652980: gr623589 — a reproduce line that runs the harness on one test.
+_GR623589 = """\
+Cross-kind fan-out repeats the dispatch query embedding
+
+Observed during OAuth verification. tests/test_cross_kind_fanout_bound.py::test_fan_out_shares_the_dispatch_query_embedding expects one embedding call and gets two.
+
+Reproduce with scripts/test tests/test_cross_kind_fanout_bound.py::test_fan_out_shares_the_dispatch_query_embedding. Expected: one embedding computation shared by the dispatch fan-out. Actual: emb.calls == 2. Root cause is not established; do not relax the assertion merely to make the gate green.
+"""
+
+#: td674828: gr663867 asks for a new section IN a factory-governed skill
+#: (``governs: factory``) — a genuine deny path, so it must route.
+_GR663867 = """\
+Skills: gripe-fleet lacks the pre-dispatch overlap check
+
+Add a short section "Before you dispatch" to `gripe-fleet` (src/precis/data/skills/gripe-fleet.md and its .claude mirror):
+- Run `scripts/inflight` and read the `.claude/purpose` lines for the gripe id or file.
+- `scripts/fleet-wave cites ID…` lists unlanded branch commits naming it.
+"""
+_GOVERNED = ("src/precis/data/skills/gripe-fleet.md",)
+#: the router's real deny set: strict deny plus the governed skills
+_ALL_DENY = lanes.STRICT_DENY + _GOVERNED
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _RESCUE_REPORT,
+        _DIAGNOSE_BRIEF,
+        _GR663138,
+        _GR663864,
+        _GR623589,
+        # bare run cues and the "on <files>" form
+        "Fix: the pooled fixture leaks. Run scripts/test when done.",
+        "Goal: stop the flake in guards.py; re-run `scripts/test` on tests/test_x.py",
+        "Fix: guards.py flakes; step 14 ran scripts/test on `tests/test_x.py`.",
+        "Fix: guards.py flakes (never ran `scripts/ship`).",
+        "scripts/round --quick on src/precis/todo/guards.py",
+        # a checkout location is not a write target
+        "resolve in /Users/deploy/work/repo/.claude/worktrees/slice-td1 and retry",
+        "the tree at .claude/worktrees/agent-a1b2c3 is dirty; fix guards.py",
+        "`.claude/worktrees` holds the slice checkouts",
+    ],
+)
+def test_run_invocation_evidence_and_checkout_never_route(text: str) -> None:
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        # a genuine edit request on the harness still routes
+        ("Goal: scripts/test accepts --foo", "scripts/test"),
+        ("Fix: edit deploy/group_vars/all.yml", "deploy/group_vars/all.yml"),
+        ("Goal: scripts/ship should refuse a dirty tree", "scripts/ship"),
+        # a run cue does not hide a later edit request in the same text
+        ("Run scripts/test first.\n\nFix: edit scripts/test", "scripts/test"),
+        ("Fix: make scripts/ship quieter, then run scripts/test", "scripts/ship"),
+        # only the repo-relative remainder of a checkout path is judged
+        (
+            "Fix: edit /Users/deploy/work/repo/.claude/worktrees/slice-td1/scripts/ship",
+            "scripts/ship",
+        ),
+        ("Goal: edit .claude/worktrees/t1/CLAUDE.md", "CLAUDE.md"),
+        # a rescue report's non-evidence lines still classify
+        (
+            _RESCUE_REPORT.replace(
+                "head: e47a116ad\n",
+                "head: e47a116ad\nFix: edit scripts/ship so the push retries\n",
+            ),
+            "scripts/ship",
+        ),
+        # gr663867: the skill file IS the requested edit target
+        (_GR663867, "src/precis/data/skills/gripe-fleet.md"),
+    ],
+)
+def test_genuine_edit_request_still_routes(text: str, path: str) -> None:
+    why = route.coordinator_route(text, _ALL_DENY)
+    assert why is not None and f"`{path}`" in why

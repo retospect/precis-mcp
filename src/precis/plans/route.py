@@ -47,6 +47,28 @@ Two signals:
   and a quoted ``names deny path …`` reason are stripped with the
   boilerplate; hidden comments never reach here (the callers drop them:
   ``templates.gripe_report_texts``, ``plan_dispatch._route_text``).
+  Three more non-targets (gr663138, gr658931):
+
+  - A harness path run as a command, wider than the flag/test-path form:
+    ``scripts/test on tests/x.py``, a path after a run verb within three
+    words (``run``/``ran``/``re-run``/``execute``…, ``never ran
+    `scripts/ship```), a clause that opens with a run verb (``run the
+    tests through that tree's own scripts/test``) unless an edit verb
+    follows it, and a parenthetical list after one (``commands to run
+    (`scripts/test`, `scripts/ship`)``). ``Goal: scripts/test accepts
+    --foo`` has no such cue and still routes.
+  - A rescue report's evidence: from a ``log tail:`` label (or a ``---
+    log tail ---`` rule) to the next ``## `` heading or the end, plus
+    its ``rescue class:``/``signature key:``/``first node:``/``job:``/
+    ``step:``/``branch:``/``head:`` lines when the text is a rescue
+    report. Like a ``log`` fence, they record what the dead run did.
+    Real intent lines elsewhere in the report still classify.
+  - A slice checkout location: a path through ``.claude/worktrees/<tree>``
+    is where the work runs, not what it changes. It is judged by the
+    repo-relative remainder after ``<tree>/`` — none, no hit; ``scripts/
+    release``, still a hit. (This is the router only: the write gates
+    keep ``.claude/**`` fully denied.)
+
   The rule is negative on purpose: a positive "edit verb or label" rule
   would drop reports whose subject is the broken file with no verb at
   all (gr639737's ``scripts/round open refuses …``).
@@ -124,7 +146,77 @@ _NOTE_START = re.compile(
 #: tests/test_x.py -m slow``, ``scripts/test --typecheck``) — every
 #: slice brief's acceptance names the harness this way (td647606).
 _RUN_INVOCATION = re.compile(
-    r"`?\bscripts/[\w.-]+`?(?=\s+(?:--?\w|tests/|[\"']))", re.IGNORECASE
+    r"`?\bscripts/[\w.-]+`?(?=\s+(?:--?\w|tests?/|[\"']"
+    r"|on\s+[`\"']?(?:tests?/|[\w./-]+\.py)))",
+    re.IGNORECASE,
+)
+
+#: The verbs that run a command (gr663138): a path inside one — ``never
+#: ran `scripts/ship```, ``run the tests through that tree's own
+#: scripts/test`` — is an invocation, not a write target.
+_RUN_VERBS = frozenset(
+    [
+        "run",
+        "runs",
+        "ran",
+        "running",
+        "re-run",
+        "re-runs",
+        "re-ran",
+        "re-running",
+        "rerun",
+        "reruns",
+        "rerunning",
+        "execute",
+        "executes",
+        "executed",
+        "executing",
+        "invoke",
+        "invokes",
+        "invoked",
+    ]
+)
+#: A clause that OPENS with a run verb (after these lead-in words) is a
+#: command to run however far the path sits from the verb — unless an
+#: edit verb comes between (``run the fix by editing scripts/ship``).
+_RUN_LEAD_WORDS = "and then also please just first finally now to can should must will"
+_RUN_LEAD = frozenset(_RUN_LEAD_WORDS.split())
+_EDIT_VERB_WORDS = """
+edit edits editing change changes changing modify modifies modifying
+update updates updating patch patches fix fixes fixing rewrite rewrites
+replace replaces add adds touch touches amend amends
+"""
+_EDIT_VERBS = frozenset(_EDIT_VERB_WORDS.split())
+#: A parenthetical list of commands after a run verb (``commands to run
+#: (`scripts/test`, `scripts/ship`)``): the whole list is invocations.
+_RUN_LIST = re.compile(
+    r"\b(?:" + "|".join(sorted(_RUN_VERBS)) + r")\s+\([^)\n]*\)", re.IGNORECASE
+)
+
+#: A rescue report's evidence (gr663138, td675895): the dead builder's
+#: log tail, from the ``log tail:`` label (or a ``--- log tail ---``
+#: rule) to the next Markdown H2 or the end, plus the label lines that
+#: record what happened rather than what to change. Like a ``log``-
+#: labelled fence, nothing in them is a target. The label lines count
+#: only when the text is a rescue report (``rescue class:`` /
+#: ``signature key:``): a brief's own ``Step: …`` is real intent.
+_LOG_TAIL_START = re.compile(
+    r"^\s*(?:log tail:|-{3,}\s*log tail\s*-{3,})", re.IGNORECASE
+)
+_RESCUE_MARK = re.compile(
+    r"^\s*(?:rescue(?: class)?|signature key):", re.IGNORECASE | re.MULTILINE
+)
+_RESCUE_LABEL = re.compile(
+    r"^\s*(?:rescue(?: class)?|signature key|first node|job|step|branch|head):",
+    re.IGNORECASE,
+)
+
+#: A ``.claude/worktrees[/<tree>[/<repo-relative remainder>]]`` path: the
+#: slice's checkout location (gr658931). Only the remainder, if any, is a
+#: repo path; the location itself is where the work happens, never what
+#: it changes.
+_CHECKOUT_PATH = re.compile(
+    r"(?:^|/)\.claude/worktrees(?:/[^/]+(?:/(?P<rest>.*))?)?$", re.IGNORECASE
 )
 
 #: A brief's declared write set (``File set: a.py, b.py``, through the
@@ -335,6 +427,23 @@ def strip_direct_head(text: str) -> str:
     return stripped
 
 
+def strip_evidence(text: str) -> str:
+    """The text minus a rescue report's evidence (:data:`_LOG_TAIL_START`
+    blocks, and the :data:`_RESCUE_LABEL` lines when the text is a rescue
+    report): what the dead run logged, never what to change."""
+    rescue = _RESCUE_MARK.search(text) is not None
+    out: list[str] = []
+    tail = False
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            tail = False
+        elif _LOG_TAIL_START.match(line):
+            tail = True
+        if not (tail or (rescue and _RESCUE_LABEL.match(line))):
+            out.append(line)
+    return "\n".join(out)
+
+
 def routing_note(text: str) -> bool:
     """True when ``text`` opens as a dispatcher routing stamp or a
     coordinator note (:data:`_NOTE_START`) — a comment about the work's
@@ -351,10 +460,22 @@ def _discounted(text: str, start: int, end: int) -> bool:
     breaks = list(_CLAUSE_BREAK.finditer(head))
     if breaks:
         head = head[breaks[-1].end() :]
-    if any(w in _DISCOUNT_CUES for w in _cue_words(head)[-_CUE_REACH:]):
+    words = _cue_words(head)
+    if any(w in _DISCOUNT_CUES or w in _RUN_VERBS for w in words[-_CUE_REACH:]):
+        return True
+    if _run_clause(words):
         return True
     tail = _cue_words(text[end : end + 40])
     return bool(tail) and tail[0].startswith("cross-checked")
+
+
+def _run_clause(words: list[str]) -> bool:
+    """True when the clause ``words`` opens with a run verb and no edit
+    verb follows it: the path ending the clause is a command's argument."""
+    rest = list(words)
+    while rest and rest[0] in _RUN_LEAD:
+        rest.pop(0)
+    return bool(rest) and rest[0] in _RUN_VERBS and not _EDIT_VERBS.intersection(rest)
 
 
 def _cue_words(text: str) -> list[str]:
@@ -366,12 +487,19 @@ def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | Non
     glob, ``None`` when none does — case-folded like the lane's write
     check. Tokens are judged as whole paths, so ``gr645163`` or
     ``plan_dispatch`` prose never reads as a ``scripts/*`` hit. A
-    negated or cited mention (:func:`_discounted`) is no hit."""
+    negated or cited mention (:func:`_discounted`) is no hit, and a path
+    through ``.claude/worktrees/<tree>/`` is judged by the repo-relative
+    remainder alone (:data:`_CHECKOUT_PATH`)."""
     globs = tuple(dict.fromkeys(g.lower() for g in deny_paths))
     for m in _PATH_TOKEN.finditer(text):
         if _discounted(text, m.start(), m.end()):
             continue
-        token = m.group(0).lower()
+        shown = m.group(0)
+        if checkout := _CHECKOUT_PATH.search(shown):
+            shown = checkout.group("rest") or ""
+            if not shown:
+                continue
+        token = shown.lower()
         if token.startswith("./"):
             token = token[2:]
         hit = next(
@@ -384,7 +512,7 @@ def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | Non
             None,
         )
         if hit is not None:
-            return m.group(0), hit
+            return shown, hit
     return None
 
 
@@ -475,7 +603,11 @@ def coordinator_route(
     the ask body and context, so it names the signal, not advice.
     An optional newest brief has its own intent and declared write set;
     neither it nor the body can mask the other's deny paths."""
-    parts = [strip_direct_head(part) for part in (brief, text) if part and part.strip()]
+    parts = [
+        strip_evidence(strip_direct_head(part))
+        for part in (brief, text)
+        if part and part.strip()
+    ]
     deny = tuple(deny_paths)
     for body in parts:
         file_set = _FILE_SET.search(body)
@@ -484,7 +616,7 @@ def coordinator_route(
         judged = (
             file_set.group(1)
             if file_set
-            else _change_intent(_RUN_INVOCATION.sub(" ", body))
+            else _change_intent(_RUN_LIST.sub(" ", _RUN_INVOCATION.sub(" ", body)))
         )
         hit = deny_path_hit(judged, deny)
         if hit is not None:
