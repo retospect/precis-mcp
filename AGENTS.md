@@ -161,13 +161,19 @@ Files are explicit mirror/export artifacts after cutover. Native edits and
 operator CLI mirror commands are distinct: never import/export at task
 start, to answer a question, or automatically on an MCP outage.
 
-Outage (emergency measure, Reto 2026-10-22): MCP down → read the node copies
-under `~/.cache/precis/memory-nodes*` as stale scratch (never edit them as
-memory; they are overwritten). Anything that must be remembered is appended to
-`<harness memory dir>/outage-memory.md` (`## <UTC timestamp> <session name>`,
-then the fact); the SessionStart hook flags it once the graph is back and the
-session integrates then empties it. No other memory writes, no replay tooling.
-`docs/runbooks/memory-restore.md`.
+Outage (Reto 2026-10-22, 2026-11-14): MCP down → stop the task. Retry the
+connection with growing waits (1, 2, 4, 8 minutes, then every 15) and resume
+when it answers; do not work the task without skills and memory, and do not
+carry on through `scripts/prod-precis` (that is the release owner's recovery
+tool). The node copies under `~/.cache/precis/memory-nodes*` are stale scratch
+(never edit them as memory; they are overwritten). Anything that must be
+remembered is appended to `<harness memory dir>/outage-memory.md`, each entry
+under a heading that starts with the UTC date and time
+(`## 2026-11-14T19:35Z <session name>`, then the fact). Once the graph is back
+the session that wrote an entry integrates it and removes that entry; it leaves
+other sessions' entries alone. An entry older than 24 hours, or one with no
+date and time, may be integrated by any interactive session. No other memory
+writes, no replay tooling. `docs/runbooks/memory-restore.md`.
 
 ## Definition of done
 
