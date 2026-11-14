@@ -2,7 +2,8 @@
 description: End-of-session wrap-up — commit WIP, sync onto main, gate on GitHub CI (scripts/ship --remote), squash-merge to main, mark the open round. Ship-only; /go also deploys.
 ---
 
-The procedure is `.claude/commands/land.md` — read it and follow it. It is
+The procedure is the precis skill `land` (`get(kind='skill', id='land')`; in
+the checkout `src/precis/data/skills/land.md`) — read it and follow it. It is
 the single source; this file only maps what differs for Devin, so the two
 cannot drift apart again.
 

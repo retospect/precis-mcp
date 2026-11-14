@@ -2,7 +2,8 @@
 description: Implement the agreed spec, ship to main with the local gate, deploy the gated sha to the cluster (scripts/deploy --pinned).
 ---
 
-The procedure is `.claude/commands/go.md` — read it and follow it. It is the
+The procedure is the precis skill `go` (`get(kind='skill', id='go')`; in the
+checkout `src/precis/data/skills/go.md`) — read it and follow it. It is the
 single source; this file only maps what differs for Devin.
 
 ## Devin differences
