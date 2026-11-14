@@ -41,7 +41,7 @@ Assumed foundation seams, all read on that branch:
   arbitrary client able to set the same database setting.
 - `src/precis/handlers/learning.py::LearningHandler` supports private
   `/activity`, `/settings`, `/checkin` and `le<N>` addresses.
-  `src/precis/runtime/learning.py::dispatch_learning` bypasses shared content
+  `src/precis/runtime/private.py::dispatch_private` bypasses shared content
   logs, result caches and continuations, with a 3,500-byte response bound.
   `src/precis/learning_privacy.py::is_learning_call` recognizes malformed
   learning envelopes for the same redaction.
@@ -130,7 +130,7 @@ install-token integrations, or implementing the gr556002 policy for all kinds.
 `src/precis/user_context.py::Principal`, `require_user` and `user_scope`,
 `src/precis/server.py::_install_token_auth`,
 `src/precis/tools/core.py::_ctx_user_scope`, and
-`src/precis/runtime/learning.py::_dispatch_learning`. The present principal
+`src/precis/runtime/private.py::_dispatch_private`. The present principal
 has user/token identity only. `LearningStore._tx` scopes an owner, not an
 operation or resource subset. Grant validation, job credential issuance and
 resource-aware store authorization are **new**; owner-only RLS by itself

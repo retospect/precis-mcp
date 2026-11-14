@@ -1757,12 +1757,13 @@ class DispatchMixin(RuntimeShape):
     def _dispatch_with_status(
         self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
-        from precis.learning_privacy import is_learning_call
+        from precis.private_kinds import private_kind_of
 
-        if is_learning_call(args):
-            from precis.runtime.learning import dispatch_learning
+        private = private_kind_of(args)
+        if private is not None:
+            from precis.runtime.private import dispatch_private
 
-            return dispatch_learning(self, verb, args)
+            return dispatch_private(self, verb, args, private)
         if (
             verb != "search"
             or self.store is None
