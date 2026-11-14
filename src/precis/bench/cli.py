@@ -118,7 +118,9 @@ def _parser() -> argparse.ArgumentParser:
         "--caller",
         choices=runner.CALLERS,
         default=runner.DEFAULT_CALLER,
-        help="scripted caller: triage (default) or ladder (the whole-ladder climb)",
+        help="scripted caller: triage (default), rowkw, rank-order (rowkw's "
+        "unscored control), oracle (upper bound: opens the gold hit) or "
+        "ladder (the whole-ladder climb)",
     )
 
     swp = sub.add_parser(

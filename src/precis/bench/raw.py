@@ -111,6 +111,10 @@ def row_header(r: Mapping[str, Any]) -> str:
         bits.append(f"errors {r['errors']}")
     if r.get("recall_at_5") is not None:
         bits.append(f"recall@5 {r['recall_at_5']:.3f}")
+    if r.get("gold_rank_page") is not None:
+        bits.append(f"gold@page {r['gold_rank_page']}")
+    if r.get("gold_rank_100") is not None:
+        bits.append(f"gold@100 {r['gold_rank_100']}")
     return " · ".join(bits)
 
 
@@ -249,6 +253,9 @@ def run_index(results_dir: Path) -> list[dict[str, Any]]:
                 readable=True,
                 set=h.get("set"),
                 caller=caller.get("name") if isinstance(caller, Mapping) else None,
+                upper_bound=bool(
+                    isinstance(caller, Mapping) and caller.get("upper_bound")
+                ),
                 schema=h.get("schema"),
                 precis_sha=h.get("precis_sha"),
                 git_dirty=h.get("git_dirty"),
@@ -271,7 +278,8 @@ def index_line(e: Mapping[str, Any]) -> str:
         return f"{e['stem']} — ({e.get('note') or 'unreadable results file'})"
     bits = [
         f"set {e.get('set') or '?'}",
-        f"caller {e.get('caller') or '?'}",
+        f"caller {e.get('caller') or '?'}"
+        + (" (upper bound)" if e.get("upper_bound") else ""),
         f"{e.get('started_at') or '?'} → {e.get('ended_at') or '?'}",
         f"schema {e.get('schema') if e.get('schema') is not None else '?'}",
         f"{e.get('n_rows', 0)} rows",
@@ -382,6 +390,8 @@ def raw_markdown(
     )
     h = results["header"]
     caller = h.get("caller", {}).get("name", "?")
+    if h.get("caller", {}).get("upper_bound"):
+        caller += ", upper bound — reads the gold"
     end = min(offset + limit, len(sel))
     out = [
         f"# raw log {h.get('set', '?')} (caller {caller}) — rows {offset}-{end} "

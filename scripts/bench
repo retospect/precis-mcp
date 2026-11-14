@@ -15,7 +15,7 @@
 #                                           # free local derived passes on the dev DB: chunk embeddings
 #                                           # + per-chunk keywords (no LLM: summaries, categorizer tags
 #                                           # and edges stay empty; `run` reports their coverage)
-#   scripts/bench run --set quick [--caller triage|rowkw|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
+#   scripts/bench run --set quick [--caller triage|rowkw|rank-order|oracle|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
 #                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick-<caller>.json;
 #                                           # re-ingest arms in --arms provision + run their own DB (header.worlds)
 #   scripts/bench sweep [--caller triage|rowkw] [--seeds 1,2,3]   # pick the triage threshold on planted dev seeds (throwaway DB of its own:

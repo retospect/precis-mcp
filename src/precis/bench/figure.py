@@ -37,11 +37,19 @@ _INK, _MUTED, _GRID, _SURFACE = "#0b0b0b", "#898781", "#e1e0d9", "#fcfcfb"
 
 def figure_points(runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Per (run, arm) series with answerable tasks that reached gold:
-    ``label``, ``x`` median tokens, ``recall`` {k: mean}, ``censored``, ``n``."""
-    names = [str(r["header"].get("caller", {}).get("name", "ladder")) for r in runs]
+    ``label``, ``x`` median tokens, ``recall`` {k: mean}, ``censored``, ``n``.
+    The label is the arm, plus the caller when several files are plotted or
+    the caller is an upper bound."""
     multi = len(runs) > 1
     out: list[dict[str, Any]] = []
-    for run, caller in zip(runs, names, strict=True):
+    for run in runs:
+        meta = run["header"].get("caller", {})
+        caller = str(meta.get("name", "ladder"))
+        # an upper-bound caller (oracle) is named on every series, also for
+        # a single results file, where the label is otherwise the bare arm
+        bound = bool(meta.get("upper_bound"))
+        if bound:
+            caller += " — upper bound"
         rows = run["rows"]
         for arm in runner.ALL_ARMS:
             sel = [
@@ -65,7 +73,7 @@ def figure_points(runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 continue
             out.append(
                 {
-                    "label": f"{arm} ({caller})" if multi else arm,
+                    "label": f"{arm} ({caller})" if multi or bound else arm,
                     "x": float(agg["median_tokens"]),
                     "recall": recall,
                     "censored": int(agg["censored"]),
