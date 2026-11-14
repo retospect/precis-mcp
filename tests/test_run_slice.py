@@ -19,6 +19,7 @@ import threading
 import time
 import types
 import urllib.error
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -9963,62 +9964,6 @@ def test_pinned_git_rev_real_lock_and_misses() -> None:
     assert run_slice.pinned_git_rev("[[package\nbroken", "autocatpath") is None
 
 
-def test_git_auth_argv_env_and_no_token_in_argv(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    token = "tok-SECRET-123"
-    monkeypatch.setenv("PRECIS_DSN_TEST_CANARY", "leak-me")
-    monkeypatch.setattr(
-        run_slice._factory_git,
-        "git_auth_env",
-        lambda base=None: {**(base or {}), run_slice._factory_git.SECRET_NAME: token},
-    )
-    seen: dict[str, Any] = {}
-
-    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
-        seen["argv"], seen["env"] = argv, kw["env"]
-        return subprocess.CompletedProcess(argv, 0, "", f"boom {token}")
-
-    monkeypatch.setattr(run_slice.subprocess, "run", fake_run)
-    proc = run_slice._git_auth(["fetch", "origin", "main"], tmp_path)
-    argv = seen["argv"]
-    # The overrides come before the subcommand, each as its own ``-c``.
-    assert argv[0] == "git" and argv[-3:] == ["fetch", "origin", "main"]
-    assert argv[1:-3] == [
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "protocol.ext.allow=never",
-        "-c",
-        "http.sslVerify=true",
-        "-c",
-        "fetch.recurseSubmodules=false",
-    ]
-    assert not any(token in a or "@" in a for a in argv)
-    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
-    assert seen["env"][run_slice._factory_git.SECRET_NAME] == token
-    assert "PRECIS_DSN_TEST_CANARY" not in seen["env"]
-    assert token not in proc.stderr and "***" in proc.stderr
-
-
-def test_git_auth_without_token_adds_a_legible_hint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        run_slice._factory_git, "git_auth_env", lambda base=None: dict(base or {})
-    )
-    monkeypatch.setattr(
-        run_slice.subprocess,
-        "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 128, "", "denied"),
-    )
-    proc = run_slice._git_auth(["fetch"], tmp_path)
-    assert proc.returncode == 128
-    assert "denied" in proc.stderr and "PRECIS_FACTORY_GIT_TOKEN" in proc.stderr
-
-
 def _prep_world(tmp_path: Path) -> dict[str, Any]:
     """Origin + clone of the target repo, and a fake precis root whose
     ``origin/main`` carries a ``uv.lock`` pinning the target's first commit."""
@@ -10042,6 +9987,15 @@ def _prep_world(tmp_path: Path) -> dict[str, Any]:
         pin=("uv.lock", "autocat"),
     )
     return {"profile": profile, "root": c_root, "prec": p_root, "pin": pin}
+
+
+def _set_pin(w: dict[str, Any], rev: str) -> None:
+    """Point the precis lockfile's pin at ``rev`` (whatever it pinned)."""
+    path = w["prec"] / "uv.lock"
+    text = re.sub(r"[0-9a-f]{40}", rev, path.read_text(encoding="utf-8"))
+    path.write_text(text, encoding="utf-8")
+    _rg(w["prec"], "commit", "-q", "-am", "setpin")
+    _rg(w["prec"], "push", "-q", "origin", "main")
 
 
 def _repin(w: dict[str, Any], rev: str) -> None:
@@ -10116,30 +10070,187 @@ def test_prepare_repo_refuses_userinfo_remote(
     assert why is not None and "userinfo" in why and fake not in why
 
 
-def test_prepare_repo_private_fetches_through_git_auth_only(
+class _FetchSpy:
+    """Stands in for ``fetch_ref_into``: records the call and, like the real
+    helper, moves the tracking ref in the clone, then returns its tip."""
+
+    def __init__(self, dest_tip: str | None = "from-remote") -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.result: str | None = dest_tip
+
+    def __call__(
+        self,
+        dest: Path,
+        url: str,
+        ref: str,
+        dest_ref: str,
+        *,
+        ops_parent: Path,
+        env: Mapping[str, str],
+        object_dirs: tuple[Path, ...] = (),
+    ) -> str | None:
+        self.calls.append(
+            {
+                "dest": dest,
+                "url": url,
+                "ref": ref,
+                "dest_ref": dest_ref,
+                "ops_parent": ops_parent,
+                "env": dict(env),
+                "object_dirs": object_dirs,
+            }
+        )
+        if self.result == "from-remote":
+            _rg(dest, "fetch", "-q", url, f"+refs/heads/{ref}:{dest_ref}")
+            return _rg(dest, "rev-parse", dest_ref)
+        return self.result
+
+
+def _private_world(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, token: str | None = "tok-x"
+) -> tuple[dict[str, Any], lanes.RepoProfile]:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    monkeypatch.setattr(run_slice._factory_git, "factory_git_token", lambda: token)
+
+    def fake_auth(base: Mapping[str, str] | None = None) -> dict[str, str]:
+        env = dict(base or {})
+        if token:
+            env[run_slice._factory_git.SECRET_NAME] = token
+            env["GIT_CONFIG_COUNT"] = "2"
+        return env
+
+    monkeypatch.setattr(run_slice._factory_git, "git_auth_env", fake_auth)
+    return w, replace(w["profile"], private=True)
+
+
+def test_prepare_repo_private_fetches_through_fetch_ref_into(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w, private = _private_world(monkeypatch, tmp_path)
+    spy = _FetchSpy()
+    monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", spy)
+    real_git = run_slice._git
+    git_calls: list[tuple[list[str], Path]] = []
+
+    def spy_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        git_calls.append((args, cwd))
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", spy_git)
+    assert run_slice._prepare_repo(private, w["root"]) is None
+    (call,) = spy.calls
+    assert call["url"] == private.remote and call["ref"] == private.base
+    assert call["dest"] == w["root"]
+    assert call["dest_ref"] == f"refs/remotes/origin/{private.base}"
+    ops = call["ops_parent"]
+    assert ops == run_slice._factory_git_mirror.mirror_root(w["prec"])
+    assert w["root"] not in (ops, *ops.parents)
+    assert call["env"][run_slice._factory_git.SECRET_NAME] == "tok-x"
+    assert call["env"]["GIT_CONFIG_COUNT"] == "2"
+    assert call["object_dirs"] == ((w["root"] / ".git" / "objects").resolve(),)
+    # No git run inside the clone fetched, and none carried the credential.
+    assert not any(a and a[0] == "fetch" for a, _ in git_calls)
+
+
+def test_prepare_repo_private_git_calls_in_the_clone_carry_no_credential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w, private = _private_world(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", _FetchSpy())
+    monkeypatch.setenv(run_slice._factory_git.SECRET_NAME, "tok-x")
+    monkeypatch.setenv("GH_TOKEN", "tok-x")
+    envs: list[Mapping[str, str]] = []
+    real_git = run_slice._git
+
+    def spy_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        # `_git` runs under `_git_env()`; record what that env is right now.
+        envs.append(run_slice._git_env())
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", spy_git)
+    assert run_slice._prepare_repo(private, w["root"]) is None
+    assert envs
+    for env in envs:
+        assert run_slice._factory_git.SECRET_NAME not in env
+        assert "GH_TOKEN" not in env
+        assert not any(k.startswith("GIT_CONFIG_") for k in env)
+
+
+def test_prepare_repo_private_fetch_failure_refuses_generically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w, private = _private_world(monkeypatch, tmp_path)
+    spy = _FetchSpy(None)
+    monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", spy)
+    why = run_slice._prepare_repo(private, w["root"])
+    assert why is not None and "'cat'" in why and "oracle" in why
+    assert "next:" in why and "tok-x" not in why
+
+
+def test_prepare_repo_private_without_token_refuses_before_the_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w, private = _private_world(monkeypatch, tmp_path, token=None)
+    spy = _FetchSpy()
+    monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", spy)
+    why = run_slice._prepare_repo(private, w["root"])
+    assert why is not None and "PRECIS_FACTORY_GIT_TOKEN" in why and "next:" in why
+    assert spy.calls == []
+
+
+def test_prepare_repo_private_pin_check_uses_the_returned_sha(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w, private = _private_world(monkeypatch, tmp_path)
+    root = w["root"]
+    head = _rg(root, "rev-parse", "HEAD")  # the pinned commit's child
+    assert _rg(root, "rev-parse", "HEAD~1") == w["pin"]
+    _rg(root, "checkout", "-q", "-b", "offbase", "HEAD~1")
+    stray = _commit(root, "stray.txt")
+    _set_pin(w, stray)
+
+    def run_with(returned: str, rewrite_to: str) -> str | None:
+        def stub(
+            dest: Path,
+            url: str,
+            ref: str,
+            dest_ref: str,
+            **kw: Any,
+        ) -> str | None:
+            # A session rewrites the tracking ref after the fetch.
+            _rg(dest, "update-ref", dest_ref, rewrite_to)
+            return returned
+
+        monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", stub)
+        return run_slice._prepare_repo(private, root)
+
+    # Tracking ref rewritten onto the pin descendant, returned sha is not:
+    # the verdict follows the returned sha.
+    why = run_with(head, stray)
+    assert why is not None and "behind the pin" in why
+    # Opposite: ref rewritten onto a commit that lacks the pin, returned
+    # sha is the pin itself: ready.
+    assert run_with(stray, head) is None
+
+
+def test_prepare_repo_public_still_fetches_through_git(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     w = _prep_world(tmp_path)
     monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    spy = _FetchSpy()
+    monkeypatch.setattr(run_slice._factory_git_mirror, "fetch_ref_into", spy)
     real_git = run_slice._git
     calls: list[str] = []
 
     def spy_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        calls.append("git:" + args[0])
-        return real_git(args, cwd)
-
-    def spy_auth(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        calls.append("auth:" + args[0])
+        calls.append(args[0])
         return real_git(args, cwd)
 
     monkeypatch.setattr(run_slice, "_git", spy_git)
-    monkeypatch.setattr(run_slice, "_git_auth", spy_auth)
-    private = replace(w["profile"], private=True)
-    assert run_slice._prepare_repo(private, w["root"]) is None
-    assert "auth:fetch" in calls and "git:fetch" not in calls
-    calls.clear()
     assert run_slice._prepare_repo(w["profile"], w["root"]) is None
-    assert "git:fetch" in calls and "auth:fetch" not in calls
+    assert "fetch" in calls and spy.calls == []
 
 
 def test_ensure_worktree_fetched_skips_the_fetch(

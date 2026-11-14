@@ -877,7 +877,7 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     factory token and the DSN in a spawned child's env. The env is
     :func:`_git_env` and hooks are off
     (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). Credentialed
-    network git is :func:`_git_auth`."""
+    network git is :func:`_prepare_repo`'s ``fetch_ref_into``."""
     return subprocess.run(
         ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),
@@ -2670,63 +2670,6 @@ _GIT_AUTH_PASSTHROUGH: tuple[str, ...] = (
     "no_proxy",
 )
 
-#: ``-c`` overrides every credentialed git carries: no hooks, no fsmonitor
-#: program and no ``ext::`` transport, so nothing a session planted in the
-#: clone's config or hooks directory is run with the token in its
-#: environment. ``git_auth_env`` itself resets the credential helpers a
-#: local config names. The clone's other config (proxy, TLS) is still
-#: read: a session shares the worker's OS user, so this narrows the
-#: exposure and does not close it (gr659929).
-_GIT_AUTH_OVERRIDES: tuple[str, ...] = (
-    "core.hooksPath=/dev/null",
-    "core.fsmonitor=false",
-    "protocol.ext.allow=never",
-    "http.sslVerify=true",
-    "fetch.recurseSubmodules=false",
-)
-
-
-def _git_auth(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run ``git <args>`` in ``cwd`` under the factory credential, for a
-    network operation on a private repo. Never raises on a non-zero exit.
-
-    The env is a minimal base (PATH, HOME, :data:`_GIT_AUTH_PASSTHROUGH`)
-    plus :func:`factory_git.git_auth_env` and ``GIT_TERMINAL_PROMPT=0``; the
-    token travels only in that env, read back by the credential helper, never
-    in argv or a remote URL. :data:`_GIT_AUTH_OVERRIDES` come first: a hook
-    or fsmonitor program planted in a clone a session could write must not
-    run with the token in its environment, which is the reason this helper
-    exists apart from :func:`_git`. With no token configured ``git_auth_env`` returns the base
-    unchanged (it logs a warning) and git runs on the host's own
-    credentials; a failure then gets a ``no <SECRET> configured`` line
-    appended to its stderr so the caller can say why. The token is scrubbed
-    from the captured output."""
-    base = {
-        k: os.environ[k]
-        for k in ("PATH", "HOME", *_GIT_AUTH_PASSTHROUGH)
-        if k in os.environ
-    }
-    env = _factory_git.git_auth_env(base)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    token = env.get(_factory_git.SECRET_NAME, "")
-    overrides = [part for kv in _GIT_AUTH_OVERRIDES for part in ("-c", kv)]
-    proc = subprocess.run(
-        ["git", *overrides, *args],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=300,
-    )
-    out, err = proc.stdout or "", proc.stderr or ""
-    if token:
-        out, err = out.replace(token, "***"), err.replace(token, "***")
-    elif proc.returncode != 0:
-        err = f"{err.rstrip()}\nno {_factory_git.SECRET_NAME} configured on this host"
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
-
 
 def _ensure_info_exclude(root: Path, lines: tuple[str, ...]) -> None:
     """Make each of ``lines`` present in the clone's ``info/exclude`` under
@@ -2783,6 +2726,34 @@ def _norm_remote(url: str) -> str:
     return url[:-4] if url.endswith(".git") else url
 
 
+def fetch_base_tip(profile: _lanes.RepoProfile, root: Path) -> str | None:
+    """Fetch ``profile.base`` of a private repo under the factory credential
+    and return its tip sha, with ``refs/remotes/origin/<base>`` in the clone
+    at ``root`` moved to it. ``None`` on any failure.
+
+    No credential-bearing git runs inside the clone, whose config a session
+    can write: :func:`factory_git_mirror.fetch_ref_into` fetches the
+    profile's remote constant in a fresh ops gitdir under the precis
+    checkout's scratch, checks the tip against the ``ls-remote`` oracle, and
+    moves the ref in with a credential-free local push. Callers use the
+    returned sha, not the tracking ref a session could rewrite afterwards
+    (the second-repo lander squashes onto it and pushes from it)."""
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    env = _factory_git.git_auth_env(base=_git_env())
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return _factory_git_mirror.fetch_ref_into(
+        root,
+        profile.remote,
+        profile.base,
+        f"refs/remotes/origin/{profile.base}",
+        ops_parent=_factory_git_mirror.mirror_root(slice_root()),
+        env=env,
+        object_dirs=(Path(common.stdout.strip()) / "objects",),
+    )
+
+
 def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
     """Ready a non-default repo's host clone before a worktree is cut.
     ``None`` when ready, else a one-sentence refusal ending in ``next:``
@@ -2814,17 +2785,37 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
             "https URL without credentials"
         )
     _ensure_info_exclude(root, profile.exclude)
-    fetch_git = _git_auth if profile.private else _git
-    # An explicit refspec: the tracking ref moves whatever fetch refspec
-    # the clone's config carries.
-    base_ref = f"+refs/heads/{profile.base}:refs/remotes/origin/{profile.base}"
-    fetch = fetch_git(["fetch", "origin", base_ref], root)
-    if fetch.returncode != 0:
-        tail = " ".join((fetch.stderr or "").split())[-300:]
-        return (
-            f"git fetch origin {profile.base} failed in the '{name}' clone "
-            f"({tail}); next: check the clone's network and the factory git token"
-        )
+    tip = f"origin/{profile.base}"
+    if profile.private:
+        # Credentialed fetch never runs git inside the clone (a session can
+        # write its config): a fresh ops gitdir outside it fetches under the
+        # token, and a credential-free local push moves the ref in.
+        if not _factory_git.factory_git_token():
+            return (
+                f"no {_factory_git.SECRET_NAME} configured on this host, so the "
+                f"'{name}' clone cannot be fetched; next: set the factory git token"
+            )
+        sha = fetch_base_tip(profile, root)
+        if sha is None:
+            return (
+                f"git fetch origin {profile.base} (or its oracle check) failed "
+                f"for the '{name}' repo; next: check the network and the "
+                "factory git token"
+            )
+        # The pin check below reads the returned sha, not the tracking ref
+        # a session could rewrite after the fetch.
+        tip = sha
+    else:
+        # An explicit refspec: the tracking ref moves whatever fetch refspec
+        # the clone's config carries.
+        base_ref = f"+refs/heads/{profile.base}:refs/remotes/origin/{profile.base}"
+        fetch = _git(["fetch", "origin", base_ref], root)
+        if fetch.returncode != 0:
+            tail = " ".join((fetch.stderr or "").split())[-300:]
+            return (
+                f"git fetch origin {profile.base} failed in the '{name}' clone "
+                f"({tail}); next: check the clone's network and the factory git token"
+            )
     if profile.pin is None:
         return None
     lockfile, package = profile.pin
@@ -2835,7 +2826,7 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
             f"no git rev for '{package}' in {lockfile} on precis origin/main; "
             "next: fix the lockfile pin or the repo profile"
         )
-    anc = _git(["merge-base", "--is-ancestor", rev, f"origin/{profile.base}"], root)
+    anc = _git(["merge-base", "--is-ancestor", rev, tip], root)
     if anc.returncode != 0:
         return (
             f"the '{name}' base origin/{profile.base} is behind the pin "

@@ -662,6 +662,150 @@ def _push_ref(
     return ("raced", f"{ref}: lease held {tip[:9]} across a retry")
 
 
+def fetch_ref_into(
+    dest: Path,
+    url: str,
+    ref: str,
+    dest_ref: str,
+    *,
+    ops_parent: Path,
+    env: Mapping[str, str],
+    object_dirs: tuple[Path, ...] = (),
+) -> str | None:
+    """Fetch branch ``ref`` of ``url`` under the factory credential into
+    ``dest`` — a clone a builder session can write — without running one
+    credential-bearing git inside it. The fetch lands in a fresh
+    :func:`_ops_repo`, its tip is compared with the :func:`ls_remote`
+    oracle, and only then does an unauthenticated LOCAL push move the
+    objects and force-update exactly ``dest_ref`` (say
+    ``refs/remotes/origin/main``) in ``dest``. The tip sha, or ``None``
+    on any failure — a git failure or timeout never raises."""
+    local = local_env(env)
+    ops = _ops_repo(ops_parent, *object_dirs, env=local)
+    if ops is None:
+        return None
+    try:
+        oracle = (ls_remote(url, (ref,), env=env) or {}).get(ref)
+        if oracle is None:
+            return None
+        cp = _run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "-C",
+                str(ops),
+                "fetch",
+                "--quiet",
+                url,
+                f"+refs/heads/{ref}:refs/heads/{ref}",
+            ],
+            cwd=ops,
+            env=trusted_env(env),
+            timeout=POPULATE_TIMEOUT_S,
+        )
+        if cp.returncode != 0 or _tip(ops, ref, env=local) != oracle:
+            return None
+        # Local transport, credential-free: dest's spawned receive-pack
+        # reads its writable config and inherits nothing worth stealing.
+        push = _run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "-C",
+                str(ops),
+                "push",
+                "--quiet",
+                str(dest),
+                f"+{oracle}:{dest_ref}",
+            ],
+            cwd=ops,
+            env=local,
+            timeout=120.0,
+        )
+        return oracle if push.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        _drop_ops(ops)
+
+
+def push_cas(
+    url: str,
+    ref: str,
+    sha: str,
+    tip: str,
+    *,
+    ops_parent: Path,
+    env: Mapping[str, str],
+    object_dirs: tuple[Path, ...],
+) -> tuple[str, str]:
+    """Push ``sha`` onto branch ``ref`` of ``url`` as a pure fast-forward
+    compare-and-swap from a fresh ops gitdir whose alternates hold
+    ``object_dirs`` (the clone's object store). A plain push — never a
+    ``+`` refspec, ``--force`` or a lease: origin's own fast-forward rule
+    is the compare, and no force push reaches this repo. ``sha`` must
+    descend from ``tip`` before anything touches the network, and the
+    outcome is reconciled against the oracle like :func:`_push_ref`:
+    ``("ok", ref)``, ``("raced", detail)`` when origin moved under the
+    push, ``("error", detail)`` when it cannot be verified."""
+    local = local_env(env)
+    ops = _ops_repo(ops_parent, *object_dirs, env=local)
+    if ops is None:
+        return ("error", f"{ref}: no scratch for the push ops repo")
+    try:
+        if not _descends(ops, tip, sha, env=local):
+            return (
+                "error",
+                f"{ref}: {sha[:9]} does not descend from {tip[:9]} — refusing the push",
+            )
+        before = (ls_remote(url, (ref,), env=env) or {}).get(ref)
+        if before is None:
+            return ("error", f"{ref}: GitHub unreadable before the push")
+        if before == sha:
+            return ("ok", ref)
+        try:
+            cp = _run(
+                [
+                    "git",
+                    *TRUSTED_ARGS,
+                    "-C",
+                    str(ops),
+                    "push",
+                    url,
+                    f"{sha}:refs/heads/{ref}",
+                ],
+                cwd=ops,
+                env=trusted_env(env),
+                timeout=SYNC_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ("error", f"{ref}: push did not answer ({type(exc).__name__})")
+        remote = (ls_remote(url, (ref,), env=env) or {}).get(ref)
+        if remote is None:
+            return ("error", f"{ref}: GitHub unreadable after the push")
+        if remote == sha:
+            return ("ok", ref)
+        if cp.returncode == 0:
+            return (
+                "raced",
+                f"{ref} moved on origin after the push: expected {sha[:9]}, "
+                f"found {remote[:9]}",
+            )
+        if remote != tip:
+            return (
+                "raced",
+                f"{ref} moved on origin: expected {tip[:9]}, found {remote[:9]}",
+            )
+        out = (cp.stderr or "").lower()
+        if "non-fast-forward" in out or "fetch first" in out:
+            return ("raced", f"{ref}: push rejected as non-fast-forward")
+        return ("error", f"{ref}: push failed with origin still at {tip[:9]}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return ("error", f"{ref}: git did not answer ({type(exc).__name__})")
+    finally:
+        _drop_ops(ops)
+
+
 def sync(
     mirror: Path,
     cache: Path | None,

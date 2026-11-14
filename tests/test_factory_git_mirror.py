@@ -1231,3 +1231,198 @@ def test_ship_git_shim_none_without_a_resolvable_git(
 ) -> None:
     monkeypatch.setattr(fgm.shutil, "which", lambda name: None)
     assert fgm.ship_git_shim(tmp_path / "m.git") is None
+
+
+# ── fetch_ref_into / push_cas (catpath lander) ─────────────────────
+
+
+_IDENT = ["-c", "user.email=t@t", "-c", "user.name=t"]
+
+
+def _real_env() -> dict[str, str]:
+    return {
+        "PATH": os.environ["PATH"],
+        "PRECIS_FACTORY_GIT_TOKEN": "tok",
+        "GIT_CONFIG_COUNT": "0",
+    }
+
+
+def _commit(repo: Path, name: str) -> str:
+    (repo / name).write_text(name + "\n", encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, *_IDENT, "commit", "-qm", name)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _lander_repos(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A bare 'GitHub' with one commit on main and a writable clone of it."""
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    tip = _commit(seed, "one")
+    _git(tmp_path, "clone", "-q", "--bare", str(seed), str(remote))
+    dest = tmp_path / "dest"
+    _git(tmp_path, "clone", "-q", str(remote), str(dest))
+    return remote, dest, tip
+
+
+def _record_real(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[list[str], Path, dict[str, str]]]:
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((list(args), cwd, dict(env)))
+        return _real_run(args, cwd, env, timeout)
+
+    monkeypatch.setattr(fgm, "_run", run)
+    return calls
+
+
+def _inside(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
+
+
+def test_fetch_ref_into_writes_the_tracking_ref_and_drops_the_ops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip = _lander_repos(tmp_path)
+    new = _commit(dest, "two")  # a second commit, pushed to the remote
+    _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    _git(dest, "update-ref", "refs/remotes/origin/main", tip)
+    calls = _record_real(monkeypatch)
+    ops_parent = tmp_path / "ops"
+    got = fgm.fetch_ref_into(
+        dest,
+        str(remote),
+        "main",
+        "refs/remotes/origin/main",
+        ops_parent=ops_parent,
+        env=_real_env(),
+    )
+    assert got == new
+    assert _git(dest, "rev-parse", "refs/remotes/origin/main") == new
+    assert list(ops_parent.iterdir()) == []
+    # the credential never ran git inside the writable clone
+    cred = [(a, c) for a, c, e in calls if "PRECIS_FACTORY_GIT_TOKEN" in e]
+    assert cred
+    for args, cwd in cred:
+        assert not _inside(cwd, dest), args
+        if "-C" in args:
+            assert not _inside(Path(args[args.index("-C") + 1]), dest), args
+
+
+def test_fetch_ref_into_refuses_when_the_oracle_disagrees(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip = _lander_repos(tmp_path)
+    before = _git(dest, "rev-parse", "refs/remotes/origin/main")
+    monkeypatch.setattr(fgm, "ls_remote", lambda *a, **k: {"main": SHA_C})
+    ops_parent = tmp_path / "ops"
+    got = fgm.fetch_ref_into(
+        dest,
+        str(remote),
+        "main",
+        "refs/remotes/origin/main",
+        ops_parent=ops_parent,
+        env=_real_env(),
+    )
+    assert got is None
+    assert _git(dest, "rev-parse", "refs/remotes/origin/main") == before == tip
+    assert list(ops_parent.iterdir()) == []
+
+
+def test_fetch_ref_into_is_none_when_the_remote_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    _remote, dest, _tip = _lander_repos(tmp_path)
+    ops_parent = tmp_path / "ops"
+    got = fgm.fetch_ref_into(
+        dest,
+        str(tmp_path / "missing.git"),
+        "main",
+        "refs/remotes/origin/main",
+        ops_parent=ops_parent,
+        env=_real_env(),
+    )
+    assert got is None
+    assert list(ops_parent.iterdir()) == []
+
+
+def _push_setup(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    remote, dest, tip = _lander_repos(tmp_path)
+    sha = _commit(dest, "two")
+    return remote, dest, tip, sha
+
+
+def _cas(
+    remote: Path, dest: Path, sha: str, tip: str, tmp_path: Path
+) -> tuple[str, str]:
+    return fgm.push_cas(
+        str(remote),
+        "main",
+        sha,
+        tip,
+        ops_parent=tmp_path / "ops",
+        env=_real_env(),
+        object_dirs=(dest / ".git" / "objects",),
+    )
+
+
+def _pushes(calls: list[tuple[list[str], Path, dict[str, str]]]) -> list[list[str]]:
+    return [a for a, _c, _e in calls if _sub(a) == "push"]
+
+
+def test_push_cas_fast_forwards_without_any_force(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip, sha = _push_setup(tmp_path)
+    calls = _record_real(monkeypatch)
+    assert _cas(remote, dest, sha, tip, tmp_path) == ("ok", "main")
+    assert _git(remote, "rev-parse", "refs/heads/main") == sha
+    pushes = _pushes(calls)
+    assert len(pushes) == 1
+    for arg in pushes[0]:
+        assert not arg.startswith("--force"), arg
+        assert not arg.startswith("+"), arg
+    assert f"{sha}:refs/heads/main" in pushes[0]
+    assert list((tmp_path / "ops").iterdir()) == []
+
+
+def test_push_cas_refuses_a_sha_that_does_not_descend_from_the_tip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip, sha = _push_setup(tmp_path)
+    calls = _record_real(monkeypatch)
+    outcome, detail = _cas(remote, dest, tip, sha, tmp_path)  # reversed
+    assert outcome == "error" and "descend" in detail
+    assert _pushes(calls) == []
+    assert _git(remote, "rev-parse", "refs/heads/main") == tip
+
+
+def test_push_cas_races_when_the_remote_moved_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip, sha = _push_setup(tmp_path)
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(remote), str(other))
+    moved = _commit(other, "elsewhere")
+    _git(other, "push", "-q", "origin", "HEAD:refs/heads/main")
+    calls = _record_real(monkeypatch)
+    outcome, detail = _cas(remote, dest, sha, tip, tmp_path)
+    assert outcome == "raced", detail
+    assert _git(remote, "rev-parse", "refs/heads/main") == moved
+    assert all("--force" not in a for a in _pushes(calls))
+
+
+def test_push_cas_is_ok_without_a_push_when_the_sha_is_already_there(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, dest, tip, sha = _push_setup(tmp_path)
+    _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    calls = _record_real(monkeypatch)
+    assert _cas(remote, dest, sha, tip, tmp_path) == ("ok", "main")
+    assert _pushes(calls) == []
