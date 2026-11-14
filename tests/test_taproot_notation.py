@@ -505,6 +505,64 @@ def test_tilde_approximation_still_fires_next_to_quantity() -> None:
     assert any("tilde-approximation" in w for w in warnings)
 
 
+def test_tilde_section_selector_does_not_fire() -> None:
+    # gr674776: '<slug>~N' / '<slug> ~N' is how get ids and skill outlines
+    # name a numbered section -- not approximation. Same for handles and
+    # 'kind:id' refs, with and without a space before the '~'. A bare
+    # alphabetic word counts only when it is a real skill slug.
+    for sentence in [
+        "The outline lists precis-quest-help~14.",
+        "The outline lists precis-quest-help ~14.",
+        "The remember~14 section covers filing.",
+        "See the remember ~14 section for filing.",
+        "See the soul ~2 section for the index.",
+        "See me674763~2 for the follow-up.",
+        "See me674763 ~2 for the follow-up.",
+        "See gr674776 ~1 for the audit trail.",
+        "Cite paper:acheson26~12 for the table.",
+        "Cite paper:acheson26 ~12 for the table.",
+        "Cite memory:6184~3 for the detail.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert not any("tilde-approximation" in w for w in warnings), sentence
+
+
+def test_tilde_selector_exemption_does_not_hide_later_approximation() -> None:
+    warnings = lint_notation("See precis-quest-help~14 for the ~19 nm result.")
+    assert any("tilde-approximation" in w for w in warnings)
+
+
+def test_tilde_after_plain_word_still_fires() -> None:
+    # A bare letter or ordinary word left of '~' is no selector.
+    warnings = lint_notation("The crystallite grows x ~5 mm per hour.")
+    assert any("tilde-approximation" in w for w in warnings)
+
+
+def test_tilde_after_punctuation_or_symbol_still_fires() -> None:
+    # td675489 review: punctuation alone or a math symbol left of '~' is
+    # no selector base -- these are genuine approximations and must warn.
+    for sentence in [
+        "The median crystallite size: ~19 nm across samples.",
+        "Two regimes meet at - ~19 nm thickness.",
+        "The gap opens at E_g ~5 eV.",
+        "Opening angles were observed near ~19 degrees.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert any("tilde-approximation" in w for w in warnings), sentence
+
+
+def test_tilde_selector_probe_covers_plugin_slugs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A plugin-contributed skill slug is only visible through the
+    # registered probe -- the packaged-corpus fallback never sees it.
+    from precis.taproot import notation
+
+    monkeypatch.setattr(notation, "_SKILL_SLUG_PROBE", lambda slug: slug == "plugskill")
+    warnings = lint_notation("See plugskill ~3 for the routing rules.")
+    assert not any("tilde-approximation" in w for w in warnings)
+
+
 def test_caret_letter_superscript_does_not_fire() -> None:
     # '2^N' -- a letter superscript; canon keeps these ASCII.
     warnings = lint_notation("Conductance scales as 2^N with system size.")
@@ -993,3 +1051,22 @@ def test_authored_lint_never_reports_formula_ascii_subscript() -> None:
     from precis.taproot.notation import lint_authored_notation
 
     assert lint_authored_notation("C60 and H2O and B3LYP stay as written.") == []
+
+
+def test_authored_lint_ignores_skill_section_selector() -> None:
+    # gr674776: put(kind='memory', text='... precis-quest-help ~14.')
+    # tagged AUDIT:notation for a section selector, not an approximation.
+    from precis.taproot.notation import lint_authored_notation
+
+    hits = lint_authored_notation(
+        "Sections name chunks: precis-quest-help ~14, remember~7, me674763 ~2."
+    )
+    assert not any(code == "tilde-approximation" for code, _, _ in hits)
+
+
+def test_authored_lint_still_flags_tilde_approximation() -> None:
+    # td675489 review: `Size: ~19` is prose, not a selector.
+    from precis.taproot.notation import lint_authored_notation
+
+    hits = lint_authored_notation("Median crystallite size: ~19 nm.")
+    assert any(code == "tilde-approximation" for code, _, _ in hits)

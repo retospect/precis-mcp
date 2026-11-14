@@ -112,6 +112,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from functools import lru_cache
+from importlib import resources
+
+from precis.utils import handle_registry
 
 __all__ = ["lint_notation", "normalize_notation"]
 
@@ -257,8 +261,99 @@ _ASCII_MULT_RE = re.compile(r"\d\s*x\s*10")
 #: `~` before a numeral, digit run NOT immediately followed by `/` --
 #: `~19` (approximation) fires, `~ 1/W` (proportionality -- an expression,
 #: not a bare quantity, on the right) does not. Canon: "`~` is overloaded"
-#: (`docs/backlog/nanopub-corpus-remediation.md` Phase 0).
+#: (`docs/backlog/nanopub-corpus-remediation.md` Phase 0). A second
+#: carve-out lives in `lint_notation`: a `~<digits>` whose left neighbour
+#: names an addressable thing is a section/chunk selector, exempt via
+#: `_is_tilde_selector_base` (gr674776).
 _TILDE_APPROX_RE = re.compile(r"~\s*\d+(?!\s*/)")
+
+#: The whitespace-delimited token immediately left of a `~` -- the
+#: candidate selector base. `\s*$` is the optional gap between the token
+#: and the `~` (`slug~14`, `slug ~14`).
+_TILDE_LEFT_TOKEN_RE = re.compile(r"(\S+)\s*$")
+
+#: Prose punctuation stripped off a candidate token's edges before the
+#: selector-base checks (`(see remember~14)`, `"soul" ~2`). `:` is NOT
+#: in the strip set: `Size: ~19` is a colon-terminated prose label, not a
+#: `kind:id` ref.
+_TILDE_TOKEN_STRIP = ".,;!?()[]{}\"'`*_<>"
+
+#: A `kind:id` ref token (`paper:acheson26`, `memory:6184`,
+#: `skill:soul`, `main::<qualname>`): a lowercase kind word, one or two
+#: colons, then a non-space id. `Size:` fails (empty id), so a prose
+#: label never exempts `Size: ~19`.
+_KIND_ID_REF_RE = re.compile(r"[a-z][a-z0-9-]*::?\S+")
+
+#: Skill-slug shape (`precis-quest-help`, `soul`, `remember`) -- the
+#: `_SLUG_RE` / `_SKILL_ID_RE` grammar of `precis.handlers.skill`. Shape
+#: alone cannot exempt (`near` is slug-shaped too); it only gates the
+#: corpus probe in `_is_tilde_selector_base`.
+_SLUG_SHAPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+#: "Does this slug name a served skill?" -- `precis.handlers.skill`
+#: registers `skill_exists` at import (the same seam
+#: `precis.store._refs_ops.set_skill_probe` uses: taproot must not reach
+#: up to the handlers layer). The probe also answers for plugin-
+#: contributed slugs; unset, `_skill_slugs` reads the packaged corpus.
+_SKILL_SLUG_PROBE: Callable[[str], bool] | None = None
+
+
+def set_skill_slug_probe(probe: Callable[[str], bool] | None) -> None:
+    """Register the skill-slug predicate the `~N` selector carve-out uses."""
+    global _SKILL_SLUG_PROBE
+    _SKILL_SLUG_PROBE = probe
+
+
+@lru_cache(maxsize=1)
+def _skill_slugs() -> frozenset[str]:
+    """Slugs of the skills shipped under ``precis.data.skills`` -- the
+    offline fallback for ``_SKILL_SLUG_PROBE``, walking the corpus the
+    same way ``precis.handlers.skill._walk_skill_root`` does (minus the
+    plugin roots, which only the probe sees)."""
+    try:
+        root = resources.files("precis.data.skills")
+    except (ModuleNotFoundError, FileNotFoundError):
+        return frozenset()
+    out: set[str] = set()
+    stack = [root]
+    while stack:
+        for entry in stack.pop().iterdir():
+            name = entry.name
+            if name.startswith("__"):
+                continue
+            if entry.is_dir():
+                stack.append(entry)
+                continue
+            if not name.endswith(".md"):
+                continue
+            stem = name[:-3]
+            if _SLUG_SHAPE_RE.fullmatch(stem):
+                out.add(stem)
+    return frozenset(out)
+
+
+def _is_tilde_selector_base(token: str) -> bool:
+    """Whether ``token`` names something a ``~<digits>`` selector hangs off.
+
+    A `~N` directly right of an addressable thing is a section/chunk
+    selector, not approximation (gr674776): a handle (``me674763~2``,
+    ``pr592588 ~124``), a ``kind:id`` ref (``paper:acheson26~12``), or a
+    skill slug (``precis-quest-help~14``, ``soul ~2``) -- with or without
+    a space before the ``~``. Anything else still warns: punctuation
+    alone (``Size: ~19``, ``- ~19``), a math symbol (``E_g ~5``,
+    ``x ~5``), and ordinary prose (``near ~19`` -- slug-shaped, but no
+    such skill).
+    """
+    if handle_registry.is_well_formed(token):
+        return True
+    if _KIND_ID_REF_RE.fullmatch(token):
+        return True
+    if not _SLUG_SHAPE_RE.fullmatch(token):
+        return False
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
+
 
 #: Unit-symbol alternation for the negative-exponent rule below --
 #: `_ACCEPTED_DENOMINATORS` sorted longest-first so e.g. `MeV` wins over a
@@ -592,12 +687,15 @@ def lint_notation(sentence: str) -> list[str]:
             "never 'x' (e.g. '4.6 x 10^-6' -> '4.6×10⁻⁶')."
         )
 
-    m = _TILDE_APPROX_RE.search(sentence)
-    if m:
+    for tm in _TILDE_APPROX_RE.finditer(sentence):
+        left = _TILDE_LEFT_TOKEN_RE.search(sentence[: tm.start()])
+        if left and _is_tilde_selector_base(left.group(1).strip(_TILDE_TOKEN_STRIP)):
+            continue  # '<ref>~N' / '<slug> ~N' names a section, not '~N'
         warnings.append(
-            f"tilde-approximation: {m.group(0)!r} found -- use '≈', not '~' "
+            f"tilde-approximation: {tm.group(0)!r} found -- use '≈', not '~' "
             "(ambiguous between 'about' and 'of order')."
         )
+        break
 
     m = _ASCII_MINUS_EXP_RE.search(sentence)
     if m:

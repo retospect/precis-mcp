@@ -69,6 +69,7 @@ from precis.skill_index import (
     chunk_by_h2,
 )
 from precis.store import SEMANTIC_DISTANCE_FLOOR, _refs_ops
+from precis.taproot.notation import set_skill_slug_probe
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.search_merge import SearchHit as _MergeSearchHit
 from precis.utils.skill_common import (
@@ -5731,6 +5732,11 @@ def skill_exists(slug: str) -> bool:
 # The store stamps skill reads without importing handlers (import-linter:
 # "store is the bottom layer"); it takes the existence probe by registration.
 _refs_ops.set_skill_probe(skill_exists)
+
+# The notation lint's `~N` section-selector carve-out asks the same "is
+# this a served skill?" question through its own probe seam (gr674776);
+# the probe also covers plugin-contributed slugs.
+set_skill_slug_probe(skill_exists)
 
 
 def skill_corpus_texts() -> dict[str, str]:
