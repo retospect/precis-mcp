@@ -106,8 +106,7 @@ lines: groups are never compared. Left out of every ranking: ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
 `trusted = false`, rows whose newest current review is `rejected`,
 `origin='ml_prediction'` rows (a predicted value never outranks an
-experimental one — `Store.best_measure(..., include_ml_predictions=True)`
-opts them back in), and anything
+experimental one), and anything
 that is not a single number (an interval, a bound, a category).
 A potential stated against SHE does not stand in for an RHE
 one: conversion between references is not built.
@@ -162,16 +161,16 @@ assumption). Only `context` rows satisfy a measurand's required conditions.
 | `literal` | the exact printed string, always kept (`9.6 ± 1.7`, `<1`, `550–575`, `Cordierite`) |
 | `value_num` / `value_low` / `value_high` / `value_err` / `value_text` / `value_bool` | the parsed reading. **Stored** in the measurand's canonical (SI) unit; **on a write** you give them in the REPORTED unit, the same unit as `reported_unit` and the `literal`, and put converts them (literal `500`, `reported_unit` `mV`, optional `value_num` 500 stores 0.5 V; `value_num` 0.5 with `mV` would store 0.0005 V) |
 | `value_form` | `point`, `approximate_point`, `upper_bound`, `lower_bound`, `interval`, `categorical`, `boolean`, `not_established` |
-| `reported_unit` | the unit as printed; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit); NULL only for a unitless measurand and for rows written before 0188 |
+| `reported_unit` | the unit as printed; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit); NULL only for a unitless measurand and for older rows |
 | `reference` | the reference state (RHE, SHE, Ag/AgCl, ...), never folded into the unit |
 | `normalization` | the basis (per catalyst mass, per geometric area, per ECSA); never compare across different bases |
 | `subject` / `subject_group` | the paper-local sample label ("Cu NWA") and its group (the claim handle) |
 | `tier` | `measured`, `computed`, `derived`, `asserted`; NULL means it could not be established |
-| `origin` | `experiment`, `computation`, `ml_prediction`, `literature` — where the number itself was produced (the ALCHEM `PropertyValue.origin` axis); NULL means not recorded. Rankings exclude `ml_prediction` by default |
+| `origin` | `experiment`, `computation`, `ml_prediction`, `literature` — where the number itself was produced; NULL means not recorded. Rankings exclude `ml_prediction` by default |
 | `source_attribution` | `own_work`, `cited_work`, `not_established` |
 | `measurand_status` | `explicit`, `interpreted`, `ambiguous` |
 | `extraction_status` | `unverified`, `anchor_matched`, `anchor_mismatch`, `human_checked`; computed when written |
-| `computed_source` | a computed-evidence contract (`precis.computed_sources`) pinning the number to a producer's frozen output bytes, exact field selector, unit and method; requires `origin='computation'` and no `anchor`, and the contract's pinned value/unit must agree with the row's stated number (`value_num` or a numeric literal) and `reported_unit` (the row's own contract is unchanged — the source rides in `meta`, standing is re-checked with `verify_source`) |
+| `computed_source` | a computed-evidence contract pinning the number to a producer's frozen output bytes, exact field selector, unit and method; requires `origin='computation'` and no `anchor`, and the contract's pinned value/unit must agree with the row's stated number (`value_num` or a numeric literal) and `reported_unit` (the source rides in `meta`) |
 
 The measurand is a `taxon` node. Each carries one canonical unit and values are
 stored in it.
@@ -285,7 +284,7 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   `source_attribution`,
   `measurand_status`, `anchor`, `extra_anchors`, `supersedes` (a measure id or
   `mx` handle), `derived_from` (a list of them), `note` (free text, at most 500 characters;
-  stored in `measures.meta`, shown by `get`, fixed once written), `run_key`
+  stored on the row, shown by `get`, fixed once written), `run_key`
   (else minted) and `model` (the writing model).
 - **`anchor`** is `{chunk: <chunk handle or id>, anchor_scheme, span}`; the paper
   is the chunk's own. `tier='measured'` needs one.
@@ -359,8 +358,7 @@ edit(kind="measure", id="mx12", review="model", verdict="approved",
   human review is refused ("a human review has no model").
 - The ledger's actor is plain text, so an agent could claim to be a person.
   Relay a human sign-off only when the person gave it; the record is a claim,
-  not proof. A web or CLI caller sets the actor through
-  `revision_context(actor=...)` instead.
+  not proof.
 - The answer is the review id, the verdict and the sha. `get(kind='measure',
   id=12)` lists it under `reviews:`.
 - **No other edit exists.** `edit(kind='measure')` without `review=` is
@@ -370,23 +368,23 @@ edit(kind="measure", id="mx12", review="model", verdict="approved",
 The review ledger is the shared one (target kind `measure`) and covers the fixed
 fields only, so setting `trusted` never makes a review stale.
 
-## Extraction pass (an operation, not code)
+## Extraction pass
 
-How a corpus of claims becomes reviewed measures. Nothing here is a worker.
+How a corpus of claims becomes reviewed measures.
 
-1. **Propose.** Subagents at the mid tier each read one finding with its
-   anchored chunk text and write the runs they see as JSON: one run per claim
-   and condition set ("95% at -0.5 V and 61% at -0.9 V" is two runs), each
-   holding exactly the `put` arguments above. The measurand is a taxon from
-   `search(kind='taxon', ...)`; one that is missing is minted first.
-2. **Check.** A script reads every proposal and tests it before any write: the
-   literal occurs in the chunk text on number boundaries, the measurand and
-   subject resolve, the unit fits the taxon's `canonical_unit`, a `measured`
-   run has its anchor. Failures go back to the proposer; nothing is written.
-3. **Write.** The checked proposals are `put` through `scripts/prod-precis`
-   with `reason='<quest id> pilot extraction'`, one call per run. Keep the
-   returned `mx` ids and flags in a log beside the input.
-4. **Review.** A reviewer subagent on a larger model reads each written row
+1. **Propose.** Read one finding with its anchored chunk text and write the
+   runs you see: one run per claim and condition set ("95% at -0.5 V and 61%
+   at -0.9 V" is two runs), each holding exactly the `put` arguments above.
+   The measurand is a taxon from `search(kind='taxon', ...)`; one that is
+   missing is minted first.
+2. **Check.** Test every proposal before any write: the literal occurs in the
+   chunk text on number boundaries, the measurand and subject resolve, the
+   unit fits the taxon's `canonical_unit`, a `measured` run has its anchor.
+   Failures go back to the proposer; nothing is written.
+3. **Write.** `put(kind='measure')` each checked proposal with
+   `reason='<quest id> pilot extraction'`, one call per run. Keep the
+   returned `mx` ids and flags.
+4. **Review.** A reviewer on a larger model reads each written row
    with `get(kind='measure', id=N)` and its chunk, then `edit`s it with
    `review='model'`, a `verdict` and a one-line note. Rows it rejects are
    corrected by a new `put` with `meta.supersedes`; anything it cannot decide
@@ -396,39 +394,30 @@ Report what was left out (claims with no anchor, no number) rather than
 extracting them.
 
 The same pass also runs as two jobs. `put(kind='job', job_type='survey_extract',
-params={'paper': <id>})` reads one paper's chunks on the local model, writes
-the checked runs tagged with a batch token in `meta.extraction_run`, then
-spawns `measure_accept`. `measure_accept` has a frontier model review a
-stratified sample of that batch and accepts or fails the batch by the Wilson
-rule (default bar 5%); the verdict lands in the accept job's
-`meta.acceptance`. Run `measure_accept` on its own (`params={'paper': <id>,
-'extraction_run': <token>, 'sample_n': N, 'bar': 0.05}`) to re-accept a batch
-without extracting again. `paper` may be omitted — the batch is then the
-whole run token across papers and the sample stratifies by paper × measurand
-(the intended shape: one token per trial or filler window, since a per-paper
-batch rarely reaches the n=52 the zero-error bar needs). `params.papers=[<id>,
-…]` is the re-review scope: it samples every live output row on those papers
-regardless of `extraction_run`, so rows a re-run skipped as duplicates (they
-keep their older token) are reviewable; the verdict is recorded under a
-synthetic `papers:<ids>` token that grants nothing to `accepted_runs`.
+params={'paper': <id>})` reads one paper's chunks, writes the checked runs
+tagged with a batch token in `meta.extraction_run`, then spawns
+`measure_accept`. `measure_accept` has a frontier model review a stratified
+sample of that batch and accepts or fails the batch (default bar 5%); the
+verdict lands in the accept job's `meta.acceptance`. Run `measure_accept` on
+its own (`params={'paper': <id>, 'extraction_run': <token>, 'sample_n': N,
+'bar': 0.05}`) to re-accept a batch without extracting again. `paper` may be
+omitted — the batch is then the whole run token across papers and the sample
+stratifies by paper × measurand. `params.papers=[<id>, …]` is the re-review
+scope: it samples every live output row on those papers regardless of
+`extraction_run`, so rows a re-run skipped as duplicates (they keep their
+older token) are reviewable; the verdict is recorded under a synthetic
+`papers:<ids>` token that grants nothing to batch acceptance.
 
 The verdict is read, never written onto rows (a row's `meta` is frozen).
 Each `meta.acceptance` records its coverage, frozen at the draw:
 `papers` — the papers in the sampling frame — and `max_id`, the frame's
 row-id high-water mark (rows minted under the token after the draw were
 never in the frame). A run-level accept (`extraction_run` without
-`paper`) is refused while `survey_extract` jobs still carry the token —
-sequence order is not commit order, so a row can hold an id under the
-mark yet commit after the frame read.
-`Store.accepted_runs(tokens)` maps each token to the latest *counting*
-verdict per covered paper: a verdict counts only with both coverage
-fields, `bar` at or under the default 5%, and `z` at or above the
-default 1.645, so a loose-bar or loose-z re-accept can neither grant nor
-overturn and a pre-coverage verdict grants nothing.
-`best_measure(..., accepted_only=True)` keeps a token row only when its
-paper's governing verdict passed, the row id sits under the mark, and the
-row keeps its anchor — rows carrying no `extraction_run` token are not
-batch rows and stay.
+`paper`) is refused while `survey_extract` jobs still carry the token.
+A verdict counts only with both coverage fields, `bar` at or under the
+default 5%, and `z` at or above the default 1.645, so a loose-bar or
+loose-z re-accept can neither grant nor overturn and a pre-coverage
+verdict grants nothing.
 
 ## Table recipe
 

@@ -122,7 +122,6 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
 | Send an existing todo to a factory lane | `edit(kind='todo', id=N, args={'meta': {'op': {'type': 'run_slice'}}})` + `tag(add=['plan:N'])` | `precis-job-help`, `precis-job-factory-help` |
-| Hand-submit a `fix_gripe` job (switched off; reference only) | `put(kind='job', link='gripe:42', rel='fixes', args={'parent_id': <todo>, 'job_type': 'fix_gripe'})` | `precis-fix-gripe-help` |
 | Get a gripe fixed, or submit other code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
 | Read raw worker_logs (no Bash/SQL) | `get(kind='job', id='/logs?handler=<name>&since=24&level=WARNING')` | `precis-job-observe-help` |
 

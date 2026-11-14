@@ -8,7 +8,7 @@ answers:
   - what do the severity emojis in a preflight report mean?
   - how do I verify a DOI's metadata actually matches the paper I think I'm citing?
   - how do I check whether my own sources cite retracted work?
-applies-to: get (kind='provenance'), jobs check-provenance
+applies-to: get (kind='provenance')
 kinds: [provenance]
 tags: troubleshooting, external-sources
 status: active
@@ -23,17 +23,15 @@ Expression of Concern, have a correction, or point at the wrong paper.
 ## Check my references for retractions before submitting
 ## Pre-flight my bib file
 
-```bash
-# 1. Extract every cited DOI from the bib
-grep -oE '10\.[0-9]{4,9}/[^"} ,]+' references.bib | sort -u > preflight.txt
+Collect every cited DOI from the bib and pass them in one call
+(comma, whitespace or newline separated):
 
-# 2. Run the audit
-precis jobs check-provenance --refs preflight.txt \
-    --view default --out preflight.md
+```python
+get(kind="provenance", q="10.1234/foo, 10.5678/bar, 10.9999/baz")
 ```
 
-Open `preflight.md`. 🔴 must be fixed; 🟠 needs human judgement;
-🟡 is usually housekeeping; 🟢 / 🟢 is fine; ⚪ is an unresolvable DOI.
+🔴 must be fixed; 🟠 needs human judgement; 🟡 is usually housekeeping;
+🟢 is fine; ⚪ is an unresolvable DOI.
 
 ## Read the report
 ## What the severity emojis mean
@@ -65,8 +63,8 @@ Provenance check — 250 DOIs · 2026-05-30
 - ⚪ **Unknown DOI** — Crossref 404. Likely typo or hallucinated DOI.
 - ⚪ **Malformed DOI** — doesn't match `10.<digits>/<suffix>`.
 
-`#N` is the 1-based line in `preflight.txt` — grep your bib for the
-matching DOI to locate the citation.
+`#N` is the 1-based position of the DOI in your input — use it to
+locate the citation in your bib.
 
 ## Catch the "right DOI, wrong paper" case
 ## Verify that each DOI's metadata matches what I cite
@@ -94,10 +92,6 @@ phonetic alternates (`Müller` ↔ `Mueller`).
 ## Run a transitive cite-walk one level deep
 ## Audit depth-1 — do my sources cite bad papers?
 
-```bash
-precis jobs check-provenance --refs preflight.txt --transitive depth=1
-```
-
 ```python
 get(kind="provenance", q="10.x/a, 10.x/b, ...", args={"transitive": True})
 ```
@@ -118,15 +112,6 @@ get(
 The 404'd DOI stays `unknown` — no auto-substitution. The report lists
 possible Crossref matches; verify and replace by hand.
 
-## Keep retraction reasons fresh
-
-```bash
-precis jobs sync-retraction-watch --mailto you@example.org
-```
-
-Run once monthly. Surfaces *why* a paper was retracted, not just *that*
-it was.
-
 ## Decide whether "cites retracted work" matters
 
 The citing paper might cite the retracted source for unrelated
@@ -137,14 +122,13 @@ paragraph) and decide.
 
 ## Pre-release sequence
 
-1. `sync-retraction-watch` (monthly).
-2. Extract DOIs from the bib.
-3. Run `check-provenance` with `--transitive depth=1`.
-4. Fix 🔴 first — non-negotiable.
-5. Read 🟠; decide per-citation.
-6. Skim 🟡 for substantive corrections.
-7. Resolve ⚪ — typos or hallucinated DOIs.
-8. Re-run until clean.
+1. Extract the DOIs from the bib.
+2. Run the batch with `args={"transitive": True}`.
+3. Fix 🔴 first — non-negotiable.
+4. Read 🟠; decide per-citation.
+5. Skim 🟡 for substantive corrections.
+6. Resolve ⚪ — typos or hallucinated DOIs.
+7. Re-run until clean.
 
 ## See also
 

@@ -1,74 +1,81 @@
 ---
 id: precis-session-context-help
 family: core
-title: precis — session context (pinned skills, disabled kinds, default tags)
-summary: per-session configuration — pinned skills, disabled kinds, default tags via env vars
+title: precis — session context (banner, disabled kinds, default tags)
+summary: reading the cold-start banner — live and unavailable kinds, pinned skills — and the default tags a put may pick up
 answers:
   - why did a verb fail with Unsupported on a kind I expected in this session?
-  - which skills did the operator pre-pin for this deployment?
   - why did my note end up tagged with a project tag I didn't add?
   - what does the workspace tag mean on a file?
-applies-to: env (PRECIS_STARTUP_SKILLS, PRECIS_KINDS_DISABLED, PRECIS_DEFAULT_TAGS)
+applies-to: cold-start banner; put/tag response hints
 status: active
 tags: orientation, troubleshooting
 ---
 
-# precis-session-context-help — what the operator has set for this session
+# precis-session-context-help — what this session is set up with
 
-Three env vars shape the session. The cold-start banner reports
-all three; read it before assuming a kind is live or a tag is
-yours alone.
+The cold-start banner reports what is live in this process; read it
+before assuming a kind is live or a tag is yours alone.
 
 ## What kinds are available in this session?
-## Which kinds did the operator turn off?
+## Which kinds are turned off here?
 ## Why does `get(kind='patent')` raise Unsupported here?
 
-Look at the cold-start banner for `Kinds loaded:` and
-`Kinds unavailable: <kind> (prohibited)`. A prohibited kind
-raises `Unsupported` on every verb (see [[precis-kinds-disabled-help]]) —
-don't retry, don't suggest it to the user without flagging the prohibition.
+Look at the cold-start banner for the `Kinds:` line and, when a kind was
+gated out at boot, `Kinds unavailable:`:
 
 ```text
-Kinds loaded: paper, memory, gripe, conversation, ...
-Kinds unavailable: patent (prohibited), web (prohibited).
+Kinds: paper, memory, gripe, conv, ...
+Kinds unavailable: math (missing WOLFRAM_APP_ID), patent (prohibited).
 ```
 
-`PRECIS_KINDS_DISABLED=<comma-list>` is the operator's lever.
-Prohibition wins over resource availability — env presence
-doesn't override operator intent.
+An unavailable kind raises `Unsupported` on every verb (see
+[[precis-kinds-disabled-help]]) — don't retry, and don't suggest it to
+the user without flagging that it is off here. `Kinds unavailable:` is
+absent on a clean boot; a kind that was never configured does not appear
+on either line.
 
-## What skills did the operator pre-pin?
+## What skills were pre-pinned?
 ## Which skills should I load on the first message?
-## Is there an operator-curated reading list for this deployment?
 
-The operator pins a reading list via PRECIS_STARTUP_SKILLS so it
-surfaces in the cold-start banner for every connecting agent — pin
-list, size cap, and unknown-slug handling: [[precis-startup-skills-help]].
+A `Pinned skills:` line lists skills this deployment surfaces for every
+connecting agent; see [[precis-startup-skills-help]] for it and its ⚠
+warning lines.
+
+## How do I tell the user what this deployment is configured for?
+
+Read the cold-start banner. It carries:
+
+- `Kinds: ...` — the live verb surface.
+- `Kinds unavailable: ... (reason)` — what is off and why.
+- `Pinned skills: ...` — the curated reading list.
+- Inline `[info]` hints on `put` / `tag` responses — the per-call
+  default-tag activity below.
 
 ## What tags get auto-added to every put?
 ## Why did my note end up tagged `fbproj`?
-## Which tags is the operator stamping onto everything?
+## Which tags is the deployment stamping onto everything?
 
-`PRECIS_DEFAULT_TAGS=<comma-list>` merges into `tags=` on every
-`put` for note-like kinds. The dispatcher prints what it added:
+A deployment may define default tags. They merge into `tags=` on every
+`put` for note-like kinds, and the response says what was added:
 
 ```text
 [info] Added PRECIS_DEFAULT_TAGS to put: fbproj, 2026-q2.
 ```
 
-Note-like kinds (merge applies): `memory`, `gripe`,
-`conversation`, `anki`, `todo`, `markdown`,
-`plaintext`, `tex`.
+Note-like kinds (merge applies) are the ones that hold your own notes and
+working records: `memory`, `gripe`, `todo`, `anki`, `conv`, `draft`, and
+the file kinds `markdown`, `plaintext`, `tex`, among others.
 
-Not note-like (no merge): `paper`, `patent`, `web`, `wolfram`,
-`youtube`, `oracle`, `random`, `skill`, `calc`, `python`. Ingested
-metadata is canonical across deployments; auto-tagging would
-corrupt the shared store.
+Not note-like (no merge): ingested or fetched kinds such as `paper`,
+`patent`, `web`, `youtube`, plus `oracle`, `random`, `skill`, `calc`,
+`python`. Ingested metadata is canonical across deployments;
+auto-tagging would corrupt the shared store.
 
 ## Why didn't my `tag(add=...)` get the defaults?
 
 `tag(kind=..., id=..., add=[...])` does **not** mutate the
-caller's set. The dispatcher suggests:
+caller's set. The response suggests:
 
 ```text
 [info] PRECIS_DEFAULT_TAGS suggested for tag add: fbproj.
@@ -77,36 +84,23 @@ caller's set. The dispatcher suggests:
 Re-issue with the merged set if you want the defaults applied.
 
 A default tag removed via `tag(remove=...)` will be re-added on
-the next `put`. To remove permanently the operator must drop it
-from `PRECIS_DEFAULT_TAGS` and restart.
+the next `put`.
 
 ## What does the `workspace` tag mean on a file?
 
 File-rooted kinds (`markdown`, `plaintext`, `tex`) auto-stamp
-`workspace` on every ref under `PRECIS_ROOT`. It's applied by the
-handler with `set_by='system'` — distinguishes operator-authored
-files from arbitrary content.
+`workspace` on every ref under the sandbox root. It's applied by the
+handler with `set_by='system'` — distinguishes workspace files from
+arbitrary content.
 
-`workspace` and `PRECIS_DEFAULT_TAGS` layer. Both apply; neither
+`workspace` and the default tags layer. Both apply; neither
 supersedes the other. `workspace` identifies file-rooted-ness;
 defaults identify deployment intent.
-
-## How do I tell the user what this deployment is configured for?
-
-Read the cold-start banner. It carries:
-
-- `Kinds loaded: ...` — the live verb surface.
-- `Kinds unavailable: ... (prohibited|missing <ENV>|...)` — what
-  the operator turned off and why.
-- `Pinned skills (load via prompts/get): ...` — operator's
-  curated reading list.
-- Inline `[info]` hints on each `put` / `tag` response — the
-  per-call default-tag activity.
 
 ## See also
 
 - [[precis-overview]] — verbs and kinds
-- [[precis-startup-skills-help]] — PRECIS_STARTUP_SKILLS detail
-- [[precis-kinds-disabled-help]] — PRECIS_KINDS_DISABLED detail
+- [[precis-startup-skills-help]] — the Pinned skills line
+- [[precis-kinds-disabled-help]] — kinds that are not live in this process
 - [[precis-tags]] — tag axis matrix, closed prefixes
-- [[precis-files-help]] — PRECIS_ROOT and file-rooted kinds
+- [[precis-files-help]] — file-rooted kinds

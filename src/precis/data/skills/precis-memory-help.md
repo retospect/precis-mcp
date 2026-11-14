@@ -101,8 +101,7 @@ transcript, not landed history (those live in `git log` and the docs).
    are ready before judging recall quality. Then
    `search(kind='memory', q='<the question you
    will ask next time>', view='index')`. A miss is not yet a rewrite:
-   compare first — the three-way check frozen in
-   `tests/workers/test_embed_fresh_memory.py` (natural question, exact
+   compare first — the three-way check (natural question, exact
    title via `scope='title'`, tag-scoped query). Exact-title and scoped
    hit but the paraphrase misses → the title/hook lacks the task words —
    rewrite `title=` / `meta.hook` with them: `view='index'` cuts
@@ -127,7 +126,8 @@ memories plus findings — a `research` memory's paper neighbours never
 appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
-keys: `hook`, `type`, `expires`).
+keys: `hook`, `type`, `expires`; the node type is the `section:<slug>`
+tag, never `meta['type']`).
 
 ## Notation in memory text
 
@@ -151,28 +151,24 @@ artifact hashes, and reports the oldest outstanding item's age plus recorded
 artifact/claim timestamps. An edit's old body artifacts do not count. Artifact
 creation times are first insertion times, not last completion times.
 
-Memory work is memory-first by default: every stage claims memory chunks in
-an interactive lane ahead of the paper backlog, so a pending memory is
-normally waiting for a pass tick or a claimed lease — not for papers to
-drain. Each stage line names its `lane=` and, for a queued stage,
-`queue_ahead≈N` chunks in that lane. `phase=queued` means eligible and
-awaiting a worker claim; `phase=claimed`/`phase=attempt-lease` means a
-worker lease is out (executing or abandoned — evidence cannot split those;
-claims re-open on their ~20 min cooldown, axis attempt leases ~60 min).
-`phase=awaiting-embedding` (keywords) is an eligibility delay — the claim
-gates on a current body embedding, so the stage holds no lane position yet.
+Memory work is memory-first: memory chunks queue ahead of the paper
+backlog, so a pending memory is not waiting for papers to drain. Each stage
+line names its `lane=` and, for a queued stage, `queue_ahead≈N` chunks in
+that lane. `phase=queued` means eligible and awaiting a worker claim;
+`phase=claimed`/`phase=attempt-lease` means a worker holds it (executing or
+abandoned — the view cannot split those; a claim re-opens after ≈20 min, an
+attempt lease after ≈60 min). `phase=awaiting-embedding` (keywords) is an
+eligibility delay: the stage waits on a current body embedding.
 `not applicable`/`disabled` is eligibility, not delay. Failed
-embedding/summary rows include the recorded error and an operator next step.
+embedding/summary rows include the recorded error and a next step.
 Dream move categorization has only ref tags, no input revision: an older
 marker is stale; even a newer marker cannot certify current-body completion.
-A matching-version marker can prevent reclassification after an edit; the
-view explains when operator review is needed. Worker switches outside the
-stored evidence are not inferred. This view reads evidence; it schedules or
-retries nothing. It requires one memory id.
+A matching-version marker can prevent reclassification after an edit. This
+view reads evidence; it schedules or retries nothing. It requires one
+memory id.
 
-A long `queue_ahead` is unusual — the interactive lanes are small — so a
-memory still `queued` minutes after a write is worth a promote request
-(below) or an operator check, not patience.
+A long `queue_ahead` is unusual, so a memory still `queued` minutes after a
+write is worth a promote request (below), not patience.
 
 ## Process a selected memory now
 
@@ -194,9 +190,8 @@ the processing view is accepted too. Omitted `stages` requests every stage
 and reports refusals or inapplicability separately. Only embeddings support
 this write; see [[precis-job-types-help]] for the stage map.
 
-`promote` queues pending work at priority 1 in the existing worker job lane;
-it does not preempt running work or invalidate completed results. Processing
-runs in a worker. The request pins current chunk IDs, content fingerprints
+`promote` queues pending work at top priority; it does not preempt running
+work or invalidate completed results. The request pins current chunk IDs, content fingerprints
 and the active embedder; an edit makes the old request stale instead of
 redirecting it onto the new revision. Request the current revision again.
 
@@ -228,7 +223,7 @@ recompute again; those active jobs preserve already-complete artifacts.
 A completed recompute receipt is also reused for the same revision: replaying
 that call cannot erase its result again. Inspect the returned job and processing view before testing
 recall; a queued receipt never claims completion. Existing chunk claims are
-left for their worker/operator to resolve.
+left as they are.
 
 ## Save a thought
 ## Capture a note
@@ -273,10 +268,6 @@ rather than your own thought; it reads `human reto via claude-opus-5-5`.
 Both are labelled claims (`model_source='self'`), not proof. A model the
 run or client already records wins over yours. `written:` above the trust
 line on a bare `get` shows the first and last writer.
-
-A scripted write that cannot pass `args=` gets its model from the operator's
-environment (`model_source='env'`), the lowest precedence, so a session,
-agentlog or per-call claim still wins.
 
 ## Edit a memory in place
 ## Rewrite a memory body without losing its id or links
@@ -338,10 +329,8 @@ put(
 ```
 
 Decisions are conventionally tagged with `confidence-*` and the
-relevant `project:`. `pinned` is a writable marker only — nothing
-archives a non-thread memory while `dream_consolidate` stays dark
-(lit, it soft-retires stale `DREAM:`-tagged nodes behind `supersedes`
-summaries); the armed `section:threads` sweep never reads `pinned`.
+relevant `project:`. `pinned` is a writable marker only: nothing reads it, and it does not
+protect a `section:threads` node from expiry.
 
 ## Flag an open question to come back to
 ## Park an unresolved problem
@@ -372,9 +361,7 @@ Tags alone implement no recurrence or backoff — nothing re-surfaces a
 `wip` memory on a cadence, so a question that must come back belongs on
 the linked todo (a real cadence is `meta.schedule`, [[precis-todo-help]]),
 never on tag edits. A question whose answer sits in the corpus settles by
-the research pass in [[precis-research-help]]. A proposed loose-end
-lifecycle (me626709) would give `wip` nodes review cadence; until it lands
-the linked todo is the only mechanism. Settled → drop `wip`, record the
+the research pass in [[precis-research-help]]. Settled → drop `wip`, record the
 settling evidence in the body and bump confidence.
 
 ## Find memories I wrote earlier
@@ -408,14 +395,11 @@ line. `q=` is required. The second call opens the hit with its linked
 neighbours and the nearest unlinked memories in the same `SPACE:`
 (`precis-fisheye-help`). `view='index'` applies the same recall cut as
 the write-section round-trip check: semantic-only hits past a
-query-relative gap (best hit's distance + 0.15, capped at the 0.65
-corpus floor; the fixed 0.42 memory floor applies only under the
-fixed-floors fallback) — a memory whose title/hook
+query-relative gap past the best hit — a memory whose title/hook
 lacks the task words can miss the list. The semantically nearest
 hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching
-`section:gotchas` node is added as one extra line. Shell form: `precis memory
-index --q "<task>" --k 5`. Besides `index`, `count` and the default,
+`section:gotchas` node is added as one extra line. Besides `index`, `count` and the default,
 memory search takes `view='reads'`, `view='rulings'`, `view='smells'` and
 `view='shape'`
 (below); any other
@@ -464,11 +448,7 @@ for all live memories. This is an aggregate, so `q`/`mode`/`scope`/`status`
 and pages beyond 1 are refused. Open a member with the single-node view
 to read its evidence.
 
-`precis garden stats` reports pending, sampled and Opus approval agreement
-per detector, including zero rows for all nine memory detectors. A zero
-sample count means no agreement measurement yet. These reads create no
-proposals or reviews. The `kg-review:<model>:<date>:ok` stamp and `reviewed:`
-line await the type checklist (gr560762).
+These reads create no proposals or reviews.
 
 ## Review a memory's graph neighbourhood and shape smells
 
@@ -570,11 +550,9 @@ link(kind="memory", id=73, target="pa<id>", rel="related-to")  # ref handle
 
 link(
     kind="memory", id=73, target="pa<id>", rel="disputes"
-)  # the chen2021critique handle — disputes, not contradicts: the
-   # latter is adjudication-derived claim-graph disagreement (unbuilt
-   # Part 2); memory-vs-paper disagreement files disputes, free and
-   # non-blocking. (memory<->memory contradicts stays valid — a
-   # separate, unaffected subsystem, memory reconsolidation.)
+)  # the chen2021critique handle — memory-vs-paper disagreement
+   # files disputes, free and non-blocking, not contradicts.
+   # (memory<->memory contradicts stays valid.)
 ```
 
 Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`).
@@ -638,13 +616,7 @@ Rules that bite:
   current verdict is its LATEST judgment — whichever side it was judged
   on. A verdict judged against different content goes stale on the
   canonical ref (real reconsideration); an identical-content merge keeps
-  it valid. The garden apply doors are the exception: their undo
-  records snapshot links only, so a merge loser — or a retire /
-  supersede / split / compact-retire target or canonical pair —
-  carrying a live verdict is refused. Withdraw the pair's `considered`
-  edge first, or go through the unreviewed merge/delete door, which
-  reconciles the ledger. `garden undo` likewise refuses while a live
-  judgment names the retired scope.
+  it valid.
 
 One paper can be `not-useful` for one scope and `useful` for another —
 exclusions are always scoped. Cheap triage never writes a verdict: only
@@ -715,8 +687,7 @@ ungrounded: "10 nm" near websearch:170350 — not in the cited text; drop the at
 
 Fix it by moving the handle off the figure, or mark the figure yours:
 `≈10 nm (my estimate)`. Rewriting the body clears the tag when it is
-clean. If the deployment is set to reject mode, the write is refused
-instead of tagged. Citations that do not resolve are not checked. A
+clean. The write may be refused instead of tagged. Citations that do not resolve are not checked. A
 parenthetical glosses the citation before it: the numbers in it are checked
 against that source, not the next citation in the line.
 A chunk-range cite (`~18..28`) is checked against every chunk in the range,
@@ -903,11 +874,10 @@ can succeed. Receipts do not block edits or provide undo/reviewed apply.
 ## Scratch memories — throwaway nodes that clean themselves up
 
 `SPACE:scratch` is for probes, session scratch, and drafts you would
-otherwise have to remember to delete. The daily `memory_thread_sweep`
-cadence soft-retires a scratch node once it is past its expiry —
-7 days from the last touch by default, or keyed to the owning task's
-close when the node carries `scratch-for:` — `rule=s` in the sweep
-log. Nothing else reads `scratch` as "keep
+otherwise have to remember to delete. A daily sweep soft-retires
+a scratch node once it is past its expiry — 7 days from the last touch
+by default, or keyed to the owning task's close when the node carries
+`scratch-for:`. Nothing else reads `scratch` as "keep
 less"; recall and `+recall` stay inside one `SPACE:`, so scratch never
 leaks into research or repo-dev recall.
 
@@ -960,16 +930,15 @@ different `scratch-for:` owner — one task owns a scratch node (a second
 
 `meta.expires` accepts an ISO date/datetime or a `<n>[mhdw]` duration
 (resolved to an absolute instant at write) — shorter or longer than the
-7-day default, on any memory; on non-scratch spaces it only flags garden
-review debt, it never auto-retires. A scratch-only node is the scratch
-pass's alone — `section:threads` rules a–c never fire on it, so an
-`expires` override holds even on a scratch thread node (a second
-`SPACE:` value returns it to thread rules). Editing a scratch node renews its
+7-day default, on any memory; on non-scratch spaces it never auto-retires. A scratch-only node is
+exempt from the thread-expiry rules, so an `expires` override holds even
+on a scratch thread node (a second `SPACE:` value returns it to thread
+rules). Editing a scratch node renews its
 default TTL only when `expires` is unset. Retagging the node out of the
 space (`tag(remove=['SPACE:scratch'], add=['SPACE:research'])`) takes it
 out of the sweep. `section:index` hubs are exempt even when scratch-tagged.
 Retirement is the normal soft delete — `view='retired'` reads the
-tombstone, and the node is restorable at the SQL layer.
+tombstone.
 
 ## Sticky memories — show up every turn until you unpin them
 
@@ -996,9 +965,8 @@ lifetime — unpinning drops it from the per-turn preamble but the
 memory itself stays in the corpus and searchable.
 
 Use sparingly — every sticky memory eats prompt budget every turn.
-asa_bot's preamble caps the injected set at ~5 thread-scoped + ~5
-global (`sticky_max_thread` / `sticky_max_global` in
-`asa_bot/config.py`) — stay under that or some pins won't make the
+The per-turn preamble caps the injected set at ≈5 thread-scoped + ≈5
+global — stay under that or some pins won't make the
 per-turn read.
 
 ## The argument graph — kind:lemma / kind:inference sub-kinds
@@ -1087,8 +1055,7 @@ follow-up handles. The incident narrative is exempt from
 Once cause and fix are verified, compact to a concise dated cause, the
 verified fix and any open uncertainty. Never invent a fix. Move still-true
 claims into gotchas or rulings before retiring the incident. Incidents
-older than 90 days are review candidates reported by `scripts/memory-lint`,
-never automatically retired by it. First examples: incident me564175,
+older than 90 days are review candidates, never automatically retired. First examples: incident me564175,
 ruling me564176.
 
 ## Rulings — the owner's one-line decisions
@@ -1178,8 +1145,7 @@ todo linked to it; name the disputed memories and what was checked:
    ```
 
 Also link the todo to each disputed memory with `raises-concern-about`.
-`scripts/memory-lint` lists the node as "under review" while the todo is
-open and as a "stalled review" after 7 days. Nothing changes ranking.
+Nothing changes ranking.
 
 ## Working a memory-review todo
 
@@ -1194,75 +1160,6 @@ never silently discard a still-true claim. Settled → add what you changed to t
 `STATUS:done`. Still unsettled → append your findings to the todo body, then
 `tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
 Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
-
-## Operator: recall-set review
-
-Weekly `memory_recall_harvest` ships OFF behind `service_config`. When explicitly
-enabled, it queues up to 50 trace-derived pairs in a parked `recall-set-review`
-todo, not the benchmark. In a precis Git checkout, run
-`precis memory recall-set accept td<N> [--only 1,3]` to append reviewed pairs
-to `src/precis/data/memory_recall_set.json`. It reads the todo without graph
-writes, prints the diff, and never commits or pushes. The operator checks for
-private data and lands the diff; no fixer is queued. Close the todo after all
-pairs are settled. Prior batches suppress repeat proposals.
-
-## Operator: mirror files
-## Harness MEMORY.md ↔ graph import/export — CLI, not MCP verbs
-
-The `dream_consolidate` service retires stale dreams under `supersedes`
-summaries; it is dark until `service_config` lights it, then dry-run until
-`dream_consolidate.dry_run` is disarmed. Reto ruled it stays dark
-(2026-10-24): dreams exist to add useful links to the graph for discovery,
-so don't retire them by age. Improve weak dreams or link them instead.
-
-`precis memory mirror import|export` is how harness `MEMORY.md` and its
-topic files become `SPACE:repo-dev` nodes (the one-shot `precis memory
-import` is the cutover tool, not a seeding path); `precis memory index`
-prints only the live threads — `section:threads` nodes edited in the last
-14 days (`--days N`), newest first, one `- me<id> <Title> — <Left: line>`
-each (first body line, else `meta.hook`), plus a count of older ones. The
-SessionStart hook prints just the `--for-hook` counts line pointing here —
-run the command when you want the roster. Everything else is recalled by
-`search`; `--full` prints the old every-node list. A thread node's first
-line is `Left: …`; keep it true or `delete` the node.
-
-For explicit file coexistence, `precis memory mirror import
-DIR --namespace NAME` preserves YAML name/description/metadata, body prose
-and filenames; `mirror export DEST --namespace NAME` writes a fresh
-directory. Reruns update the same imported handles and resolve `[[…]]`
-links (a topic filename stem inside double brackets). Missing files stay
-live; graph edits cause an import conflict. Export preserves graph body
-edits but refuses changed file-authored metadata. These are CLI
-operations, not native MCP modes; they do not authorize migration of a
-real harness directory. `mirror import` refuses when live nodes from the
-one-shot importer share a topic's `name:` (`--legacy retire` soft-deletes
-them in the import, `--legacy keep` imports beside them, `--legacy
-refresh` adopts each in place: same handle and inbound links, the file's
-body and links written over it); `mirror export` writes a live
-`SPACE:repo-dev` node that has no file to a new `<slug>.md` (slug of the
-title, `-<id>` on a clash; `description:` = its hook, else the body's
-first line; `metadata.type` = its `type` meta or `project`) and stamps it
-as a mirror node — its title becomes the slug in listings, so the
-readable line belongs in `meta.hook`, which the index and recall print —
-and reports any node it still cannot render (no title, or another
-namespace's) as `unexported`.
-
-The harness files are not mounted as a read-only `markdown` root on the
-session server: the graph nodes above are the record, and the files
-remain a legacy import source only. `PRECIS_ROOTS` mirrors the skill
-files instead (`precis-overview`).
-
-**Where to edit.** A memory that has a file is edited in the graph with
-the anchored `edit` once the real mirror import has run for its
-namespace, and in the file before that; the mirror export is how the
-file catches up. A memory with no file is created with
-`put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'],
-meta={'hook': '…'})` and gets its file at the next `mirror export`; set
-`meta={'type': 'user'|'feedback'|'project'|'reference'}` to choose the
-file's `metadata.type` (default `project`). `meta['type']` is that
-file-metadata axis only — the node *type* (`threads`/`runbooks`/
-`gotchas`/`workflow`/`reference`) is the `section:<slug>` tag, never a
-`meta['type']` value.
 
 ## See also
 

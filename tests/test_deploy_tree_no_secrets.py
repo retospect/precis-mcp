@@ -156,11 +156,7 @@ _HOSTNAME_SCOPES = (
 #: being cleaned by someone else. path -> why. Hits in a listed file are not
 #: reported; ``test_hostname_pending_cleanup_has_no_stale_entries`` fails once
 #: the file is clean. Remove when the file is clean.
-_HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
-    "src/precis/data/skills/precis-gardener-memory-help.md": (
-        "two hits, cleaned in a parallel change"
-    ),
-}
+_HOSTNAME_PENDING_CLEANUP: dict[str, str] = {}
 
 #: A line the hostname check must flag (also the self-test's planted sample).
 _HOSTNAME_SAMPLE = "when: inventory_hostname == 'melchior'"

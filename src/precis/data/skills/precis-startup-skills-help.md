@@ -1,35 +1,22 @@
 ---
 id: precis-startup-skills-help
 family: core
-title: precis — pin skills into the cold-start banner
-summary: operator skill pinning — surface chosen skills on cold-start banner via env var
+title: precis — pinned skills on the cold-start banner
+summary: what the "Pinned skills:" banner line and its ⚠ warning lines mean, and what to do with them
 answers:
-  - how do I pin skills so every connecting agent sees them at cold start?
-  - how do I cap how much context pinned skills consume?
-  - what happens if I pin a slug that doesn't exist?
-applies-to: PRECIS_STARTUP_SKILLS env var
+  - what does the Pinned skills line on the cold-start banner mean?
+  - what do the ⚠ skill warning lines on the banner mean?
+applies-to: cold-start banner (serverInfo.instructions)
 status: active
 tags: orientation, workflow
 kinds: skill
 ---
 
-# precis-startup-skills-help — pin skills into the cold-start banner
+# precis-startup-skills-help — pinned skills on the cold-start banner
 
 The cold-start banner is spare by default: it teaches discovery via
-`search(kind='skill', q=...)`. Operators can pin skill ids so they
-surface to every connecting agent on the first message — useful when
-small models would otherwise miss them.
-
-## Pin skills for every connecting agent
-## Configure PRECIS_STARTUP_SKILLS
-## Tell the server which skills to advertise at boot
-
-```bash
-PRECIS_STARTUP_SKILLS=precis-search-help,precis-paper-help,precis-patent-search-help
-```
-
-Comma-separated skill slugs. Whitespace tolerated. Duplicates dropped
-(first occurrence wins). Empty by default — banner stays lean.
+`search(kind='skill', q=...)`. A deployment can pin skill ids so they
+surface to every connecting agent on the first message.
 
 ## What pinning surfaces to the agent
 ## How an agent sees pinned skills
@@ -41,59 +28,26 @@ The banner gains one line listing the pinned ids:
 Pinned skills: precis-search-help, precis-paper-help, precis-patent-search-help.
 ```
 
-The agent decides whether to pre-fetch the bodies via
-`get(kind='skill', id='<slug>')` or `prompts/get`. The corresponding
-MCP prompts carry a `pinned` tag for clients that prioritise tagged
-prompts in their picker.
+Bodies are not inlined — the banner stays small. Pre-fetch the ones the
+task needs via `get(kind='skill', id='<slug>')` or `prompts/get`. The
+corresponding MCP prompts carry a `pinned` tag for clients that prioritise
+tagged prompts in their picker. Absent the line, nothing is pinned.
 
-Bodies are not inlined — the banner stays small, bodies stream on
-demand.
-
-## Cap pinned-body size
-## Limit how much context pinning can consume
-## PRECIS_STARTUP_SKILLS_CAP_KB
-
-Default cap: **50 KB** of cumulative resolved-body size across all
-pinned slugs.
-
-```bash
-PRECIS_STARTUP_SKILLS_CAP_KB=50    # default; 0 disables (not recommended)
-```
-
-Drop-tail when exceeded: slugs resolve in env-var order; the first
-slug that would push the total over the cap — and every slug after
-it — is omitted. A warning line appends to the banner:
-
-```text
-⚠ truncated (50 KB cap): precis-python-help, precis-files-help.
-```
-
-Bodies are never inlined, yet the cap still counts them: a pinned slug
-whose own body exceeds the remaining cap is dropped along with every
-slug after it, so one oversized skill early in the list silently
-unpins the rest.
-
-Reorder entries (highest-priority first) or raise the cap to change
-which skills survive.
-
-## Unknown slug handling
-
-Unresolvable slugs (typo, removed skill, third-party id) drop with a
-one-line warning in the banner:
+## Warning lines under the Pinned skills line
 
 ```text
 ⚠ unknown skill ids: foo, bar.
-```
-
-A pin for a kind this server has not loaded is dropped the same way:
-
-```text
+⚠ truncated (50 KB cap): precis-python-help, precis-files-help.
 ⚠ skills for unavailable kinds: precis-patent-help.
 ```
 
-A valid config adds only the `Pinned skills:` line.
+A skill named in a warning line is not pinned: `unknown` ids resolve to no
+skill, `truncated` ones were dropped by the size cap, and `unavailable kinds`
+ones document a kind this server has not loaded (see
+[[precis-kinds-disabled-help]]). Look any of them up with
+`search(kind='skill', q='<goal>')` as usual.
 
-## Pick the right slugs to pin
+## Pick skills yourself
 
 ```python
 get(kind="skill", id="toc")  # browse every skill, one-line synopsis
@@ -103,23 +57,10 @@ get(kind="skill", id="toc", args={"by": "family"})  # toc grouped by family
 get(kind="skill", view="usage")  # maintenance: coldest skills first, last read + open concerns
 ```
 
-Pin the skills agents in this deployment will hit first and most
-often — typically `precis-search-help` plus the one or two `kind`
-helpers central to the workspace. On a repo-dev deployment the first
-pin is [[precis-repo-dev-start-help]] — the fixed start page every
-coding session loads once.
-
-## Writing skills — authoring a new skill file is a repo-dev task, not this
-
-This skill covers *pinning* existing skills at boot, not *authoring*
-one. A new skill file (or a rewrite of the prose conventions in an
-existing one) is repo-dev work on `src/precis/data/skills/` — outside
-what this MCP session can do. Use the `scaffold` agent, or read
-`docs/conventions/skill-authoring-style.md` in the precis-mcp repo.
-
 ## See also
 
 - [[precis-overview]] — verbs and kinds
 - [[precis-search-help]] — default cold-start action
-- [[precis-repo-dev-start-help]] — the repo-dev start page worth pinning
-- [[precis-kinds-disabled-help]] — PRECIS_KINDS_DISABLED sibling env var
+- [[precis-repo-dev-start-help]] — the repo-dev start page
+- [[precis-session-context-help]] — the other banner lines
+- [[precis-kinds-disabled-help]] — kinds that are not live in this process

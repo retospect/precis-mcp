@@ -457,4 +457,4 @@ it).
 - [[precis-gripe-help]] — filing, comments, STATUS lifecycle, closing
 - [[precis-work-help]] — the todo tree, `meta.ask`, leases
 - [[precis-fleet-help]] — live agent rows: host, tree, ctx%, attach line
-- [[precis-fix-gripe-help]] — the `fix_gripe` job recipe (lane OFF)
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)

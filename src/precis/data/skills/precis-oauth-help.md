@@ -24,8 +24,7 @@ Claude web: add the public MCP URL under **Customize → Connectors**, choose
 OAuth **Sign in now → Use your own OAuth client**, enter `precis-claude`
 with no client secret, then sign in to Precis and approve the requested
 permissions. The older UI places client fields under Advanced settings.
-Team/Enterprise administrators must first add the connector. Public endpoint
-configuration and registered client redirects belong to the deployment owner.
+Team/Enterprise administrators must first add the connector.
 
 ## Permissions
 
@@ -38,7 +37,7 @@ actor; an OAuth credential never becomes the install principal.
 
 `learning` is a narrower capability for existing private learning calls.
 Read `get(kind='skill', id='precis-learning-help')` for those calls. It may be
-offered instead of full access by the deployment owner.
+offered instead of full access.
 
 This guide, the exact learning-help read and
 `get(kind='profile', id='me')` — the session's own user, connection label
@@ -54,6 +53,5 @@ Start a fresh MCP session for another app, connection or account. Legacy SSE
 does not accept OAuth credentials. Existing personal API tokens remain
 learning-only and keep their separate revoke controls.
 
-User guide: `/manual/mcp-connections`. Operator runbook:
-`docs/runbooks/mcp-oauth.md`. Claude's supported flow:
+User guide: `/manual/mcp-connections`. Claude's supported flow:
 https://claude.com/docs/connectors/building/authentication (2026-11-10 UTC).

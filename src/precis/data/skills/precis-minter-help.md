@@ -142,6 +142,6 @@ rejected at mint time (above), not silently coerced.
 ## See also
 
 - [[precis-job-help]] — the kind='job' surface
-- [[precis-fix-gripe-help]] — the `fix_gripe` job_type (lane OFF)
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)
 - [[precis-auto-todo-help]] — the child_job_succeeded evaluator
 - [[precis-todo-tree-help]] — the todo tree shape

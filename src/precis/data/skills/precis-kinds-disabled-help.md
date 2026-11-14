@@ -1,23 +1,24 @@
 ---
 id: precis-kinds-disabled-help
 family: core
-title: precis — recognize and enable disabled kinds
-summary: disabled-kind diagnostics — Unsupported errors, env var gating, operator prohibition
+title: precis — recognize disabled kinds
+summary: disabled-kind diagnostics — Unsupported and NotFound answers for a kind this process does not serve, what each reason means, what to call instead
 answers:
   - I got an Unsupported error on a kind I expected to work — what does that mean?
-  - what env var enables a specific kind?
   - how do I check what's actually live in this build?
   - what does reason='prohibited' mean on a kind?
+  - what does "kind routes through host(s)" mean?
 applies-to: all kinds (boot-time enablement)
 tags: troubleshooting
 status: active
 ---
 
-# precis-kinds-disabled-help — recognize and enable disabled kinds
+# precis-kinds-disabled-help — recognize disabled kinds
 
-A kind is *disabled* when its env vars are missing or when the
-operator listed it in `PRECIS_KINDS_DISABLED`. Calls against a
-disabled kind raise `Unsupported`; the error names the reason.
+A kind is *disabled* in this process when it was gated out at boot: it
+is switched off, or something it needs is missing. Calls against a
+disabled kind raise `Unsupported`; the error names the reason. It
+stays disabled for the life of the process — retrying does not help.
 
 ## I got "kind is registered but disabled" — what now?
 ## A verb failed with Unsupported on a kind I expected to work
@@ -33,31 +34,28 @@ Next: see get(kind='skill', id='precis-kinds-disabled-help')
       and precis-overview Needs column
 ```
 
-The parenthetical names the reason: `prohibited` (operator listed
-it in `PRECIS_KINDS_DISABLED`), `missing <ENV1>, <ENV2>` (required
-env vars not set), or a **contextual hint** when a background pass
-disabled the kind *on purpose for this run* and told you what to do
-instead. Example: a draft-editing tick gates off the `tex` file kind
-and the reason reads `this project's deliverable is draft 'X' — write
-prose with put(kind='draft' ...) …`. When the reason is an
-instruction, follow it — don't relay it to the operator. A bare
-`missing <ENV>` is the operator's to fix.
+The parenthetical names the reason: `prohibited` (the kind is switched
+off here on purpose), `missing <name>, <name>` (a credential or root
+this deployment has not configured), `missing setting: <key>` (a
+deployment setting it is gated on is unset), `store required`, or a
+**contextual hint** when a background pass disabled the kind *on purpose
+for this run* and told you what to do instead. Example: a draft-editing
+tick gates off the `tex` file kind and the reason reads `this project's
+deliverable is draft 'X' — write prose with put(kind='draft' ...) …`.
+When the reason is an instruction, follow it. Otherwise the kind is
+simply not callable from this session: use a kind that is live, and tell
+the user which kind is off and why instead of retrying.
 
-## Which env vars does each kind need?
-## What credentials enable a kind?
-## How do I tell the operator what to set?
+## "unknown kind" with "routes through host(s)"
 
-| Kind | Required env |
-|---|---|
-| `patent` | `EPO_OPS_CLIENT_KEY`, `EPO_OPS_CLIENT_SECRET`, `PRECIS_PATENT_RAW_ROOT` |
-| `math` | `WOLFRAM_APP_ID` |
-| `websearch`, `perplexity-reasoning`, `perplexity-research` | `PERPLEXITY_API_KEY` |
-| `markdown`, `plaintext`, `tex` | `PRECIS_ROOT` |
-| `python` | `PRECIS_PYTHON_ROOTS` |
+```text
+NotFound: unknown kind: patent
+Next: kind 'patent' routes through host(s): <names>; options above are kinds ...
+```
 
-Store-backed kinds (`paper`, `oracle`, `conv`, `todo`,
-`memory`, `gripe`, `anki`, `citation`) need a configured store; if
-absent they report `store required` in the boot banner.
+The kind exists in the deployment but is served by another process, not
+this one. The call cannot succeed here; use one of the listed `options`
+kinds, or continue without it.
 
 ## Check what's actually live in this build
 ## See which kinds loaded vs which got gated out
@@ -74,30 +72,25 @@ The cold-start banner already names every absent kind:
 Kinds unavailable: math (missing WOLFRAM_APP_ID), patent (prohibited).
 ```
 
-## Operator prohibited a kind on purpose
 ## A kind shows reason='prohibited' on the banner
-## What is PRECIS_KINDS_DISABLED?
+## Why is a kind prohibited?
 
-`PRECIS_KINDS_DISABLED` is a comma-separated list of kind names
-the operator has turned off even when resources are present (air-
-gapped deployment disabling `web`; security review keeping
-`patent` off until audit lands). Prohibition wins over resource
-state: a prohibited kind that *could* load still reports
-`prohibited` on the banner.
-
-To re-enable: operator removes the kind from
-`PRECIS_KINDS_DISABLED` and restarts the server.
+`prohibited` means the deployment turned the kind off even though
+everything it needs is present (an air-gapped deployment disabling `web`;
+a kind held back until a review lands). It outranks resource state: a
+prohibited kind that *could* load still reports `prohibited`. Nothing in
+this session re-enables it.
 
 ## A pinned skill targets a disabled kind
 ## Startup-skills mention a kind I can't call
 
 The skill body still loads — it's package data, no I/O on the
 kind. The skill teaches you how to call a verb that will then
-raise `Unsupported`. If you hit this, tell the operator to either
-enable the kind or remove the skill from `PRECIS_STARTUP_SKILLS`.
+raise `Unsupported`. If you hit this, tell the user the kind is off here
+and continue without it.
 
 ## See also
 
-- [[precis-overview]] — Needs column maps kinds to env vars
-- [[precis-startup-skills-help]] — sibling env var for pinned skills
+- [[precis-overview]] — Needs column maps kinds to what they need
+- [[precis-startup-skills-help]] — the Pinned skills line
 - [[precis-preflight]] — health probe before calling unfamiliar kinds

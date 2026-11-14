@@ -406,7 +406,7 @@ directly.
 
 ## See also
 
-- [[precis-diag-help]] — a failed run's structured record: the Diag anchored on the error-marked trace frame
+- [[precis-diag-help]] — what a failed run reports, and `o.probe` for checking a selector without running
 - [[precis-workspace-optimize-help]] — `precis_geom.physics.evaluate`: score a script-built shape
 - [[precis-workspace-mol-help]] — molecular builds: fragments, decorators, step cache, collapse check, `pg.inspect`
 - [[precis-se-help]] — the se call surface: ops, views, units, BOM

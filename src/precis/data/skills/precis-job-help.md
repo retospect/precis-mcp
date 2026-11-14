@@ -282,5 +282,5 @@ release-fix), [[precis-job-observe-help]] (compute + code).
 - [[precis-minter-help]] — the `meta.executor` → job bridge in full
 - [[precis-factory-submit-help]] — mint a whole plan (build + reviewer + land)
 - [[precis-gripe-help]] — the bug tracker
-- [[precis-fix-gripe-help]] — fix_gripe recipe
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)
 - [[precis-search-help]] — find jobs by link/status

@@ -150,7 +150,7 @@ Pin it with `mode=` when you know better:
 | `'lexical'` | Full-text match only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
 | `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer — when the cause is the service at capacity (queue timeout, not down), the error carries a retry-after hint in seconds; capacity ≠ absence, so wait and retry rather than concluding the hit doesn't exist. |
 | `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. When the scan is bounded — one ref (`scope=`/ref-id set) or the `memory` corpus — chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored: stopwords, LaTeX tokens). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). On `kind='memory'` a full-sentence query is the dedup check: a verbatim hit means the sentence already lives in some body. Empty query returns nothing. |
-| `'literal'` | Exact substring match over the chunk text itself (`ILIKE`, case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/precis/cli/memory_mirror.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
+| `'literal'` | Exact substring match over the chunk text itself (case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/app/config.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
 
 ```python
 search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
@@ -410,9 +410,8 @@ one oversized row requires a larger result byte budget.
 ## Weak memory matches leave the default result
 ## The `weak match(es) omitted` line
 
-`search(kind='memory', ...)` omits a hit whose embedding distance exceeds
-the best candidate distance plus the shared gap delta, capped at **0.65**,
-*and* that no lexical leg corroborated.
+`search(kind='memory', ...)` omits a hit that sits well behind the best
+candidate on embedding distance *and* that no lexical leg corroborated.
 Shown hits print that distance (`(0.21)`) in place of the opaque rank. The
 result ends with a count and a targeted alternative:
 
@@ -426,20 +425,15 @@ never judged on distance alone. Numeric body-search renderers show the omission
 line; paper, patent and web retain their own single-kind rendering.
 
 `search(kind='memory', view='index')` (the session-start recall shape)
-applies the same gap/corpus boundary as a hard cut with no hint. The omission applies to the
+applies the same boundary as a hard cut with no hint. The omission applies to the
 default hybrid mode only: `mode='semantic'` and `mode='lexical'` never
-omit, so a semantic search lists everything within the 0.65 corpus floor.
+omit.
 
-Cross-kind search (`kind='*'` or a kind list) floors every kind's
-semantic leg at the 0.65 corpus distance cut before the merge, so a
-kind with no real match contributes nothing — the per-kind count line
-is real matches, not `min(k, page_size)`; the shared gap/corpus cut
-additionally trims uncorroborated hits on kinds that wire it. The
-single-kind `search(kind='paper'|'patent'|'web', ...)` does not apply
-the gap cut.
-The provisional delta defaults to 0.15; to retune it or to restore the
-old per-kind floors for one release, ask a human operator (knobs:
-`docs/reference/config-variables.md` §Tuning knobs).
+Cross-kind search (`kind='*'` or a kind list) drops weak semantic matches
+before the merge, so a kind with no real match contributes nothing — the
+per-kind count line is real matches, not `min(k, page_size)`; the weak-hit
+omission additionally trims uncorroborated hits on kinds that apply it. The
+single-kind `search(kind='paper'|'patent'|'web', ...)` does not omit.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X
@@ -512,7 +506,7 @@ search(kind="job", view="count", args={"link": "gripe:472990"})
 ```
 
 `group_by` terms: `state` (the `STATUS:` axis), `meta.<key>` (a
-`refs.meta` scalar like `meta.job_type`), `tag:<axis>` (closed axis
+meta scalar like `meta.job_type`), `tag:<axis>` (closed axis
 when uppercase — `tag:STATUS` — else the open `prefix:*` tag family),
 `fulltext` (the ref's body state — `full-text` / `thin-text` /
 `card-only` / `stub`; `thin-text` = ≤12 body chunks with a
@@ -521,11 +515,11 @@ paper's count also trails a `passages:` line of live body chunks),
 `touched` (last-touched recency buckets — `<=7d` / `<=30d` / `>30d`).
 Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
 a tag facet land in `(untagged)`; other missing facet values land in
-`(none)`. The totals are exact `COUNT`s over the same
-WHERE as the listing, so they match the "N of K" page headers;
+`(none)`. The totals are exact counts over the same
+filter as the listing, so they match the "N of K" page headers;
 `args={'folder'}` and `args={'under'}` fold in as ref-set filters, and
 `args={'since'}`/`args={'until'}` bound on
-`refs.created_at` (`until=` exclusive). `kind='job'` counts also tail a
+creation date (`until=` exclusive). `kind='job'` counts also tail a
 bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind
 per call — no cross-kind or `sort=` on this shape.
@@ -537,12 +531,11 @@ per call — no cross-kind or `sort=` on this shape.
 ## How fast is the backlog burning down? (view='flow')
 ## Opened vs closed per day — the burn-down and lane-health read
 
-`view='count'` buckets by `refs.created_at` — it answers "how many
+`view='count'` buckets by creation date — it answers "how many
 jobs minted today", never "how many closed today". `view='flow'`
 reads each `STATUS:` tag's *set-time* instead: per-bucket opens,
 closes and net, plus median/p90 open-to-close time and a live
-`open now` count — the pipeline questions that used to send you to
-raw `ref_tags` SQL:
+`open now` count — the pipeline questions:
 
 ```python
 search(kind="gripe", view="flow")                     # last 7d by day (default window)
@@ -565,11 +558,10 @@ set-time of a live ref's *latest* terminal STATUS — a
 reopened-then-reclosed ref counts its newest close only.
 
 ## What keys/tags does a kind actually carry? (view='meta' / 'tags')
-## Inventory a kind's meta fields or tag values — no raw SQL
+## Inventory a kind's meta fields or tag values
 
 Before writing `meta.foo = X` filters or guessing a tag axis, ask what
-is really in use — this is what agents used to read `refs`/`ref_tags`
-for directly:
+is really in use:
 
 ```python
 search(kind="job", view="meta")                    # meta keys, types, counts, examples
@@ -588,7 +580,7 @@ search(view="plan")                              # every fanned-out kind
 ```
 
 `view='meta'` is read-only and cached ~15min (shape changes slowly);
-`view='tags'` groups live ref_tags by namespace (STATUS / OPEN / FLAG
+`view='tags'` groups live tags by namespace (STATUS / OPEN / FLAG
 sections), expired rows excluded. Both are single-kind, like count.
 
 ## Search inside a specific paper or ref
@@ -713,7 +705,7 @@ _(hubbed=true: restricted to 12 hubbed papers)_
 ## Why did a retracted paper rank so low?
 
 A `⚠ RETRACTED` / `⚠ corrected` / `⚠ expression of concern` prefix on a
-row means `refs.retraction_status` is set on that paper. Retracted hits are
+row means a retraction notice is on file for that paper. Retracted hits are
 downranked hard, the softer notices mildly — but **never excluded**: a
 retracted paper is often exactly what you were looking for.
 
@@ -729,8 +721,8 @@ Pasting a whole title into `q=` is a weak lexical query: full-text search
 strips `attention is all you need` to its stemmed content words, so any
 content-dense body that repeats those words outranks the paper's own
 short card. Paper search compensates — on page 1 with no
-`scope=`/`tags=`/`after=`/`before=`, a near-exact trigram match on
-`refs.title` is promoted to the top of the table **and** named above it:
+`scope=`/`tags=`/`after=`/`before=`, a near-exact match on
+the title is promoted to the top of the table **and** named above it:
 
 ```
 Title match — the paper record:
@@ -835,9 +827,8 @@ or `count`; special browse/spray forms such as `dreamable`, `stubs`, `rulings`,
 claim search to the owner's `part-of` subtree when that structure exists.
 
 Each effective `page_size` defaults to 5 and must be at most 10. All item
-shapes are validated before any search runs. Queries then run sequentially
-through ordinary search dispatch, including filter validation and error
-mapping. The response is a JSON envelope with ordered `results` entries:
+shapes are validated before any search runs. Items then run in order with
+ordinary search semantics. The response is a JSON envelope with ordered `results` entries:
 `{"key": "jane", "q": "Jane", "is_error": false, "body": "..."}`.
 `body` contains that individual search's usual result text. A valid batch
 envelope succeeds even when an item fails: inspect every `is_error` and

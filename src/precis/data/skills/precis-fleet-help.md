@@ -75,8 +75,7 @@ No change: first output line `moot: gr<N> already fixed by <sha>`,
 builds. Test-only changes must not hide the verdict in a worker commit;
 silence fails. Cloud `devin_task` publishes `devin/job-<job id>` and its
 SHA, never a PR. Cloud branch handoff is **pending**: no fetch/landing
-consumer exists; an operator must fetch, verify and arrange landing.
-See [[precis-fix-gripe-help]].
+consumer exists, so a cloud task does not reach main by itself.
 
 ## Rows
 

@@ -7,7 +7,7 @@ title: DB-resident settings — deferred key migrations (move when touched)
 # DB-resident settings — residuals
 
 Slices 1–4 shipped (2026-08-22): see the `precis.settings` module
-docstring and skill `precis-settings-help`.
+docstring.
 
 Remaining, all deliberate move-when-touched:
 

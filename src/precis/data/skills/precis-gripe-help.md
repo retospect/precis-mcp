@@ -961,7 +961,7 @@ link or comment the recovery note onto the surviving ref instead.
 
 - [[precis-fix-memory-gripe-help]] — replay and resolve a `project:memory` complaint
 - [[precis-gripe-loop-help]] — the builder-wave loop: batch, brief, assign, handoff, verdict, land, close
-- [[precis-fix-gripe-help]] — the fix_gripe job recipe (lane OFF)
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds
 - [[precis-todo-help]] — promote a gripe to a todo

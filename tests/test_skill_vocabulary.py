@@ -86,7 +86,34 @@ _NAME_BOUNDARY = r"[a-z0-9]"
 
 #: Names that are coined in a swept registry but never shown to agents —
 #: each with the reason they stay undocumented. Keep this short.
-_ALLOWLIST: dict[str, str] = {}
+_ALLOWLIST: dict[str, str] = {
+    "elsevier-truncation": "operator-only pass/alert id; skills carry no worker internals",
+    "elsevier_truncation": "operator-only pass/alert id; skills carry no worker internals",
+    "marker-fallback": "operator-only pass/alert id; skills carry no worker internals",
+    "bib_retag": "operator-only pass/alert id; skills carry no worker internals",
+    "card_describe": "operator-only pass/alert id; skills carry no worker internals",
+    "citer_watch": "operator-only pass/alert id; skills carry no worker internals",
+    "clusterize": "operator-only pass/alert id; skills carry no worker internals",
+    "corpus_reconcile": "operator-only pass/alert id; skills carry no worker internals",
+    "dream_agent": "operator-only pass/alert id; skills carry no worker internals",
+    "embed:bge-m3": "operator-only pass/alert id; skills carry no worker internals",
+    "fetch_google_patents": "operator-only pass/alert id; skills carry no worker internals",
+    "gen_abstract": "operator-only pass/alert id; skills carry no worker internals",
+    "gp_fetch": "operator-only pass/alert id; skills carry no worker internals",
+    "idea_feed": "operator-only pass/alert id; skills carry no worker internals",
+    "mail_poll": "operator-only pass/alert id; skills carry no worker internals",
+    "openalex_enrich": "operator-only pass/alert id; skills carry no worker internals",
+    "openalex_snapshot": "operator-only pass/alert id; skills carry no worker internals",
+    "paper_glossary": "operator-only pass/alert id; skills carry no worker internals",
+    "paper_meta_enrich": "operator-only pass/alert id; skills carry no worker internals",
+    "survey_requeue": "operator-only pass/alert id; skills carry no worker internals",
+    "watch_poll": "operator-only pass/alert id; skills carry no worker internals",
+    "dream_consolidate": "operator-only pass/alert id; skills carry no worker internals",
+    "paper_reconcile": "operator-only pass/alert id; skills carry no worker internals",
+    "offer_discovery": "operator-side discovery pass; agents have no door to it",
+    "pool_refresh": "operator-side pool ledger refresh; agents read /pools only",
+    "proxy-missing": "operator-side catalogue drift alert; no agent action",
+}
 
 
 def _skill_texts() -> dict[str, str]:

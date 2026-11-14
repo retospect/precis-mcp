@@ -87,7 +87,7 @@ name/path.
 | `oracle` | `or7` | Curated wisdom-tradition entry | store |
 | `conv` | `co12` | Past conversation | store |
 | `pres` | `pr5` | Slide deck or unpublished writeup | store |
-| `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT`; where `PRECIS_ROOTS` mounts it, `skills/<slug>` is the read-only mirror of a skill file (tag `mirror:skills`, `part-of` its parent skill via `precis mirror-links`) | `PRECIS_ROOT`, `PRECIS_ROOTS` |
+| `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT`; where `PRECIS_ROOTS` mounts it, `skills/<slug>` is the read-only mirror of a skill file (tag `mirror:skills`, `part-of` its parent skill) | `PRECIS_ROOT`, `PRECIS_ROOTS` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
@@ -247,7 +247,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-job-ops-help` | Steer a job — cancel, retry, reprioritise, wake, extend; STATUS vocabulary |
 | `precis-job-find-help` | Read the queue + a job card; `under=`/`job_type=` listings |
 | `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence, /facts |
-| `precis-fix-gripe-help` | `fix_gripe` job recipe (lane OFF since 2026-10-02; hand-submit only) |
+| `precis-fix-gripe-help` | reading existing `fix_gripe` jobs (lane OFF since 2026-10-02) |
 | `precis-gripe-loop-help` | The builder-wave loop on the gripe: `edit(mode='fix')` for batch/brief/assign/handoff/verdict/landed, `/queue` + `/batch` views |
 | `precis-factory-submit-help` | Submit code work to the dark factory — plan node shapes, `gripe-fix`/`spec-build` templates, pre-land review, the `wait` arg |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
@@ -255,10 +255,6 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-health-digest-help` | Hourly slow-rot liveness digest — curated/derived checks, daily/on-degradation push |
 | `precis-wikipedia-help` | On-demand Wikipedia lookup + the `ORIGIN:wikipedia` search fence |
 | `precis-chem-help` | Name / CAS / abbreviation → SMILES + InChIKey; tiers, ambiguity refusal, caching |
-
-PRIO sort key + 1/N rotation across active strategics + dedup-aware
-nursery / structural / deep reviewers are the operational discipline
-on top.
 
 ## Worked examples
 
@@ -300,39 +296,6 @@ shows up in output and is ambiguous:
 - **lane** — as a `todo`/`job` scheduling concept it's legitimate contract
   vocabulary (`precis-job-help`, `precis-minter-help`); any other, ad-hoc
   sense of "lane" isn't part of the API.
-
-## Worker fleet — pass names an alert or log line shows
-
-Corpus-pipeline services documenting against this skill:
-
-| name | what it does |
-|---|---|
-| `summarize` | RAKE keyword summary per chunk (`summarize:rake-lemma` in logs) |
-| `bib_parse` | paper bibliographies → `paper_bib_entries`; a Crossref match whose record title disagrees with the entry's printed title tags the citing paper `AUDIT:spliced-ref` (`bib_mark` extracts `[N]` markers — `precis-citation-help`) |
-| `bib_retag` | retypes mis-typed biblio chunks + drops embeddings (manual) |
-| `tag_embeddings` | embeds tags for `kind='tag'` discovery |
-| `gp_fetch` | fall-back patent fetch (`fetch_google_patents` in logs) |
-| `openalex_enrich` | backfills abstracts + OpenAlex metadata |
-| `openalex_snapshot` | ~30-day diff of the public OpenAlex works dump into `openalex_cite_edges` (citation edges touching held papers); runs on the data node only |
-| `paper_meta_enrich` | re-resolves authors/journal/idents/retraction from Crossref |
-| `paper_reconcile` | folds duplicate paper refs + hygiene heals |
-| `corpus_reconcile` | per-host `pdf_locations` ledger |
-| `survey_requeue` | re-queues `survey_extract` after a body swap — drains the `meta.survey_requeue_pending` flag ingest stamps on `markup_refetch` REPLACE; a live pass gets a durable `meta.survey_revision_request` its next slice restarts on, and terminal jobs holding revision intent (the request, or a `restart` checkpoint whose slice never returned) get an idem-keyed re-mint — or the request transfers to a live sibling whose state cannot see the swap (parked at `await_accept`, or a `running` slice already past its `body_mark` check) (gr632959) |
-| `clusterize` | SOM cluster maps for `/clusters` (daily) |
-| `llm_summarize` | model-authored 2-part chunk summaries |
-| `paper_glossary` | per-paper glossary → `card_glossary` chunk |
-| `card_describe` | LLM narrative `card_description` per non-text ref (structure first, gr497688) |
-| `context_sentence` | one method/evidence sentence per grounding paper |
-| `gen_abstract` | labelled generated `card_gen_abstract` for papers with no abstract (default-off; gr635825) |
-| `classify_topics` | paper→topic-dossier cascade (`topic:` tags) |
-| `watch_poll` | S2 citing-paper poll → stubs |
-| `citer_watch` | daily OpenAlex cited-by watch for held papers; mints stub papers for new citing works (capped per day) and writes a digest memory; dark unless service_config enables it |
-| `upstream_watch` | daily watch of GitHub issues/PRs we filed on repos we do not own; reports movement only — flags the `upstream:<owner>/<repo>#<n>`-tagged todo that waits on it (or mints a tracker) with the suggested response, plus a digest memory; dark unless service_config enables it |
-| `idea_feed` | daily novel-ideas digest: polls arXiv listing RSS (configured categories) + Hacker News top/show (Firebase API), dedupes against ingested refs and prior digests, scores survivors with one SMALL-tier judge call under a $1/day per-op cap, mints one digest `kind='todo'` with the top hits; dark unless service_config enables it |
-| `mail_poll` / `inject_scan` | email poll + depth-0 scan, then model-scores flagged mail |
-| `dream_agent` | reflective memory pass (scheduler cadence) |
-| `watch` (daemon) | PDF-inbox ingestor — alerts `watch:elsevier_truncation/elsevier-truncation:<ref>` (truncated PDF) and `ingest:marker-fallback` (extractor fallback) |
-| `embed` / `embedder` | embed backlog lane (logs as `embed:bge-m3`; `materialize`→`embed_batch` drains it — `precis-job-help`) / the idle-unloading bge-m3 server |
 
 ## See also
 

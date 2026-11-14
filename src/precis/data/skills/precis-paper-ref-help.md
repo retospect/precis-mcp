@@ -59,8 +59,8 @@ share the same `refs` machinery.
 | re-extract from the stored pdf | `args={'reextract': True, 'reason': …}` — keeps the pdf, queues a `paper_reextract` job; `'pdf_sha256': '<sha>'` names the file when several are attached |
 | re-home a stored pdf / adopt an orphan | `args={'move_pdf_to': '<pa>'/'attach_pdf': '<sha>', 'reason': …}` — identity-gated on the target's title/DOI |
 | re-seat the pdf pointer on a held sha | `args={'pdf_pointer': '<sha>', 'reason': …}` — no body change, no re-extract |
-| export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
-| rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
+| export a ref's full state (undo) | `get(id=…, view='ops')` |
+| rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
 | upload a local PDF | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
@@ -160,29 +160,25 @@ time.
 
 Re-keys also happen automatically: a repair that gives a paper on a
 *junk* key — `anon\d+`, `user\d+`, `the\d+` mints from empty/garbage
-ingest metadata (`is_junk_cite_key`, gr521515) — a real byline/year
-re-mints via `suggest_cite_key` (this `edit` door on `authors`/`year`,
-the fix-metadata sweep, registry resolution, stub reconcile/merge),
-reason `auto re-mint after metadata repair`. A non-junk key is never
-re-minted, a still-junk suggestion is skipped, and a collision lands on
-the suggester's letter suffix — never a steal. The standing sweep is
-`precis paper-remint-junk` (dry-run default, `--apply` to write).
+ingest metadata — a real byline/year re-mints a proper key (this `edit`
+door on `authors`/`year`, metadata repair, registry resolution, stub
+reconcile/merge), reason `auto re-mint after metadata repair`. A
+non-junk key is never re-minted, a still-junk suggestion is skipped,
+and a collision lands on a letter suffix — never a steal.
 
-The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
-guards against pulling in the *wrong* identity (gr353804): a Crossref/S2
-registry hit whose title shares zero distinctive words with the paper's
-own chunk-0 text (e.g. an SI PDF) gets the write withheld — tags the ref
-`paper-meta:title-mismatch`, records the withheld `doi`/`title`/`reason`
-under `meta.registry_mismatch` on the Meta tab, and clears the stored DOI
-only for the zero-overlap case. Parked refs leave the triage sweep until
-the tag is removed by hand; `human_verified_at` is never touched.
+A registry hit (Crossref/S2) whose title shares zero distinctive words
+with the paper's own first-page text (e.g. an SI PDF) is withheld
+rather than written: the ref is tagged `paper-meta:title-mismatch`, the
+withheld `doi`/`title`/`reason` sit under `meta.registry_mismatch` on
+the Meta tab, and the stored DOI is cleared only for the zero-overlap
+case. `human_verified_at` is never touched.
 
-ALL-CAPS titles are repaired by the paper-meta enrich worker, not by
-agents: for a DOI paper whose stored title is all caps, the agreeing
-Crossref title replaces it (old kept as `meta.title_raw`);
-`human_verified_at` freezes a title; a substantively different registry
-title is left alone. Do not hand-normalise titles; BibTeX export
-brace-protects acronym/formula tokens (`{DFT}`).
+ALL-CAPS titles are repaired automatically: for a DOI paper whose
+stored title is all caps, the agreeing Crossref title replaces it (old
+kept as `meta.title_raw`); `human_verified_at` freezes a title; a
+substantively different registry title is left alone. Do not
+hand-normalise titles; BibTeX export brace-protects acronym/formula
+tokens (`{DFT}`).
 
 ## Resolving a duplicate ref
 ## `already belongs to ref id=N` — what now?
@@ -216,10 +212,6 @@ fails the shared title gate — trigram similarity ≥ 0.85, ≥ 5 distinctive
 title tokens, known years within ±1 (a missing year needs near-identical
 titles), agreeing first-author family. On a gate refusal that is still
 the same paper, fix the disagreeing field with `edit` and retry.
-
-The standing sweep (`precis reconcile-duplicates`, an operator CLI —
-prod invocation via `docs/runbooks/prod-one-off-cli.md`) folds the
-groups nobody pointed at and picks its own survivor.
 
 ## A merged stub resolves to the wrong paper — how do I re-point the redirect?
 
@@ -306,19 +298,16 @@ restricts hits to them.
 content ids, keeps metadata — a live stub, refetchable via `pdf_url`.
 Add `'keep_pdf': True` when the ref's own PDF is the right file and only
 the body is wrong (e.g. it arrived by a dedup merge): the pointer and its
-`pdf_sha256` identifier stay, so the stub is a bodiless-heal candidate —
-the `paper_reconcile` pass or `precis bodiless-heal --apply` re-extracts
-the stored file, no refetch needed. Attached to several PDFs?
+`pdf_sha256` identifier stay, so `reextract` rebuilds the body from the
+stored file, no refetch needed. Attached to several PDFs?
 `'pdf_sha256': '<sha>'` names the one to keep — required then; a named
 non-pointer sha re-points `refs.pdf_sha256` at it.
 `reextract` queues a `paper_reextract` job — the re-ingest door for the
 stored pdf: the repair for a bad *extraction* of the right file
-(garbled chunks, an old Marker). The door only validates: a sha no
-node holds refuses toward `pdf_url`, and a ref with no pdf refuses the
-same way. The job probes the file, checks its leading pages against
-the ref's title/DOI, extracts, then swaps old body for new in one
-transaction — the old body survives any failure, and a file held only
-on another node parks the job for a retry rather than failing.
+(garbled chunks, an old Marker). The door only validates: a missing
+file or a ref with no pdf refuses toward `pdf_url`. The job checks the
+file's leading pages against the ref's title/DOI, extracts, then swaps
+old body for new — the old body survives any failure.
 `'pdf_sha256': '<sha>'` rides it with the same naming rule as
 `keep_pdf`; the job re-points `refs.pdf_sha256` to it (the ack names
 the pending switch). The job is idempotent on
@@ -328,7 +317,7 @@ non-extracted verdict (missing file, unreadable, preview,
 identity_mismatch) also logs `reextract_failed`.
 `move_body_to` gives body, pdf and content ids to a live ref holding
 zero body chunks and no pdf (refuses otherwise: `drop_body`/
-`merge_into`/`bodiless-heal`); the donor ends a live stub — except a
+`merge_into`); the donor ends a live stub — except a
 merge tombstone, which may hand its leftover body to ITS OWN survivor
 while that survivor holds no body chunks and no pdf (every other
 tombstone move refuses).
@@ -345,8 +334,7 @@ take first: `get(id='<pa>', view='ops')` dumps the ref's stored state —
 ref row, identifiers, tags, links (with chunk ords) and every chunk —
 as a fenced `precis-paper-dump/1` block, paged by
 `args={'page': N, 'page_size': K}` (default 100, cap 500, 0 = the rest;
-concatenate the slices' `chunks` arrays). The operator twin
-`precis paper dump <id> --out <file>` writes every slice into one file.
+concatenate the slices' `chunks` arrays).
 
 ## A stored PDF sits on the wrong ref — how do I move it?
 
@@ -365,7 +353,7 @@ Before anything moves the file is identity-checked against the
 *target's* title/DOI — the same gate `paper_pull`/`paper_reextract`
 run — from the donor's stored page-1-3 chunk text when it exists (a
 re-ingested donor keeps them as history), else by a `pdf_attach` job
-that reads the file's leading pages on a corpus host. `mismatch`
+that reads the file's leading pages. `mismatch`
 refuses with the detail line; `unchecked` (the target has neither
 title words nor a DOI) refuses toward fixing the target's metadata
 first. On `doi`/`title` the write lands in one transaction — the
@@ -390,7 +378,7 @@ move target.
 
 The identity gate always runs as a `pdf_attach` job — an orphan sha
 has no donor chunks to judge against here, so the file's leading pages
-are read on a corpus host and checked against the target's title/DOI
+are read and checked against the target's title/DOI
 (a `mismatch`/`unchecked` verdict fails the job — `unchecked` wants
 the target's metadata fixed first). On a
 `doi`/`title` verdict the job sets the pointer, re-homes the
@@ -426,8 +414,7 @@ put(kind="paper", id="pa174214", args={"restore": <one dump slice>, "reason": "u
 ```
 
 The write half of `view='ops'`: send the dump's slices back **in window
-order**, one `put` per slice (the block a `view='ops'` page or one
-`precis paper dump` file yields — a merged file is one slice).
+order**, one `put` per slice (the block a `view='ops'` page yields).
 `reason` required, `dry_run` previews, one transaction per slice; each
 lands a `paper_restore_slice` ref_event, the completing slice a
 `paper_restored`.
@@ -477,20 +464,14 @@ the chunk rows the run inserted — nothing half-restored stays behind.
 Chunks that predate the restore stay, and a retired (or just-minted)
 target stays retired. `dry_run` previews the counts.
 
-CLI twin: `precis paper restore <file> [--apply] [--target new]
-[--handle s]` — a merged `precis paper dump` file as one slice, dry
-run unless `--apply`, events stamped `source='cli'`.
-
 `get(id=…, view='pdf_link')` is the way a held PDF leaves the corpus:
 it returns a signed `GET /files/pdf/<sha>?t=<token>` URL (sha, byte
 size and page count, expiry, and the `curl` line), never the bytes.
 The link is reusable until it expires — `args={'ttl_s': N}` (default
 600 s, cap 3600 s). A ref with no PDF refuses and points at
-`pdf_url`. When the reply's first line says `PRECIS_WEB_BASE_URL` is
-unset the URL is path-only — prepend the precis_web origin yourself;
-when you don't have it, report it — the operator sets
-`PRECIS_WEB_BASE_URL` in the vault (`precis secret set` or /secrets)
-and every later link is absolute.
+`pdf_url`. When the reply's first line says the link is path-only,
+the server's web origin is not configured: prepend the origin yourself
+if you have it, else report it.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 
@@ -507,9 +488,8 @@ previews.
 Only allow-listed retry stamps clear — `context_sentence_failed`,
 `context_sentence_no_abstract`, `s2_enriched_at`, `s2_enrich_failed`,
 `llm_band_failures`, `openalex` — anything else is refused naming the
-allowed set. The registry is `precis/workers/retry_stamps.py`; there is
-no generic `refs.meta` delete door, and `clear_stamp` combines with no
-other edit field.
+allowed set. There is no generic `refs.meta` delete door, and
+`clear_stamp` combines with no other edit field.
 
 ## I found a legal PDF for a body-less stub — how do I attach it?
 
@@ -537,26 +517,23 @@ folded body yourself. The folded paper keeps the URL as `meta.source_url`.
 
 No legal copy to fetch at all — every leg of the daily fetch failed
 (no open version, publisher 403, body-less markup)? Re-queueing does
-nothing: ask the person to download the PDF and hand-drop the PDF in
-the papers inbox. A body-less stub folds a plain drop in by DOI;
-naming the file `pa<id>.pdf`, or a sidecar naming `ref_id`, makes the
-fold deterministic. Only PDF and markup files trigger ingest — confirm
-the landing with `search(kind='paper', view='status', args={'ids':
-['pa<id>']})`.
-
-A paper that already has a body — a thin publisher-preview body
-counts — is not a fold target: the drop parks under duplicates or
-mints a twin. Clear the body first, then drop with a sidecar naming
-the ref:
+nothing: get the PDF from the person and upload it. Mint a single-use
+link, POST the file to it, then attach the sha256 the POST answers:
 
 ```python
-edit(kind="paper", id="pa123", args={"drop_body": True, "reason": "preview body; hand-dropped full text replaces it"})
+put(kind="paper", id="smith2023", args={"pdf_upload_link": True})
+put(kind="paper", id="smith2023", args={"pdf_upload": "<sha256>", "reason": "person supplied the PDF"})
 ```
 
-The sidecar sits beside the PDF as `<name>.pdf.precis-fetch.json`
-(`{"ref_id": <ref_id>}`; a supplement adds `"role": "supplement"` and
-names the parent's `ref_id`). Write the sidecar first, then place the
-PDF.
+The same identity gate as `pdf_url` applies before the file folds in.
+The link works for a paper that still needs a PDF or a body (sha-less
+or bodiless ref). A paper that already has a body — a thin
+publisher-preview body counts — refuses; clear the body first, then
+upload:
+
+```python
+edit(kind="paper", id="pa123", args={"drop_body": True, "reason": "preview body; uploaded full text replaces it"})
+```
 
 ## A datasheet/manual was ingested as a paper — how do I convert it?
 
