@@ -29,8 +29,11 @@ records ``{head, deployed_at, landed}`` after each deploy into the
 ``release.prod_head`` setting (an ``app_settings`` row, see
 :data:`precis.settings.REGISTRY`); ``landed`` accumulates the abbreviated
 shas of every deploy's ``prev..head`` range, so a sha that rode an earlier
-release stays visible. Reads go through :func:`precis.settings.get_str`, so
-a freshly written record can take up to its 60 s cache TTL to show.
+release stays visible. Record reads go through
+:func:`precis.settings.get_str`, so a freshly written record can take up to
+its 60 s cache TTL to show. A sha the record misses costs one GitHub
+compare call inside ``evaluate`` (cached per ``(sha, head)`` and guarded by
+a process breaker in ``_github_ancestor``).
 
 **tests-green reads a recorded verdict first.** ``scripts/release`` writes
 ``[{sha, range, verdict, run_id, at}]`` into the ``release.ci_verdicts``

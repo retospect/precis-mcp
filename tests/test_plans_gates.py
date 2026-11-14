@@ -193,12 +193,14 @@ def _fake_compare(
 
 
 @pytest.fixture(autouse=True)
-def _github_down(monkeypatch: pytest.MonkeyPatch, store: Store) -> list[str]:
+def _github_down(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """No test reaches the real API; the ancestry fallback is unavailable
     unless a test installs its own ``_fake_compare``."""
     gates._ANCESTOR_CACHE.clear()
     monkeypatch.setattr(gates, "_breaker_until", 0.0)
-    psettings.set_setting("release.repo", REPO, store=store)
+    from precis.plans import pr_class
+
+    monkeypatch.setattr(pr_class, "resolve_repo", lambda *a, **k: REPO)
     return _fake_compare(monkeypatch, OSError("network down"))
 
 
