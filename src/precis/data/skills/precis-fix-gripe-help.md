@@ -1,15 +1,14 @@
 ---
 id: precis-fix-gripe-help
 family: work
-title: precis — drive a gripe to a fix landed on main
-summary: fix_gripe job recipe (lane OFF since 2026-10-02, hand-submit only) — gripe to job to a squash commit on main, iteration, review
+title: precis — the fix_gripe job (switched off): reference
+summary: reference for the fix_gripe job type, which nothing mints — hand-submit, where it lands, review, another pass, cancel; the live routes for fixing a gripe are in precis-gripe-help
 answers:
-  - who fixes a gripe now that the fix lane is off?
   - how do I hand-submit a fix_gripe job (reference only)?
-  - how do I check whether my gripe-fix job is done?
-  - how do I review the candidate fix's diff before merging?
-  - how do I reject a fix and ask for another pass?
-  - how do I cancel a fix job that's stuck?
+  - how do I check whether a fix_gripe job is done?
+  - how do I review what a fix_gripe job landed?
+  - how do I ask a fix_gripe job for another pass?
+  - how do I cancel a fix_gripe job that's stuck?
 applies-to: put (kind='job', job_type='fix_gripe')
 tags: workflow, troubleshooting
 kinds: job, gripe, todo
@@ -17,37 +16,23 @@ status: active
 scope: write
 ---
 
-# precis-fix-gripe-help — get a gripe fixed end-to-end
+# precis-fix-gripe-help — the fix_gripe job (switched off)
 
-**The fix lane is OFF (Reto, 2026-10-02).** Nothing mints `fix_gripe`
-jobs any more, and a hand-submitted one skips at the preflight unless
-the worker node holds a push credential. Gripes are fixed by the
-owning thread's session in its own worktree; do not queue a job to
-get a gripe fixed. The job type and this recipe stay as reference for
-a deliberate hand-submit.
+**Nothing mints `fix_gripe` jobs**: `backlog_groom`, the pass that
+turns `OPEN:auto-fix` gripes into `fix_gripe` todos, is switched off,
+and a hand-submitted job skips at the preflight unless the worker node
+holds a push credential. Do not queue one to get a gripe fixed:
+[[precis-gripe-help]] § "Who fixes a gripe?" names the live routes. This
+page is reference for a deliberate hand-submit and for reading old
+`fix_gripe` jobs.
 
-Recipe for handing a gripe to an agent, getting its fix landed
-on `main`, and iterating until the fix holds. Joins `precis-gripe-help` (the bug tracker) and
-`precis-job-help` (the offline-work substrate).
+## What runs underneath a fix_gripe job?
 
-## Who fixes a gripe now that the lane is off?
-
-`project:memory` gripes belong to the gardener, never a coder lane.
-Fixer intake excludes them even when triage has added `auto-fix` and a
-diagnosis. Use [[precis-fix-memory-gripe-help]] to replay the reader's
-routes and resolve or qualify the claims; project triage is attribution only.
-
-The repo session that owns the gripe's work thread, in its own
-worktree. Unthreaded
-gripes are relinked to a thread by `/pillar-review`. The
-automatic `diagnose_gripe` pass is off too; a hand-`put`
-`diagnose_gripe` job still runs and comments a `DIAGNOSIS`.
-
-The machinery underneath, for triage: `backlog_groom` is the pass that
-promotes open gripes into dispatchable `fix_gripe` todos, and
 `job_claude_inproc` is the executor drain that runs `claude_inproc`
-jobs (`fix_gripe`, `plan_tick`, the cast producers) — a stuck fix job
-means checking that drain, not the gripe row.
+jobs (`fix_gripe`, `plan_tick`, the cast producers): a stuck fix job
+means checking that drain, not the gripe row. The automatic
+`diagnose_gripe` pass is off too; a hand-`put` `diagnose_gripe` job
+still runs and comments a `DIAGNOSIS`.
 
 ## What is the Devin finishing contract?
 

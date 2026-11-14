@@ -19,13 +19,16 @@ governs: factory
 
 # gripe-fleet — run a builder wave (repo-dev mechanics)
 
+A wave is the manual form; for one fix the factory is the default
+([[precis-factory-submit-help]]).
+
 **The loop is in the product skill:** [[precis-gripe-loop-help]] — triage,
 mint the code todo, assign, handoff, review verdict, land, close on
 deploy. Work state lives on the gripe's `fixed-by` code todo under
 `td559473` (`put`/`tag`/`link` on the todo, `work:` mirrors on the gripe)
 and the queue is `get(kind='todo', id=559473, view='tree')`; a crashed
 coordinator resumes from that view alone. The old gripe-side
-`edit(mode='fix')` state stays readable (the skill's legacy appendix).
+`edit(mode='fix')` state stays readable; nothing writes it for new work.
 This file is what that skill cannot know — this repo's tmux, scripts and
 authority tiers. Steps 3–8 and the two sections after them are
 authority-gated text: change them only with Reto's typed go.

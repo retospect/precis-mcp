@@ -262,21 +262,26 @@ that combination is refused.
 ## Find gripes that are ready for a fix attempt
 
 ```python
-search(kind="gripe", tags=["STATUS:ready_for_fix"])
+search(kind="gripe", tags=["STATUS:triaged"])  # confirmed and unclaimed: the pick list
 ```
 
-## Find gripes with a fix in flight (claimed through landing and deploy)
+## Find gripes with a fix in flight
 
 ```python
-search(kind="gripe", tags=["STATUS:in_review"])
+search(kind="gripe", tags=["STATUS:fixing"])  # claimed, not yet on main
 ```
 
-## Find gripes deployed and awaiting the probe verdict
+## Find gripes landed and awaiting verification
 
 ```python
-search(kind="gripe", tags=["STATUS:auto_verify"])   # landed, deploy check closes it
-search(kind="gripe", tags=["STATUS:user_verify"])  # landed, a human checks it
-search(kind="gripe", tags=["STATUS:needs_spec"])   # parked until a spec exists
+search(kind="gripe", tags=["STATUS:auto_verify"])  # on main, the deploy check closes it
+search(kind="gripe", tags=["STATUS:user_verify"])  # on main, a human checks it
+```
+
+## Find gripes waiting on a spec
+
+```python
+search(kind="gripe", tags=["STATUS:needs_spec"])
 ```
 
 ## Find gripes marked won't-fix
@@ -528,24 +533,17 @@ naming a file adds hits but never replaces it: which files belong to
 that gripe. Closed gripes don't rank. No hits means file a new one.
 
 ## Triage a gripe — I've reviewed it and it's real {write}
+## Mark a gripe ready for someone to fix {write}
 
 ```python
 tag(kind="gripe", id=42, add=["STATUS:triaged"])
 ```
 
-Use when the gripe is confirmed but not yet ready to act on
-(needs more discussion, blocked on something, etc.). `STATUS:`
-is closed-prefix and replaces atomically.
-
-## Mark a gripe ready for someone to fix {write}
-
-```python
-tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
-```
-
-The signal that flips it from "thinking about it" to "ready for the
-owning thread's session to fix". Nothing auto-mints a `fix_gripe` job
-from it (lane OFF since 2026-10-02).
+`STATUS:triaged` means confirmed and ready to pick: sessions pick from
+it, and the factory takes the ones that also carry a `fix:<class>` tag.
+A real gripe that cannot be acted on yet is not `triaged`: park it with
+a wake condition (`STATUS:parked`) or send it to `STATUS:needs_spec`.
+`STATUS:` is closed-prefix and replaces atomically.
 
 ## Say a tree is working the gripe {write}
 
@@ -564,39 +562,41 @@ diff the branch to learn the coverage (gr514899).
 ## Who fixes a gripe?
 ## Can I hand a gripe off to an LLM to fix? {write}
 
-`project:memory` belongs to the gardener under
-[[precis-fix-memory-gripe-help]]; never submit it to the coder lane below.
+Filing is all the filer does. A triaged gripe is fixed by one of three
+routes, and its tags decide which.
 
-A coordinator running a builder wave batches gripes, briefs a builder
-and records handoff, review verdict and landed sha on each gripe with
-`edit(kind='gripe', id=[...], mode='fix', args={...})`; the queues are
-`get(kind='gripe', id='/queue')` — see `precis-gripe-loop-help`.
-Otherwise the repo session that owns the gripe's work thread fixes it in
-its own worktree;
-`/pillar-review` relinks unthreaded gripes to a thread. The
-auto-fix lane is OFF by ruling: the groomer mints no `fix_gripe`
-todos, and a hand-submitted job skips at the push preflight unless
-the worker node holds a credential. A hand-submit, for reference:
+**A memory gripe** (`project:memory`) belongs to the gardener under
+[[precis-fix-memory-gripe-help]]; it never goes to a coder.
+
+**The factory** builds code fixes. Where its intake runs, it takes an
+`open` or `triaged` gripe that carries a fix class (`fix:code`,
+`fix:skill`, `fix:docs`, `fix:web`, `fix:mcp`) and no hold tag, mints a
+plan and leaves a `dispatch:` comment naming the plan root
+([[precis-work-help]] § "How does a gripe reach a build lane by
+itself?"). To send one gripe yourself:
 
 ```python
-put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
-# → created job id=101
-# gripe auto-tagged STATUS:ready_for_fix as a side effect.
+put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 42})
 ```
 
-One call — no need to set `STATUS:ready_for_fix` first. If a
-credential is present the worker clones the repo, runs claude on a `gripe_42` branch,
-publishes the branch to the repo's upstream — confirmed there
-with `git ls-remote` before it says so — and posts a comment on
-the gripe when it's ready for review (or explains why it
-couldn't).
+[[precis-factory-submit-help]] has the recipe and how to read the
+outcome. `hold:no-dispatch` keeps a gripe out of the intake.
 
-See `precis-fix-gripe-help` for the full review / iterate loop.
+**A session already working in that code** fixes it in its own tree:
+claim it (`tag(kind='gripe', id=42, add=['claimed-by:<you>'])` moves it
+to `fixing`), comment the tree and its coverage (above), and end the
+squash subject with `(gr42)`. Landing writes the `resolved:` comment and
+`STATUS:auto_verify`.
 
-## Show me which agent fixes are running for this gripe
+A coordinator's manual builder wave is [[precis-gripe-loop-help]]. The
+`fix_gripe` job is switched off; [[precis-fix-gripe-help]] is its
+reference page.
+
+## Show me what is working this gripe
 
 ```python
-search(kind="job", link="gripe:42")
+get(kind="gripe", id=42)  # status, claim, dispatch: and in-progress comments
+search(kind="todo", args={"link": "gripe:42"})  # the plan or code todo fixing it
 ```
 
 ## Mark a gripe as won't-fix
@@ -620,11 +620,12 @@ you want the gripe gone from search.
 ## Defer a gripe without fixing or closing it
 ## Park a gripe {write}
 
-Leave it at `STATUS:open` (or `STATUS:triaged`) and append a
-comment with the reason:
+Park it with a wake condition, which takes it off every open queue until
+the condition is met ("Park a gripe until something happens" above lists
+the condition types):
 
 ```python
-put(kind="gripe", id=42, text="parking until after the F20 freeze")
+put(kind="gripe", id=42, tags=["STATUS:parked"], args={"until": "the F20 freeze is over"})
 ```
 
 ## Close a gripe after the fix is merged

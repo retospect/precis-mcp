@@ -71,7 +71,7 @@ their own view set instead, is in `precis-overview`.
 |---|---|---|
 | File a task | `put(kind='todo', text='...', tags=['PRIO:high'])` | `precis-todo-help` |
 | File a bug in precis itself | `put(kind='gripe', text='exact command; expected; actual')`; no duplicate search or filing cap; dogfooding adds `tags=['dogfood', 'topic:<area>']`; read-only agents report `FRICTION` for their coordinator to file | `precis-gripe-help` |
-| Batch gripes for a builder, record handoff / verdict / landed sha | `edit(kind='gripe', id=[...], mode='fix', args={'batch': 'x', 'brief': '...'})`; queues `get(kind='gripe', id='/queue')` | `precis-gripe-loop-help` |
+| Run a manual builder wave over gripes: one code todo per gripe carries the brief, handoff and verdict | `put(kind='todo', parent_id=559473, body='<brief>', meta={'llm_tier': None}, link='gripe:N', rel='fixes')`; then `handoff:` / `review:` comments on the todo | `precis-gripe-loop-help` |
 | Run a question round before a flagged build | `search(kind='memory'|'conv'|'paper', q=...)` first, then `put(kind='todo', id=N, text='grill: ...')` for what stays open | `precis-grill-me-help` |
 | Keep a note for later | `put(kind='memory', text='...')` | `precis-memory-help` |
 | Capture a term into the learner's knowledge graph | `put(kind='concept', text='<name> — <definition>')` (`dry_run` previews near-duplicates); typed edges `has-prerequisite`/`analogy-of`/`contrasts-with` | `precis-concept-help` |
@@ -122,8 +122,8 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
 | Send an existing todo to a factory lane | `edit(kind='todo', id=N, args={'meta': {'op': {'type': 'run_slice'}}})` + `tag(add=['plan:N'])` | `precis-job-help`, `precis-job-factory-help` |
-| Hand-submit a fix job (lane OFF; sessions fix gripes) | `put(kind='job', link='gripe:42', rel='fixes', args={'parent_id': <todo>, 'job_type': 'fix_gripe'})` | `precis-fix-gripe-help` |
-| Submit code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
+| Hand-submit a `fix_gripe` job (switched off; reference only) | `put(kind='job', link='gripe:42', rel='fixes', args={'parent_id': <todo>, 'job_type': 'fix_gripe'})` | `precis-fix-gripe-help` |
+| Get a gripe fixed, or submit other code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
 | Read raw worker_logs (no Bash/SQL) | `get(kind='job', id='/logs?handler=<name>&since=24&level=WARNING')` | `precis-job-observe-help` |
 
 ## Authoring artifacts — models & files
