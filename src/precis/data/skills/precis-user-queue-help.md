@@ -118,6 +118,25 @@ If the finding gives up a second time, the chase files a fresh
 `Fetch by hand:` ask — a closed want-paper todo keeps its tag as
 history but does not suppress the renewed one.
 
+## Mark a chore the person must run at a terminal (needs-terminal)
+
+A queue item asking a person to do something only a shell, vault or
+host login can do — set a prod vault secret, rescue a stale
+`index.lock`, run a deploy — carries the **`needs-terminal`** tag
+alongside `waiting-for:<login>` (Reto 2026-11-13). The tag is the
+convention that makes the whole class listable with one search:
+
+```python
+search(kind="todo", tags=["needs-terminal"], status="open")
+```
+
+The asks view marks these rows `[terminal]`, and
+`search(kind="todo", view="reto-queue")` groups them under TERMINAL,
+ahead of the chat answers and the hand work (`want-paper` /
+`needs-hands` land under HANDS). File a terminal chore the same shape
+as any queue item — verb-first title, what it unblocks, the default if
+nobody runs it — plus the tag.
+
 ## Close an item once the person answered
 
 Record the answer as a comment, then release it — `put` with `id=` +

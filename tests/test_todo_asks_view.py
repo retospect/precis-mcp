@@ -4,15 +4,18 @@ a question for the owner is an ``ask-user`` todo carrying ``meta.ask``."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
+import precis.settings as psettings
 from precis import alerts as alerts_mod
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.todo import _TREE_SEARCH_VIEWS, TodoHandler, TodoView
+from precis.plans import gates
 from precis.store import Store
 from precis.store.types import Tag
 from precis.todo import asks_view
@@ -174,9 +177,11 @@ def test_render_groups_by_class_then_quest_then_thread(
     lines = out.splitlines()
 
     # gr652333: the header tails with the untriaged count (none of the
-    # seeded rows carries an asks-triage stamp yet).
+    # seeded rows carries an asks-triage stamp yet). gr653289 narrowed it
+    # to what the sweep can stamp — todos only; the needs:ruling gripe is
+    # not a triage subject, so 3, not 4.
     assert (
-        lines[0] == "# asks — 1 showstopper · 2 decision · 1 discussion · 4 untriaged"
+        lines[0] == "# asks — 1 showstopper · 2 decision · 1 discussion · 3 untriaged"
     )
     heads = [ln for ln in lines if ln.split(" (")[0] in asks_view.CLASSES]
     assert [h.split(" (")[0] for h in heads] == [
@@ -620,3 +625,205 @@ def test_coordinator_view_lists_routed_rows(
 
     # And the routed row is off the owner-facing model.
     assert all(r.ref_id != routed for r in asks_view.asks_model(store).rows)
+
+
+# ── gr653289: needs groups, needs-spec gripes, warn alerts, releases ──
+
+
+def _waiting(handler: TodoHandler, text: str, *tags: str) -> int:
+    """An unclaimed ``waiting-for:reto`` queue item with extra tags."""
+    return id_of(handler.put(text=text, tags=["waiting-for:reto", *tags]).body)
+
+
+def test_reto_queue_groups_by_needs(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr653289 slice 1: TERMINAL / CHAT / HANDS sections in that order,
+    a count per group, numbering continuous across them and
+    most-blocked-first inside each."""
+    quiet = _waiting(handler, "Set the prod vault secret", "needs-terminal")
+    hot = _waiting(handler, "Rescue the stale index.lock", "needs-terminal")
+    hands = _waiting(handler, "Fetch by hand: the paywalled paper", "want-paper")
+    chat = _waiting(handler, "Pick the merge order")
+    for _ in range(2):
+        sl = id_of(handler.put(text="Waiting slice.", meta={"llm_tier": None}).body)
+        store.add_link(src_ref_id=sl, dst_ref_id=hot, relation="blocked-by")
+
+    body = asks_view.render_reto_queue(store).body
+    terminal = body.index("TERMINAL (2)")
+    assert terminal < body.index("CHAT (1)") < body.index("HANDS (1)")
+    assert body.index(f"1. td{hot} ") < body.index(f"2. td{quiet} ")
+    assert f"3. td{chat} " in body
+    assert f"4. td{hands} " in body
+
+
+def test_asks_marks_terminal_rows(handler: TodoHandler, hub: Hub) -> None:
+    """gr653289 slice 2: a ``needs-terminal`` row wears ``[terminal]`` in
+    ``view='asks'``; an unmarked queue item does not."""
+    term = _waiting(handler, "Rescue the stale index.lock", "needs-terminal")
+    plain = _waiting(handler, "Pick the merge order")
+    body = handler.search(view="asks").body
+    line = next(ln for ln in body.splitlines() if f"td{term} " in ln)
+    assert "[terminal]" in line
+    plain_line = next(ln for ln in body.splitlines() if f"td{plain} " in ln)
+    assert "[terminal]" not in plain_line
+
+
+def test_queue_includes_reto_gripe_and_warn_alert(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr653289 slice 3: a ``STATUS:needs_spec`` gripe carrying
+    ``reto:ask`` and a warn alert join the queue as decisions; an info
+    alert, a noisy-source warn alert and an untagged needs-spec gripe
+    stay out."""
+    gripe_h = GripeHandler(hub=hub)
+    asked = id_of(gripe_h.put(text="Needs a spec ruling.").body)
+    store.add_tag(asked, Tag.open("reto:ask"), set_by="system")
+    store.add_tag(
+        asked,
+        Tag.closed("STATUS", "needs_spec"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    untagged = id_of(gripe_h.put(text="Needs spec, nobody asked Reto.").body)
+    store.add_tag(
+        untagged,
+        Tag.closed("STATUS", "needs_spec"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    warn, _ = alerts_mod.raise_alert(
+        store,
+        source="fix_gripe",
+        fingerprint="lane-skip-1",
+        title="fix_gripe lane skipping",
+        severity="warn",
+    )
+    info, _ = alerts_mod.raise_alert(
+        store,
+        source="openalex-enrich",
+        fingerprint="minor-1",
+        title="a minor condition",
+        severity="info",
+    )
+    noisy, _ = alerts_mod.raise_alert(
+        store,
+        source="nursery:long-wait",
+        fingerprint="wait-1",
+        title="a long wait",
+        severity="warn",
+    )
+
+    ids = {r.ref_id for r in asks_view.reto_queue(store)}
+    assert {asked, warn} <= ids
+    assert ids.isdisjoint({untagged, info, noisy})
+    model = asks_view.asks_model(store)
+    assert _row(model, asked).klass == asks_view.DECISION
+    assert _row(model, asked).reasons == ("reto:ask",)
+    assert _row(model, warn).klass == asks_view.DECISION
+
+
+def test_pending_release_row_terminal(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr653289 slice 4: a release pass whose ``meta.release_target.sha``
+    the prod head doesn't cover renders one ``needs='terminal'`` row
+    naming the release and its sha count; a covered sha and a confirmed
+    pass stay out."""
+    pending = id_of(handler.put(text="Release pass", meta={"llm_tier": None}).body)
+    store.stamp_ref_meta(
+        pending,
+        {
+            "release_target": {
+                "sha": "a1b2696f7000aaaa",
+                "upto": ["c76d8c202abc", "a1b2696f7000"],
+            },
+            "release": {"rN": "r9", "sha": "a1b2696f7000aaaa"},
+        },
+    )
+    shipped = id_of(handler.put(text="Release pass", meta={"llm_tier": None}).body)
+    store.stamp_ref_meta(
+        shipped,
+        {"release_target": {"sha": "be100d540abc", "upto": ["be100d540abc"]}},
+    )
+    confirmed = id_of(handler.put(text="Release pass", meta={"llm_tier": None}).body)
+    store.stamp_ref_meta(
+        confirmed,
+        {
+            "release_target": {"sha": "f00df00df00d", "upto": ["f00df00df00d"]},
+            "release": {"rN": "r8", "confirmed": {"sha": "f00df00df00d"}},
+        },
+    )
+    rec = {
+        "head": "be100d540abc",
+        "deployed_at": "2026-11-13T00:00:00Z",
+        "landed": ["0123456789ab"],
+    }
+    psettings.set_setting(gates.PROD_HEAD_KEY, json.dumps(rec), store=store)
+    psettings.invalidate(gates.PROD_HEAD_KEY)
+
+    rows = asks_view.reto_queue(store)
+    row = next(r for r in rows if r.ref_id == pending)
+    assert (row.kind, row.needs) == ("release", "terminal")
+    assert {shipped, confirmed}.isdisjoint(r.ref_id for r in rows)
+
+    body = asks_view.render_reto_queue(store).body
+    assert "TERMINAL (1)" in body
+    assert "release r9 pending — 2 shas on main await deploy" in body
+    assert "untriaged" not in body  # a synthetic row is no triage subject
+
+
+def test_reto_gripe_reason_needs_the_needs_spec_status(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr653289 review: ``reto:ask`` earns the decision reason only on a
+    ``STATUS:needs_spec`` gripe — a row admitted by another tag keeps the
+    tag as parked context. Without the status the same tags stay a
+    discussion, and a discussion never reaches the queue."""
+    gripe_h = GripeHandler(hub=hub)
+    open_g = id_of(
+        gripe_h.put(
+            text="Was asked once; the spec landed elsewhere.",
+            tags=["reto:ask", "discussion"],
+        ).body
+    )
+    spec_g = id_of(
+        gripe_h.put(
+            text="Still needs Reto's ruling.",
+            tags=["reto:ask", "discussion"],
+        ).body
+    )
+    store.add_tag(
+        spec_g,
+        Tag.closed("STATUS", "needs_spec"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+
+    model = asks_view.asks_model(store)
+    assert _row(model, open_g).klass == asks_view.DISCUSSION
+    spec_row = _row(model, spec_g)
+    assert spec_row.klass == asks_view.DECISION
+    assert "reto:ask" in spec_row.reasons
+    ids = {r.ref_id for r in asks_view.reto_queue(store)}
+    assert spec_g in ids and open_g not in ids
+
+
+def test_reto_queue_pages_stay_group_ordered(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr653289 review: the queue is group-ordered before slicing — a
+    page-1 CHAT row can never precede a page-2 TERMINAL one, and a group
+    header counts the whole group, not just the rows on the page."""
+    chat = _waiting(handler, "Pick the merge order")  # filed first
+    t1 = _waiting(handler, "Set the prod vault secret", "needs-terminal")
+    t2 = _waiting(handler, "Rescue the stale index.lock", "needs-terminal")
+
+    one = asks_view.render_reto_queue(store, page_size=2).body
+    assert "TERMINAL (2)" in one and "CHAT" not in one
+    assert f"1. td{t1} " in one and f"2. td{t2} " in one
+    assert f"td{chat}" not in one
+
+    two = asks_view.render_reto_queue(store, page_size=2, page=2).body
+    assert "CHAT (1)" in two and "TERMINAL" not in two
+    assert f"3. td{chat} " in two
