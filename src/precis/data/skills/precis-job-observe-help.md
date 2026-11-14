@@ -81,9 +81,9 @@ get(kind='job', id='/logs')
 
 get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
 # handler= takes the short pass name ('dispatch', 'embed', ...), the full
-# dotted logger ('precis.workers.dispatch'), or the pass named in the
-# runner's per-cycle `worker: <pass> claimed=N ok=N failed=N` INFO row
-# (payload.handler) — so level=INFO shows a quiet pass's heartbeat too
+# dotted logger ('precis.workers.dispatch'), or the per-cycle
+# `worker: <pass> claimed=N ok=N failed=N` INFO row's pass (payload.handler)
+# — so level=INFO shows a quiet pass's heartbeat too
 
 get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&page_size=50')
 # host=, q= (substring on message), since= (hours, max 168),
@@ -94,8 +94,8 @@ get(kind='job', id='/logs?job=jo123')
 # it (host= overrides); since= is ignored. Errors if never claimed.
 
 get(kind='job', id='/logs?process=precis-worker-agentlane')
-# process= is an exact match on the PRECIS_PROCESS env the plist sets
-# (NULL unless set); a host with several worker units needs this —
+# process= exactly matches the PRECIS_PROCESS env the plist sets
+# (NULL unless set); a host with several worker units needs it —
 # host= alone can't tell them apart
 
 # top-level q= works too (id's query string wins on conflict)
@@ -106,9 +106,9 @@ get(kind='job', id='/logs', args={'handler': 'dispatch', 'level': 'INFO', 'since
 
 Read-only view over the centralised `worker_logs` table (migration
 0015) — the same table an operator reads via `precis logs` on the
-CLI. Header line states the resolved filter + UTC cutoff; each row is
+CLI. The header states the resolved filter + UTC cutoff; each row is
 `ts host handler LEVEL message`; the trailer says `N rows shown of M
-matching`; no other agent surface reads this table (no Bash, no raw SQL).
+matching`.
 
 ## Read garden review counts
 
@@ -119,10 +119,9 @@ latest non-skipped `graph_garden` job with recorded results in that
 window. Omit `since` for 7d; a positive age (`24h`, `14d`) or ISO UTC
 timestamp works, as does `/garden?since=7d`.
 
-These are dated ledger events, not current pending-proposal counts:
-an approved proposal still has its original proposal event. Held
-consumer rows are separated from proposed; sampled reviewer actors
-are excluded. This view is read-only.
+These are dated ledger events, not current pending counts: an
+approved proposal keeps its original event; held consumer rows are
+separated from proposed; sampled reviewer actors are excluded. Read-only.
 
 ## Is the external rate limiter pacing a provider?
 
@@ -146,8 +145,8 @@ unless `hosts=1` or `provider=host:<netloc>`; the trailer is host-row
 occupancy.
 
 `effective:` is the resolved `EffectivePolicy`
-(`precis.utils.outbound_policy`): `cls`, `rate` (`-` =
-rate-less class), `concurrency` (a `resource_slots` resource — `slots`
+(`precis.utils.outbound_policy`): `cls`, `rate` (`-` = rate-less),
+`concurrency` (a `resource_slots` resource; `slots`
 shows `free/capacity`), `max_wait_s`, `connect_s`/`read_s`/`total_s`,
 `on_refuse` (wait/defer/fail), `retry`; `(layer)` names who set each
 field (class/code/db/inferred/deadline). `state:` = `parked` (live
@@ -158,7 +157,7 @@ Overrides (operator, no deploy — never hand SQL):
 --on-refuse|--concurrency RESOURCE|N [--clear FIELD] [--create]
 [--dry-run]`; a bare N edits the hold row's `resource_slots` capacity.
 A write audits to `worker_logs` and lands fleet-wide in ~60 s (30 s
-snapshot TTL).
+TTL).
 
 ## Storage and health quick facts
 
@@ -174,9 +173,9 @@ get(kind='job', id='/facts')
 The "how big is the corpus" block the weekly report's quick-facts line
 reads (gr593053) — one call, read-only, no Bash. Everything is SQL over
 tables this server owns; the backup line says `no in-DB record` until
-the dir-dump leg's stamp lands rather than reporting a stale figure. Pair with
+the dir-dump leg stamps it, never a stale figure. Pair with
 `get(kind='skill', id='precis-status')` for build staleness and
-`search(kind=K, view='count')` for filtered totals on one kind.
+`search(kind=K, view='count')` for one-kind totals.
 
 ## What changed since the last doctor tick?
 
@@ -191,7 +190,7 @@ One read that answers "what moved since the last doctor_tick job ran":
 nothing new — the baseline-noise candidates) / `NEW GRIPES` /
 `GRIPE COMMENTS`, each row naming the ref to drill into. The cutoff
 comes from the last *succeeded* `doctor_tick` job's `meta.started_at`
-(falls back to the latest finished tick, then to 8h ago). This is the
+(fallback: latest finished tick, then 8h ago). This is the
 doctor's gather entry point — the static `/rules` catalogue and
 unchanged threads don't need re-reading.
 
@@ -211,9 +210,9 @@ where. Each row is
 
 The stamp is taken at claim time — `/builds` shows what a process ran
 on its last claim, not what it runs now; an idle lane keeps its
-pre-restart build and `last=` still moves (polls update old jobs). An
-old build is "no claim since the restart", not "deploy did not land" —
-the deploy's post-bounce check (playbook 43) is the authority there.
+pre-restart build and `last=` still moves. An old build is "no claim
+since the restart", not "deploy did not land" — the deploy's
+post-bounce check (playbook 43) is the authority there.
 
 A fix is live on a process when that process's newest build sha is the fix
 or a descendant of it. Do not judge that by eye: pass the fix's commit as
@@ -257,8 +256,8 @@ get(kind="job", id="/cadence")                # every scheduler_leases row
 ```
 
 Each recurring cadence holds a `scheduler_leases` row — the lease clock
-the decentralized scheduler claims. `next_fire_at` in the past means the
-cadence is due, not broken (any live worker may claim it).
+the scheduler claims. `next_fire_at` in the past means due, not broken (any live
+worker may claim it).
 
 ## Is a live switch set? — /settings
 
@@ -276,9 +275,8 @@ withheld count), unknown key segments render as `<name>`, and values
 render only as typed scalars (bool, number, timestamp, duration,
 vetted enum word — anything else is `(withheld: string, N chars)`).
 `service_config.host` is masked. Read-only — writes stay with
-a human operator (the service/settings surfaces and the web pages).
-The Dark switches table on [[precis-status]] covers only `enable_env`
-services; this is every row.
+a human operator. The Dark switches table on [[precis-status]] covers
+only `enable_env` services; this is every row.
 
 ## Which claim.* overrides are set? — /claim
 
@@ -312,8 +310,8 @@ The stored credential check as counts, never names or values:
 but unverified, missing = absent, invalid = rejected, unknown =
 inconclusive), plus when the hourly `secret_status` job last wrote
 the snapshot and whether a re-check is queued. The web `/secrets`
-page is the editor and shows the same snapshot per row; this view is
-the reportable one-liner.
+page is the editor (same snapshot per row); this view is the
+reportable one-liner.
 
 ## See also
 

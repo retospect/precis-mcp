@@ -21,7 +21,9 @@ from typing import Any
 import pytest
 
 import precis.handlers as handlers_pkg
+from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.gripe import GripeHandler
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -950,6 +952,32 @@ def test_args_key_naming_forwarded_kwarg_is_promoted_not_rejected(
     bad = _call(runtime_with_store, "todo", "search", {"sort": "bogus"})
     assert "not accepted by todo.search" not in bad, bad
     assert "sort= is supported" in bad, bad
+
+
+def test_wrapper_defaulted_page_does_not_shadow_args_page(
+    runtime_with_store: PrecisRuntime, hub: Hub, store: Store
+) -> None:
+    """gr673370: the reto-queue footer advertises the continuation
+    ``args={'page': N}``, but the verb wrapper unconditionally defaults
+    top-level ``page=1`` into the search payload — promotion treated that
+    default as an explicit caller value and silently dropped the nested
+    one, so the window never moved and the caller looped on page 1. A
+    wrapper default is not caller intent: the promoted args= value wins
+    it. (The payload below is exactly what tools/core.search builds for
+    ``search(kind='todo', view='reto-queue', page_size=2, args={'page': 2})``.)"""
+    gripe_h = GripeHandler(hub=hub)
+    for i in range(3):
+        gripe_h.put(text=f"Ruling {i}?", tags=["for-reto:ruling"])
+    payload = {
+        "kind": "todo",
+        "view": "reto-queue",
+        "page_size": 2,
+        "page": 1,
+        "__extras__": {"page": 2},
+    }
+    out = runtime_with_store.dispatch("search", payload)
+    assert "[error" not in out, out
+    assert out.startswith("# reto-queue — rows 3-3 of 3 waiting"), out.splitlines()[0]
 
 
 @pytest.mark.parametrize("kind", ["gripe", "todo"])

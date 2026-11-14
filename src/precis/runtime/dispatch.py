@@ -4299,8 +4299,20 @@ class DispatchMixin(RuntimeShape):
                             verb,
                             {k: extras.pop(k) for k in promotable},
                         )
+                        # A top-level value the verb wrapper defaulted (not
+                        # typed by this caller — search's ``page=1`` can't be
+                        # passed at the top level over MCP at all) must not
+                        # shadow the same key arriving explicitly through
+                        # args=; otherwise the windowed views' advertised
+                        # continuation ``args={'page': N}`` is silently
+                        # dropped and the caller loops on page 1 (gr673370).
+                        wrapper_defaulted = _WRAPPER_DEFAULTED_KWARGS.get(verb, ())
                         for k, v in promoted.items():
-                            if k not in args or args[k] is None:
+                            if (
+                                k not in args
+                                or args[k] is None
+                                or k in wrapper_defaulted
+                            ):
                                 args[k] = v
                         unknown = sorted(set(unknown) - set(promotable))
                     if unknown:

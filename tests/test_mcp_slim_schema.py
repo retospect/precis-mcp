@@ -21,6 +21,8 @@ import pytest
 from mcp.types import CallToolResult
 
 from precis import server
+from precis.dispatch import Hub
+from precis.handlers.gripe import GripeHandler
 from precis.store import Store
 from precis.tools import core as tools_core
 from precis.tools.mcp_slim import CORE_PARAMS
@@ -546,6 +548,23 @@ def test_reto_queue_page_arg_reaches_dispatch(
     )
     assert out == "ok"
     assert seen["__extras__"]["page"] == 3
+
+
+def test_reto_queue_page_arg_windows_end_to_end(mcp_runtime: None, hub: Hub) -> None:
+    """gr673370 end-to-end: the rendered footer's continuation is
+    ``args={'page': N}`` — over the real call path (slim → core →
+    dispatch → handler) it must actually move the window, not just reach
+    the dispatch boundary. The verb wrapper defaults top-level page=1
+    into the payload; dispatch promotion used to let that default shadow
+    the nested page, silently dropping it."""
+    gripe_h = GripeHandler(hub=hub)
+    for i in range(3):
+        gripe_h.put(text=f"Ruling {i}?", tags=["for-reto:ruling"])
+    out = _call(
+        "search",
+        {"kind": "todo", "view": "reto-queue", "page_size": 2, "args": {"page": 2}},
+    )
+    assert "rows 3-3 of 3 waiting" in out.splitlines()[0], out[:300]
 
 
 def test_memory_index_listing_page_still_refused_with_a_query(
