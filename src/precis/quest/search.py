@@ -606,9 +606,12 @@ def run_search_step(
     :data:`SEEN_NOT_LINKED_CAP`); every
     :data:`lit_gate.GATE_SAMPLE_MODULUS`-th rejection is flagged
     ``— sampled for review`` — *named for the next tick's* ``judgments``
-    *verdict, never linked past the gate*. Gate failures record no
-    ``considered`` row — durable rejection is the ``judgments``
-    payload's job (:func:`apply_judgments`).
+    *verdict, never linked past the gate*. The gate's own config is
+    verified too: a quest whose meta can't be read is not "no gate" —
+    every paper candidate defers (``gate unreadable — deferred``)
+    rather than link past a possibly-configured gate. Gate failures
+    record no ``considered`` row — durable rejection is the
+    ``judgments`` payload's job (:func:`apply_judgments`).
 
     Each lit-search entry stamps ``lit_linked``/``lit_acquired`` meta so
     :func:`weekly_literature_line` can sum the week's gate-passing links
@@ -630,6 +633,8 @@ def run_search_step(
             f"held out {len(rejected)} considered-not-useful source(s) "
             "(view='considerations')"
         )
+    if gate is lit_gate.UNREADABLE:
+        notes.append("lit_gate config unreadable — paper links deferred")
 
     for raw in searches[:MAX_QUERIES]:
         entry = _parse_search_entry(raw)
@@ -690,8 +695,11 @@ def run_search_step(
         # quest's own graph), and every GATE_SAMPLE_MODULUS-th rejection
         # is flagged "— sampled for review": named for the next tick's
         # `judgments` verdict, NEVER linked past the required gate.
-        # Gate failures write NO considered row — durable rejection is
-        # the tick's `judgments` channel, not this cheap triage.
+        # A quest whose lit_gate config can't be READ is not "no gate" —
+        # every paper defers ("gate unreadable — deferred") rather than
+        # link past a possibly-configured gate. Gate failures write NO
+        # considered row — durable rejection is the tick's `judgments`
+        # channel, not this cheap triage.
         passing: list[int] = []
         rejects: list[tuple[int, str]] = []
         for rid in above_floor:
@@ -708,15 +716,19 @@ def run_search_step(
             if not lit_gate.ref_has_metadata(store, ref):
                 rejects.append((rid, "no title/abstract"))
                 continue
-            if kind == "paper" and gate:
-                ok, why = lit_gate.check_terms(
-                    lit_gate.candidate_text(store, ref), gate
-                )
-                if not ok:
-                    if rid % lit_gate.GATE_SAMPLE_MODULUS == 0:
-                        why = f"{why} — sampled for review"
-                    rejects.append((rid, why))
+            if kind == "paper":
+                if gate is lit_gate.UNREADABLE:
+                    rejects.append((rid, "gate unreadable — deferred"))
                     continue
+                if gate:
+                    ok, why = lit_gate.check_terms(
+                        lit_gate.candidate_text(store, ref), gate
+                    )
+                    if not ok:
+                        if rid % lit_gate.GATE_SAMPLE_MODULUS == 0:
+                            why = f"{why} — sampled for review"
+                        rejects.append((rid, why))
+                        continue
             passing.append(rid)
         linked: list[int] = []
         for rid in passing[:MAX_LINK_PER_QUERY]:

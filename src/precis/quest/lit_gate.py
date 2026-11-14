@@ -21,7 +21,11 @@ filters now sit between a hit and its edge:
   configured list; a miss reports ``no host term`` / ``no reaction
   term`` as the line's per-candidate verdict. The gate is **opt-in**:
   a quest with no ``lit_gate`` config links as before, so the gate
-  stays off until an operator writes the lists.
+  stays off until an operator writes the lists. A quest read that
+  **fails** is *not* "no gate" — :func:`gate_terms` returns
+  :data:`UNREADABLE` and every paper candidate defers (``gate
+  unreadable — deferred``): an unseen config must never silently
+  disable a configured gate.
 
 **No durable rejection.** A gate failure is ephemeral — it names the
 verdict in the lit-search logbook line and stops there; nothing here
@@ -82,19 +86,24 @@ def candidate_ref(store: Store, kind: str, ref_id: int) -> Any:
         return UNREADABLE
 
 
-def gate_terms(store: Store, quest_id: int) -> dict[str, list[str]]:
+def gate_terms(store: Store, quest_id: int) -> dict[str, list[str]] | Any:
     """The quest's ``meta.lit_gate`` term lists, normalised to
     ``{"host": […], "reaction": […]}`` (a list is dropped when absent
     or empty — an unconfigured axis gates nothing).
 
-    Empty dict when the key is unset, malformed, both lists are empty,
-    or the quest can't be read — every such case means *no gate*: the
-    gate is opt-in and stays off until an operator writes the terms.
+    Three distinct outcomes, because "can't tell" must never read as
+    "nothing configured": :data:`UNREADABLE` when the quest read itself
+    *fails* (a store blip) — callers defer linking rather than treat an
+    unseen config as no gate; ``{}`` when the read succeeds — the key
+    unset, malformed, both lists empty, or the quest resolving to
+    nothing is *absent* configuration, and the opt-in gate stays off
+    until an operator writes the terms; otherwise the term dict.
     """
     try:
         ref = store.get_ref(kind="quest", id=quest_id)
     except Exception:
-        return {}
+        log.debug("lit gate: quest %s unreadable", quest_id, exc_info=True)
+        return UNREADABLE
     cfg = (getattr(ref, "meta", None) or {}).get(LIT_GATE_META_KEY)
     if not isinstance(cfg, dict):
         return {}
@@ -171,7 +180,10 @@ def gate_verdict(store: Store, quest_id: int, ref_id: int) -> tuple[bool, str]:
     """The pre-link term gate on one paper candidate → ``(pass, reason)``.
 
     No ``meta.lit_gate`` terms configured → pass (the gate is opt-in).
-    An unreadable candidate → ``(False, "candidate unreadable —
+    An unreadable *quest* — the config itself can't be read →
+    ``(False, "gate unreadable — deferred")``: an unseen config is not
+    a verdict and must not silently disable a configured gate. An
+    unreadable candidate → ``(False, "candidate unreadable —
     deferred")``: a store blip is no verdict, so the link is deferred
     rather than either approved or rejected. Otherwise the
     title+abstract must carry a host term and a reaction term, reported
@@ -180,6 +192,8 @@ def gate_verdict(store: Store, quest_id: int, ref_id: int) -> tuple[bool, str]:
     candidate.
     """
     terms = gate_terms(store, quest_id)
+    if terms is UNREADABLE:
+        return False, "gate unreadable — deferred"
     if not terms:
         return True, f"no {LIT_GATE_META_KEY} terms configured"
     ref = candidate_ref(store, "paper", ref_id)

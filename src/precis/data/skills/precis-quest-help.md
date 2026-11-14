@@ -578,6 +578,9 @@ the quest carries `meta.lit_gate` term lists (`{"host": ["Pd", "Pd(111)"],
 "reaction": ["NO", "NH3", "nitric oxide reduction"]}` — set via
 `edit(kind='quest', meta={...})`; unset = no gate), a paper whose
 title+abstract names no term from a configured list is rejected. The
+gate's own config is verified the same way: a quest whose meta can't
+be read defers every paper candidate (`gate unreadable — deferred`)
+rather than let an unseen config silently disable a configured gate. The
 logbook line names the verdict per candidate —
 `lit-search: "…" → linked pa1; seen, not linked: pa2 (no host term), pa3
 (no title/abstract)` — and every fifth rejected ref id is flagged
@@ -669,7 +672,10 @@ that's wedged.
 - **`lit_gate`** — the lit-search term gate (gr592951):
   `{'host': [...], 'reaction': [...]}`, each a list of terms a paper
   candidate's title+abstract must name (at least one per configured
-  list) to link `serves`. Unset = no gate. Off-topic rejections are
+  list) to link `serves`. Unset = no gate; a quest whose meta can't be
+  read at search time defers every paper candidate (`gate unreadable —
+  deferred`) rather than link past a possibly-configured gate.
+  Off-topic rejections are
   named in the lit-search line's `seen, not linked:` tail; every fifth
   is flagged `— sampled for review` for a later `judgments` verdict
   (never auto-linked). Write the lists from the

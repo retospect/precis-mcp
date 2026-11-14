@@ -137,6 +137,34 @@ class TestGateVerdict:
         assert not ok
         assert why == "no host term"
 
+    def test_unreadable_quest_config_defers_not_passes(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """td678026 review: a quest read blip is not "no gate" —
+        ``gate_terms`` reports UNREADABLE and ``gate_verdict`` defers so
+        an unseen config can't silently disable a configured gate."""
+        q = _quest(store, GATE)
+        p = _paper(store, "p", "NO reduction on Pd", "NH3 selectivity")
+        orig_get_ref = store.get_ref
+
+        def _flaky(*, kind: str, id: int, **kw: Any) -> Any:
+            if kind == "quest":
+                raise RuntimeError("store blip")
+            return orig_get_ref(kind=kind, id=id, **kw)
+
+        monkeypatch.setattr(store, "get_ref", _flaky)
+        assert lit_gate.gate_terms(store, q) is lit_gate.UNREADABLE
+        assert lit_gate.gate_verdict(store, q, p) == (
+            False,
+            "gate unreadable — deferred",
+        )
+
+    def test_missing_quest_reads_as_no_gate(self, store: Store) -> None:
+        """A quest ref resolving to nothing is a *successful* read —
+        absent configuration, ``{}``, never UNREADABLE: only a failed
+        read defers."""
+        assert lit_gate.gate_terms(store, 987654321) == {}
+
 
 # ── run_search_step wiring ───────────────────────────────────────────
 
@@ -244,6 +272,51 @@ class TestRunSearchStepGate:
         lines = _lit_search_lines(store, q)
         assert len(lines) == 1
         assert f"pa{p} (unreadable — deferred)" in lines[0]
+
+    def test_unreadable_gate_config_defers_paper_candidates(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """td678026 review: ``gate_terms`` used to fold a quest read
+        failure into ``{}`` — no gate — so a store blip silently linked
+        off-topic candidates past a configured gate. Now every paper
+        defers (``gate unreadable — deferred``); the metadata rule still
+        runs, so a titleless candidate reports its own verdict."""
+        q = _quest(store, GATE)
+        on_topic = _paper(
+            store,
+            "on-topic",
+            "Nitric oxide electroreduction on doped Pd(111)",
+            "NO to NH3 pathways on Pd.",
+        )
+        meta_less = _paper(store, "stub", "")
+        orig_get_ref = store.get_ref
+        quest_reads = 0
+
+        def _flaky(*, kind: str, id: int, **kw: Any) -> Any:
+            nonlocal quest_reads
+            if kind == "quest":
+                quest_reads += 1
+                # quest_tag_value reads the quest first; the blip lands
+                # on the gate_terms read — a mid-step store failure.
+                if quest_reads > 1:
+                    raise RuntimeError("store blip")
+            return orig_get_ref(kind=kind, id=id, **kw)
+
+        monkeypatch.setattr(store, "get_ref", _flaky)
+
+        step = qsearch.run_search_step(
+            store,
+            q,
+            ["q"],
+            search_fn=lambda _s, _q, _e: [(on_topic, 1.0), (meta_less, 0.9)],
+        )
+
+        assert step.papers_linked == 0
+        assert not _serving(store, q)
+        lines = _lit_search_lines(store, q)
+        assert len(lines) == 1
+        assert f"pa{on_topic} (gate unreadable — deferred)" in lines[0]
+        assert f"pa{meta_less} (no title/abstract)" in lines[0]
 
     def test_gate_failure_writes_no_considered_row(self, store: Store) -> None:
         """Cheap triage never becomes a durable rejection: a gate-rejected
