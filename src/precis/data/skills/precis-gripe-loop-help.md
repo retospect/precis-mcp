@@ -244,7 +244,7 @@ The `attempt:N` tag shape is the one `run_slice.release_todo` writes,
 so a later automated pass reads the same history — but `release_todo`
 only knows the `claimed-by:lane-<lane>` prefix; a `claimed-by:fleet-…`
 lease is dropped by hand in the same `tag` call, or kept when the same
-tree re-takes the fix round.
+tree re-takes the fix round. A wrong test is fixed inline (gr674030).
 
 ## Step 5 — record the review verdict
 

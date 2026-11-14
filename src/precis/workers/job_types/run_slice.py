@@ -1378,6 +1378,10 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "land, push or ship. Do not tag this todo done: the dispatcher "
         "closes it on your verdict.",
         "",
+        "A test the build changed is judged like code (gr674030): LAND when "
+        "the handoff shows the old assertion was a wrong spec, FIX when the "
+        "change weakens a real check to get green.",
+        "",
         "You are read-only: run no tests, no typecheck, no lint and no "
         "`uv` or `scripts/test` command — read the diff the Review target "
         "section names (a `git show <sha>` squash after land, a "
@@ -1798,13 +1802,17 @@ def _devin_verdict_text(base: str) -> str:
 _DEVIN_HANDOFF_TEXT = (
     "Your final message is posted on the todo as the `handoff:` comment "
     "the next session starts from: what changed, what is left, and "
-    "what you would do next."
+    "what you would do next. A test that asserts a wrong spec is code: "
+    "fix it in this build and name the test, the change and why in the "
+    "handoff — no ask (gr674030)."
 )
 
 _BUILDER_HANDOFF_TEXT = (
     "Your final message is posted on the todo as the `handoff:` comment the "
     "next session starts from: what you committed, what is left, what you "
-    "would do next."
+    "would do next. A test that asserts a wrong spec is code: fix it in this "
+    "build and name the test, the change and why in the handoff — no ask "
+    "(gr674030)."
 )
 
 #: The builder's ``tests:`` line instruction (:func:`tests_ran` reads it).
