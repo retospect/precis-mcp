@@ -81,6 +81,31 @@ what the slice waits on. ``stats`` carries per-reason
 drop counters (``drop:<reason>``, ``unparseable_reply``, ``truncated``,
 ``write_refused``, ``flag:<name>``, ``paused``) and every escalation
 carries ``chunk_kind`` plus ``stop_reason`` on reply failures.
+
+A body re-ingest that swaps the paper's chunks re-queues this pass
+(:mod:`precis.workers.survey_requeue`, gr632959): a live job's next
+slice consumes ``meta.survey_revision_request`` into a durable
+``coordinator_state.restart`` checkpoint in the same UPDATE — the
+request can't be lost to a mid-slice crash — and re-reads the new body
+from chunk 0; a resumed slice whose checkpointed ``body_mark``
+disagrees with the live chunks restarts the same way, covering swap
+paths that miss the stamp. The acceptance child is idem-keyed by run
+token AND body mark — the revision the pass read — so a restart never
+adopts the outgoing body's still-active review, even when a
+params-pinned token keeps naming the same operator batch across the
+restart (the token alone cannot tell the revisions apart; the child's
+sampling frame is frozen at its draw). A restart's revision-keyed run
+token is merged into the checkpoint before the slice processes — a
+run-level accept gated by ``_token_extract_live`` must see the live
+pass carrying it, not just the next ``Yield``. The ``restart``
+checkpoint is the consumed request's receipt: a terminal job still
+carrying it is a slice that never returned (coordinator exception, or
+a crash the stuck-job sweeper later fails), and ``survey_requeue``'s
+drain sweeps it into an idem-keyed follow-up — or transfers the
+request to a live sibling whose own state cannot see the swap
+(one parked at ``await_accept`` over the outgoing body, or a
+``running`` slice already past its ``body_mark`` check — it can
+still finish into ``await_accept`` or ``Done`` without re-checking).
 """
 
 from __future__ import annotations
@@ -90,6 +115,8 @@ import re
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+
+from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
 from precis.extract import accept as _accept
@@ -238,6 +265,21 @@ def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _body_mark(chunks: list[dict[str, Any]]) -> str:
+    """A cheap revision stamp over the pass's live chunk set.
+
+    A body re-ingest is DELETE + INSERT, so the replacement lands on
+    fresh ``chunk_id``s and ``max(chunk_id)`` moves; the count catches
+    a swap that keeps the same high-water id. A re-ingested supplement
+    moves it too — the pass reads those chunks as well. Stamped into
+    the checkpoint as ``body_mark`` so a resume can tell the body it
+    counted chunks over from the body that is there now (gr632959).
+    """
+    if not chunks:
+        return "0:0"
+    return f"{max(c['chunk_id'] for c in chunks)}:{len(chunks)}"
 
 
 def _measurand_root(store: Store, raw: Any) -> int | None:
@@ -1033,14 +1075,74 @@ def _process_chunk(
     return None, landed, result
 
 
+#: ``refs.meta`` key a body-swap requeue stamps on a live job
+#: (:mod:`precis.workers.survey_requeue`); the next slice restarts the
+#: whole pass over the new body. Literal shared with that module — kept
+#: as a literal in both directions so neither imports the other.
+_REVISION_KEY = "survey_revision_request"
+
+
 def _survey_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
     state = (ctx.meta or {}).get("coordinator_state") or {}
+    req = (ctx.meta or {}).get(_REVISION_KEY)
+    if req is not None:
+        # gr632959 review: the body swap stamped a revision request on
+        # this job. The request survives whatever an in-flight slice
+        # persisted (the executor's meta merge never deletes keys), so
+        # a pass parked at await_accept — or whose slice persisted
+        # ``Done`` — over the outgoing body restarts here at its next
+        # claim instead of trusting a checkpoint that counts chunks that
+        # no longer exist. The consume is atomic with the restart it
+        # records: one UPDATE deletes the request AND writes the
+        # restart checkpoint. A crash between a bare delete and the
+        # slice's own persist used to leave the stale checkpoint
+        # standing with no request for the drain's terminal sweep; now
+        # a post-commit crash leaves ``restart`` durably in the
+        # checkpoint (the next claim restarts the same way) and a
+        # pre-commit crash leaves the request (reconsumed on claim).
+        state = {"phase": "extract", "restart": req}
+        with ctx.store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = (meta - %s) || %s::jsonb "
+                "WHERE ref_id = %s AND meta ? %s",
+                (
+                    _REVISION_KEY,
+                    Jsonb({"coordinator_state": state}),
+                    ctx.ref_id,
+                    _REVISION_KEY,
+                ),
+            )
+            conn.commit()
+        ctx.append_chunk(
+            "job_event",
+            "body replaced while this pass was live — restarting the "
+            "extract over the new body from chunk 0",
+        )
     phase = state.get("phase") or "extract"
     if phase == "extract":
-        return _phase_extract(ctx, state)
-    if phase == "await_accept":
-        return _phase_await(ctx, state)
-    return Done(summary=f"survey_extract: unknown phase {phase!r}", success=False)
+        result = _phase_extract(ctx, state)
+    elif phase == "await_accept":
+        result = _phase_await(ctx, state)
+    else:
+        return Done(summary=f"survey_extract: unknown phase {phase!r}", success=False)
+    if isinstance(result, Done) and state.get("restart") is not None:
+        # gr632959 review: ``restart`` means "a revision request was
+        # consumed and the restarted slice has not returned". A Done —
+        # success or failure — IS that return: the restarted pass ended
+        # on its own verdict, so the marker must not outlive it. The
+        # requeue sweep mints a follow-up for any terminal job still
+        # carrying one — that is exactly a slice that never returned
+        # (a coordinator exception, or a crash the stuck-job sweeper
+        # later fails) — and a stale marker here would mint a
+        # duplicate pass over a body this job already finished.
+        with ctx.store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta "
+                "#- '{coordinator_state,restart}'::text[] WHERE ref_id = %s",
+                (ctx.ref_id,),
+            )
+            conn.commit()
+    return result
 
 
 def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
@@ -1060,6 +1162,43 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     stats = {**_fresh_stats(), **dict(state.get("stats") or {})}
     escalations = list(state.get("escalations") or [])
     idx = int(state.get("idx") or 0)
+    mark = _body_mark(chunks)
+    body_changed = bool(state.get("restart")) or (
+        state.get("body_mark") is not None and state["body_mark"] != mark
+    )
+    if body_changed:
+        # gr632959: the body was swapped since the last slice — the
+        # checkpointed ``idx`` counts chunks that no longer exist, so a
+        # resume would silently skip the replacement chunks. Restart as
+        # a complete pass over the new body; a params-pinned run_token
+        # stays pinned (the operator's batch), else the token keys on
+        # the revision actually read. ``restart`` is the durable flag a
+        # consumed revision request leaves in the checkpoint (see
+        # _survey_dispatch) — same restart, but the checkpoint's own
+        # body_mark may match the new body already.
+        idx = 0
+        stats = _fresh_stats()
+        escalations = []
+        if not params.get("run_token"):
+            run_token = f"survey-extract:{ctx.ref_id}:{mark}"
+        if state.get("run_token") != run_token:
+            # gr632959 review r3: the revision-keyed token must reach the
+            # checkpoint BEFORE the slice processes — until the next
+            # Yield the row shows no run_token at all (the consume's
+            # checkpoint carries only ``restart``), so a run-level
+            # ``measure_accept`` gated by ``_token_extract_live`` would
+            # not see this live pass and could sample a half-written
+            # batch. Merge into the persisted checkpoint, preserving
+            # ``restart`` (the never-returned sweep still reads it).
+            with ctx.store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = meta || jsonb_build_object("
+                    "'coordinator_state', "
+                    "COALESCE(meta -> 'coordinator_state', '{}'::jsonb) "
+                    "|| %s::jsonb) WHERE ref_id = %s",
+                    (Jsonb({"run_token": run_token}), ctx.ref_id),
+                )
+                conn.commit()
     per_slice = _chunks_per_slice(params)
     min_chars = _min_chars(params)
     include_all = bool(params.get("include_all_sections"))
@@ -1143,7 +1282,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     # loop below treats it like remote. A ``local`` landing flips the
     # pacing off — see the module docstring.
     local_lane: bool | None = None
-    pause_streak = int(state.get("pause_streak") or 0)
+    pause_streak = 0 if body_changed else int(state.get("pause_streak") or 0)
     # ``ctx.budget_exhausted`` is the third exit (gr549215): the
     # coordinator pass's wall deadline. Between chunks is the yield
     # boundary — a pass that spent its budget stops after its current
@@ -1224,6 +1363,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                     "escalations": escalations,
                     "run_token": run_token,
                     "pause_streak": pause_streak,
+                    "body_mark": mark,
                 },
                 wake_when=_retry_wake(routed, why=why),
             )
@@ -1254,6 +1394,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 "escalations": escalations,
                 "run_token": run_token,
                 "pause_streak": pause_streak,
+                "body_mark": mark,
             },
             wake_when=_wake_s(1, why=why),
         )
@@ -1274,7 +1415,17 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 "tier": params.get("accept_tier"),
             },
             model=params.get("accept_model"),
-            idem_key=f"measure-accept:{ctx.ref_id}",
+            # Keyed by the run token AND the body mark — the revision
+            # this pass actually read — not the job or the batch token
+            # alone: a restarted pass (body swap — see _survey_dispatch)
+            # must not dedupe onto the outgoing body's still-active
+            # acceptance child. ``_accept_dispatch`` freezes its
+            # sampling frame at the draw, so that child can never
+            # review the replacement rows (gr632959 review). A
+            # params-pinned token names the operator's batch across the
+            # restart, so the token alone cannot tell the two revisions
+            # apart; the mark can.
+            idem_key=f"measure-accept:{ctx.ref_id}:{run_token}:{mark}",
         )
         acc_note = f"acceptance delegated to measure_accept job {accept_child}"
 

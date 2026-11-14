@@ -44,6 +44,7 @@ from psycopg.types.json import Jsonb
 
 from precis.utils.timeutil import now_iso
 from precis.workers.job_types import JobTypeSpec
+from precis.workers.survey_requeue import requeue_after_body_replace
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -489,6 +490,8 @@ def reextract(
             },
             conn=conn,
         )
+        # gr632959: a prior survey_extract read the outgoing body.
+        requeue_after_body_replace(store, conn, ref_id, new_chunks=len(chunk_rows))
         if body.spread:
             from precis.ingest.paper_hygiene import _journal_spread
 

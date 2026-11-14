@@ -64,6 +64,7 @@ _EXPECTED_SYSTEM = frozenset(
         "clusterize",
         "corpus_reconcile",
         "paper_reconcile",
+        "survey_requeue",
         "llm_reconcile",
         "openalex_enrich",
         "paper_meta_enrich",

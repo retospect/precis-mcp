@@ -512,6 +512,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="survey_requeue",
+        label="survey_extract requeue",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        one_line="Re-queue survey_extract on papers whose body was replaced.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="openalex_enrich",
         label="OpenAlex abstract/metadata enrich",
         category="acquisition",

@@ -224,6 +224,27 @@ Most work lands at one of these. Each has a convention that bites:
 - **Add a worker pass** → register on the derived queue; don't call
   `fill_embeddings` from the ingest path (workers own it).
 - **Mutate chunk text** → DELETE + INSERT, never UPDATE (cascade).
+- **Ingest needs worker-side follow-up** → `precis.ingest` may not
+  import `precis.workers` (import-linter contract), so an ingest path
+  that must trigger a worker pass stamps a flag on `refs.meta` in the
+  same transaction and a worker ref pass drains it — the pattern
+  `db_writer.py`'s `markup_refetch` body REPLACE uses for
+  `meta.survey_requeue_pending` → `workers/survey_requeue.py`
+  (re-running `survey_extract` after a body swap, gr632959: a live pass
+  gets a durable `meta.survey_revision_request` its next slice
+  atomically swaps for a `coordinator_state.restart` checkpoint — a
+  checkpoint clear would race the in-flight slice's persist, a bare
+  request delete would strand the stale checkpoint on a crash; a `Done`
+  return discharges the marker —
+  and the same pass sweeps either marker on a terminal job — an
+  unconsumed request (`Done` raced the stamp) or a restart checkpoint
+  whose slice never returned — into an idem-keyed re-mint, or
+  transfers the request to a live sibling whose state cannot see
+  the swap — parked at `await_accept` over the outgoing body, or a
+  `running` slice already past its `body_mark` check that can still
+  finish into `await_accept`/`Done` without re-checking; the sibling's
+  coverage is judged on `meta` + STATUS read under its `refs` row lock
+  so a concurrent `_persist_dispatch_result` can't tear the pair).
 - **Fetch an agent-supplied URL** → `safe_get`/`safe_stream`
   (`src/precis/utils/safe_fetch.py`); raw redirected `httpx` is an SSRF.
 

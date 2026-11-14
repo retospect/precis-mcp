@@ -35,6 +35,7 @@ from tests.extract_helpers import (
     fe_reply,
     llm_result,
     make_taxon,
+    ref_meta,
     survey_world,
 )
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -117,6 +118,283 @@ class TestSurveyExtractDispatch:
         ]
         assert len(run_inputs) == 2
         assert {r["literal"] for r in run_inputs} == {"NH3", "-0.5"}
+
+    def test_revision_request_restarts_parked_await_pass(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632959 review: a pass parked at ``await_accept`` over the
+        outgoing body must restart at extract when the claim carries the
+        requeue's revision request — the await phase never consults
+        ``body_mark``, so without the restart the replacement chunks
+        stay unprocessed."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        meta = _extract_meta(world, skip_accept=True)
+        meta["coordinator_state"] = {
+            "phase": "await_accept",
+            "accept_child": 999999,
+            "stats": {"chunks": 40, "written": 3},
+            "run_token": "survey-extract:old-body",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 161}
+        # At claim the row's own meta is ctx.meta — stamp it so the
+        # consume's ``meta ? key`` guard sees the request.
+        store.stamp_ref_meta(job_row, meta)
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        # Spy on the persisted row from inside the phase: the consume
+        # must have atomically swapped the request for the durable
+        # restart checkpoint before the slice ran.
+        seen: list[dict] = []
+        orig_extract = job._phase_extract
+
+        def _spy(ctx: Any, state: dict) -> Any:
+            seen.append(ref_meta(store, ctx.ref_id))
+            return orig_extract(ctx, state)
+
+        monkeypatch.setattr(job, "_phase_extract", _spy)
+        out = dispatch(fake_ctx(store, meta, [], ref_id=job_row), job.SPEC)
+        assert isinstance(out, Done)
+        assert out.success
+        # A fresh pass over the new body: new run token keyed on the
+        # revision actually read, old stats gone, request consumed.
+        assert out.summary.startswith(f"survey_extract done (survey-extract:{job_row}:")
+        assert "chunks=40" not in out.summary
+        mid = seen[0]
+        assert "survey_revision_request" not in mid
+        assert mid["coordinator_state"]["phase"] == "extract"
+        assert mid["coordinator_state"]["restart"]["paper"] == world["paper"]
+        # …and the Done discharged the marker, so the drain's terminal
+        # sweep won't mint a duplicate pass (gr632959 review r2).
+        row = ref_meta(store, job_row)
+        assert "restart" not in row["coordinator_state"]
+
+    def test_restart_checkpoint_survives_a_mid_slice_crash(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632959 review: consume is atomic — a slice that dies after
+        the UPDATE commits but before it can return (a crash, or a
+        coordinator exception the executor fails the job for) leaves the
+        durable ``restart`` checkpoint, not the stale cursor. The next
+        claim restarts over the new body from it, and the drain's
+        terminal sweep can mint the lost pass from the same marker."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        meta = _extract_meta(world, skip_accept=True)
+        meta["coordinator_state"] = {
+            "phase": "extract",
+            "idx": 2,
+            "body_mark": "1:2",
+            "stats": {"chunks": 2, "written": 1},
+            "run_token": "survey-extract:old-body",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 3}
+        store.stamp_ref_meta(job_row, meta)
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        orig_extract = job._phase_extract
+
+        def _boom(ctx: Any, state: dict) -> Any:
+            raise RuntimeError("slice died mid-dispatch")
+
+        monkeypatch.setattr(job, "_phase_extract", _boom)
+        with pytest.raises(RuntimeError, match="slice died"):
+            dispatch(fake_ctx(store, meta, [], ref_id=job_row), job.SPEC)
+        row = ref_meta(store, job_row)
+        assert "survey_revision_request" not in row
+        assert row["coordinator_state"] == {
+            "phase": "extract",
+            "restart": {"paper": world["paper"], "chunks": 3},
+        }
+        # The post-crash claim: no request, but the durable restart flag
+        # still discards any stale cursor and re-reads the whole body.
+        monkeypatch.setattr(job, "_phase_extract", orig_extract)
+        out2 = dispatch(fake_ctx(store, row, [], ref_id=job_row), job.SPEC)
+        assert isinstance(out2, Done) and out2.success
+        assert out2.summary.startswith(
+            f"survey_extract done (survey-extract:{job_row}:"
+        )
+        # That Done discharged the marker too.
+        assert "restart" not in ref_meta(store, job_row)["coordinator_state"]
+
+    def test_restart_persists_revision_token_before_processing(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632959 review r3: the restart's revision-keyed run token
+        must reach ``coordinator_state`` before the slice processes —
+        until the next ``Yield`` the consume's checkpoint carries only
+        ``restart``, so a run-level ``measure_accept`` gated by
+        ``_token_extract_live`` could not see the live restarted pass
+        and sampled a half-written batch."""
+        store = world["store"]
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        seen: list[dict] = []
+
+        def _route(req: Any) -> Any:
+            seen.append(ref_meta(store, job_row))
+            return llm_result('{"results": []}')
+
+        monkeypatch.setattr(job, "route", _route)
+        meta = _extract_meta(world, skip_accept=True)
+        meta["coordinator_state"] = {
+            "phase": "await_accept",
+            "accept_child": 999999,
+            "run_token": "survey-extract:old-body",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 3}
+        store.stamp_ref_meta(job_row, meta)
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(fake_ctx(store, meta, [], ref_id=job_row), job.SPEC)
+        assert isinstance(out, Done) and out.success
+        mark = job._body_mark(job._chunks(store, world["paper"]))
+        token = f"survey-extract:{job_row}:{mark}"
+        assert seen  # chunks were read inside the slice
+        for mid in seen:
+            # The new token was durable mid-slice — and the merge kept
+            # the restart receipt the terminal sweep reads.
+            assert mid["coordinator_state"]["run_token"] == token
+            assert mid["coordinator_state"]["restart"]["paper"] == world["paper"]
+            assert job._token_extract_live(store, token)
+
+    def test_restart_mints_a_fresh_accept_child_not_the_active_one(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632959 review: keyed by job alone, ``measure-accept`` idem
+        deduped a restarted pass onto the outgoing run's still-active
+        acceptance child — ``_phase_await`` then adopted a verdict
+        sampled over chunks that no longer exist. The key now carries
+        the run token and the body mark, so the restart mints a fresh
+        child."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        # put() parents the spawned child on this row only when its
+        # meta names the coordinator executor.
+        store.stamp_ref_meta(
+            job_row, {"job_type": "survey_extract", "executor": "coordinator"}
+        )
+        # The outgoing run's acceptance child, still live.
+        old_child = seed_ref(store, title="measure_accept", kind="job")
+        store.stamp_ref_meta(
+            old_child,
+            {
+                "job_type": "measure_accept",
+                "params": {"paper": world["paper"], "extraction_run": "old"},
+                "idem_key": f"measure-accept:{job_row}",
+            },
+        )
+        meta = _extract_meta(world)
+        meta["coordinator_state"] = {
+            "phase": "await_accept",
+            "accept_child": old_child,
+            "stats": {"chunks": 40, "written": 3},
+            "run_token": "survey-extract:old-body",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 3}
+        store.stamp_ref_meta(job_row, meta)
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(fake_ctx(store, meta, [], ref_id=job_row), job.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await_accept"
+        new_child = out.state["accept_child"]
+        assert new_child != old_child
+        assert out.wake_when.payload["child_job_ids"] == [new_child]
+        child_meta = ref_meta(store, new_child)
+        mark = job._body_mark(job._chunks(store, world["paper"]))
+        token = f"survey-extract:{job_row}:{mark}"
+        assert child_meta["params"]["extraction_run"] == token
+        assert child_meta["idem_key"] == f"measure-accept:{job_row}:{token}:{mark}"
+        # The stale child is left to finish alone — nothing awaits it.
+        assert "acceptance" not in ref_meta(store, job_row)
+
+    def test_pinned_token_restart_still_mints_a_fresh_accept_child(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632959 review r2: under a params-pinned ``run_token`` the
+        batch token does not change across a body restart — keyed on
+        the token alone, the restart deduped onto the outgoing body's
+        still-active ``measure_accept`` child, whose sampling frame
+        froze at its draw and can never see the replacement rows. The
+        key carries the body revision too, so the restart mints a
+        fresh child for the same batch."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        # put() parents the spawned child on this row only when its
+        # meta names the coordinator executor.
+        store.stamp_ref_meta(
+            job_row, {"job_type": "survey_extract", "executor": "coordinator"}
+        )
+        # The outgoing pass's acceptance child, still live — under the
+        # old key shape its idem key is exactly what a token-only key
+        # collides with after the restart.
+        old_child = seed_ref(store, title="measure_accept", kind="job")
+        store.stamp_ref_meta(
+            old_child,
+            {
+                "job_type": "measure_accept",
+                "params": {"paper": world["paper"], "extraction_run": "pinned"},
+                "idem_key": f"measure-accept:{job_row}:pinned",
+            },
+        )
+        meta = _extract_meta(world, run_token="pinned")
+        meta["coordinator_state"] = {
+            "phase": "await_accept",
+            "accept_child": old_child,
+            "stats": {"chunks": 40, "written": 3},
+            "run_token": "pinned",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 3}
+        store.stamp_ref_meta(job_row, meta)
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(fake_ctx(store, meta, [], ref_id=job_row), job.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await_accept"
+        new_child = out.state["accept_child"]
+        assert new_child != old_child
+        assert out.wake_when.payload["child_job_ids"] == [new_child]
+        mark = job._body_mark(job._chunks(store, world["paper"]))
+        child_meta = ref_meta(store, new_child)
+        # Same operator batch, fresh revision key.
+        assert child_meta["params"]["extraction_run"] == "pinned"
+        assert child_meta["idem_key"] == f"measure-accept:{job_row}:pinned:{mark}"
+
+    def test_revision_request_restarts_mid_extract_checkpoint(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same restart for a pass mid-extract: the stale checkpoint
+        (an old-body ``idx`` and ``body_mark``) is discarded, not
+        resumed."""
+        store = world["store"]
+        monkeypatch.setattr(job, "route", lambda req: llm_result('{"results": []}'))
+        job_row = seed_ref(store, title="survey_extract", kind="job")
+        meta = _extract_meta(world, skip_accept=True)
+        meta["coordinator_state"] = {
+            "phase": "extract",
+            "idx": 2,
+            "body_mark": "1:2",
+            "stats": {"chunks": 2, "written": 1},
+            "run_token": "survey-extract:old-body",
+        }
+        meta["survey_revision_request"] = {"paper": world["paper"], "chunks": 161}
+        store.stamp_ref_meta(job_row, meta)
+        events: list = []
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        out = dispatch(fake_ctx(store, meta, events, ref_id=job_row), job.SPEC)
+        assert isinstance(out, Done)
+        assert out.success
+        assert out.summary.startswith(f"survey_extract done (survey-extract:{job_row}:")
+        assert "chunks=2" not in out.summary
+        assert "survey_revision_request" not in ref_meta(store, job_row)
+        assert any(
+            kind == "job_event" and "restarting" in text for kind, text in events
+        )
 
     def test_supplement_chunks_are_extracted(
         self, world: dict, monkeypatch: pytest.MonkeyPatch

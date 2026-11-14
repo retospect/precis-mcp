@@ -892,6 +892,18 @@ def register_aliases_and_maybe_upgrade(
                     new_body,
                     paper.provider,
                 )
+                # gr632959: a finished survey_extract read the outgoing
+                # body. This layer cannot mint the re-run (precis.ingest
+                # may not import precis.workers), so the ref carries a
+                # pending flag the workers' survey_requeue ref pass
+                # drains — same transaction, so the flag and the new
+                # body commit or roll back together.
+                conn.execute(
+                    "UPDATE refs SET meta = meta || "
+                    "jsonb_build_object('survey_requeue_pending', now()) "
+                    "WHERE ref_id = %s",
+                    (existing_ref_id,),
+                )
                 # Body cleared — fall through to the "no body" path below
                 # so this ingest's chunks are written the normal way.
                 has_body = False

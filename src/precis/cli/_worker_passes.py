@@ -1815,6 +1815,21 @@ def build_ref_passes(
 
         ref_passes.append(_paper_reconcile_pass)
 
+    # survey_extract requeue (gr632959) — drains the
+    # meta.survey_requeue_pending flag the ingest-side markup_refetch
+    # body REPLACE stamps (precis.ingest can't mint jobs itself), so a
+    # paper extracted against a swapped-out body gets a fresh complete
+    # pass. Cheap between flags; cadence via
+    # PRECIS_SURVEY_REQUEUE_REFRESH_HOURS (default 1).
+    if _register("survey_requeue"):
+        from precis.workers.runner import BatchResult as _BatchResult
+        from precis.workers.survey_requeue import run_survey_requeue_pass
+
+        def _survey_requeue_pass(batch_size: int) -> _BatchResult:
+            return run_survey_requeue_pass(store, limit=None)
+
+        ref_passes.append(_survey_requeue_pass)
+
     # OpenAlex abstract/metadata enrich — self-healing fill for
     # top-level abstracts (what the paper page reads). Promotes
     # already-fetched OpenAlex abstracts (no network) and drips a

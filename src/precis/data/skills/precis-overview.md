@@ -315,6 +315,7 @@ Corpus-pipeline services documenting against this skill:
 | `paper_meta_enrich` | re-resolves authors/journal/idents/retraction from Crossref |
 | `paper_reconcile` | folds duplicate paper refs + hygiene heals |
 | `corpus_reconcile` | per-host `pdf_locations` ledger |
+| `survey_requeue` | re-queues `survey_extract` after a body swap — drains the `meta.survey_requeue_pending` flag ingest stamps on `markup_refetch` REPLACE; a live pass gets a durable `meta.survey_revision_request` its next slice restarts on, and terminal jobs holding revision intent (the request, or a `restart` checkpoint whose slice never returned) get an idem-keyed re-mint — or the request transfers to a live sibling whose state cannot see the swap (parked at `await_accept`, or a `running` slice already past its `body_mark` check) (gr632959) |
 | `clusterize` | SOM cluster maps for `/clusters` (daily) |
 | `llm_summarize` | model-authored 2-part chunk summaries |
 | `paper_glossary` | per-paper glossary → `card_glossary` chunk |
