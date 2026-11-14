@@ -47,9 +47,20 @@ this job). Phases, in the handle's ``phase``:
 * ``verify`` (detached, same env): the pin coherence tests and the anchor
   test in the committed tree. Green stamps ``meta.pin_bump`` ``state:
   "committed"``.
-* ``handoff`` (parked, every 120 s): a stub; the next round mints the
-  ``land_slice`` for the branch here. A committed record whose commit is
-  still the branch head on the same tip is resumed straight to it.
+* ``handoff`` (parked, due at once): a committed bump mints the
+  ``land_slice`` for the branch (``run_slice``'s own mint: idem key
+  ``land_slice:td<id>``, a child of the node), stamps the record ``handed``
+  and succeeds. A refused or failed mint fails attempt-free
+  (:data:`HANDOFF_CLASS`); the record stays ``committed`` and the next job
+  resumes straight here (a live land under the idem key is adopted). A
+  committed record whose commit is still the branch head on the same tip is
+  resumed to it. A no-op mints no land and the dispatcher closes a pin node
+  only on a land, so the job closes the node itself: the same gripe
+  resolution, one ``pinned:`` comment (never ``landed:``), ``STATUS:done``.
+
+:func:`finish` is the closing tail ``land_slice`` calls right before its land
+record: it stamps the record ``landed`` and resolves the batch's gripes.
+:func:`validate_submit` serialises pin bumps (one in flight at a time).
 
 The derive runs repo code as the worker's user, so its result file is
 attacker-writable: only a 64-hex key is accepted, and the verify run re-checks
@@ -76,9 +87,12 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.plans import release as _release
+from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git_mirror as _mirror
 from precis.workers import repo_land as _rl
+from precis.workers._mint import JOB_TERMINAL_STATUSES
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import land_slice as _ls
 from precis.workers.job_types import repo_release as _rr
@@ -102,6 +116,7 @@ __all__ = [
     "PinError",
     "compare_versions",
     "current_pin",
+    "finish",
     "kill",
     "pin_is_coherent",
     "poll",
@@ -577,9 +592,10 @@ DESCRIPTION: str = (
     "mirror, edit pyproject.toml, uv.lock and deploy/group_vars/all.yml as "
     "text, derive the coverage anchor key with the new engine installed "
     "credential-free, commit the four files on slice/<id>, run the pin "
-    "tests and park for the land. Refused while PRECIS_FACTORY=off, for a "
+    "tests, then mint the land_slice for the branch and succeed (a no-op "
+    "closes its node itself). Refused while PRECIS_FACTORY=off, for a "
     "repo whose profile names another pinner, and for a repo that is not "
-    "open."
+    "open, and held (holding:) while another pin bump is in flight."
 )
 
 #: ``meta.attempt_free`` of this job's attempt-free failures.
@@ -603,8 +619,10 @@ RESOLVE_PHASE = "resolve"
 DERIVE_PHASE = "derive"
 VERIFY_PHASE = "verify"
 HANDOFF_PHASE = "handoff"
-#: Seconds the final phase's stub sleeps between polls.
-HANDOFF_PARK_S = 120
+#: Seconds the final phase waits before its first poll (due at once).
+HANDOFF_PARK_S = 0
+#: Newest job rows scanned per type by the serialise check.
+SCAN_LIMIT = 50
 
 #: The four files a pin bump commits.
 PYPROJECT_PATH = "pyproject.toml"
@@ -650,6 +668,7 @@ TREE_CLASS = "pin-tree"
 RECORD_CLASS = "pin-record"
 SOURCE_CLASS = "pin-source"
 TRANSPORT_CLASS = "pin-transport"
+HANDOFF_CLASS = "pin-handoff"
 
 #: What uv's registry and git transport failures look like in a log.
 _TRANSPORT_RE = re.compile(
@@ -770,12 +789,71 @@ def _refusal(store: Any, params: dict[str, Any]) -> str | None:
     return None
 
 
+def _recent_jobs(store: Any, job_type: str) -> list[tuple[int, int | None, bool]]:
+    """``(job id, params.todo_id, terminal)`` of the newest
+    :data:`SCAN_LIMIT` ``job_type`` job rows (seam)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.ref_id, j.meta -> 'params' ->> 'todo_id' FROM refs j
+             WHERE j.kind = 'job' AND j.retired_at IS NULL
+               AND j.meta ->> 'job_type' = %s
+             ORDER BY j.ref_id DESC
+             LIMIT %s
+            """,
+            (job_type, SCAN_LIMIT),
+        ).fetchall()
+    out: list[tuple[int, int | None, bool]] = []
+    for jid, tid in rows:
+        terminal = any(
+            t.prefix == "STATUS" and str(t.value) in JOB_TERMINAL_STATUSES
+            for t in store.tags_for(int(jid))
+        )
+        out.append((int(jid), int(tid) if str(tid).isdigit() else None, terminal))
+    return out
+
+
+def _other_pin_work(store: Any, todo_id: int) -> list[str]:
+    """The live pin work of a DIFFERENT node: a non-terminal ``pin_bump``
+    job, or a non-terminal ``land_slice`` job whose todo carries a
+    ``meta.pin_bump`` record."""
+    held: list[str] = []
+    for jid, tid, terminal in _recent_jobs(store, NAME):
+        if not terminal and tid != todo_id:
+            held.append(f"pin_bump jo{jid} (td{tid})")
+    for jid, tid, terminal in _recent_jobs(store, "land_slice"):
+        if terminal or tid is None or tid == todo_id:
+            continue
+        if _stored(store, tid) is not None:
+            held.append(f"land_slice jo{jid} (td{tid})")
+    return held
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
-    """Refuses everything :func:`_refusal` does."""
+    """Refuses everything :func:`_refusal` does, and holds (a ``holding:``
+    refusal, so no job is minted; the dispatcher notes it and tries the next
+    tick) while another node's pin bump is in flight: a live ``pin_bump`` job,
+    or a live ``land_slice`` of a todo carrying a pin record. Two bumps would
+    edit the same four files. Reads the newest :data:`SCAN_LIMIT` rows per
+    job type; a store that cannot be read holds too."""
     del gripe_id
-    return _refusal(store, params)
+    refusal = _refusal(store, params)
+    if refusal is not None or store is None:
+        return refusal
+    try:
+        held = _other_pin_work(store, int(params["todo_id"]))
+    except Exception:
+        log.warning("pin_bump: serialise scan failed", exc_info=True)
+        return "holding: the live pin work could not be read; next: retried next tick"
+    if not held:
+        return None
+    shown = ", ".join(held[:4]) + (", ..." if len(held) > 4 else "")
+    return (
+        f"holding: another pin bump is in flight ({shown}); next: this node "
+        "waits until it lands"
+    )
 
 
 # ── Failures and the record ────────────────────────────────────────
@@ -1241,7 +1319,7 @@ def _record(
 
 
 def _to_handoff(run: _Run, record: dict[str, Any]) -> None:
-    """Swap the handle for the parked final-phase stub."""
+    """Swap the handle for the parked final phase."""
     fresh: dict[str, Any] = {
         "op": NAME,
         "repo": _lanes.DEFAULT_REPO,
@@ -1262,7 +1340,7 @@ def _no_op(
     run: _Run, release: _Release, tip: str, floor: str, rev: str, why: str
 ) -> bool:
     """The pin is already there (or past it): stamp the committed record with
-    ``noop`` and park in the final phase."""
+    ``noop`` and park in the final phase, which closes the node."""
     record = _record(
         run,
         release,
@@ -1888,6 +1966,257 @@ def _poll_verify_green(run: _Run) -> bool:
     return False
 
 
+# ── Hand-off and the closing tail ──────────────────────────────────
+
+#: Gripe links a pin bump resolves: a slice that fixes a gripe, or names it.
+_GRIPE_RELATIONS = ("fixes", "related-to")
+
+
+def _gripe_links(store: Any, slice_ids: list[int]) -> list[tuple[int, int]]:
+    """``(slice, gripe)`` of every outgoing ``fixes`` / ``related-to`` link of
+    ``slice_ids`` to a live gripe (seam)."""
+    if not slice_ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.src_ref_id, l.dst_ref_id
+              FROM links l JOIN refs g ON g.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = ANY(%s) AND l.relation = ANY(%s)
+               AND g.kind = 'gripe' AND g.retired_at IS NULL
+             ORDER BY l.src_ref_id, l.dst_ref_id
+            """,
+            (list(slice_ids), list(_GRIPE_RELATIONS)),
+        ).fetchall()
+    return [(int(a), int(b)) for a, b in rows]
+
+
+def _batch_slices(store: Any, todo_id: int, repo: str) -> list[int]:
+    """The build slices of the pin node's batch that landed in ``repo``: the
+    transitive ``blocked-by`` closure of the node inside its plan root (a
+    ``blocked-by`` on a phase gates its children, so those join), kept when a
+    build slice (no phase, generator or op node), closed ``done`` and carrying
+    ``meta.landed_repo == repo``. Ids ascending."""
+    root = _release.plan_root(store, todo_id)
+    rows = [r for r in _rr._plan_rows(store, root) if r.get("kind") == "todo"]
+    parent_of = {int(r["id"]): r.get("parent_id") for r in rows}
+    edges = _rr._blocked_edges(store, list(parent_of))
+    found: set[int] = set()
+    frontier = {todo_id}
+    while frontier:
+        nxt = {dst for src, dst in edges if src in frontier}
+        nxt |= {nid for nid, parent in parent_of.items() if parent in nxt}
+        frontier = nxt - found - {todo_id}
+        found |= frontier
+    parents = set(parent_of.values())
+    out: list[int] = []
+    for nid in sorted(found):
+        ref = store.get_ref(kind="todo", id=nid)
+        meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+        if (
+            nid not in parents
+            and _rr._is_slice_node(meta)
+            and _rs._terminal_status(store, nid) == "done"
+            and meta.get(_lanes.LANDED_REPO_KEY) == repo
+        ):
+            out.append(nid)
+    return out
+
+
+def _resolve_gripe(
+    store: Any, gripe_id: int, sha: str, package: str, version: str, slices: list[int]
+) -> bool:
+    """``land_slice._deferred_notify``'s resolved path for one gripe, once: a
+    ``resolved:`` comment (unless the newest comment already is one naming the
+    sha) and ``STATUS:auto_verify``. A settled gripe is left alone. ``True``
+    when this wrote."""
+    if _rs._todo_status(store, gripe_id) in _ls._GRIPE_SETTLED:
+        return False
+    chunks = store.chunks.list_chunks_for_ref(gripe_id)
+    comments = [c for c in chunks if c.chunk_kind == _ls._GRIPE_COMMENT_KIND]
+    newest = str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
+    if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
+        by = ", ".join(f"td{n}" for n in slices)
+        store.chunks.insert_chunks(
+            gripe_id,
+            [
+                ChunkInsert(
+                    ord=max((int(c.ord) for c in chunks), default=0) + 1,
+                    text=(
+                        f"resolved: {sha[:9]} (main, release pending) — "
+                        f"{package} v{version}, {by}"
+                    ),
+                    meta={"chunk_kind": _ls._GRIPE_COMMENT_KIND},
+                )
+            ],
+        )
+    store.add_tag(
+        gripe_id,
+        Tag.closed("STATUS", "auto_verify"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    return True
+
+
+def finish(store: Any, todo_id: int, sha: str) -> None:
+    """The pin bump has landed at ``sha``: stamp ``meta.pin_bump`` ``state:
+    "landed"`` / ``landed_sha`` and resolve the batch's gripes (the done
+    slices of the pinned repo upstream of the node, their ``fixes`` and
+    ``related-to`` gripes: ``resolved:`` + ``STATUS:auto_verify``, once each;
+    ``gripes`` / ``slices`` go on the record). Idempotent, and it never
+    raises: the pin already landed, the gripes are a record."""
+    try:
+        record = _stored(store, todo_id)
+        if record is None:
+            log.warning("pin_bump: finish: td%d carries no pin record", todo_id)
+            return
+        landed = {**record, "state": "landed", "landed_sha": sha}
+        if landed != record:
+            store.stamp_ref_meta(todo_id, {RECORD_KEY: landed})
+        record = landed
+    except Exception:
+        log.warning("pin_bump: finish: stamping td%d failed", todo_id, exc_info=True)
+        return
+    try:
+        slices = _batch_slices(store, todo_id, str(record.get("repo")))
+        by_gripe: dict[int, list[int]] = {}
+        for slice_id, gripe_id in _gripe_links(store, slices):
+            by_gripe.setdefault(gripe_id, []).append(slice_id)
+        resolved: list[int] = []
+        for gripe_id, upstream in sorted(by_gripe.items()):
+            try:
+                if _resolve_gripe(
+                    store,
+                    gripe_id,
+                    sha,
+                    str(record.get("package")),
+                    str(record.get("version")),
+                    sorted(set(upstream)),
+                ):
+                    resolved.append(gripe_id)
+            except Exception:
+                log.warning(
+                    "pin_bump: finish: gripe gr%d not resolved", gripe_id, exc_info=True
+                )
+        known_g = [g for g in record.get("gripes") or [] if isinstance(g, int)]
+        known_s = [n for n in record.get("slices") or [] if isinstance(n, int)]
+        both = {
+            "gripes": sorted(set(known_g) | set(resolved)),
+            "slices": sorted(set(known_s) | set(slices)),
+        }
+        if any(record.get(k) != v for k, v in both.items()):
+            store.stamp_ref_meta(todo_id, {RECORD_KEY: {**record, **both}})
+    except Exception:
+        log.warning(
+            "pin_bump: finish: gripe walk of td%d failed", todo_id, exc_info=True
+        )
+
+
+def _succeed(run: _Run, summary: str, **meta: Any) -> bool:
+    run.ctx.set_meta(compute_handle_released=True, **meta)
+    run.ctx.append_chunk("job_summary", summary)
+    run.ctx.set_status("succeeded")
+    return True
+
+
+def _close_noop(run: _Run, record: dict[str, Any] | None) -> bool:
+    """A no-op bump mints no land, and the dispatcher closes a pin node only
+    on a succeeded land: resolve the batch's gripes with the precis tip, write
+    ``pinned:`` (never ``landed:``; nothing landed), close the node and
+    succeed. Every step is idempotent, so a retry after a failure repeats it."""
+    ctx, todo_id = run.ctx, run.todo_id
+    if (
+        record is None
+        or not record.get("noop")
+        or record.get("state") not in ("committed", "landed")
+    ):
+        return run.charged(
+            f"the no-op pin record of td{todo_id} is gone",
+            "the no-op record on the node is missing or changed; nothing was moved.",
+        )
+    tip = _rl._hex(record.get("base"))
+    package, version = str(record.get("package")), str(record.get("version"))
+    sha = str(record.get("sha"))
+    finish(ctx.store, todo_id, tip)
+    note = f"pinned: {package} v{version} already at {sha[:9]} (no-op)"
+    try:
+        newest = (_ls._newest_comment(ctx.store, todo_id) or "").lstrip()
+        if not newest.lower().startswith("pinned:"):
+            _rs._append_comment(ctx.store, todo_id, note)
+        if _rs._terminal_status(ctx.store, todo_id) is None:
+            _ls._close_todo(ctx.store, todo_id)
+    except Exception:
+        log.warning("pin_bump: closing no-op td%d failed", todo_id, exc_info=True)
+        return run.free(
+            f"could not close the no-op node td{todo_id}",
+            "the node could not be closed (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    return _succeed(
+        run,
+        f"pin_bump td{todo_id}: v{version} already pinned at {sha[:9]} (no-op), "
+        "node closed",
+    )
+
+
+def _poll_handoff(run: _Run) -> bool:
+    """The final phase. A no-op closes its node; a committed bump mints its
+    land (adopting a live one under the idem key), stamps ``handed`` and
+    succeeds. ``True`` when the job is terminal."""
+    ctx, root, todo_id = run.ctx, run.root, run.todo_id
+    record = _stored(ctx.store, todo_id)
+    if run.handle.get("noop"):
+        return _close_noop(run, record)
+    commit = _rl._hex(run.handle.get("commit"))
+    if (
+        record is None
+        or not commit
+        or record.get("commit") != commit
+        or record.get("state") not in ("committed", "handed", "landed")
+    ):
+        return run.charged(
+            f"the committed pin record of td{todo_id} is gone or changed",
+            "the committed record on the node is missing or changed; nothing is "
+            "landed.",
+        )
+    version = str(record.get("version"))
+    if record.get("state") != "committed":
+        # Already handed (a repeated poll): succeed again, mint nothing.
+        return _succeed(
+            run,
+            f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "
+            f"land_slice jo{record.get('land_job')}",
+        )
+    branch = _rs.slice_branch(todo_id)
+    if _head(root, branch) != commit:
+        return run.charged(
+            f"{branch} no longer points at the committed commit",
+            f"{branch} moved off the committed commit {commit[:9]}; nothing is landed.",
+        )
+    try:
+        land = _rs._mint_land(ctx, todo_id, Path(str(record["worktree"])), None)
+    except Exception as exc:
+        log.warning("pin_bump: land_slice mint for td%d failed", todo_id, exc_info=True)
+        return run.free(
+            f"the land_slice mint failed: {exc}",
+            f"the land_slice job could not be minted ({exc}); retried.",
+            HANDOFF_CLASS,
+        )
+    if not _stamp(ctx, todo_id, {**record, "state": "handed", "land_job": land}):
+        return run.free(
+            f"could not stamp the pin record on td{todo_id}",
+            "the node could not be marked (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    return _succeed(
+        run,
+        f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "
+        f"land_slice jo{land}",
+        land_job=land,
+    )
+
+
 # ── Poll and kill ──────────────────────────────────────────────────
 
 
@@ -1919,9 +2248,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     if phase == VERIFY_PHASE:
         return _poll_detached(run, "verify", _poll_verify_green)
     if phase == HANDOFF_PHASE:
-        # R2 stub: the next round mints the land_slice for the branch here.
-        _rl.park_until(ctx, handle, HANDOFF_PARK_S)
-        return False
+        return _poll_handoff(run)
     ctx.record_failure(f"pin_bump: unknown phase {phase!r}")
     return True
 

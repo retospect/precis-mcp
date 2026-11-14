@@ -9403,6 +9403,87 @@ def test_failed_land_at_the_retry_cap_does_not_redispatch_pin_bump(
     ]
 
 
+def _stale_alerts(store: Store, pin: int) -> list[dict[str, Any]]:
+    """The open ``stale-open:<pin>`` alerts: their meta plus ``title`` and
+    ``source``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta, title, alert_source FROM refs WHERE kind = 'alert' "
+            "AND retired_at IS NULL AND resolved_at IS NULL "
+            "AND meta->>'fingerprint' = %s",
+            (f"stale-open:{pin}",),
+        ).fetchall()
+    return [{**dict(r[0]), "title": r[1], "source": r[2]} for r in rows]
+
+
+def _tagged(store: Store, rel: int, *, hours: float, state: str = "tagged") -> None:
+    at = datetime.now(UTC) - timedelta(hours=hours)
+    store.stamp_ref_meta(
+        rel,
+        {
+            "repo_release": {
+                "state": state,
+                "tag": "v0.50.0",
+                "tagged_at": at.isoformat(),
+            }
+        },
+    )
+
+
+def test_stale_open_pin_bump_node_raises_one_warn_alert(
+    store: Store, pin_op: Any
+) -> None:
+    """An open pin-bump node 7 h past its release tag with no live job raises
+    ``pin_bump``/``stale-open:<todo>`` once (repeat passes dedup) at warn,
+    naming the node, the tag and the hours; if this fails a bump that never
+    landed goes unnoticed."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=7)
+    res = pd.run_pass(store)
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    assert alert["severity"] == "warn" and alert["source"] == "pin_bump"
+    assert alert["seen_count"] >= 1
+    for text in (alert["title"], alert["detail"]):
+        assert f"td{pin}" in text and "v0.50.0" in text and "7 h" in text
+    assert any(f"td{pin}: pin bump still open 7 h" in n for n in res.notes)
+
+
+def test_stale_open_covers_a_succeeded_pin_bump_whose_land_never_appeared(
+    store: Store, pin_op: Any
+) -> None:
+    """A succeeded ``pin_bump`` with no land under it is no live job: the
+    alert covers it; if this fails a lost hand-off waits silently."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _tagged(store, mint.ids["rel"], hours=8)
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    pd.run_pass(store)
+    assert len(_stale_alerts(store, pin)) == 1
+
+
+@pytest.mark.parametrize("case", ["fresh", "closed", "busy", "untagged", "dry-run"])
+def test_stale_open_stays_quiet_for_a_fresh_closed_busy_or_untagged_node(
+    store: Store, pin_op: Any, case: str
+) -> None:
+    """No alert for a release tagged under 6 h ago, a closed pin node, one
+    with a live job (a land in flight), a release not in state tagged, or a
+    dry run; if this fails the page cries wolf."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=5 if case == "fresh" else 7)
+    dry = case == "dry-run"
+    if case == "closed":
+        _mark_done(store, pin)
+    elif case == "busy":
+        _slice_job(store, pin, "land_slice", "running")
+    elif case == "untagged":
+        _tagged(store, rel, hours=7, state="pushed")
+    pd.run_pass(store, dry_run=dry)
+    assert _stale_alerts(store, pin) == []
+
+
 @pytest.mark.parametrize(
     "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
 )

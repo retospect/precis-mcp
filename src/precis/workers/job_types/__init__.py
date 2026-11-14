@@ -1075,6 +1075,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
     "land_slice",
     "repo_release",
+    "pin_bump",
     "plan_dispatch",
     "factory_rescue_tick",
     "ci_watch",
@@ -1222,6 +1223,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         # Mechanical release of a second repo (td659522 step 3): version
         # bump, push, CI wait, tag. Refused until a profile names a releaser.
         from precis.workers.job_types.repo_release import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "pin_bump":
+        # Mechanical pin bump of a released second-repo engine (td659522
+        # step 4): edit, derive, commit, hand the branch to land_slice.
+        # Refused until a profile names a pinner.
+        from precis.workers.job_types.pin_bump import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

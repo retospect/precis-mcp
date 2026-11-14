@@ -395,6 +395,28 @@ def _d_repo_release(
     return what
 
 
+def _d_pin_bump(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    tid = _as_int(params.get("todo_id"))
+    repo = params.get("pin_repo")
+    what = f"moving the {repo} pin" if repo else "moving a pin"
+    if tid is not None:
+        what += f" (td{tid})"
+    if status == "failed" and error:
+        return f"{what}: failed — {_first_line(error)}"
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return _first_line(summary)
+    return what
+
+
 def _d_sandbox_run(
     *,
     params: dict[str, Any],
@@ -509,6 +531,7 @@ DESCRIBERS: dict[str, Callable[..., str]] = {
     "run_slice": _d_run_slice,
     "land_slice": _d_land_slice,
     "repo_release": _d_repo_release,
+    "pin_bump": _d_pin_bump,
     "sandbox_run": _d_sandbox_run,
     "devin_task": _d_devin_task,
     "paper_pull": _d_paper_pull,

@@ -381,6 +381,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert
 from precis.errors import BadInput
 from precis.plans import gates as _gates
@@ -434,6 +435,11 @@ _HIDDEN_META_KEY = "hidden_comments"
 
 #: A ``claimed-by:`` tag older than this, with no live job, is released.
 CLAIM_STALE = timedelta(hours=4)
+
+#: An open pin-bump node with no live job this long after its release node
+#: tagged raises the ``pin_bump/stale-open:{todo}`` alert (td659522 step 4).
+PIN_STALE_AFTER = timedelta(hours=6)
+_PIN_STALE_SOURCE = RULES_BY_ID["pin_bump/stale-open:{todo}"].rule
 
 #: A plan job queued longer than this with no host advertising its placement
 #: capabilities gets a pass note (td543917).
@@ -4580,6 +4586,19 @@ def _pin_awaits_land(plan: _Plan, n: _Node) -> bool:
     )
 
 
+def _pin_releases(plan: _Plan, n: _Node) -> list[_Node]:
+    """The non-ask ``blocked-by`` targets of ``n`` that are ``repo_release``
+    nodes inside the loaded plan."""
+    return [
+        m
+        for b in plan.blockers.get(n.id, [])
+        if not b.is_ask
+        and (m := plan.nodes.get(b.id)) is not None
+        and m.kind == "todo"
+        and _is_repo_release(m)
+    ]
+
+
 def _pin_params(
     plan: _Plan, n: _Node, params: dict[str, Any]
 ) -> tuple[dict[str, Any], str | None]:
@@ -4598,14 +4617,7 @@ def _pin_params(
             f"resolves to repo {', '.join(own)}; it builds in precis "
             "(carry repo:precis or inherit no repo: tag)"
         )
-    releases = [
-        m
-        for b in plan.blockers.get(n.id, [])
-        if not b.is_ask
-        and (m := plan.nodes.get(b.id)) is not None
-        and m.kind == "todo"
-        and _is_repo_release(m)
-    ]
+    releases = _pin_releases(plan, n)
     ids = sorted({m.id for m in releases})
     if len(ids) != 1:
         return params, (
@@ -6979,6 +6991,59 @@ def _rescue_node(
         res.notes.append(f"td{n.id}: rescue skipped ({r.skipped})")
 
 
+def _tagged_age(record: Any, now: datetime) -> timedelta | None:
+    """How long ago a ``meta.repo_release`` record (``state: tagged``) was
+    tagged, else ``None`` (no record, not tagged, or no readable
+    ``tagged_at``)."""
+    if not isinstance(record, dict) or record.get("state") != "tagged":
+        return None
+    try:
+        at = datetime.fromisoformat(str(record.get("tagged_at")))
+    except ValueError:
+        return None
+    return now - (at if at.tzinfo else at.replace(tzinfo=UTC))
+
+
+def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> None:
+    """td659522 step 4 F1: an OPEN pin-bump node whose one release node
+    tagged over :data:`PIN_STALE_AFTER` ago and which has no live job raises
+    ``pin_bump/stale-open:{todo}`` (warn; ``raise_alert`` dedups on the
+    fingerprint). A succeeded ``pin_bump`` whose land never appeared is such a
+    node: its newest job is terminal and nothing else runs."""
+    for n in plan.todos():
+        if _closed(n) or not _is_pin_bump(n) or plan.live_job(n):
+            continue
+        releases = _pin_releases(plan, n)
+        if len(releases) != 1:
+            continue
+        rel = releases[0]
+        age = _tagged_age(rel.meta.get("repo_release"), now)
+        if age is None or age <= PIN_STALE_AFTER:
+            continue
+        record = rel.meta["repo_release"]
+        tag = str(record.get("tag") or "?")
+        hours = int(age.total_seconds() // 3600)
+        res.notes.append(
+            f"td{n.id}: pin bump still open {hours} h after {tag} was tagged"
+        )
+        if w.dry_run:
+            continue
+        raise_alert(
+            w.store,
+            source=_PIN_STALE_SOURCE,
+            fingerprint=f"stale-open:{n.id}",
+            title=f"pin bump td{n.id} still open {hours} h after {tag} was tagged",
+            detail=(
+                f"pin-bump node td{n.id} is open with no live job; release node "
+                f"td{rel.id} tagged {tag} {hours} h ago (limit "
+                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h). The bump "
+                "failed, was never dispatched, or its land never ran."
+            ),
+            severity="warn",
+            subject_ref_id=n.id,
+        )
+
+
 def _step_hygiene(
     plan: _Plan,
     w: _Writer,
@@ -6990,6 +7055,7 @@ def _step_hygiene(
     _step_gripe_leases(w.store, w, res, now)
     _step_unplaced(w.store, plan, w, res, now)
     _step_mint_holds(w.store, plan, w, res, now)
+    _step_pin_stale(plan, w, res, now)
     for n in plan.todos():
         if _closed(n):
             continue

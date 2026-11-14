@@ -17,7 +17,8 @@ import json
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,8 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes
-from precis.workers import factory_git_mirror
+from precis.store.types import Tag
+from precis.workers import _mint, factory_git_mirror
 from precis.workers.job_types import land_slice, repo_release, run_slice
 from precis.workers.job_types import pin_bump as pb
 from tests import test_pin_bump as tpb
@@ -48,10 +50,18 @@ KEY = "ab12" * 16
 DERIVE_RED = "ERROR lock is stale\n✖ gate lock failed: uv lock --check\n"
 
 
+class _PinStore(_Store):
+    """The land_slice fake store plus the ``tx`` the land mint opens."""
+
+    @contextmanager
+    def tx(self) -> Iterator[None]:
+        yield None
+
+
 @dataclass
 class Pin:
     rig: Rig
-    store: _Store
+    store: _PinStore
     tmp: Path
     cat: Path
     old: str = ""
@@ -63,6 +73,16 @@ class Pin:
     mirror_fails: bool = False
     signals: list[tuple[int, int]] = field(default_factory=list)
     ctx: _Ctx | None = None
+    # the land mint seam: every call, the live job per idem key, a forced error
+    mints: list[dict[str, Any]] = field(default_factory=list)
+    live: dict[str, int] = field(default_factory=dict)
+    mint_error: Exception | None = None
+    # the serialise scan's rows per job type: (job id, params.todo_id, terminal)
+    jobs: dict[str, list[tuple[int, int | None, bool]]] = field(default_factory=dict)
+    # the batch: plan rows, blocked-by edges, (slice, gripe) links
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    edges: list[tuple[int, int]] = field(default_factory=list)
+    links: list[tuple[int, int]] = field(default_factory=list)
 
     # -- the catpath stand-in -------------------------------------------
     def cat_commit(
@@ -185,7 +205,7 @@ def pin(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Pin:
-    store = _Store()
+    store = _PinStore()
     store.add_todo(PIN, tags=("repo:precis",))
     store.add_todo(REL, tags=("repo:catpath",))
     cat = tmp_path / "catpath-src"
@@ -217,6 +237,23 @@ def pin(
         _g(mirror, "fetch", "-q", str(cat), "+refs/heads/main:refs/heads/main")
         return _g(mirror, "rev-parse", "refs/heads/main")
 
+    def mint_job_once(store: Any, **kw: Any) -> tuple[int, bool]:
+        if p.mint_error is not None:
+            raise p.mint_error
+        p.mints.append(kw)
+        key = kw["idem_key"]
+        if key in p.live:
+            return p.live[key], True
+        p.live[key] = 5000 + len(p.mints)
+        return p.live[key], False
+
+    monkeypatch.setattr(_mint, "mint_job_once", mint_job_once)
+    monkeypatch.setattr(pb, "_recent_jobs", lambda store, jt: p.jobs.get(jt, []))
+    monkeypatch.setattr(repo_release, "_plan_rows", lambda store, root: p.rows)
+    monkeypatch.setattr(repo_release, "_blocked_edges", lambda store, ids: p.edges)
+    monkeypatch.setattr(
+        pb, "_gripe_links", lambda store, ids: [x for x in p.links if x[0] in ids]
+    )
     monkeypatch.setattr(factory_git_mirror, "ls_remote_tag", ls_remote_tag)
     monkeypatch.setattr(factory_git_mirror, "fetch_source_mirror", fetch_source_mirror)
     monkeypatch.setattr(
@@ -455,16 +492,11 @@ def test_no_real_profile_names_the_pinner_yet() -> None:
     )
 
 
-def test_spec_declares_three_required_params_and_is_registered_nowhere() -> None:
-    """If this fails the schema admits other params, or the spec leaked into
-    the registry before the switch round."""
+def test_spec_declares_three_required_params() -> None:
+    """If this fails the schema admits other params than the three."""
     assert pb.SPEC.name == "pin_bump"
     assert pb.PARAMS_SCHEMA["required"] == ["todo_id", "release_todo", "pin_repo"]
     assert pb.PARAMS_SCHEMA["additionalProperties"] is False
-    from precis.workers import job_types
-
-    assert "pin_bump" not in job_types._BUILTIN_JOB_TYPES
-    assert "pin_bump" not in job_types._REGISTRY
 
 
 # ── resolve refusals ───────────────────────────────────────────────
@@ -1169,28 +1201,429 @@ def test_a_green_verify_stamps_the_record_and_parks_in_handoff(pin: Pin) -> None
     assert handle["phase"] == "handoff" and handle["commit"] == commit
     assert ctx.meta_set["compute_handle"] is handle
     due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
-    assert 100 < (due - datetime.now(UTC)).total_seconds() < 130
+    assert (due - datetime.now(UTC)).total_seconds() < 5
     assert pin.tree().is_dir() and _g(pin.tree(), "status", "--porcelain") == ""
     assert _g(pin.tree(), "rev-parse", "HEAD") == commit
     assert pin.store.comments(PIN) == []
     _clean(pin, ctx)
 
 
-def test_the_handoff_stub_re_parks_every_120_s_and_does_nothing_else(pin: Pin) -> None:
-    """If this fails the final-phase stub finishes the job, mints something,
-    or touches the tree, branch or record."""
+def _handoff(pin: Pin) -> tuple[_Ctx, dict[str, Any]]:
+    """A job parked in ``handoff`` and due now."""
     ctx, handle = _committed(pin)
-    rec, head, launches = dict(pin.record()), pin.branch_head(), len(pin.rig.launches)
-    assert pb.poll(ctx, handle) is False  # not due: nothing at all
-    first = handle["not_before"]
     _due_now(handle)
-    assert pb.poll(ctx, handle) is False
-    assert (
-        handle["not_before"] != "2000-01-01T00:00:00Z" and handle["not_before"] >= first
+    return ctx, handle
+
+
+def test_the_handoff_mints_one_land_and_succeeds(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the committed bump mints no land (or a wrong one: idem
+    key, params, parent), does not stamp the record handed, or does not
+    succeed the job with the summary the dispatcher's readers expect."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    ctx, handle = _handoff(pin)
+    commit = handle["commit"]
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    (mint,) = pin.mints
+    assert mint["job_type"] == "land_slice" and mint["executor"] == "ssh_node"
+    assert mint["idem_key"] == "land_slice:td77" and mint["parent_id"] == PIN
+    assert mint["params"] == {
+        "todo_id": PIN,
+        "worktree": str(pin.tree()),
+        "branch": "slice/77",
+        "target_node": "spark",
+    }
+    rec = pin.record()
+    assert rec["state"] == "handed" and rec["land_job"] == 5001
+    assert rec["commit"] == commit and rec["worktree"] == str(pin.tree())
+    assert ctx.chunks[-1] == (
+        "job_summary",
+        f"pin_bump td77: v0.50.0 committed {commit[:9]}, handed to land_slice jo5001",
     )
-    assert ctx.status is None
-    assert pin.record() == rec and pin.branch_head() == head
-    assert len(pin.rig.launches) == launches and pin.tree().is_dir()
+    assert ctx.meta_set["land_job"] == 5001
+    assert pin.tree().is_dir() and pin.branch_head() == commit
+    assert pin.store.comments(PIN) == []
+    _clean(pin, ctx)
+
+
+def test_a_second_poll_of_a_handed_bump_mints_nothing(pin: Pin) -> None:
+    """If this fails a repeated poll of the final phase mints a second land."""
+    ctx, handle = _handoff(pin)
+    assert pb.poll(ctx, handle) is True
+    assert pb.poll(ctx, handle) is True
+    assert len(pin.mints) == 1 and ctx.status == "succeeded"
+    assert pin.record()["land_job"] == 5001
+
+
+def test_a_resumed_job_adopts_a_live_land_instead_of_minting_another(
+    pin: Pin,
+) -> None:
+    """If this fails a job resumed onto a committed record whose land is
+    already live (the stamp died after the mint) duplicates the land."""
+    _c, first = _committed(pin)
+    pin.live["land_slice:td77"] = 777
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is False
+    assert handle["phase"] == "handoff" and handle["commit"] == first["commit"]
+    _due_now(handle)
+    assert pb.poll(ctx, handle) is True
+    assert pin.live == {"land_slice:td77": 777}
+    assert pin.record()["state"] == "handed" and pin.record()["land_job"] == 777
+
+
+def test_a_failed_mint_is_attempt_free_and_the_next_job_resumes_to_it(
+    pin: Pin,
+) -> None:
+    """If this fails a failed land mint is charged, drops the committed
+    branch or tree, or the next job rebuilds instead of resuming the
+    hand-off."""
+    ctx, handle = _handoff(pin)
+    commit = handle["commit"]
+    pin.mint_error = RuntimeError("db is down")
+    assert pb.poll(ctx, handle) is True
+    _attempt_free(ctx, "pin-handoff")
+    assert pin.record()["state"] == "committed" and pin.record()["commit"] == commit
+    assert pin.branch_head() == commit and pin.tree().is_dir()
+    assert pin.store.comments(PIN)[-1].startswith("handoff: pin bump FAILED:")
+    pin.mint_error = None
+    launches = len(pin.rig.launches)
+    ctx2, handle2 = _submitted(pin)
+    assert pb.poll(ctx2, handle2) is False
+    assert handle2["phase"] == "handoff" and len(pin.rig.launches) == launches
+    _due_now(handle2)
+    assert pb.poll(ctx2, handle2) is True
+    assert ctx2.status == "succeeded" and len(pin.mints) == 1
+    assert pin.record()["state"] == "handed"
+
+
+def test_a_branch_moved_before_the_handoff_mints_nothing(pin: Pin) -> None:
+    """If this fails a land is minted for a branch whose head is no longer
+    the committed commit."""
+    ctx, handle = _handoff(pin)
+    _g(
+        pin.tree(),
+        "-c",
+        "user.name=x",
+        "-c",
+        "user.email=x@x",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "moved",
+    )
+    assert pb.poll(ctx, handle) is True
+    _charged(ctx)
+    assert pin.mints == [] and pin.record()["state"] == "committed"
+
+
+def _no_op_job(pin: Pin) -> tuple[_Ctx, dict[str, Any]]:
+    pin.precis_commit(pin.texts("0.50.0", pin.new))
+    ctx, handle = _submitted(pin)
+    assert pb.poll(ctx, handle) is False
+    assert handle["phase"] == "handoff" and handle["noop"] is True
+    _due_now(handle)
+    return ctx, handle
+
+
+def test_a_no_op_closes_its_node_with_pinned_and_never_landed(pin: Pin) -> None:
+    """If this fails a no-op leaves its node open (the dispatcher closes a pin
+    node only on a land), writes a `landed:` comment for a bump that landed
+    nothing, or mints a land."""
+    ctx, handle = _no_op_job(pin)
+    tip = pin.tip()
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert pin.store.comments(PIN) == [
+        f"pinned: autocatpath v0.50.0 already at {pin.new[:9]} (no-op)"
+    ]
+    assert "STATUS:done" in pin.store.tag_strings(PIN)
+    rec = pin.record()
+    assert rec["state"] == "landed" and rec["noop"] is True
+    assert rec["landed_sha"] == tip
+    assert pin.mints == [] and pin.branch_head() is None
+    assert not any("landed:" in c for c in pin.store.comments(PIN))
+    assert ctx.chunks[-1][0] == "job_summary" and "no-op" in ctx.chunks[-1][1]
+    # a repeated poll writes nothing new
+    assert pb.poll(ctx, handle) is True
+    assert len(pin.store.comments(PIN)) == 1
+
+
+def test_a_no_op_resolves_the_batch_gripes_with_the_precis_tip(pin: Pin) -> None:
+    """If this fails the no-op's closing tail skips the gripe resolution or
+    names the release sha instead of the precis tip."""
+    _batch(pin)
+    ctx, handle = _no_op_job(pin)
+    tip = pin.tip()
+    assert pb.poll(ctx, handle) is True
+    assert [c.text for c in pin.store.chunks.list_chunks_for_ref(91)] == [
+        f"resolved: {tip[:9]} (main, release pending) — autocatpath v0.50.0, td81"
+    ]
+    assert "STATUS:auto_verify" in pin.store.tag_strings(91)
+
+
+def test_a_no_op_leaves_a_node_closed_by_the_coordinator_alone(pin: Pin) -> None:
+    """If this fails a no-op re-opens or re-closes a node a ruling already
+    closed won't-do."""
+    ctx, handle = _no_op_job(pin)
+    pin.store.add_tag(PIN, Tag.closed("STATUS", "won't-do"), replace_prefix=True)
+    assert pb.poll(ctx, handle) is True
+    assert "STATUS:won't-do" in pin.store.tag_strings(PIN)
+    assert "STATUS:done" not in pin.store.tag_strings(PIN)
+
+
+# ── finish: the gripe walk ─────────────────────────────────────────
+
+SHA = "c" * 40
+GRIPE_STATUS = {91: "open", 92: "triaged", 93: "auto_verify", 94: "open"}
+
+
+def _batch(pin: Pin) -> None:
+    """root 70: PIN -> REL -> {81 catpath done, 82 hexfold done, 83 open};
+    81 -> 85 (done catpath, upstream through 81); 84 (done catpath) is not
+    upstream; gripes 91..97 hang off them. The pin record is ``handed``."""
+    store = pin.store
+    store.add_tag(PIN, Tag.open("plan:70"), set_by="system")
+    store.add_todo(70)
+    store.refs[REL].meta["op"] = "repo_release"
+    done = {"landed_repo": "catpath"}
+    store.add_todo(81, status="done", meta=dict(done))
+    store.add_todo(82, status="done", meta={"landed_repo": "hexfold"})
+    store.add_todo(83, status="open", meta=dict(done))
+    store.add_todo(84, status="done", meta=dict(done))
+    store.add_todo(85, status="done", meta=dict(done))
+    for gid, status in {**GRIPE_STATUS, 95: "open", 96: "open", 97: "done"}.items():
+        store.add_todo(gid, status=status)
+    pin.rows = [
+        {"id": i, "parent_id": None, "kind": "todo"}
+        for i in (70, PIN, REL, 81, 82, 83, 84, 85)
+    ]
+    pin.edges = [(PIN, REL), (REL, 81), (REL, 82), (REL, 83), (81, 85)]
+    pin.links = [
+        (81, 91),
+        (81, 92),
+        (85, 92),
+        (81, 93),
+        (82, 94),
+        (83, 95),
+        (84, 96),
+        (81, 97),
+    ]
+    store.refs[PIN].meta["pin_bump"] = {
+        "state": "handed",
+        "repo": "catpath",
+        "package": "autocatpath",
+        "version": "0.50.0",
+        "commit": "d" * 40,
+    }
+
+
+def test_finish_walks_exactly_the_closure_and_resolves_each_gripe_once(
+    pin: Pin,
+) -> None:
+    """If this fails finish resolves a gripe of another repo's slice, an open
+    slice, a slice not upstream or an already settled gripe, resolves one
+    twice, or omits the gripe/slice lists from the record."""
+    _batch(pin)
+    pb.finish(pin.store, PIN, SHA)
+    want = "resolved: ccccccccc (main, release pending) — autocatpath v0.50.0, "
+    assert pin.store.comments(91) == []  # gripe comments are not todo comments
+    assert [c.text for c in pin.store.chunks.list_chunks_for_ref(91)] == [want + "td81"]
+    assert [c.text for c in pin.store.chunks.list_chunks_for_ref(92)] == [
+        want + "td81, td85"
+    ]
+    for gid in (91, 92):
+        assert "STATUS:auto_verify" in pin.store.tag_strings(gid)
+    for gid in (93, 94, 95, 96, 97):
+        assert pin.store.chunks.list_chunks_for_ref(gid) == []
+    assert pin.store.tag_strings(93) == {"STATUS:auto_verify"}
+    assert pin.store.tag_strings(97) == {"STATUS:done"}
+    for gid in (94, 95, 96):
+        assert pin.store.tag_strings(gid) == {"STATUS:open"}
+    rec = pin.record()
+    assert rec["state"] == "landed" and rec["landed_sha"] == SHA
+    assert rec["gripes"] == [91, 92] and rec["slices"] == [81, 85]
+
+
+def test_a_second_finish_writes_nothing_new(pin: Pin) -> None:
+    """If this fails a repeated finish duplicates a comment, rewrites the
+    record or drops the lists the first call stored."""
+    _batch(pin)
+    pb.finish(pin.store, PIN, SHA)
+    before = (
+        json.dumps(pin.store.refs[PIN].meta, sort_keys=True),
+        {g: len(pin.store.chunks.list_chunks_for_ref(g)) for g in (91, 92)},
+        {g: sorted(pin.store.tag_strings(g)) for g in (91, 92, 93)},
+    )
+    pb.finish(pin.store, PIN, SHA)
+    after = (
+        json.dumps(pin.store.refs[PIN].meta, sort_keys=True),
+        {g: len(pin.store.chunks.list_chunks_for_ref(g)) for g in (91, 92)},
+        {g: sorted(pin.store.tag_strings(g)) for g in (91, 92, 93)},
+    )
+    assert before == after
+    assert before[1] == {91: 1, 92: 1}
+
+
+def test_finish_follows_a_phase_gate_to_its_children(pin: Pin) -> None:
+    """If this fails a slice under a phase the pin chain is blocked by is not
+    in the batch (a blocked-by on a phase gates its children)."""
+    _batch(pin)
+    pin.store.add_todo(86, status="doing")  # a phase
+    pin.store.add_todo(87, status="done", meta={"landed_repo": "catpath"})
+    pin.store.add_todo(98, status="open")
+    pin.rows += [
+        {"id": 86, "parent_id": 70, "kind": "todo"},
+        {"id": 87, "parent_id": 86, "kind": "todo"},
+    ]
+    pin.edges.append((REL, 86))
+    pin.links.append((87, 98))
+    pb.finish(pin.store, PIN, SHA)
+    assert pin.record()["slices"] == [81, 85, 87]
+    assert pin.record()["gripes"] == [91, 92, 98]
+
+
+def test_finish_never_raises(pin: Pin, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If this fails a broken walk, a refusing store or a missing record makes
+    finish raise into the land that already happened."""
+    pb.finish(pin.store, PIN, SHA)  # no record at all
+    _batch(pin)
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("store down")
+
+    real = pb._batch_slices
+    monkeypatch.setattr(pb, "_batch_slices", boom)
+    pb.finish(pin.store, PIN, SHA)
+    assert pin.record()["state"] == "landed"  # stamped before the walk
+    monkeypatch.setattr(pb, "_batch_slices", real)
+    monkeypatch.setattr(pin.store, "stamp_ref_meta", boom)
+    pb.finish(pin.store, PIN, SHA)  # the stamp refusing does not raise either
+
+
+def test_one_failing_gripe_does_not_stop_the_others(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a gripe whose write fails leaves the rest of the batch
+    unresolved."""
+    _batch(pin)
+    real = pb._resolve_gripe
+
+    def flaky(store: Any, gid: int, *a: Any) -> bool:
+        if gid == 91:
+            raise RuntimeError("write failed")
+        return real(store, gid, *a)
+
+    monkeypatch.setattr(pb, "_resolve_gripe", flaky)
+    pb.finish(pin.store, PIN, SHA)
+    assert pin.record()["gripes"] == [92]
+    assert "STATUS:auto_verify" in pin.store.tag_strings(92)
+
+
+# ── serialise ──────────────────────────────────────────────────────
+
+
+def test_another_nodes_live_pin_bump_holds_the_submit(pin: Pin) -> None:
+    """If this fails a second pin bump can start while another node's is in
+    flight; a holding: refusal means no job is minted."""
+    pin.jobs["pin_bump"] = [(900, 66, False)]
+    held = pb.validate_submit(pin.store, params=dict(PARAMS))
+    assert held is not None and held.startswith("holding:") and "jo900" in held
+
+
+def test_the_same_nodes_own_or_finished_jobs_do_not_hold(pin: Pin) -> None:
+    """If this fails a retry of the same node, or another node's finished
+    bump, holds the submit."""
+    pin.jobs["pin_bump"] = [(900, PIN, False), (901, 66, True)]
+    pin.jobs["land_slice"] = [(902, PIN, False)]
+    assert pb.validate_submit(pin.store, params=dict(PARAMS)) is None
+
+
+def test_a_live_land_of_a_pin_node_holds_but_an_ordinary_land_does_not(
+    pin: Pin,
+) -> None:
+    """If this fails a pin node's land in flight does not hold the next bump,
+    or an unrelated slice's land does."""
+    pin.store.add_todo(66, meta={"pin_bump": {"state": "handed"}})
+    pin.store.add_todo(67)
+    pin.jobs["land_slice"] = [(903, 67, False)]
+    assert pb.validate_submit(pin.store, params=dict(PARAMS)) is None
+    pin.jobs["land_slice"] = [(904, 66, False), (903, 67, False)]
+    held = pb.validate_submit(pin.store, params=dict(PARAMS))
+    assert held is not None and held.startswith("holding:") and "jo904" in held
+    pin.jobs["land_slice"] = [(904, 66, True)]
+    assert pb.validate_submit(pin.store, params=dict(PARAMS)) is None
+
+
+def test_an_unreadable_job_scan_holds_rather_than_admits(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a store that cannot list jobs lets two bumps run."""
+
+    def boom(store: Any, jt: str) -> Any:
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(pb, "_recent_jobs", boom)
+    held = pb.validate_submit(pin.store, params=dict(PARAMS))
+    assert held is not None and held.startswith("holding:")
+
+
+def test_the_serialise_scan_is_bounded_and_reads_terminal_from_the_tags() -> None:
+    """If this fails the scan reads every job row, or mistakes a tagged
+    terminal job for a live one."""
+
+    class _Conn:
+        sql: list[tuple[str, tuple[Any, ...]]] = []
+
+        def __enter__(self) -> _Conn:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def execute(self, sql: str, args: tuple[Any, ...]) -> _Conn:
+            self.sql.append((sql, args))
+            return self
+
+        def fetchall(self) -> list[tuple[int, str | None]]:
+            return [(12, "66"), (11, None), (10, "65")]
+
+    class _Pool:
+        def connection(self) -> _Conn:
+            return _Conn()
+
+    class _St:
+        pool = _Pool()
+
+        def tags_for(self, jid: int) -> list[Tag]:
+            return [Tag.closed("STATUS", "succeeded" if jid == 10 else "running")]
+
+    rows = pb._recent_jobs(_St(), "pin_bump")
+    assert rows == [(12, 66, False), (11, None, False), (10, 65, True)]
+    (sql, args), *_ = _Conn.sql
+    assert (
+        "LIMIT" in sql and args == ("pin_bump", pb.SCAN_LIMIT) and pb.SCAN_LIMIT == 50
+    )
+
+
+def test_registered_in_every_table_the_job_types_use() -> None:
+    """If this fails pin_bump is missing from the job-type registry, the
+    service registry, the describers or the factory pipeline band."""
+    from precis.workers import job_describe, registry
+    from precis.workers.executors import _common
+    from precis.workers.job_types import _BUILTIN_JOB_TYPES, get_job_type
+
+    assert get_job_type("pin_bump") is pb.SPEC
+    assert "pin_bump" in _BUILTIN_JOB_TYPES
+    assert "pin_bump" in _common.FACTORY_PIPELINE_JOB_TYPES
+    assert "pin_bump" in job_describe.DESCRIBERS
+    (svc,) = [s for s in registry.SERVICES if s.name == "pin_bump"]
+    assert svc.placement == frozenset({"repo_checkout", "git"})
+    assert _common.placement_requires(
+        {"job_type": "pin_bump", "params": {"pin_repo": "catpath"}}
+    ) == frozenset({"repo_checkout", "git"})
 
 
 def test_a_committed_record_still_at_the_branch_head_is_resumed(pin: Pin) -> None:

@@ -202,6 +202,7 @@ FACTORY_PIPELINE_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
     "land_slice",
     "repo_release",
+    "pin_bump",
     "release_cut",
     "release_deploy",
     "release_confirm",

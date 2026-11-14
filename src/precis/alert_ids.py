@@ -854,6 +854,19 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "its terminal status clears the lease row for good.",
     ),
     AlertRule(
+        "pin_bump",
+        "stale-open:{todo}",
+        "A pin-bump node is still open over six hours after its release node "
+        "tagged, with no live job (a succeeded pin_bump whose land never "
+        "appeared counts).",
+        "warn",
+        "pin_bump",
+        triage="get(kind='todo', id=<todo>, view='comments'): the pin_bump "
+        "job failed, was never dispatched or handed off a land that never "
+        "ran; clear the cause (an ask, a held land) or move the pin by hand "
+        "and close the node.",
+    ),
+    AlertRule(
         "lane_health",
         "lane-parked:{lane}",
         "A lane has been parked on a failed health probe for over six hours.",

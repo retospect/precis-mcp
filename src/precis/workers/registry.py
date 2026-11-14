@@ -1429,6 +1429,17 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="pin_bump",
+        label="Pin bump (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Move precis's pin of a released second-repo engine "
+        "mechanically, then hand the branch to land_slice (refused until a "
+        "profile names a pinner).",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="release_cut",
         label="Release cut (job)",
         category="jobs",
