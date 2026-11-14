@@ -256,13 +256,24 @@ def _target_ref_id(store: Any, kind: str, ident: Any) -> int:
 class TrustFooter:
     """The resolved stamp behind one ``get`` trust line. ``line`` is the
     text an agent reads — the consider call spelled out and runnable; the
-    parts let a surface link that call instead of printing it."""
+    parts let a surface link that call instead of printing it. ``recipe``
+    is that runnable call alone — ``None`` when there is no sha to name —
+    so a serve that already showed it can print only :attr:`short`, the
+    stamp and sha ``edit(mode='trust')`` still needs (gr499041)."""
 
     kind: str
     ref_id: int
     stamp: str
     sha: str | None
     line: str
+    recipe: str | None = None
+
+    @property
+    def short(self) -> str:
+        """``line`` without the `` — edit(...)`` recipe (~50 bytes)."""
+        if self.recipe is None:
+            return self.line
+        return self.line.removesuffix(f" — {self.recipe}")
 
 
 def trust_footer(store: Any, kind: str, ident: Any) -> TrustFooter | None:
@@ -282,14 +293,24 @@ def trust_footer(store: Any, kind: str, ident: Any) -> TrustFooter | None:
         label = None
     if label:
         stamp += f" · {label}"
-    line = f"trust: {stamp}"
+    short = f"trust: {stamp}"
+    recipe = None
     if state.sha:
-        line += (
-            f" · sha {state.sha} — edit(kind={kind!r}, id={ref_id}, mode='trust', "
+        short += f" · sha {state.sha}"
+        recipe = (
+            f"edit(kind={kind!r}, id={ref_id}, mode='trust', "
             "args={'trust': {'confidence': 'considered', 'reason': "
             f"'<why you trust it>', 'expected_sha': '{state.sha}'}}}})"
         )
-    return TrustFooter(kind=kind, ref_id=ref_id, stamp=stamp, sha=state.sha, line=line)
+    line = short if recipe is None else f"{short} — {recipe}"
+    return TrustFooter(
+        kind=kind,
+        ref_id=ref_id,
+        stamp=stamp,
+        sha=state.sha,
+        line=line,
+        recipe=recipe,
+    )
 
 
 def trust_line(store: Any, kind: str, ident: Any) -> str | None:

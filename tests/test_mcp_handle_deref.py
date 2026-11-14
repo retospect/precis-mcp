@@ -12,7 +12,7 @@ import pytest
 
 from precis import serve_ledger, server
 from precis.runtime import PrecisRuntime
-from precis.runtime.handle_deref import reset_read_receipts
+from precis.runtime.handle_deref import MEMORY_GRIPE_HINT, reset_read_receipts
 from precis.store import ChunkInsert, Store
 from precis.tools import core as tools_core
 from precis.utils import handle_registry
@@ -47,6 +47,38 @@ def _memory_id(body: str) -> int:
         match = re.search(r"\b(?:me|fi)(\d+)", body)
     assert match is not None, body
     return int(match.group(1))
+
+
+def _memory(store: Store) -> int:
+    ref = store.insert_ref(kind="memory", slug=None, title="deref memory")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="A claim.", meta={"chunk_kind": "memory_body"})],
+    )
+    return ref.id
+
+
+def test_gripe_hint_once_per_session(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The memory complaint prompt serves on the session's first exact
+    memory read only — the text is identical for every node (gr499041)."""
+    from precis.utils.hint_ledger import _clear_for_tests
+
+    _clear_for_tests()
+    first, second = _memory(store), _memory(store)
+    session = object()
+    with serve_ledger.session_scope(session):
+        a = runtime_with_store.dispatch("get", {"id": f"me{first}"})
+        b = runtime_with_store.dispatch("get", {"id": f"me{second}"})
+        a_again = runtime_with_store.dispatch("get", {"id": f"me{first}"})
+    assert MEMORY_GRIPE_HINT in a
+    assert MEMORY_GRIPE_HINT not in b
+    assert MEMORY_GRIPE_HINT not in a_again
+    other = object()
+    with serve_ledger.session_scope(other):
+        fresh = runtime_with_store.dispatch("get", {"id": f"me{second}"})
+    assert MEMORY_GRIPE_HINT in fresh
 
 
 def test_missing_receipt_refuses_before_mutation(

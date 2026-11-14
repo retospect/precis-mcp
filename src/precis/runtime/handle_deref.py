@@ -4,12 +4,15 @@ A same-session exact read is the receipt that permits substitution. Expansion
 uses current stored bytes, never the earlier rendered response, and never
 leaves expanded content in the tool-call audit arguments.
 
-Memory complaint hints share these receipts: first sight is per node and
-session, independent of the requested view. Numeric memory ids normalize to
-the same receipt as their universal handle. The search variant
-(:func:`memory_search_gripe_hint`) is coarser by design — offered once per
-session, marked with a ``ref_id=-1`` identity that cannot collide with a
-live node — because a search result has no single node to key on.
+Memory complaint hints bind to the same session but not the receipts:
+the exact-get offer (:func:`memory_gripe_hint`) is once per session
+through the hint ledger — its text is identical for every node, so the
+gr561869 per-node rule paid it on every read (gr499041). Numeric memory
+ids normalize to the same receipt as their universal handle. The search
+variant (:func:`memory_search_gripe_hint`) is coarser by design —
+offered once per session, marked with a ``ref_id=-1`` identity that
+cannot collide with a live node — because a search result has no single
+node to key on.
 """
 
 from __future__ import annotations
@@ -135,7 +138,14 @@ def _memory_read_handle(handle: Any, explicit_kind: Any) -> Any:
 def memory_gripe_hint(
     handle: Any, *, store: Any, explicit_kind: Any = None
 ) -> str | None:
-    """Complaint prompt before the successful read records its receipt."""
+    """Complaint prompt on the session's first exact memory read.
+
+    The text is identical for every node, so the hint ledger keys the
+    offer on the text itself (gr499041): first sight of any memory node
+    in the session serves it, later reads do not — the per-node receipt
+    stays for ``$ref`` substitution, it no longer gates the hint. As
+    before, a sessionless caller sees nothing.
+    """
     session_id, _ = current_session_key()
     if session_id is None:
         return None
@@ -148,7 +158,9 @@ def memory_gripe_hint(
     resolved = store.resolve_handle(handle.strip())
     if resolved is None or resolved.kind != "memory" or resolved.chunk_id is not None:
         return None
-    if _RECEIPTS.contains(session_id, resolved):
+    from precis.utils.hint_ledger import was_shown
+
+    if was_shown(MEMORY_GRIPE_HINT):
         return None
     return MEMORY_GRIPE_HINT
 

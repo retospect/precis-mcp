@@ -90,7 +90,7 @@ from precis.runtime.trust_verb import (
     pop_trust_payload,
     pop_writer_payload,
     producer_kwargs,
-    trust_line,
+    trust_footer,
     written_line,
 )
 from precis.runtime.under_facet import UNDER_NEXT
@@ -4550,19 +4550,28 @@ class DispatchMixin(RuntimeShape):
         if store is None:
             return response
         try:
-            line = trust_line(store, kind, ident)
-            written = written_line(store, kind, ident) if line is not None else None
+            footer = trust_footer(store, kind, ident)
+            written = written_line(store, kind, ident) if footer is not None else None
         except Exception:
             log.debug("trust line for %s %r failed", kind, ident, exc_info=True)
             return response
-        if line is None:
+        if footer is None:
             return response
-        # gr499041: the identical stamp+sha footer on a re-read carries no
-        # new information; suppress it for a session that saw it recently.
-        from precis.utils.hint_ledger import was_shown
+        line = footer.line
+        if footer.recipe is not None:
+            # gr499041 (reopened): the runnable consider call is one
+            # template — keying the ledger on the whole line let the
+            # per-node sha make every read "new", and a per-kind key
+            # re-served it on the session's first read of each kind.
+            # Serve it once per session across kinds, and never in a
+            # read-scoped run that cannot run it. The stamp and sha stay
+            # on every footer because edit(mode='trust') needs
+            # expected_sha; a sessionless caller always gets the full
+            # line.
+            from precis.utils.hint_ledger import was_shown
 
-        if was_shown(line):
-            return response
+            if _put_denied() or was_shown("trust recipe"):
+                line = footer.short
         # The trust line stays last: the web lifts it off the end of the body.
         lead = f"{written}\n\n" if written else ""
         return replace(response, body=f"{response.body.rstrip()}\n\n{lead}{line}")

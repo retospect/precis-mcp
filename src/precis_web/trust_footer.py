@@ -54,6 +54,11 @@ def strip_trust_footer(
         return body, None
     marker = f"\n\n{footer.line}"
     idx = body.rfind(marker)
+    if idx < 0 and footer.short != footer.line:
+        # A read-scoped run (or a session that already saw the recipe)
+        # prints the sha-only form — lift it the same way (gr499041).
+        marker = f"\n\n{footer.short}"
+        idx = body.rfind(marker)
     if idx < 0:
         return body, None
     return (
