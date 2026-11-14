@@ -165,6 +165,221 @@ def test_sha_in_prod_closed_for_unknown_sha(store: Store) -> None:
     assert not res.open and "not in prod yet" in res.why and "ab12cd34e" in res.why
 
 
+REPO = "octo/precis-fixture"
+MISSING = "9" * 40
+
+
+def _fake_compare(
+    monkeypatch: pytest.MonkeyPatch, status: str | int | Exception
+) -> list[str]:
+    """Stub the GitHub transport; returns the URLs requested."""
+    from types import SimpleNamespace
+
+    from precis.plans import pr_class
+
+    calls: list[str] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        calls.append(url)
+        if isinstance(status, Exception):
+            raise status
+        if isinstance(status, int):
+            return SimpleNamespace(status_code=status, json=lambda: {})
+        return SimpleNamespace(status_code=200, json=lambda: {"status": status})
+
+    monkeypatch.setattr(pr_class, "_http_get", get)
+    monkeypatch.setattr(pr_class, "_headers", lambda: {})
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def _github_down(monkeypatch: pytest.MonkeyPatch, store: Store) -> list[str]:
+    """No test reaches the real API; the ancestry fallback is unavailable
+    unless a test installs its own ``_fake_compare``."""
+    gates._ANCESTOR_CACHE.clear()
+    monkeypatch.setattr(gates, "_breaker_until", 0.0)
+    psettings.set_setting("release.repo", REPO, store=store)
+    return _fake_compare(monkeypatch, OSError("network down"))
+
+
+def _sha_in_prod(store: Store, sha: str = MISSING) -> GateVerdict:
+    return evaluate(store, {"kind": "sha-in-prod", "args": {"sha": sha}}, todo_id=1)
+
+
+@pytest.mark.parametrize("status", ["ahead", "identical"])
+def test_sha_in_prod_github_ancestor_opens(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, status)
+    res = _sha_in_prod(store)
+    assert res.open and "ancestor of prod head ab12cd34e" in res.why
+    assert calls == [f"https://api.github.com/repos/{REPO}/compare/{MISSING}...{HEAD}"]
+
+
+@pytest.mark.parametrize("status", ["behind", "diverged"])
+def test_sha_in_prod_github_not_ancestor_stays_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    _record(store)
+    _fake_compare(monkeypatch, status)
+    res = _sha_in_prod(store)
+    assert not res.open and "not in prod yet" in res.why
+    assert "unconfirmed" not in res.why
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("network down"), TimeoutError("slow"), 404, 403, 502]
+)
+def test_sha_in_prod_github_error_closes_without_raising(
+    store: Store, monkeypatch: pytest.MonkeyPatch, failure: Exception | int
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, failure)
+    res = _sha_in_prod(store)
+    assert not res.open and "not in prod yet" in res.why
+    assert "GitHub ancestry unconfirmed" in res.why
+    assert calls
+
+
+def test_sha_in_prod_github_unknown_status_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    _fake_compare(monkeypatch, "weird")
+    res = _sha_in_prod(store)
+    assert not res.open and "unconfirmed" in res.why
+    assert gates._ANCESTOR_CACHE == {}
+
+
+def test_sha_in_prod_github_no_repo_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import pr_class
+
+    _record(store)
+    calls = _fake_compare(monkeypatch, "ahead")
+    monkeypatch.setattr(pr_class, "resolve_repo", lambda *a, **k: None)
+    res = _sha_in_prod(store)
+    assert not res.open and not calls
+
+
+def test_sha_in_prod_github_positive_is_cached(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store).open and _sha_in_prod(store).open
+    assert len(calls) == 1
+    # a different head is a different question
+    _record(store, head="cd" * 20)
+    assert _sha_in_prod(store).open
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", ["behind", "diverged"])
+def test_sha_in_prod_github_negative_is_cached_per_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, status)
+    assert not _sha_in_prod(store).open and not _sha_in_prod(store).open
+    assert len(calls) == 1
+    # prod moved: a new head is a new question
+    _record(store, head="cd" * 20)
+    _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store).open
+
+
+def test_sha_in_prod_github_404_and_unknown_status_are_not_cached(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, 404)
+    assert not _sha_in_prod(store).open and not _sha_in_prod(store).open
+    assert len(calls) == 2
+    _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store).open
+
+
+def test_ancestor_cache_is_bounded(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, "behind")
+    monkeypatch.setattr(gates, "_CACHE_MAX", 2)
+    for i in range(3):
+        assert not _sha_in_prod(store, f"{i}" * 40).open
+    assert len(gates._ANCESTOR_CACHE) == 1  # cleared at the third insert
+    assert len(calls) == 3
+
+
+class _Clock:
+    now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.mark.parametrize("failure", [OSError("down"), 503, 403])
+def test_breaker_trips_on_outage_and_resets_after_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch, failure: Exception | int
+) -> None:
+    _record(store)
+    clock = _Clock()
+    monkeypatch.setattr(gates, "_clock", clock)
+    monkeypatch.setattr(gates, "_breaker_until", 0.0)
+    calls = _fake_compare(monkeypatch, failure)
+    other = "8" * 40
+    assert "unconfirmed" in _sha_in_prod(store).why
+    assert len(calls) == 1
+    # open breaker: other shas skip GitHub entirely
+    clock.now += gates._BREAKER_S - 1
+    res = _sha_in_prod(store, other)
+    assert not res.open and "unconfirmed" in res.why and len(calls) == 1
+    # window over: GitHub is asked again and a good answer opens the gate
+    clock.now += 2
+    calls = _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store, other).open and len(calls) == 1
+
+
+def test_breaker_ignores_404_and_serves_cache_while_open(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    clock = _Clock()
+    monkeypatch.setattr(gates, "_clock", clock)
+    monkeypatch.setattr(gates, "_breaker_until", 0.0)
+    calls = _fake_compare(monkeypatch, 404)
+    _sha_in_prod(store)
+    _sha_in_prod(store, "8" * 40)
+    assert len(calls) == 2  # a 404 never trips it
+    _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store).open  # cached positive, then an outage
+    calls = _fake_compare(monkeypatch, OSError("down"))
+    _sha_in_prod(store, "7" * 40)
+    assert _sha_in_prod(store).open and len(calls) == 1
+
+
+def test_sha_in_prod_record_hit_makes_no_http_call(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    calls = _fake_compare(monkeypatch, "ahead")
+    assert _sha_in_prod(store, HEAD).open
+    assert _sha_in_prod(store, LANDED[0]).open
+    assert calls == []
+
+
+def test_tests_green_uses_github_ancestry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record(store)
+    _fake_compare(monkeypatch, "ahead")
+    gate = {"kind": "tests-green", "args": {"range": f"{MISSING}"}}
+    assert evaluate(store, gate, todo_id=1).open
+
+
 @pytest.mark.parametrize(
     "sha", [None, "", "abc123", "main", "zzzzzzz", 1234567, "a" * 41]
 )
