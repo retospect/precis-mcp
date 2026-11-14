@@ -602,14 +602,22 @@ def file_gripe(
 def unpark_gripe(store: Any, gid: int, text: str) -> bool:
     """Wake a parked gripe (gr543711): comment ``text`` and flip it back
     to ``STATUS:open`` through the handler (the tag leg clears
-    ``meta.until``). Returns False when the put refused."""
+    ``meta.until``). The comment is stamped ``unpark_notice`` so the
+    ``resolved:`` close gate reads it as a system wake line, not the
+    referrer's own word (gr673558). Returns False when the put
+    refused."""
     from precis.dispatch import Hub
     from precis.errors import PrecisError
-    from precis.handlers.gripe import GripeHandler
+    from precis.handlers.gripe import (
+        _PUT_COMMENT_META,
+        _UNPARK_NOTICE_META,
+        GripeHandler,
+    )
 
     handler = GripeHandler(hub=Hub(store=store))
     try:
-        handler.put(id=gid, text=text, tags=["STATUS:open"])
+        with _PUT_COMMENT_META.bind({_UNPARK_NOTICE_META: True}):
+            handler.put(id=gid, text=text, tags=["STATUS:open"])
     except PrecisError:
         return False
     return True
