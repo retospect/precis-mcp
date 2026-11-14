@@ -12,8 +12,8 @@ status: active
 ---
 An **xy chart** is a bar and/or line chart over an x-axis — a quantitative
 plot of values. Reach for it when the user says "bar chart", "line chart",
-"plot", or "graph of numbers". (For proportions/shares — a pie chart — see
-`precis-mermaid-unsupported`.)
+"plot", or "graph of numbers". (For proportions/shares use a `pie` diagram;
+it renders — see `precis-mermaid-help`.)
 
     xychart-beta
       title "Sales"

@@ -42,6 +42,35 @@ Harness-neutral: where a step names a Monitor/SendMessage/subagent
 runtime, do that step yourself (or map to your runtime's equivalent)
 when none exists; Kimi maps commands via `/skill:<name>`.
 
+## Before you dispatch
+
+Sibling sessions race a new dispatch to main; the loser's merge is a semantic
+conflict (two designs), not a textual one. Each check is point-in-time —
+rerun it just before launch.
+
+1. `scripts/inflight`, then the `.claude/purpose` lines: look for the gripe
+   id or the file. A tree with no purpose line defeats this check.
+2. `git log --grep=gr<N>`, `git log -S gr<N>`, `grep -rn gr<N> src tests
+   docs`. A gr id ending a squash subject means that commit fixes it;
+   `refs gr<N>` means it only touches it; older commits often never named
+   the gripe. A gripe's STATUS can lag the code.
+3. The gripe's code todo and its `claimed-by:` holder. A same-day campaign
+   tag means the campaign session is probably fixing it: treat it as claimed.
+4. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming
+   the id. A queued unlanded branch owns its gripes until it lands or is
+   dropped; check every id before writing a brief.
+5. Claim before spawning, in the parent session, and list the id in
+   `.claude/purpose`:
+
+   ```
+   tag(kind='gripe', id=N, add=['claimed-by:<tree>'])   # STATUS:fixing, 4 h lease
+   ```
+
+   Re-issue the tag to refresh the lease; drop it to release.
+6. Two sessions on one gripe: the first to reach main wins. Adopt main's
+   version and keep only your delta (extra tests, hardening the other
+   lacked); judge on the merits only when main's version is defective.
+
 ## Loop step → script — mint & launch
 
 | loop step | here |

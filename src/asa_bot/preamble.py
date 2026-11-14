@@ -173,16 +173,29 @@ async def _fetch_digest(
 async def _fetch_stickies(
     precis: PrecisClient, conv_slug: str, cfg: PreambleConfig
 ) -> str:
-    thread_tag = f"sticky:thread:{conv_slug}"
-    body = await precis.call_tool(
-        "search",
-        {
-            "kind": "memory",
-            "tags": [thread_tag, "sticky:thread", "sticky:global"],
-            "page_size": cfg.sticky_max_thread + cfg.sticky_max_global,
-        },
-    )
-    return body
+    """This thread's stickies UNION the unscoped and global stickies.
+
+    Tag filters are AND-semantics, so one multi-tag search would only
+    match memories carrying every tag. Run one search per tag (each with
+    its own cap) and join the non-empty blobs. Bare ``sticky:thread`` is
+    the pin ``precis-memory-help`` teaches; it carries no conv, so it
+    shows in every thread.
+    """
+    blobs: list[str] = []
+    for tag, cap in (
+        (f"sticky:thread:{conv_slug}", cfg.sticky_max_thread),
+        ("sticky:thread", cfg.sticky_max_thread),
+        ("sticky:global", cfg.sticky_max_global),
+    ):
+        if cap <= 0:
+            continue
+        body = await precis.call_tool(
+            "search",
+            {"kind": "memory", "tags": [tag], "page_size": cap},
+        )
+        if body.strip() and not body.startswith("no memory entries"):
+            blobs.append(body.strip())
+    return "\n\n".join(blobs)
 
 
 async def _fetch_last_meta(precis: PrecisClient, slug: str) -> str:

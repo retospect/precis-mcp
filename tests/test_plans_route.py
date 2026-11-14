@@ -565,6 +565,9 @@ def test_run_invocation_evidence_and_checkout_never_route(text: str) -> None:
         ),
         # gr663867: the skill file IS the requested edit target
         (_GR663867, "src/precis/data/skills/gripe-fleet.md"),
+        # a target ending its sentence keeps its glob match
+        ("Fix: please edit scripts/ship.", "scripts/ship"),
+        ("Run `scripts/test tests/x.py`, then edit scripts/ship.", "scripts/ship"),
     ],
 )
 def test_genuine_edit_request_still_routes(text: str, path: str) -> None:

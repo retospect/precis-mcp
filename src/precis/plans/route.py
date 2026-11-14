@@ -494,7 +494,8 @@ def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | Non
     for m in _PATH_TOKEN.finditer(text):
         if _discounted(text, m.start(), m.end()):
             continue
-        shown = m.group(0)
+        # Sentence punctuation rides the token (``edit scripts/ship.``).
+        shown = m.group(0).rstrip(".")
         if checkout := _CHECKOUT_PATH.search(shown):
             shown = checkout.group("rest") or ""
             if not shown:

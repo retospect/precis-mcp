@@ -30,9 +30,9 @@ authority.
 
 | Goal | Skill |
 |---|---|
-| Recall before adding knowledge | precis-memory-help~11 |
-| Link a node into its subject | precis-memory-help~21 |
-| Choose an update rather than a duplicate | precis-memory-help~22 |
+| Recall before adding knowledge | [[precis-memory-help]] § "Recall what I already know" |
+| Link a node into its subject | [[precis-memory-help]] § "Hubs, part-of and qualifies" |
+| Choose an update rather than a duplicate | [[precis-memory-help]] § "Update or new node?" |
 
 ## See also
 

@@ -35,7 +35,7 @@ separate search for busywork.
 
 | Goal | Skill |
 |---|---|
-| Record tool friction | precis-gripe-help~1 |
+| Record tool friction | [[precis-gripe-help]] § "File a bug I just noticed" |
 | Learn filing and lifecycle details | [[precis-gripe-help]] |
 
 ## See also

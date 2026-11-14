@@ -71,17 +71,17 @@ log = logging.getLogger(__name__)
 #: excluded, §2) and pulled on demand via MCP ``get``.
 
 
-#: Hard cap on the skill index. Each entry costs ~40 tokens; at the
-#: current corpus (~140 active skills) the full index renders at ~5.6k
-#: tokens, so the cap keeps the cached system prompt bounded even as the
-#: corpus grows. Sized to admit the whole active set today (a purely
-#: alphabetical truncation would otherwise drop late-sorted core skills
-#: like ``precis-todo-tree-help`` — bumped 120 -> 160 on 2026-07-29 when the
-#: ``component`` kind's new skill tipped the corpus past the old cap and
-#: evicted exactly that one). If a planner needs a skill beyond the cap
-#: it calls ``search(kind='skill', q='…')`` — that's the discovery
-#: mechanism by design.
-_SKILL_INDEX_MAX: int = 160
+#: Hard cap on the skill index. The index is names only, so an entry is a
+#: ~20-byte slug; the cap is a safety net that keeps the cached system prompt
+#: bounded, not a budget the corpus is expected to press against. Sized to
+#: admit the whole active set with room: a purely alphabetical truncation
+#: silently drops every late-sorted skill (it once dropped ``precis-put-help``,
+#: ``precis-search-help`` and every ``soul*`` at a 160 cap over a ~296-skill
+#: corpus). ``test_planner_prompt_budget`` fails when the eligible count
+#: exceeds this, so the next overflow is a red test, not a silent drop. If a
+#: planner needs a skill beyond the cap it calls ``search(kind='skill',
+#: q='…')`` — that's the discovery mechanism by design.
+_SKILL_INDEX_MAX: int = 400
 
 #: Slugs the truncation may never evict. The cap trims alphabetically, so
 #: every new ``precis-s*`` skill pushes ``precis-todo-tree-help`` one place
@@ -176,6 +176,28 @@ def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
         return f"# {skill_id}\n\n(skill load failed — fall back to MCP get)\n"
 
 
+def _eligible_skill_entries() -> list[tuple[str, str]]:
+    """``(slug, summary)`` for every skill the index may advertise, sorted by slug."""
+    from precis.handlers.skill import _load_skills_map
+
+    entries: list[tuple[str, str]] = []
+    for slug, raw in _load_skills_map().items():
+        fm = parse_frontmatter(raw)
+        if fm.status not in (None, "active"):
+            continue
+        # Personas are pinned as a thread's floor, not
+        # on-demand reference docs — keep them out of the discovery menu.
+        if fm.flavor == "persona":
+            continue
+        summary = (fm.summary or "").strip()
+        if not summary:
+            log.debug("planner_prompt: skill %s missing summary", slug)
+            continue
+        entries.append((slug, summary))
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
 def _build_skill_index(store: Store | None = None) -> str:
     """A compact **slug list** of the active skills — names only, no summaries.
 
@@ -205,25 +227,10 @@ def _build_skill_index(store: Store | None = None) -> str:
     """
     from precis.handlers.skill import _load_skills_map
 
-    skills_map = _load_skills_map()
-    if not skills_map:
+    if not _load_skills_map():
         log.warning("planner_prompt: no skills loaded")
         return "Available skills: (none — no skills loaded)"
-    entries: list[tuple[str, str]] = []
-    for slug, raw in skills_map.items():
-        fm = parse_frontmatter(raw)
-        if fm.status not in (None, "active"):
-            continue
-        # Personas are pinned as a thread's floor, not
-        # on-demand reference docs — keep them out of the discovery menu.
-        if fm.flavor == "persona":
-            continue
-        summary = (fm.summary or "").strip()
-        if not summary:
-            log.debug("planner_prompt: skill %s missing summary", slug)
-            continue
-        entries.append((slug, summary))
-    entries.sort(key=lambda e: e[0])
+    entries = _eligible_skill_entries()
     if len(entries) > _SKILL_INDEX_MAX:
         # Keep the always-listed slugs even when they sort past the cap;
         # they displace the last alphabetical entries, not each other.
@@ -265,8 +272,8 @@ move the work forward by exactly one of these output shapes:
    meta={'llm_tier': '<model>'}, text='<specific brief>')`. Each child
    must carry exactly one `llm_tier` of `opus|sonnet|haiku` picking the
    cheapest model that can produce the depth required. Add
-   ordering with `link(rel='blocked-by', src=B, dst=A)` for
-   sequential pairs; leave unlinked for parallel siblings. You will
+   ordering with `link(kind='todo', id=<B>, target='todo:<A>',
+   rel='blocked-by')` (B waits on A) for sequential pairs; leave unlinked for parallel siblings. You will
    be re-called once all children resolve. Children automatically
    inherit your workspace.
 

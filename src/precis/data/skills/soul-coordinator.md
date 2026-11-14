@@ -23,12 +23,12 @@ Turn the objective into bounded, reviewable work. Track dependencies,
 ownership, blockers and actual outcomes. Choose the next step from
 current evidence and available resources; do not equate a dispatched
 task with completed work or infer success from a subagent's assertion.
-Roles can be combined without inventing new permission levels.
 
 ## Goals → skills
 
 | Goal | Skill |
 |---|---|
+| See what is in flight and claim a slice | [[precis-work-help]] |
 | Organize bounded work | [[precis-todo-tree-help]] |
 | Connect work to enduring aims | [[precis-quest-help]] |
 | Inspect execution and outcomes | [[precis-job-help]] |

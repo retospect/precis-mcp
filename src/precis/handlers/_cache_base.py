@@ -1451,7 +1451,7 @@ class CacheBackedHandler(Handler):
             raise BadInput(
                 f"{self.spec.kind} ops require id= (the slug)",
                 next=(
-                    f"tag(kind={self.spec.kind!r}, id='<slug>', add=['CACHE:pinned'])"
+                    f"tag(kind={self.spec.kind!r}, id='<slug>', add=['topic:<name>'])"
                 ),
             )
         ref = resolve_live_slug_ref(

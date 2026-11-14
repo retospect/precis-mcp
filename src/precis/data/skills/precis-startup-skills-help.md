@@ -38,8 +38,7 @@ Comma-separated skill slugs. Whitespace tolerated. Duplicates dropped
 The banner gains one line listing the pinned ids:
 
 ```text
-Pinned skills (load via prompts/get): precis-search-help,
-  precis-paper-help, precis-patent-search-help.
+Pinned skills: precis-search-help, precis-paper-help, precis-patent-search-help.
 ```
 
 The agent decides whether to pre-fetch the bodies via
@@ -63,12 +62,16 @@ PRECIS_STARTUP_SKILLS_CAP_KB=50    # default; 0 disables (not recommended)
 
 Drop-tail when exceeded: slugs resolve in env-var order; the first
 slug that would push the total over the cap — and every slug after
-it — is omitted. A warning appends to the banner:
+it — is omitted. A warning line appends to the banner:
 
 ```text
-PRECIS_STARTUP_SKILLS truncated to cap (50 KB): omitted
-  precis-python-help, precis-files-help.
+⚠ truncated (50 KB cap): precis-python-help, precis-files-help.
 ```
+
+Bodies are never inlined, yet the cap still counts them: a pinned slug
+whose own body exceeds the remaining cap is dropped along with every
+slug after it, so one oversized skill early in the list silently
+unpins the rest.
 
 Reorder entries (highest-priority first) or raise the cap to change
 which skills survive.
@@ -76,13 +79,19 @@ which skills survive.
 ## Unknown slug handling
 
 Unresolvable slugs (typo, removed skill, third-party id) drop with a
-one-line warning:
+one-line warning in the banner:
 
 ```text
-PRECIS_STARTUP_SKILLS skipped unknown skill ids: foo, bar.
+⚠ unknown skill ids: foo, bar.
 ```
 
-Zero banner bytes are paid when the config is valid.
+A pin for a kind this server has not loaded is dropped the same way:
+
+```text
+⚠ skills for unavailable kinds: precis-patent-help.
+```
+
+A valid config adds only the `Pinned skills:` line.
 
 ## Pick the right slugs to pin
 

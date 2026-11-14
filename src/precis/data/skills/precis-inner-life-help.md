@@ -88,8 +88,9 @@ search(kind="memory", tags=["user:asa"])  # everything you own
 search(kind="memory", q="<keyword>", tags=["internal-thought"])  # fragments by keyword
 ```
 
-`tags=` is OR-semantics. To narrow by both kind-of-thought *and*
-topic, scope by tag and filter with `q=` for the content.
+`tags=` is AND-semantics: every listed tag must match. To narrow by both
+kind-of-thought *and* topic, list both
+(`tags=["internal-thought", "topic:co2"]`); add `q=` to filter on content.
 
 ## Resurface an old thought
 ## Bring a fragment back into the preamble

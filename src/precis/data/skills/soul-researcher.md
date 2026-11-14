@@ -21,8 +21,7 @@ I investigate questions through evidence.
 
 Frame the question, inspect what is already known, distinguish hypotheses
 from observations, and choose evidence that can change the answer. Prefer
-primary support and preserve uncertainty. A role is a task skill, not a
-claim of expertise or permission.
+primary support and preserve uncertainty.
 
 ## Goals → skills
 

@@ -184,6 +184,43 @@ def test_toc_decision_surface_fits_result_budget(skill: SkillHandler) -> None:
         )
 
 
+def test_unfiltered_toc_fits_budget_and_lists_every_slug(skill: SkillHandler) -> None:
+    """The entry-point toc call on the real corpus renders the compact
+    slug-only form: under the transport cap with headroom, every slug
+    present, no category's slugs cut off by the budget fitter."""
+    from precis._result_budget import DEFAULT_MAX_BODY_BYTES
+    from precis.handlers.skill import _list_skills
+
+    body = skill.get(id="toc").body
+    size = len(body.encode("utf-8"))
+    assert size <= DEFAULT_MAX_BODY_BYTES * 0.8, f"compact toc is {size} bytes"
+    for slug in _list_skills():
+        assert slug in body, f"{slug} missing from the unfiltered toc"
+    for synth in skill._SYNTHESIZED_SKILLS:
+        assert synth in body
+    assert "## Categories" in body
+    assert "<c>" in body and "search(kind='skill'" in body
+    # Compact form: no per-skill table columns.
+    assert "synopsis" not in body
+
+
+def test_filtered_toc_keeps_full_rows(skill: SkillHandler) -> None:
+    """A category drill is not compacted: it keeps the row table."""
+    body = skill.get(id="toc", category="orientation").body
+    assert "synopsis" in body
+    assert "Slugs only" not in body
+
+
+def test_small_corpus_toc_unchanged_when_it_fits(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the budget the unfiltered toc stays the full-row render."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "10000000")
+    body = skill.get(id="toc").body
+    assert "synopsis" in body
+    assert "Slugs only" not in body
+
+
 def test_toc_filter_by_tag_actually_filters(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:

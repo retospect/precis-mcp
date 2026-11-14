@@ -2982,6 +2982,13 @@ class SkillHandler(Handler):
         # Same category-driven layout as the index, but with the
         # synopsis column added so a skim-reading agent can decide
         # which slug to fetch in full.
+        import textwrap
+
+        from precis._result_budget import result_context_cap
+
+        # Only the bare entry-point call may fall back to the compact
+        # slug-only render; any narrowing keeps the full rows.
+        filtered = any(v is not None for v in (tag, tags, kinds, family, by, category))
         synth = list(self._SYNTHESIZED_SKILLS.keys())
         file_slugs = sorted(_list_skills())
         if by is not None and by != "family":
@@ -3157,8 +3164,9 @@ class SkillHandler(Handler):
                 )
             return row
 
-        for category, slugs in groups:
-            lines.append(f"## {category} ({len(slugs)})")
+        head_lines = list(lines)
+        for group_name, slugs in groups:
+            lines.append(f"## {group_name} ({len(slugs)})")
             lines.append("")
             lines.append(
                 render_agent_table(
@@ -3178,6 +3186,7 @@ class SkillHandler(Handler):
                 )
             )
             lines.append("")
+        full_sections = lines[len(head_lines) :]
 
         # F17: hidden skills (subject kind not wired in this build)
         # dropped from the agent-facing list — unreachable from the
@@ -3224,7 +3233,41 @@ class SkillHandler(Handler):
             )
         if domain_hidden and domain is not None:
             lines.extend(["", _domain_hidden_note(domain_hidden, domain.name)])
-        return "\n".join(lines)
+        full = "\n".join(lines)
+        if filtered or len(full.encode("utf-8")) <= result_context_cap():
+            return full
+
+        # Unfiltered entry-point call over the response budget: swap the
+        # per-category row tables for slug-only lists so every skill's
+        # existence lands in the first page; titles and synopses come
+        # from the category drill. The header, Categories menu, families
+        # line and the footer sections are the same lines as above.
+        compact: list[str] = []
+        for group_name, slugs in [*groups, ("Other", uncategorised)]:
+            if not slugs:
+                continue
+            compact.append(f"## {group_name} ({len(slugs)})")
+            compact.append("")
+            # break_on_hyphens=False is load-bearing: every slug is
+            # hyphenated, and the default would wrap inside one.
+            compact.append(
+                textwrap.fill(
+                    ", ".join(slugs),
+                    width=88,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+            )
+            compact.append("")
+        compact.append(
+            "Slugs only (the full listing exceeds the response budget). "
+            "Titles and synopses: open a category with "
+            "get(kind='skill', id='toc', args={'category': '<c>'}) from the "
+            "Categories table, or search(kind='skill', q='<goal>')."
+        )
+        compact.append("")
+        footer = lines[len(head_lines) + len(full_sections) :]
+        return "\n".join([*head_lines, *compact, *footer])
 
     def _render_help(self) -> str:
         """Render the synthesized ``precis-help`` skill.

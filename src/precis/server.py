@@ -810,6 +810,7 @@ _INSTRUCTIONS = (
     "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
     "the moment a call or a skill misbehaves, no asking first. "
+    "Conduct: get(kind='skill', id='soul'). "
     "Build/sha/DB: get(kind='skill', id='precis-status')."
 )
 
@@ -1229,7 +1230,7 @@ mcp: FastMCP = FastMCP(
 
 
 #: ``PRECIS_MCP_PROFILE`` values. ``typed`` (default) is the
-#: eight-tool surface this file has always registered — unchanged.
+#: seven-verb surface this file has always registered — unchanged.
 #: ``command`` collapses it into the single ``precis(command, text=
 #: None)`` tool parsed by :mod:`precis.tools.command_parser` — see
 #: the :mod:`precis.tools.command_parser` docstring. Read once at import time
@@ -1279,7 +1280,7 @@ _COMMAND_TOOL_DESCRIPTION = (
     f"keyword args only, e.g. {_COMMAND_EXAMPLE} — values must be "
     "literals (str/int/float/bool/None/list/dict/tuple), no "
     "expressions, no positional args. Verbs: get/search/put/edit/"
-    "delete/tag/link/more; kind= is the discriminator. Put a large "
+    "delete/tag/link; kind= is the discriminator. Put a large "
     "body in the separate `text=` param instead of quoting it inside "
     "`command` (avoids escaping): "
     "command=\"put(kind='memory', title='...')\", text='...'. "
@@ -1343,8 +1344,7 @@ def precis(
     # ``ctx`` goes to every verb that declares it — not just get/search:
     # the serve-ledger session binding and the write-time-fold detection
     # (``_dispatch`` folds only for a session-bound call, gr513762) both
-    # key off it. ``more`` declares it too, so a command-profile drain
-    # follows the same agent-serving policy.
+    # key off it.
     func = TOOL_REGISTRY[verb]["func"]
     if "ctx" in TOOL_REGISTRY[verb]["signature"].parameters:
         kwargs["ctx"] = ctx

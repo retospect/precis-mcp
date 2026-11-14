@@ -175,8 +175,6 @@ tag(
     add=["bookmark", "topic:rag", "read-later"],
 )
 
-tag(kind="web", id="https://example.com/article", add=["CACHE:pinned"])  # never expire
-
 tag(kind="web", id="https://example.com/article", remove=["read-later"])
 ```
 

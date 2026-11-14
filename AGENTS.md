@@ -13,7 +13,9 @@ the repo-dev vocabulary taxonomy for an unfamiliar or overloaded term
 (`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`) →
 `docs/backlog/INDEX.md` (generated, gitignored —
 run `scripts/docs-index` if absent). Runtime kinds and verbs:
-`get(kind='skill', id='precis-overview')`.
+`get(kind='skill', id='precis-overview')`. Conduct, the same for every
+agent: `get(kind='skill', id='soul')` — open only the entries the task
+touches.
 
 ## Rules by pointer
 
@@ -82,10 +84,9 @@ source. At task start, recall relevant knowledge with
 `search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`.
 For exploratory memory/hub/index reads, prefer
 `get(kind='memory', id='<handle>', extent='fisheye+2hop')`; explicit narrow
-reads stay narrow. Canonical procedure: staged Structure me563920 (via
-Curator me563916 or soul index me563907), for selective group expansion
-and truncation reporting; ordinary-skill migration gr563975. Mechanics:
-`precis-fisheye-help`, "The second hop".
+reads stay narrow. Canonical procedure: `get(kind='skill',
+id='soul-structure')`, for selective group expansion and truncation
+reporting. Mechanics: `precis-fisheye-help`, "The second hop".
 This browsing preference does not change runtime defaults.
 Use the bootstrap's verified root when orientation is needed; do not load
 the entire graph or use a filename as a native ID.

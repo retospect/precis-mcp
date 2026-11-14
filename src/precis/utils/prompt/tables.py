@@ -70,7 +70,7 @@ _TOOLS: list[dict[str, str]] = [
     },
     {
         "verb": "link",
-        "example": "link(rel='blocked-by', src=B, dst=A)",
+        "example": "link(kind='todo', id=B, target='todo:A', rel='blocked-by')",
         "what": "order or relate refs (B waits on A)",
     },
 ]
