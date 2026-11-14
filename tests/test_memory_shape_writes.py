@@ -419,6 +419,8 @@ def test_notation_warning_on_edit_and_title(
         "The derivation:\n$$\nE = \\frac{a^2}{b}\n$$\nholds.",
         "Run `x^2 $HOME` here.\nSee src/precis/a_b.py and 2026-08-22.",
         "The cell is 3 cm² wide, about ≈1 Å, 4600 rows, ×3.",
+        # gr674576: a skill-rev sha8 is an identifier, not e-notation.
+        "The rev list was read from precis-relations (rev 6e521678).",
     ],
 )
 def test_notation_exempt_and_clean_text_gets_no_warning(

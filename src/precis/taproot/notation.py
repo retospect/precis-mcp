@@ -359,8 +359,26 @@ _MICROMETRE_WORD_RE = re.compile(
 _UM_UNIT_RE = re.compile(r"\d\s?um\b|\bum/")
 
 #: Scientific E-notation -- `1e3`, `4.6E-6`. Digit required immediately
-#: before `e`/`E` so this never fires on an ordinary word.
-_E_NOTATION_RE = re.compile(r"\b(\d+(?:\.\d+)?)[eE]([+-]?\d+)\b")
+#: before `e`/`E` so this never fires on an ordinary word. The leading
+#: `(?![0-9a-fA-F]{7,}+(?![.+-]?\d))` keeps a hex revision hash out
+#: (gr674576): precis prints a `skill rev <sha8>` on every whole-skill
+#: serve and agents cite it back (`rev 6e521678`), and a sha of the
+#: `<digits>e<digits>` shape is regex-identical to E-notation -- the only
+#: tell is that a 7+-char all-hex run is an identifier, not a quantity
+#: (the `old-sha` audit's `_SHA` uses the same 7-char floor as git's
+#: short sha). The exemption is a *complete* hex token: the possessive
+#: `+` pins the run to its maximal extent (a plain `{7,}` could back off
+#: mid-token), and `(?![.+-]?\d)` refuses a numeric tail -- a `.`, `+` or
+#: `-` followed by a digit is a fraction or a signed exponent
+#: (`123456e-6`, `1234567.6e-6`), never part of a hash, so those still
+#: warn. Below the floor a bare `123e45` keeps firing too -- six chars is
+#: neither a git abbreviation nor a sane mantissa+exponent. Matters
+#: doubly here because `normalize_notation` shares this pattern: an
+#: unguarded match did not merely lint `6e521678`, it rewrote it to
+#: `6×10⁵²¹⁶⁷⁸`.
+_E_NOTATION_RE = re.compile(
+    r"\b(?![0-9a-fA-F]{7,}+(?![.+-]?\d))(\d+(?:\.\d+)?)[eE]([+-]?\d+)\b"
+)
 
 #: `≈`-spacing: a "symbol" is a single letter/Greek letter, or an
 #: identifier with a subscript underscore (`K_d`, `E_g`, `ΔG_aq`, `R_Q`)

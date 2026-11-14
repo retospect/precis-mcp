@@ -253,6 +253,64 @@ def test_e_notation_fires_on_positive_exponent() -> None:
     assert any("e-notation" in w for w in warnings)
 
 
+def test_e_notation_does_not_fire_on_hex_revision_hash() -> None:
+    # gr674576: precis prints 'skill rev <sha8>' on every whole-skill
+    # serve and agents cite it back; a <digits>e<digits> sha shape is an
+    # identifier, not a quantity. Same floor as git's short sha (7+).
+    for sentence in [
+        "read from precis-relations (rev 6e521678).",
+        "The fix landed in 1234e567 and was verified.",
+        "See commit 12345e67 for the guard.",
+        "See commit 123456e7 for the guard.",
+        "Abbreviated 123e456 still identifies the commit.",
+        "The run continued through 1234567e8 without a gap.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert not any("e-notation" in w for w in warnings), (sentence, warnings)
+
+
+def test_e_notation_still_fires_below_the_hash_floor() -> None:
+    # Six chars is neither a git abbreviation nor a sane
+    # mantissa+exponent, so a bare '123e45' keeps warning.
+    warnings = lint_notation("An extrapolated value near 123e45 was used.")
+    assert any("e-notation" in w for w in warnings)
+
+
+def test_e_notation_fires_on_signed_exponent_past_hex_run() -> None:
+    # review td674955: the exemption covers a *complete* hex token only --
+    # a '.', '+' or '-' followed by a digit is a fraction or a signed
+    # exponent, never part of a hash, so '123456e-6' still warns.
+    for sentence in [
+        "The count was 123456e-6 in the sample.",
+        "The count was 123456e+6 in the sample.",
+        "The count was 1234567e-6 in the sample.",
+        "The count was 1234567.6e-6 in the sample.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert any("e-notation" in w for w in warnings), (sentence, warnings)
+
+
+def test_normalize_notation_rewrites_signed_exponent_past_hex_run() -> None:
+    # Same guard on the rewriter side: a signed exponent after a 7+-char
+    # hex run normalizes to '×10' superscript form, it is not left alone
+    # as a hash would be.
+    out, codes = normalize_notation("The count was 123456e-6 in the sample.")
+    assert out == "The count was 123456×10⁻⁶ in the sample."
+    assert codes == ["e-notation"]
+    out, codes = normalize_notation("The count was 123456e+6 in the sample.")
+    assert out == "The count was 123456×10⁶ in the sample."
+    assert codes == ["e-notation"]
+
+
+def test_normalize_notation_leaves_hex_revision_hash_alone() -> None:
+    # The shared regex guards the rewriter too (gr674576): unguarded,
+    # 'rev 6e521678' normalized to 'rev 6×10⁵²¹⁶⁷⁸'.
+    sentence = "The behaviour changed in 6e521678 and persists."
+    out, codes = normalize_notation(sentence)
+    assert out == sentence
+    assert codes == []
+
+
 # ── canon v3: hyphen-numeric-range, ascii-x-multiplier ──────────────────
 
 
