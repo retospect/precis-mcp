@@ -899,6 +899,8 @@ class TodoHandler(NumericRefHandler):
                 "group_by",
                 "since",
                 "until",
+                "closed_since",
+                "closed_until",
                 "page",
                 "include_ref_ids",
                 "exclude_ref_ids",
@@ -916,7 +918,15 @@ class TodoHandler(NumericRefHandler):
             # count's own next: call is issued with it inside args=;
             # the ref-id channels are the continuation's replayed
             # dispatch-scope filters.
-            for key in ("since", "until", "page", "include_ref_ids", "exclude_ref_ids"):
+            for key in (
+                "since",
+                "until",
+                "closed_since",
+                "closed_until",
+                "page",
+                "include_ref_ids",
+                "exclude_ref_ids",
+            ):
                 if rest.get(key) is not None:
                     merged.setdefault(key, rest[key])
             return super().search(

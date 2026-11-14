@@ -85,6 +85,66 @@ from precis.utils.title_views import title_plain_sql
 #: happens at query time.
 _TITLE_PLAIN_SQL = title_plain_sql("r.title")
 
+#: Terminal ``STATUS`` values a ``closed_*`` window reads when the
+#: caller doesn't name a set — the gripe family closers (gr592737).
+_CLOSED_VALUES_DEFAULT: tuple[str, ...] = ("done", "wontfix")
+
+
+def _closed_status_at_sql(ref_alias: str = "r") -> str:
+    """Scalar SQL: the set-time of the ref's newest live ``STATUS`` tag
+    whose value is in the bound closed set.
+
+    Carries one ``%s`` — the closed-value list (``ANY(%s)``). ``NULL``
+    when the ref carries no live in-set status tag, so ``>=``/``<``
+    comparisons drop it and ``IS NOT NULL`` reads "is closed". The
+    ``max()`` is the "newest live STATUS tag in that set" rule — a
+    closed → reopened → reclosed ref counts only its latest close
+    (gr592737; ``replace_prefix`` deletes the old row, so the live
+    row's ``ref_tags.created_at`` is that close).
+    """
+    return (
+        "(SELECT max(rt.created_at) FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {ref_alias}.ref_id "
+        "AND t.namespace = 'STATUS' AND t.value = ANY(%s) "
+        "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
+    )
+
+
+def _closed_window_clauses(
+    closed_after: Any,
+    closed_before: Any,
+    closed_values: Any,
+    *,
+    ref_alias: str = "r",
+) -> tuple[list[str], list[Any]]:
+    """``(clauses, params)`` for the closed-window filter shared by
+    :meth:`RefsMixin.list_refs`, :meth:`RefsMixin.count_refs` and
+    :func:`filtered_ref_clauses`.
+
+    Engaged by any of the three args; empty otherwise. A lone
+    ``closed_values`` (no bounds) reads "currently closed"
+    (``IS NOT NULL``); ``closed_values`` itself defaults to
+    :data:`_CLOSED_VALUES_DEFAULT` once any bound engages it.
+    """
+    if closed_after is None and closed_before is None and closed_values is None:
+        return [], []
+    values = sorted(set(closed_values or _CLOSED_VALUES_DEFAULT))
+    expr = _closed_status_at_sql(ref_alias)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if closed_after is not None:
+        clauses.append(f"{expr} >= %s")
+        params.extend([values, closed_after])
+    if closed_before is not None:
+        clauses.append(f"{expr} < %s")
+        params.extend([values, closed_before])
+    if closed_after is None and closed_before is None:
+        clauses.append(f"{expr} IS NOT NULL")
+        params.append(values)
+    return clauses, params
+
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -3958,6 +4018,9 @@ class RefsMixin:
         year_to: int | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: Iterable[str] | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -3968,11 +4031,21 @@ class RefsMixin:
         the source-search primitive's filtered listing passes its whole
         resolved kind set.
 
+        ``closed_after``/``closed_before`` bound the *closure* clock —
+        the set-time of the ref's newest live ``STATUS`` tag whose
+        value is in ``closed_values`` (default
+        :data:`_CLOSED_VALUES_DEFAULT`; ``closed_before`` exclusive) —
+        instead of mint time (gr592737). A lone ``closed_values``
+        filters to refs currently carrying an in-set status tag.
+        ``order_by='closed_desc'``/``'closed_asc'`` sorts on that same
+        closure clock, ``NULLS LAST`` so unclosed refs trail.
+
         ``meta_has=`` keeps refs whose ``meta`` carries that top-level key
         (``meta ? key`` — the generalised ``has_schedule``); the gripe-fix
         queue views select the gripes in the loop by ``meta_has='fix'``.
         ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys (default
-        ``updated_desc``); an unknown key falls back rather than erroring
+        ``updated_desc``) or ``'closed_desc'``/``'closed_asc'``; an
+        unknown key falls back rather than erroring
         (a stale client bookmark can't 500). ``has_pdf``/``has_chunks``
         are tri-state presence filters (``None``=don't filter) keying off
         ``refs.pdf_sha256``/body-chunk existence — back the Papers tab's
@@ -4054,6 +4127,11 @@ class RefsMixin:
         if created_before is not None:
             params.append(created_before)
             clauses.append("r.created_at < %s")
+        closed_clauses, closed_params = _closed_window_clauses(
+            closed_after, closed_before, closed_values
+        )
+        clauses.extend(closed_clauses)
+        params.extend(closed_params)
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
@@ -4064,9 +4142,24 @@ class RefsMixin:
             clauses.append(f"NOT ({excluded_frag})")
             params.extend(excluded_params)
 
-        order_sql = self._LIST_ORDER_BY.get(
-            order_by, self._LIST_ORDER_BY["updated_desc"]
-        )
+        order_params: list[Any] = []
+        if order_by in ("closed_desc", "closed_asc"):
+            # The closure clock is a correlated subquery, not a column —
+            # it can't sit in ``_LIST_ORDER_BY`` (those values carry no
+            # binds). ``NULLS LAST`` keeps unclosed refs at the tail
+            # under DESC (Postgres's NULLS-FIRST default would bury the
+            # closed set it was asked to list).
+            direction = "DESC" if order_by == "closed_desc" else "ASC"
+            order_sql = (
+                f"{_closed_status_at_sql('r')} {direction} NULLS LAST, "
+                f"r.ref_id {direction}"
+            )
+            order_params.append(sorted(set(closed_values or _CLOSED_VALUES_DEFAULT)))
+        else:
+            order_sql = self._LIST_ORDER_BY.get(
+                order_by, self._LIST_ORDER_BY["updated_desc"]
+            )
+        params.extend(order_params)
         params.append(limit)
         params.append(offset)
         sql = (
@@ -4727,6 +4820,9 @@ class RefsMixin:
         exclude_tags: list[str] | None = None,
         created_before: datetime | None = None,
         created_after: datetime | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: Iterable[str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
         include_ref_ids: list[int] | None = None,
@@ -4744,7 +4840,8 @@ class RefsMixin:
         :meth:`list_refs`; runtime callers must validate via
         :meth:`Tag.parse_strict` before this point. ``created_before=``
         keeps refs created strictly before that instant (the gripe open
-        view's "older than 3d" count).
+        view's "older than 3d" count). ``closed_*`` is the
+        :meth:`list_refs` closure-clock filter (gr592737).
         """
         clauses = [
             "r.retired_at IS NULL",
@@ -4781,6 +4878,11 @@ class RefsMixin:
         if year_to is not None:
             params.append(year_to)
             clauses.append("r.year <= %s")
+        closed_clauses, closed_params = _closed_window_clauses(
+            closed_after, closed_before, closed_values
+        )
+        clauses.extend(closed_clauses)
+        params.extend(closed_params)
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
@@ -4814,6 +4916,9 @@ class RefsMixin:
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
+        closed_after: Any = None,
+        closed_before: Any = None,
+        closed_values: Iterable[str] | None = None,
         meta_eq: tuple[str, str] | None = None,
         has_body: bool | None = None,
         year_from: int | None = None,
@@ -4843,7 +4948,10 @@ class RefsMixin:
         the cross-kind source-search primitive uses (mcp-introspection
         gap closures 2026-10-14): "jobs in the last 24h" means minted in
         that window. Both are tz-aware datetimes (parsed at the handler
-        boundary); ``until`` is exclusive.
+        boundary); ``until`` is exclusive. ``closed_after``/
+        ``closed_before`` bound the *closure* clock instead — the
+        set-time of the ref's newest live ``STATUS`` tag in
+        ``closed_values`` (gr592737: "gripes closed between A and B").
 
         ``facets`` is a list of ``(facet_kind, key)`` pairs from the
         handler's ``group_by=`` parse:
@@ -4888,6 +4996,9 @@ class RefsMixin:
             exclude_ref_ids=exclude_ref_ids,
             since=since,
             until=until,
+            closed_after=closed_after,
+            closed_before=closed_before,
+            closed_values=closed_values,
             meta_eq=meta_eq,
             has_body=has_body,
             year_from=year_from,
@@ -5082,6 +5193,9 @@ def filtered_ref_clauses(
     exclude_ref_ids: list[int] | None = None,
     since: Any = None,
     until: Any = None,
+    closed_after: Any = None,
+    closed_before: Any = None,
+    closed_values: Iterable[str] | None = None,
     meta_eq: tuple[str, str] | None = None,
     has_body: bool | None = None,
     year_from: int | None = None,
@@ -5117,6 +5231,10 @@ def filtered_ref_clauses(
     ``refs.created_at`` for card-only), unlike ``since``/``until`` which
     bound ref creation. Both are tz-aware datetimes parsed at the
     handler boundary; ``ingested_before`` is exclusive.
+
+    ``closed_after``/``closed_before``/``closed_values`` are the
+    closure-clock filter (gr592737) — same semantics as
+    :meth:`RefsMixin.list_refs`.
     """
     clauses = ["r.retired_at IS NULL", "r.kind = %s"]
     params: list[Any] = [kind]
@@ -5222,6 +5340,11 @@ def filtered_ref_clauses(
     if ingested_before is not None:
         clauses.append(f"{ingested_at_sql('r')} < %s")
         params.append(ingested_before)
+    closed_clauses, closed_params = _closed_window_clauses(
+        closed_after, closed_before, closed_values
+    )
+    clauses.extend(closed_clauses)
+    params.extend(closed_params)
     return clauses, params
 
 

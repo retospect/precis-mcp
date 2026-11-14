@@ -886,11 +886,21 @@ search(kind="gripe", view="count", args={"group_by": "state"})  # cohorts now
 search(kind="gripe", view="count", status="*",
        args={"group_by": "tag:area"})                           # by theme
 search(kind="gripe", view="flow", since="7d")                   # opens/closes per day
+search(kind="gripe", status="done",
+       args={"closed_since": "2026-11-01",
+             "closed_until": "2026-11-08"})                     # closed in [A,B)
+search(kind="gripe", view="count", status="done",
+       args={"group_by": "tag:thread",
+             "closed_since": "2026-11-01"})                    # closings per thread
 ```
 
 `view='count'` + `group_by` (`state`, `meta.<key>`, `tag:<axis>`)
 is the **snapshot** — "which cohorts are busy right now" — and
-`since=`/`until=` bound the counted set by mint time.
+`since=`/`until=` bound the counted set by mint time. The
+`closed_since`/`closed_until` pair bounds **closure** time instead —
+the STATUS tag's set-time — on a queryless listing (newest-closed
+first) or `view='count'`; `status='resolved'` reads as `done`, and
+`get(kind="gripe", id="/done")` pages the same newest-closed list.
 `view='flow'` is the **trend** — opened vs closed per bucket
 (`args={'bucket': 'hour'|'day'|'week'|'month'}`), net, and
 median/p90 open-to-close time read off the STATUS tag's set-times,

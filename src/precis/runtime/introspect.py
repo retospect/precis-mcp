@@ -771,7 +771,13 @@ class IntrospectionMixin(RuntimeShape):
     )
     #: args= keys the generic count reads.
     _GENERIC_COUNT_ALLOWED_EXTRAS: frozenset[str] = frozenset(
-        {"group_by", "include_ref_ids", "exclude_ref_ids"}
+        {
+            "group_by",
+            "include_ref_ids",
+            "exclude_ref_ids",
+            "closed_since",
+            "closed_until",
+        }
     )
 
     def _dispatch_generic_count(self, kind: str, args: dict[str, Any]) -> Response:
@@ -877,6 +883,12 @@ class IntrospectionMixin(RuntimeShape):
         )
         since_dt = _parse_window_bound(args.get("since"), "since")
         until_dt = _parse_window_bound(args.get("until"), "until")
+        closed_after_dt = _parse_window_bound(
+            extras.get("closed_since"), "closed_since"
+        )
+        closed_before_dt = _parse_window_bound(
+            extras.get("closed_until"), "closed_until"
+        )
         facets = _parse_count_facets(extras.get("group_by"))
 
         total, groups = self.store.count_refs_facets(
@@ -888,6 +900,8 @@ class IntrospectionMixin(RuntimeShape):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            closed_after=closed_after_dt,
+            closed_before=closed_before_dt,
         )
 
         filters: list[str] = []
@@ -897,6 +911,18 @@ class IntrospectionMixin(RuntimeShape):
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
             filters.append(f"created [{lo}, {hi})")
+        if closed_after_dt is not None or closed_before_dt is not None:
+            lo = (
+                closed_after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_after_dt
+                else "…"
+            )
+            hi = (
+                closed_before_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_before_dt
+                else "…"
+            )
+            filters.append(f"closed [{lo}, {hi})")
         head = f"# {total} {kind} entr{'y' if total == 1 else 'ies'}"
         if filters:
             head += f" ({', '.join(filters)})"

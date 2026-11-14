@@ -133,6 +133,7 @@ from precis.handlers._numeric_ref import (
     _BROWSE_TERMINALS,
     _PUT_IDEM_KEY,
     NumericRefHandler,
+    _parse_window_bound,
     plain_listing_view,
 )
 from precis.handlers._prio_tag import (
@@ -646,6 +647,10 @@ class GripeHandler(NumericRefHandler):
     # ~175 gripes sat live). The literal status stays reachable via
     # tags=['STATUS:open'].
     live_status_spellings: ClassVar[frozenset[str]] = frozenset({"open"})
+    # The closing-comment convention is "resolved: <sha>", so agents
+    # reach for status='resolved' — read it as the canonical 'done'
+    # (gr592737: the search refused the natural word).
+    status_aliases: ClassVar[dict[str, str]] = {"resolved": "done"}
 
     # Queryless browse is the drain queue (gr595573 ruling): the
     # dispatch score first, then size s<m<l<unsized, then oldest first —
@@ -695,11 +700,13 @@ class GripeHandler(NumericRefHandler):
         # /queue and /batch are the gripe-fix loop views (gr519361),
         # rendered in get() before the base list-view route. /parked is
         # the parked shelf (gr543711): each row's until condition and
-        # parked age.
-        return ("recent", "open", "wontfix", "queue", "batch", "parked")
+        # parked age. /done is the closure listing (gr592737): STATUS:done
+        # gripes, newest-closed first, with args={'closed_since'/
+        # 'closed_until'} bounding the STATUS-tag set-time window.
+        return ("recent", "open", "wontfix", "queue", "batch", "parked", "done")
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset(
-        {"open", "wontfix", "parked"}
+        {"open", "wontfix", "parked", "done"}
     )
 
     def _list_view(
@@ -709,9 +716,21 @@ class GripeHandler(NumericRefHandler):
         page: int = 1,
         page_size: int | None = None,
         sort: str | None = None,
+        closed_since: str | None = None,
+        closed_until: str | None = None,
     ) -> Response | None:
         size = 20 if page_size is None else page_size
         offset = (page - 1) * size
+        closed_after = _parse_window_bound(closed_since, "closed_since")
+        closed_before = _parse_window_bound(closed_until, "closed_until")
+        closed_given = closed_after is not None or closed_before is not None
+        if closed_given and view in ("open", "parked", "recent"):
+            raise BadInput(
+                f"args={{'closed_since'/'closed_until'}} bound a closure "
+                f"window — '/{view}' is the live shelf, not a closed list",
+                next="get(kind='gripe', id='/done', "
+                "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})",
+            )
         if view == "parked":
             if sort is not None:
                 raise BadInput(
@@ -724,17 +743,30 @@ class GripeHandler(NumericRefHandler):
             return super()._list_view(view)
         # /open selects by exclusion, not by pinning STATUS:open — the
         # live cohort is every non-terminal status (gr530682), and parked
-        # is off it too (gr543711).
-        tags = [] if view == "open" else ["STATUS:wontfix"]
+        # is off it too (gr543711). /done is the closure list (gr592737):
+        # ``closed_values=['done']`` both pins STATUS:done semantics and
+        # engages the newest-closed-first order in ``_list_by_tags``.
+        tags = [] if view == "open" else [f"STATUS:{view}"]
         exclude = sorted(_OPEN_EXCLUDED_TAGS) if view == "open" else None
+        # ``closed_values`` pins which STATUS tag's set-time the closure
+        # clock reads and switches the order to newest-closed — /done's
+        # whole point; on /wontfix only when a window was asked for, so
+        # the plain view keeps its recency order.
+        closed_values = (
+            [view] if view == "done" or (view == "wontfix" and closed_given) else None
+        )
         # The next-page call must repeat a non-default page_size or the
         # continuation silently shrinks back to 20 rows — and a caller's
-        # sort=, or page 2 quietly reverts to the default order.
+        # sort= or closure window, or page 2 quietly reverts.
         more_args = "'page': {next}"
         if page_size is not None:
             more_args += f", 'page_size': {size}"
         if sort is not None:
             more_args += f", 'sort': {sort!r}"
+        if closed_since is not None:
+            more_args += f", 'closed_since': {closed_since!r}"
+        if closed_until is not None:
+            more_args += f", 'closed_until': {closed_until!r}"
         resp = self._list_by_tags(
             tags,
             page_size=size,
@@ -743,12 +775,30 @@ class GripeHandler(NumericRefHandler):
             sort=sort or ("drain" if view == "open" else "recency"),
             exclude_tags=exclude,
             more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
+            closed_after=closed_after,
+            closed_before=closed_before,
+            closed_values=closed_values,
         )
         if "next page:" in resp.body:
-            fallback = f"search(kind='gripe', status='{view}', page_size=100"
-            if sort is not None:
-                fallback += f", sort={sort!r}"
-            resp = replace(resp, body=resp.body + f"\nfallback: {fallback})")
+            if closed_values is not None:
+                # A closure listing: search() only reads the closure
+                # clock when a bound is present, so a bare
+                # status='done' search would silently drop the window
+                # and revert to created-time recency. The same view at
+                # a bigger page is the honest grab-more fallback —
+                # it keeps both (gr592737 review).
+                fb_args = "'page_size': 100"
+                if closed_since is not None:
+                    fb_args += f", 'closed_since': {closed_since!r}"
+                if closed_until is not None:
+                    fb_args += f", 'closed_until': {closed_until!r}"
+                fallback = f"get(kind='gripe', id='/{view}', args={{{fb_args}}})"
+            else:
+                fallback = f"search(kind='gripe', status='{view}', page_size=100"
+                if sort is not None:
+                    fallback += f", sort={sort!r}"
+                fallback += ")"
+            resp = replace(resp, body=resp.body + f"\nfallback: {fallback}")
         return replace(
             resp,
             body=resp.body
@@ -2852,6 +2902,11 @@ class GripeHandler(NumericRefHandler):
         # payload (gr595551): rank open gripes by which trace
         # symbols/files their comment ledgers already name.
         trace: str | None = None,
+        # ``args={'closed_since'/'closed_until': ISO}`` — the ``/done``
+        # closure window (gr592737); forwarded to the base's list-view
+        # route like ``page``/``sort``.
+        closed_since: str | None = None,
+        closed_until: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
@@ -2860,6 +2915,10 @@ class GripeHandler(NumericRefHandler):
             _kw["page"] = page
         if page_size is not None:
             _kw["page_size"] = page_size
+        if closed_since is not None:
+            _kw["closed_since"] = closed_since
+        if closed_until is not None:
+            _kw["closed_until"] = closed_until
         if sort is not None:
             sort = str(sort).strip().lower()
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
@@ -2890,6 +2949,16 @@ class GripeHandler(NumericRefHandler):
                     f"id='/match' takes no view= (got {view!r})",
                     next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
                 )
+            if (
+                _kw.get("closed_since") is not None
+                or _kw.get("closed_until") is not None
+            ):
+                raise BadInput(
+                    "id='/match' ranks open gripes by trace — it takes no "
+                    "closure bounds",
+                    next="get(kind='gripe', id='/done', "
+                    "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})",
+                )
             return self._match_view(trace)
         if trace is not None:
             raise BadInput(
@@ -2899,10 +2968,15 @@ class GripeHandler(NumericRefHandler):
                 next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
             )
         if id in ("/queue", "/batch"):
-            if _kw.get("page") not in (None, 1) or _kw.get("page_size") is not None:
+            if (
+                _kw.get("page") not in (None, 1)
+                or _kw.get("page_size") is not None
+                or _kw.get("closed_since") is not None
+                or _kw.get("closed_until") is not None
+            ):
                 raise BadInput(
                     f"id={id!r} renders the whole loop on one page; it takes no "
-                    "page/page_size",
+                    "page/page_size or closure bounds",
                     next=f"get(kind='gripe', id={id!r}, args={{'queue': 'in-build'}})"
                     if id == "/queue"
                     else f"get(kind='gripe', id={id!r}, args={{'batch': '<slug>'}})",

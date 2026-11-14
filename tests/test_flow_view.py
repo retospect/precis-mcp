@@ -286,6 +286,41 @@ class TestFlowView:
         body = runtime_with_store.dispatch("search", {"kind": "gripe", "view": "flow"})
         assert "(default)" in body
 
+    def test_count_closed_window_group_by(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """gr592737 slice 5: ``view='count'`` accepts
+        ``closed_since``/``closed_until`` — the closure window bounds the
+        counted set and every facet group the same way."""
+        t1, t2, t3 = _day(5), _day(3), _day(1)
+        g1 = _gripe(store, "thread:alpha")
+        g2 = _gripe(store, "thread:beta")
+        g3 = _gripe(store, "thread:beta")
+        for g in (g1, g2, g3):
+            _close_gripe(store, g)
+        _backdate_status(store, g1, t1)
+        _backdate_status(store, g2, t2)
+        _backdate_status(store, g3, t3)
+
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "gripe",
+                "view": "count",
+                "status": "done",
+                "__extras__": {
+                    "group_by": "tag:thread",
+                    "closed_since": t2.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "closed_until": t3.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+            },
+        )
+        # [t2, t3) holds only g2's close — the total and the facet agree.
+        assert body.startswith("# 1 gripe entry")
+        assert "closed [" in body
+        assert re.search(r"^  thread:beta: 1", body, re.MULTILINE)
+        assert "thread:alpha" not in body
+
 
 class TestFlowErrors:
     def test_requires_single_kind(self, runtime_with_store: PrecisRuntime) -> None:

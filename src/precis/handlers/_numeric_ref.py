@@ -767,6 +767,15 @@ class NumericRefHandler(Handler):
     #: explicit ``tags=['STATUS:open']`` pin.
     live_status_spellings: ClassVar[frozenset[str]] = frozenset()
 
+    #: ``status=`` spellings that map onto a canonical STATUS value
+    #: before vocabulary validation (gripe: the closing comment
+    #: convention is ``resolved: <sha>``, so agents reach for
+    #: ``status='resolved'`` — gr592737). Applied in
+    #: :meth:`_apply_status_default` on both the positive and the
+    #: ``status='!v'`` negation paths; ``tag()``/``put()`` writes are
+    #: untouched — an alias is a *read* shorthand, not a stored value.
+    status_aliases: ClassVar[dict[str, str]] = {}
+
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
     browse_default_sort: ClassVar[str] = "recency"
@@ -1086,8 +1095,25 @@ class NumericRefHandler(Handler):
         # ``_accepted_kwargs`` excludes VAR_KEYWORD catch-alls, so an
         # undeclared extras key would be rejected as a typo upstream.
         since: str | int | None = None,
+        # ``args={'closed_since'/'closed_until': ISO}`` on a paged
+        # closure list view (gripe's ``/done``): bound the STATUS-tag
+        # set-time the view orders by (gr592737). Named like
+        # ``search``'s closure args — ``since`` is already claimed by
+        # ``view='diff'``'s sha on this verb.
+        closed_since: str | None = None,
+        closed_until: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (closed_since is not None or closed_until is not None) and not (
+            isinstance(id, str) and id.startswith("/")
+        ):
+            raise BadInput(
+                "args={'closed_since'/'closed_until'} bound a closure list "
+                "view (id='/<view>') — a single-ref read has no closure "
+                "window to filter",
+                next=f"get(kind={self.kind!r}, id='/done', "
+                "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})",
+            )
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find, never silently dropped. Eye views keep their own ``q``
         # (ring expansion); the ladder routes through ``eye`` below.
@@ -1100,7 +1126,12 @@ class NumericRefHandler(Handler):
         if isinstance(id, str) and id.startswith("/"):
             self._check_list_id_view(id, view)
             list_resp = self._list_view_paged(
-                id[1:], _kw.get("page"), _kw.get("page_size"), _kw.get("sort")
+                id[1:],
+                _kw.get("page"),
+                _kw.get("page_size"),
+                _kw.get("sort"),
+                closed_since=closed_since,
+                closed_until=closed_until,
             )
             if list_resp is not None:
                 return list_resp
@@ -1267,6 +1298,14 @@ class NumericRefHandler(Handler):
         # gr536316) pass the already-parsed datetime through.
         since: str | datetime | None = None,
         until: str | datetime | None = None,
+        # ``args={'closed_since'/'closed_until': ISO}`` — bound the
+        # *closure* clock, not mint time: the set-time of the ref's
+        # newest live terminal ``STATUS`` tag (gr592737). A queryless
+        # listing orders newest-closed first; ``view='count'`` counts
+        # the windowed set; a ranked or link= search refuses rather
+        # than drop the filter.
+        closed_since: str | datetime | None = None,
+        closed_until: str | datetime | None = None,
         # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
         # ._resolve_cited_include — ``search(uncited=<draft>)`` /
         # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
@@ -1308,6 +1347,9 @@ class NumericRefHandler(Handler):
             view = None
         view = plain_listing_view(view, self._search_view_names())
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
+        closed_after_dt = _parse_window_bound(closed_since, "closed_since")
+        closed_before_dt = _parse_window_bound(closed_until, "closed_until")
+        closed_given = closed_after_dt is not None or closed_before_dt is not None
         if sort is not None:
             sort = sort.strip().lower()
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
@@ -1340,10 +1382,14 @@ class NumericRefHandler(Handler):
         browse = (
             not (q and q.strip()) and self.kind in _BROWSE_TERMINALS and link is None
         )
-        explicit_state = status is not None or any(
-            _tag_names_axis(t, "STATUS")
-            or (self.kind == "alert" and _tag_names_axis(t, "alert-state"))
-            for t in (tags or [])
+        explicit_state = (
+            status is not None
+            or closed_given
+            or any(
+                _tag_names_axis(t, "STATUS")
+                or (self.kind == "alert" and _tag_names_axis(t, "alert-state"))
+                for t in (tags or [])
+            )
         )
         excluded = (
             _live_excluded_tags(self.kind) if browse and not explicit_state else []
@@ -1352,7 +1398,12 @@ class NumericRefHandler(Handler):
             effective_tags, status_note = tags, "(default: live statuses)"
         else:
             effective_tags, status_note, status_excluded = self._apply_status_default(
-                status, tags
+                # A closed window with no status= reads as "the terminal
+                # set" — '*' keeps the live-cohort default from
+                # subtracting exactly the rows the caller asked for
+                # (gr592737).
+                "*" if closed_given and status is None else status,
+                tags,
             )
             excluded = status_excluded
 
@@ -1398,6 +1449,8 @@ class NumericRefHandler(Handler):
                 include_ref_ids=include_ref_ids,
                 since=since,
                 until=until,
+                closed_since=closed_after_dt,
+                closed_until=closed_before_dt,
                 id_min=id_lo,
                 id_max=id_hi,
                 page_size=page_size,
@@ -1415,6 +1468,18 @@ class NumericRefHandler(Handler):
                     f"search(kind={self.kind!r}, view='count', "
                     "args={'since': '<ISO>', 'until': '<ISO>'}) — or a dated "
                     "cross-kind search: search(q='…', args={'since': '…'})"
+                ),
+            )
+        if closed_given and (
+            (q and q.strip()) or (link is not None and str(link).strip())
+        ):
+            raise BadInput(
+                f"args={{'closed_since'/'closed_until'}} bound the closure "
+                f"clock on a queryless {self._sense()} listing or "
+                "view='count' — they don't narrow a ranked or link= search",
+                next=(
+                    f"search(kind={self.kind!r}, status='done', "
+                    "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})"
                 ),
             )
 
@@ -1441,6 +1506,7 @@ class NumericRefHandler(Handler):
                 or sort is not None
                 or browse
                 or excluded
+                or closed_given
                 or id_lo is not None
                 or id_hi is not None
                 # A resolved scope alone (under=/cited= with no q=/tags=)
@@ -1462,6 +1528,11 @@ class NumericRefHandler(Handler):
                     id_max=id_hi,
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
+                    closed_after=closed_after_dt,
+                    closed_before=closed_before_dt,
+                    closed_values=self._closed_status_values()
+                    if closed_given
+                    else None,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -1711,10 +1782,12 @@ class NumericRefHandler(Handler):
         if status is not None:
             parts = [p.strip() for p in re.split(r"[,|;]", status) if p.strip()]
             if parts and all(p.startswith("!") for p in parts):
-                vals = [
-                    ("resolved" if self.kind == "alert" and v == "closed" else v)
-                    for v in (_strip_status_axis(p[1:].strip()) for p in parts)
-                ]
+                vals = []
+                for p in parts:
+                    v = _strip_status_axis(p[1:].strip())
+                    if self.kind == "alert" and v == "closed":
+                        v = "resolved"
+                    vals.append(self.status_aliases.get(v, v))
                 bad = [
                     v
                     for v in vals
@@ -1751,6 +1824,7 @@ class NumericRefHandler(Handler):
         explicit = status is not None
         resolved = (status if explicit else self.default_search_status) or ""
         resolved = _strip_status_axis(resolved.strip())
+        resolved = self.status_aliases.get(resolved, resolved)
         # 'any'/'all' are the spellings agents reach for meaning "no
         # status filter" — map them onto the '*' opt-out (gr484229).
         if explicit and resolved.lower() in ("any", "all"):
@@ -1897,6 +1971,8 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
+        closed_since: str | datetime | None = None,
+        closed_until: str | datetime | None = None,
         meta_eq: tuple[str, str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
@@ -1942,6 +2018,9 @@ class NumericRefHandler(Handler):
         facets = _parse_count_facets(group_by)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
+        closed_after_dt = _parse_window_bound(closed_since, "closed_since")
+        closed_before_dt = _parse_window_bound(closed_until, "closed_until")
+        closed_engaged = closed_after_dt is not None or closed_before_dt is not None
         link_ref_id: int | None = None
         link_label = ""
         if link is not None and str(link).strip():
@@ -1967,6 +2046,9 @@ class NumericRefHandler(Handler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            closed_after=closed_after_dt,
+            closed_before=closed_before_dt,
+            closed_values=self._closed_status_values() if closed_engaged else None,
             id_min=id_min,
             id_max=id_max,
             meta_eq=meta_eq,
@@ -1985,6 +2067,18 @@ class NumericRefHandler(Handler):
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
             filters.append(f"created [{lo}, {hi})")
+        if closed_engaged:
+            lo = (
+                closed_after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_after_dt
+                else "…"
+            )
+            hi = (
+                closed_before_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_before_dt
+                else "…"
+            )
+            filters.append(f"closed [{lo}, {hi})")
         head = f"# {total} {self._sense()} entr{'y' if total == 1 else 'ies'}"
         if filters:
             head += f" ({', '.join(filters)})"
@@ -2043,6 +2137,8 @@ class NumericRefHandler(Handler):
                             link=link,
                             since=since_dt,
                             until=until_dt,
+                            closed_since=closed_after_dt,
+                            closed_until=closed_before_dt,
                             id_min=id_min,
                             id_max=id_max,
                             include_ref_ids=include_ref_ids,
@@ -2164,6 +2260,8 @@ class NumericRefHandler(Handler):
         link: str | None,
         since: datetime | None,
         until: datetime | None,
+        closed_since: datetime | None,
+        closed_until: datetime | None,
         id_min: int | None,
         id_max: int | None,
         include_ref_ids: list[int] | None,
@@ -2212,6 +2310,10 @@ class NumericRefHandler(Handler):
             args["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
         if until is not None:
             args["until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if closed_since is not None:
+            args["closed_since"] = closed_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if closed_until is not None:
+            args["closed_until"] = closed_until.strftime("%Y-%m-%dT%H:%M:%SZ")
         if group_by is not None:
             # Kinds that normalise the facet list before _count_view
             # (job's ``job_type`` → ``meta.job_type`` rewrite hands a
@@ -2383,6 +2485,19 @@ class NumericRefHandler(Handler):
             return f"{self.kind}_{sort}"
         return "updated_desc"
 
+    def _closed_status_values(self) -> list[str] | None:
+        """The terminal ``STATUS`` values this kind's closure clock
+        reads as "closed" — the same set the live-cohort browse
+        subtracts (:data:`_BROWSE_TERMINALS`), minus the axis prefix.
+        ``None`` for kinds with no lifecycle set (the store then applies
+        its own default)."""
+        terms = [
+            t.split(":", 1)[1]
+            for t in _BROWSE_TERMINALS.get(self.kind, ())
+            if t.startswith("STATUS:")
+        ]
+        return terms or None
+
     def _list_by_tags(
         self,
         tags: list[str],
@@ -2399,6 +2514,9 @@ class NumericRefHandler(Handler):
         id_max: int | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: list[str] | None = None,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -2415,7 +2533,16 @@ class NumericRefHandler(Handler):
         (gripe gr204291: ``page=`` was accepted but dropped on the floor
         for every tag-scoped/status-scoped listing).
         """
+        closed_engaged = (
+            closed_after is not None
+            or closed_before is not None
+            or closed_values is not None
+        )
         filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
+        if closed_engaged:
+            filters["closed_after"] = closed_after
+            filters["closed_before"] = closed_before
+            filters["closed_values"] = closed_values
         # The ref-id channels carry dispatch-resolved scopes (under=,
         # cited=) — the announced "restricted to N descendants" note is
         # a lie without them on the SQL (gr568264: under= + tags=
@@ -2424,12 +2551,15 @@ class NumericRefHandler(Handler):
             filters["include_ref_ids"] = include_ref_ids
         if exclude_ref_ids:
             filters["exclude_ref_ids"] = exclude_ref_ids
+        # A closed-window listing reads newest-closed first — the
+        # question it answers is "what closed when" (gr592737).
+        order_key = "closed_desc" if closed_engaged else self._order_key_for_sort(sort)
         refs = self.store.list_refs(
             kind=self.kind,
             tags=tags,
             limit=page_size,
             offset=offset,
-            order_by=self._order_key_for_sort(sort),
+            order_by=order_key,
             id_min=id_min,
             id_max=id_max,
             **filters,
@@ -2452,6 +2582,11 @@ class NumericRefHandler(Handler):
                 note + f"\n{hidden} {label} entries hidden; status='*' to include"
             ).strip()
         tag_clause = f" tagged {tags}" if tags else ""
+        window_note = ""
+        if closed_after is not None or closed_before is not None:
+            lo = closed_after.strftime("%Y-%m-%dT%H:%M:%SZ") if closed_after else "…"
+            hi = closed_before.strftime("%Y-%m-%dT%H:%M:%SZ") if closed_before else "…"
+            window_note = f" closed in [{lo}, {hi})"
         if not refs:
             if page > 1 and total > 0:
                 # Past the last page — total is still positive, so this
@@ -2464,7 +2599,7 @@ class NumericRefHandler(Handler):
                 if note:
                     body += f"\n{note}"
                 return Response(body=body, result_count=0)
-            body = f"no {self._sense()} entries{tag_clause}"
+            body = f"no {self._sense()} entries{tag_clause}{window_note}"
             if note:
                 body += f"\n{note}"
             nav = [
@@ -2497,19 +2632,24 @@ class NumericRefHandler(Handler):
             count_frag = f"{shown}"
         header = (
             f"# {count_frag} {self._sense()} entr"
-            f"{'y' if total == 1 else 'ies'}{tag_clause} "
-            f"(by {sort})"
+            f"{'y' if total == 1 else 'ies'}{tag_clause}{window_note} "
+            f"(by {'closed' if order_key.startswith('closed_') else sort})"
         )
         parts = [header]
-        if summary := self._list_summary(
-            tags,
-            exclude_tags=exclude_tags,
-            total=total,
-            past_page=total - offset - shown,
-            id_min=id_min,
-            id_max=id_max,
-            include_ref_ids=include_ref_ids,
-            exclude_ref_ids=exclude_ref_ids,
+        # The age summary reads the *open* queue — on a closure listing
+        # it would count the unfiltered tag set and name rows outside
+        # the window (gr592737).
+        if not closed_engaged and (
+            summary := self._list_summary(
+                tags,
+                exclude_tags=exclude_tags,
+                total=total,
+                past_page=total - offset - shown,
+                id_min=id_min,
+                id_max=id_max,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
         ):
             parts.append(summary)
         if total > offset + shown and (
@@ -2520,6 +2660,9 @@ class NumericRefHandler(Handler):
                 id_max=id_max,
                 include_ref_ids=include_ref_ids,
                 exclude_ref_ids=exclude_ref_ids,
+                closed_after=closed_after,
+                closed_before=closed_before,
+                closed_values=closed_values,
             )
         ):
             parts.append(facets)
@@ -2580,6 +2723,9 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None,
         exclude_ref_ids: list[int] | None,
         q: str | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: list[str] | None = None,
     ) -> str:
         """``clusters: a 12 · b 7 · … +3 groups (5) · (none) 40 — narrow: tags=[…, 'a']``.
 
@@ -2625,6 +2771,9 @@ class NumericRefHandler(Handler):
             id_max=id_max,
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
+            closed_after=closed_after,
+            closed_before=closed_before,
+            closed_values=closed_values,
         )
         named = [(v[0], n) for v, n, _span in groups if v[0] is not None]
         if not named or total <= 0:
@@ -5248,7 +5397,13 @@ class NumericRefHandler(Handler):
         return frozenset()
 
     def _list_view_paged(
-        self, view: str, page: Any, page_size: Any = None, sort: Any = None
+        self,
+        view: str,
+        page: Any,
+        page_size: Any = None,
+        sort: Any = None,
+        closed_since: Any = None,
+        closed_until: Any = None,
     ) -> Response | None:
         """Route ``get(id='/<view>', page=N)`` to ``_list_view``.
 
@@ -5285,15 +5440,30 @@ class NumericRefHandler(Handler):
             # the base signature stays ``(view)`` so non-paging overrides
             # still match.
             paged: Any = self._list_view
-            resp: Response | None = paged(view, page=n, page_size=ps, sort=sort)
+            resp: Response | None = paged(
+                view,
+                page=n,
+                page_size=ps,
+                sort=sort,
+                closed_since=closed_since,
+                closed_until=closed_until,
+            )
             return resp
-        if n > 1 or ps is not None or sort is not None:
+        if (
+            n > 1
+            or ps is not None
+            or sort is not None
+            or closed_since is not None
+            or closed_until is not None
+        ):
             bad = (
                 f"page={n}"
                 if n > 1
                 else f"page_size={ps}"
                 if ps is not None
                 else f"sort={sort!r}"
+                if sort is not None
+                else "closed_since=/closed_until="
             )
             # The verb refuses ``page=`` on every numeric-ref kind
             # (gr530420, gr634204): naming it in ``next`` would
