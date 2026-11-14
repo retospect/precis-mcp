@@ -25,7 +25,9 @@ this module translates pos↔chunk_id at the boundary:
 
 Inverse-relation rewrite at read time
 (``relation='cited-by'`` → match ``cites`` rows with the ref on
-the dst side) carries over unchanged from v1.
+the dst side) carries over unchanged from v1. Writes go the other
+way: a passive spelling (``cited-by``) is stored as its active row
+with the ends swapped (:data:`_CANONICAL_FLIP`).
 
 Mixin assumes the concrete Store provides ``self.pool``.
 """
@@ -228,7 +230,25 @@ def _reraise_link_fk_violation(
 # ``served-by`` A->B is the row ``serves`` B->A, so the quest-side and the
 # server-side call write the identical edge and the readers' inbound walk of
 # ``serves`` never sees a row whose src is the quest itself.
-_CANONICAL_FLIP = {"served-by": "serves"}
+# The active side is the one the server's own writers use (and that carries
+# the 0180 functional / acyclic constraint); the passive slugs stay
+# registered, so callers may still say them.
+_CANONICAL_FLIP = {
+    "served-by": "serves",
+    "cited-by": "cites",
+    "has-draft": "draft-of",
+    "has-plan": "plan-of",
+    "prerequisite-of": "has-prerequisite",
+    "represented-by": "represents",
+    "has-dossier": "dossier-of",
+    "has-paper": "paper-of",
+}
+
+
+def canonical_relation(relation: Any) -> str | None:
+    """The active spelling ``relation`` is stored as (ends swapped) by
+    :meth:`LinksMixin.add_link`, or None when it is stored as written."""
+    return _CANONICAL_FLIP.get(relation) if isinstance(relation, str) else None
 
 
 def _canonical_edge(
@@ -238,7 +258,7 @@ def _canonical_edge(
     src_pos: int | None,
     dst_pos: int | None,
 ) -> tuple[Any, int, int, int | None, int | None]:
-    active = _CANONICAL_FLIP.get(relation) if isinstance(relation, str) else None
+    active = canonical_relation(relation)
     if active is None:
         return relation, src_ref_id, dst_ref_id, src_pos, dst_pos
     return active, dst_ref_id, src_ref_id, dst_pos, src_pos
@@ -1212,7 +1232,8 @@ class LinksMixin:
         hint rather than a psycopg ``CheckViolation``.
 
         One row per edge — asymmetric pairs (``cites`` / ``cited-by``)
-        are NOT auto-mirrored. The "who cites me?" filter is handled
+        are NOT auto-mirrored, and a passive spelling is stored as the
+        active row with the ends swapped (see :func:`_canonical_edge`). The "who cites me?" filter is handled
         at read time in :meth:`links_for`.
 
         Machine-edge write rule (graph-gardener-value slice 1): when the
@@ -1594,8 +1615,9 @@ class LinksMixin:
         ``None`` ↔ NULL matching aligns with the UNIQUE NULLS NOT
         DISTINCT semantics on the index.
 
-        ``relation='served-by'`` removes the canonical ``serves`` edge with
-        the ends swapped (see :func:`_canonical_edge`).
+        A passive ``relation`` (``served-by``, ``cited-by``, ...) removes
+        the canonical active edge with the ends swapped (see
+        :func:`_canonical_edge`).
         """
         if relation is not None:
             relation, src_ref_id, dst_ref_id, src_pos, dst_pos = _canonical_edge(
@@ -1668,11 +1690,10 @@ class LinksMixin:
         """Fetch links touching ``ref_id``.
 
         Inverse-relation rewrite carries over unchanged from v1:
-        ``relation='cited-by'`` matches literal ``cited-by`` rows
-        on this ref's side OR ``cites`` rows on the opposite side
-        (the v2 schema doesn't store ``cited-by`` rows — only
-        ``cites`` — so the rewrite is the only way to surface
-        "who cites me?" links).
+        ``relation='cited-by'`` matches ``cited-by`` rows (legacy:
+        ``add_link`` now stores ``cites``) on this ref's side OR
+        ``cites`` rows on the opposite side, so the rewrite is the way
+        to surface "who cites me?" links.
         """
         # Inverse from the DB `relations.inverse_slug` (gripe 160213), so a
         # plugin relation's inverse mirrors on read too — not just the built-ins

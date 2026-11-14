@@ -78,6 +78,7 @@ from precis.store import (
     Ref,
     Tag,
 )
+from precis.store._links_ops import canonical_relation
 from precis.store._search_cut import (
     fixed_floors_enabled,
     fold_enabled,
@@ -4213,11 +4214,11 @@ class NumericRefHandler(Handler):
                 )
             if link_target.kind == "part":
                 self._enqueue_part_datasheet(link_target.ref_id)
-            if relation == "served-by":
-                # Stored canonically as ``serves`` with the ends swapped
-                # (store.add_link); the ack names the row that exists.
+            if (stored_rel := canonical_relation(relation)) is not None:
+                # Stored canonically as the active spelling with the ends
+                # swapped (store.add_link); the ack names the row that exists.
                 return Response(
-                    body=f"linked {target} serves {self._sense()} id={ref_id}"
+                    body=f"linked {target} {stored_rel} {self._sense()} id={ref_id}"
                 )
             return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
         # mode == "remove"
@@ -4227,10 +4228,10 @@ class NumericRefHandler(Handler):
             dst_pos=link_target.pos,
             relation=relation if rel is not None else None,
         )
-        if relation == "served-by":
+        if (stored_rel := canonical_relation(relation)) is not None:
             return Response(
                 body=(
-                    f"unlinked {target} serves {self._sense()} id={ref_id} "
+                    f"unlinked {target} {stored_rel} {self._sense()} id={ref_id} "
                     f"({n_removed} edge{'s' if n_removed != 1 else ''} removed)"
                 )
             )

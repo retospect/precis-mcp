@@ -1122,8 +1122,8 @@ class TestNeighbourhood:
         store.add_link(src_ref_id=citer, dst_ref_id=focus, relation="cites")
         store.add_link(src_ref_id=focus, dst_ref_id=mem_out, relation="related-to")
         store.add_link(src_ref_id=mem_in, dst_ref_id=focus, relation="related-to")
-        # a literally stored inverse-slug row (``cited-by``) is kept as-is
-        # on the out side, same as ``links_for`` returns it.
+        # the passive spelling (``cited-by``) is stored as ``mem_in cites
+        # focus``, which the neighbourhood presents as ``cited-by`` inbound.
         store.add_link(src_ref_id=focus, dst_ref_id=mem_in, relation="cited-by")
 
         nb = store.neighbourhood("paper", focus)
