@@ -1059,9 +1059,13 @@ class TestTrustedSortViews:
         store.stamp_ref_meta(sid, {"barrier": 0.3, "barrier_trusted": False})
         h = QuestHandler(hub=Hub(store=store))
         handle = self._handle(sid)
-        for view in ("results", "leaderboard", "frontier"):
+        for view in ("results", "leaderboard"):
             body = h.get(id=qid, view=view, args={"trusted": True}).body
             assert "no candidates pass the trusted filter" in body, view
+        # frontier is the exception since gr592563: the provisional
+        # candidate prints on the evidence ladder instead.
+        body = h.get(id=qid, view="frontier", args={"trusted": True}).body
+        assert "evidence ladder" in body and handle in body
         # and the unfiltered views still show the candidate
         assert handle in h.get(id=qid, view="results").body
 

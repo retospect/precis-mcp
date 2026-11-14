@@ -895,6 +895,25 @@ def _logbook_limit(value: Any) -> int:
     return value
 
 
+#: ``view='frontier'`` evidence-ladder page size — the top-N provisional
+#: candidates printed when ``args={'trusted': true}`` leaves the confirmed
+#: frontier empty (gr592563); ``args={'limit': N}`` widens.
+_LADDER_PAGE = 10
+
+
+def _ladder_limit(value: Any) -> int:
+    """``args['limit']`` for the frontier evidence ladder — a positive int
+    (rungs), default :data:`_LADDER_PAGE`."""
+    if value is None:
+        return _LADDER_PAGE
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise BadInput(
+            f"args={{'limit': {value!r}}}: limit must be a positive int (ladder rows)",
+            next="args={'limit': 10}",
+        )
+    return value
+
+
 def _utc_aware(dt: datetime) -> datetime:
     """``chunks.created_at`` is ``timestamptz`` — aware out of psycopg; a
     hand-built fixture may be naive, which the house convention reads as
@@ -2065,6 +2084,9 @@ class QuestHandler(NumericRefHandler):
                     budget=_budget_arg(args),
                     trusted=_trusted_arg(args),
                     sort=_sort_arg(args),
+                    limit=_ladder_limit(
+                        args.get("limit") if isinstance(args, dict) else None
+                    ),
                 )
             )
         if view == "leaderboard" and concrete:
@@ -2567,6 +2589,7 @@ class QuestHandler(NumericRefHandler):
         budget: int = _DEFAULT_VIEW_BUDGET,
         trusted: bool = False,
         sort: str | None = None,
+        limit: int = _LADDER_PAGE,
     ) -> str:
         """`view='frontier'` — the Pareto frontier of candidate materials.
 
@@ -2581,7 +2604,12 @@ class QuestHandler(NumericRefHandler):
         orders each band by it on its declared sense — the "trusted AND
         best" read (gr592277). Both print a ``filter:`` note; a filter
         that empties the confirmed band says so under it rather than
-        misreading as "none evaluated".
+        misreading as "none evaluated". When ``trusted`` leaves the
+        confirmed frontier empty but provisional candidates exist, an
+        **evidence ladder** prints instead of the bare "no candidates
+        pass" line — the top ``limit`` provisional rows (default
+        :data:`_LADDER_PAGE`, ``args={'limit': N}`` widens) ranked
+        closest-to-trusted, one blocker each (gr592563).
 
         An ``inquiry``-body quest (docs/backlog/quest-bodies-inquiry.md) has
         no candidate materials AND NEVER WILL — it reads, reasons, and
@@ -2654,7 +2682,44 @@ class QuestHandler(NumericRefHandler):
             reasons = f" [{'; '.join(pc.reasons)}]" if pc.reasons else ""
             return f"  {c.handle} {c.name} — {ms}{star}{reasons}"
 
+        # gr592563: a ``trusted`` read whose confirmed frontier came out
+        # empty gets the evidence ladder — the provisional candidates
+        # ranked closest-to-trusted, one blocker each — instead of the
+        # bare "no candidates pass" line.
+        ladder_band: tuple[str, list[str]] | None = None
+        if trusted and not fr.frontier and raw_fr.provisional:
+            ladder = frontier_mod.evidence_ladder(raw_fr, top_n=limit)
+            total = len(raw_fr.provisional)
+
+            def _fmt_ladder(i: int, row: frontier_mod.LadderRow) -> str:
+                pc = row.provisional
+                c = pc.candidate
+                bits = []
+                for k, v in sorted(pc.measures.items()):
+                    mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
+                    bits.append(f"{k}={v:g}{mark}")
+                ms = " ".join(bits) or "(no measures)"
+                star = " ★ provisional-frontier" if pc.on_frontier else ""
+                return f"  {i}. {c.handle} {c.name} — {ms}{star} — clear: {row.blocker}"
+
+            ladder_rows = [_fmt_ladder(i, row) for i, row in enumerate(ladder, 1)]
+            if total > len(ladder):
+                ladder_rows.append(
+                    f"  (+{total - len(ladder)} more provisional — "
+                    "args={'limit': N} widens the ladder)"
+                )
+            ladder_band = (
+                "── evidence ladder — provisional candidates, closest to "
+                f"trusted ({len(ladder)} of {total}; one blocker each) ──",
+                ladder_rows,
+            )
+
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
+            if ladder_band is not None:
+                # The same ``_fit_bands`` budget contract as the banded
+                # render below — a lone ladder band still trims rungs off
+                # its tail under ``args={'budget': N}`` (review td677831).
+                return _fit_bands(lines, [ladder_band], budget=budget)
             if had_candidates:
                 lines.append(
                     "no candidates pass the trusted filter — none carries an "
@@ -2685,6 +2750,8 @@ class QuestHandler(NumericRefHandler):
                 frontier_rows,
             )
         ]
+        if ladder_band is not None:
+            bands.append(ladder_band)
         if fr.dominated:
             bands.append(
                 (

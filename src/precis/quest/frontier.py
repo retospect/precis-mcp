@@ -2309,6 +2309,72 @@ def _provisional_split(
     return final, still_unevaluated
 
 
+#: :func:`evidence_ladder`'s last tie-break — a candidate measured at a
+#: higher rung of the tier ladder (``flags['tier']``) has more evidence
+#: behind it, so it sorts closer to trusted; an unstamped (pre-ladder or
+#: opted-out) candidate ranks last.
+_LADDER_TIER_RANK: dict[str, int] = {"verify": 0, "neb": 1, "screening": 2}
+
+
+@dataclass(frozen=True)
+class LadderRow:
+    """One rung of :func:`evidence_ladder` — a provisional candidate plus
+    the single blocker it must clear next on the way to trusted."""
+
+    provisional: ProvisionalCandidate
+    blocker: str
+
+
+def evidence_ladder(fr: FrontierResult, *, top_n: int = 10) -> list[LadderRow]:
+    """Rank ``fr.provisional`` closest-to-trusted first (gr592563).
+
+    The answer to "which candidate are we most certain about" when NOTHING
+    is trusted: the confirmed frontier is empty (today's qu164903 — every
+    barrier and |U_L| carried untrusted) and the bare "no candidates pass"
+    line leaves the reader to re-derive the order by hand. Closeness to
+    trust is read off the SAME signals :func:`_provisional_reasons` already
+    renders — a network-stale candidate (engine version vs current: all
+    its values are demoted pending re-measurement) is furthest, then the
+    count of failed checks (untrusted gates, missing objectives, no
+    converged relax — the reasons list's own length), then position on the
+    provisional frontier, then tier as a last tie-break. Each rung names
+    exactly ONE blocker — the single check the candidate must clear next:
+    the network re-measure for a stale row, else its first (highest-priority)
+    reason. Pure over :class:`FrontierResult`, trivially testable; the
+    handler renders the top ``top_n`` rungs and says how to widen.
+    """
+
+    def _rank(pc: ProvisionalCandidate) -> tuple[bool, int, bool, int, int]:
+        c = pc.candidate
+        return (
+            bool(c.flags.get("network_stale")),
+            len(pc.reasons) or len(pc.untrusted_keys),
+            not pc.on_frontier,
+            _LADDER_TIER_RANK.get(str(c.flags.get("tier") or ""), 3),
+            c.ref_id,
+        )
+
+    def _blocker(pc: ProvisionalCandidate) -> str:
+        c = pc.candidate
+        if c.flags.get("network_stale"):
+            stale = next((r for r in pc.reasons if "older reaction network" in r), None)
+            if stale is not None:
+                return stale
+            keys = c.flags.get("network_stale_keys")
+            named = (
+                f" ({', '.join(str(k) for k in keys)})"
+                if isinstance(keys, list) and keys
+                else ""
+            )
+            return f"re-measure on the current engine/network{named}"
+        if pc.reasons:
+            return pc.reasons[0]
+        return "awaiting an affirmative trust verdict"
+
+    ranked = sorted(fr.provisional, key=_rank)
+    return [LadderRow(provisional=pc, blocker=_blocker(pc)) for pc in ranked[:top_n]]
+
+
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
 #: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
 #: tier, not ``barrier_fidelity``). A candidate with no tier stamp at all (a
@@ -2795,6 +2861,7 @@ __all__ = [
     "Candidate",
     "FrontierResult",
     "FrontierScatter",
+    "LadderRow",
     "ProvisionalCandidate",
     "apply_network_demotion",
     "axis_label_for",
@@ -2802,6 +2869,7 @@ __all__ = [
     "build_frontier_scatter",
     "candidate_trusted",
     "current_network_basis",
+    "evidence_ladder",
     "leaderboard",
     "pareto_split",
     "plot_axes_for",
