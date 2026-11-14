@@ -38,7 +38,10 @@ for :data:`TEST_TASK_CLASS` nodes it re-resolves the model over the
 candidate table ``pick_lane`` already filtered, preferring another
 model on the same lane, then a different lane — and REFUSING the
 launch when nothing satisfies it, because a test session on its code
-session's model is no test (the MUST is not a preference). The MUST
+session's model is no test (the MUST is not a preference). A lane
+that satisfies the MUST but is held — at its cap or backed off by a
+host refusal — is a WAIT, not a refusal: the launch parks on the
+lane-wait machinery for its slot (gr674214). The MUST
 also binds when a prior code session's model cannot be established
 — a failed pick read parks the launch; an unrecorded one resolves to
 the vendor's account default where this host's config names it
@@ -667,12 +670,16 @@ def diverse_model_pick(
     avoid: frozenset[str],
     model_pin: str | None,
     task_class: str,
-) -> tuple[Any, str | None, str | None]:
-    """``(lane, model, note)`` — the test-session pick routed around the
-    run's prior code models (gr595545), or ``(None, None, note)`` when
-    no pick satisfies the different-model MUST: the caller REFUSES the
-    launch (review td655142 — a test session on its code session's
-    model is no test, not a fallback the old pick may ride).
+) -> tuple[Any, str | None, str | None, tuple[str, ...]]:
+    """``(lane, model, note, wait)`` — the test-session pick routed
+    around the run's prior code models (gr595545), or ``(None, None,
+    note, ())`` when no lane can satisfy the different-model MUST: the
+    caller REFUSES the launch (review td655142 — a test session on its
+    code session's model is no test, not a fallback the old pick may
+    ride). ``(None, None, None, wait)`` names the lanes that satisfy
+    the MUST once their hold clears — at their cap or backed off by a
+    host refusal — so the caller PARKS for a slot instead of filing the
+    deterministic refusal a coordinator ask routes on (gr674214).
 
     Same-lane alternates win first (the pick's lane still stands, only
     the model moves), then another candidate lane offering a model
@@ -693,7 +700,7 @@ def diverse_model_pick(
     from precis.plans import lanes as _lanes
 
     if not avoid or lane is None:
-        return lane, model, None
+        return lane, model, None, ()
 
     def _pinnable(ln: Any, candidate: str) -> bool:
         """``True`` when the lane's adapter can launch ``candidate`` as
@@ -731,7 +738,7 @@ def diverse_model_pick(
     # A resolved model that already differs needs nothing; a resolved
     # None (the account default) is unknown — it could BE a code model.
     if model is not None and model not in avoid:
-        return lane, model, None
+        return lane, model, None, ()
 
     alt = _alt(lane)
     if alt is not None:
@@ -741,9 +748,10 @@ def diverse_model_pick(
             f"run_slice: test session must differ from the run's code "
             f"model(s) {sorted(avoid)}; lane {lane.name!r} carries "
             f"{alt!r} instead of {model or model_pin or 'the account default'}",
+            (),
         )
 
-    def _refuse() -> tuple[Any, None, str]:
+    def _refuse() -> tuple[Any, None, str, tuple[()]]:
         why = (
             f"its resolved model {model!r} repeats them"
             if model is not None
@@ -756,6 +764,7 @@ def diverse_model_pick(
             f"than the run's code session(s) {sorted(avoid)}, but {why} "
             f"on lane {lane.name!r} and no fit lane offers one outside "
             f"them; refusing the launch — a same-model test is no test",
+            (),
         )
 
     if len(candidates) <= 1:
@@ -763,35 +772,43 @@ def diverse_model_pick(
     live = dict(counts) if counts is not None else _lanes.live_lane_counts(store)
     now = datetime.now(UTC)
     backed = {n for n, until in (backoffs or {}).items() if until and until > now}
-    fit = [
+    # ``able`` = the lane can LAUNCH a model outside ``avoid`` (the MUST
+    # is provable there); the transient holds — cap, host-refusal
+    # backoff, the free-lane cost gate — come after, in ``pick_lane``'s
+    # own order. An able-but-held lane is a wait, not a refusal
+    # (gr674214): a full claude-sub frees a slot this launch may take.
+    able = [
         ln
         for ln in candidates
         if ln is not lane
         and ln.enabled
         and not ln.parked
         and ln.fits(task_class)
-        and ln.name not in backed
-        and live.get(ln.name, 0) < ln.cap
         and _alt(ln) is not None
     ]
-    if not paid_ok and any(ln.cost_class == _lanes.COST_FREE for ln in fit):
-        fit = [ln for ln in fit if ln.cost_class == _lanes.COST_FREE]
-    if not fit:
-        return _refuse()
+    offered = [ln for ln in able if ln.name not in backed]
+    if not paid_ok and any(ln.cost_class == _lanes.COST_FREE for ln in offered):
+        offered = [ln for ln in offered if ln.cost_class == _lanes.COST_FREE]
+    open_lanes = [ln for ln in offered if live.get(ln.name, 0) < ln.cap]
+    if not open_lanes:
+        wait = tuple(ln.name for ln in able)
+        return (None, None, None, wait) if wait else _refuse()
     best = min(
-        fit,
+        open_lanes,
         key=lambda ln: (
             _lanes.COST_ORDER.index(ln.cost_class),
             live.get(ln.name, 0),
         ),
     )
+    best_alt = _alt(best)
     return (
         best,
-        _alt(best),
+        best_alt,
         f"run_slice: test session must differ from the run's code "
         f"model(s) {sorted(avoid)}; re-picked lane {best.name!r} "
-        f"on {_alt(best)!r} (was {lane.name!r} "
+        f"on {best_alt!r} (was {lane.name!r} "
         f"{model or model_pin or 'the account default'})",
+        (),
     )
 
 

@@ -593,7 +593,7 @@ def test_diverse_pick_prefers_same_lane_alternate() -> None:
         default_model="claude-sonnet-5-5",
     )
     other = _lane("devin", models=("swe-2-high",), cost_class=COST_FREE)
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model="claude-sonnet-5-5",
@@ -613,7 +613,7 @@ def test_diverse_pick_prefers_same_lane_alternate() -> None:
 def test_diverse_pick_crosses_lanes_when_same_lane_has_no_alternate() -> None:
     lane = _lane("only", models=("m1",), default_model="m1")
     other = _lane("free", models=("m2",), default_model="m2", cost_class=COST_FREE)
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model="m1",
@@ -642,7 +642,7 @@ def test_diverse_pick_pins_prefix_lane_model_outside_code_set() -> None:
         _lane("claude-sub", models=("claude-opus-5-5",)),
         model_prefix="claude-",
     )
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=codex,
         model=None,
@@ -664,7 +664,7 @@ def test_diverse_pick_refuses_when_no_lane_differs() -> None:
     "different" — the MUST refuses the launch, it does not ride the
     old pick anyway."""
     lane = _lane("only", models=("m1",), default_model="m1")
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model="m1",
@@ -685,7 +685,7 @@ def test_diverse_pick_refuses_an_unknown_account_default() -> None:
     UNKNOWN, not "different": it could be the code model under another
     name, so the pick either pins a declared outside model or fails."""
     lane = replace(_lane("default-only"), adapter="api")  # nameless default
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model=None,
@@ -703,7 +703,7 @@ def test_diverse_pick_refuses_an_unknown_account_default() -> None:
     # …but the same lane with a declared outside model pins it rather
     # than trusting the unknown default.
     lane = _lane("mixed", models=("m1", "m2"))
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model=None,
@@ -731,7 +731,9 @@ def test_diverse_pick_names_a_codex_account_default(
     )
     lane = replace(_lane("codex"), adapter="codex_exec")
 
-    def _pick(avoid: frozenset[str]) -> tuple[Any, str | None, str | None]:
+    def _pick(
+        avoid: frozenset[str],
+    ) -> tuple[Any, str | None, str | None, tuple[str, ...]]:
         return outcome.diverse_model_pick(
             None,
             lane=lane,
@@ -764,7 +766,7 @@ def test_diverse_pick_never_pins_a_default_the_adapter_cannot_launch(
         '{"agent": {"model": "swe-2-max"}}\n', encoding="utf-8"
     )
     devin = replace(_lane("devin"), adapter="devin_tree")  # models=()
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=devin,
         model=None,
@@ -807,7 +809,7 @@ def test_allowlist_model_adapters_derives_from_argv(tmp_path: Path) -> None:
 
 def test_diverse_pick_noops_when_model_already_differs() -> None:
     lane = _lane("a", models=("m1", "m2"), default_model="m2")
-    new_lane, model, note = outcome.diverse_model_pick(
+    new_lane, model, note, _wait = outcome.diverse_model_pick(
         None,
         lane=lane,
         model="m2",
@@ -828,7 +830,7 @@ def test_diverse_pick_respects_caps_backoffs_and_free_first() -> None:
     backed = _lane("backed", models=("m3",), default_model="m3")
     paid = _lane("paid", models=("m4",), default_model="m4")
     free = _lane("free", models=("m5",), default_model="m5", cost_class=COST_FREE)
-    new_lane, model, _ = outcome.diverse_model_pick(
+    new_lane, model, _, _wait = outcome.diverse_model_pick(
         None,
         lane=picked,
         model="m1",
@@ -843,6 +845,74 @@ def test_diverse_pick_respects_caps_backoffs_and_free_first() -> None:
     # The full lane, the backed-off lane and the paid lanes (a fit free
     # lane exists) are all out of the diverse re-pick.
     assert (new_lane.name, model) == ("free", "m5")
+
+
+def test_diverse_pick_waits_on_held_lanes_instead_of_refusing() -> None:
+    """gr674214: a lane that offers a provable different model but is at
+    its cap or backed off is a WAIT, not a refusal — the pick names the
+    held lanes so the caller parks for a slot instead of filing the
+    deterministic model-rule refusal a coordinator ask routes on."""
+    picked = _lane("picked", models=("m1",), default_model="m1")
+    full = _lane("full", models=("m2",), default_model="m2", cap=1)
+    backed = _lane("backed", models=("m3",), default_model="m3")
+    new_lane, model, note, wait = outcome.diverse_model_pick(
+        None,
+        lane=picked,
+        model="m1",
+        candidates=(picked, full, backed),
+        counts={"full": 1},
+        backoffs={"backed": datetime.now(UTC) + timedelta(hours=1)},
+        paid_ok=True,
+        avoid=frozenset({"m1"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane, model, note) == (None, None, None)
+    assert wait == ("full", "backed")
+
+    # A paid able lane held out by the free-first cost gate waits too —
+    # the free wait's expiry opens it again.
+    free = _lane(
+        "free", models=("m4",), default_model="m4", cap=1, cost_class=COST_FREE
+    )
+    paid = _lane("paid", models=("m5",), default_model="m5")
+    new_lane, model, note, wait = outcome.diverse_model_pick(
+        None,
+        lane=picked,
+        model="m1",
+        candidates=(picked, free, paid),
+        counts={"free": 1},
+        backoffs=None,
+        paid_ok=False,
+        avoid=frozenset({"m1"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane, model, note) == (None, None, None)
+    assert wait == ("free", "paid")
+
+
+def test_diverse_pick_still_refuses_when_no_lane_can_differ() -> None:
+    """The wait covers HELD lanes only — a lane that cannot launch a
+    provable different model at all (disabled, or every offer inside
+    ``avoid``) stays the deterministic refusal."""
+    picked = _lane("picked", models=("m1",), default_model="m1")
+    dead = replace(_lane("dead", models=("m2",)), enabled=False)
+    same = _lane("same", models=("m1",), default_model="m1")
+    new_lane, model, note, wait = outcome.diverse_model_pick(
+        None,
+        lane=picked,
+        model="m1",
+        candidates=(picked, dead, same),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset({"m1"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane, model, wait) == (None, None, ())
+    assert note and "refusing the launch" in note
 
 
 # ── build_outcome end-to-end ──────────────────────────────────────

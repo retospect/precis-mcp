@@ -9389,6 +9389,44 @@ def test_submit_validate_parks_when_the_prior_pick_read_fails(
     assert seams["launch"] == []
 
 
+def test_submit_validate_parks_when_every_diverse_lane_is_held(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr674214: codex's unnameable account default cannot prove the
+    different-model MUST and the lanes that can — devin, claude-sub —
+    are at their caps: a held lane is a wait, not the deterministic
+    refusal the MODEL_RULE_KEY stamp routes to a coordinator ask
+    (td673966/td673995 refused while claude-sub merely ran full). The
+    park names the held lanes so a freed slot wakes the job."""
+    use_lanes(monkeypatch, *SEED_LANES)
+    seams["live"] = {"devin": 3, "claude-sub": 2}
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset({"kimi-for-coding"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    # ``wait_parks`` past the free-lane wait so the paid codex lane is
+    # pickable while devin sits at its cap — prod's 08:08Z shape.
+    ctx = _Ctx(store, {"todo_id": 42}, wait_parks=2)
+    parks: list[str] = []
+
+    def _park(_wake: Any, why: str) -> bool:
+        parks.append(why)
+        return True
+
+    ctx.defer = _park
+    handle = run_slice.submit(ctx, None)
+    assert handle is None and ctx.failure is None
+    assert parks and "different model" in parks[0]
+    assert "claude-sub" in parks[0] and "devin" in parks[0]
+    assert ctx.meta_set["wait_parks"] == 3
+    assert ctx.meta_set["lane_wait"] == ["devin", "claude-sub"]
+    assert run_slice.MODEL_RULE_KEY not in ctx.meta_set
+    assert seams["launch"] == []
+
+
 def test_submit_validate_refuses_an_unrecorded_prior_model(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

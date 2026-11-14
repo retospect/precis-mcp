@@ -564,7 +564,9 @@ def _diverse_test_pick(
     None)`` when the launch PARKED instead — the pick's store read
     failed, a transient fault the caller must not read as a refusal
     (review td655142: an unestablishable prior model may never ride an
-    empty avoid past the different-model rule)."""
+    empty avoid past the different-model rule), or every lane that can
+    prove a different model is held — at its cap or backed off — a
+    lane-wait, not a verdict (gr674214)."""
     try:
         avoid, unknown = _outcome.code_session_models(ctx.store, todo_id)
     except Exception:  # pragma: no cover — the read already reports
@@ -594,7 +596,7 @@ def _diverse_test_pick(
         return None, None, why
     if not avoid:
         return lane, model, None
-    new_lane, new_model, note = _outcome.diverse_model_pick(
+    new_lane, new_model, note, wait = _outcome.diverse_model_pick(
         ctx.store,
         lane=lane,
         model=model,
@@ -606,6 +608,21 @@ def _diverse_test_pick(
         model_pin=model_pin,
         task_class=task_class,
     )
+    if new_lane is None and note is None and wait:
+        # gr674214: every lane that can prove a different model is held
+        # — at its cap or backed off by a host refusal. A held lane is
+        # a wait, not the deterministic refusal the MODEL_RULE_KEY
+        # stamp routes to a coordinator ask; park for a slot like the
+        # ordinary lane-full path (the wake names free the wait early).
+        _park_lane_full(
+            ctx,
+            "run_slice: the test session must run a different model than "
+            f"the run's code session(s) {sorted(avoid)}, and every lane "
+            f"offering one ({', '.join(wait)}) is at its cap or backed "
+            "off; parked for a slot",
+            lanes=wait,
+        )
+        return None, None, None
     if note:
         ctx.append_chunk("job_event", note)
     return new_lane, new_model, note
