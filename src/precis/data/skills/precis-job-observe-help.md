@@ -286,19 +286,11 @@ services; this is every row.
 get(kind="job", id="/claim")
 ```
 
-The `claim.*` `app_state` knobs the claim substrate reads live, next
-to their code defaults: `claim.max_running.<job_type>` (per-host
-running cap, `0` suspends the type; code default
-`_MAX_RUNNING_DEFAULTS`, absent = uncapped),
-`claim.slicing.<executor>` (per-lane slicing flip — default off
-unless `PRECIS_JOB_SLICING`), `claim.slice_s.<executor>` (per-claim
-wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`),
-`claim.executor_cap.<executor>` (per-host executor running cap —
-`ssh_node` defaults to 8, gr603792) and `claim.reserve.<executor>`
-(JSON `{<job_type>: <slots>}` held back inside the cap for those
-types). The view also shows live per-`job_type` occupancy for the
-capped executors. Writes go through
-`put(kind='job', mode='setting', …)` — see [[precis-job-ops-help]].
+The `claim.*` `app_state` knobs the claim substrate reads live
+(`max_running`, `slicing`, `slice_s`, `executor_cap`, `reserve`), next
+to their code defaults, plus live per-`job_type` occupancy for the
+capped executors. What each knob means and how to set it:
+[[precis-job-ops-help]].
 
 ## How healthy is the secrets vault? — /secrets
 
