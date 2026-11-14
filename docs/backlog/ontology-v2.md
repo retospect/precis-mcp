@@ -125,8 +125,26 @@ its rollback as the next forward migration (`docs/conventions/invariants.md`).
    relabel carrying `prior_tag` is not a model judgement. Rollback:
    delete links `WHERE meta.migration=<id>`; the tags are still there.
 4. **Tags that are links → links.** `discovered-via:cite:<paper>`
-   (writers `workers/watch_poll.py`, `workers/stub_rank.py`) becomes a
-   `derived-from`-class edge ref→paper (relation name: open question 6);
+   (writer `workers/watch_poll.py::_mint_stub`, sole reader
+   `workers/stub_rank.py`) holds two facts and they split (ruled Reto
+   2026-11-14, revising question 6). The citation is the existing
+   ref-level `cites` edge stub→seed that
+   `backfill/citation_recall.py::ensure_s2_neighbors` already writes:
+   prod 2026-11-13 had 49,736 tags over 7,152 seeds, 49,221 pairs
+   resolving by cite_key, 35,391 of them with that edge; the backfill
+   migration inserts the 13,830 missing with `meta.via` naming the
+   watcher. The minting provenance (which watcher, which seed, when)
+   moves to `refs.meta.discovered_via = {via, seed_ref, at}` on the
+   stub, the per-ref fact `stub_rank` clamps on; it reads the meta key
+   instead of the tag. Both watchers write edge + meta from this slice
+   on: `workers/citer_watch.py` (OpenAlex twin, tag
+   `discovered-via:citer-watch`, 30 rows) already knows the seeds each
+   find cites and discards them. `discovered-via:get`
+   (`job_types/paper_ingest.py`, 81 rows) has no reader and is culled
+   with no replacement: `set_by` and `created_at` on the ref already say
+   an agent fetched it. These are system edges, so they carry provenance
+   and never a `meta.reason`; the link-reason ruling on gr626882
+   (Reto 2026-11-14, memory me677467) classes them structural.
    `quest:<id>` (writers `quest/needs.py`, `quest/tagging.py`,
    `quest/pourbaix_map.py`, `quest/status.py`, `quest/loop.py`) becomes
    the existing `serves` edge the quest `view='measures'` walk already
@@ -193,7 +211,10 @@ relation registry beyond what open question 6 decides.
 - After slice 4's cull: `get(kind='tag')` shows no `discovered-via:*` and
   no `quest:*`; the quest `view='measures'` and the stub-rank reader
   return the same rows as before the cull (counted in the migration's
-  dry run).
+  dry run); every stub that carried a `discovered-via:cite` tag has a
+  ref-level `cites` edge to its seed and a `refs.meta.discovered_via`
+  entry, and the fisheye on such a stub shows the edge's provenance from
+  `meta.via`, not a missing reason.
 - After slice 5: no `interest:*` on memories, no bare `pcb` on gripes;
   the junk list is gone; `sticky:*` count unchanged.
 - Every UPPERCASE namespace present on prod is in `precis-tags`, or is
@@ -209,6 +230,8 @@ and search handlers (`under=`, `property=`), `src/precis/utils/
 link_tag_ops.py` (closed-axis registry, `check_relation_constraints`),
 `store/_links_ops.py::add_link` (migration exemption), the categorizer
 passes under `data/axes/`, `workers/watch_poll.py`, `workers/stub_rank.py`,
+`workers/citer_watch.py`, `workers/job_types/paper_ingest.py`,
+`backfill/citation_recall.py` (slice 4 reuses its `cites` edge shape),
 `quest/{needs,tagging,pourbaix_map,status,loop}.py`, migrations (one per
 slice step), skills `precis-tags`, `precis-taxon-help`,
 `precis-classify-help`, `precis-measure-help`. Post-deploy look: the
@@ -216,7 +239,8 @@ acceptance queries above, run on prod read-only.
 
 ## Open questions / decisions log
 
-**Ruled (Reto 2026-10-22): 1–7 approved as recommended. 8 approved:** 13
+**Ruled (Reto 2026-10-22): 1–7 approved as recommended (6 revised
+2026-11-14, see below). 8 approved:** 13
 quantity-class groups — geometry; component form; mechanical; thermal;
 electrical and dielectric; bulk and structure (+BET, ECSA); molecular and
 surface (kept separate); energetics (renamed from "DFT energetics": +band
@@ -276,6 +300,15 @@ append-only: supersede-per-row).
    changes only by migration, graph-gardener-value §promotion rule). If
    `derived-from` is semantically wrong for "found while chasing", a new
    `discovered-via` relation is one migration.
+   **Revised (Reto 2026-11-14): no `derived-from` edge.** The tag's
+   bibliographic half is the `cites` edge the citation-graph backfill
+   already writes for 72 % of the pairs; a parallel `derived-from` would
+   show the same pair twice under two names. The provenance half is a
+   fact about the stub, so it lives on the ref
+   (`refs.meta.discovered_via`), not on an edge. Seedless tags: `get` is
+   culled with nothing in its place; `citer-watch` is the cite watcher's
+   twin and writes the same edge + meta. Slice 4 above carries the
+   2026-11-13 counts.
 7. **Reto's three from the teardown:** `level:` — recommend a column on
    todos (it is tree depth, machine-written); `internal-thought` dual
    writer — recommend drop the tag writer, the meta key stays;
