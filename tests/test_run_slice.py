@@ -10786,3 +10786,123 @@ def test_repo_devin_brief_does_not_claim_the_harness_runs_tests() -> None:
     assert "harness runs the supplied tests" not in brief
     assert "our harness runs no tests here" in brief
     assert "the separate lander, which runs the full suite" in brief
+
+
+# ── _git runs under a scrubbed env (td659522, gr659929) ────────────
+
+
+@pytest.fixture
+def _scrubbed_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A real ``run_slice._git`` (an empty ``HOME``, no global identity)
+    and the temp repo it works in."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for var in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "XDG_CONFIG_HOME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert run_slice._git(["init", "-q", "-b", "main"], repo).returncode == 0
+    return repo
+
+
+def test_git_env_drops_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-secret")
+    monkeypatch.setenv("GH_TOKEN", "tok-secret")
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://db.invalid/x")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    seen: list[dict[str, str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(dict(kw["env"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_slice.subprocess, "run", fake_run)
+    run_slice._git(["status"], tmp_path)
+    assert len(seen) == 1
+    env = seen[0]
+    for name in (
+        "PRECIS_FACTORY_GIT_TOKEN",
+        "GH_TOKEN",
+        "PRECIS_DATABASE_URL",
+        "GIT_CONFIG_COUNT",
+    ):
+        assert name not in env
+    assert "tok-secret" not in " ".join(env.values())
+    # The host's global config stays visible: no credential rides the call.
+    assert "GIT_CONFIG_GLOBAL" not in env
+    assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_git_runs_no_planted_hook(
+    _scrubbed_git: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _scrubbed_git
+    marker = tmp_path / "hook-ran"
+    for name in ("post-checkout", "post-commit"):
+        hook = repo / ".git" / "hooks" / name
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+        hook.chmod(0o755)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "T")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "T")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.invalid")
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert run_slice._git(["add", "a.txt"], repo).returncode == 0
+    done = run_slice._git(["commit", "-qm", "x"], repo)
+    assert done.returncode == 0, done.stderr
+    out = run_slice._git(["checkout", "-q", "-b", "other"], repo)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists()
+
+
+def test_git_commit_carries_env_identity_without_global_config(
+    _scrubbed_git: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _scrubbed_git
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Env Author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "author@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Env Committer")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "committer@example.invalid")
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    assert run_slice._git(["add", "a.txt"], repo).returncode == 0
+    done = run_slice._git(["commit", "-qm", "x"], repo)
+    assert done.returncode == 0, done.stderr
+    shown = run_slice._git(["log", "-1", "--format=%an <%ae>|%cn <%ce>"], repo)
+    assert shown.stdout.strip() == (
+        "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+    )
+
+
+def test_git_keeps_the_hosts_global_identity_and_ignores(
+    _scrubbed_git: Path,
+) -> None:
+    repo = _scrubbed_git
+    home = Path(os.environ["HOME"])
+    ignores = home / "ignore-global"
+    ignores.write_text("*.junk\n", encoding="utf-8")
+    (home / ".gitconfig").write_text(
+        "[user]\n\tname = Global Person\n\temail = global@example.invalid\n"
+        f"[core]\n\texcludesFile = {ignores}\n",
+        encoding="utf-8",
+    )
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    (repo / "b.junk").write_text("b\n", encoding="utf-8")
+    assert run_slice._git(["add", "-A"], repo).returncode == 0
+    done = run_slice._git(["commit", "-qm", "x"], repo)
+    assert done.returncode == 0, done.stderr
+    run_slice._git(["status", "--porcelain"], repo)
+    shown = run_slice._git(["log", "-1", "--format=%an <%ae>|%cn <%ce>"], repo)
+    assert shown.stdout.strip() == (
+        "Global Person <global@example.invalid>|Global Person <global@example.invalid>"
+    )
+    tracked = run_slice._git(["ls-files"], repo).stdout.split()
+    assert tracked == ["a.txt"]  # the global excludes file still applies

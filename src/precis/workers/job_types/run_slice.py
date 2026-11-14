@@ -251,6 +251,7 @@ from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
 from precis.workers import factory_git as _factory_git
+from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers.job_types import _lane_decide, _run_features
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
@@ -818,11 +819,69 @@ def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
 # ── Seams (tests monkeypatch these) ────────────────────────────────
 
 
+#: Non-secret names ``_git`` keeps from the worker's env; ``LC_*`` and
+#: :data:`_GIT_AUTH_PASSTHROUGH` (TLS and proxy) ride along. An allowlist
+#: of its own, not ``land_slice.land_env``: land_slice imports this module.
+#: ``SSH_AUTH_SOCK`` is a socket path, not a key; the identity names let a
+#: unit pin the worker commit's author.
+_GIT_BASE_ENV_NAMES: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "TMPDIR",
+    "TZ",
+    "XDG_CONFIG_HOME",
+    "SSH_AUTH_SOCK",
+    "GIT_SSH_COMMAND",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """The env :func:`_git` runs under: the non-secret names of
+    ``os.environ`` (:data:`_GIT_BASE_ENV_NAMES`, ``LC_*``,
+    :data:`_GIT_AUTH_PASSTHROUGH`) and nothing else, so no token, DSN or
+    command-scope ``GIT_CONFIG_*`` entry reaches a spawned child.
+
+    Unlike ``land_slice._git`` the system and global git config stay
+    visible. These calls carry no credential, so a planted config has
+    nothing to steal that the repo's own (session-writable) config could
+    not already reach; and the host's identity, global ignores,
+    ``safe.directory`` and URL rewrites keep working as before."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if v
+        and (
+            k in _GIT_BASE_ENV_NAMES
+            or k in _GIT_AUTH_PASSTHROUGH
+            or k.startswith("LC_")
+        )
+    }
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit."""
+    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit.
+
+    Never the worker's ambient env (td659522, gr659929): the repos and
+    worktrees these calls touch are writable by a builder session, so a
+    planted hook, ``core.fsmonitor`` program or filter would meet the
+    factory token and the DSN in a spawned child's env. The env is
+    :func:`_git_env` and hooks are off
+    (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). Credentialed
+    network git is :func:`_git_auth`."""
     return subprocess.run(
-        ["git", *args],
+        ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),
+        env=_git_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
