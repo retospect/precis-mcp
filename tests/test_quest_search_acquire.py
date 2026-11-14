@@ -517,6 +517,12 @@ class _StepStore(FakeStore):
     def add_tag(self, *a: Any, **kw: Any) -> None:
         return None
 
+    def get_ref(self, *, kind: str, id: int, **kw: Any) -> Any:
+        # A titled stand-in — candidates pass the gate's mandatory
+        # no-metadata rule; the quest's empty meta means no lit_gate
+        # config (the term gate stays off).
+        return SimpleNamespace(id=id, kind=kind, title=f"{kind} {id}", meta={})
+
 
 class TestRunSearchStepLocalFirst:
     @pytest.fixture(autouse=True)

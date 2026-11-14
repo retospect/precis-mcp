@@ -571,23 +571,27 @@ count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
 
 **Two filters sit between a hit and its `serves` edge** (gr592951). A
-candidate with neither a title nor an abstract is never linked. And when
+candidate with neither a title nor an abstract is never linked — the
+rule is verified, not assumed, so a candidate whose ref can't be read
+is deferred (`unreadable — deferred`), not linked. And when
 the quest carries `meta.lit_gate` term lists (`{"host": ["Pd", "Pd(111)"],
 "reaction": ["NO", "NH3", "nitric oxide reduction"]}` — set via
 `edit(kind='quest', meta={...})`; unset = no gate), a paper whose
 title+abstract names no term from a configured list is rejected. The
 logbook line names the verdict per candidate —
 `lit-search: "…" → linked pa1; seen, not linked: pa2 (no host term), pa3
-(no title/abstract)` — and every fifth rejected ref id links anyway,
-flagged `(sampled past gate)`, so cheap triage is not the only discovery
-path. A gate rejection is ephemeral; it records no durable verdict. The
+(no title/abstract)` — and every fifth rejected ref id is flagged
+`(no host term — sampled for review)` instead: never auto-linked, but
+named for a later tick to weigh through `judgments`, so cheap triage is
+not the only discovery path. A gate rejection is ephemeral; it records
+no durable verdict. The
 durable channel is the tick's `judgments` field (0–8/tick): a `not-useful`
 verdict writes a `considered` row that holds the source out of every
 later lit-search leg until the striving or the source changes — inspect
-it at `get(kind='quest', id=N, view='considerations')`. The weekly "new
-literature" line — the digest the weekly report renders once
-`view='literature'` ships (gr592952) — lists only acquisitions and
-gate-passing links, so a rejected candidate never reaches it.
+it at `get(kind='quest', id=N, view='considerations')`. And once a week
+the step appends a `new literature (last 7d): acquired M; linked pa…`
+digest line summing only the window's acquisitions and gate-passing
+links — a rejected candidate never reaches it.
 
 ## A research tick: compute and the frontier
 
@@ -667,7 +671,8 @@ that's wedged.
   candidate's title+abstract must name (at least one per configured
   list) to link `serves`. Unset = no gate. Off-topic rejections are
   named in the lit-search line's `seen, not linked:` tail; every fifth
-  links anyway as a `sampled past gate` probe. Write the lists from the
+  is flagged `— sampled for review` for a later `judgments` verdict
+  (never auto-linked). Write the lists from the
   striving's own rubric — host metal/facet + dopants on one axis,
   reaction family on the other.
 - **`quest_body`** — which tick body runs the loop. Unset (the default) is

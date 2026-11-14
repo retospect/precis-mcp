@@ -2648,7 +2648,10 @@ you weighed — the durable form of "seen, not linked": `not-useful` holds \
 the source out of every later lit-search leg until the striving or the \
 source changes (its ledger: `get(kind='quest', id=<this quest>, \
 view='considerations')`), and `useful` re-opens a source you judged \
-before. Every judgment needs `reason` — a reasonless entry is dropped. \
+before. Lit-search lines flag `(… — sampled for review)` candidates the \
+cheap gate rejected: weigh those first and verdict the ones you can — \
+a sampled candidate is never auto-linked, so your judgment IS its \
+re-check. Every judgment needs `reason` — a reasonless entry is dropped. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
@@ -2913,7 +2916,10 @@ you weighed — the durable form of "seen, not linked": `not-useful` holds \
 the source out of every later lit-search leg until the striving or the \
 source changes (its ledger: `get(kind='quest', id=<this quest>, \
 view='considerations')`), and `useful` re-opens a source you judged \
-before. Every judgment needs `reason` — a reasonless entry is dropped. \
+before. Lit-search lines flag `(… — sampled for review)` candidates the \
+cheap gate rejected: weigh those first and verdict the ones you can — \
+a sampled candidate is never auto-linked, so your judgment IS its \
+re-check. Every judgment needs `reason` — a reasonless entry is dropped. \
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Aim for roughly {narrative_word_target} \

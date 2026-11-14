@@ -9,7 +9,11 @@ filters now sit between a hit and its edge:
 * **The no-metadata rule** — a candidate with neither a title nor an
   abstract is never linked (:func:`ref_has_metadata`). An S2 acquire
   stub minted before ``fetch_oa`` fills it has nothing to judge; the
-  logbook line names it ``(no title/abstract)``.
+  logbook line names it ``(no title/abstract)``. A candidate whose ref
+  **cannot be read** (:data:`UNREADABLE`, a store blip) is *deferred* —
+  not linked this run, named ``(unreadable — deferred)`` in the line,
+  free to link on a later read. The mandatory rule is verified, not
+  assumed: an unreadable candidate never passes it on suspicion.
 * **The term gate** — :func:`gate_verdict` matches a paper candidate's
   title+abstract against the quest's ``meta.lit_gate`` term lists
   (``{"host": [...], "reaction": [...]}`` — host metal/facet and
@@ -27,10 +31,12 @@ gr626718/me626852). A source the tick judges off-topic gets its durable
 verdict through the payload's ``judgments`` channel
 (:func:`precis.quest.search.apply_judgments`); the ``considered``
 ledger then holds it out of every later leg via
-:func:`precis.quest.search.judged_out`. And because cheap triage is not
-the only discovery path, every :data:`GATE_SAMPLE_MODULUS`-th rejected
-ref id links anyway, flagged ``sampled past gate`` — a deterministic
-sample of unflagged pairs under the same per-query link budget.
+:func:`precis.quest.search.judged_out`. And because cheap triage must
+not be the only discovery path, every
+:data:`GATE_SAMPLE_MODULUS`-th rejected ref id is flagged ``— sampled
+for review`` in the line — never linked past the gate, but named for
+the next tick to weigh through ``judgments``. Sampling triggers
+further review; it does not bypass a required relevance gate.
 """
 
 from __future__ import annotations
@@ -50,26 +56,30 @@ log = logging.getLogger(__name__)
 LIT_GATE_META_KEY = "lit_gate"
 
 #: Deterministic cheap-triage sample rate: every Nth gate-rejected ref
-#: id links anyway ("sampled past gate" in the line), so the gate can't
-#: quietly starve discovery of adjacent literature.
+#: id is flagged ``— sampled for review`` in the line (never linked
+#: past the gate), so a later tick weighs it through the ``judgments``
+#: channel and the gate can't quietly starve discovery of adjacent
+#: literature.
 GATE_SAMPLE_MODULUS = 5
 
 #: Sentinel for "the candidate's ref could not be read" — distinct from
-#: ``None`` (the ref resolved to nothing). An unreadable candidate
-#: degrades to pass/has-metadata rather than blocking the link loop on
-#: a store blip: a read failure excludes nothing, matching
+#: ``None`` (the ref resolved to nothing). An unreadable candidate is
+#: *deferred*, never linked: the mandatory no-metadata rule is
+#: verified, not assumed, so a store blip must not smuggle a
+#: titleless/abstractless paper past it. Deferral excludes nothing —
+#: the candidate is simply judged again on a later run, matching
 #: ``judged_out``'s miss-not-break contract.
-_UNREADABLE: Any = object()
+UNREADABLE: Any = object()
 
 
 def candidate_ref(store: Store, kind: str, ref_id: int) -> Any:
     """The candidate's ref — ``None`` when it resolves to nothing, or
-    the :data:`_UNREADABLE` sentinel on a store error."""
+    the :data:`UNREADABLE` sentinel on a store error."""
     try:
         return store.get_ref(kind=kind, id=ref_id)
     except Exception:
         log.debug("lit gate: get_ref failed for %s ref %s", kind, ref_id, exc_info=True)
-        return _UNREADABLE
+        return UNREADABLE
 
 
 def gate_terms(store: Store, quest_id: int) -> dict[str, list[str]]:
@@ -118,11 +128,9 @@ def _abstract(store: Store, ref: Ref) -> str:
 def ref_has_metadata(store: Store, ref: Any) -> bool:
     """The no-metadata rule's unit: the candidate carries a title or an
     abstract. ``None`` (no such ref) is metadata-less by definition;
-    :data:`_UNREADABLE` degrades to True — a store blip is not a reason
-    to drop a hit."""
-    if ref is _UNREADABLE:
-        return True
-    if ref is None:
+    :data:`UNREADABLE` is False too — the rule is mandatory, so an
+    unreadable candidate defers rather than linking unverified."""
+    if ref is UNREADABLE or ref is None:
         return False
     if (ref.title or "").strip():
         return True
@@ -132,7 +140,7 @@ def ref_has_metadata(store: Store, ref: Any) -> bool:
 def candidate_text(store: Store, ref: Any) -> str:
     """Title + abstract — the surface the term gate matches (the same
     snippet depth the tick's served-literature list shows)."""
-    if ref is None or ref is _UNREADABLE:
+    if ref is None or ref is UNREADABLE:
         return ""
     return "\n".join(p for p in [(ref.title or "").strip(), _abstract(store, ref)] if p)
 
@@ -163,24 +171,27 @@ def gate_verdict(store: Store, quest_id: int, ref_id: int) -> tuple[bool, str]:
     """The pre-link term gate on one paper candidate → ``(pass, reason)``.
 
     No ``meta.lit_gate`` terms configured → pass (the gate is opt-in).
-    An unreadable candidate → pass (a store error never becomes a
-    rejection). Otherwise the title+abstract must carry a host term and
-    a reaction term, reported as ``no host term`` / ``no reaction
-    term`` when missing — the one-line rejection reason the lit-search
-    logbook line names per candidate.
+    An unreadable candidate → ``(False, "candidate unreadable —
+    deferred")``: a store blip is no verdict, so the link is deferred
+    rather than either approved or rejected. Otherwise the
+    title+abstract must carry a host term and a reaction term, reported
+    as ``no host term`` / ``no reaction term`` when missing — the
+    one-line rejection reason the lit-search logbook line names per
+    candidate.
     """
     terms = gate_terms(store, quest_id)
     if not terms:
         return True, f"no {LIT_GATE_META_KEY} terms configured"
     ref = candidate_ref(store, "paper", ref_id)
-    if ref is _UNREADABLE:
-        return True, "candidate unreadable — gate skipped"
+    if ref is UNREADABLE:
+        return False, "candidate unreadable — deferred"
     return check_terms(candidate_text(store, ref), terms)
 
 
 __all__ = [
     "GATE_SAMPLE_MODULUS",
     "LIT_GATE_META_KEY",
+    "UNREADABLE",
     "candidate_ref",
     "candidate_text",
     "check_terms",

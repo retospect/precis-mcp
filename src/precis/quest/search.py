@@ -65,6 +65,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.quest import lit_gate
@@ -596,15 +597,22 @@ def run_search_step(
 
     **Pre-link relevance gate** (gr592951): between the floor and the
     ``serves`` edge sits :mod:`precis.quest.lit_gate` — a candidate
-    with no title and no abstract is never linked, and (when the quest
-    carries ``meta.lit_gate`` term lists) a paper missing a host or
-    reaction term is rejected with the reason the logbook line names
-    per candidate (``seen, not linked: pa<N> (<reason>)``, cap
+    with no title and no abstract is never linked, one whose ref can't
+    be read is deferred (``unreadable — deferred`` — the mandatory rule
+    is verified, never assumed), and (when the quest carries
+    ``meta.lit_gate`` term lists) a paper missing a host or reaction
+    term is rejected with the reason the logbook line names per
+    candidate (``seen, not linked: pa<N> (<reason>)``, cap
     :data:`SEEN_NOT_LINKED_CAP`); every
-    :data:`lit_gate.GATE_SAMPLE_MODULUS`-th rejection links anyway,
-    flagged ``sampled past gate``. Gate failures record no
+    :data:`lit_gate.GATE_SAMPLE_MODULUS`-th rejection is flagged
+    ``— sampled for review`` — *named for the next tick's* ``judgments``
+    *verdict, never linked past the gate*. Gate failures record no
     ``considered`` row — durable rejection is the ``judgments``
     payload's job (:func:`apply_judgments`).
+
+    Each lit-search entry stamps ``lit_linked``/``lit_acquired`` meta so
+    :func:`weekly_literature_line` can sum the week's gate-passing links
+    and acquisitions into one ``new literature`` digest line.
     """
     search = search_fn or _default_paper_search
     quest_tag = Tag.open(quest_tag_value(quest_id, store))
@@ -673,15 +681,18 @@ def run_search_step(
         ]
         # The pre-link relevance gate (gr592951): every candidate is
         # classified before the MAX_LINK_PER_QUERY slice — a ref with no
-        # title and no abstract is never linked ("no title/abstract"), a
-        # paper that misses the quest's meta.lit_gate term lists is
-        # rejected with its one-line reason (the gate is opt-in and only
-        # papers are gated — findings/concepts are the quest's own graph),
-        # and every GATE_SAMPLE_MODULUS-th rejection links anyway, flagged
-        # "sampled past gate" so cheap triage isn't the only discovery
-        # path. Gate failures write NO considered row — durable rejection
-        # is the tick's `judgments` channel, not this cheap triage.
-        passing: list[tuple[int, bool]] = []  # (ref_id, sampled-past-gate)
+        # title and no abstract is never linked ("no title/abstract"), one
+        # whose ref can't be read is DEFERRED ("unreadable — deferred":
+        # the mandatory rule is verified, not assumed, so a store blip
+        # links nothing), a paper that misses the quest's meta.lit_gate
+        # term lists is rejected with its one-line reason (the gate is
+        # opt-in and only papers are gated — findings/concepts are the
+        # quest's own graph), and every GATE_SAMPLE_MODULUS-th rejection
+        # is flagged "— sampled for review": named for the next tick's
+        # `judgments` verdict, NEVER linked past the required gate.
+        # Gate failures write NO considered row — durable rejection is
+        # the tick's `judgments` channel, not this cheap triage.
+        passing: list[int] = []
         rejects: list[tuple[int, str]] = []
         for rid in above_floor:
             # A search_fn that ignores its exclude list (a legacy test
@@ -691,23 +702,24 @@ def run_search_step(
                 continue
             kind = kinds.get(rid, "paper")
             ref = lit_gate.candidate_ref(store, kind, rid)
+            if ref is lit_gate.UNREADABLE:
+                rejects.append((rid, "unreadable — deferred"))
+                continue
             if not lit_gate.ref_has_metadata(store, ref):
                 rejects.append((rid, "no title/abstract"))
                 continue
-            sampled = False
             if kind == "paper" and gate:
                 ok, why = lit_gate.check_terms(
                     lit_gate.candidate_text(store, ref), gate
                 )
                 if not ok:
                     if rid % lit_gate.GATE_SAMPLE_MODULUS == 0:
-                        sampled = True
-                    else:
-                        rejects.append((rid, why))
-                        continue
-            passing.append((rid, sampled))
-        linked: list[tuple[int, bool]] = []
-        for rid, sampled in passing[:MAX_LINK_PER_QUERY]:
+                        why = f"{why} — sampled for review"
+                    rejects.append((rid, why))
+                    continue
+            passing.append(rid)
+        linked: list[int] = []
+        for rid in passing[:MAX_LINK_PER_QUERY]:
             store.add_link(
                 src_ref_id=rid,
                 dst_ref_id=quest_id,
@@ -716,16 +728,18 @@ def run_search_step(
             )
             store.add_tag(rid, quest_tag, set_by="system")
             existing.add(rid)
-            linked.append((rid, sampled))
+            linked.append(rid)
         linked_total += len(linked)
         sources = _sources_clause(report)
         seen_not = _seen_not_linked(rejects, kinds)
+        linked_handles = [_handle(kinds.get(rid, "paper"), rid) for rid in linked]
+        lit_meta = {
+            "signal": _LIT_SEARCH_SIGNAL,
+            "lit_linked": linked_handles,
+            "lit_acquired": report.acquired if report is not None else 0,
+        }
         if linked:
-            handles = ", ".join(
-                _handle(kinds.get(rid, "paper"), rid)
-                + (" (sampled past gate)" if sampled else "")
-                for rid, sampled in linked
-            )
+            handles = ", ".join(linked_handles)
             append_entry(
                 store,
                 quest_id,
@@ -735,7 +749,7 @@ def run_search_step(
                 ),
                 entry_type="result",
                 by=by,
-                extra_meta={"signal": "lit-search"},
+                extra_meta=lit_meta,
             )
             notes.append(f"{query[:40]}: +{len(linked)}")
         else:
@@ -748,11 +762,129 @@ def run_search_step(
                 ),
                 entry_type="observation",
                 by=by,
-                extra_meta={"signal": "lit-search"},
+                extra_meta=lit_meta,
             )
             notes.append(f"{query[:40]}: 0")
 
+    if queries_run:
+        try:
+            weekly_literature_line(store, quest_id)
+        except Exception:
+            log.warning(
+                "quest %s: weekly literature line failed", quest_id, exc_info=True
+            )
+
     return SearchStep(queries_run=queries_run, papers_linked=linked_total, notes=notes)
+
+
+# ── the weekly "new literature" digest (gr592951 item d) ─────────────
+#
+# Once a week the step appends ONE logbook line summing the window's
+# lit-search activity: acquisitions plus only the links that passed the
+# relevance gate — a rejected candidate never reaches it. Entries carry
+# `signal`/`lit_linked`/`lit_acquired` meta, so the digest reads stamped
+# facts, not logbook prose. Until gr592952's view='literature' ships this
+# IS the gate-aware digest; that view can read the same meta.
+
+
+#: ``chunk.meta['signal']`` value stamped on every per-query lit-search
+#: logbook entry (with ``lit_linked``/``lit_acquired`` beside it) — the
+#: digest's read key.
+_LIT_SEARCH_SIGNAL = "lit-search"
+
+#: ``chunk.meta['signal']`` value stamped on the weekly digest itself, so
+#: the due-check finds the last one without parsing prose.
+_LIT_DIGEST_SIGNAL = "lit-search-weekly"
+
+#: The digest's cadence + window, in days.
+LIT_DIGEST_DAYS = 7
+
+
+def _as_utc(ts: Any) -> datetime | None:
+    """A tz-aware UTC datetime for a chunk ``created_at`` (naive stamps
+    read as UTC); ``None`` for anything that isn't a datetime."""
+    if not isinstance(ts, datetime):
+        return None
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+
+
+def weekly_literature_line(store: Store, quest_id: int, *, by: str = "system") -> bool:
+    """Append the weekly ``new literature`` digest when one is due → True
+    when written.
+
+    Due = the newest ``lit-search-weekly`` digest is older than
+    :data:`LIT_DIGEST_DAYS` (or none exists) AND the trailing window
+    holds at least one stamped ``lit-search`` entry — a quiet quest
+    writes nothing. The line reads
+    ``new literature (last 7d): acquired M; linked pa…, fi…`` — the
+    window's acquisitions plus only the links that passed the gate.
+    Entries stamped before the gate shipped carry no ``lit_linked``/
+    ``lit_acquired`` meta and simply don't count. A logbook read or
+    append failure returns False — never a broken search step.
+    """
+    try:
+        chunks = [
+            b
+            for b in store.chunks.list_chunks_for_ref(quest_id)
+            if b.chunk_kind == "quest_log"
+        ]
+    except Exception:
+        log.warning(
+            "quest %s: weekly literature line's logbook read failed",
+            quest_id,
+            exc_info=True,
+        )
+        return False
+    now = datetime.now(UTC)
+    since = now - timedelta(days=LIT_DIGEST_DAYS)
+    digests = [
+        ts
+        for b in chunks
+        if (b.meta or {}).get("signal") == _LIT_DIGEST_SIGNAL
+        for ts in [_as_utc(getattr(b, "created_at", None))]
+        if ts is not None
+    ]
+    if digests and max(digests) > since:
+        return False
+    acquired = 0
+    linked: list[str] = []
+    activity = False
+    for b in chunks:
+        meta = b.meta or {}
+        if meta.get("signal") != _LIT_SEARCH_SIGNAL:
+            continue
+        # The judgments-summary row carries the same signal but no
+        # per-query keys — it is bookkeeping, not lit-search activity.
+        if "lit_linked" not in meta and "lit_acquired" not in meta:
+            continue
+        ts = _as_utc(getattr(b, "created_at", None))
+        if ts is not None and ts < since:
+            continue
+        activity = True
+        acquired += int(meta.get("lit_acquired") or 0)
+        for h in meta.get("lit_linked") or []:
+            if h not in linked:
+                linked.append(h)
+    if not activity:
+        return False
+    tail = f"; linked {', '.join(linked)}" if linked else "; no new links"
+    try:
+        append_entry(
+            store,
+            quest_id,
+            text=f"new literature (last {LIT_DIGEST_DAYS}d): acquired {acquired}{tail}",
+            entry_type="observation",
+            by=by,
+            extra_meta={"signal": _LIT_DIGEST_SIGNAL},
+        )
+    except Exception:
+        log.warning(
+            "quest %s: weekly literature line append failed",
+            quest_id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 # ── the tick's verdict channel (gr592951 slice 5) ────────────────────
