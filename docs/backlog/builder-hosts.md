@@ -25,8 +25,8 @@ marked UNVERIFIED. Vendor CLI linux-arm64 claims are web-verified
   `/proc/meminfo`+`nproc` on Linux); `docker-disk.sh` `colima ssh` is a
   fallback leg only. Gate slots live in the shared git common dir → already
   per-host.
-- Deploy defaults hard-code `/Users/deploy`: `precis_fix_repo_dir` default
-  `/Users/deploy/precis-fix-repo` in `20b/20d/20e/20g` playbooks;
+- Deploy defaults hard-code `/Users/deploy`: `precis_fix_repo_dir` default <!-- home-path: allow — the deploy user's fixed home on every host -->
+  `/Users/deploy/precis-fix-repo` in `20b/20d/20e/20g` playbooks; <!-- home-path: allow — same -->
   `provision.yml` (`precis_worker_agent`) gates nearly every task on
   `os_family == "darwin"` including the fix-repo clone (line ~202-217),
   pgpass verify, colima LaunchDaemon, mactex, `~/.claude/mcp.json`.
@@ -62,7 +62,7 @@ marked UNVERIFIED. Vendor CLI linux-arm64 claims are web-verified
 
 - `20g-precis-worker-slices.yml`: one launchd unit (service_unit role)
   `precis worker --only job_ssh_node --only plan_tick --batch-size 1`, env
-  `/opt/precis/venv`, `HOME=/Users/deploy`, `PGPASSFILE`, `PRECIS_DEVIN_BIN`,
+  `/opt/precis/venv`, `HOME=/Users/deploy`, `PGPASSFILE`, `PRECIS_DEVIN_BIN`, <!-- home-path: allow — same -->
   `DOCKER_HOST=unix://~/.colima/docker.sock`, DSN `agent_rw@pgbouncer`,
   cost caps, `PRECIS_SLICE_ROOT` (default `precis_fix_repo_dir`), embedder,
   optional `PRECIS_MCP_SLICE_TOKEN_DIR` + `PRECIS_CLAUDE_BIN` wrapper
@@ -186,8 +186,8 @@ last, conservative cap.
   # the default '' fails loud there; set, the tunnel leg no-ops.
   precis_builder_mcp_host: <mcp-host-inventory-name>
   # Optional: per-OS checkout path overrides (defaults cover both).
-  # precis_fix_repo_dir: /home/deploy/precis-fix-repo   # linux
-  # precis_fix_repo_dir: /Users/deploy/precis-fix-repo  # darwin
+  # precis_fix_repo_dir: /home/deploy/precis-fix-repo   # linux   # home-path: allow — fixed per-OS default
+  # precis_fix_repo_dir: /Users/deploy/precis-fix-repo  # darwin   # home-path: allow — fixed per-OS default
   ```
 - host_vars per host (canary): `agent_cli_pin_*` pins if they diverge
   from group pins. The per-host cap is NOT an ansible var — it is a

@@ -48,6 +48,48 @@
   become: true
   notify: restart pgbouncer
 
+# Refuse, never silently drop (gr678654 want 1, gr680328 want 3). On
+# 2026-11-14 a deploy from an overlay that had lost precis_system/precis_owner
+# from postgres_roles re-rendered this userlist without them and every unit
+# logging in as precis_system lost DB auth for four hours. The variable name
+# is ASSEMBLED per item ('vault_' ~ password_var), never written literally —
+# the lanes-deny scan flags literal credential variable names, and `_var in
+# vars` tests presence without resolving the secret, so the message stays
+# visible (no no_log needed).
+- name: Refuse to render userlist.txt while a role in postgres_roles has no password var
+  ansible.builtin.assert:
+    that:
+      - "_var in vars"
+    fail_msg: >-
+      postgres_roles names {{ item.name }} but {{ _var }} is undefined — the
+      render would drop the role from pgbouncer and every unit logging in as
+      {{ item.name }} would lose DB auth (2026-11-14, gr678654). Define it in
+      the overlay vault (ansible-vault encrypt_string, tr -d '\n' first —
+      gr583810) or remove the role from postgres_roles.
+  vars:
+    _var: "{{ 'vault_' ~ item.password_var }}"
+  loop: "{{ postgres_roles | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [roles]
+
+- name: Refuse to render userlist.txt while the db-own roles are missing from postgres_roles
+  ansible.builtin.assert:
+    that:
+      - "'precis_system' in _role_names"
+      - "'precis_ingress' in _role_names"
+      - "'precis_owner' in _role_names"
+    fail_msg: >-
+      precis_db_own_cutover_done is true but postgres_roles ({{ _role_names | join(', ') }})
+      lacks one of precis_system / precis_ingress / precis_owner — the units
+      whose DSN uses the missing role would lose DB auth (2026-11-14,
+      gr678654). Add { name: <role>, password_var: pg_<role>_pass } with its
+      vault password to the overlay.
+  vars:
+    _role_names: "{{ postgres_roles | default([]) | map(attribute='name') | list }}"
+  when: precis_db_own_cutover_done | default(false) | bool
+  tags: [roles]
+
 - name: Deploy userlist.txt
   ansible.builtin.template:
     src: userlist.txt.j2

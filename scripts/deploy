@@ -28,6 +28,13 @@
 #                     selects only login/grant/userlist tasks — it can never
 #                     touch postgresql.conf/pg_hba or reach a restart
 #                     handler, so it is safe to run mid-deploy.
+#      overlay-guard — (gr680328) before role-sync: the private overlay repo's
+#                     HEAD must not lag or diverge from its deploy-helper
+#                     remote (fetch + compare; ahead or dirty only warns;
+#                     PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides a die).
+#      owner-preflight — (gr678404) before role-sync: the owner of
+#                     public._migrations on prod must agree with the overlay's
+#                     precis_db_own_cutover_done; an unreadable prod warns.
 #   2. deploy       — run the redeploy playbook for the ref.
 #   3. report       — the play's final debug task prints installed sha +
 #                     bounced daemons; a `failed=`/`unreachable=` on a
@@ -1610,12 +1617,102 @@ _roles_synced_stamp() {
         printf ' roles_synced=1'
     fi
 }
+
+# ── 1-rb. overlay lag guard + owner preflight (gr680328, gr678404) ────────
+# 2026-11-14: a deploy launched from a Mac whose private overlay had lagged
+# its deploy-helper remote for two months rendered pgpass and the pgbouncer
+# userlist without precis_system (the role lived only in the helper's copy),
+# then tried to migrate as agent_rw after the db-own cutover had made
+# precis_owner the owner of public._migrations. Both facts were knowable
+# before any play ran. A guard dies on a PROVABLE mismatch and warns on
+# anything it cannot read — an unreachable helper or a failed prod read never
+# blocks a deploy by itself. Both run before role-sync, which is the first
+# step that renders credentials.
+#
+# overlay-guard: the overlay dir is a git repo with a `deploy-helper` remote
+# (melchior's bare helper, the copy the factory's fix lane deploys from).
+#   HEAD == deploy-helper/main            → ok
+#   HEAD strict ancestor (lags)           → die (PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 warns instead)
+#   deploy-helper/main ancestor (ahead)   → warn: push so the fix lane matches
+#   diverged                              → die (same override)
+#   dirty tracked files                   → warn: this deploy renders them
+#   no repo / no remote / fetch failed    → skipped, said once
+_deploy_overlay_lag_guard() {
+    local dir="${OVERLAY_DIR:-}" head helper
+    [[ -n "$dir" ]] || return 0
+    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    if ! git -C "$dir" remote get-url deploy-helper >/dev/null 2>&1; then
+        say "overlay-guard: ${dir} has no deploy-helper remote — lag check skipped"
+        return 0
+    fi
+    if ! GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o ConnectTimeout=15 -o BatchMode=yes" \
+            git -C "$dir" fetch -q deploy-helper 2>/dev/null; then
+        say "WARNING overlay-guard: could not fetch deploy-helper — lag check skipped (helper unreachable?)"
+        return 0
+    fi
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)" || return 0
+    if ! helper="$(git -C "$dir" rev-parse deploy-helper/main 2>/dev/null)"; then
+        say "overlay-guard: deploy-helper has no main branch — lag check skipped"
+        return 0
+    fi
+    if [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        say "WARNING overlay-guard: the overlay working tree has uncommitted edits — this deploy renders them; commit and push them to deploy-helper so the fix lane's copy matches"
+    fi
+    [[ "$head" == "$helper" ]] && return 0
+    if git -C "$dir" merge-base --is-ancestor "$head" "$helper" 2>/dev/null; then
+        if [[ -n "${PRECIS_DEPLOY_ALLOW_STALE_OVERLAY:-}" ]]; then
+            say "WARNING overlay-guard: overlay HEAD ${head:0:9} lags deploy-helper/main ${helper:0:9} — allowed by PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
+            return 0
+        fi
+        die "overlay-guard: the overlay at ${dir} (HEAD ${head:0:9}) LAGS deploy-helper/main (${helper:0:9}) — a deploy would render stale roles and topology (2026-11-14, gr680328). Fast-forward it: git -C ${dir} merge --ff-only deploy-helper/main (reset --hard when the tree is meant to equal the helper). PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides."
+    fi
+    if git -C "$dir" merge-base --is-ancestor "$helper" "$head" 2>/dev/null; then
+        say "WARNING overlay-guard: overlay HEAD ${head:0:9} is ahead of deploy-helper/main ${helper:0:9} — push it (git -C ${dir} push deploy-helper HEAD:main) so melchior's fix-lane copy renders the same overlay"
+        return 0
+    fi
+    if [[ -n "${PRECIS_DEPLOY_ALLOW_STALE_OVERLAY:-}" ]]; then
+        say "WARNING overlay-guard: overlay HEAD ${head:0:9} and deploy-helper/main ${helper:0:9} have DIVERGED — allowed by PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
+        return 0
+    fi
+    die "overlay-guard: the overlay at ${dir} (HEAD ${head:0:9}) and deploy-helper/main (${helper:0:9}) have DIVERGED — reconcile first (gr680328 comment 4 is the worked example: take the helper as base, re-apply the local additions, push). PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1 overrides."
+}
+
+# owner-preflight: who owns public._migrations on prod must agree with the
+# overlay's precis_db_own_cutover_done (the flag picks the migrate DSN's
+# login — precis_owner when true, agent_rw otherwise). Read via prod-psql
+# --ro (the _db_migration_head pattern); an unreadable owner warns and
+# skips, never fails open as a refusal. Dies on either mismatch.
+_deploy_owner_preflight() {
+    local owner flag
+    [[ -x "${REPO_ROOT}/scripts/prod-psql" ]] || return 0
+    owner="$(PRECIS_PROD_PSQL_OPTS="-At" "${REPO_ROOT}/scripts/prod-psql" --ro \
+        "SELECT c.relowner::regrole::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = '_migrations'" 2>/dev/null \
+        | grep -E '^[a-z_][a-z0-9_]*$' | head -1 || true)"
+    if [[ -z "$owner" ]]; then
+        say "WARNING owner-preflight: could not read the owner of public._migrations via prod-psql — check skipped"
+        return 0
+    fi
+    _deploy_cutover_flag || _CUTOVER_FLAG=""
+    case "${_CUTOVER_FLAG:-}" in
+        [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1) flag=true ;;
+        *) flag=false ;;
+    esac
+    if [[ "$owner" == "precis_owner" && "$flag" != true ]]; then
+        die "owner-preflight: public._migrations on prod is owned by precis_owner (the db-own cutover has run) but the overlay does not declare precis_db_own_cutover_done: true — the migrate play would log in as agent_rw and refuse, after the pgpass/userlist renders had already run (2026-11-14, gr678404). Set precis_db_own_cutover_done: true plus the owner/ingress/system password vars in the overlay (docs/backlog/multi-user-overhaul.md §Owner DSN), then re-run."
+    fi
+    if [[ "$owner" != "precis_owner" && "$flag" == true ]]; then
+        die "owner-preflight: the overlay declares precis_db_own_cutover_done: true but public._migrations on prod is owned by ${owner} — the cutover has not run (or was rolled back); run scripts/db-own-cutover --apply first, or set the flag back to false."
+    fi
+    say "owner-preflight: public._migrations owner ${owner} agrees with precis_db_own_cutover_done=${flag}"
+}
 # END _deploy_role_sync
 export CLUSTER_INVENTORY="${OVERLAY_DIR:+${OVERLAY_DIR}/hosts.yml}"
 if [[ -f "${REPO_ROOT}/scripts/lib/pgb-host.sh" ]]; then
     # shellcheck source=scripts/lib/pgb-host.sh
     . "${REPO_ROOT}/scripts/lib/pgb-host.sh"
 fi
+_deploy_overlay_lag_guard
+_deploy_owner_preflight
 _deploy_role_sync
 
 # ── 1-pre. coverage map refresh (gr567471) ──────────────────────────────
