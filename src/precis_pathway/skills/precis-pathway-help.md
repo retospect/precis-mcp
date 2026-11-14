@@ -160,6 +160,17 @@ put(kind="pathway", id="no-nh3-pd", text="""...same config...""")
 Heavy backends run on the GPU nodes (the seed fan-out spreads across them); a real run takes minutes. Re-running an
 unchanged config is a cache hit (free); editing it recomputes only what changed.
 
+**Cost follows the number of NEB edges, not the hardware.** A small slab is
+overhead-bound, so a faster GPU does not help; cutting edges is the first
+lever on a slow run. `reagents=[] filters the network template` — an empty
+list withholds the adatoms from the steps, `None` keeps the full template.
+Recorded on the ammonia network: 9 NEB edges down to 2, hours down to
+minutes on a 36-atom slab. Budget two more multipliers: the quest NEB tier
+runs three multistarts per edge (about three times the per-edge cost), and
+the MLIP device — the engine defaults to `cpu` with no auto-detect, but a
+routed quest run is dispatched on `cuda` when the config omits
+`mlip.device`; an explicit `mlip.device` wins either way.
+
 ## Read the objective / what's the rate-limiting step / how good is this path
 
 ```python
@@ -701,7 +712,8 @@ Today's config knobs are the search space you explore:
 
 - `slab.element` — the catalyst surface metal.
 - `network` — `branching` (a DAG with competing routes), `oxidation`, or `auto`.
-- `reagents` — which adatoms (O\*, H\*) are available to the steps.
+- `reagents` — which adatoms (O\*, H\*) are available to the steps; `[]`
+  filters the template down (the speed lever above), `None` keeps it full.
 - `mlip.backend` — the fidelity: `emt` (free, qualitative — a smoke test only),
   `mace` / `fairchem` (real ML potentials, GPU), and higher DFT rungs.
 - `search.seeds` — more seeds → a real mean ± spread (use ≥3 for confidence).
