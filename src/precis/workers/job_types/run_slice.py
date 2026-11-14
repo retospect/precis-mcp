@@ -29,8 +29,9 @@ that holds the lane's credentials with ``params.target_node``):
   tree is reset to a clean checkout of its branch tip first
   (:func:`_reset_reused_worktree`, gr571311), after a dead git's stale
   ``index.lock`` there is reaped by land_slice's keep-on-doubt rule; a
-  live one fails the submit ``attempt_free`` (:func:`_clear_slice_index_lock`,
-  gr650484) — writes
+  live one is waited out briefly, then fails the submit
+  ``attempt_free`` (:func:`_clear_slice_index_lock`, gr650484, gr662077)
+  — writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -2406,9 +2407,11 @@ def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
 
 class _IndexLockWait(RuntimeError):
     """A reused slice tree's ``index.lock`` that a live (or unjudgeable)
-    git holds: an infra wait, not the build's failure (gr650484). Submit
-    gives the lease back with ``meta.attempt_free = "index-lock"``, so
-    no ``attempt:<n>`` and no ladder rung is spent on it."""
+    git still holds past the brief wait (gr650484): an infra wait, not
+    the build's failure. Submit gives the lease back with
+    ``meta.attempt_free = "index-lock"``, so no ``attempt:<n>`` and no
+    ladder rung is spent on it; the tick backs off a sustained run of
+    identical waits instead of re-minting every pass (gr662077)."""
 
 
 def _git_or_raise(args: list[str], tree: Path) -> None:
@@ -2430,10 +2433,12 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     (:func:`land_slice._index_lock_state`, scripts/reap-index-locks'
     rule): provably dead is removed with a job_event line — the judged
     inode/mtime rides to the unlink so a lock replaced after the verdict
-    is never unlinked; young, held open, a live git in the tree,
-    unjudgeable, or a mismatched replacement is kept and raises
-    :class:`_IndexLockWait`. No tree yet, or no gitdir git will name:
-    nothing to clear."""
+    is never unlinked. A live or unjudgeable lock gets the brief
+    :func:`land_slice.index_lock_wait_s` wait first (gr662077): the
+    previous attempt's own git often still holds the lock when the retry
+    lands, and finishing it beats bouncing back to the tick — only a
+    lock still held past the wait raises :class:`_IndexLockWait`. No
+    tree yet, or no gitdir git will name: nothing to clear."""
     if not tree.exists():
         return
     # land_slice imports this module at load time; the lazy import keeps
@@ -2444,15 +2449,27 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     if gitdir is None:
         return
     lock = gitdir / "index.lock"
-    state, judged = _ls._index_lock_state(lock, tree)
-    if state == "stale" and judged is not None:
-        _ls._reap_index_lock(ctx, lock, judged, who=NAME)
-    if lock.exists():
-        raise _IndexLockWait(
-            f"index.lock {lock} is kept — a live git holds it, it is younger "
-            f"than {_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
-            "ruled out; the reuse checkout waits for it"
-        )
+    deadline = time.monotonic() + _ls.index_lock_wait_s()
+    while True:
+        state, judged = _ls._index_lock_state(lock, tree)
+        if state == "absent":
+            return
+        if (
+            state == "stale"
+            and judged is not None
+            and _ls._reap_index_lock(ctx, lock, judged, who=NAME)
+        ):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _IndexLockWait(
+                f"index.lock {lock} was still held after "
+                f"{_ls.index_lock_wait_s():.0f}s — a live git owns the "
+                "checkout, it is younger than "
+                f"{_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
+                "ruled out; the reuse checkout waits for it"
+            )
+        time.sleep(min(1.0, remaining))
 
 
 def _reset_reused_worktree(tree: Path, branch: str) -> None:

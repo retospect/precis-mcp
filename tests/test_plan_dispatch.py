@@ -1351,6 +1351,95 @@ def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def _index_lock_job(store: Store, task: int) -> int:
+    return _failed_job(
+        store,
+        task,
+        "run_slice: index.lock is kept — a live git holds it",
+        meta={"attempt_free": "index-lock"},
+    )
+
+
+def test_identical_free_failures_back_off_then_recover(store: Store) -> None:
+    """gr662077: a sustained run of identical ``attempt_free`` failures
+    backs off exponentially instead of re-minting a doomed job every
+    tick — the first repeats re-queue at once, then the mint waits out
+    the hold and recovers on its own."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    t0 = datetime.now(UTC)
+    # Under the grace the re-mint stays immediate.
+    for _ in range(pd.FREE_RUN_GRACE - 1):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store, now=t0)
+    assert (res.dispatched, res.asks) == (1, 0)
+    # The re-mint dies the same way: the run hits the grace and the next
+    # mint waits out the backoff.
+    newest, _ = _jobs_under(store, task)[-1]
+    _set_job_status(store, newest, "failed")
+    store.stamp_ref_meta(newest, {"attempt_free": "index-lock"})
+    res = pd.run_pass(store, now=t0)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert any("index-lock" in n and "held" in n for n in res.notes)
+    # Past the backoff the node re-dispatches on its own.
+    res = pd.run_pass(store, now=t0 + pd.FREE_BACKOFF_BASE + timedelta(seconds=30))
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_free_run_resets_on_a_different_reason(store: Store) -> None:
+    """The run counts only IDENTICAL free reasons (gr662077): a
+    different ``attempt_free`` interleaved restarts the count."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for reason in ("index-lock", "lane-wait", "index-lock", "lane-wait"):
+        _failed_job(store, task, "f", meta={"attempt_free": reason})
+    # The newest tail run is just 1 — under the grace, the re-mint is
+    # immediate.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_free_run_breaks_on_a_real_attempt(store: Store) -> None:
+    """The run is only the consecutive tail (gr662077): a real failed
+    attempt between identical free failures ends it — a build that got
+    far enough to burn an attempt is a different failure class."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.FREE_RUN_GRACE):
+        _index_lock_job(store, task)
+    _failed_job(store, task, "build red on the diff")
+    _index_lock_job(store, task)
+    # The tail run is 1 — under the grace the re-mint is immediate.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_identical_free_failures_cap_to_a_coordinator_ask(
+    store: Store,
+) -> None:
+    """gr662077: at :data:`FREE_RUN_CAP` identical free failures the
+    node parks behind a coordinator ask — a wedged holder is a human
+    call, and closing the ask re-arms the node."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.FREE_RUN_CAP):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and "index-lock" in str(ask_ref.title)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert _blocked_by_ids(store, task) == [ask]
+    # Parked: nothing mints while the ask sits open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    # Answering re-arms the run — the next tick dispatches fresh.
+    _answer_ask(store, ask, "acknowledged")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
 @pytest.mark.parametrize("no_lanes", [False, True])
 def test_infra_red_land_relands_without_a_builder(
     store: Store, monkeypatch: pytest.MonkeyPatch, no_lanes: bool

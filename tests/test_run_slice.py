@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import types
 import urllib.error
@@ -311,6 +312,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return calls["push_note"].format(branch=branch)
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push_branch)
+    # run_slice's index-lock preflight resolves the reused tree's
+    # gitdir through ``land_slice._worktree_gitdir`` — ``land_slice._git``,
+    # not ``run_slice._git``. The same fake answers its
+    # ``rev-parse --absolute-git-dir`` from ``calls["abs_gitdir"]`` so
+    # the lock path is actually exercised; unset = "git cannot answer".
+    monkeypatch.setattr(land_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "_process_alive", lambda pid, **kw: calls["alive"])
@@ -1565,6 +1572,7 @@ def test_submit_keeps_a_live_index_lock_and_burns_no_attempt(
     the reuse checkout never runs and the job fails attempt-free — a
     wait, not a build failure, so no ``attempt:<n>`` and no ladder rung
     (gr650484)."""
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
     age = 5.0 if why == "fresh" else land_slice.INDEX_LOCK_STALE_S + 600
     lock = _reused_tree_with_lock(seams, tmp_path, age_s=age)
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
@@ -1584,6 +1592,32 @@ def test_submit_keeps_a_live_index_lock_and_burns_no_attempt(
     assert "attempt:1" in tags and "attempt:2" not in tags
     assert "STATUS:open" in tags
     assert not any(t.startswith("claimed-by:") for t in tags)
+
+
+def test_submit_waits_out_a_live_index_lock(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr662077: a live ``index.lock`` gets the brief wait for its
+    holder before the submit gives up — when the holder's git finishes
+    mid-wait the launch proceeds instead of bouncing a doomed re-mint
+    back to the tick."""
+    lock = _reused_tree_with_lock(seams, tmp_path, age_s=5.0)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "10")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    release = threading.Timer(0.2, lock.unlink)
+    release.start()
+    try:
+        ctx, handle = _submit(store, seams)
+    finally:
+        release.cancel()
+
+    assert handle is not None and ctx.failure is None
+    assert not lock.exists()
+    assert seams["launch"]
 
 
 def test_reuse_checkout_index_lock_failure_is_an_infra_wait(
@@ -1628,6 +1662,7 @@ def test_submit_keeps_an_index_lock_replaced_between_judgement_and_unlink(
     mismatches, and the submit waits attempt-free. The old two-fresh-
     stats reap would have matched the replacement and unlinked a live
     lock."""
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
     lock = _reused_tree_with_lock(
         seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
     )
