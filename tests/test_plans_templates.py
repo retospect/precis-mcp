@@ -1021,3 +1021,65 @@ def test_mint_repo_release_refuses_a_profile_without_a_releaser(
     )
     with pytest.raises(BadInput, match="no releasable"):
         mint_repo_release(store, root, "catpath", blocked_by=reviewers)
+
+
+# -- second-repo reviewer node (td659522 step 5 R1) ---------------------------
+
+
+def _reviewer_root(store: Store) -> tuple[int, int]:
+    from precis.plans import templates as T
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Batch", {"auto_close": True})
+
+    root = T._run(store, None, build).root_id
+    return root, T.mint_plan_task(store, root, "Slice", "x")
+
+
+def test_mint_reviewer_default_is_unchanged(store: Store) -> None:
+    """``repo`` left out: the precis body, no repo tag, the blocked-by edge."""
+    from precis.plans import templates as T
+
+    root, target = _reviewer_root(store)
+    rid = T.mint_reviewer(store, root, target)
+    assert _body(store, rid) == T._reviewer_brief(target)
+    tags = {t.value for t in store.tags_for(rid)}
+    assert f"plan:{root}" in tags and not [t for t in tags if t.startswith("repo:")]
+    assert _meta(store, rid)["generate"] == {"role": "reviewer", "from": f"td{target}"}
+
+
+def test_mint_reviewer_for_a_second_repo(store: Store) -> None:
+    """Own repo tag, blocked-by the target, and a body a session with no
+    precis tools can follow: none of the precis-only phrases, the verdict
+    grammar and the first-line rule."""
+    from precis.plans import templates as T
+
+    root, target = _reviewer_root(store)
+    rid = T.mint_reviewer(store, root, target, repo="catpath")
+    tags = {t.value for t in store.tags_for(rid)}
+    assert {f"plan:{root}", "repo:catpath"} <= tags
+    assert validate_plan_meta(_meta(store, rid)) == []
+    assert _meta(store, rid)["generate"] == {"role": "reviewer", "from": f"td{target}"}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id, relation FROM links WHERE src_ref_id = %s", (rid,)
+        ).fetchall()
+    assert rows == [(target, "blocked-by")]
+    body = _body(store, rid)
+    for gone in ("scripts/test", "AGENTS.md", "CLAUDE.md", "put(", "get(", "mcp"):
+        assert gone.lower() not in body.lower(), gone
+    assert T.REVIEW_GRAMMAR in body
+    assert T.REVIEW_READONLY_MARKER in body
+    assert "FIRST line of your final message" in body
+    assert "catpath" in body
+
+
+@pytest.mark.parametrize("repo", ["nosuchrepo", lanes.DEFAULT_REPO])
+def test_mint_reviewer_refuses_a_repo_without_a_second_repo_profile(
+    store: Store, repo: str
+) -> None:
+    from precis.plans import templates as T
+
+    root, target = _reviewer_root(store)
+    with pytest.raises(BadInput, match="not a second-repo profile"):
+        T.mint_reviewer(store, root, target, repo=repo)

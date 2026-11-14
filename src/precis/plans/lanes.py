@@ -379,7 +379,9 @@ class RepoProfile:
     release of this repo; ``None`` means the factory cannot release it.
     ``pinner`` is the job type that moves the consumer's (precis's) pin of
     this repo's package after a release; ``None`` means the pin is moved by
-    hand. ``release_check_cmds`` are run credential-free in the release tree
+    hand. ``reviewer`` is true when reviewer generator nodes may run in this
+    repo (a read-only session in a detached tree at the landed sha); false
+    means ``run_slice`` refuses them. ``release_check_cmds`` are run credential-free in the release tree
     before it pushes. ``ci_workflow`` is the workflow file whose run on the
     release commit must be green before the tag. ``tag_prefix`` starts the
     release tag (``v`` plus the version).
@@ -401,6 +403,7 @@ class RepoProfile:
     lander: str | None = None
     releaser: str | None = None
     pinner: str | None = None
+    reviewer: bool = False
     release_check_cmds: tuple[str, ...] = ()
     ci_workflow: str | None = None
     tag_prefix: str = "v"

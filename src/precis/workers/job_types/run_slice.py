@@ -230,6 +230,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1720,6 +1721,232 @@ def _review_target(store: Any, meta: Any) -> str | None:
     if text:
         lines += ["", "Its brief:", "", text]
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class RepoReviewTarget:
+    """What a reviewer of a second-repo slice judges (td659522 step 5):
+    ``shas`` are the landed commits (7-40 hex as the ``landed:`` comments
+    name them, one per landed target, ascending by todo id), ``title`` the
+    targets' ``td<N>: <title>`` lines and ``brief`` their briefs, capped."""
+
+    shas: tuple[str, ...]
+    title: str
+    brief: str
+
+
+_LANDED_SHA_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+_REVIEW_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _newest_landed_comment(store: Any, todo_id: int) -> str | None:
+    """The text of the todo's newest ``landed:`` comment, else ``None``."""
+    for c in reversed(_todo_chunks(store, todo_id)):
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        text = str(c.text or "").strip()
+        if text.lower().startswith("landed:"):
+            return text
+    return None
+
+
+def _review_target_repo(
+    store: Any, meta: Any, profile: _lanes.RepoProfile
+) -> RepoReviewTarget | str:
+    """The target of a reviewer of a ``profile`` (second-repo) slice, read
+    from the STORE only: no git, no fetch, nothing in the precis clone
+    (td659522 step 5). The targets are the todo ``meta.generate.from`` names
+    or, when that todo has no ``landed:`` comment of its own, its children
+    that have one. Each target needs ``meta.landed_repo == profile.name``
+    and a newest ``landed:`` comment naming a 7-40 hex sha (the lander
+    writes the first nine). Else a one-sentence refusal ending in ``next:``,
+    a ``str`` where success is a :class:`RepoReviewTarget`. A caller with
+    several shas detaches at the fetched base tip: they are all ancestors
+    of it (:func:`_ensure_review_tree`)."""
+    name = profile.name
+    if _generate_role(meta) != "reviewer":
+        return "this node is not a reviewer; next: dispatch only reviewer nodes here"
+    m = _TD_FROM_RE.fullmatch(str((meta.get("generate") or {}).get("from") or ""))
+    if m is None:
+        return "the reviewer names no td<N> target; next: mint it with generate.from"
+    target_id = int(m.group(1))
+    if store.get_ref(kind="todo", id=target_id) is None:
+        return f"review target td{target_id} does not exist; next: re-mint the review"
+    ids = [target_id]
+    if _newest_landed_comment(store, target_id) is None:
+        kids = sorted(
+            int(r.id)
+            for r in store.recent_refs(["todo"], parent_id=target_id, limit=1000)
+            if _newest_landed_comment(store, int(r.id)) is not None
+        )
+        ids = kids or ids
+    shas: list[str] = []
+    titles: list[str] = []
+    briefs: list[str] = []
+    for tid in ids:
+        ref = store.get_ref(kind="todo", id=tid)
+        landed = _newest_landed_comment(store, tid)
+        if landed is None:
+            return (
+                f"td{tid} has no `landed:` comment, so nothing is on {name} to "
+                "review; next: review it after its land"
+            )
+        owner = (getattr(ref, "meta", None) or {}).get(_lanes.LANDED_REPO_KEY)
+        if owner != name:
+            return (
+                f"td{tid} landed in {owner!r}, not '{name}' ({_lanes.LANDED_REPO_KEY}); "
+                "next: review it in the repo it landed in"
+            )
+        hit = _LANDED_SHA_RE.match(landed)
+        if hit is None:
+            return (
+                f"td{tid}'s newest `landed:` comment names no commit "
+                f"({landed[:80]!r}); next: nothing landed, close the review"
+            )
+        shas.append(hit.group(1).lower())
+        title = str(getattr(ref, "title", "") or "").strip()
+        titles.append(f"td{tid}: {title}")
+        body, latest = _brief_parts(store, tid)
+        text = (body or "").strip()
+        if latest:
+            text = f"{text}\n\n{latest.strip()}".strip()
+        if len(text) > _TARGET_CAP:
+            text = text[:_TARGET_CAP].rstrip() + "\n\n[brief cut here]"
+        briefs.append(f"td{tid}:\n\n{text}" if len(ids) > 1 else text)
+    return RepoReviewTarget(
+        shas=tuple(shas), title="; ".join(titles), brief="\n\n".join(briefs)
+    )
+
+
+def _ensure_review_tree(
+    profile: _lanes.RepoProfile, root: Path, todo_id: int, sha: str, tip: str
+) -> Path | str:
+    """A fresh detached worktree ``<root>/.claude/worktrees/slice-td<id>`` of
+    the clone at ``root``, at the landed commit ``sha`` (7-40 hex, expanded
+    here), for a second-repo reviewer. No branch is created and no network
+    is touched: the caller already fetched through :func:`_prepare_repo`
+    and passes ``tip``, the fetched base tip sha. ``sha`` must be an
+    ancestor of ``tip``. A tree left there by an earlier launch is removed
+    first: a reviewer's tree is re-cut on every launch, never reused. The
+    clone's ``info/exclude`` is :func:`_prepare_repo`'s per-clone job, not
+    this tree's. Returns the path, or a one-sentence refusal ending in
+    ``next:``."""
+    name = profile.name
+    if not _REVIEW_SHA_RE.fullmatch(sha):
+        return f"'{sha}' is not a commit sha; next: fix the landed comment"
+    full = _git(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], root)
+    if full.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", full.stdout.strip()):
+        return (
+            f"the '{name}' clone does not know commit {sha[:12]}; "
+            "next: check that the land pushed it"
+        )
+    full_sha = full.stdout.strip()
+    anc = _git(["merge-base", "--is-ancestor", full_sha, tip], root)
+    if anc.returncode != 0:
+        return (
+            f"commit {full_sha[:12]} is not on the fetched {name} "
+            f"{profile.base} ({tip[:12]}); next: wait for the land to reach it"
+        )
+    tree = worktrees_dir(root) / slice_name(todo_id)
+    if tree.exists():
+        gone = _git(["worktree", "remove", "--force", str(tree)], root)
+        if gone.returncode != 0 or tree.exists():
+            shutil.rmtree(tree, ignore_errors=True)
+    _git(["worktree", "prune"], root)
+    if tree.exists():
+        return f"could not clear the old review tree {tree}; next: remove it by hand"
+    add = _git(["worktree", "add", "--detach", str(tree), full_sha], root)
+    if add.returncode != 0:
+        tail = " ".join((add.stderr or "").split())[-200:]
+        return f"git worktree add failed for the review tree ({tail}); next: retry"
+    return tree
+
+
+def _render_repo_review_brief(
+    profile: _lanes.RepoProfile,
+    *,
+    todo_id: int,
+    sha: str,
+    tip: str,
+    target_title: str,
+    target_brief: str,
+    shas: Sequence[str] = (),
+) -> str:
+    """The launch brief of a reviewer of a ``profile`` (second-repo) slice
+    (td659522 step 5). The session works in a detached tree at ``sha``, off
+    the network, and writes nothing; ``tip`` is the fetched base tip the
+    later-changes query ends at. ``shas`` are the landed commits to read
+    (``sha`` alone when empty). The verdict is the first line of the final
+    message, in the grammar and with the marker of
+    :func:`_reviewer_close`'s verdict; poll posts that message as the
+    ``handoff:`` comment and ``plan_dispatch._read_verdict`` reads it there."""
+    from precis.plans.templates import REVIEW_GRAMMAR, REVIEW_READONLY_MARKER
+
+    name = profile.name
+    checks = [*profile.lint_cmds, *profile.test_cmds]
+    ran = (
+        "the lander ran " + ", ".join(f"`{c}`" for c in checks) + " green"
+        if checks
+        else "the lander ran the repo's checks green"
+    )
+    reads = list(shas) or [sha]
+    lines = [
+        f"# Review td{todo_id}: {target_title}",
+        "",
+        f"This is the `{name}` repository. Your working tree is a detached "
+        f"checkout at the landed commit `{sha}`. You review it; you change "
+        "nothing.",
+        "",
+        f"## Rules for this repo ({name}); they win over the task text",
+        "",
+        "- Do not fetch, pull, checkout, edit, commit, push, tag, bump a "
+        "version or open a pull request. The tree is read-only for you.",
+        "- Do not run `uv`, a linter or tests: " + ran + " on this commit.",
+        "- Do not file reports or leave notes anywhere; your final message is "
+        "all you write.",
+        "",
+        "## What to read",
+        "",
+    ]
+    if len(reads) > 1:
+        lines += [
+            "The slice landed these commits; read each with `git show <sha>`:",
+            "",
+            *[f"- `{s}`" for s in reads],
+        ]
+    else:
+        lines.append(f"Read `git show {reads[0]}` and the files it touches.")
+    lines += [
+        "",
+        "For later changes to the same files, `git log <sha>..<tip> -- <files>` "
+        f"(`<tip>` is `{tip}`; local only) names the commits since: a finding "
+        "a later commit already fixed is not a finding.",
+        "",
+        "Judge whether the diff does what the slice's brief below asked, and "
+        "nothing it should not. A test the build changed is judged like "
+        "code: LAND when the old assertion was a wrong spec, FIX when the "
+        "change weakens a real check to get green.",
+        "",
+        "## The slice's brief",
+        "",
+        target_brief.strip() or "(the slice has no brief)",
+        "",
+        "## When done: your verdict",
+        "",
+        "This todo is a reviewer: your work is one verdict, not a land and "
+        "not child todos. Make the verdict the FIRST line of your final "
+        "message, one of: " + REVIEW_GRAMMAR + ".",
+        "",
+        "`FIX` and `REVERT` need the list / the why after the dash: name "
+        "files and the concrete problem. End the verdict line with "
+        f"`{REVIEW_READONLY_MARKER}`. Below that line, in a few lines: what "
+        "you checked and the findings. No other line of the message may "
+        "start with `review:`.",
+        "",
+        "Mint nothing: no child todos, no fix, no revert. Commit nothing. Do "
+        "not tag this todo done: the dispatcher closes it on your verdict.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 #: The lint the land runs on the whole tree before it merges, in the

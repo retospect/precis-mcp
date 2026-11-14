@@ -377,6 +377,31 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
 )
 
 
+def _repo_reviewer_brief(target_id: int, repo: str) -> str:
+    """The node body of a reviewer of a second repo's slice (td659522 step 5).
+    The session runs in that repo's clone with no precis tools: the launch
+    brief names the landed commit and inlines the slice's brief, and the
+    verdict is the first line of the final message. Nothing here points at a
+    precis path, command or tool."""
+    return (
+        "Review after land, from another lane than the builder's. "
+        f"td{target_id} landed in the `{repo}` repository: the launch brief "
+        "names the landed commit and carries the slice's own brief. Read "
+        "`git show <sha>` against that brief and judge whether the diff does "
+        "what the brief asked, and nothing it should not.\n\n"
+        "Make the verdict the FIRST line of your final message, one of: "
+        f"{REVIEW_GRAMMAR}. End that line with `{REVIEW_READONLY_MARKER}`. "
+        "The findings follow below that line; the text after the dash is what "
+        "the fix or the revert slice is built from: name files and the "
+        "concrete problem. No other line of the message may start with "
+        "`review:`.\n\n"
+        "You are read-only: run no tests, no typecheck, no lint and no `uv` "
+        "command; read the diff and the files. Mint nothing yourself: no "
+        "child todos, no fix, no revert, no commit, no push, and do not tag "
+        "this todo done. The plan tick reads the verdict."
+    )
+
+
 def _sha_reviewer_brief(sha12: str) -> str:
     """The sha-keyed reviewer's brief: the commit IS the brief — no live
     plan root claims it (gr597625)."""
@@ -518,7 +543,9 @@ def mint_merge_back_resolver(
     return ids["resolve"], ids["merge_back"]
 
 
-def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
+def mint_reviewer(
+    store: Store, plan_root: int, target_id: int, *, repo: str | None = None
+) -> int:
     """Mint one reviewer node over the already-landed td<target_id>,
     directly under ``plan_root`` and tagged ``plan:<plan_root>`` — the
     same shape the templates wire ``blocked-by`` their build, edge
@@ -536,15 +563,36 @@ def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
     transaction as a savepoint. Hang the node only under a LIVE root:
     one open under a dead root is judged hopeless by the gate (and hung
     on the reviewed todo itself it would read as its own review
-    target)."""
+    target).
+
+    ``repo`` names a second repo (td659522 step 5): the node then carries
+    its own ``repo:<repo>`` tag and a body for a session with no precis
+    tools (the verdict is the first line of its final message). It must name
+    a non-default profile, else ``BadInput``. The profile's ``reviewer``
+    switch is NOT checked here, so a node can be minted before the repo
+    allows reviewers; ``run_slice`` refuses to run it until it does."""
+    if repo is not None and (
+        repo == _lanes.DEFAULT_REPO or _lanes.repo_profile(repo) is None
+    ):
+        raise BadInput(
+            f"reviewer: {repo!r} is not a second-repo profile",
+            next="pass a repo other than the default one that has a build "
+            "profile, or leave repo out",
+        )
 
     def build(m: _Minter) -> None:
         rid = m.node(
             "review",
             f"Review the td{target_id} land",
             _reviewer(target_id),
-            body=_reviewer_brief(target_id),
+            body=(
+                _reviewer_brief(target_id)
+                if repo is None
+                else _repo_reviewer_brief(target_id, repo)
+            ),
         )
+        if repo is not None:
+            _tag(m, rid, f"repo:{repo}")
         store.add_link(
             src_ref_id=rid,
             dst_ref_id=target_id,

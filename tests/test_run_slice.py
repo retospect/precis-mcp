@@ -10582,6 +10582,236 @@ def test_repo_brief_refuses_a_generator() -> None:
         )
 
 
+# ── Reviewer of a second-repo slice, unwired helpers (td659522 step 5, R2) ──
+
+_SHA9 = "0123456789abcdef0123456789abcdef01234567"[:9]
+_REVIEWER_META: dict[str, Any] = {"generate": {"role": "reviewer", "from": "td7"}}
+
+
+def _cat_review_store(
+    comments: tuple[str, ...] = ("handoff: built it", f"landed: {_SHA9} — add grid"),
+    meta: dict[str, Any] | None = None,
+) -> _Store:
+    store = _Store()
+    store.add_todo(
+        7,
+        "Widen the grid",
+        body="Add the Pd row to the grid.",
+        status="done",
+        comments=comments,
+        meta={"landed_repo": "catpath"} if meta is None else meta,
+    )
+    return store
+
+
+def test_review_target_repo_reads_the_store() -> None:
+    profile = lanes.REPO_PROFILES["catpath"]
+    got = run_slice._review_target_repo(_cat_review_store(), _REVIEWER_META, profile)
+    assert isinstance(got, run_slice.RepoReviewTarget)
+    assert got.shas == (_SHA9,)
+    assert got.title == "td7: Widen the grid"
+    assert "Add the Pd row to the grid." in got.brief
+    assert "handoff: built it" in got.brief
+
+
+def test_review_target_repo_takes_the_newest_landed_comment() -> None:
+    store = _cat_review_store(
+        comments=("landed: aaaaaaaaa — old", "landed: bbbbbbbbb — new")
+    )
+    profile = lanes.REPO_PROFILES["catpath"]
+    got = run_slice._review_target_repo(store, _REVIEWER_META, profile)
+    assert isinstance(got, run_slice.RepoReviewTarget) and got.shas == ("bbbbbbbbb",)
+
+
+def test_review_target_repo_with_several_landed_children() -> None:
+    store = _Store()
+    store.add_todo(7, "Phase", status="done")
+    for tid, sha in ((8, "aaaaaaaaa"), (9, "bbbbbbbbb")):
+        store.add_todo(
+            tid,
+            f"Slice {tid}",
+            body=f"Brief {tid}.",
+            status="done",
+            comments=(f"landed: {sha} — x",),
+            meta={"landed_repo": "catpath"},
+            parent_id=7,
+        )
+    got = run_slice._review_target_repo(
+        store, _REVIEWER_META, lanes.REPO_PROFILES["catpath"]
+    )
+    assert isinstance(got, run_slice.RepoReviewTarget)
+    assert got.shas == ("aaaaaaaaa", "bbbbbbbbb")
+    assert "td8: Slice 8" in got.title and "td9: Slice 9" in got.title
+    assert "Brief 8." in got.brief and "Brief 9." in got.brief
+
+
+@pytest.mark.parametrize(
+    ("comments", "meta", "needle"),
+    [
+        (("handoff: built it",), {"landed_repo": "catpath"}, "no `landed:` comment"),
+        ((f"landed: {_SHA9}",), {}, "landed in None"),
+        ((f"landed: {_SHA9}",), {"landed_repo": "precis"}, "landed in 'precis'"),
+        (
+            ("landed: nothing — branch had no net diff against origin/main",),
+            {"landed_repo": "catpath"},
+            "names no commit",
+        ),
+        (("landed: abc12",), {"landed_repo": "catpath"}, "names no commit"),
+        (("landed: not-a-sha",), {"landed_repo": "catpath"}, "names no commit"),
+    ],
+)
+def test_review_target_repo_refusals(
+    comments: tuple[str, ...], meta: dict[str, Any], needle: str
+) -> None:
+    store = _cat_review_store(comments=comments, meta=meta)
+    got = run_slice._review_target_repo(
+        store, _REVIEWER_META, lanes.REPO_PROFILES["catpath"]
+    )
+    assert isinstance(got, str) and needle in got and "next:" in got
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"generate": {"role": "triage", "from": "td7"}},
+        {"generate": {"role": "reviewer", "from": "sha:abc123456789"}},
+        {"generate": {"role": "reviewer", "from": "td99"}},
+    ],
+)
+def test_review_target_repo_refuses_other_nodes(meta: dict[str, Any]) -> None:
+    got = run_slice._review_target_repo(
+        _cat_review_store(), meta, lanes.REPO_PROFILES["catpath"]
+    )
+    assert isinstance(got, str) and "next:" in got
+
+
+def _review_world(tmp_path: Path) -> dict[str, Any]:
+    """A clone of a second repo with a landed commit and a later one on main."""
+    _origin, root = _repo_with_origin(tmp_path, "cat")
+    landed = _commit(root, "grid.txt", "pd")
+    later = _commit(root, "later.txt", "z")
+    return {"root": root, "landed": landed, "tip": later}
+
+
+def _tree_head(tree: Path) -> str:
+    return _rg(tree, "rev-parse", "HEAD")
+
+
+def test_ensure_review_tree_is_detached_at_the_sha_with_no_branch(
+    tmp_path: Path,
+) -> None:
+    w = _review_world(tmp_path)
+    profile = lanes.REPO_PROFILES["catpath"]
+    branches = _rg(w["root"], "branch", "--list")
+    got = run_slice._ensure_review_tree(profile, w["root"], 42, w["landed"], w["tip"])
+    assert isinstance(got, Path)
+    assert got == w["root"] / ".claude" / "worktrees" / "slice-td42"
+    assert _tree_head(got) == w["landed"]
+    assert _rg(got, "branch", "--show-current") == ""
+    assert _rg(w["root"], "branch", "--list") == branches
+    assert (got / "grid.txt").is_file() and not (got / "later.txt").exists()
+
+
+def test_ensure_review_tree_expands_an_abbreviated_sha(tmp_path: Path) -> None:
+    w = _review_world(tmp_path)
+    got = run_slice._ensure_review_tree(
+        lanes.REPO_PROFILES["catpath"], w["root"], 42, w["landed"][:9], w["tip"]
+    )
+    assert isinstance(got, Path) and _tree_head(got) == w["landed"]
+
+
+def test_ensure_review_tree_replaces_a_stale_tree(tmp_path: Path) -> None:
+    w = _review_world(tmp_path)
+    profile = lanes.REPO_PROFILES["catpath"]
+    first = run_slice._ensure_review_tree(profile, w["root"], 42, w["tip"], w["tip"])
+    assert isinstance(first, Path)
+    (first / "stale.txt").write_text("old run", encoding="utf-8")
+    second = run_slice._ensure_review_tree(
+        profile, w["root"], 42, w["landed"], w["tip"]
+    )
+    assert second == first and isinstance(second, Path)
+    assert _tree_head(second) == w["landed"] and not (second / "stale.txt").exists()
+    # a tree directory whose registration is gone is replaced too
+    shutil.rmtree(second)
+    third = run_slice._ensure_review_tree(profile, w["root"], 42, w["landed"], w["tip"])
+    assert isinstance(third, Path) and _tree_head(third) == w["landed"]
+
+
+def test_ensure_review_tree_refuses_a_sha_off_the_tip(tmp_path: Path) -> None:
+    w = _review_world(tmp_path)
+    root = w["root"]
+    _rg(root, "checkout", "-q", "-b", "side", w["landed"])
+    off = _commit(root, "off.txt")
+    _rg(root, "checkout", "-q", "main")
+    profile = lanes.REPO_PROFILES["catpath"]
+    for bad in (off, "f" * 40, "not-a-sha"):
+        why = run_slice._ensure_review_tree(profile, root, 42, bad, w["tip"])
+        assert isinstance(why, str) and "next:" in why, bad
+    assert not (root / ".claude" / "worktrees" / "slice-td42").exists()
+    why = run_slice._ensure_review_tree(profile, root, 42, off, w["tip"])
+    assert isinstance(why, str) and "is not on the fetched catpath main" in why
+
+
+def _review_brief(**over: Any) -> str:
+    kw: dict[str, Any] = {
+        "todo_id": 55,
+        "sha": "a" * 40,
+        "tip": "b" * 40,
+        "target_title": "td7: Widen the grid",
+        "target_brief": "Add the Pd row to the grid.",
+        "shas": ("a" * 40,),
+    }
+    kw.update(over)
+    return run_slice._render_repo_review_brief(lanes.REPO_PROFILES["catpath"], **kw)
+
+
+def test_repo_review_brief_names_the_tree_the_commands_and_the_limits() -> None:
+    from precis.plans.templates import REVIEW_GRAMMAR, REVIEW_READONLY_MARKER
+
+    brief = _review_brief()
+    profile = lanes.REPO_PROFILES["catpath"]
+    for cmd in (*profile.lint_cmds, *profile.test_cmds):
+        assert f"`{cmd}`" in brief, cmd
+    for kept in (
+        "`catpath` repository",
+        "detached checkout at the landed commit `" + "a" * 40 + "`",
+        "Do not fetch, pull, checkout, edit, commit, push, tag, bump a version "
+        "or open a pull request",
+        "Do not run `uv`, a linter or tests",
+        f"git show {'a' * 40}",
+        "git log <sha>..<tip> -- <files>",
+        "b" * 40,
+        "td7: Widen the grid",
+        "Add the Pd row to the grid.",
+        "FIRST line of your final message",
+        REVIEW_GRAMMAR,
+        REVIEW_READONLY_MARKER,
+    ):
+        assert kept in brief, kept
+    for gone in ("scripts/test", "AGENTS.md", "origin/slice/", "release/r", "MCP"):
+        assert gone not in brief, gone
+
+
+def test_repo_review_brief_lists_several_shas() -> None:
+    brief = _review_brief(shas=("c" * 9, "d" * 9))
+    assert "- `ccccccccc`" in brief and "- `ddddddddd`" in brief
+
+
+def test_repo_review_brief_first_line_verdict_reaches_the_dispatcher_parser() -> None:
+    """The line the brief asks for, as poll posts it, is read as a verdict."""
+    from precis.plans.templates import REVIEW_READONLY_MARKER
+
+    for line, want in (
+        ("review: LAND", "LAND"),
+        ("review: FIX — a.py drops the Pd row", "FIX"),
+        ("review: REVERT — wrong repo", "REVERT"),
+    ):
+        text = f"handoff: {line} {REVIEW_READONLY_MARKER}\n\nChecked the diff."
+        assert pd._is_review_line(text)
+        parsed = pd.parse_verdict(text)
+        assert parsed is not None and parsed[0] == want
+
+
 # ── Submit side for a second repo (td659522 step 1, R4) ───────────────
 
 
