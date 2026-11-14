@@ -132,6 +132,7 @@ from precis.workers.executors._common import (
     append_chunk,
     effective_requires,
     job_type_requires,
+    lane_adapter_map,
     parent_pause_gaps,
     placement_gap,
     placement_requires,
@@ -813,6 +814,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     """
     with store.pool.connection() as conn:
         by_host = advertised_by_host(conn)
+        lane_map = lane_adapter_map(conn)
         advertised = set().union(*by_host.values()) if by_host else set()
         rows = conn.execute(
             """
@@ -871,7 +873,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         # td543917: placement tokens are gated on EVERY claim path (pinned or
         # not) and must all sit on ONE live host, so a fleet that has the
         # checkout on one host and claude on another still pages.
-        gap = placement_gap(meta, by_host)
+        gap = placement_gap(meta, by_host, lane_map)
         if not requires and not gap:
             continue
         params = meta.get("params") or {}

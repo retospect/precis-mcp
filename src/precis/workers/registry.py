@@ -1399,9 +1399,12 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Run slice (job)",
         category="jobs",
         kind=ServiceKind.JOB,
-        placement=frozenset({"repo_checkout", "claude_bin", "git"}),
+        # ``builder`` = any lane binary (gr676054): a builder fleet host
+        # may carry kimi/codex/devin without claude; ``placement_requires``
+        # substitutes the picked/pinned adapter's ``<a>_bin`` token per job.
+        placement=frozenset({"repo_checkout", "builder", "git"}),
         uses_model=True,
-        one_line="One slice headless: claude -p in its own worktree of the "
+        one_line="One slice headless: its lane's CLI in a worktree of the "
         "host's checkout; a clean exit mints land_slice.",
         doc_skill="precis-job-help",
     ),

@@ -110,6 +110,19 @@ def adapter_bin(name: str) -> str:
     return _ADAPTER_BINS[name]()
 
 
+def adapter_bin_present(name: str) -> bool:
+    """Whether THIS host can exec the adapter's binary — resolved exactly
+    as :func:`adapter_bin` does: an explicit path (``PRECIS_*_BIN`` or a
+    fallback like ``~/.kimi-code/bin/kimi``) must be an executable file,
+    a bare name must resolve on ``PATH``. The capability probe and
+    run_slice's pick filter share it, so a host neither advertises nor
+    picks a lane its preflight would refuse (gr676054)."""
+    raw = _ADAPTER_BINS[name]()
+    if os.sep in raw or (os.altsep and os.altsep in raw):
+        return os.path.isfile(raw) and os.access(raw, os.X_OK)
+    return shutil.which(raw) is not None
+
+
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
     """Claude deny rules in cwd-relative and absolute forms, plus trust
     for the service account checkout's project MCP servers. The

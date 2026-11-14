@@ -257,6 +257,7 @@ from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
     adapter_bin,
+    adapter_bin_present,
     deny_settings,
     devin_bin,
     devin_model_rate,
@@ -2901,6 +2902,10 @@ def _ensure_worktree(
 #: The MCP preflight's HTTP call — a seam for tests.
 _mcp_preflight_open = urllib.request.urlopen
 
+#: The default docker socket a ``DOCKER_HOST``-less client hits on
+#: Linux — a module constant so tests can point the seam (gr676054).
+_LINUX_DOCKER_SOCK = Path("/var/run/docker.sock")
+
 
 def _mcp_url(tree: Path) -> str | None:
     """The precis MCP URL the session will connect to: the checkout's
@@ -3057,6 +3062,14 @@ def _codex_writable_roots(tree: Path) -> tuple[Path, ...]:
         # HOME, when it exists — a missing dir grants no phantom root.
         candidate = Path.home() / ".colima"
         sock_dir = candidate if candidate.is_dir() else None
+        if sock_dir is None:
+            # Linux system docker (gr676054): with no DOCKER_HOST the
+            # client defaults to /var/run/docker.sock. The granted
+            # parent is /var/run — broad on paper, but the socket's
+            # group mode still binds, and no grant at all is the dead
+            # docker-in-gate this fallback exists to fix.
+            if _LINUX_DOCKER_SOCK.exists():
+                sock_dir = _LINUX_DOCKER_SOCK.parent
     if sock_dir is not None:
         home = Path.home()
         if sock_dir == home or home.is_relative_to(sock_dir):
@@ -3751,6 +3764,20 @@ def submit(ctx: Any, spec: Any) -> Any:
                 until=wake,
             )
             return None
+        if lane.adapter in ADAPTERS and not adapter_bin_present(lane.adapter):
+            # The lane pin landed on a host that cannot exec it (gr676054:
+            # the placement gate only sees the ``builder`` floor when the
+            # lane→adapter map misses). A host gap, not a lane failure —
+            # park without the ``meta.host_refusal`` stamp so the lane is
+            # not backed off fleet-wide; the wait rides the lane's wakes.
+            _park_lane_full(
+                ctx,
+                f"run_slice: lane {lane.name!r} pinned by params.lane "
+                f"cannot run here — no {lane.adapter} binary on this "
+                "host; held for a host that has one",
+                lanes=(lane.name,),
+            )
+            return None
         counts = _lanes.live_lane_counts(store)
         live = counts.get(lane.name, 0)
         if live >= lane.cap:
@@ -3775,6 +3802,17 @@ def submit(ctx: Any, spec: Any) -> Any:
             else lane_table
         )
         table = tuple(ln for ln in capable if not exclude or ln.vendor != exclude)
+        # Only lanes this host can exec (gr676054): a builder fleet host
+        # may carry a subset of the lane binaries — the ``builder``
+        # placement floor passes any one of them, so the pick must not
+        # offer a lane whose adapter preflight would refuse and stamp a
+        # GLOBAL lane backoff for a one-host gap.
+        host_adapters = {
+            ln.adapter
+            for ln in table
+            if ln.adapter in ADAPTERS and adapter_bin_present(ln.adapter)
+        }
+        table = tuple(ln for ln in table if ln.adapter in host_adapters)
         backoffs = _lanes.lane_backoffs(store)
         # Free compute first (gr573563): while a fit free lane exists the
         # pick holds paid lanes out; the build waits on the free lane's

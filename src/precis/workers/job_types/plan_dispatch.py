@@ -6413,6 +6413,7 @@ def _step_unplaced(
     heals or the job leaves ``queued`` → ``done``."""
     from precis.workers.executors._common import (
         advertised_by_host,
+        lane_adapter_map,
         placement_gap,
         placement_requires,
     )
@@ -6434,6 +6435,7 @@ def _step_unplaced(
         return
     with store.pool.connection() as conn:
         advertised = advertised_by_host(conn)
+        lane_map = lane_adapter_map(conn)
     for n, mark in marked:
         ask_id = mark.get("ask")
         ask = plan.nodes.get(ask_id) if isinstance(ask_id, int) else None
@@ -6455,7 +6457,7 @@ def _step_unplaced(
         still_blocked = any(
             j.status == "queued"
             and placement_requires(j.meta)
-            and placement_gap(j.meta, advertised)
+            and placement_gap(j.meta, advertised, lane_map)
             for j in plan.jobs(n)
         )
         if still_blocked:
@@ -6470,7 +6472,7 @@ def _step_unplaced(
             f"td{ask.id}: unplaced ask closed — td{n.id}'s placement gap healed"
         )
     for n, j in waiting:
-        gap = placement_gap(j.meta, advertised)
+        gap = placement_gap(j.meta, advertised, lane_map)
         if not gap:
             continue
         minutes = int((now - j.created_at).total_seconds() // 60)

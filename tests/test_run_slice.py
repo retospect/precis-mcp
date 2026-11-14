@@ -387,6 +387,15 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         lambda: calls["devin"]["prices"],
         raising=False,
     )
+    # Lane binary presence (gr676054): the pick's host-adapter filter
+    # and the pinned-lane guard — every adapter's bin resolves by
+    # default; a test names the absent ones in ``calls["bins_absent"]``.
+    calls["bins_absent"] = set()
+    monkeypatch.setattr(
+        run_slice,
+        "adapter_bin_present",
+        lambda name: name not in calls["bins_absent"],
+    )
     # gr657521: the vendor account default resolves off host config
     # files — the seam stands it empty so the rig's own ``~/.codex`` /
     # ``~/.config`` cannot leak into assertions; a test sets
@@ -1924,6 +1933,72 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     seams["live"] = {"claude-sub": 1}
     ctx2, handle = _submit(store, seams, lane="claude-sub")
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
+
+
+def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
+    seams: dict[str, Any],
+) -> None:
+    """gr676054: a lane pin landing on a host without the lane's binary
+    parks as a lane wait — the ``builder`` placement floor passed the
+    host on SOME lane binary, so the pin holds for a host that carries
+    this one. It is a host gap, not a lane failure: no
+    ``meta.host_refusal`` stamp, so no fleet-wide lane backoff."""
+    seams["bins_absent"] = {"claude_p"}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred
+    assert deferred[0][1].startswith(lanes.LANE_PARK_WHY)
+    assert "cannot run here" in deferred[0][1]
+    assert "no claude_p binary" in deferred[0][1]
+    assert ctx.failure is None
+    assert ctx.meta_set["lane_wait"] == ["claude-sub"]
+    assert ctx.meta_set["wait_parks"] == 1
+    assert "host_refusal" not in ctx.meta_set
+    assert seams["launch"] == []
+
+
+def test_submit_pick_filters_lanes_to_host_bins(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr676054: the unpinned pick offers only lanes whose adapter binary
+    this host can exec — a builder host carrying a subset must not pick
+    a lane its preflight would refuse (a global lane backoff stamped for
+    a one-host gap). A bin-absent free lane also stops holding paid
+    lanes out of the pick: it is not a fit wait, it is a host gap."""
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    store = _Store()
+    store.add_todo(42, "Build")
+    # devin's binary absent → the pick falls through to claude-sub and
+    # launches, without parking on a free-lane wait this host could
+    # never end.
+    seams["bins_absent"] = {"devin_tree"}
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+
+    # Every fit lane's bin absent → nothing is pickable; the job parks.
+    seams["bins_absent"] = {"devin_tree", "claude_p"}
+    ctx2 = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx2.defer = _defer
+    assert run_slice.submit(ctx2, None) is None
+    assert deferred and "no lane free" in deferred[0][1]
+    assert "no enabled lane" in deferred[0][1]
+    assert ctx2.meta_set["lane_wait"] == []
+    assert ctx2.failure is None
 
 
 def test_lane_full_park_names_the_lanes_to_wake_on(seams: dict[str, Any]) -> None:
@@ -6368,6 +6443,8 @@ def test_codex_add_dir_docker_fallback_and_skip(
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
     monkeypatch.delenv("DOCKER_HOST", raising=False)
+    # No Linux system docker in this scenario — deterministic off every host.
+    monkeypatch.setattr(run_slice, "_LINUX_DOCKER_SOCK", tmp_path / "no-docker.sock")
     common = tmp_path / "repo.git"
     seams["git_common"] = str(common)
     home = tmp_path / "home"
@@ -6395,6 +6472,33 @@ def test_codex_add_dir_docker_fallback_and_skip(
     [(argv2, _kw2)] = seams["launch"]
     assert argv2.count("--add-dir") == 1
     assert str(common) in argv2
+
+
+def test_codex_add_dir_falls_back_to_linux_system_docker(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """gr676054: no DOCKER_HOST and no ~/.colima — the Linux system
+    socket's parent (``/var/run``) is granted when the socket exists, so
+    a codex slice's gate can reach docker; absent, no phantom root."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    common = tmp_path / "repo.git"
+    seams["git_common"] = str(common)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    sock_dir = tmp_path / "run"
+    sock_dir.mkdir()
+    (sock_dir / "docker.sock").touch()
+    monkeypatch.setattr(run_slice, "_LINUX_DOCKER_SOCK", sock_dir / "docker.sock")
+    roots = run_slice._codex_writable_roots(tmp_path)
+    assert roots == (common, sock_dir)
+    # Socket gone → nothing granted beyond the git common dir.
+    (sock_dir / "docker.sock").unlink()
+    assert run_slice._codex_writable_roots(tmp_path) == (common,)
 
 
 @pytest.mark.parametrize("unsafe", ["root", "home", "home-parent"])

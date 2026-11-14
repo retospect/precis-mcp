@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -559,15 +560,18 @@ def job_type_running_caps(conn: Connection) -> dict[str, int]:
 
 
 def executor_lane_limits(
-    conn: Connection, executor: str
+    conn: Connection, executor: str, host: str | None = None
 ) -> tuple[int | None, dict[str, int]]:
     """``(running cap, {job_type: reserved slots})`` for ``executor``
     on this host (gr603792).
 
     The cap is the code-shipped :data:`_EXECUTOR_CAP_DEFAULTS` entry
-    overlaid with ``app_state`` ``claim.executor_cap.<executor>``; the
-    reserve map is :data:`_EXECUTOR_RESERVE_DEFAULTS` REPLACED wholesale
-    by ``app_state`` ``claim.reserve.<executor>`` (a JSON
+    overlaid with ``app_state`` ``claim.executor_cap.<executor>`` — and
+    with ``claim.executor_cap.<executor>.<host>`` when ``host`` is given
+    (gr676054: per-host caps on a builder fleet — the host-suffixed key
+    replaces the unsuffixed one wholesale); the reserve map is
+    :data:`_EXECUTOR_RESERVE_DEFAULTS` REPLACED wholesale by
+    ``claim.reserve.<executor>[.<host>]`` (a JSON
     ``{"<job_type>": <slots>}``). ``cap=None`` means uncapped — the
     reserve map is then inert (an unbounded pool has no slots to hold
     back). Read live per claim pass, same as
@@ -579,26 +583,38 @@ def executor_lane_limits(
         f"{_EXECUTOR_CAP_KEY_PREFIX}{executor}",
         f"{_RESERVE_KEY_PREFIX}{executor}",
     ]
+    host_keys = [f"{key}.{host}" for key in keys] if host else []
     rows: dict[str, str] = dict(
         conn.execute(
-            "SELECT key, value FROM app_state WHERE key = ANY(%s)", (keys,)
+            "SELECT key, value FROM app_state WHERE key = ANY(%s)",
+            (keys + host_keys,),
         ).fetchall()
     )
-    raw_cap = rows.get(keys[0])
+    raw_cap = (
+        rows.get(host_keys[0], rows.get(keys[0])) if host_keys else rows.get(keys[0])
+    )
     if raw_cap is not None:
         try:
             cap = max(0, int(str(raw_cap)))
         except ValueError:
-            log.warning("claim: %s=%r is not an int; ignored", keys[0], raw_cap)
-    raw_reserve = rows.get(keys[1])
+            log.warning(
+                "claim: %s%s=%r is not an int; ignored",
+                _EXECUTOR_CAP_KEY_PREFIX,
+                f"{executor}.{host}" if host else executor,
+                raw_cap,
+            )
+    raw_reserve = (
+        rows.get(host_keys[1], rows.get(keys[1])) if host_keys else rows.get(keys[1])
+    )
     if raw_reserve is not None:
         try:
             parsed = json.loads(str(raw_reserve))
             reserve = {str(k): max(0, int(v)) for k, v in dict(parsed).items()}
         except (ValueError, TypeError, AttributeError):
             log.warning(
-                "claim: %s=%r is not a {job_type: slots} map; ignored",
-                keys[1],
+                "claim: %s%s=%r is not a {job_type: slots} map; ignored",
+                _RESERVE_KEY_PREFIX,
+                f"{executor}.{host}" if host else executor,
                 raw_reserve,
             )
     return cap, reserve
@@ -966,17 +982,63 @@ def _coordinator_capability_ok(
     return requires <= advertised.get(host, set())
 
 
-def placement_requires(meta: dict[str, Any]) -> frozenset[str]:
+#: Lane adapter → the ``resource_slots`` token its binary advertises
+#: (gr676054). Restated rather than imported: ``job_types`` modules
+#: pull this file, not the reverse — keep it in sync with
+#: ``_slice_adapters.ADAPTERS`` (a test pins it).
+_ADAPTER_PLACEMENT_TOKENS: dict[str, str] = {
+    "claude_p": "claude_bin",
+    "codex_exec": "codex_bin",
+    "kimi_tree": "kimi_bin",
+    "devin_tree": "devin_bin",
+}
+
+
+def lane_adapter_map(conn: Connection) -> dict[str, str]:
+    """``{lane name: adapter}`` from ``llm_account`` — the lane→adapter
+    resolution ``placement_requires`` needs to turn a ``params.lane``
+    pin into its binary token (gr676054)."""
+    return {
+        str(name): str(adapter)
+        for name, adapter in conn.execute(
+            "SELECT name, adapter FROM llm_account"
+        ).fetchall()
+    }
+
+
+def placement_requires(
+    meta: dict[str, Any], lane_adapters: Mapping[str, str] | None = None
+) -> frozenset[str]:
     """The job_type's ``ServiceSpec.placement`` tokens (td543917): host
     capabilities checked at claim, never reserved. Empty for a job_type with
-    no spec or none declared — every job_type but the dark-factory ops."""
+    no spec or none declared — every job_type but the dark-factory ops.
+
+    A ``run_slice`` job swaps the ``builder`` floor for the adapter's
+    bin token when the job names its lane: ``meta.adapter`` (stamped by
+    a prior submit) or a ``params.lane`` pin resolved through
+    ``lane_adapters`` ({lane: adapter}, :func:`lane_adapter_map`; absent
+    or unresolved → the ``builder`` floor stands)."""
     job_type = meta.get("job_type")
     spec = SERVICES_BY_NAME.get(str(job_type)) if job_type else None
-    return spec.placement if spec is not None else frozenset()
+    if spec is None:
+        return frozenset()
+    tokens = set(spec.placement)
+    if str(job_type) != "run_slice" or "builder" not in tokens:
+        return frozenset(tokens)
+    adapter = meta.get("adapter")
+    if not adapter:
+        lane = (meta.get("params") or {}).get("lane")
+        adapter = (lane_adapters or {}).get(str(lane)) if lane else None
+    tokens.discard("builder")
+    tokens.add(_ADAPTER_PLACEMENT_TOKENS.get(str(adapter), "builder"))
+    return frozenset(tokens)
 
 
 def _placement_ok(
-    meta: dict[str, Any], advertised: dict[str, set[str]], default_host: str
+    meta: dict[str, Any],
+    advertised: dict[str, set[str]],
+    default_host: str,
+    lane_adapters: Mapping[str, str] | None = None,
 ) -> bool:
     """Check-only placement gate (td543917): ``True`` when the job_type
     declares no :func:`placement_requires` tokens, or the host that would
@@ -986,7 +1048,7 @@ def _placement_ok(
     ``JobTypeSpec.requires`` of an ``ssh_node`` job (``has_gpaw``) is not a
     ``resource_slots`` token, so ``ssh_node`` cannot opt into
     ``check_job_type_requires`` without stranding every GPU job."""
-    tokens = placement_requires(meta)
+    tokens = placement_requires(meta, lane_adapters)
     if not tokens:
         return True
     params = meta.get("params") or {}
@@ -1001,13 +1063,15 @@ def advertised_by_host(conn: Connection) -> dict[str, set[str]]:
 
 
 def placement_gap(
-    meta: dict[str, Any], advertised: dict[str, set[str]]
+    meta: dict[str, Any],
+    advertised: dict[str, set[str]],
+    lane_adapters: Mapping[str, str] | None = None,
 ) -> frozenset[str]:
     """The job's :func:`placement_requires` tokens when NO live host in
     ``advertised`` (``host -> tokens``) offers all of them at once, else
     empty. A ``target_node`` pin narrows the search to that host. Shared by
     the sweeper's unschedulable alert and the plan tick's queued note."""
-    tokens = placement_requires(meta)
+    tokens = placement_requires(meta, lane_adapters)
     if not tokens:
         return frozenset()
     pin = (meta.get("params") or {}).get("target_node")
@@ -1795,6 +1859,34 @@ def claim_executor_jobs(
     # model-VRAM and predicted-RSS reads across the pick loop's candidates
     # (gr595542 — same key asked again for the next row hits the dict).
     fp_cache: dict[tuple[Any, ...], Any] = {}
+    # The lane→adapter map, read once per claim pass and only when a
+    # lane-named run_slice row actually reaches the placement gate
+    # (gr676054) — most passes carry no such row.
+    _lane_adapters_cache: dict[str, str] | None = None
+
+    def lane_adapters() -> dict[str, str]:
+        nonlocal _lane_adapters_cache
+        if _lane_adapters_cache is None:
+            try:
+                _lane_adapters_cache = lane_adapter_map(conn)
+            except Exception:
+                # The map is a refinement, not a gate: an unreadable lane
+                # table falls back to the ``builder`` floor — same as a
+                # lane pin that resolves to nothing.
+                log.warning("claim: lane→adapter map read failed", exc_info=True)
+                _lane_adapters_cache = {}
+        return _lane_adapters_cache
+
+    def lane_adapters_for(meta: dict[str, Any]) -> dict[str, str] | None:
+        """The lane→adapter map, only when THIS row's placement consults
+        it — a ``run_slice`` carrying ``params.lane`` and no stamped
+        ``meta.adapter`` (the adapter stamp resolves the token without
+        the table, and an unpinned row takes the ``builder`` floor)."""
+        if meta.get("job_type") != "run_slice" or meta.get("adapter"):
+            return None
+        if not (meta.get("params") or {}).get("lane"):
+            return None
+        return lane_adapters()
 
     def _stamp_lease_identity(
         ref_id: int, meta: dict[str, Any], status_value: str | None
@@ -1933,14 +2025,14 @@ def claim_executor_jobs(
             # capability-less host never reaches (and never reserves against)
             # the resource_slots path below for this row.
             return None
-        if not _placement_ok(meta, advertised, default_host):
+        if not _placement_ok(meta, advertised, default_host, lane_adapters_for(meta)):
             # Placement gate (td543917): a dark-factory op on a host without
-            # its checkout / claude / git stays queued for a capable host.
+            # its checkout / lane binary / git stays queued for a capable host.
             log.debug(
                 "claim: skip job %s on %s — placement %s not advertised",
                 ref_id,
                 default_host,
-                sorted(placement_requires(meta)),
+                sorted(placement_requires(meta, lane_adapters_for(meta))),
             )
             return None
         if reclaim_stale_running and meta.get("reserved"):
@@ -2256,7 +2348,9 @@ def claim_executor_jobs(
     running_total = 0
     if claim_host is not None:
         caps = job_type_running_caps(conn)
-        executor_cap, executor_reserve = executor_lane_limits(conn, executor)
+        executor_cap, executor_reserve = executor_lane_limits(
+            conn, executor, host=claim_host
+        )
         reserve_total = sum(executor_reserve.values())
         if executor_cap is not None:
             # Serialize this lane's count+claim (td604572 review of
@@ -3292,6 +3386,7 @@ __all__ = [
     "effective_requires",
     "is_cancel_requested",
     "job_type_requires",
+    "lane_adapter_map",
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
     "parent_pause_gaps",

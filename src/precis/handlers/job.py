@@ -480,8 +480,8 @@ _CLAIM_SETTING_SOURCES: frozenset[str] = frozenset({"cli"})
 _CLAIM_SETTING_NEXT = (
     "put(kind='job', mode='setting', args={'key': "
     "'claim.max_running.<job_type>' | 'claim.slicing.<executor>' | "
-    "'claim.slice_s.<executor>' | 'claim.executor_cap.<executor>' | "
-    "'claim.reserve.<executor>', 'value': <v>, 'reason': '<why>'}; "
+    "'claim.slice_s.<executor>' | 'claim.executor_cap.<executor>[.<host>]' | "
+    "'claim.reserve.<executor>[.<host>]', 'value': <v>, 'reason': '<why>'}; "
     "clear with args={'key': ..., 'unset': true, 'reason': ...})"
 )
 
@@ -489,7 +489,10 @@ _CLAIM_SETTING_NEXT = (
 def _claim_setting_leaf(key: str) -> str:
     """Split ``claim.<family>.<leaf>`` and validate the leaf names a real
     job_type / executor — a typo'd override must refuse at write time, not
-    sit inert in ``app_state``."""
+    sit inert in ``app_state``. ``claim.executor_cap`` / ``claim.reserve``
+    also accept ``<executor>.<host>`` (gr676054: the per-host override the
+    claim pass reads before the unsuffixed key); the host part is free-form
+    but never empty."""
     for prefix, registry in (
         (_MAX_RUNNING_KEY_PREFIX, "job_type"),
         (_SLICING_KEY_PREFIX, "executor"),
@@ -504,6 +507,14 @@ def _claim_setting_leaf(key: str) -> str:
                 if registry == "job_type"
                 else sorted(EXECUTOR_PROVIDES)
             )
+            host_scoped = (
+                prefix in (_EXECUTOR_CAP_KEY_PREFIX, _RESERVE_KEY_PREFIX)
+                and "." in leaf
+            )
+            if host_scoped:
+                head, _dot, host = leaf.partition(".")
+                if head in EXECUTOR_PROVIDES and host:
+                    return leaf
             if not leaf or leaf not in known:
                 raise BadInput(
                     f"{key!r}: unknown {registry} {leaf!r} — the override "

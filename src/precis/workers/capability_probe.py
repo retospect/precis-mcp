@@ -91,15 +91,25 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 )
 
 
+#: The per-adapter lane binaries run_slice's lane-aware placement asks
+#: for (gr676054): no ServiceSpec declares them statically —
+#: ``placement_requires`` substitutes the picked/pinned adapter's token
+#: for the ``builder`` floor — but the heartbeat must still probe them
+#: so each host advertises the lane subset it carries.
+LANE_BIN_TOKENS = frozenset({"claude_bin", "codex_bin", "kimi_bin", "devin_bin"})
+
+
 def capability_vocabulary() -> frozenset[str]:
     """Every capability token any service declares via ``requires`` or
-    ``placement`` (the check-only claim-gate tokens, td543917).
+    ``placement`` (the check-only claim-gate tokens, td543917), plus the
+    lane-bin tokens :data:`LANE_BIN_TOKENS` a lane-aware run_slice asks
+    for per job.
 
     The self-probe evaluates exactly this set, so a capability no host can
     provide still gets a definitive absent (deleted) row rather than being
     silently ignored.
     """
-    tokens: set[str] = set()
+    tokens: set[str] = set(LANE_BIN_TOKENS)
     for spec in SERVICES:
         tokens |= set(spec.requires) | set(spec.placement)
     return frozenset(tokens)
@@ -456,6 +466,46 @@ def codex_login_present() -> bool:
     return _probe()
 
 
+def _probe_adapter_bin(adapter: str) -> int:
+    """A lane adapter's binary token — resolved exactly as its argv does
+    (:func:`_slice_adapters.adapter_bin_present`; lazy import: the
+    worker module is heavier than this probe file)."""
+    from precis.workers.job_types._slice_adapters import adapter_bin_present
+
+    return 1 if adapter_bin_present(adapter) else 0
+
+
+def _probe_codex_bin() -> int:
+    """The ``codex_exec`` lane's binary (``PRECIS_CODEX_BIN`` or ``codex``
+    on PATH) — the ``codex_bin`` token."""
+    return 1 if codex_bin_present() else 0
+
+
+def _probe_kimi_bin() -> int:
+    """The ``kimi_tree`` lane's binary — the ``kimi_bin`` token."""
+    return _probe_adapter_bin("kimi_tree")
+
+
+def _probe_devin_bin() -> int:
+    """The ``devin_tree`` lane's binary — the ``devin_bin`` token."""
+    return _probe_adapter_bin("devin_tree")
+
+
+def _probe_builder() -> int:
+    """The ``builder`` token — at least one slice-lane binary on this
+    host: the unpinned ``run_slice`` placement floor (gr676054). The
+    pick then filters to the adapters actually present."""
+    for probe in (
+        _probe_claude_bin,
+        _probe_codex_bin,
+        _probe_kimi_bin,
+        _probe_devin_bin,
+    ):
+        if probe() == 1:
+            return 1
+    return 0
+
+
 def claude_agent_capable() -> bool:
     """Whether THIS host can run a ``call_claude_agent``-class workload —
     the ``claude`` binary (:func:`claude_bin_present`) OR the verified
@@ -483,6 +533,10 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "embedder": _probe_embedder,
     "git": _probe_git,
     "claude_bin": _probe_claude_bin,
+    "codex_bin": _probe_codex_bin,
+    "kimi_bin": _probe_kimi_bin,
+    "devin_bin": _probe_devin_bin,
+    "builder": _probe_builder,
     "clones_dir": _probe_clones_dir,
     "claude_config_mount": _probe_claude_config,
     "repo_checkout": _probe_repo_checkout,
