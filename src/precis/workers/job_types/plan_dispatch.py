@@ -2289,6 +2289,46 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
     return None
 
 
+def _mint_fix_reviewer(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    n: _Node,
+    fix_id: int,
+    repo: str,
+    now: datetime,
+) -> None:
+    """Mint the reviewer of the second-repo fix ``fix_id`` in the same pass
+    (td659522 step 5): ``mint_reviewer`` gives it the repo tag and the
+    ``blocked-by`` edge on the fix; the in-memory plan gets the node (like
+    :func:`_mint_task`, so later steps of this pass see it) and the open
+    release node waits on it too. A fix of a second repo would otherwise
+    land unreviewed; the FIX depth cap bounds the chain. The caller skips a
+    dry run (nothing is minted)."""
+    rid = _templates.mint_reviewer(store, n.root, fix_id, repo=repo)
+    ref = store.get_ref(kind="todo", id=rid)
+    root = plan.nodes.get(n.root)
+    plan.nodes[rid] = _Node(
+        id=rid,
+        kind="todo",
+        parent_id=n.root,
+        title=str(ref.title or "") if ref is not None else "",
+        meta=dict(ref.meta or {}) if ref is not None else {},
+        status="open",
+        created_at=now,
+        prio=None,
+        depth=(root.depth + 1) if root is not None else 1,
+        root=n.root,
+        open_tags={f"plan:{n.root}": now, f"repo:{repo}": now},
+    )
+    if root is not None:
+        root.children.append(rid)
+    plan.blockers.setdefault(rid, []).append(
+        _Blocker(id=fix_id, status="open", is_ask=False, created_at=now)
+    )
+    _gate_release_on(store, plan, w, n, rid, now)
+
+
 def _review_fix(
     store: Any,
     plan: _Plan,
@@ -2341,8 +2381,21 @@ def _review_fix(
         if _review_sha(n) is not None
         else f"{handle}'s brief is the intent"
     )
-    target = _release_scope_target(store, _reviewed_shas(store, plan, n))
-    if target is None:
+    repo = _second_repo(plan, n)
+    # A second repo's sha is not a precis sha: its release scope is never
+    # read (td659522 step 5).
+    target = (
+        None
+        if repo is not None
+        else _release_scope_target(store, _reviewed_shas(store, plan, n))
+    )
+    if repo is not None:
+        body = (
+            f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
+            f"{repo} {_repo_base(repo)}. Fix them on a fresh slice in the {repo} "
+            f"repo; the factory's lander lands it; {intent}."
+        )
+    elif target is None:
         body = (
             f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
             f"main. Fix them on a fresh slice and land it; {intent}."
@@ -2362,6 +2415,8 @@ def _review_fix(
     node = plan.nodes[fix_id]
     _tag_minted_repo(plan, w, n, fix_id, now)
     _gate_release_on(store, plan, w, n, fix_id, now)
+    if repo is not None and not w.dry_run:
+        _mint_fix_reviewer(store, plan, w, n, fix_id, repo, now)
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
     if target is not None:
         w.stamp_meta(node, {_release.LAND_TARGET_KEY: target})
@@ -2439,9 +2494,11 @@ def _review_revert(
         if from_sha is not None:
             shas = [from_sha]
     # release-train T3 review F2: a land inside the open release is
-    # reverted on its release branch, where the deploy gate wants it.
-    target = _release_scope_target(store, shas)
-    where = target or "main"
+    # reverted on its release branch, where the deploy gate wants it. A
+    # second repo's sha is no precis sha: its scope is never read.
+    repo = _second_repo(plan, n)
+    target = None if repo is not None else _release_scope_target(store, shas)
+    where = target or (f"{repo} {_repo_base(repo)}" if repo else "main")
     if len(shas) == 1:
         title = f"Revert {shas[0]} on {where}"
     elif shas:
@@ -2453,7 +2510,19 @@ def _review_revert(
         if shas
         else f"the squash commit(s) naming {handle} (`git log --grep {handle} origin/main`)"
     )
-    if target is None:
+    if repo is not None:
+        cmds = (
+            ", ".join(f"`git revert --no-edit {s}`" for s in shas)
+            if shas
+            else "`git revert --no-edit <sha>` for each commit naming " + handle
+        )
+        body = (
+            f"Revert {named} in the {repo} repo: a builder slice whose whole "
+            f"change is {cmds} (newest first); no other edit, no version "
+            "bump, no push. The factory's lander lands it."
+            f"\n\nWhy (review td{n.id}): {why}"
+        )
+    elif target is None:
         body = (
             f"Revert {named} on main: `git revert --no-edit <sha>` for each, "
             "newest first; resolve conflicts against the current main; commit "
@@ -4636,6 +4705,26 @@ def _pin_params(
     return out, None
 
 
+def _second_repo(plan: _Plan, reviewer: _Node) -> str | None:
+    """The one non-default repo a reviewer's verdict concerns (td659522
+    step 5): the repo governing the reviewer, else the first review target
+    that has one. ``None`` for the default repo, no repo, or more than one."""
+    repos = _node_repos(plan, reviewer)
+    for t in () if repos else _review_targets(plan, reviewer):
+        repos = _node_repos(plan, t)
+        if repos:
+            break
+    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+        return None
+    return repos[0]
+
+
+def _repo_base(repo: str) -> str:
+    """The base branch of ``repo``'s build profile (``main`` without one)."""
+    profile = _lanes.repo_profile(repo)
+    return profile.base if profile is not None else "main"
+
+
 def _tag_minted_repo(
     plan: _Plan, w: _Writer, reviewer: _Node, minted_id: int, now: datetime
 ) -> None:
@@ -4646,18 +4735,12 @@ def _tag_minted_repo(
     a single non-default repo not already governing the minted node is
     tagged."""
     minted = plan.nodes.get(minted_id)
-    if minted is None:
+    repo = _second_repo(plan, reviewer)
+    if minted is None or repo is None:
         return
-    repos = _node_repos(plan, reviewer)
-    for t in () if repos else _review_targets(plan, reviewer):
-        repos = _node_repos(plan, t)
-        if repos:
-            break
-    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+    if _node_repos(plan, minted) == [repo]:
         return
-    if _node_repos(plan, minted) == repos:
-        return
-    w.add_tag(minted, f"repo:{repos[0]}", now)
+    w.add_tag(minted, f"repo:{repo}", now)
 
 
 def _gate_release_on(
@@ -5650,6 +5733,26 @@ def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) ->
         log.info("plan_dispatch: %s", note)
 
 
+def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
+    """Why the reviewer ``n`` must not dispatch: the repo it resolves to
+    (:func:`_node_repos`, none = the default) is not the repo its review
+    target(s) landed in (``meta.landed_repo``, absent = the default).
+    ``None`` when they agree. A reviewer with no target in the plan (a
+    sha-keyed one) compares against the default repo."""
+    tagged = _node_repos(plan, n)
+    own = tagged[0] if tagged else _lanes.DEFAULT_REPO
+    landed = {
+        str(t.meta.get(_lanes.LANDED_REPO_KEY) or _lanes.DEFAULT_REPO)
+        for t in _review_targets(plan, n)
+    } or {_lanes.DEFAULT_REPO}
+    if landed == {own}:
+        return None
+    return (
+        f"review repo mismatch: the reviewer resolves to repo {own}, its "
+        f"target landed in {', '.join(sorted(landed))}"
+    )
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -5703,6 +5806,13 @@ def _step_dispatch(
         if repo_problem is not None:
             res.notes.append(f"td{n.id}: not dispatched — {repo_problem}")
             continue
+        if _is_reviewer(n):
+            # td659522 step 5: a reviewer runs in the repo its target landed
+            # in; a mismatch would review one repo's sha in another's tree.
+            mismatch = _review_repo_mismatch(plan, n)
+            if mismatch is not None:
+                res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
+                continue
         if n.id in held:
             res.notes.append(
                 f"td{n.id}: file-overlap hold — brief names files in "

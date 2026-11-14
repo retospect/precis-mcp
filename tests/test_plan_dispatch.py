@@ -9079,10 +9079,14 @@ def test_fix_or_revert_todo_carries_the_reviewed_slices_second_repo(
     if root_tag:
         store.add_tag(mint.root_id, Tag.open(root_tag), set_by="system")
     pd.run_pass(store)
+    # A second-repo fix also gets its own reviewer in the same pass (step 5):
+    # pick the fix todo itself.
     (new,) = [
         c
         for c in _children(store, mint.root_id)
         if c not in (ids["b1"], ids["rb1"], ids["rel"], ids["pin"])
+        and (ref := store.get_ref(kind="todo", id=c)) is not None
+        and (ref.title or "").startswith(("Fix review findings", "Revert"))
     ]
     tags = {t for t in _open_tags(store, new) if t.startswith("repo:")}
     assert tags == ({"repo:catpath"} if expected else set())
@@ -9521,3 +9525,288 @@ def test_pin_bump_node_lives_while_its_release_node_is_open(
     pd.run_pass(store)
     got = _plan_statuses(store, mint, "rel", "pin")
     assert all(v not in pd.TERMINAL_TODO_STATUSES for v in got.values())
+
+
+# ── the second-repo reviewer (td659522 step 5, round R4) ───────────
+
+
+def _review_dispatch_plan(
+    store: Store, *, slice_repo: str | None, review_repo: str | None
+) -> T.PlanMint:
+    """root: landed slice b1 -> reviewer rb1, both ready; the slice carries
+    ``meta.landed_repo`` when ``slice_repo`` names one, the reviewer its
+    own ``repo:`` tag when ``review_repo`` does."""
+    mint = _release_plan(store)
+    b1, rb1 = mint.ids["b1"], mint.ids["rb1"]
+    _todo_comment(store, b1, "landed: abc1234 — the slice")
+    _mark_done(store, b1)
+    if slice_repo:
+        store.stamp_ref_meta(b1, {L.LANDED_REPO_KEY: slice_repo})
+        store.add_tag(b1, Tag.open(f"repo:{slice_repo}"), set_by="system")
+    if review_repo:
+        store.add_tag(rb1, Tag.open(f"repo:{review_repo}"), set_by="system")
+    return mint
+
+
+@pytest.mark.parametrize(
+    ("slice_repo", "review_repo"), [("catpath", None), (None, "catpath")]
+)
+def test_a_reviewer_of_another_repos_land_is_not_dispatched(
+    store: Store,
+    release_op: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    slice_repo: str | None,
+    review_repo: str | None,
+) -> None:
+    """A reviewer whose resolved repo differs from the repo its target landed
+    in (an untagged reviewer of a catpath slice, a catpath reviewer of a
+    precis slice) mints no job and leaves one note; if this fails it reviews
+    one repo's sha in the other's tree."""
+    use_lanes(monkeypatch)
+    mint = _review_dispatch_plan(store, slice_repo=slice_repo, review_repo=review_repo)
+    rb1 = mint.ids["rb1"]
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rb1) == []
+    assert [n for n in res.notes if f"td{rb1}: not dispatched — review repo" in n]
+
+
+def test_a_reviewer_in_the_repo_its_target_landed_in_passes_the_guard(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catpath reviewer of a catpath land is not stopped by the repo
+    guard (run_slice may still refuse it elsewhere); if this fails the guard
+    blocks the agreeing pair too."""
+    use_lanes(monkeypatch)
+    _review_dispatch_plan(store, slice_repo="catpath", review_repo="catpath")
+    res = pd.run_pass(store)
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
+def test_a_precis_reviewer_of_a_precis_land_still_dispatches(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both default: the guard is silent and the reviewer gets its job; if
+    this fails every precis review stops."""
+    use_lanes(monkeypatch)
+    mint = _review_dispatch_plan(store, slice_repo=None, review_repo=None)
+    res = pd.run_pass(store)
+    assert len(_jobs_under(store, mint.ids["rb1"])) == 1
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
+def _catpath_reviewed(store: Store, verdict: str, *, landed_job: bool) -> T.PlanMint:
+    """``_release_reviewed`` for a catpath slice: slice, reviewer and
+    release node tagged ``repo:catpath``, the slice stamped landed there."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    for key in ("b1", "rb1", "rel"):
+        store.add_tag(mint.ids[key], Tag.open("repo:catpath"), set_by="system")
+    store.stamp_ref_meta(mint.ids["b1"], {L.LANDED_REPO_KEY: "catpath"})
+    return mint
+
+
+def _minted_children(store: Store, root: int, known: set[int]) -> dict[str, int]:
+    """The todos under ``root`` not in ``known``, keyed ``fix`` / ``revert`` /
+    ``review`` by title."""
+    out: dict[str, int] = {}
+    for c in _children(store, root):
+        ref = store.get_ref(kind="todo", id=c)
+        title = str(ref.title or "") if ref is not None else ""
+        if c in known:
+            continue
+        for key, prefix in (
+            ("fix", "Fix review findings"),
+            ("revert", "Revert"),
+            ("review", "Review the"),
+        ):
+            if title.startswith(prefix):
+                out[key] = c
+    return out
+
+
+def _new_children(store: Store, mint: T.PlanMint) -> dict[str, int]:
+    return _minted_children(store, mint.root_id, set(mint.ids.values()))
+
+
+def test_catpath_fix_is_repo_worded_and_gets_its_own_reviewer(
+    store: Store, release_op: Any
+) -> None:
+    """FIX on a catpath reviewer: the fix is tagged, worded for the repo (no
+    precis main, ship or land target), its reviewer is minted in the same
+    pass (tagged, blocked-by the fix) and the open release waits on both;
+    if this fails a catpath fix lands unreviewed or releases early."""
+    mint = _catpath_reviewed(
+        store, "review: FIX — a.py misses the empty case", landed_job=False
+    )
+    ids = mint.ids
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    fix, rev = new["fix"], new["review"]
+    assert "repo:catpath" in _open_tags(store, fix)
+    body = _body_text(store, fix)
+    assert (
+        f"Findings of the review td{ids['rb1']} of td{ids['b1']}'s land on "
+        "catpath main. Fix them on a fresh slice in the catpath repo; the "
+        f"factory's lander lands it; td{ids['b1']}'s brief is the intent."
+    ) in body
+    assert "scripts/ship" not in body
+    assert "land target:" not in body
+    assert "land on main" not in body
+    assert "repo:catpath" in _open_tags(store, rev)
+    assert f"plan:{mint.root_id}" in _open_tags(store, rev)
+    assert _meta(store, rev)["generate"]["from"] == f"td{fix}"
+    assert _blocked_by_ids(store, rev) == [fix]
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], fix, rev])
+    assert _meta(store, fix)["fix_depth"] == 1
+    pd.run_pass(store)  # idempotent: no second fix, reviewer or edge
+    assert _new_children(store, mint) == new
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], fix, rev])
+
+
+def test_catpath_fix_dry_run_mints_nothing(store: Store, release_op: Any) -> None:
+    """A dry run of a catpath FIX mints neither the fix nor its reviewer and
+    adds no release edge; if this fails the read-only tick writes."""
+    mint = _catpath_reviewed(store, "review: FIX — hole", landed_job=False)
+    before = _children(store, mint.root_id)
+    pd.run_pass(store, dry_run=True)
+    assert _children(store, mint.root_id) == before
+    assert _blocked_by_ids(store, mint.ids["rel"]) == [mint.ids["rb1"]]
+
+
+def test_catpath_revert_is_one_tagged_slice_without_a_reviewer(
+    store: Store, release_op: Any
+) -> None:
+    """REVERT on a catpath reviewer: one revert slice tagged with the repo,
+    its body naming `git revert --no-edit <sha>`, no precis ship text, no
+    reviewer of its own, and the release gated on it; if this fails a
+    catpath revert runs precis' release-scope read or reviews itself."""
+    mint = _catpath_reviewed(store, "review: REVERT — bad", landed_job=True)
+    ids = mint.ids
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    assert set(new) == {"revert"}
+    revert = new["revert"]
+    assert "repo:catpath" in _open_tags(store, revert)
+    body = _body_text(store, revert)
+    assert "`git revert --no-edit abc1234`" in body
+    assert "scripts/ship" not in body
+    assert "land target:" not in body
+    assert "no push" in body and "no version bump" in body
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], revert])
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [("review: FIX — hole", False), ("review: REVERT — bad", True)],
+)
+def test_catpath_verdict_never_reads_the_precis_release_scope(
+    store: Store,
+    release_op: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    landed_job: bool,
+) -> None:
+    """A second-repo verdict does not call the precis release-scope read;
+    if this fails a catpath sha is looked up in precis release branches."""
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("release scope read for a second repo")
+
+    monkeypatch.setattr(pd, "_release_scope_target", boom)
+    mint = _catpath_reviewed(store, verdict, landed_job=landed_job)
+    pd.run_pass(store)
+    assert _new_children(store, mint)
+
+
+def test_catpath_fix_chain_alternates_and_caps_at_round_four(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fix -> reviewer -> fix through ``generate.from``: each reviewer's FIX
+    reads the depth off the fix it reviewed (1, 2, 3), and the fourth round
+    parks the root with the cap ask instead of minting; if this fails a
+    second-repo chain is unbounded."""
+    use_lanes(monkeypatch)
+    mint = _catpath_reviewed(store, "review: FIX — hole one", landed_job=False)
+    ids = mint.ids
+    root = mint.root_id
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    for depth in (1, 2, 3):
+        fix, rev = new["fix"], new["review"]
+        assert _meta(store, fix)["fix_depth"] == depth
+        assert _blocked_by_ids(store, rev) == [fix]
+        _land(store, fix, f"{depth}ddd111")
+        _job(store, rev, lane="claude-sub")
+        store.add_tag(rev, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+        _todo_comment(store, rev, f"review: FIX — hole {depth + 1}")
+        known = set(_children(store, root))
+        pd.run_pass(store)
+        assert _status(store, rev) == "done"
+        if depth < 3:
+            new = _minted_children(store, root, known)
+            assert set(new) == {"fix", "review"}
+            assert "repo:catpath" in _open_tags(store, new["review"])
+            assert _blocked_by_ids(store, ids["rel"]).count(new["review"]) == 1
+    assert "waiting-for:coordinator" in _open_tags(store, root)
+    assert _meta(store, rev)["review"]["verdict"] == "FIX"
+    assert "cap_ask" in _meta(store, rev)["review"]
+    assert _status(store, ids["rel"]) not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_precis_fix_body_and_behaviour_are_unchanged(store: Store) -> None:
+    """A precis reviewer's FIX body is byte-identical to the one the chain
+    item test pins, mints no reviewer for the fix and tags no repo; if this
+    fails the second-repo wording leaked into precis."""
+    mint = _reviewed(store, "review: FIX — hole one")
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    assert set(new) == {"fix"}
+    assert _body_text(store, new["fix"]) == (
+        "hole one\n\n"
+        f"Findings of the review td{mint.ids['review']} of td{mint.ids['build']}'s "
+        "land on main. Fix them on a fresh slice and land it; "
+        f"td{mint.ids['build']}'s brief is the intent."
+    )
+    assert not {t for t in _open_tags(store, new["fix"]) if t.startswith("repo:")}
+
+
+def _dead_catpath_plan(store: Store, *, slices: tuple[str, ...]) -> T.PlanMint:
+    """The release plan with every slice, reviewer and the release node
+    tagged ``repo:catpath``."""
+    mint = _release_plan(store, slices=slices)
+    for key, tid in mint.ids.items():
+        if key != "pin":
+            store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    return mint
+
+
+def test_catpath_slice_that_landed_nothing_closes_the_whole_chain(
+    store: Store, release_op: Any
+) -> None:
+    """One slice done with ``landed: nothing``: its reviewer, the release
+    node and the pin node close won't-do; if this fails a no-diff batch
+    leaves the release waiting forever."""
+    mint = _dead_catpath_plan(store, slices=("b1",))
+    _todo_comment(store, mint.ids["b1"], "landed: nothing — no diff")
+    _mark_done(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_catpath_release_stays_open_while_another_slice_landed(
+    store: Store, release_op: Any
+) -> None:
+    """Two slices, one landed nothing and one landed: only the dead
+    slice's reviewer closes; the release and pin nodes stay open; if this
+    fails one empty slice drops the whole batch."""
+    mint = _dead_catpath_plan(store, slices=("b1", "b2"))
+    _todo_comment(store, mint.ids["b1"], "landed: nothing — no diff")
+    _mark_done(store, mint.ids["b1"])
+    _todo_comment(store, mint.ids["b2"], "landed: abc1234 — the slice")
+    _mark_done(store, mint.ids["b2"])
+    store.stamp_ref_meta(mint.ids["b2"], {L.LANDED_REPO_KEY: "catpath"})
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert got["rb1"] == "won't-do"
+    for key in ("rb2", "rel", "pin"):
+        assert got[key] not in pd.TERMINAL_TODO_STATUSES
