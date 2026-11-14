@@ -391,7 +391,8 @@ with two read-time, mechanical reads (no `% done`):
   quest that is not yet settled — `STATUS:refuted` or the dialectic's
   `settle` closes it; **transitional**: a `hypothesis` logbook entry with
   no later `result`/`dead-end` still counts until the tick stops logging
-  hypotheses as entries), **needs-experiment** (a graduated candidate
+  hypotheses as entries, except an `fi`-linked pointer, which defers to
+  its finding), **needs-experiment** (a graduated candidate
   waiting on a real-world experiment), **needs-tool** (an open gripe the
   tick filed for a capability that doesn't exist — see the next section).
   Gaps *are* where to look next.
@@ -463,8 +464,10 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place; refuted per the record-a-rejection workflow ([[precis-nanopub-help]]) |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place; refuted per the record-a-rejection workflow — pending gr664308 (lands in `precis-nanopub-help`/`precis-finding-help`); until then: `retracts`/`superseded-by`-link the hypothesis to the negative ruling and stamp `STATUS:refuted` on it, so the do-not-repropose ledger and the gap list close it |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
+
+## Directions — state rides `STATUS`, not tags
 
 An idea's state never rides a tag — not `ATTEMPT:`, not
 `DREAM:speculative`: a try that ran its course marks `done`, a

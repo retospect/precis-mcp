@@ -170,6 +170,85 @@ class TestGaps:
         )
         assert "open-hypothesis" not in _gap_kinds(store, qid)
 
+    def test_fi_pointer_entry_defers_to_the_finding_gap(self, store: Any) -> None:
+        """A ``hypothesis`` logbook entry naming a served hypothesis finding
+        is a dated pointer, not a second hypothesis: the quest reports the
+        finding's gap once, handle and all (gr674775 review td674960)."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a pointed-at hypothesis"))
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        h.put(
+            id=qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry="hypothesis",
+        )
+        flagged = [g for g in quest_gaps(store, qid) if g.kind == "open-hypothesis"]
+        assert len(flagged) == 1
+        assert flagged[0].handle == f"fi{fid}"
+
+    def test_fi_pointer_entry_leaves_no_legacy_gap_after_refutation(
+        self, store: Any
+    ) -> None:
+        """Once the pointed-at finding is refuted, its logbook pointer must
+        not linger as an un-answerable legacy ``open-hypothesis`` gap."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a refuted pointer"))
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        h.put(
+            id=qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry="hypothesis",
+        )
+        store.add_tag(fid, Tag.closed("STATUS", "refuted"), set_by="system")
+        assert "open-hypothesis" not in _gap_kinds(store, qid)
+
+    def test_fi_pointer_entry_leaves_no_legacy_gap_after_dialectic_settle(
+        self, store: Any
+    ) -> None:
+        """A ``settle`` op on the pointed-at finding closes the pointer too."""
+        from precis.quest.dossier import apply_dialectic_op
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a settled pointer"))
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        h.put(
+            id=qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry="hypothesis",
+        )
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "settle",
+                "hypothesis": f"fi{fid}",
+                "text": "settled — [st1] showed the barrier is low",
+            },
+        )
+        assert "open-hypothesis" not in _gap_kinds(store, qid)
+
+    def test_fi_pointer_to_unserved_finding_keeps_legacy_tracking(
+        self, store: Any
+    ) -> None:
+        """A pointer whose ``fi`` does not ``serves`` the quest is not
+        governed by the finding leg — the entry stays an ordinary
+        open-hypothesis gap so the question is never silently dropped
+        (and the missing link still surfaces)."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with an unlinked pointer"))
+        fid = _mint_hypothesis(store)  # minted but never serves-linked
+        h.put(
+            id=qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry="hypothesis",
+        )
+        flagged = [g for g in quest_gaps(store, qid) if g.kind == "open-hypothesis"]
+        assert len(flagged) == 1
+        assert flagged[0].handle is None  # the legacy logbook leg, not the finding
+
 
 # ── structure fan-out cap (gr311678) ────────────────────────────────────
 

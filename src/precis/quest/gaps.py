@@ -9,7 +9,8 @@ the nodes that ``serves`` a quest, no minting:
 * **Gaps** — a striving with little support, a served ``concept`` stuck at low
   mastery, a quest with no literature grounding, an un-answered hypothesis (a
   ``serves``-linked hypothesis finding not yet settled; the older
-  ``hypothesis`` logbook entry still counts, transitional). Each is a
+  ``hypothesis`` logbook entry still counts, transitional — an ``fi``-linked
+  pointer entry defers to its finding). Each is a
   concrete, computable "here is where to look next".
 * **Health** — *momentum* (are deeds + knowledge flowing in? recent logbook +
   recent server activity, open todos moving, no ``child-failed`` bubble) and an
@@ -211,8 +212,11 @@ def quest_gaps(
     #    still logs proposals and open questions as ``hypothesis`` entries
     #    until its own gripe lands, so an entry with no later *supported*
     #    result / dead-end (:func:`_answers_hypothesis`: a bare `by=agent`
-    #    kill is restatement, not an answer) still surfaces alongside.
-    for r in _open_hypothesis_findings(store, quest_id, live):
+    #    kill is restatement, not an answer) still surfaces alongside —
+    #    except an entry naming a governed ``fi`` handle, which is a dated
+    #    pointer the finding leg already owns (:func:`_open_hypotheses`).
+    open_hyps, governed = _open_hypothesis_findings(store, quest_id, live)
+    for r in open_hyps:
         title = (r.title or "").splitlines()[0] if r.title else ""
         gaps.append(
             Gap(
@@ -221,7 +225,7 @@ def quest_gaps(
                 handle=_handle("finding", r.id),
             )
         )
-    for text in _open_hypotheses(store, quest_id):
+    for text in _open_hypotheses(store, quest_id, governed):
         gaps.append(
             Gap(
                 kind="open-hypothesis",
@@ -372,8 +376,13 @@ def _answers_hypothesis(b: ChunkRow) -> bool:
 
 def _open_hypothesis_findings(
     store: Store, quest_id: int, live: list[Ref]
-) -> list[Ref]:
-    """Hypothesis findings serving the quest that are not yet settled.
+) -> tuple[list[Ref], set[int]]:
+    """Open hypothesis findings serving the quest, plus their governed ids.
+
+    Returns ``(open, governed)``: ``open`` is the served hypothesis
+    findings not yet settled, ``governed`` the ids of *all* served
+    hypothesis findings, settled or not — the set the finding leg owns,
+    which a fi-linked logbook pointer defers to.
 
     A finding is a hypothesis when ``meta.artifact_type == 'hypothesis'``
     (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE`` — the durable
@@ -392,7 +401,7 @@ def _open_hypothesis_findings(
         and str((r.meta or {}).get("artifact_type") or "") == "hypothesis"
     ]
     if not hyps:
-        return []
+        return [], set()
     settled: set[int] = set()
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -410,11 +419,40 @@ def _open_hypothesis_findings(
         settled.update(
             b.hypothesis_id for b in _load_dialectic_blocks(store, did) if b.settled
         )
-    return [r for r in hyps if r.id not in settled]
+    return [r for r in hyps if r.id not in settled], {r.id for r in hyps}
 
 
-def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
-    """Hypothesis logbook entries with no later *answering* entry."""
+#: An ``fi<id>`` handle inside a ``hypothesis`` logbook entry's text — the
+#: dated-pointer convention (decision me674763): the entry only records
+#: that a hypothesis finding was raised; the finding IS the hypothesis.
+_FI_POINTER_RE = re.compile(r"\bfi(\d+)\b")
+
+
+def _is_finding_pointer(text: str, governed: set[int]) -> bool:
+    """True when the entry names an ``fi<id>`` the finding leg owns.
+
+    The pointer defers only when its finding ``serves`` the quest —
+    then the finding leg is authoritative for open/settled and the
+    entry must not double-count. A pointer naming any other ``fi``
+    (unserved, retired, dangling) keeps the legacy answer-tracking
+    treatment so the question is never silently dropped.
+    """
+    return any(int(m) in governed for m in _FI_POINTER_RE.findall(text or ""))
+
+
+def _open_hypotheses(
+    store: Store, quest_id: int, governed: set[int] | None = None
+) -> list[str]:
+    """Hypothesis logbook entries with no later *answering* entry.
+
+    ``governed`` is the set of served hypothesis-finding ids the finding
+    leg owns: an entry that names one is a dated pointer, never the
+    hypothesis itself, so it is skipped here — a pointer to a live
+    hypothesis must not duplicate the finding's own gap, and a pointer
+    to a refuted or dialectic-settled one must not linger as a legacy
+    gap the finding leg already closed.
+    """
+    governed = governed or set()
     blocks = [
         b
         for b in store.chunks.list_chunks_for_ref(quest_id)
@@ -434,6 +472,7 @@ def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
         for i, b in enumerate(blocks)
         if str((b.meta or {}).get("entry_type", "note")) == "hypothesis"
         and i > last_answer
+        and not _is_finding_pointer(b.text, governed)
     ]
 
 
