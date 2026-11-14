@@ -2818,6 +2818,245 @@ def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
     assert checkout["argv"][-1] == [str(script), "41"]
 
 
+def test_restamp_parks_on_a_hand_closed_fix_while_the_head_has_not_moved(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664485 (r309): the fix node closed by hand — a bare ``done``,
+    gr663909's hand close — while ``scripts/ship --onto`` was still
+    pushing. An unmoved head is then not "no fix landed": the restamp
+    parks and re-reads the head, refuses loudly once the park cap is
+    spent, and moves ``meta.release`` onto the push when it arrives —
+    never leaving the recorded sha on the red cut for the poll to
+    judge."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _close(store, it["fix"])  # a hand close: STATUS:done, no outcome comment
+    parks: list[Any] = []
+
+    def _park(*a: Any) -> bool:
+        parks.append(a)
+        return True
+
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=_park,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    assert "push may still be in flight" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+    # The park cap spends and the push never arrived: a loud refusal,
+    # not a quiet "no fix landed".
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=lambda *a: False,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures and "cannot move meta.release" in ctx.failures[-1]
+
+    # The push lands: the re-dispatched restamp moves meta.release.
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA3)
+    ctx = Ctx(store, {"restamp": True, "todo_id": it["restamp"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    rel = _meta(store, mint.root_id)["release"]
+    assert (rel["sha"], rel["cut_sha"]) == (SHA3, SHA)
+
+
+def test_restamp_parks_on_a_recorded_land_the_head_does_not_show(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fix node whose ``landed: <sha>`` comment records a push owes
+    the release branch that push: a head still on the recorded cut
+    means it has not arrived — the restamp waits for it, it does not
+    stand down."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _comment(store, it["fix"], f"landed: {SHA3[:9]} — fix test_alpha")
+    _close(store, it["fix"])
+    parks: list[Any] = []
+
+    def _park(*a: Any) -> bool:
+        parks.append(a)
+        return True
+
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=_park,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    assert f"td{it['fix']} recorded landed: {SHA3[:9]}" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+def test_restamp_unmoved_head_still_stands_down_on_a_no_land_close(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "no fix landed" stand-down survives for the closes that
+    prove no push is owed — a verdict comment (``no-op:`` — the
+    digest's own closes), ``landed: nothing``, ``won't-do``. An
+    unmoved head on those writes nothing, as before."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _comment(store, it["fix"], "no-op: already green on origin/release/r7")
+    _close(store, it["fix"])
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=lambda *a: (_ for _ in ()).throw(AssertionError("parked")),
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert "no fix landed" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+    assert ctx.stamped["ci_verdict_restamp"] == {"head": SHA, "moved": False}
+
+
+def test_restamp_stands_down_on_a_handoff_first_line_verdict(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664485 review: run_slice's finishing contract puts the close
+    verdict on the handoff's FIRST line (``handoff: no-op: …``,
+    ``handoff: verified: …``); the owed scan must read it there, not
+    only on the handoff's later lines — a fix closed with one owes the
+    branch nothing, so an unmoved head still stands down."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _comment(
+        store,
+        it["fix"],
+        "handoff: verified: td987 green on origin/main\n"
+        "the loop's next cut is the check",
+    )
+    _close(store, it["fix"])
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=lambda *a: (_ for _ in ()).throw(AssertionError("parked")),
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert "no fix landed" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+def test_restamp_reads_a_land_on_the_handoff_first_line(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first-line read cuts the other way too: ``handoff: landed:
+    <sha>`` records a push the unmoved head does not show — the restamp
+    waits on it."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _comment(store, it["fix"], f"handoff: landed: {SHA3[:9]} — fix test_alpha")
+    _close(store, it["fix"])
+    parks: list[Any] = []
+
+    def _park(*a: Any) -> bool:
+        parks.append(a)
+        return True
+
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=_park,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    assert f"td{it['fix']} recorded landed: {SHA3[:9]}" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+def test_restamp_parks_when_only_an_earlier_attempt_recorded_no_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664485 review: the fix was reopened and its SECOND attempt
+    closed bare ``done`` while ``ship --onto`` was still pushing —
+    attempt one's ``handoff: no-op:`` is not this attempt's outcome.
+    The owed scan stops at the previous attempt's handoff boundary, so
+    the restamp still waits on the push."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    _comment(store, it["fix"], "handoff: no-op: the ids were already green")
+    _comment(store, it["fix"], "handoff: pushed the fix; ship --onto running")
+    _close(store, it["fix"])
+    parks: list[Any] = []
+
+    def _park(*a: Any) -> bool:
+        parks.append(a)
+        return True
+
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=_park,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    assert "no recorded land or verdict" in ctx.chunks[-1][1]
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+def test_restamp_reads_no_outcome_in_a_non_comment_chunk(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664485 review: the owed scan reads ``todo_comment`` chunks
+    only — a ``no-op:`` line inside a job summary is quoted grammar
+    (td604234), not the close's recorded outcome, so a bare ``done``
+    still owes proof."""
+    mint, it = _red_iteration(store)
+    _close(store, it["digest"])
+    ord_ = (
+        max(
+            (int(c.ord) for c in store.chunks.list_chunks_for_ref(it["fix"])),
+            default=0,
+        )
+        + 1
+    )
+    store.chunks.insert_chunks(
+        it["fix"],
+        [
+            ChunkInsert(
+                ord=ord_,
+                text="no-op: quoted inside a job summary",
+                meta={"chunk_kind": "job_summary"},
+            )
+        ],
+    )
+    _close(store, it["fix"])
+    parks: list[Any] = []
+
+    def _park(*a: Any) -> bool:
+        parks.append(a)
+        return True
+
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(
+        store,
+        {"restamp": True, "todo_id": it["restamp"]},
+        defer=_park,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    assert "no recorded land or verdict" in ctx.chunks[-1][1]
+
+
 def _iteration2(store: Store, loop_id: int, first: set[int]) -> dict[str, int]:
     with store.pool.connection() as conn:
         rows = conn.execute(

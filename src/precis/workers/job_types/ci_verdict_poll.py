@@ -59,8 +59,18 @@ API (:func:`fetch_head`) and moves ``meta.release`` onto it with no cut
 (:func:`precis.plans.release.record_head`: sha, range end, the
 ``tests-green`` gate and the loop's ``until``). The poll after it then
 waits on the run the fixes' push started; the digest of a second red
-reads that run. A head equal to the recorded sha (no fix landed) writes
-nothing. The no-run ladder's clock is ``meta.release.head_at`` once a
+reads that run. A head equal to the recorded sha splits on the fix
+nodes' closes (:func:`_restamp_owed`, gr664485): a close is not a push
+— a hand close (gr663909) releases the restamp while the
+``ship --onto`` push is still in flight. When a blocker may still owe
+the branch a push — a recorded ``landed: <sha>`` the head does not
+show, a held land, an open or bare-``done`` close with no legible
+outcome — the restamp parks and re-reads the head like a pending poll,
+then fails loudly at the park cap rather than leaving ``meta.release``
+on the red cut and letting the poll judge the stale run. When every
+blocker closed with no land owed (verdict closes, ``won't-do``,
+``landed: nothing``) an unmoved head writes nothing, as before. The
+no-run ladder's clock is ``meta.release.head_at`` once a
 restamp set it, else ``cut_at``.
 
 A poll the plan tick mints for a ``validated:`` non-repro rerun
@@ -266,6 +276,151 @@ def fetch_head(repo: str, branch: str) -> str | None:
     return sha if _FULL_SHA_RE.match(sha) else None
 
 
+#: A ``landed: <sha>`` comment line — the record a fixer's land_slice
+#: leaves on the fix todo (``land_slice._LANDED_COMMENT_RE``). An
+#: all-zeros sha is the gate's PENDING_SHA placeholder, not a land.
+_LANDED_SHA_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+#: ``landed: nothing``/other non-sha ``landed:`` lines — a land that
+#: pushed no commit owes the branch nothing.
+_LANDED_ANY_RE = re.compile(r"^landed:", re.IGNORECASE)
+#: The no-land closes a fix todo's comments may carry: the verdicts
+#: (``no-op:``/``moot:``/``validated:`` — ``plans.nodes.any_verdict``'s
+#: set), the release-fix ``verified:`` escape, and the digest's
+#: ``waived:`` close. A close carrying one of these owes the release
+#: branch no push.
+_NO_LAND_RE = re.compile(
+    r"^\s*(?:no-op|moot|validated|verified|waived)\s*:", re.IGNORECASE
+)
+#: Terminal todo statuses a fix node may close with owing no push —
+#: ``precis.todo.TERMINAL_TODO_STATUSES`` minus ``done``.
+_NO_LAND_STATUS = frozenset({"won't-do", "auto-timeout"})
+
+
+def _restamp_blockers(store: Any, restamp_id: int) -> list[int]:
+    """The todos the restamp node waits on — the iteration's fix nodes
+    (``src`` waits on ``dst`` in a ``blocked-by`` link)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND src_ref_id = %s ORDER BY dst_ref_id",
+            (restamp_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _comment_outcome(text: str) -> tuple[str, str] | None:
+    """The close outcome one comment records: ``('landed', sha)`` a push
+    was recorded, ``('no-land', line)`` a close that owes the release
+    branch nothing — a first-line ``landed:``/verdict comment, or a
+    ``handoff:`` comment's outcome line. The finishing contract puts the
+    verdict on the handoff's own first line (``handoff: no-op: …``,
+    ``handoff: verified: …``), so the ``handoff:`` prefix is stripped
+    before that line is read — not only its later lines. ``None`` —
+    other comments never count: a brief quoting the verdict grammar is
+    no outcome (td604234)."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    if lines[0].lower().startswith("handoff:"):
+        embedded = lines[0][len("handoff:") :].strip()
+        candidates = ([embedded] if embedded else []) + lines[1:]
+    else:
+        candidates = lines[:1]
+    for s in candidates:
+        m = _LANDED_SHA_RE.match(s)
+        if m is not None and m.group(1).lstrip("0"):
+            return "landed", m.group(1).lower()
+        if _LANDED_ANY_RE.match(s) or _NO_LAND_RE.match(s):
+            return "no-land", s[:80]
+    return None
+
+
+def _fix_owed(store: Any, fix_id: int) -> str | None:
+    """Why a todo blocking the restamp may still owe ``release/r<N>`` a
+    push, else ``None``: a held land (``meta.pending_land``) or a
+    ``landed: <sha>`` comment the head does not show, a still-open node
+    (never reached — the restamp is blocked-by it), or a bare ``done``
+    with no legible outcome — a hand close (gr663909) whose
+    ``ship --onto`` may still be in flight. A ``won't-do``/verdict/
+    ``landed: nothing`` close owes nothing.
+
+    The outcome scan reads only the CURRENT attempt's ``todo_comment``
+    chunks — newest-first down to (not through) the second
+    ``handoff:``/``brief:`` boundary, the ``run_slice._posted_verdict``
+    convention — so an earlier attempt's ``no-op:`` close cannot read as
+    this attempt's outcome and hide a bare ``done`` whose push is still
+    in flight. A ``landed:``/verdict line inside a job summary or the
+    todo body is quoted grammar (td604234), not the close's outcome."""
+    from precis.plans.templates import PENDING_LAND_KEY
+    from precis.workers.job_types import run_slice as _rs
+
+    ref = store.get_ref(kind="todo", id=fix_id)
+    if ref is None:
+        return None
+    if isinstance((ref.meta or {}).get(PENDING_LAND_KEY), dict):
+        return f"td{fix_id} holds a pending land"
+    status = "open"
+    for tag in store.tags_for(fix_id):
+        if tag.prefix == "STATUS":
+            status = str(tag.value)
+            break
+    if status in _NO_LAND_STATUS:
+        return None
+    if status != "done":
+        return f"td{fix_id} is still {status}"
+    comments = sorted(
+        (
+            c
+            for c in store.chunks.list_chunks_for_ref(fix_id)
+            if c.chunk_kind == _COMMENT_KIND and c.text
+        ),
+        key=lambda c: (int(c.ord), int(getattr(c, "id", 0))),
+        reverse=True,
+    )
+    boundary_seen = False
+    for c in comments:
+        body = str(c.text).strip()
+        lowered = body.lower()
+        if (
+            lowered.startswith("handoff:")
+            or lowered.startswith("brief:")
+            or body == _rs._HANDOFF_WITHHELD
+        ):
+            if boundary_seen:
+                break
+            boundary_seen = True
+        hit = _comment_outcome(body)
+        if hit is not None:
+            kind, detail = hit
+            if kind == "landed":
+                return f"td{fix_id} recorded landed: {detail[:12]}"
+            return None
+    return f"td{fix_id} closed done with no recorded land or verdict"
+
+
+def _restamp_owed(store: Any, restamp_id: int) -> list[str]:
+    """One line per fix todo blocking the restamp whose close may still
+    owe ``release/r<N>`` a push (:func:`_fix_owed`) — the head-equals-
+    recorded-sha wait is for these. An unreadable blocker list or node
+    counts as owed: guessing "no fix landed" is the failure gr664485
+    files, so an unprovable close waits and then refuses loudly."""
+    try:
+        blockers = _restamp_blockers(store, restamp_id)
+    except Exception:
+        log.warning("%s: restamp blockers unreadable", NAME, exc_info=True)
+        return ["the iteration's fix nodes are unreadable"]
+    owed: list[str] = []
+    for fix_id in blockers:
+        try:
+            why = _fix_owed(store, fix_id)
+        except Exception:
+            log.warning("%s: fix close td%s unreadable", NAME, fix_id, exc_info=True)
+            why = f"td{fix_id}'s close outcome is unreadable"
+        if why is not None:
+            owed.append(why)
+    return owed
+
+
 def _restamp(ctx: Any, params: dict[str, Any]) -> None:
     """The restamp node (release-train T1, :data:`PARAMS_SCHEMA`
     ``restamp``): the fix round's lands moved ``origin/release/r<N>``,
@@ -273,7 +428,10 @@ def _restamp(ctx: Any, params: dict[str, Any]) -> None:
     (:func:`precis.plans.release.record_head`) — no cut. The next node,
     the verdict poll, then waits on the check.yml run the fixes' push
     started, and a red there digests that run, never the cut's. An
-    unreadable head parks like a pending poll."""
+    unreadable head parks like a pending poll — and so does a head that
+    has not moved while a fix node's close may still owe a push
+    (:func:`_restamp_owed`, gr664485): the close released the restamp,
+    it is not proof ``origin`` moved."""
     try:
         target = resolve_target(ctx.store, params)
     except PollError as exc:
@@ -292,12 +450,45 @@ def _restamp(ctx: Any, params: dict[str, Any]) -> None:
         ctx.record_failure(note)
         return
     if head.startswith(target["sha"]) or target["sha"].startswith(head):
-        ctx.append_chunk(
-            "job_summary",
+        todo_id = params.get("todo_id")
+        owed: list[str]
+        if (
+            isinstance(todo_id, int)
+            and not isinstance(todo_id, bool)
+            and ctx.store is not None
+        ):
+            owed = _restamp_owed(ctx.store, todo_id)
+        elif ctx.store is None:
+            owed = []
+        else:
+            owed = ["the restamp node's todo_id is missing"]
+        if not owed:
+            ctx.append_chunk(
+                "job_summary",
+                f"{NAME}: restamp — {target['branch']} head {head[:9]} is the "
+                "recorded sha (no fix landed); meta.release unchanged",
+            )
+            ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False})
+            return
+        why = "; ".join(owed)
+        note = (
             f"{NAME}: restamp — {target['branch']} head {head[:9]} is the "
-            "recorded sha (no fix landed); meta.release unchanged",
+            f"recorded sha but {why}: the push may still be in flight; "
+            f"re-checking in {POLL_INTERVAL_LATE}"
         )
-        ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False})
+        ctx.append_chunk("job_summary", note)
+        ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False, "owed": owed})
+        defer = getattr(ctx, "defer", None)
+        if defer is not None and defer(datetime.now(UTC) + POLL_INTERVAL_LATE, note):
+            return
+        ctx.record_failure(
+            f"{NAME}: restamp — {target['branch']} head is still the "
+            f"recorded sha {target['sha'][:9]} and {why}: cannot move "
+            f"meta.release; next: push the fix to {target['branch']} "
+            f"(scripts/ship --onto {target['branch']}), or close the fix "
+            "node(s) with a no-land verdict (no-op:/moot: — a bare done "
+            "never proves nothing was pushed)"
+        )
         return
     notes = _release.record_head(ctx.store, int(params["todo_id"]), head)
     ctx.set_meta(ci_verdict_restamp={"head": head, "moved": True})
