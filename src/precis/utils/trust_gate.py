@@ -1058,6 +1058,7 @@ def precis_guard_rows(
     thresholds: Thresholds,
     engine: str | None = None,
     current_engine: str | None = None,
+    tier: str | None = None,
 ) -> list[dict[str, Any]]:
     """The precis-side rows: the absurd-magnitude guard and the
     twin-disagreement guard (both read from the candidate's stamped meta —
@@ -1065,8 +1066,10 @@ def precis_guard_rows(
     ``autocatpath_version`` vs the env-or-pinned current version — the
     same comparison the harvest's seed gate demotes on, so view='trust'
     answers ``engine:stale`` exactly when the harvest does), and the
-    seed-spread readout that rides along for information and never
-    gates."""
+    seed-spread row — a REAL gate at neb tier (gr684807: the pathway's
+    own LOW CONFIDENCE verdict makes its barrier a lead to confirm, not
+    a trusted result), an informational ``blocking: "—"`` readout at
+    every other tier."""
     cand = candidate_meta or {}
     rows: list[dict[str, Any]] = []
     if barrier_ea is None:
@@ -1103,10 +1106,10 @@ def precis_guard_rows(
         )
     else:
         geom = cand.get("geom_hash_c")
-        tier = cand.get("barrier_fidelity") or cand.get("tier")
+        cand_tier = cand.get("barrier_fidelity") or cand.get("tier")
         detail = (
-            f"no geom_hash_c twin stamped at tier {tier}"
-            if geom and tier
+            f"no geom_hash_c twin stamped at tier {cand_tier}"
+            if geom and cand_tier
             else "no twin disagreement stamped"
         )
         rows.append(
@@ -1143,14 +1146,25 @@ def precis_guard_rows(
             "blocking": 1 if eng_v == "fail" else 0,
         }
     )
-    spread_v = "warn" if low_confidence else "pass"
-    if rate_limit_std is None:
-        spread_v, spread_in = "not-run", "no spread recorded"
-    else:
+    if low_confidence:
+        spread_v = "fail" if tier == "neb" else "warn"
+        spread_in = (
+            f"std {rate_limit_std:g} eV on the rate-limiting step"
+            if rate_limit_std is not None
+            else "fewer than 2 samples on the rate-limiting step"
+        )
+    elif rate_limit_std is not None:
+        spread_v = "pass"
         spread_in = f"std {rate_limit_std:g} eV on the rate-limiting step"
+    else:
+        spread_v = "not-run"
+        spread_in = "no spread recorded"
+    spread_blocking: int | str = (
+        "—" if tier != "neb" else (1 if spread_v == "fail" else 0)
+    )
     rows.append(
         {
-            "gate": "spread (info, never gates)",
+            "gate": "spread (precis)",
             "verdict": spread_v,
             "input": spread_in,
             "threshold": (
@@ -1158,7 +1172,7 @@ def precis_guard_rows(
                 if thresholds.energy_thresh_ev is not None
                 else "energy_thresh (unset)"
             ),
-            "blocking": "—",
+            "blocking": spread_blocking,
         }
     )
     return rows
@@ -1250,6 +1264,7 @@ _FAMILY_OF_GATE: dict[str, str] = {
     "saddle_verified": "saddle_verified",
     "detachment": "detachment",
     "seed independence (precis)": "seed_registration",
+    "spread (precis)": "spread",
 }
 
 
@@ -1359,6 +1374,8 @@ def family_action(
     * ``detachment``: ``stop`` — no rerun, no credit.
     * ``seed_registration``: ``file-gripe`` — a pipeline bug, not a
       chemistry fault.
+    * ``spread``: ``escalate-fidelity`` — the pathway's own LOW
+      CONFIDENCE verdict: a lead to confirm, not a result (gr684807).
     """
     if family == "endpoint_agreement":
         repro, detail, _lower = second_basin(records, scope, engine=engine)
@@ -1392,6 +1409,16 @@ def family_action(
             "action": "file-gripe",
             "detail": "pipeline bug — record it as a gripe, not a chemistry fault",
         }
+    if family == "spread":
+        return {
+            "family": family,
+            "action": "escalate-fidelity",
+            "detail": (
+                "rate-limiting step is low confidence (spread exceeds "
+                "energy_thresh or <2 samples) — escalate fidelity before "
+                "trusting it; a lead to confirm, not a result"
+            ),
+        }
     return None
 
 
@@ -1412,7 +1439,8 @@ def trust_anchor(
     set is unprovable (``seeds=None`` — never credit what can't be
     named), or when nothing passed (a record-poor run anchors no
     credit). Rows with ``blocking == "—"`` are informational (the
-    spread readout) — they never gate and never enter the pass list.
+    non-neb spread readout) — they never gate and never enter the
+    pass list.
     ``not-run`` rows are named under ``not_run`` so the credit's
     coverage stays inspectable."""
     cred = {str(g) for g in creditable}

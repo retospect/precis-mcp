@@ -14,7 +14,10 @@ Match contract (v1 — structure-level): an experiment entry pre-registers by
 citing ``[st…]`` handles inline; a match is that structure carrying a
 trusted canonical barrier (``meta.barrier_trusted is True`` + a ``barrier``
 — stamped by :func:`precis.quest.compute._pathway_quality` from catpath
-trust schema 1-2). Per-step (reaction-edge) matching is a follow-up once
+trust schema 1-2). A neb-tier stamp beside the pathway's own
+``barrier_low_confidence`` verdict never mints either — a single-sample or
+out-of-tolerance barrier is a lead to confirm, not a trusted result
+(gr684807). Per-step (reaction-edge) matching is a follow-up once
 experiments pre-register ``pw<id>~src→tgt`` step selectors.
 
 Idempotency: each mint records itself under the experiment entry chunk's
@@ -164,6 +167,43 @@ def _mint_ruling_finding(
     return int(ref.id)
 
 
+def _untrusted_neb(smeta: dict[str, Any]) -> bool:
+    """True for a neb-tier stamp beside the pathway's own LOW CONFIDENCE
+    verdict — a lead to confirm, never a trusted result (gr684807)."""
+    tier = str(smeta.get("barrier_fidelity") or "neb")
+    return tier == "neb" and smeta.get("barrier_low_confidence") is True
+
+
+def _retract_ruling(store: Store, fid: Any, structure_id: int) -> None:
+    """Retract a ruling minted before the low-confidence gate: stamp it,
+    retitle it so no reader mistakes it for a trusted measurement, and
+    retire it when nothing cites it (a cited finding stays, retracted)."""
+    try:
+        rid = int(fid)
+    except (TypeError, ValueError):
+        return
+    ref = store.get_ref(kind="finding", id=rid)
+    if ref is None or (ref.meta or {}).get("sim_ruling_retracted"):
+        return
+    store.stamp_ref_meta(
+        rid,
+        {
+            "sim_ruling_retracted": True,
+            "sim_ruling_retracted_reason": "pathway low confidence (gr684807)",
+        },
+    )
+    title = str(ref.title or "")
+    store.chunks.set_ref_title(
+        rid,
+        f"RETRACTED (low confidence, not trusted): {title}"[:300],
+        source="system",
+    )
+    try:
+        store.retire_ref(rid)
+    except Exception:
+        log.info("rulings: retracted fi%s (st%s) kept — still cited", rid, structure_id)
+
+
 def mint_measurement_rulings(store: Store, quest_id: int) -> int:
     """Scan the quest's dialectic blocks and mint one measurement-ruling
     finding per (pre-registered experiment structure × trusted measurement)
@@ -197,12 +237,24 @@ def mint_measurement_rulings(store: Store, quest_id: int) -> int:
                 if sref is None:
                     continue
                 smeta = sref.meta or {}
+                if _untrusted_neb(smeta):
+                    # gr684807: reconcile rulings minted before the gate —
+                    # retract them and drop the dossier's measured bookmark.
+                    for rkey in [k for k in rulings if k.startswith(f"st{st_id}:")]:
+                        _retract_ruling(store, rulings.pop(rkey), st_id)
+                        dirty = True
                 if smeta.get("barrier_trusted") is not True:
                     continue
                 barrier = smeta.get("barrier")
                 if not isinstance(barrier, (int, float)) or isinstance(barrier, bool):
                     continue
                 tier = str(smeta.get("barrier_fidelity") or "neb")
+                # gr684807: a neb-tier barrier the pathway itself flagged
+                # LOW CONFIDENCE is not a trusted measurement — the stamp
+                # predating the harvest gate still reads
+                # ``barrier_trusted=true`` (the gripe's fi338835 shape).
+                if _untrusted_neb(smeta):
+                    continue
                 pw_id = _measuring_pathway(store, st_id, tier)
                 key = (
                     f"st{st_id}:pw{pw_id}"

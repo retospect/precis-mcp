@@ -129,6 +129,44 @@ class TestMint:
         assert _ruling_ids(store, hyp) == []
         assert _ruling_ids(store, hyp2) == []
 
+    def test_low_confidence_neb_stamp_never_mints(self, store: Any) -> None:
+        """gr684807's exact shape: a structure stamped
+        ``barrier_trusted=True`` beside the pathway's own
+        ``barrier_low_confidence`` verdict (single sample / spread over
+        tolerance — fi338835) must not mint a 'trusted, neb tier'
+        ruling; a verify-tier flag stays informational."""
+        qid = _mk_quest(store, "A striving")
+        hyp = seed_ref(store, kind="finding")
+        st = _mk_structure(store, barrier=0.9, trusted=True, tier="neb")
+        store.stamp_ref_meta(st, {"barrier_low_confidence": True})
+        _preregister(store, qid, hyp, st)
+        assert mint_measurement_rulings(store, qid) == 0
+        assert _ruling_ids(store, hyp) == []
+
+        hyp2 = seed_ref(store, kind="finding")
+        st2 = _mk_structure(store, barrier=0.9, trusted=True, tier="verify")
+        store.stamp_ref_meta(st2, {"barrier_low_confidence": True})
+        _preregister(store, qid, hyp2, st2)
+        assert mint_measurement_rulings(store, qid) == 1
+        assert len(_ruling_ids(store, hyp2)) == 1
+
+    def test_existing_low_confidence_ruling_is_retracted(self, store: Any) -> None:
+        """td685886 review: a ruling minted before the gate (fi338835's
+        shape) is retracted once its structure reads low confidence, and
+        the dossier stops presenting it as measured."""
+        qid = _mk_quest(store, "A striving")
+        hyp = seed_ref(store, kind="finding")
+        st = _mk_structure(store, barrier=0.9, trusted=True, tier="neb")
+        _preregister(store, qid, hyp, st)
+        assert mint_measurement_rulings(store, qid) == 1
+        (rid,) = _ruling_ids(store, hyp)
+        store.stamp_ref_meta(st, {"barrier_low_confidence": True})
+        assert mint_measurement_rulings(store, qid) == 0
+        assert _ruling_ids(store, hyp) == []
+        ref = store.get_ref(kind="finding", id=rid)
+        assert ref is None or str(ref.title).startswith("RETRACTED")
+        assert f"[fi{rid}]" not in read_dialectic(store, qid)
+
     def test_second_run_is_a_no_op(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         hyp = seed_ref(store, kind="finding")

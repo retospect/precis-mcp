@@ -371,6 +371,18 @@ def _trust_evidence(rec: dict[str, Any]) -> str:
     return ", ".join(f"{k}={v}" for k, v in ev.items())
 
 
+def _viewed_low_confidence(
+    meta: dict[str, Any], candidate: dict[str, Any] | None
+) -> bool:
+    """The viewed pathway's own LOW CONFIDENCE verdict (gr684807). It wins
+    over the structure's ``barrier_low_confidence``: a confident canonical
+    measurement must not mask a low-confidence NEB sibling. The structure
+    stamp is only the fallback for a pathway that carries no verdict."""
+    if meta.get("low_confidence") is not None:
+        return bool(meta["low_confidence"])
+    return bool((candidate or {}).get("barrier_low_confidence"))
+
+
 def trust_toon(
     meta: dict[str, Any],
     *,
@@ -511,9 +523,11 @@ def trust_toon(
         if isinstance(barrier, int | float) and not isinstance(barrier, bool)
         else None
     )
-    low_conf = bool(
-        (candidate or {}).get("barrier_low_confidence", meta.get("low_confidence"))
-    )
+    low_conf = _viewed_low_confidence(meta, candidate)
+    if low_conf and tier == "neb":
+        # gr684807: the pathway's own LOW CONFIDENCE verdict is a neb-tier
+        # gate — name it in blocked_by like the other precis guards.
+        blocked = sorted({*blocked, "spread:low-confidence"})
     rows += trust_gate.precis_guard_rows(
         candidate,
         barrier_ea=barrier,
@@ -526,6 +540,7 @@ def trust_toon(
         thresholds=thresholds,
         engine=engine,
         current_engine=current_engine,
+        tier=tier,
     )
 
     head = [
@@ -802,9 +817,7 @@ def gate_verdict(
     barrier = (candidate_meta or {}).get("barrier")
     if not isinstance(barrier, int | float) or isinstance(barrier, bool):
         barrier = meta.get("rate_Ea")
-    low_conf = bool(
-        (candidate_meta or {}).get("barrier_low_confidence", meta.get("low_confidence"))
-    )
+    low_conf = _viewed_low_confidence(meta, candidate_meta)
     guard_rows = trust_gate.precis_guard_rows(
         candidate_meta,
         barrier_ea=(
@@ -821,6 +834,7 @@ def gate_verdict(
         thresholds=thresholds,
         engine=engine,
         current_engine=current_engine,
+        tier=tier,
     )
     guard_fail = sorted(
         str(r["gate"]).removesuffix(" (precis)")
@@ -909,9 +923,7 @@ def row_anchor(
     barrier = (candidate_meta or {}).get("barrier")
     if not isinstance(barrier, int | float) or isinstance(barrier, bool):
         barrier = meta.get("rate_Ea")
-    low_conf = bool(
-        (candidate_meta or {}).get("barrier_low_confidence", meta.get("low_confidence"))
-    )
+    low_conf = _viewed_low_confidence(meta, candidate_meta)
     rows += trust_gate.precis_guard_rows(
         candidate_meta,
         barrier_ea=(
@@ -928,6 +940,7 @@ def row_anchor(
         thresholds=thresholds,
         engine=engine,
         current_engine=_autocatpath_current_version(),
+        tier=tier,
     )
     # The union endpoint replay mutates the endpoint_agreement row exactly
     # as view='trust' does before the anchor judges it (a vacuous own

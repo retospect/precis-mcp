@@ -106,7 +106,7 @@ def _rows(*, ea_fail: bool = False) -> list[dict[str, Any]]:
         }
     rows.append(
         {
-            "gate": "spread (info, never gates)",
+            "gate": "spread (precis)",
             "verdict": "warn",
             "input": "…",
             "threshold": "…",
@@ -122,9 +122,23 @@ def test_anchor_names_pathway_gates_and_seeds() -> None:
     assert a["pathway"] == "pw7"
     assert a["seeds"] == [0, 1, 2]
     assert "endpoint_agreement" in a["gates"]
-    # the info spread row is neither a gate nor a blocker
+    # the informational (non-neb) spread row is neither a gate nor a blocker
     assert all("spread" not in g for g in a["gates"])
     assert a["over"] == []
+
+
+def test_anchor_none_on_failing_neb_spread_row() -> None:
+    """gr684807: at neb tier the spread row is a real gate — a
+    LOW CONFIDENCE barrier refuses credit like any other blocker."""
+    rows = _rows()
+    rows[-1] = {
+        "gate": "spread (precis)",
+        "verdict": "fail",
+        "input": "…",
+        "threshold": "…",
+        "blocking": 1,
+    }
+    assert trust_gate.trust_anchor(rows, pathway="pw7", seeds={0, 1, 2}) is None
 
 
 def test_anchor_none_on_uncreditable_fail_and_unprovable_seeds() -> None:
@@ -164,6 +178,7 @@ def test_second_basin_reproducible_vs_not() -> None:
         ("saddle_verified", "ci-neb-rerun"),
         ("detachment", "stop"),
         ("seed_registration", "file-gripe"),
+        ("spread", "escalate-fidelity"),
     ],
 )
 def test_family_action_ruled_families(family: str, action: str) -> None:

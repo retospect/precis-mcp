@@ -2708,12 +2708,15 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     """Derive the trust verdict on a harvested barrier from its pathway's meta.
 
     ``meta`` is the linked `pathway` ref's meta: ``meta['warnings']`` (list
-    of human-readable strings) and ``meta['low_confidence']`` — a separate,
-    less informative flag (a single-seed run always sets it, autocatpath's
-    ``low_confidence = std>tol OR n<2``; rides along for visibility, never
-    gates trust alone). Counts warnings mentioning a non-converged NEB edge,
-    a desorbed adsorbate, a wrong-site (mis-bound) endpoint;
-    ``barrier_trusted`` is False iff any count is nonzero.
+    of human-readable strings) and ``meta['low_confidence']`` — the
+    pathway's OWN confidence verdict on the rate-limiting step
+    (autocatpath's ``low_confidence = std>tol OR n<2``). At the neb tier it
+    GATES: a single-sample or out-of-tolerance barrier is a lead to
+    confirm, never a trusted result (gr684807, qu164903); at other tiers it
+    still rides along for visibility only. Counts warnings mentioning a
+    non-converged NEB edge, a desorbed adsorbate, a wrong-site (mis-bound)
+    endpoint; ``barrier_trusted`` is False iff any count is nonzero — or
+    the low-confidence verdict fires.
 
     Version-gated on ``meta['results']['trust_schema']`` (catpath's
     structured per-step trust records, ``docs/backlog/per-step-trust-records.md``):
@@ -2738,6 +2741,7 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     results = meta.get("results")
     results = results if isinstance(results, dict) else None
     schema = results.get("trust_schema") if results is not None else None
+    out: dict[str, Any]
     if schema in (1, 2):
         # schema 2 (engine 0.20.0) is ADDITIVE over 1: same record shape and
         # verdict vocabulary, new checks (endpoint_identity/agreement,
@@ -2746,29 +2750,45 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
         assert results is not None  # narrows for mypy: schema came from it
         out = _pathway_quality_v1(results)
         out["barrier_low_confidence"] = bool(meta.get("low_confidence"))
-        return out
-
-    warnings = meta.get("warnings")
-    warnings = warnings if isinstance(warnings, list) else []
-    n_neb_failed = sum(1 for w in warnings if _NEB_NOT_CONVERGED in str(w))
-    n_desorbed = sum(1 for w in warnings if _ADSORBATE_DETACHED in str(w))
-    n_wrong_site = sum(1 for w in warnings if _WRONG_BINDING_SITE in str(w))
-    out = {
-        "barrier_trusted": n_neb_failed == 0 and n_desorbed == 0 and n_wrong_site == 0,
-        "barrier_neb_failed": n_neb_failed,
-        "barrier_desorbed": n_desorbed,
-        "barrier_wrong_site": n_wrong_site,
-        "barrier_low_confidence": bool(meta.get("low_confidence")),
-    }
-    if schema is not None:
-        # A trust_schema present but not == 1: newer than this reader
-        # understands. Never guess at the shape — fall back to the regex
-        # path (above) and say why, since this function has no logger.
-        out["barrier_trust_note"] = (
-            f"pathway results carry trust_schema={schema!r}, newer than this "
-            "reader (understands schemas 1-2) — fell back to the regex "
-            "warning path"
-        )
+    else:
+        warnings = meta.get("warnings")
+        warnings = warnings if isinstance(warnings, list) else []
+        n_neb_failed = sum(1 for w in warnings if _NEB_NOT_CONVERGED in str(w))
+        n_desorbed = sum(1 for w in warnings if _ADSORBATE_DETACHED in str(w))
+        n_wrong_site = sum(1 for w in warnings if _WRONG_BINDING_SITE in str(w))
+        out = {
+            "barrier_trusted": n_neb_failed == 0
+            and n_desorbed == 0
+            and n_wrong_site == 0,
+            "barrier_neb_failed": n_neb_failed,
+            "barrier_desorbed": n_desorbed,
+            "barrier_wrong_site": n_wrong_site,
+            "barrier_low_confidence": bool(meta.get("low_confidence")),
+        }
+        if schema is not None:
+            # A trust_schema present but not == 1: newer than this reader
+            # understands. Never guess at the shape — fall back to the regex
+            # path (above) and say why, since this function has no logger.
+            out["barrier_trust_note"] = (
+                f"pathway results carry trust_schema={schema!r}, newer than this "
+                "reader (understands schemas 1-2) — fell back to the regex "
+                "warning path"
+            )
+    # gr684807: the pathway's own LOW CONFIDENCE verdict gates at neb tier
+    # — a single-sample or out-of-tolerance barrier is a lead to confirm,
+    # never a trusted result (qu164903: rulings minted "trusted, neb tier"
+    # beside the pathway's LOW CONFIDENCE banner). The gate is neb-tier
+    # only like the seed-independence rule; other tiers keep the flag as
+    # information. Only ever ADDS distrust — never lifts an untrusted
+    # verdict — and names its blocker id like the other precis guards.
+    if (
+        out["barrier_trusted"]
+        and out["barrier_low_confidence"]
+        and _pathway_tier(meta) == _TIER_NEB
+    ):
+        out["barrier_trusted"] = False
+        blocked = list(out.get("barrier_blocked_by") or [])
+        out["barrier_blocked_by"] = [*blocked, "spread:low-confidence"]
     return out
 
 
@@ -3092,6 +3112,7 @@ def _barrier_anchor(
         thresholds=thresholds,
         engine=engine,
         current_engine=_autocatpath_current_version(),
+        tier=tier,
     )
     creditable: set[str] = set()
     failing = {

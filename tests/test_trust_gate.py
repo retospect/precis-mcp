@@ -250,7 +250,7 @@ def _meta(results: dict[str, Any], **extra: Any) -> dict[str, Any]:
         },
         "results": results,
         "rate_Ea": 1.004,
-        "low_confidence": True,
+        "low_confidence": False,
     }
     meta.update(extra)
     return meta
@@ -1154,6 +1154,100 @@ def test_gate_verdict_na_without_trust_records() -> None:
     assert gate_verdict({"results": {}}) == ("n/a", "pre-trust-schema")
     meta = _meta(_results([], [0]))
     assert gate_verdict(meta) == ("n/a", "no trust records")
+
+
+def test_precis_guard_rows_spread_gates_at_neb_only() -> None:
+    """gr684807: the pathway's own LOW CONFIDENCE verdict is a real gate
+    at neb tier — fail + blocking — and stays an informational warn at
+    every other tier."""
+    thresholds = trust_gate.thresholds_from([], {})
+    row = trust_gate.precis_guard_rows(
+        {},
+        barrier_ea=0.9,
+        rate_limit_std=0.94,
+        low_confidence=True,
+        thresholds=thresholds,
+        tier="neb",
+    )[-1]
+    assert (row["gate"], row["verdict"], row["blocking"]) == (
+        "spread (precis)",
+        "fail",
+        1,
+    )
+    for tier in ("verify", "screening", None):
+        row = trust_gate.precis_guard_rows(
+            {},
+            barrier_ea=0.9,
+            rate_limit_std=0.94,
+            low_confidence=True,
+            thresholds=thresholds,
+            tier=tier,
+        )[-1]
+        assert (row["verdict"], row["blocking"]) == ("warn", "—")
+    # a confident run is a passing neb-tier gate row
+    row = trust_gate.precis_guard_rows(
+        {},
+        barrier_ea=0.9,
+        rate_limit_std=0.94,
+        low_confidence=False,
+        thresholds=thresholds,
+        tier="neb",
+    )[-1]
+    assert (row["verdict"], row["blocking"]) == ("pass", 0)
+    # single-sample shape: flagged with no recorded spread still fails
+    row = trust_gate.precis_guard_rows(
+        {},
+        barrier_ea=0.9,
+        rate_limit_std=None,
+        low_confidence=True,
+        thresholds=thresholds,
+        tier="neb",
+    )[-1]
+    assert (row["verdict"], row["blocking"]) == ("fail", 1)
+    assert "fewer than 2 samples" in row["input"]
+
+
+def test_trust_toon_low_confidence_blocks_neb_and_names_it() -> None:
+    """gr684807's exact shape: a clean 2-seed mace:medium NEB run whose
+    pathway banner says LOW CONFIDENCE must read BLOCKED on view='trust',
+    name ``spread:low-confidence``, refuse the credit anchor, and block
+    the compare column's gate verdict."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]), low_confidence=True)
+    body = trust_toon(meta, pw_handle="pw1")
+    assert "verdict: BLOCKED" in body
+    assert "spread:low-confidence" in body
+    spread = next(ln for ln in body.splitlines() if ln.startswith("spread (precis)"))
+    assert "fail" in spread
+    assert "anchor: none — no credit" in body
+    assert "spread (precis)" in body
+    assert "next action (spread)" in body
+    assert "escalate fidelity" in body
+    verdict, why = gate_verdict(meta)
+    assert verdict == "blocked" and "spread" in why
+    assert row_anchor(meta).startswith("no credit (")
+
+
+def test_confident_structure_stamp_never_masks_low_confidence_pathway() -> None:
+    """td685886 review: the viewed pathway's own LOW CONFIDENCE verdict
+    gates, even when the structure's canonical stamp reads confident."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]), low_confidence=True)
+    cand = {"barrier_low_confidence": False}
+    assert "verdict: BLOCKED" in trust_toon(meta, pw_handle="pw1", candidate=cand)
+    assert gate_verdict(meta, candidate_meta=cand)[0] == "blocked"
+    assert row_anchor(meta, candidate_meta=cand).startswith("no credit (")
+
+
+def test_trust_toon_low_confidence_stays_informational_off_neb() -> None:
+    """Off the neb tier the same flag is still informational — the
+    spread readout warns and never gates."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]), low_confidence=True, tier="verify")
+    body = trust_toon(meta, pw_handle="pw1")
+    spread = next(ln for ln in body.splitlines() if ln.startswith("spread (precis)"))
+    assert "warn" in spread and "fail" not in spread
+    assert "verdict: PASS" in body
 
 
 def test_row_anchor_renders_the_named_credit() -> None:

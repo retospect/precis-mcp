@@ -114,7 +114,12 @@ The gate a harvested barrier passes is assembled from three places:
    trusted (or non-neb) harvest.
 
 `barrier_low_confidence` (std > `energy_thresh`, or fewer than 2 samples)
-rides along on the candidate and never gates.
+GATES at neb tier since gr684807: the pathway's own LOW CONFIDENCE verdict
+makes its barrier a lead to confirm, not a trusted result — it flips
+`barrier_trusted` in `_pathway_quality` (blocked id
+`spread:low-confidence`), renders as the `spread (precis)` fail row, and
+the frontier demotes pre-fix trusted stamps on read. At other tiers it
+still rides along on the candidate as information only.
 
 ## Where it lives
 
@@ -160,7 +165,7 @@ wrong_binder	…
 seed independence (precis)	pass	3 independent seeds	≥ 2 independent seeds, same engine	0
 absurd magnitude (precis)	pass	|1.004| eV	≤ 8.0 eV	0
 twin disagreement (precis)	not-run	no geom_hash_c twin at tier neb	≤ 0.5 eV	0
-spread (info, never gates)	warn	std 0.938 eV on the rate-limiting step	energy_thresh <config> eV	—
+spread (precis)	fail	std 0.938 eV on the rate-limiting step	energy_thresh <config> eV	1
 ```
 
 The sample uses pw515950's stored blockers; N/M/K are route-scoped counts

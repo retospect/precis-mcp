@@ -1366,6 +1366,7 @@ def test_put_typo_mode_raises_and_mints_no_job(
         "recompute_kinetics",
         "verify",
         "measure_modes",
+        "export",
     ]
 
     assert pathway_store.get_ref(kind="pathway", id="typo-mode-test") is None
@@ -1407,16 +1408,19 @@ def test_get_unknown_view_raises_bad_input_naming_accepted_set(
 
 
 def test_all_declared_views_dispatch(pathway_store: Store) -> None:
-    """Every one of the 17 views the KindSpec declares must still pass
+    """Every one of the 20 views the KindSpec declares must still pass
     through `get` (not itself get rejected as 'unknown') once the view=
     validation lands. kinetics-sweep (slice 4) was routed but undeclared,
-    so get rejected it; manifest is kinetics v2 slice 10, tpd slice 9."""
+    so get rejected it; manifest is kinetics v2 slice 10, tpd slice 9;
+    bundle-plan is gr564186's export inventory."""
+    from precis.errors import BadInput
+
     h = _handler(pathway_store)
     slug = "views-smoke"
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 19
+    assert len(declared) == 20
     assert {
         "kinetics-sweep",
         "kinetics-summary",
@@ -1424,8 +1428,16 @@ def test_all_declared_views_dispatch(pathway_store: Store) -> None:
         "tpd",
         "optimum",
         "objective",
+        "bundle-plan",
     } <= set(declared)
     for view in declared:
+        if view == "bundle-plan":
+            # Routes into _bundle_plan, which honestly refuses on a
+            # pathway with no succeeded autocatpath_seed job — the
+            # domain refusal still proves the view dispatched.
+            with pytest.raises(BadInput, match="no succeeded autocatpath_seed"):
+                h.get(id=slug, view=view)
+            continue
         resp = h.get(id=None if view == "kinetics-summary" else slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"
 
@@ -1488,6 +1500,14 @@ def test_every_read_leads_with_pw_handle_and_web_path(
             with pytest.raises(BadInput, match="population view"):
                 h.get(id=slug, view=view)
             assert "Kinetics summary:" in h.get(view=view).body
+            continue
+        if view == "bundle-plan":
+            from precis.errors import BadInput
+
+            # Routes into _bundle_plan, which honestly refuses on a
+            # pathway with no succeeded autocatpath_seed job.
+            with pytest.raises(BadInput, match="no succeeded autocatpath_seed"):
+                h.get(id=slug, view=view)
             continue
         resp = h.get(id=slug, view=view)
         # config/mermaid are verbatim payloads — a leading line would

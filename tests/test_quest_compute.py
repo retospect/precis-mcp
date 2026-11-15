@@ -4164,6 +4164,54 @@ class TestBarrierVerdictConsistency:
         assert c.flags["barrier_trusted"] is True
         assert c.measures["barrier"] == 0.8
 
+    def test_low_confidence_neb_stamp_demotes_an_overwritten_true(
+        self, store: Any
+    ) -> None:
+        """gr684807 (the fi338835 shape): rows harvested before the
+        write-side gate carry ``barrier_trusted=True`` beside the
+        pathway's own ``barrier_low_confidence=True`` — the confidence
+        verdict is the truth, so the read side demotes on it."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 2.83,
+                "barrier_trusted": True,
+                "barrier_fidelity": "neb",
+                "barrier_low_confidence": True,
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert "barrier" not in c.measures
+        assert c.flags["barrier_untrusted_value"] == 2.83
+
+    def test_low_confidence_verify_tier_still_rides_trusted(self, store: Any) -> None:
+        """The low-confidence demotion is the neb tier's rule (like seed
+        independence) — a verify-fidelity barrier's flag stays
+        informational."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.8,
+                "barrier_trusted": True,
+                "barrier_fidelity": "verify",
+                "barrier_low_confidence": True,
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert c.measures["barrier"] == 0.8
+
     def test_explicit_null_autocatpath_anchor_demotes(self, store: Any) -> None:
         """An explicit-null ``barrier_anchor`` on the autocatpath lane is
         a refused credit — the anchor-era harvest only writes null on
@@ -5474,7 +5522,7 @@ class TestAutocatpathHarvest:
             title="pw",
             meta={
                 "warnings": [],
-                "low_confidence": True,
+                "low_confidence": False,
                 "autocatpath_version": "0.39.0",
                 "candidate_ref": sid,
                 "results": {
@@ -5505,6 +5553,52 @@ class TestAutocatpathHarvest:
         assert meta["barrier_neb_failed"] == 0
         assert meta["barrier_desorbed"] == 0
         assert meta["barrier_wrong_site"] == 0
+
+    def test_low_confidence_neb_pathway_is_untrusted(self, store: Any) -> None:
+        """gr684807: the pathway's own LOW CONFIDENCE verdict gates — the
+        same clean 2-seed neb run stamped ``low_confidence`` (single
+        sample / spread exceeds tolerance, the fi338835 shape) lands
+        ``barrier_trusted=False`` naming ``spread:low-confidence``, and
+        no credit anchor can be minted for it."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="pathway",
+            slug="pw-lowconf",
+            title="pw",
+            meta={
+                "warnings": [],
+                "low_confidence": True,
+                "autocatpath_version": "0.39.0",
+                "candidate_ref": sid,
+                "results": {
+                    "seeds": [0, 1],
+                    "route_steps": ["R->A"],
+                    "trust": [
+                        {
+                            "id": f"R->A#s{s}#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ],
+                },
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert "spread:low-confidence" in (meta.get("barrier_blocked_by") or [])
+        assert meta["barrier_low_confidence"] is True
+        assert meta.get("barrier_anchor") is None
 
     def test_non_pathway_ref_keeps_verdict_and_gets_no_anchor(self, store: Any) -> None:
         """gr543165 follow-up: the credit-anchor demotion binds the
@@ -8041,6 +8135,31 @@ class TestPathwayQualityTrustRecords:
         assert "selectivity_trusted" not in out
         assert "barrier_trust_note" in out
         assert "trust_schema=3" in out["barrier_trust_note"]
+
+    def test_low_confidence_demotes_neb_barrier_and_names_blocker(self) -> None:
+        """gr684807: a pathway-stamped ``low_confidence`` verdict (single
+        sample / spread exceeds tolerance) flips an otherwise-clean
+        neb-tier ``barrier_trusted`` and names ``spread:low-confidence``
+        in the blocked set — a lead to confirm, not a trusted result."""
+        results = {
+            "trust_schema": 1,
+            "route_steps": ["R->M"],
+            "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+        }
+        meta = {"results": results, "warnings": [], "low_confidence": True}
+        out = compute_mod._pathway_quality(meta)
+        assert out["barrier_trusted"] is False
+        assert out["barrier_blocked_by"] == ["spread:low-confidence"]
+        assert out["barrier_low_confidence"] is True
+
+    def test_low_confidence_is_informational_off_neb_tier(self) -> None:
+        """The gate is the neb tier's rule (like seed independence): a
+        verify-tier pathway's ``low_confidence`` rides along for
+        visibility only and never untrusts the verdict."""
+        meta = {"tier": "verify", "warnings": [], "low_confidence": True}
+        out = compute_mod._pathway_quality(meta)
+        assert out["barrier_trusted"] is True
+        assert "barrier_blocked_by" not in out
 
     def test_marginal_only_artifact_stays_trusted_with_count(self) -> None:
         """``marginal``/``severity: warn`` never untrust anything — surfaced

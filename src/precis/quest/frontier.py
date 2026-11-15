@@ -1757,6 +1757,16 @@ def _candidate_from_structure(
                 and isinstance(anchor_seeds, list)
                 and len({s for s in anchor_seeds}) < 2
             )
+            or (
+                # gr684807: a ``barrier_trusted=True`` stamp beside the
+                # pathway's own LOW CONFIDENCE verdict is the same
+                # contradictory shape — rows harvested before the
+                # write-side gate (``_pathway_quality``) demote here.
+                # ``rung`` absent is a pre-ladder neb pathway
+                # (``_pathway_tier`` defaults neb); verify keeps its
+                # own ladder rung's semantics.
+                meta.get("barrier_low_confidence") is True and (rung or "neb") == "neb"
+            )
         ):
             flags["barrier_trusted"] = False
     # gr592670 (S4, defence in depth): the credit anchor must name the
