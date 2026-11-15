@@ -57,6 +57,7 @@ from psycopg.errors import QueryCanceled
 
 from precis import slice_tokens, worktree_server
 from precis._result_budget import size_cell
+from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
 from precis.errors import (
     BadInput,
@@ -65,6 +66,7 @@ from precis.errors import (
     NotFound,
     PrecisError,
     Unsupported,
+    nearest_option,
 )
 from precis.handlers._eye import is_eye_view
 from precis.handlers._prio_tag import prio_display
@@ -1234,12 +1236,24 @@ class NumericRefHandler(Handler):
         ref = self._resolve_live_ref(ref_id)
         if view is not None:
             if view not in _BASE_VIEWS:
+                # gr613469: lead with the corrected call — the caller's
+                # own get (q=/rel=/every arg preserved, review td680653)
+                # with the nearest valid view swapped in — ahead of the
+                # vocabulary.
+                near = nearest_option(view, _BASE_VIEWS)
+                corrected = (
+                    retry_call("get", kind=self.kind, id=ref.id, view=near)
+                    if near
+                    else None
+                )
+                nexts = [corrected] if corrected else []
+                nexts.append(
+                    f"views available for {self.kind!r}: {', '.join(_BASE_VIEWS)}"
+                )
                 raise Unsupported(
                     f"unknown view {view!r} for kind={self.kind!r}",
                     options=list(_BASE_VIEWS),
-                    next=(
-                        f"views available for {self.kind!r}: {', '.join(_BASE_VIEWS)}"
-                    ),
+                    next=nexts,
                 )
             if view == "dependants":
                 from precis.handlers._dependants_view import (

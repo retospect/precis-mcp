@@ -28,7 +28,9 @@ into `Internal(...)` or `Upstream(...)` with `__cause__` chained.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import difflib
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 
 class PrecisError(Exception):
@@ -166,3 +168,64 @@ class RateLimited(PrecisError):
 
 class Internal(PrecisError):
     """Unhandled server-side bug."""
+
+
+# ── corrected-call helpers (gr613469) ────────────────────────────────────
+#
+# A refusal's ``next=`` should name the one call that would have worked —
+# the caller's own call with the bad key/view swapped for the nearest
+# accepted one — not just the vocabulary. These two helpers build it;
+# ``tool_ledger.next_call_summary`` reads the same ``verb(`` shape back
+# out of rendered bodies to measure hint uptake.
+
+
+def nearest_option(name: str, choices: Iterable[str]) -> str | None:
+    """difflib's closest of ``name`` in ``choices``, else ``None``."""
+    near = difflib.get_close_matches(name, [str(c) for c in choices], n=1)
+    return near[0] if near else None
+
+
+def render_corrected_call(
+    verb: str,
+    args: Mapping[str, Any],
+    *,
+    extras: Mapping[str, Any] | None = None,
+    top_level: Iterable[str] | None = None,
+) -> str:
+    """``verb(k=v, …, args={…})`` — the caller's call re-rendered.
+
+    Non-``None`` args render ``key=value`` (repr values, so strings get
+    quotes and the call stays copy-pasteable — mcp-authoring's "next= is
+    a call that works"). ``__``-prefixed dispatch-internal keys never
+    render. ``top_level`` narrows which keys render ``key=value``: keys
+    outside it fold into a trailing ``args={…}`` dict, merged with
+    ``extras`` — the slim-schema spelling (only the verb's
+    ``CORE_PARAMS`` go top-level; ``runtime.search._search_call_text``'s
+    rule). ``top_level=None`` renders every key top-level — right for
+    the full-signature verbs (``get``/``link``/…) and for extras the
+    caller already nested under ``args=``. A mapping-valued ``args``
+    key always merges into the one trailing ``args={…}`` dict — two
+    ``args=`` kwargs would not be a runnable call.
+    """
+    top = set(top_level) if top_level is not None else None
+    parts: list[str] = []
+    nested: dict[str, Any] = {}
+    for k, v in args.items():
+        ks = str(k)
+        if ks.startswith("__") or v is None:
+            continue
+        if ks == "args" and isinstance(v, Mapping):
+            # The caller's own ``args={…}`` dict merges into the ONE
+            # trailing ``args={…}`` with the folded keys — emitting a
+            # second ``args=`` kwarg would not be a runnable call.
+            nested.update(v)
+        elif top is None or ks in top:
+            parts.append(f"{ks}={v!r}")
+        else:
+            nested[ks] = v
+    if extras:
+        for k, v in extras.items():
+            nested[str(k)] = v
+    if nested:
+        parts.append(f"args={nested!r}")
+    return f"{verb}({', '.join(parts)})"

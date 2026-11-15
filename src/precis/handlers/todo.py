@@ -90,13 +90,19 @@ caching needed.
 from __future__ import annotations
 
 import dataclasses
-import difflib
 import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    Gone,
+    NotFound,
+    Unsupported,
+    nearest_option,
+)
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
@@ -778,19 +784,35 @@ class TodoHandler(NumericRefHandler):
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
             views_list = ["body", "comments", "scratch", "tree", "full", *_BASE_VIEWS]
-            near = difflib.get_close_matches(view, views_list, n=1)
-            lead = f"nearest is view={near[0]!r}. " if near else ""
+            near = nearest_option(view, views_list)
+            lead = f"nearest is view={near!r}. " if near else ""
+            # gr613469: lead with the corrected call — the caller's own
+            # get (every arg preserved, review td680653) with the
+            # nearest valid view swapped in — ahead of the vocabulary
+            # walk-through.
+            corrected = (
+                retry_call(
+                    "get",
+                    kind="todo",
+                    id=id if id is not None else "<id>",
+                    view=near,
+                )
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                lead + "get(kind='todo', id=<id>) — the card (text, "
+                "tags, status); view='body' the untruncated details "
+                "body; view='comments' the timeline; view='meta' the "
+                "raw meta dict; view='tree' the subtree; list views "
+                "are search-side: "
+                "search(kind='todo', view='projects'|'doable'|'active')"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='todo'",
                 options=views_list,
-                next=(
-                    lead + "get(kind='todo', id=<id>) — the card (text, "
-                    "tags, status); view='body' the untruncated details "
-                    "body; view='comments' the timeline; view='meta' the "
-                    "raw meta dict; view='tree' the subtree; list views "
-                    "are search-side: "
-                    "search(kind='todo', view='projects'|'doable'|'active')"
-                ),
+                next=nexts,
             )
         # Single-ref reads route through the base class so links /
         # log views and the soft-delete vs not-found split keep
@@ -971,10 +993,19 @@ class TodoHandler(NumericRefHandler):
                         options=available,
                         next=_SEARCH_PATH_SPELLING_HINTS[view],
                     ) from None
+                # gr613469: lead with the corrected call — the caller's
+                # own search (q/tags/page_size/args preserved, review
+                # td680653), nearest valid view swapped in.
+                near = nearest_option(view, available)
+                corrected = (
+                    retry_call("search", kind="todo", q=q, view=near) if near else None
+                )
+                nexts = [corrected] if corrected else []
+                nexts.append(f"views available: {available}; see precis-todo-tree-help")
                 raise Unsupported(
                     f"unknown view {view!r} for kind={self.kind!r} search",
                     options=available,
-                    next=f"views available: {available}; see precis-todo-tree-help",
+                    next=nexts,
                 ) from None
             if view_enum is TodoView.DOABLE:
                 # gr568264: doable is the one tree view that honours

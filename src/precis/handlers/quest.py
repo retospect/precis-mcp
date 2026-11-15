@@ -47,7 +47,13 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    NotFound,
+    Unsupported,
+    nearest_option,
+)
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
@@ -2228,21 +2234,30 @@ class QuestHandler(NumericRefHandler):
         # deeds are a filtered slice of view='log'. (Tooling-log audit:
         # recurring guess.)
         if concrete and view is not None and view not in _BASE_VIEWS:
+            # gr613469: lead with the corrected call — the same get,
+            # nearest valid view swapped in — ahead of the view prose.
+            view_options = [*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS]
+            near = nearest_option(view, view_options)
+            corrected = (
+                retry_call("get", kind="quest", id=id, view=near) if near else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts += [
+                "quest views: tree, gaps, dossier, frontier, leaderboard, "
+                "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
+                "rubric, served, meta, replay, considerations "
+                "(quest-specific) · "
+                "fisheye ladder (kwd, summary, verbatim, fisheye, "
+                "fisheye+1hop, fisheye+2hop, optionally +recall) · "
+                "links, log, raw (generic)",
+                "no 'deeds' view — default get(kind='quest', id=N) shows a "
+                "digest with a logbook tail; view='logbook' is the full lab "
+                "notebook; view='log' is the raw ref-events ledger",
+            ]
             raise Unsupported(
                 f"unknown view {view!r} for kind='quest'",
-                options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
-                next=[
-                    "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
-                    "rubric, served, meta, replay, considerations "
-                    "(quest-specific) · "
-                    "fisheye ladder (kwd, summary, verbatim, fisheye, "
-                    "fisheye+1hop, fisheye+2hop, optionally +recall) · "
-                    "links, log, raw (generic)",
-                    "no 'deeds' view — default get(kind='quest', id=N) shows a "
-                    "digest with a logbook tail; view='logbook' is the full lab "
-                    "notebook; view='log' is the raw ref-events ledger",
-                ],
+                options=view_options,
+                next=nexts,
             )
         return super().get(id=id, view=view, q=q, **_kw)
 

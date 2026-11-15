@@ -48,8 +48,13 @@ from typing import Any, ClassVar
 
 from precis.checklist import ItemStatus, bridge_for, compute_statuses
 from precis.checklist.status import NOT_CHECKABLE, VERDICTS, default_applies
+from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import (
+    BadInput,
+    NotFound,
+    nearest_option,
+)
 from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -743,7 +748,18 @@ class ChecklistHandler(Handler):
     ) -> Response:
         v = (view or "").strip().lower()
         if v and v != "page":
-            raise BadInput(f"unknown checklist view {view!r}", next="omit view=")
+            # gr613469: 'page' is the only view — lead with the
+            # caller's own get (target=/fingerprint= preserved, review
+            # td680653) re-spelled with it, else "omit view=" stands.
+            near = nearest_option(v, ("page",))
+            corrected = (
+                retry_call("get", kind="checklist", id=id, view="page")
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append("omit view=")
+            raise BadInput(f"unknown checklist view {view!r}", next=nexts)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             if target is not None:
                 return self._render_for_target(self._resolve_target(target))

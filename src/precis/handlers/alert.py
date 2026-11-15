@@ -75,7 +75,12 @@ from precis.alerts import (
     sync_resolved_at_with_tags,
     unack_alert,
 )
-from precis.errors import BadInput, Unsupported
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    Unsupported,
+    nearest_option,
+)
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler, scaled_age
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -539,15 +544,26 @@ class AlertHandler(NumericRefHandler):
                 minutes=minutes,
             )
         if concrete and view is not None and view not in _BASE_VIEWS:
+            views = [*_DETAIL_VIEWS, "context", *_BASE_VIEWS]
+            # gr613469: lead with the corrected call — the caller's own
+            # get (host=/minutes=/every context filter preserved, review
+            # td680653) with the nearest valid view swapped in — ahead
+            # of the view walk-through.
+            near = nearest_option(view, views)
+            corrected = (
+                retry_call("get", kind="alert", id=id, view=near) if near else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                "view='detail' (triage shape: body + severity/source/"
+                "state + fingerprint/seen_count + timestamps + links; "
+                "'full' is an alias) · view='context' (detail + "
+                "worker_logs window) · links, log, raw (generic)"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='alert'",
-                options=[*_DETAIL_VIEWS, "context", *_BASE_VIEWS],
-                next=(
-                    "view='detail' (triage shape: body + severity/source/"
-                    "state + fingerprint/seen_count + timestamps + links; "
-                    "'full' is an alias) · view='context' (detail + "
-                    "worker_logs window) · links, log, raw (generic)"
-                ),
+                options=views,
+                next=nexts,
             )
         return super().get(id=id, view=view, q=q, **_kw)
 

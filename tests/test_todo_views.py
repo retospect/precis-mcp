@@ -821,7 +821,12 @@ def test_get_view_meta_in_unknown_view_options(handler: TodoHandler) -> None:
     with pytest.raises(Unsupported) as exc:
         handler.get(id=rid, view="metta")
     assert "meta" in (exc.value.options or [])
-    assert "view='meta'" in (exc.value.next or "")
+    # gr613469: next is a list — the corrected call leads, the prose
+    # follows; either may carry the view='meta' spelling.
+    next_text = " ".join(
+        [exc.value.next] if isinstance(exc.value.next, str) else (exc.value.next or [])
+    )
+    assert "view='meta'" in next_text
 
 
 # ── gr547804: get view aliases and the unknown-view vocabulary ─────

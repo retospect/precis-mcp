@@ -38,6 +38,7 @@ import textwrap
 import time
 import urllib.error
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -45,6 +46,11 @@ import psycopg
 
 from precis import search_feedback
 from precis.agentlog import current_from_env, write_search_trace
+from precis.corrected_call import (
+    IN_FLIGHT_CALL,
+    drop_wrapper_defaults,
+    verb_top_level,
+)
 from precis.errors import (
     BadInput,
     Denied,
@@ -55,6 +61,8 @@ from precis.errors import (
     RateLimited,
     Unsupported,
     Upstream,
+    nearest_option,
+    render_corrected_call,
 )
 from precis.filing_origin import writer_stamp
 from precis.protocol import (
@@ -164,6 +172,34 @@ _WRAPPER_DEFAULTED_KWARGS: dict[str, frozenset[str]] = {
     "search": frozenset({"page"}),
 }
 _DROPPABLE_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
+
+
+def _nearest_swapped(
+    keys: dict[str, Any], unknown: list[str], accepted: Iterable[str]
+) -> dict[str, Any] | None:
+    """``keys`` with each ``unknown`` name swapped for its nearest
+    accepted spelling — the corrected call's argument dict (gr613469).
+
+    ``None`` unless *every* unknown name has a difflib near-match in
+    ``accepted`` — a partial swap would leave the unmatched invalid
+    key in the suggested retry, so it still would not run (mcp-authoring
+    rule 2; review td680653). A typo'd key whose nearest spelling is
+    already present is dropped rather than shadowing the correctly
+    spelt value.
+    """
+    swaps = {k: nearest_option(k, accepted) for k in unknown}
+    if not all(swaps.values()):
+        return None
+    out: dict[str, Any] = {}
+    for k, v in keys.items():
+        tgt = swaps.get(k)
+        if tgt is not None:
+            if tgt not in keys:
+                out[tgt] = v
+        else:
+            out[k] = v
+    return out
+
 
 #: ``search``'s one-release legacy paging spellings (gr530420). The verb
 #: wrapper reads ``k``/``limit`` as ``page_size`` aliases and no-ops
@@ -2079,13 +2115,20 @@ class DispatchMixin(RuntimeShape):
                 arg_sample,
                 current_client,
                 error_head,
+                next_call_summary,
                 record_call,
             )
 
             error_type: str | None = None
+            err_next: tuple[bool, str | None, str | None] = (False, None, None)
             if is_error:
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
+                # 0325 (gr613469): whether the rendered ack carried a
+                # concrete corrected call — error_head only keeps the
+                # first line, so this is the ledger's whole next: uptake
+                # signal.
+                err_next = next_call_summary(body)
             elif scope_verdict is not None:
                 error_type = principal.WOULD_REFUSE
             elif budget_fitted:
@@ -2146,6 +2189,9 @@ class DispatchMixin(RuntimeShape):
                     ),
                     arg_sample=arg_sample(args),
                     client=current_client(),
+                    error_next_concrete=err_next[0] if is_error else None,
+                    error_next_verb=err_next[1],
+                    error_next_kind=err_next[2],
                 ),
             )
         except Exception:
@@ -4294,6 +4340,13 @@ class DispatchMixin(RuntimeShape):
                         if k != "args"
                         and k in _handler_accepted_kwargs(type(handler), verb)
                     ]
+                    # Snapshots for the corrected-call render (gr613469,
+                    # review td680653): the hint replays the caller's own
+                    # args={…} — a key the promotion lifts stays nested,
+                    # never hoisted top-level where the verb's wire
+                    # schema may not declare it.
+                    caller_extras = dict(extras)
+                    pre_promotion_args = dict(args)
                     if promotable:
                         promoted = _coerce_extras(
                             type(handler),
@@ -4317,10 +4370,31 @@ class DispatchMixin(RuntimeShape):
                                 args[k] = v
                         unknown = sorted(set(unknown) - set(promotable))
                     if unknown:
+                        swapped = _nearest_swapped(caller_extras, unknown, declared)
                         raise BadInput(
                             f"keys {unknown!r} not accepted by {kind}.{verb}; "
                             f"its args= keys are listed below",
                             options=_typed_kwargs(type(handler), verb, declared),
+                            next=(
+                                render_corrected_call(
+                                    verb,
+                                    {
+                                        "kind": kind,
+                                        **drop_wrapper_defaults(
+                                            verb,
+                                            {
+                                                k: v
+                                                for k, v in pre_promotion_args.items()
+                                                if v is not None
+                                            },
+                                        ),
+                                    },
+                                    extras=swapped,
+                                    top_level=verb_top_level(verb),
+                                )
+                                if swapped is not None
+                                else None
+                            ),
                         )
                 # Keys that shadow a named parameter of the handler (python.get
                 # folds them back in) get the same JSON-string coercion as the
@@ -4357,22 +4431,41 @@ class DispatchMixin(RuntimeShape):
                         (k for k in unknown if k in _SEARCH_PAGING_SPELLINGS),
                         None,
                     )
+                    # gr613469: lead with the corrected call — the same
+                    # call, nearest accepted args= key swapped in — ahead
+                    # of the shape-specific prose hint.
+                    swapped = _nearest_swapped(extras, unknown, accepted)
+                    corrected = (
+                        render_corrected_call(
+                            verb,
+                            {
+                                "kind": kind,
+                                **drop_wrapper_defaults(
+                                    verb,
+                                    {k: v for k, v in args.items() if v is not None},
+                                ),
+                            },
+                            extras=swapped,
+                            top_level=verb_top_level(verb),
+                        )
+                        if swapped is not None
+                        else None
+                    )
+                    # gr478557: gripe/todo comment via id= + text=, not args=.
+                    shape_hint = (
+                        f"to comment: put(kind={kind!r}, id=N, text='...') with no args"
+                        if verb == "put" and getattr(handler, "supports_comment", False)
+                        else (
+                            _search_paging_alias_next(alias, extras[alias])
+                            if verb == "search" and alias is not None
+                            else None
+                        )
+                    )
                     raise BadInput(
                         f"keys {unknown!r} not accepted by {kind}.{verb}; "
                         f"its args= keys are listed below",
                         options=accepted_kwargs,
-                        # gr478557: gripe/todo comment via id= + text=, not args=.
-                        next=(
-                            f"to comment: put(kind={kind!r}, id=N, text='...') "
-                            "with no args"
-                            if verb == "put"
-                            and getattr(handler, "supports_comment", False)
-                            else (
-                                _search_paging_alias_next(alias, extras[alias])
-                                if verb == "search" and alias is not None
-                                else None
-                            )
-                        ),
+                        next=([h for h in (corrected, shape_hint) if h] or None),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))
 
@@ -4443,17 +4536,34 @@ class DispatchMixin(RuntimeShape):
                     if scope_takers:
                         hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
                 dropped = [k for k in unknown_top if k in _DROPPABLE_TOP_LEVEL_KWARGS]
+                # gr613469: lead with the corrected call — the same call,
+                # each typo'd kwarg swapped for its nearest accepted
+                # spelling — ahead of the drop-it prose.
+                swapped_top = _nearest_swapped(clean, unknown_top, accepted_top)
+                corrected = (
+                    render_corrected_call(
+                        verb,
+                        {
+                            "kind": kind,
+                            **drop_wrapper_defaults(verb, swapped_top),
+                        },
+                        top_level=verb_top_level(verb),
+                    )
+                    if swapped_top is not None
+                    else None
+                )
+                dropped_hint = (
+                    f"{dropped} has no effect on {verb}(kind={kind!r}) — "
+                    "drop it (paging/mode belong to search and the verbs "
+                    "that list them)"
+                    if dropped
+                    else None
+                )
                 raise BadInput(
                     f"{verb}(kind={kind!r}) does not accept {unknown_top!r}"
                     f"{hint}; its args= keys are listed below",
                     options=accepted_list,
-                    next=(
-                        f"{dropped} has no effect on {verb}(kind={kind!r}) — "
-                        "drop it (paging/mode belong to search and the verbs "
-                        "that list them)"
-                        if dropped
-                        else None
-                    ),
+                    next=([h for h in (corrected, dropped_hint) if h] or None),
                 )
 
         # F7: catch handler-signature-required kwargs that the caller
@@ -4492,7 +4602,16 @@ class DispatchMixin(RuntimeShape):
                 store=self.store if verb in _WRITE_VERBS else None,
                 claim=writer_claim,
             ) as wctx:
-                response = method(**clean)
+                # gr613469: record the call as dispatched so a refusal
+                # raised inside the handler can re-render the caller's
+                # own args (``corrected_call.retry_call`` / ``IN_FLIGHT_CALL``)
+                # — a corrected call that dropped them would aim the
+                # retry somewhere else.
+                call_ctx = IN_FLIGHT_CALL.set((verb, kind, dict(clean)))
+                try:
+                    response = method(**clean)
+                finally:
+                    IN_FLIGHT_CALL.reset(call_ctx)
             response = self._nudge_writer(kind, verb, wctx, response)
             act = getattr(wctx, "trust_act", None)
             if act is not None and act.target_id is None:

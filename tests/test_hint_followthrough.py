@@ -67,3 +67,58 @@ def test_aggregate_drops_below_min_errors_and_maps_null_kind() -> None:
     assert [(f.verb, f.kind, f.errors, f.followed_ok) for f in fams] == [
         ("get", "-", 2, 1)
     ]
+
+
+def test_followthrough_counts_concrete_next_rows(store: Store) -> None:
+    """0325 (gr613469): ``error_next_concrete`` rows roll up into the
+    family's concrete/concrete_ok split; pre-0325 NULLs read as
+    not-concrete."""
+    kind = f"ft{uuid4().hex[:8]}"
+    head = "[error:BadInput] unknown view 'x3' for kind=thing"
+    s1, s2, s3 = (uuid4().hex for _ in range(3))
+    # s1: concrete-next error followed by a same-kind ok -> concrete_ok.
+    record_call(
+        store,
+        ToolCallRecord(
+            verb="get",
+            kind=kind,
+            input_keys=[],
+            outcome="error",
+            error_type="BadInput",
+            session_id=s1,
+            seq=1,
+            error_head=head,
+            error_next_concrete=True,
+            error_next_verb="get",
+            error_next_kind=kind,
+        ),
+    )
+    _call(store, s1, 2, kind, "ok")
+    # s2: concrete-next error with no follow-up -> concrete, not ok.
+    record_call(
+        store,
+        ToolCallRecord(
+            verb="get",
+            kind=kind,
+            input_keys=[],
+            outcome="error",
+            error_type="BadInput",
+            session_id=s2,
+            seq=1,
+            error_head=head,
+            error_next_concrete=True,
+            error_next_verb="get",
+            error_next_kind=kind,
+        ),
+    )
+    # s3: pointer-only error (NULL flag, the pre-0325 shape) -> neither.
+    _call(store, s3, 1, kind, "error", head)
+
+    with store.pool.connection() as conn:
+        fams = [f for f in hint_followthrough(conn, days=1) if f.kind == kind]
+    assert len(fams) == 1
+    f = fams[0]
+    assert f.errors == 3
+    assert f.concrete == 2
+    assert f.concrete_ok == 1
+    assert f.concrete_share == 2 / 3

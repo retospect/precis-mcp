@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis._result_budget import DEFAULT_CONTEXT_BODY_BYTES
+from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, NotFound, Upstream
@@ -471,13 +472,25 @@ class CacheBackedHandler(Handler):
         # view that reaches a cache-backed ``get`` is unknown — the
         # dispatcher consumes eye-ladder labels before this method runs.
         if view is not None and view != "body":
+            # gr613469: ``body`` is the only view — the corrected call is
+            # unambiguous, so it always leads (the caller's own args
+            # preserved, review td680653; a ``<slug>`` placeholder when
+            # the call named no id).
+            corrected = retry_call(
+                "get",
+                kind=self.spec.kind,
+                id=id if id is not None else "<slug>",
+                view="body",
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                f"get(kind={self.spec.kind!r}, id=<slug>, view='body') "
+                "reads a cached ref whole, without the context fold"
+            )
             raise BadInput(
                 f"unknown view={view!r} for kind={self.spec.kind!r}",
                 options=["body"],
-                next=(
-                    f"get(kind={self.spec.kind!r}, id=<slug>, view='body') "
-                    "reads a cached ref whole, without the context fold"
-                ),
+                next=nexts,
             )
 
         # Chunk/section selector: ``get(id='<slug>~<ord>')``,

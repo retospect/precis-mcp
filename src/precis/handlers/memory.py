@@ -153,6 +153,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from precis._result_budget import result_context_cap, row_size_cell, size_cell
+from precis.corrected_call import retry_call
 from precis.errors import (
     BadInput,
     Gone,
@@ -1175,19 +1176,30 @@ class MemoryHandler(NumericRefHandler):
                 *_BASE_VIEWS,
             ]
             close = difflib.get_close_matches(view, legal, n=1)
+            # gr613469: lead with the corrected call — the caller's own
+            # get (every arg preserved, review td680653) with the
+            # nearest valid view swapped in — ahead of the vocabulary
+            # walk-through.
+            corrected = (
+                retry_call("get", kind="memory", id=id, view=close[0])
+                if close
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                (f"did you mean {close[0]!r}? " if close else "")
+                + "view='argument' (kind:lemma/kind:inference proof tree) "
+                f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
+                "· body (the ~body read) · members (paged part-of listing) "
+                "· toc (generated part-of tree) "
+                "· processing (before recall) "
+                "· environment (graph neighbourhood + shape smells) "
+                "· links, log, raw (generic)"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
                 options=legal,
-                next=(
-                    (f"did you mean {close[0]!r}? " if close else "")
-                    + "view='argument' (kind:lemma/kind:inference proof tree) "
-                    f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
-                    "· body (the ~body read) · members (paged part-of listing) "
-                    "· toc (generated part-of tree) "
-                    "· processing (before recall) "
-                    "· environment (graph neighbourhood + shape smells) "
-                    "· links, log, raw (generic)"
-                ),
+                next=nexts,
             )
         resp = super().get(
             id=id,

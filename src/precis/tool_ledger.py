@@ -61,6 +61,19 @@ tokens-to-first-gold is one window function over ``(session_id, seq)`` —
 the queryable per-call token log the memory-ablation bench's primary
 metric reads.
 
+Migration 0325 records *whether the error ack helped* (gr613469):
+``error_head`` keeps only the ack's first line, so ``next:`` uptake was
+never measurable from the ledger (the td605104 baseline had to mine job
+transcripts to learn 129/130 acks carried only the generic
+``get(kind='skill', …)`` doc pointer). On an error row the dispatcher
+runs :func:`next_call_summary` over the rendered body and stores the
+first *concrete* next — a ``  next:`` line that IS a call
+(``get``/``search``/``put``/``edit``/``delete``/``tag``/``link(``) and
+not the doc pointer — as ``error_next_concrete`` plus the suggested
+call's ``error_next_verb``/``error_next_kind``, the join keys for "did
+the agent take the hint" (:func:`precis.workers.call_errors.
+hint_followthrough` reports the share).
+
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
 
@@ -207,6 +220,15 @@ class ToolCallRecord:
     #: inferred — "which client keeps tripping on this call" is the
     #: mining question this answers.
     client: str | None = None
+    #: Whether the rendered error ack carried a concrete corrected call —
+    #: the first ``next:`` line that IS a runnable call rather than the
+    #: doc pointer (0325, gr613469; :func:`next_call_summary`). ``False``
+    #: on error rows without one; ``None`` on ok rows (no ack to measure).
+    error_next_concrete: bool | None = None
+    #: The suggested call's verb/kind — the join keys for "did the agent
+    #: take the hint". ``None`` unless ``error_next_concrete``.
+    error_next_verb: str | None = None
+    error_next_kind: str | None = None
 
 
 def record_call(store: Store | None, rec: ToolCallRecord) -> None:
@@ -233,9 +255,11 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 agentlog_id, source, profile, verb, kind, input_keys,
                 outcome, error_type, result_count, latency_ms,
                 session_id, seq, result_bytes, result_tokens_est,
-                error_head, arg_sample, client, result_ids
+                error_head, arg_sample, client, result_ids,
+                error_next_concrete, error_next_verb, error_next_kind
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s::bigint[])
+                      %s, %s, %s, %s, %s, %s, %s, %s::bigint[],
+                      %s, %s, %s)
             """,
             (
                 rec.agentlog_id,
@@ -260,6 +284,9 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                     if rec.result_ids
                     else None
                 ),
+                rec.error_next_concrete,
+                rec.error_next_verb,
+                rec.error_next_kind,
             ),
         )
         conn.commit()
@@ -554,6 +581,50 @@ def error_head(body: str) -> str | None:
     return mask_secrets(line, warn=False)[:200]
 
 
+# ── error_next_* (migration 0325, gr613469) ─────────────────────────────
+#
+# ``error_head`` keeps only the ack's first line, so ``next:`` uptake was
+# never measurable from the ledger. :func:`next_call_summary` is the
+# read-back: it parses the rendered body's ``  next:`` lines for the
+# first line that IS a runnable call — the same ``verb(`` shape
+# :func:`precis.errors.render_corrected_call` emits — and reports it so
+# the dispatcher can store it on the error row.
+
+#: A ``next:`` line that starts a call — one of the seven surface verbs.
+_NEXT_CALL_RE = re.compile(r"^(get|search|put|edit|delete|tag|link)\(")
+#: The doc pointer — "open the skill" is documentation, not a corrected
+#: call (the td605104 baseline's 129/130).
+_NEXT_SKILL_POINTER_RE = re.compile(r"^get\(\s*kind='skill'")
+#: ``kind='…'`` inside the suggested call text.
+_NEXT_KIND_RE = re.compile(r"\bkind='([^']+)'")
+
+
+def next_call_summary(body: str) -> tuple[bool, str | None, str | None]:
+    """``(concrete, verb, kind)`` of the first corrected call an error
+    body's ``next:`` lines name — 0325's "did the ack offer a runnable
+    fix" measure.
+
+    A ``  next:`` line is concrete when it *is* a call — ``verb(`` with
+    one of the seven surface verbs — and is not the generic doc pointer
+    ``get(kind='skill', …)``: a skill get points at documentation, not
+    at the corrected retry. Prose hints ("to comment: put(…)",
+    "if a skill showed this call …") never match — only a line whose
+    first character starts the call counts. The first concrete line
+    wins: the raise site's own corrected call leads, the
+    dispatcher-appended pointers sort after it.
+    """
+    for line in body.splitlines():
+        if not line.startswith("  next: "):
+            continue
+        call = line.removeprefix("  next: ").strip()
+        m = _NEXT_CALL_RE.match(call)
+        if m is None or _NEXT_SKILL_POINTER_RE.match(call):
+            continue
+        kind = _NEXT_KIND_RE.search(call)
+        return True, m.group(1), kind.group(1) if kind else None
+    return False, None, None
+
+
 def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
     """Delete ``tool_calls`` rows past the retention window, one bounded
     batch per pass. Returns rows deleted (0 when another host holds the
@@ -606,7 +677,7 @@ _CALL_COLS = (
     "call_id, ts, agentlog_id, source, profile, verb, kind, input_keys, "
     "outcome, error_type, result_count, latency_ms, session_id, seq, "
     "result_bytes, result_tokens_est, error_head, arg_sample, client, "
-    "result_ids"
+    "result_ids, error_next_concrete, error_next_verb, error_next_kind"
 )
 
 
@@ -895,6 +966,7 @@ __all__ = [
     "error_head",
     "gc",
     "memory_route",
+    "next_call_summary",
     "record_call",
     "sessions_rollup",
 ]

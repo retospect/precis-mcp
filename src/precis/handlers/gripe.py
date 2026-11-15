@@ -117,7 +117,16 @@ from typing import Any, ClassVar, NamedTuple
 
 import psycopg.errors
 
-from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    Denied,
+    Gone,
+    NotFound,
+    Unsupported,
+    Upstream,
+    nearest_option,
+)
 from precis.handlers import _comment_timeline as tl
 from precis.handlers import _gripe_fix as gf
 from precis.handlers import _gripe_summary as gs
@@ -3093,17 +3102,33 @@ class GripeHandler(NumericRefHandler):
             )
         if view is not None and view not in _BASE_VIEWS:
             views = [*_BASE_VIEWS, "body", "comments", "full", "fix", "summary"]
-            near = difflib.get_close_matches(view, views, n=1)
-            lead = f"nearest is view={near[0]!r}. " if near else ""
+            near = nearest_option(view, views)
+            lead = f"nearest is view={near!r}. " if near else ""
+            # gr613469: lead with the corrected call — the caller's own
+            # get (every arg preserved, review td680653) with the
+            # nearest valid view swapped in — ahead of the vocabulary
+            # walk-through.
+            corrected = (
+                retry_call(
+                    "get",
+                    kind="gripe",
+                    id=id if id is not None else "<id>",
+                    view=near,
+                )
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                lead + "get(kind='gripe', id=<id>, view='comments') — every "
+                "comment, paged whole (args={'comments': K} newest K, "
+                "{'comments': 'A-B'} a window, {'comment': K} one); "
+                "view='body' the body; the plain get is title + tags + count"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
-                next=(
-                    lead + "get(kind='gripe', id=<id>, view='comments') — every "
-                    "comment, paged whole (args={'comments': K} newest K, "
-                    "{'comments': 'A-B'} a window, {'comment': K} one); "
-                    "view='body' the body; the plain get is title + tags + count"
-                ),
+                next=nexts,
             )
         try:
             resp = super().get(id=id, view=view, q=q, **_kw)

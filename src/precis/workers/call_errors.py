@@ -669,7 +669,8 @@ def run_call_errors_pass(
 FOLLOW_WINDOW = 2
 
 HINT_FOLLOWTHROUGH_SQL = """
-SELECT e.verb, e.kind, e.error_type, e.error_head, f.outcome
+SELECT e.verb, e.kind, e.error_type, e.error_head, f.outcome,
+       e.error_next_concrete
   FROM tool_calls e
   LEFT JOIN LATERAL (
         SELECT n.outcome
@@ -697,10 +698,18 @@ class FollowThrough:
     followed_ok: int
     followed_error: int
     no_followup: int
+    #: Rows whose ack named a concrete corrected call (0325, gr613469).
+    concrete: int = 0
+    #: Of ``concrete``: rows the same session followed with an ok.
+    concrete_ok: int = 0
 
     @property
     def ok_share(self) -> float:
         return self.followed_ok / self.errors if self.errors else 0.0
+
+    @property
+    def concrete_share(self) -> float:
+        return self.concrete / self.errors if self.errors else 0.0
 
 
 def hint_followthrough(
@@ -720,22 +729,30 @@ def aggregate_followthrough(
     rows: Iterable[tuple[Any, ...]], *, min_errors: int = 1
 ) -> list[FollowThrough]:
     """Group :data:`HINT_FOLLOWTHROUGH_SQL` rows (``verb, kind, error_type,
-    error_head, next_outcome``) into families. The report script feeds it
-    rows parsed from ``scripts/prod-psql --ro`` output."""
+    error_head, next_outcome[, error_next_concrete]``) into families. The
+    report script feeds it rows parsed from ``scripts/prod-psql --ro``
+    output; the optional sixth field is the ack's concrete-next flag
+    (0325, gr613469) — rows without it count as not-concrete."""
     acc: dict[tuple[str, str, str, str], list[int]] = {}
-    for verb, kind, etype, head, outcome in rows:
+    for row in rows:
+        verb, kind, etype, head, outcome = row[:5]
+        concrete = bool(row[5]) if len(row) > 5 else False
         key = (
             str(verb),
             str(kind) if kind is not None else "-",
             str(etype or "Unknown"),
             normalize_err_head(head or ""),
         )
-        slot = acc.setdefault(key, [0, 0, 0, 0])
+        slot = acc.setdefault(key, [0, 0, 0, 0, 0, 0])
         slot[0] += 1
         slot[1 if outcome == "ok" else 2 if outcome == "error" else 3] += 1
+        if concrete:
+            slot[4] += 1
+            if outcome == "ok":
+                slot[5] += 1
     out = [
-        FollowThrough(v, k, t, h, n, ok, er, no)
-        for (v, k, t, h), (n, ok, er, no) in acc.items()
+        FollowThrough(v, k, t, h, n, ok, er, no, conc, cok)
+        for (v, k, t, h), (n, ok, er, no, conc, cok) in acc.items()
         if n >= min_errors
     ]
     out.sort(key=lambda r: (-r.errors, r.verb, r.kind, r.head))

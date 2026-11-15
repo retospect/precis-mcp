@@ -743,3 +743,72 @@ def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
         holder.execute("SELECT pg_advisory_unlock(%s)", (tool_ledger._GC_LOCK,))
         holder.commit()
     assert tool_ledger.gc(store, retention_days=30) >= 1
+
+
+# ── next_call_summary / error_next_* (0325, gr613469) ───────────────────
+
+
+def test_next_call_summary() -> None:
+    """The ledger-side read-back of a rendered error ack: the first
+    ``  next:`` line that IS a runnable call — not the skill doc
+    pointer — is the concrete next (verb + kind are the follow-through
+    join keys)."""
+    ncs = tool_ledger.next_call_summary
+    # Skill-pointer-only ack (the td605104 baseline's 129/130).
+    assert ncs(
+        "[error:BadInput] keys ['x'] not accepted\n"
+        "  options: a, b\n"
+        "  next: get(kind='skill', id='precis-search-help')"
+    ) == (False, None, None)
+    # A corrected call leads — the skill pointer after it never counts.
+    assert ncs(
+        "[error:BadInput] keys ['scop'] not accepted\n"
+        "  next: search(kind='paper', q='x', scope='pa1')\n"
+        "  next: get(kind='skill', id='precis-search-help')"
+    ) == (True, "search", "paper")
+    # The gripe standing-order hint is prose wrapping a call — not a
+    # call line (it does not start with the verb).
+    assert ncs(
+        "[error:BadInput] nope\n"
+        "  next: if a skill or doc showed this call, file a gripe — "
+        "put(kind='gripe', text='x')"
+    ) == (False, None, None)
+    # A call with no kind= keeps the verb.
+    assert ncs("[error:BadInput] nope\n  next: get(id='/recent')") == (
+        True,
+        "get",
+        None,
+    )
+    # No next lines at all.
+    assert ncs("[error:Internal] boom") == (False, None, None)
+
+
+def test_record_call_persists_error_next(store: Any) -> None:
+    """0325's three columns round-trip; ok rows keep NULLs."""
+    tag = uuid4().hex[:8]
+    verb = f"errnext-{tag}"
+    tool_ledger.record_call(
+        store,
+        _rec(
+            verb=verb,
+            outcome="error",
+            error_type="BadInput",
+            error_next_concrete=True,
+            error_next_verb="get",
+            error_next_kind="todo",
+        ),
+    )
+    tool_ledger.record_call(store, _rec(verb=f"{verb}-ok"))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT error_next_concrete, error_next_verb, error_next_kind "
+            "FROM tool_calls WHERE verb=%s",
+            (verb,),
+        ).fetchone()
+        ok_row = conn.execute(
+            "SELECT error_next_concrete, error_next_verb, error_next_kind "
+            "FROM tool_calls WHERE verb=%s",
+            (f"{verb}-ok",),
+        ).fetchone()
+    assert row == (True, "get", "todo")
+    assert ok_row == (None, None, None)
