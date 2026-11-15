@@ -2148,13 +2148,15 @@ def _poll_verify_green(run: _Run) -> bool:
 
 # ── Hand-off and the closing tail ──────────────────────────────────
 
-#: Gripe links a pin bump resolves: a slice that fixes a gripe, or names it.
-_GRIPE_RELATIONS = ("fixes", "related-to")
+#: Gripe links a pin bump resolves: a slice that fixes a gripe. ``related-to``
+#: is the default relation of any link, so a slice that only names a gripe
+#: does not settle it (Reto 2026-11-15, td659522).
+_GRIPE_RELATIONS = ("fixes",)
 
 
 def _gripe_links(store: Any, slice_ids: list[int]) -> list[tuple[int, int]]:
-    """``(slice, gripe)`` of every outgoing ``fixes`` / ``related-to`` link of
-    ``slice_ids`` to a live gripe (seam)."""
+    """``(slice, gripe)`` of every outgoing ``fixes`` link of ``slice_ids`` to
+    a live gripe (seam)."""
     if not slice_ids:
         return []
     with store.pool.connection() as conn:
@@ -2224,8 +2226,8 @@ def _resolve_gripe(
 def finish(store: Any, todo_id: int, sha: str) -> None:
     """The pin bump has landed at ``sha``: stamp ``meta.pin_bump`` ``state:
     "landed"`` / ``landed_sha`` and resolve the batch's gripes (the done
-    slices of the pinned repo upstream of the node, their ``fixes`` and
-    ``related-to`` gripes: ``resolved:`` + ``STATUS:auto_verify``, once each;
+    slices of the pinned repo upstream of the node, the gripes they link
+    with ``fixes``: ``resolved:`` + ``STATUS:auto_verify``, once each;
     ``gripes`` / ``slices`` go on the record). Idempotent, and it never
     raises: the pin already landed, the gripes are a record."""
     try:

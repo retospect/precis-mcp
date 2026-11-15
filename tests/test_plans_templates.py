@@ -1023,6 +1023,27 @@ def test_mint_repo_release_refuses_a_profile_without_a_releaser(
         mint_repo_release(store, root, "catpath", blocked_by=reviewers)
 
 
+def test_a_pin_bump_resolves_only_the_gripes_its_slices_fix(
+    handler: TodoHandler,
+) -> None:
+    """The link read against real rows: a ``fixes`` link counts, a
+    ``related-to`` link (the default of any link) does not, and neither does
+    a ``fixes`` link to a todo. If this fails a pin bump marks a gripe
+    resolved that a slice only mentions."""
+    from precis.plans import templates as T
+    from precis.workers.job_types import pin_bump
+
+    store = handler.hub.store
+    root, fixer = _reviewer_root(store)
+    namer = T.mint_plan_task(store, root, "Other slice", "x")
+    fixed, named = _gripe(handler), _gripe(handler)
+    store.add_link(src_ref_id=fixer, dst_ref_id=fixed, relation="fixes")
+    store.add_link(src_ref_id=namer, dst_ref_id=named, relation="related-to")
+    store.add_link(src_ref_id=namer, dst_ref_id=fixer, relation="fixes")
+
+    assert pin_bump._gripe_links(store, [fixer, namer]) == [(fixer, fixed)]
+
+
 # -- second-repo reviewer node (td659522 step 5 R1) ---------------------------
 
 
