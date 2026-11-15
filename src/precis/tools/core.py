@@ -1033,14 +1033,13 @@ def get(
     kinds — and expands a `fisheye+2hop` group (`extent=` below).
     `args=` holds typed extras for views that need them; an
     unknown key fails the call with `[error:BadInput]` listing the keys.
-    `extent=` is the one size dial — a fisheye rung: 'fisheye' (node +
+    `extent=` is a fisheye rung: 'fisheye' (node +
     surroundings), 'fisheye+1hop' (linked neighbours), 'fisheye+2hop'
     (second hop as counts; expand with `q='<kind>:<label>'`); any rung
-    + '+recall' (similar unlinked refs). A ladder label in `view=` is
-    the deprecated spelling — it routes and announces on `interpreted:`.
+    + '+recall' (similar unlinked refs).
     `project=`: draft's owning todo. `spec=`: component bom. `full=`,
-    `tag=`, `kinds=`: skill (`full` folds to `view='full'` on other
-    kinds — the deprecated spelling; `extent=` is canonical). NotFound
+    `tag=`, `kinds=`: skill (`full`, deprecated for `extent=`, folds to
+    `view='full'` on other kinds). NotFound
     "unknown kind" with "routes through
     host(s)": see the full reference.
 

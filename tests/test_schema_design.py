@@ -112,6 +112,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # (chunk handles and/or quoted spans, open-ended per judgment);
         # read whole by the inspect view, never queried by key.
         "considerations.passages",
+        # 0330: the evidence sources a judgment cites (handles, open-ended
+        # per judgment, mirrors passages); read whole, never queried by key.
+        "considerations.supporters",
         "cache_state.meta",
         "cad_nodes.pattern",
         "chunk_events.source",
