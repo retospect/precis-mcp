@@ -23,19 +23,20 @@ Run this when the user says "ready to compact", or before you hand off with
 yet filed) is lost at compaction; a resume-note makes it durable. The goal:
 the user tells a new session "resume from me<N>" and that session can continue.
 
-## Find or create
+## Find or create the note
 
-1. `search(kind='memory', tags=['resume-note'], q='<this session's topic>', view='index')`.
+1. `search(kind='memory', tags=['resume-note'], q='<topic>', view='index')`.
 2. This session's note exists → **update it** with `edit(kind='memory',
    id='me…', mode='replace', text='<new body>')`; never mint a second one.
 3. Otherwise `put(kind='memory', tags=['resume-note', 'SPACE:repo-dev'],
    title='Resume: <topic>, <UTC date>', text='<body>',
+   meta={'hook': '<one line: goal + next step>', 'expires': '14d'},
    args={'writer': {'model': '<your model id>'}})`.
 
 The `resume-note` tag is the whole convention: `search(kind='memory',
 tags=['resume-note'])` lists every note.
 
-## Body sections
+## Write the body
 
 Write each section; say `none` for an empty one.
 
@@ -44,19 +45,28 @@ Write each section; say `none` for an empty one.
   worktrees, rounds, deploys (sha and what blocks it), background jobs. Handle
   and state only; the ref holds the detail.
 - **Notes to read** — `me…` handles of every memory needed to resume. Also
-  `link(id='me<note>', target='memory:me…', rel='cites')` each one, so the
-  graph carries them.
-- **Files** — one python-kind ref per file the next session must open
-  (`python:src/precis/path/file.py::Symbol`), not prose paths.
-- **Repos in context** — the repos that must be mounted or checked out for those
-  python refs to resolve, and the worktree or branch in each.
+  `link(kind='memory', id='me<note>', target='me…', rel='cites')` each
+  one, so the graph carries them.
+- **Files** — one python-kind ref per file or symbol the next session must
+  open (`main::precis.tools.core.link`,
+  `precis/src/precis/cli.py~L42-58` — grammar in [[precis-python-help]]),
+  not prose paths.
+- **Repos in context** — the python alias each ref resolves against
+  (`main`, `precis`, `wt-<tree name>`), and the repo plus worktree or
+  branch that alias must point at.
 - **Transient instructions** — rulings, warnings, and steps told to you this
   session that live nowhere else. This is the one place restating content is right.
 
-## Rules
+## Keep the note resumable
 
 - Anything already on a durable ref (todo, gripe, file) is a handle, not a copy.
 - No secrets, cluster addresses or node hostnames in the body.
 - Notes expire in 14 days; the next session deletes or retires the note once
   it has resumed and filed what is still true.
 - Finish by giving the user the handle: `resume from me<N>`.
+
+## See also
+
+- [[remember]] — the repo-dev memory write recipe this follows
+- [[precis-python-help]] — the python-ref grammar for the Files section
+- [[next]] — the handoff this note precedes
