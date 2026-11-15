@@ -3646,9 +3646,11 @@ def test_digest_infra_red_on_a_superseded_run_closes_moot_without_rerun(
         }
     )
     monkeypatch.setattr(crd, "_gh", fake)
-    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA2)
     ctx = Ctx(store, {"todo_id": digest_id})
-    handle = crd.submit(ctx, None)
+    handle = crd.submit(ctx, None)  # the head is still SHA: submit's guard passes
+    assert ctx.failures == []
+    # The branch moves while the digest runs: the infra ruling re-reads it.
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA2)
     _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
     assert crd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
@@ -3683,9 +3685,11 @@ def test_digest_infra_red_parks_when_the_release_head_is_unreadable(
         }
     )
     monkeypatch.setattr(crd, "_gh", fake)
-    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: None)
     ctx = Ctx(store, {"todo_id": digest_id})
-    handle = crd.submit(ctx, None)
+    handle = crd.submit(ctx, None)  # the head is still readable here
+    assert ctx.failures == []
+    # The head turns unreadable while the digest runs.
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: None)
     _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
     assert crd.poll(ctx, handle) is False  # parked, nothing fired
     assert not any(c[:2] == ["run", "rerun"] for c in calls)

@@ -2182,8 +2182,7 @@ def put(
     errors); `todo` declares both — `text=` title, `body=` details, either or
     both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs an exact `get`
-    within one hour under this credential; same session when unauthenticated).
+    `text={'$ref': '<handle>'}` = that handle's body (needs a recent exact `get`).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2635,16 +2634,15 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    `mode=` defaults to `find-replace`; kinds whose edit_modes
-    exclude it refuse with options. todo uses `text=`/`body=`, memory also
-    takes `ops=[{find,text,...}]`; quest requires `mode='replace'`; draft
-    takes `'replace-content'`; paper, structure ignore it.
+    `mode=` defaults to `find-replace`; kinds excluding it refuse with
+    options. todo uses `text=`/`body=`, memory also takes
+    `ops=[{find,text,...}]`; quest needs `mode='replace'`; draft takes
+    `'replace-content'`; paper, structure ignore it.
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` (python `~L` ranges: the read's `sha=`) refuses
-    the edit if content changed. `dry_run=True` previews; `reason=` why.
-    `text={'$ref': '<handle>'}` = its body (after an exact `get` within one
-    hour under this credential; same session when unauthenticated).
+    / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
+    edit. `dry_run=True` previews; `reason=` why.
+    `text={'$ref': '<handle>'}` = its body (needs a recent exact `get`).
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
