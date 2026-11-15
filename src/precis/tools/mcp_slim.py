@@ -64,12 +64,9 @@ read; only kinds that implement it accept scope=, and their refusal
 names the ones that do. `status=` filters by
 `STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
-`queries=`/`answers=` fuse extra rephrasings / HyDE passages into the
-ranked legs (paper, dated search); `batch=` runs 1–8 labelled
-independent searches (memory only). A verb param a kind doesn't
-support refuses `not on <kind> yet`. Some kinds are host-gated:
-`NotFound` with `routes through host(s): …` means the kind exists but
-this process lacks its provider. Kind-specific fields (`exclude`, `reach`,
+`queries=`/`answers=` (paper, dated) and `batch=` (memory) are verb
+params; other kinds refuse `not on <kind> yet`. `NotFound … routes
+through host(s)` = a host-gated kind. Kind-specific fields (`exclude`, `reach`,
 `folder`, `per_paper`, `trust`, `wants`, `compose`,
 `property`/`min`/`max`/`unit`, ...) go in `args={...}`; an unknown key
 fails the call with `[error:BadInput]` listing the kind's accepted ones.
