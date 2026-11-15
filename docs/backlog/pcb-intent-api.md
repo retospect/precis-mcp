@@ -211,6 +211,8 @@ print(rt.summary())
 | 8 | in-script DB-free `pcb.route` (Board → batch → IR without `pcb_apply`), gr513867 | M | Opus |
 | 9 | ~~diff pairs + length groups~~ — deferred (Q5), see §Deferred signal-integrity classes | L | Opus; own spec |
 
+Slice 2 landed (expressions + `region.unresolved` in `b.check()`); rooms/keepouts/`route_rule` taking regions are still open (slices 5, 6).
+
 1–3 can land in one wave; 4 needs 1–3; 6 waits on the rulings below.
 
 ## Decisions

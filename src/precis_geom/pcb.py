@@ -51,6 +51,16 @@ only names an LCSC key can instead use :func:`catalog_part`: its pinned raw
 geometry stays attached to the part without adding package or height fields
 that the source component never authored. :meth:`Board.catalog_footprints`
 passes that bound geometry to the local kernel without another cache lookup.
+
+**Region expressions** (pcb-intent-api slice 2; ``precis_geom.pcb_region``).
+``Part.outline``/``.courtyard``/``.center``, ``Pin.center``, 2-D
+``pcb.box(x0, y0, x1, y1)`` (beside the 3-D ``pcb.box(w, d, h)``),
+``pcb.circle``/``poly``/``between``/``board_outline`` build lazy ``Region``
+ASTs; nothing resolves at build time. :meth:`Board.region` names one,
+:meth:`Board.region_snapshot` gives the authored-pose snapshot they resolve
+against (shapely, lazily), and :meth:`Board.check` emits ``region.unresolved``
+for a named region that cannot resolve. Regions are not yet consumed by
+rooms/keepouts/route rules.
 """
 
 from __future__ import annotations
@@ -71,6 +81,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from precis_geom import pcb_region as _region
 from precis_geom import pcb_shape as _shape
 from precis_geom import trace as _trace
 from precis_geom.pcb_shape import BoardShape, FitResult
@@ -746,6 +757,11 @@ class Pin:
             et = next((t for t in self.tags if t in _PIN_ETYPES), None)
         return _class_gap(et, fields)
 
+    @property
+    def center(self) -> _region.Region:
+        """Lazy ref: this pin's pad centre at its part's current pose."""
+        return _region.pin_ref(self.part.refdes, self.name)
+
     def current_role(self, kind: str) -> Pin:
         """Declare the pin's role in a current path
         (``meta.current_role``) — e.g. ``"series"`` marks a limiter for
@@ -1221,6 +1237,21 @@ class Part:
         """
         self.x, self.y, self.rot, self.side, self.fixed = x, y, rot, side, fixed
         return self
+
+    @property
+    def outline(self) -> _region.Region:
+        """Lazy ref: the part's body (pad bbox) at its current pose."""
+        return _region.part_ref(self.refdes, "outline")
+
+    @property
+    def courtyard(self) -> _region.Region:
+        """Lazy ref: the part's courtyard box at its current pose."""
+        return _region.part_ref(self.refdes, "courtyard")
+
+    @property
+    def center(self) -> _region.Region:
+        """Lazy ref: the part's origin point at its current pose."""
+        return _region.part_ref(self.refdes, "center")
 
     def leash(self, max_travel_mm: float) -> Part:
         """Cap how far the solver may move the part.
@@ -2094,6 +2125,59 @@ def objective(*, ref: Any = "seed", **shares: float) -> _ObjectiveShares:
 # --------------------------------------------------------------------------
 
 
+class _BoardSnapshot:
+    """:class:`precis_geom.pcb_region.Snapshot` over a :class:`Board`'s
+    authored data."""
+
+    def __init__(self, board: Board) -> None:
+        self._b = board
+
+    def pose(self, refdes: str) -> _region.Pose | None:
+        p = self._b._parts.get(refdes)
+        if p is None or p.x is None or p.y is None:
+            return None
+        return (float(p.x), float(p.y), float(p.rot or 0.0), str(p.side))
+
+    def _pads(self, part: Part) -> list[dict[str, Any]]:
+        fp = self._b._footprints.get(str(part.footprint or ""))
+        if fp is not None:
+            return fp.pads
+        return part._catalog.pads if part._catalog else []
+
+    def part_poly(self, refdes: str, kind: str) -> tuple[float, ...] | None:
+        part = self._b._parts.get(refdes)
+        if part is None:
+            return None
+        if kind == "outline":
+            xs: list[float] = []
+            ys: list[float] = []
+            for p_ in self._pads(part):
+                w, h = float(p_.get("w") or 0.0), float(p_.get("h") or 0.0)
+                xs += [float(p_["x"]) - w / 2.0, float(p_["x"]) + w / 2.0]
+                ys += [float(p_["y"]) - h / 2.0, float(p_["y"]) + h / 2.0]
+            if xs:
+                return (min(xs), min(ys), max(xs), max(ys))
+        return self._b._local_extent_mm(part)
+
+    def pad_xy(self, refdes: str, pin: str) -> tuple[float, float] | None:
+        part = self._b._parts.get(refdes)
+        if part is None:
+            return None
+        for p_ in self._pads(part):
+            if str(p_.get("number", p_.get("pin"))) == str(pin):
+                return (float(p_["x"]), float(p_["y"]))
+        return None
+
+    def board_outline(self) -> Any:
+        for f_ in self._b._features:
+            if f_["ftype"] != "outline":
+                continue
+            g = f_["geom"]
+            if "path" in g:
+                return [tuple(v) for v in g["path"]]
+        return None
+
+
 class Board:
     """A pcb design built in memory; ``to_batch()`` is the
     ``pcb_apply``-shaped payload. ``meta`` is the batch's free-form
@@ -2156,6 +2240,7 @@ class Board:
         #: ``_connections``.
         self._conn_sites: list[str] = []
         self._features: list[dict[str, Any]] = []
+        self._regions: list[tuple[str | None, _region.Region, str]] = []
         self._planes: list[dict[str, str]] = []
         self._footprints: dict[str, Footprint] = {}
         self._footprint_order: list[str] = []
@@ -3453,11 +3538,69 @@ class Board:
         findings += motif_findings(self)
         findings += self._over_voltage_findings()
         findings += self._source_findings()
+        findings += self._region_findings()
         return CheckResult(
             findings=findings,
             not_checked=not_checked,
             not_checked_groups=groups,
         )
+
+    @traced
+    def region(
+        self, expr: _region.Region, *, name: str | None = None
+    ) -> _region.Region:
+        """Declare a geometry expression (pcb-intent-api slice 2) so
+        :meth:`check` can prove it resolves offline, with the script line.
+        The expression stays lazy — nothing enters the batch; rooms,
+        keepouts and route rules (later slices) take it as their region.
+
+        Args:
+            expr (Region): ``u1.courtyard.buffer(1.5)``, ``pcb.box(…)``…
+            name (str | None): Label echoed in findings and the intent
+                record.
+        """
+        if not isinstance(expr, _region.Region):
+            raise PcbBuilderError(
+                f"region: expected a geometry expression, got {type(expr).__name__}"
+            )
+        self._regions.append((name, expr, _caller_site()))
+        return expr
+
+    def region_snapshot(self) -> Any:
+        """The pose snapshot :meth:`Region.resolve` reads: authored
+        ``at()`` poses, footprint extents, pad centres, the outline."""
+        return _BoardSnapshot(self)
+
+    def _region_findings(self) -> list[CheckFinding]:
+        findings: list[CheckFinding] = []
+        snap = self.region_snapshot()
+        for name, expr, site in self._regions:
+            label = name or expr.op
+            unknown = sorted(expr.refs() - set(self._parts))
+            if unknown:
+                findings.append(
+                    CheckFinding(
+                        code="region.unresolved",
+                        site=site,
+                        message=f"region {label!r} names unknown part(s) {unknown}",
+                    )
+                )
+                continue
+            if any(snap.pose(r) is None for r in expr.refs()):
+                continue  # movable: resolves against the solver's poses
+            try:
+                expr.resolve(snap)
+            except _region.RegionError as exc:
+                if "needs shapely" in str(exc):
+                    continue
+                findings.append(
+                    CheckFinding(
+                        code="region.unresolved",
+                        site=site,
+                        message=f"region {label!r} cannot resolve: {exc}",
+                    )
+                )
+        return findings
 
     @traced
     def route(self, **params: Any) -> Any:
@@ -4499,7 +4642,21 @@ def fit(
 #: Counterparty box-spec constructors for ``fit``/``BoardShape.fits`` —
 #: ``box(...)`` is an se part to keep clear of, ``enclosure(...)`` is the
 #: interior cavity the whole board must fit inside.
-box = _shape.box
+def box(*args: Any, **kw: Any) -> Any:
+    """``box(x0, y0, x1, y1)`` — a 2-D board-frame region (lazy geometry
+    ref); ``box(w, d, h, …)`` — the 3-D counterparty solid for
+    :meth:`BoardShape.fits` (:func:`precis_geom.pcb_shape.box`)."""
+    if len(args) == 4 and not kw:
+        return _region.region_box(*args)
+    return _shape.box(*args, **kw)
+
+
+circle = _region.circle
+poly = _region.poly
+between = _region.between
+board_outline = _region.board_ref
+Region = _region.Region
+RegionError = _region.RegionError
 enclosure = _shape.enclosure
 
 
@@ -4663,18 +4820,24 @@ __all__ = [
     "PcbBuilderError",
     "Pin",
     "PinConflict",
+    "Region",
+    "RegionError",
     "Role",
+    "between",
+    "board_outline",
     "box",
     "canonical_json",
     "catalog",
     "catalog_footprint",
     "catalog_part",
+    "circle",
     "content_hash",
     "enclosure",
     "fit",
     "module",
     "objective",
     "pad",
+    "poly",
     "rect",
     "run",
     "write_manifest",
