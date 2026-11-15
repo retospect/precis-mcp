@@ -39,7 +39,7 @@ get(kind="paper", id="mao18", extent="fisheye")  # the cluster map; pc<id> rows 
 get(id="pc13234", extent="fisheye")  # a chunk, bare handle: the split within its cluster
 get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order + reference ring
 get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: the body alone
-get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # body + its wikilink ring
+get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # a skill: the section map + its wikilink ring
 ```
 
 `extent=` selects the rung; `view='fisheye'` (and the other rung labels

@@ -255,7 +255,9 @@ chunks — term-wise (the literal phrase is absent)`; a total miss reads
 `args={'context': N}` widens
 the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
 file `~<block>` / `~L42-58`, paper `~A..B`). A get returns the body whole up to
-24 kB; over that it returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
+24 kB — `kind='skill'` excepted: a default whole-skill read over ~6 kB serves the
+section index (one row per H2 with its `~N` handle) and `full=true` keeps the body
+reachable. Over that cap a body returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
 the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
 ids reads its part in full, up to the same 24 kB. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't
