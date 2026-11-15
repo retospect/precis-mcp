@@ -522,7 +522,7 @@ _PHRASING_DUPE_RATIO = 0.92
 #: Absolute lexical floor per leg (gr568491 item 4): a bare two-word
 #: overlap (score 0.14) is not leg evidence — three matched content
 #: words, or two with a compound, clears it. Verbatim phrase hits
-#: (>=0.30) and identity pins always pass; semantic rows carry their
+#: (>=0.30) pass; title/identity boosts alone do not. Semantic rows carry their
 #: own ``_SKILL_SEMANTIC_FLOOR``. The gap cut from gr496170 is relative
 #: to the leg's top score and cannot tell that top is itself junk.
 _SKILL_LEXICAL_FLOOR = 0.15
@@ -900,10 +900,10 @@ def _fused_leg_rows(
 ) -> list[tuple[tuple[str, str | None], _SkillSearchRow]]:
     """One phrasing's ranked ``(key, row)`` candidates for the fusion.
 
-    Section rows come from the floored semantic hits (per-section dedup
-    keeps the best twin); whole-skill evidence — lexical rows and
-    title/slug pins — keys to ``(slug, None)`` or to the ``~N`` its
-    section resolved to. Rows under the per-regime absolute floors
+    Section rows come from floored semantic hits (per-section dedup
+    keeps the best twin) and lexical evidence scored within each section.
+    Title/slug pins must earn section relevance without their boost.
+    Rows under the per-regime absolute floors
     never make the leg: a weak row here would smuggle an off-target
     phrasing's junk past the agreement test (gr568491 item 4).
     """
@@ -915,13 +915,43 @@ def _fused_leg_rows(
             cands[key] = row
 
     for hit in sem_hits:
-        offer(_section_key_for_hit(hit), _semantic_row(hit))
+        key = _section_key_for_hit(hit)
+        if (
+            key[1] is not None
+            and key[1].startswith("~")
+            and hit.score >= _SKILL_SEMANTIC_FLOOR
+        ):
+            offer(key, _semantic_row(hit))
     for row in rows:
         if row.source == "semantic":
             continue  # covered by its section row
-        if row.source == "lexical" and row.score < _SKILL_LEXICAL_FLOOR:
-            continue
-        offer(_row_section_key(row, q=text), row)
+        # Title boosts are ranking signals, not relevance evidence. Locate
+        # lexical evidence in actual sections and floor its unboosted score.
+        body = _load_skill(row.slug) or ""
+        body = scope_render(body, current_scope() or "write")[0]
+        tokens = set(_content_tokens(text))
+        for idx, chunk in enumerate(chunk_by_h2(body)):
+            matched = tokens & set(_content_tokens(chunk.text))
+            literal = text.casefold() in chunk.text.casefold()
+            score = (
+                0.30
+                if literal
+                else _word_overlap_score(
+                    len(matched), sum("-" in t or "_" in t for t in matched)
+                )
+            )
+            if score < _SKILL_LEXICAL_FLOOR:
+                continue
+            offer(
+                (row.slug, f"~{idx}"),
+                _SkillSearchRow(
+                    slug=row.slug,
+                    score=score,
+                    source="lexical",
+                    section=chunk.heading or "Introduction",
+                    snippet=chunk.text,
+                ),
+            )
     return sorted(
         cands.items(), key=lambda kv: (-kv[1].score, kv[0][0], kv[0][1] or "")
     )
@@ -1884,7 +1914,7 @@ class SkillHandler(Handler):
         page = max(1, int(page))
         # The fused menu resolves before the empty-q degrade: a call
         # carrying only ``queries=`` (no ``q``) is the normal shape.
-        if len(phrasings) >= 2:
+        if phrasings:
             # The fused table is fisheye-capped, not paged (gr568491
             # item 3): +N more expands by narrowing, so page=/page_size=
             # are refused with the narrowing calls.
@@ -2617,8 +2647,8 @@ class SkillHandler(Handler):
         indices voted for it (``q1,q4``) so the agent learns the
         corpus's vocabulary before reading anything.
 
-        Rows are sections (``slug~N``) plus skill-level rows for
-        whole-skill evidence (word matches, unresolved title pins).
+        Rows are addressable sections (``slug~N``); whole-skill
+        evidence must resolve to floored section evidence first.
         Caps are fisheye: ≤ ``_FUSED_PER_SKILL_CAP`` rows per skill,
         ~``_FUSED_ROW_CAP`` rows total, "+N more" expands by narrowing
         — never a page. Every phrasing keeps its leg's top-1 row
@@ -2652,9 +2682,6 @@ class SkillHandler(Handler):
                 cur = best.get(key)
                 if cur is None or row.score > cur.score:
                     best[key] = row
-        # Every phrasing keeps its leg's top-1 row regardless of the
-        # fused order or the caps below (gr568491 item 2).
-        guaranteed = {leg[0][0] for leg in legs if leg}
         order = sorted(
             totals,
             key=lambda k: (-totals[k], -best[k].score, k[0], k[1] or ""),
@@ -2693,17 +2720,30 @@ class SkillHandler(Handler):
         if configured_only:
             order = [k for k in order if k[0] not in gaps]
 
-        # Fisheye caps — guaranteed top-1s may overrun them.
+        eligible = set(order)
+        guaranteed = {
+            next(key for key, _ in leg if key in eligible)
+            for leg in legs
+            if any(key in eligible for key, _ in leg)
+        }
+        # Reserve guaranteed slots before filling with the fused tail.
         per_skill: Counter[str] = Counter()
-        visible: list[tuple[str, str | None]] = []
+        visible = [k for k in order if k in guaranteed]
+        per_skill.update(k[0] for k in visible)
+        if any(n > _FUSED_PER_SKILL_CAP for n in per_skill.values()):
+            raise BadInput(
+                "distinct query winners exceed three sections in one skill",
+                next="split the sub-tasks into separate queries= calls",
+            )
         for k in order:
-            if (
+            if k in guaranteed or (
                 len(visible) >= _FUSED_ROW_CAP
                 or per_skill[k[0]] >= _FUSED_PER_SKILL_CAP
-            ) and k not in guaranteed:
+            ):
                 continue
             visible.append(k)
             per_skill[k[0]] += 1
+        visible.sort(key=order.index)
 
         legend = "\n".join(
             f"q{i + 1}: {text}" + ("" if legs[i] else "  (no leg hits)")

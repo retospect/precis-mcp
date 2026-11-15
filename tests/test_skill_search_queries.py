@@ -137,7 +137,7 @@ def test_queries_every_leg_keeps_its_top1(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A distinct sub-task's best row survives the fused caps — leg2's
-    top-1 shows even past the per-skill cap (gr568491 item 2)."""
+    top-1 reserves a slot within the per-skill cap (gr568491 item 2)."""
     _stub(
         skill,
         monkeypatch,
@@ -147,9 +147,9 @@ def test_queries_every_leg_keeps_its_top1(
         },
     )
     out = skill.search(queries=["zzzq", "wwwe"])
-    # ~5 is leg2's only hit: guaranteed despite ~0..~3 filling the
-    # per-skill cap already.
+    # ~5 reserves a slot before the fused tail fills the cap.
     assert "precis-get-help~5" in out.body
+    assert len(_row_lines(out.body, "precis-get-help~")) <= 3
 
 
 def test_queries_per_skill_cap(
@@ -228,11 +228,10 @@ def test_queries_lexical_floor_drops_weak_overlap(
     assert "precis-put-help" not in out.body
 
 
-def test_queries_lexical_floor_keeps_real_overlap(
+def test_queries_lexical_counts_need_section_evidence(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Three matched words (score 0.16) clear the lexical floor and
-    enter the leg as whole-skill evidence."""
+    """Whole-skill counts cannot substitute for addressable section evidence."""
     _stub(
         skill,
         monkeypatch,
@@ -243,7 +242,7 @@ def test_queries_lexical_floor_keeps_real_overlap(
     )
     out = skill.search(queries=["zzzq", "wwwe"])
     rows = _row_lines(out.body, "precis-put-help")
-    assert rows, "the over-floor lexical row must reach the fused menu"
+    assert not rows, "whole-skill counts without section evidence must be dropped"
 
 
 # ── arg contract ──────────────────────────────────────────────────────
@@ -284,14 +283,13 @@ def test_queries_q_counts_as_first_phrasing(
     assert "q2: wwwe" in out.body
 
 
-def test_queries_single_effective_phrasing_falls_back(
+def test_queries_single_effective_phrasing_still_uses_sections(
     skill: SkillHandler,
 ) -> None:
-    """One phrasing after dedupe is just the single-q path — no fused
-    chrome, no leg legend."""
+    """Even one queries= phrasing retains the section-only contract."""
     out = skill.search(queries=["memory search"])
-    assert "skill match" in out.body or "no skills mention" in out.body
-    assert "q1:" not in out.body
+    assert "skill section" in out.body or "no lexical matches" in out.body
+    assert "q1: memory search" in out.body
 
 
 def test_queries_refuses_over_raw_cap(skill: SkillHandler) -> None:
@@ -351,5 +349,86 @@ def test_queries_lexical_mode_still_fuses(
     )
     out = skill.search(queries=["zzzq", "wwwe"], mode="lexical")
     rows = _row_lines(out.body, "precis-put-help")
-    assert rows
-    assert "q1,q2" in rows[0]
+    assert not rows  # fabricated skill-level evidence has no matching section
+
+
+def test_queries_eval_corpus_section_recall(
+    skill: SkillHandler,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calibrate lexical floors with real gap-cut corpus retrieval scores.
+
+    Isolate the named skill after retrieval so the measurement reflects
+    flooring, rather than unrelated changes from the 20-row display cap.
+    Hash mock embeddings cannot calibrate semantic cosine relevance.
+    """
+    from collections import Counter
+
+    from precis.skill_eval.cases import load_cases
+
+    retrieve = skill._ranked_rows_full
+    misses: list[str] = []
+    measured = 0
+    for case in load_cases():
+        rows, _, _, hits = retrieve(
+            case.prompt,
+            mode_norm="lexical",
+            page_size=20,
+        )
+        target = [row for row in rows if row.slug == case.skill]
+        if not target:
+            continue
+        measured += 1
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                skill,
+                "_ranked_rows_full",
+                lambda q, target=target, prompt=case.prompt, hits=hits, **kw: (
+                    target if q == prompt else [],
+                    Counter(),
+                    set(),
+                    hits,
+                ),
+            )
+            result = skill.search(
+                queries=[case.prompt, "zxqv unrelated"],
+                mode="lexical",
+            )
+        if case.skill + "~" not in result.body:
+            misses.append(case.case_id)
+    assert measured > 0
+    assert not misses, f"floored fusion lost named probe sections: {misses}"
+
+
+def test_queries_refuses_incompatible_winner_cap(
+    skill: SkillHandler,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    phrasings = ["alpha", "bravo", "charlie", "delta"]
+    _stub(
+        skill,
+        monkeypatch,
+        {q: [_hit("precis-get-help", i, 0.9)] for i, q in enumerate(phrasings)},
+    )
+    with pytest.raises(BadInput, match="three sections"):
+        skill.search(queries=phrasings)
+
+
+def test_queries_title_boost_needs_section_evidence(
+    skill: SkillHandler,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.handlers.skill import _fused_leg_rows, _SkillSearchRow
+
+    monkeypatch.setattr(
+        "precis.handlers.skill._load_skill",
+        lambda slug: "## Unrelated\nNothing matches here.",
+    )
+    row = _SkillSearchRow(
+        slug="precis-get-help",
+        score=2.5,
+        source="title",
+        section="title match",
+        snippet="zzzq",
+    )
+    assert not _fused_leg_rows("zzzq", [row], [])

@@ -1,31 +1,10 @@
-"""Bimodal skill injection — the perfect skill, or nothing.
+"""Harness skill discovery using the interactive fused section renderer.
 
-Implements §2 of ``docs/backlog/mcp-surface-economy.md``:
-retrieval-as-infrastructure. Measured against prod, an agent almost never
-*decides* to search for a skill on its own (5 of ~19,853 jobs) — so the
-harness runs the first hop of skill RAG itself, at the handful of
-harness-controlled points where a prompt is assembled for a task. There is
-no cue/snippet middle tier: a sharp match against the question-shaped
-retrieval targets (``question_only`` + ``heading_only`` chunk variants,
-§1, shipped 2026-08-21) injects the WHOLE matched skill body, and anything
-short of the threshold injects nothing. An almost-right skill sitting in
-context is worse than silence — that's the "bimodal" contract this module
-exists to enforce; callers must never build a second-place/snippet tier on
-top of it.
-
-:func:`match_skill` embeds the caller's task text once and scores it
-against the skill corpus's question-shaped chunks; :func:`render_injection`
-turns a hit into the block a caller appends to its assembled prompt. Both
-degrade to a silent no-op (``None`` / never called) when no embedder is
-configured, mirroring :class:`~precis.skill_index.index.FileCorpusIndex`'s
-own "semantic unavailable → caller's existing behaviour" contract — a
-harness-controlled tick must never fail because injection couldn't run.
-
-Reuses :class:`~precis.skill_index.index.FileCorpusIndex` (same class,
-same on-disk cache namespace ``SkillHandler`` uses) rather than building a
-parallel index — a second `FileCorpusIndex` instance here shares chunking
-+ embedding logic and, when the cache dir is shared (the default), the
-same on-disk cache files.
+Planner and quest ticks split task text into sub-questions and inject a
+bounded section index through :func:`discover_sections`. Retrieval failure
+is a silent no-op so discovery never aborts a tick. The older bimodal
+``match_skill`` / ``render_injection`` API remains for autoskill history
+fallback callers; new tick discovery does not inject whole skills.
 """
 
 from __future__ import annotations
@@ -302,3 +281,45 @@ __all__ = [
     "match_skill",
     "render_injection",
 ]
+
+
+def discover_sections(task_text: str) -> str:
+    """Discover task sub-questions through the shared fused section renderer.
+
+    Task sentences and list items are independent goal phrasings. The
+    result is a bounded index; agents fetch only the sections they need.
+    Retrieval failure must never abort a planner tick.
+    """
+    if not task_text.strip() or not _enabled():
+        return ""
+    try:
+        import re
+
+        from precis.dispatch import Hub
+        from precis.handlers.skill import SkillHandler, _dedupe_phrasings
+
+        index = _get_index()
+        if index is None:
+            return ""
+        questions = _dedupe_phrasings(
+            [
+                part.strip(" -\t")
+                for part in re.split(r"\n+|(?<=[?!;])\s+", task_text)
+                if part.strip(" -\t")
+            ]
+        )[:5]
+        handler = SkillHandler(hub=Hub())
+        handler._index = index
+        result = handler._search_fused(
+            questions,
+            mode_norm="hybrid",
+            tag=None,
+            tags=None,
+            kinds=None,
+            family=None,
+            configured_only=False,
+        )
+        return "# Skill sections for this task\n\n" + result.body
+    except Exception:
+        log.debug("skill section discovery failed", exc_info=True)
+        return ""

@@ -227,7 +227,7 @@ def test_planner_prompt_injects_matched_skill(
     marker = "MARKER-INJECTED-SKILL-BLOCK-PLANNER"
     fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
     monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "discover_sections", lambda text: marker)
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -242,7 +242,7 @@ def test_planner_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(injection, "discover_sections", lambda text: "")
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -260,7 +260,7 @@ def test_quest_tick_prompt_injects_matched_skill(
     marker = "MARKER-INJECTED-SKILL-BLOCK-QUEST"
     fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
     monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "discover_sections", lambda text: marker)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -273,7 +273,7 @@ def test_quest_tick_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.quest.tick import build_tick_prompt
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(injection, "discover_sections", lambda text: "")
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -296,10 +296,30 @@ def test_quest_tick_prompt_survives_injection_failure(
     def _boom(text: str) -> Any:
         raise RuntimeError("boom — simulated match_skill failure")
 
-    monkeypatch.setattr(injection, "match_skill", _boom)
+    monkeypatch.setattr(injection, "discover_sections", _boom)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
     prompt = build_tick_prompt(store, qref)
     assert prompt
     assert "Auto-matched skill" not in prompt
+
+
+def test_discover_sections_uses_shared_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.handlers.skill import SkillHandler
+    from precis.response import Response
+
+    seen: list[list[str]] = []
+
+    def render(self: Any, phrasings: list[str], **kwargs: Any) -> Response:
+        seen.append(phrasings)
+        return Response(body="precis-memory-help~2 q1,q2")
+
+    monkeypatch.setattr(injection, "_get_index", lambda: object())
+    monkeypatch.setattr(SkillHandler, "_search_fused", render)
+    result = injection.discover_sections("Store a thought? Search old memories")
+    assert seen == [["Store a thought?", "Search old memories"]]
+    assert "precis-memory-help~2 q1,q2" in result
+    assert "injected in full" not in result
