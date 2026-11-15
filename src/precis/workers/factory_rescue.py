@@ -1013,30 +1013,47 @@ def _dispatcher_hold(
     return max(live, key=lambda h: h[0]) if live else None
 
 
-def _parent_gate_tag(n: Any, job_id: int | None = None) -> str | None:
+def _plan_owns_retry(plan: Any, n: Any, job: Any) -> bool:
+    """``job`` is a retry a LIVE plan's ladder owns — the claim gate's
+    gr687946 carve-out mirrored for diagnostics: the job's
+    ``meta.plan_root`` (``plan_dispatch._mint_job``'s stamp) names a root
+    the node still carries as an open ``plan:<root>`` tag, and that root
+    is a live todo in the loaded plan. A job with no stamp and a dead
+    plan's leftover tag both stay gated."""
+    digits = str(job.meta.get("plan_root") or "")
+    if not digits.isdigit() or f"plan:{digits}" not in n.open_tags:
+        return False
+    rn = plan.nodes.get(int(digits))
+    return rn is not None and rn.status not in TERMINAL_TODO_STATUSES
+
+
+def _parent_gate_tag(
+    n: Any, job: Any | None = None, plan: Any | None = None
+) -> str | None:
     """The open tag on ``n`` that makes ``parent_not_paused`` refuse to
     claim its jobs, or ``None`` (the shared ``_DOABLE_EXCLUSION_TAGS`` set;
     a terminal parent is exempt, as in the gate itself, gr575883).
 
-    gr687946: a ``child-failed:<id>`` tag on a ``plan:<root>`` node only
-    gates when ``<id>`` names a job NEWER than the claimant — the gate's
-    own carve-out for a stale or late-landing bubble (the plan tick's
-    ladder owns the retry). ``job_id`` is the queued job being judged;
-    without it the tag reads as gating, the old answer."""
+    gr687946: a ``child-failed:<id>`` tag gates a job the live plan owns
+    only when ``<id>`` names a job NEWER than the claimant — the gate's
+    carve-out for a stale or late-landing bubble (the plan tick's ladder
+    owns the retry). ``job`` is the queued job being judged and ``plan``
+    the loaded plan model; without either the tag reads as gating, the
+    old answer."""
     from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 
     if n.status in TERMINAL_TODO_STATUSES:
         return None
-    plan_node = any(v.startswith("plan:") for v in n.open_tags)
     for v in n.open_tags:
         for t in _DOABLE_EXCLUSION_TAGS:
             if v == t or (t.endswith(":") and v.startswith(t)):
                 if (
-                    plan_node
-                    and job_id is not None
-                    and t == "child-failed:"
+                    t == "child-failed:"
+                    and job is not None
+                    and plan is not None
                     and v[len(t) :].isdigit()
-                    and int(v[len(t) :]) < job_id
+                    and int(v[len(t) :]) < job.id
+                    and _plan_owns_retry(plan, n, job)
                 ):
                     continue
                 return str(v)
@@ -1089,7 +1106,7 @@ def _stage_for(
                 f"job jo{live.id} parked until {_iso(parked_at)}{why}",
             )
         if live.status == "queued":
-            gate_tag = _parent_gate_tag(n, live.id)
+            gate_tag = _parent_gate_tag(n, live, plan)
             if gate_tag is not None:
                 # The claim gate (``parent_not_paused``) refuses this job
                 # until the tag clears — its silence is the gate's, and

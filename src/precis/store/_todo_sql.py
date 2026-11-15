@@ -78,36 +78,62 @@ def _doable_exclusion_clause(
     suddenly park live leaves.
 
     ``plan_child_failed_free`` (parent-gate use only): the SQL alias of
-    the JOB row being gated. When given, the ``child-failed:`` arm only
-    matches a tag naming a sibling job NEWER than that row's id — or a
-    non-numeric hand tag — while the parent carries no ``plan:<root>``
-    tag. gr687946: a plan node's retries belong to ``plan_dispatch``'s
-    ladder, which strips the bubble tag when it re-arms; a tag that
-    lands after the re-arm's mint (the bubble's second transaction, a
-    hand or straggler write) used to wedge the queued attempt behind a
-    tag nothing would clear — the child that could succeed could never
-    be claimed. An older sibling's bubble on a plan parent is stale
-    evidence, never a park.
+    the JOB row being gated. When given, the ``child-failed:`` arm
+    exempts a tag only for a retry a LIVE plan owns — all of: the tag
+    names a sibling job OLDER than the gated row; the gated job carries
+    ``meta.plan_root`` (``plan_dispatch._mint_job``'s stamp, propagated
+    to the land re-mint — a job without it stays gated); the parent
+    still carries that same ``plan:<root>`` tag; and the named root is
+    a live, non-terminal todo (a dead plan's leftover tag exempts
+    nothing). gr687946: a plan node's retries belong to the
+    ``plan_dispatch`` ladder, which strips the bubble tag when it
+    re-arms; a tag that lands after the re-arm's mint (the bubble's
+    second transaction, a hand or straggler write) used to wedge the
+    queued attempt behind a tag nothing would clear — the child that
+    could succeed could never be claimed. An older sibling's bubble on
+    a live plan's own job is stale evidence, never a park.
+
+    The live-root arm reads the caller-provided ``term(v)`` CTE — the
+    bound terminal-status array; only
+    :func:`parent_gate_exclusion_sql` defines it, and it is the only
+    caller that passes this flag.
     """
     parts: list[str] = []
     for t in _DOABLE_EXCLUSION_TAGS:
         if t == "child-failed:" and plan_child_failed_free is not None:
+            job = plan_child_failed_free
             # ``substring(… from 'regex')`` returns the capture group or
             # '' — NULLIF keeps the ::bigint cast off non-numeric values
             # (SQL gives no AND evaluation order, so a ``~`` guard alone
             # is not safe), and COALESCE lands the NULL comparison as
-            # "not older" — a non-numeric hand tag still gates.
+            # "not older" — a non-numeric hand tag still gates. The same
+            # trick parses ``meta.plan_root``: a missing or non-numeric
+            # stamp lands NULL, failing both EXISTS arms.
             parts.append(
                 f"({tag_alias}.value LIKE '{t}%%' AND NOT ("
-                "EXISTS ("
+                f"COALESCE(NULLIF(substring({tag_alias}.value from "
+                f"'^child-failed:([0-9]+)$'), '')::bigint "
+                f"< {job}.ref_id, false) "
+                "AND EXISTS ("
                 "SELECT 1 FROM ref_tags prt JOIN tags pt "
                 "ON pt.tag_id = prt.tag_id "
-                f"WHERE prt.ref_id = {plan_child_failed_free}.parent_id "
-                "AND pt.namespace = 'OPEN' AND pt.value LIKE 'plan:%%'"
+                f"WHERE prt.ref_id = {job}.parent_id "
+                "AND pt.namespace = 'OPEN' "
+                "AND pt.value = 'plan:' || NULLIF(substring("
+                f"{job}.meta->>'plan_root' from '^([0-9]+)$'), '')"
                 ") "
-                f"AND COALESCE(NULLIF(substring({tag_alias}.value from "
-                f"'^child-failed:([0-9]+)$'), '')::bigint "
-                f"< {plan_child_failed_free}.ref_id, false)"
+                "AND EXISTS ("
+                "SELECT 1 FROM refs proot "
+                "WHERE proot.ref_id = NULLIF(substring("
+                f"{job}.meta->>'plan_root' from '^([0-9]+)$'), '')::int "
+                "AND proot.kind = 'todo' AND proot.retired_at IS NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM ref_tags srt JOIN tags st "
+                "ON st.tag_id = srt.tag_id "
+                "WHERE srt.ref_id = proot.ref_id "
+                "AND st.namespace = 'STATUS' "
+                "AND st.value IN (SELECT v FROM term)"
+                "))"
                 "))"
             )
         elif t.endswith(":"):
@@ -141,18 +167,24 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
     must not pin the parent's queued jobs forever; the ``NOT EXISTS``
     arm carves terminal parents out of the gate.
 
-    gr687946: a ``child-failed:`` bubble on a ``plan:<root>``-tagged
-    parent never gates a NEWER queued job — the plan tick owns that
-    node's retry ladder (it strips the tag when it re-arms), so a stale
-    or late-landing bubble must not deadlock the attempt it minted.
+    gr687946: a ``child-failed:`` bubble on a plan parent never gates a
+    NEWER queued job the live plan's ladder owns — the plan tick strips
+    the tag when it re-arms, so a stale or late-landing bubble must not
+    deadlock the attempt it minted. The exemption binds to the JOB:
+    ``meta.plan_root`` must name the same live root the parent tags —
+    a dead plan's leftover ``plan:`` tag and a job the tick never
+    minted stay gated.
 
     The predicate carries ONE ``%s`` param slot — the caller binds
     ``sorted(TERMINAL_TODO_STATUSES)`` (:mod:`precis.todo` must not be
-    imported here: store is the bottom layer). ``job_alias`` is a
-    trusted table alias — never user input.
+    imported here: store is the bottom layer); the ``term`` CTE the
+    child-failed arm reads is unnested from it, so both the parent
+    carve-out and the live-root check share the one binding.
+    ``job_alias`` is a trusted table alias — never user input.
     """
     return (
         "EXISTS ("
+        "WITH term(v) AS (SELECT unnest(%s::text[])) "
         "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         f"WHERE rt.ref_id = {job_alias}.parent_id "
         "AND t.namespace = 'OPEN' "
@@ -160,7 +192,7 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
         "AND NOT EXISTS ("
         "SELECT 1 FROM ref_tags xrt JOIN tags xt ON xt.tag_id = xrt.tag_id "
         f"WHERE xrt.ref_id = {job_alias}.parent_id "
-        "AND xt.namespace = 'STATUS' AND xt.value = ANY(%s)"
+        "AND xt.namespace = 'STATUS' AND xt.value IN (SELECT v FROM term)"
         "))"
     )
 

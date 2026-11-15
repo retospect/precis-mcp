@@ -1369,6 +1369,59 @@ def test_queued_job_gated_by_a_child_failed_tag_names_the_tag(
     assert any("gated by child-failed:jo123" in note for note in res.notes)
 
 
+def test_plan_owned_retry_behind_a_stale_bubble_is_a_queue_stall(
+    store: Store,
+) -> None:
+    """gr687946: the gate exempts a queued job the live plan's ladder
+    owns behind a stale ``child-failed:`` bubble — rescue agrees, so the
+    job's silence is judged on the queue (a stall), not read as the
+    gate's park."""
+    root = _root(store)
+    task = _node(store, root)
+    job1 = _job(store, task, status="failed")
+    store.add_tag(task, Tag.open(f"child-failed:{job1}"), set_by="system")
+    _job(store, task, status="queued", meta_extra={"plan_root": root})
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+    assert not any("gated by" in note for note in res.notes)
+
+
+def test_unowned_job_behind_a_stale_bubble_stays_gated(store: Store) -> None:
+    """gr687946 review (td688389): the exemption belongs to the live
+    plan's own retries — a queued job with no ``meta.plan_root`` under
+    the same node still parks on the bubble, and rescue names the tag."""
+    root = _root(store)
+    task = _node(store, root)
+    job1 = _job(store, task, status="failed")
+    store.add_tag(task, Tag.open(f"child-failed:{job1}"), set_by="system")
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert any(f"gated by child-failed:{job1}" in note for note in res.notes)
+
+
+def test_retry_of_a_foreign_root_stays_gated(store: Store) -> None:
+    """The exemption binds to the job's own ``meta.plan_root``: a stamp
+    naming a root the node does not tag — a dead or foreign plan — frees
+    nothing, the tag still gates."""
+    root = _root(store)
+    task = _node(store, root)
+    job1 = _job(store, task, status="failed")
+    store.add_tag(task, Tag.open(f"child-failed:{job1}"), set_by="system")
+    _job(store, task, status="queued", meta_extra={"plan_root": 99999999})
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert any(f"gated by child-failed:{job1}" in note for note in res.notes)
+
+
 def test_blocked_by_an_open_ask_after_a_failed_job_is_a_wait(store: Store) -> None:
     """The blocker owns the wait: an idle node behind an open ask is not
     filed as its own stall."""

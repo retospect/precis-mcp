@@ -1992,8 +1992,9 @@ def test_retry_claimable_behind_a_late_bubble(store: Store) -> None:
     """gr687946: a ``child-failed:`` tag that lands AFTER the retry's mint
     (the bubble's second transaction, a hand or straggler write) must not
     park the queued attempt — ``parent_not_paused`` exempts an older
-    sibling's bubble on a ``plan:<root>`` parent. jo686618 waited 253
-    min behind exactly this."""
+    sibling's bubble only for a job the LIVE plan owns (the mint's
+    ``meta.plan_root`` naming the same live root the parent tags).
+    jo686618 waited 253 min behind exactly this."""
     from precis.workers.executors._common import claim_executor_jobs
 
     mint = _one_task_plan(store)
@@ -2002,15 +2003,20 @@ def test_retry_claimable_behind_a_late_bubble(store: Store) -> None:
     first = _jobs_under(store, task)[-1][0]
     _set_job_status(store, first, "failed")
     assert pd.run_pass(store).dispatched == 1
-    retry_id = _jobs_under(store, task)[-1][0]
+    retry_id, retry_meta = _jobs_under(store, task)[-1]
+    # ``_mint_job`` stamps the plan that owns the retry — the gate's
+    # carve-out reads it.
+    assert retry_meta["plan_root"] == mint.root_id
 
     # The late bubble: the tag lands while the retry already sits queued —
     # the ordering that deadlocked the real fleet.
     store.add_tag(task, Tag.open(f"child-failed:{first}"), set_by="system")
     assert _gated_job_ids(store) == set()
-    # …and the gate lets a NEWER job under the same tagged parent claim
-    # for real (a ``fetch_oa`` probe — a ``run_slice`` row would also
-    # need placement tokens no test host advertises).
+    # …and a plan-owned job under the same tagged parent claims for real
+    # (a ``fetch_oa`` probe — a ``run_slice`` row would also need
+    # placement tokens no test host advertises), while a sibling job the
+    # plan never minted — no ``meta.plan_root`` — stays gated (review
+    # td688389: the exemption belongs to the live plan's retries only).
     with store.tx() as conn:
         probe = mint_background_job(
             store,
@@ -2020,7 +2026,18 @@ def test_retry_claimable_behind_a_late_bubble(store: Store) -> None:
             title="probe",
             params={},
             parent_id=task,
+            meta_extra={"plan_root": mint.root_id},
         )
+        stray = mint_background_job(
+            store,
+            conn=conn,
+            job_type="fetch_oa",
+            executor="ssh_node",
+            title="stray",
+            params={},
+            parent_id=task,
+        )
+    assert _gated_job_ids(store) == {int(stray.id)}
     with store.pool.connection() as conn:
         claimed = claim_executor_jobs(
             conn, executor="ssh_node", limit=5, parent_not_paused=True
@@ -2043,12 +2060,25 @@ def test_retry_claimable_behind_a_late_bubble(store: Store) -> None:
         )
     store.add_tag(task, Tag.open(f"child-failed:{int(ref.id) + 100}"), set_by="system")
     store.add_tag(int(plain.id), Tag.open(f"child-failed:{first}"), set_by="system")
-    assert _gated_job_ids(store) == {retry_id, int(probe.id), int(ref.id)}
+    gated = {retry_id, int(probe.id), int(stray.id), int(ref.id)}
+    assert _gated_job_ids(store) == gated
 
     # A non-numeric hand tag can't prove it's older — it gates too.
     store.remove_tag(task, Tag.open(f"child-failed:{int(ref.id) + 100}"))
     store.add_tag(task, Tag.open("child-failed:hand-check"), set_by="system")
-    assert _gated_job_ids(store) == {retry_id, int(probe.id), int(ref.id)}
+    assert _gated_job_ids(store) == gated
+
+    # A DEAD plan owns no retries: close the root and the leftover
+    # ``plan:`` tag stops exempting — the stale bubble gates even the
+    # plan's own jobs again.
+    store.remove_tag(task, Tag.open("child-failed:hand-check"))
+    store.add_tag(
+        mint.root_id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert _gated_job_ids(store) == gated
 
 
 def test_bubble_never_latches_a_live_plan_node(store: Store) -> None:
