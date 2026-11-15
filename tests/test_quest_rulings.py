@@ -249,8 +249,17 @@ class TestDegradePaths:
     ) -> None:
         qid = _mk_quest(store, "A striving")
         hyp = seed_ref(store, kind="finding")
-        # A block with NO experiment entry (open only) is skipped outright.
-        assert apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{hyp}"})
+        # A block with NO experiment entry is skipped outright.
+        from precis.quest.dossier import (
+            _ensure_dialectic_block,
+            dossier_ref_id,
+            ensure_dialectic_chunk,
+        )
+
+        container = ensure_dialectic_chunk(store, qid)
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+        _ensure_dialectic_block(store, did, container, hyp)
         hyp2 = seed_ref(store, kind="finding")
         # [zz…] parses to no kind; [st999999999] resolves to no live ref.
         ok = apply_dialectic_op(

@@ -2334,17 +2334,18 @@ class TestPromptAndView:
         assert "low-mastery" in prompt
         assert f"[cn{cid}]" in prompt
 
-    def test_prompt_without_dialectic_blocks_has_no_dialectic_section(
+    def test_prompt_without_dialectic_blocks_still_has_live_hypotheses(
         self, store: Any
     ) -> None:
-        # gr462891 stopgap: nothing to maintain -> no section, no guidance,
-        # no `dialectic_ops` schema, in either quest body.
+        # gr674774: hypotheses are findings, so the section and the
+        # `dialectic_ops` + `hypotheses` schema always render.
         qid = _mk_quest(store, "A striving")
         quest = store.get_ref(kind="quest", id=qid)
         for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
             prompt = build_tick_prompt(store, quest, quest_body=body)
-            assert "dialectic_ops" not in prompt
-            assert "dialectic" not in prompt.lower()
+            assert "## Live hypotheses" in prompt
+            assert '"dialectic_ops": [' in prompt
+            assert '"hypotheses": [' in prompt
             assert "ledger_ops" in prompt  # the rest of the schema is intact
             assert '"dossier_text"' in prompt
 
@@ -2356,11 +2357,15 @@ class TestPromptAndView:
 
         qid = _mk_quest(store, "A striving")
         fid = seed_ref(store, title="Cu is the active site", kind="finding")
-        assert apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {"op": "experiment", "hypothesis": f"fi{fid}", "text": "run it"},
+        )
         quest = store.get_ref(kind="quest", id=qid)
         for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
             prompt = build_tick_prompt(store, quest, quest_body=body)
-            assert "## Dialectic blocks (live hypotheses" in prompt
+            assert "## Live hypotheses" in prompt
             assert f"[fi{fid}] Cu is the active site" in prompt
             assert "**The dialectic lives in blocks, not prose.**" in prompt
             assert '"dialectic_ops": [' in prompt

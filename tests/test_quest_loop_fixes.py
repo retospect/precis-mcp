@@ -145,6 +145,21 @@ class TestBroadenedProgress:
         qid = _mk_quest(store, "A quest with a hypothesis")
         fid = seed_ref(store, title="Fe adatom lowers the barrier", kind="finding")
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
+        # gr674774: the objection lands as a `disputes` edge on a hypothesis
+        # finding that serves the quest.
+        from precis.handlers._finding_hypothesis import (
+            ARTIFACT_HYPOTHESIS,
+            META_ARTIFACT_TYPE,
+        )
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_build_object(%s::text, %s::text) "
+                "WHERE ref_id = %s",
+                (META_ARTIFACT_TYPE, ARTIFACT_HYPOTHESIS, fid),
+            )
+            conn.commit()
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) == 1
         assert apply_dialectic_op(

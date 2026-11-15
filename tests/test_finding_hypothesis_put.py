@@ -24,6 +24,7 @@ from precis.handlers.finding import FindingHandler
 from precis.store import Store
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import HUB_ROLES, attach_evidence, mint_hub
+from precis.utils import handle_registry
 from tests.workers._helpers import seed_chunk, seed_ref
 
 _SENTENCE = "Nanoindentation measures a modulus above 9 GPa in nanobud films."
@@ -492,3 +493,45 @@ def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> N
             (existing,),
         ).fetchall()
     assert [int(r[0]) for r in evidence] == [pa1]
+
+
+def test_two_pathways_are_independent_sources(store: Store) -> None:
+    """Benchmark-driven quests: two distinct `pathway` refs clear the
+    independence bar, one pathway named twice does not, a memory still
+    cannot motivate (gr674774)."""
+    pw1 = seed_ref(store, title="Pathway A", kind="pathway")
+    pw2 = seed_ref(store, title="Pathway B", kind="pathway")
+    h1 = handle_registry.format_handle("pathway", pw1)
+    h2 = handle_registry.format_handle("pathway", pw2)
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[h1, h2],
+    )
+    motivated = dict(_links(store, _hub_id(resp.body), "motivated-by"))
+    assert set(motivated) == {pw1, pw2}
+
+    with pytest.raises(BadInput, match="distinct source paper"):
+        _handler(store).put(
+            title=_SENTENCE + " Again.",
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[h1, h1],
+        )
+
+    mem = seed_ref(store, title="a note", kind="memory")
+    with pytest.raises(BadInput, match="'memory' ref"):
+        _handler(store).put(
+            title=_SENTENCE + " Third.",
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[h1, f"me{mem}"],
+        )

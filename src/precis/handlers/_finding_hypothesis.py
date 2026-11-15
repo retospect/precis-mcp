@@ -235,8 +235,8 @@ def put_hypothesis(
         if ref_id not in seen:
             seen.add(ref_id)
             resolved.append((ref_id, source_handle))
-        if ref.kind == "structure":
-            # A structure is its own distinct source — counted directly by
+        if ref.kind in ("structure", "pathway"):
+            # A structure or pathway is its own distinct source — counted directly by
             # ref id, not resolved through evidence edges like a claim hub.
             papers.add(ref_id)
         else:
@@ -249,7 +249,7 @@ def put_hypothesis(
             next=(
                 "two claim hubs grounded in the same paper are one source, not "
                 "two — the type exists for a binding between separate findings "
-                "(a measured structure also counts as its own source)"
+                "(a measured structure or a pathway also counts as its own source)"
             ),
         )
 

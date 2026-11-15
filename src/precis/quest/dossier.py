@@ -1469,14 +1469,13 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     changed something. Ops address blocks by the hypothesis's **fi handle**
     (stable real ids — no ledger-style quote-the-exact-text ambiguity):
 
-    * ``open`` — ensure the block exists (idempotent). On a settled block,
-      re-opens it (clears the settle sentence).
-    * ``support`` / ``counter`` — append one why-clause entry. MUST carry at
-      least one well-formed inline handle (:func:`_has_anchor_handle` — the
-      anchor gate: unanchored argument never enters the record); near-dup
-      text among the block's same-role entries is a no-op
-      (:func:`_is_near_dup`, the ledger's measure). Inline evidence handles
-      mint ``supports``/``contradicts`` edges → the hypothesis finding.
+    * ``open`` — re-open a settled hypothesis finding (clears the
+      ``settled`` tag). No dossier chunk is written (gr674774).
+    * ``support`` / ``counter`` — MUST carry at least one well-formed inline
+      handle (:func:`_has_anchor_handle` — the anchor gate). Inline
+      evidence handles mint ``supports``/``disputes`` edges → the
+      hypothesis finding; the edges are the record (idempotent, ``False``
+      when no new edge landed).
     * ``experiment`` — upsert IN PLACE (one discriminating experiment per
       block; ``predicts`` — the pre-registered branch predictions — is
       folded into the text). Editing keeps the entry chunk's ``dc`` id.
@@ -1484,9 +1483,10 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
       the same test reworded (:func:`_same_proposed_test`) — is a silent
       no-op: the record already carries that proposal, and churning its
       wording is not an advance.
-    * ``settle`` — collapse the block's render to ``text`` (one linked
-      sentence; entries kept as history). Optional ``ruling`` handle is
-      recorded on the block.
+    * ``settle`` — ``verdict`` ``refuted`` sets ``STATUS:refuted`` (+
+      ``superseded-by`` the optional ``ruling`` handle); ``supported`` /
+      ``inconclusive`` tag the finding ``settled``. Logs a milestone
+      pointer on the quest.
 
     Every CONTRACT failure is a silent ``False`` (bad shape, unresolvable
     hypothesis, blank text) — the ledger-op degrade-don't-crash convention.
@@ -1500,45 +1500,22 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     hid = _resolve_hypothesis_id(store, op.get("hypothesis"))
     if hid is None:
         return False
+    # gr674774 (me674763): open/support/counter/settle act on the finding's
+    # own edges, tags and status — no dossier chunk is written. Only the
+    # `experiment` op still keeps its legacy dossier block.
+    if kind != "experiment":
+        return _apply_finding_op(store, owner_id, hid, kind, op)
+
     container_handle = ensure_dialectic_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
     assert did is not None
     block, created = _ensure_dialectic_block(store, did, container_handle, hid)
-
-    if kind == "open":
-        if block.settled:
-            assert block.handle is not None
-            store.drafts.patch_chunk_meta(block.handle, {"settled": ""})
-            return True
-        return created
 
     text = _normalize_node_text(str(op.get("text") or ""))
     if not text:
         # A bare open-by-side-effect: the block now exists even though the
         # entry op itself carried nothing usable.
         return created
-
-    if kind == "settle":
-        assert block.handle is not None
-        ruling = str(op.get("ruling") or "").strip().strip("[]")
-        store.drafts.patch_chunk_meta(
-            block.handle, {"settled": text, "settled_ruling": ruling}
-        )
-        # A settled hypothesis is a deed: the tick stamps a `milestone`
-        # (system-authored — the settle op landed, which is a fact of the
-        # ledger even though the settle text is the model's). Momentum and
-        # the deed ledger both read it. Lazy import: logbook sits at the
-        # same layer, kept out of the module header.
-        from precis.quest.logbook import MEASURED_BY, append_entry
-
-        append_entry(
-            store,
-            owner_id,
-            text=f"hypothesis [fi{hid}] settled — {text.splitlines()[0][:200]}",
-            entry_type="milestone",
-            by=MEASURED_BY,
-        )
-        return True
 
     if kind == "experiment":
         predicts = _normalize_node_text(str(op.get("predicts") or ""))
@@ -1553,13 +1530,6 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
                 existing.handle, text, source={"reason": "quest-dialectic"}
             )
             return True
-    else:  # support / counter
-        if not _has_anchor_handle(text):
-            return False
-        same_role = [e.text for e in block.entries if e.role == kind]
-        if _is_near_dup(text, same_role) or text in same_role:
-            return False
-
     assert block.handle is not None
     created_chunks = store.drafts.add_chunks(
         ref_id=did,
@@ -1574,6 +1544,46 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     )
     _mint_evidence_edges(store, hid, kind, text)
     return True
+
+
+def _apply_finding_op(
+    store: Store, owner_id: int, hid: int, kind: str, op: dict[str, Any]
+) -> bool:
+    """open/support/counter/settle on the hypothesis finding itself."""
+    from precis.quest import hypotheses as hyp_mod
+
+    if kind == "open":
+        return hyp_mod.reopen_hypothesis(store, hid)
+    text = _normalize_node_text(str(op.get("text") or ""))
+    if not text:
+        return False
+    if kind == "settle":
+        verdict = str(op.get("verdict") or "inconclusive").strip().lower()
+        if verdict not in hyp_mod.VERDICTS:
+            return False
+        ruling = str(op.get("ruling") or "").strip().strip("[]")
+        ruling_id = _resolve_hypothesis_id(store, ruling) if ruling else None
+        changed = hyp_mod.settle_hypothesis(store, hid, verdict, ruling_id=ruling_id)
+        if not changed:
+            return False
+        from precis.quest.logbook import MEASURED_BY, append_entry
+
+        append_entry(
+            store,
+            owner_id,
+            text=f"hypothesis [fi{hid}] settled ({verdict}) — "
+            f"{text.splitlines()[0][:200]}",
+            entry_type="milestone",
+            by=MEASURED_BY,
+        )
+        return True
+    # support / counter: the anchor gate stays; the edges ARE the record.
+    if not _has_anchor_handle(text):
+        return False
+    relation = _DIALECTIC_EDGE_RELATION[kind]
+    before = len(store.links_for(hid, direction="in", relation=relation))
+    _mint_evidence_edges(store, hid, kind, text)
+    return len(store.links_for(hid, direction="in", relation=relation)) > before
 
 
 __all__ = [

@@ -356,6 +356,16 @@ def _answers_hypothesis(b: ChunkRow) -> bool:
 
 
 def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
+    """Open hypotheses: unsettled hypothesis findings serving the quest
+    (gr674774), then legacy hypothesis logbook entries with no later
+    *answering* entry."""
+    from precis.quest.hypotheses import serving_hypotheses
+
+    found = [h.sentence for h in serving_hypotheses(store, quest_id) if not h.settled]
+    return found + _open_log_hypotheses(store, quest_id)
+
+
+def _open_log_hypotheses(store: Store, quest_id: int) -> list[str]:
     """Hypothesis logbook entries with no later *answering* entry."""
     blocks = [
         b

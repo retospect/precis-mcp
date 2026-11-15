@@ -99,6 +99,34 @@ class TestGaps:
         h.put(id=qid, text="barrier too high — no", entry="dead-end")
         assert "open-hypothesis" not in _gap_kinds(store, qid)
 
+    def test_open_hypothesis_finding_then_settled(self, store: Any) -> None:
+        from precis.handlers._finding_hypothesis import (
+            ARTIFACT_HYPOTHESIS,
+            META_ARTIFACT_TYPE,
+        )
+        from tests.workers._helpers import seed_ref
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A finding-driven striving"))
+        fid = seed_ref(store, title="Fe-N4 sites lower the barrier.", kind="finding")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_build_object(%s::text, %s::text) "
+                "WHERE ref_id = %s",
+                (META_ARTIFACT_TYPE, ARTIFACT_HYPOTHESIS, fid),
+            )
+            conn.commit()
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        assert "open-hypothesis" in _gap_kinds(store, qid)
+        # a pointer note in the logbook is not itself an open hypothesis
+        h.put(id=qid, text=f"raised fi{fid}", entry="note")
+        assert _gap_kinds(store, qid).count("open-hypothesis") == 1
+        store.add_tag(fid, Tag.open("settled"))
+        assert "open-hypothesis" not in _gap_kinds(store, qid)
+        store.remove_tag(fid, Tag.open("settled"))
+        store.add_tag(fid, Tag.closed("STATUS", "refuted"))
+        assert "open-hypothesis" not in _gap_kinds(store, qid)
+
 
 # ── structure fan-out cap (gr311678) ────────────────────────────────────
 

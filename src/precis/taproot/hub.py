@@ -2082,12 +2082,13 @@ MOTIVATION_RELATION = "motivated-by"
 #: can be provoked by a passage nobody ever minted as a claim, which is why
 #: this is wider than :func:`link_claims`' hub↔hub contract. Also a
 #: ``structure`` — an instrument measurement is an observation a hypothesis
-#: can be provoked by, same as a paper. Memories and quests are deliberately
-#: absent: a dream may *think* with its own prior notes, but a signed
+#: can be provoked by, same as a paper, and a ``pathway`` — a benchmark or
+#: measurement pathway is likewise its own observation (gr674774). Memories
+#: and quests are deliberately absent: a dream may *think* with its own prior notes, but a signed
 #: artifact cites sources, and a note is not one — and a quest is a
 #: container, not an observation.
 MOTIVATION_SRC_KINDS: frozenset[str] = frozenset(
-    {"paper", "patent", "finding", "structure"}
+    {"paper", "patent", "finding", "structure", "pathway"}
 )
 
 

@@ -110,7 +110,7 @@ def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, list[str]]:
 
     did = dossier_mod.dossier_ref_id(store, quest_id)
     if did is None:
-        return 0, []
+        return _finding_edge_count(store, quest_id), []
     n_entries = 0
     exp_keys: set[str] = set()
     for b in store.chunks.list_chunks_for_ref(did):
@@ -123,7 +123,15 @@ def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, list[str]]:
         n_entries += 1
         if role == "experiment":
             exp_keys.add(dossier_mod._experiment_key(b.text or ""))
-    return n_entries, sorted(exp_keys)
+    return n_entries + _finding_edge_count(store, quest_id), sorted(exp_keys)
+
+
+def _finding_edge_count(store: Store, quest_id: int) -> int:
+    """Anchored ``supports``/``disputes`` edges on the quest's hypothesis
+    findings — since gr674774 the support/counter record lives there."""
+    from precis.quest.hypotheses import serving_hypotheses
+
+    return sum(h.supports + h.disputes for h in serving_hypotheses(store, quest_id))
 
 
 def escalation_signal(store: Store, quest_id: int) -> Escalation:

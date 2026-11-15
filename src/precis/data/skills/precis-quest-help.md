@@ -378,8 +378,9 @@ with two read-time, mechanical reads (no `% done`):
 - **gaps** — the exploration queue: **thin-support** (almost nothing
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
-  yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
-  `result`/`dead-end`), **needs-experiment** (a graduated candidate
+  yet), **open-hypothesis** (a hypothesis `finding` that `serves` the
+  quest and is not settled — `STATUS:refuted` or tag `settled`; a legacy
+  `hypothesis` logbook entry with no later `result`/`dead-end` still counts), **needs-experiment** (a graduated candidate
   waiting on a real-world experiment), **needs-tool** (an open gripe the
   tick filed for a capability that doesn't exist — see the next section).
   Gaps *are* where to look next.
@@ -450,15 +451,15 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| an open question | a `hypothesis` logbook entry | the `open-hypothesis` gap tracks it |
+| an open question | a hypothesis `finding` that `serves` the quest | supports/disputes edges; `STATUS:refuted` or tag `settled`; the `open-hypothesis` gap tracks it |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
 
 An idea's state never rides a tag — not `ATTEMPT:`, not
 `DREAM:speculative`: a try that ran its course marks `done`, a
-never-again `won't-do`, and the *why* is a `hypothesis`/`dead-end`
-entry. **Open questions stay out of the striving statement** — the first
+never-again `won't-do`, and the *why* is a `dead-end` entry. **Open questions stay out of the striving statement** — the first
 line keeps the one asymptotic sentence ([[precis-quest-writing-help]]); a
-"what if…" is a `hypothesis` entry where the gap list sees it. Nest a
+"what if…" is a hypothesis `finding` serving the quest, where the gap list
+sees it (the logbook keeps only a dated `raised fi<n>` pointer). Nest a
 check with `part-of`, never `parent_id` — a `parent_id` child joins the
 direction tree itself and leaves `doable` with it. Link evidence
 `serves` the **quest**, and the direction too when you want the answer
@@ -489,7 +490,16 @@ it reads the quest's rolling context (statement + synthesis + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4
 logbook entries, updates its synthesis state (still written to the
 deprecated dossier on quests not yet converted — see above), and may
-**propose candidate materials**.
+**propose candidate materials**. A tick raises a hypothesis through its
+`hypotheses` payload key: each item (`sentence`, `motivation`, `testable_by`,
+`motivated_by` of at least two distinct sources — papers, patents, findings,
+structures or pathways — and an optional `direction` todo) mints or converges
+onto a `finding(hypothesis=True)` that `serves` the quest (and the direction),
+and logs `raised fi<n>`. `dialectic_ops` then act on that finding in place:
+`support`/`counter` mint `supports`/`disputes` edges from the cited handles;
+`settle` with `verdict` `refuted` sets `STATUS:refuted` (+ `superseded-by` the
+`ruling`), `supported`/`inconclusive` tag it `settled`. The tick context lists
+the live ones, so a refuted hypothesis is not proposed again.
 
 A tick does not edit repo files. To land prose in a repo file (docs, a
 skill, a backlog spec), file a gripe carrying the text; a session applies it.

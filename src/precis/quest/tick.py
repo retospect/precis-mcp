@@ -43,6 +43,7 @@ import numpy as np
 
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
+from precis.quest import hypotheses as hypotheses_mod
 from precis.quest import narrative_budget
 from precis.quest import needs as needs_mod
 from precis.quest.logbook import (
@@ -2195,12 +2196,14 @@ def build_tick_prompt(
     )
     # Dialectic prompt parts only for a dossier that already holds a block
     # (gr462891 stopgap) — the rest is spliced out, nothing dangles.
-    has_blocks = dossier_mod.has_dialectic_blocks(store, qid)
-    dialectic_section = (
-        _DIALECTIC_SECTION.format(dialectic=dossier_mod.read_dialectic(store, qid))
-        if has_blocks
-        else ""
-    )
+    # gr674774: hypotheses are findings serving the quest — the section and
+    # the `dialectic_ops`/`hypotheses` schema always render; legacy dossier
+    # blocks (if any) follow the live findings.
+    has_blocks = True
+    live_text = hypotheses_mod.render_live_hypotheses(store, qid)
+    if dossier_mod.has_dialectic_blocks(store, qid):
+        live_text += "\n" + dossier_mod.read_dialectic(store, qid)
+    dialectic_section = _DIALECTIC_SECTION.format(dialectic=live_text)
     # The forest, not read_ledger's markdown: the open list shows per-node
     # meta (an `add` kept as a root because its parent didn't resolve).
     ledger_text = dossier_mod.read_ledger_nodes(store, qid)
@@ -2303,7 +2306,7 @@ def build_tick_prompt(
 #: substituted as format VALUES, so braces here are single, not doubled;
 #: ``_DIALECTIC_SECTION`` takes ``.format(dialectic=...)``.
 _DIALECTIC_SECTION = """\
-## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
+## Live hypotheses (findings serving this quest — maintain via `dialectic_ops`, raise new ones via `hypotheses`; do NOT restate in `dossier_text`)
 {dialectic}
 
 """
@@ -2357,7 +2360,15 @@ against it, evidence handles inline — same anchor requirement>"},
 discriminating experiment>", "predicts": "<pre-registered branch \
 predictions: what each outcome would mean>"},
     {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+sentence>", "verdict": "<refuted|supported|inconclusive>", \
+"ruling": "<optional fi<id> of the ruling that settled it>"}
+  ],
+  "hypotheses": [
+    {"sentence": "<one falsifiable claim sentence — do NOT re-raise one \
+listed under Live hypotheses>", "motivation": "<the inferential leap>",
+     "testable_by": "<the discriminating experiment>",
+     "motivated_by": ["<at least 2 handles of distinct sources: pa/pt/fi/st/pw>"],
+     "direction": "<optional td<id> of the direction it serves>"}
   ],
 """
 
@@ -2373,7 +2384,15 @@ against it, evidence handles inline — same anchor requirement>"},
 discriminating piece of evidence to gather>", "predicts": "<pre-registered \
 branch predictions: what each outcome would mean>"},
     {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+sentence>", "verdict": "<refuted|supported|inconclusive>", \
+"ruling": "<optional fi<id> of the ruling that settled it>"}
+  ],
+  "hypotheses": [
+    {"sentence": "<one falsifiable claim sentence — do NOT re-raise one \
+listed under Live hypotheses>", "motivation": "<the inferential leap>",
+     "testable_by": "<the discriminating experiment>",
+     "motivated_by": ["<at least 2 handles of distinct sources: pa/pt/fi/st/pw>"],
+     "direction": "<optional td<id> of the direction it serves>"}
   ],
 """
 
@@ -2955,6 +2974,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "logbook",
         "ledger_ops",
         "dialectic_ops",
+        "hypotheses",
         "dossier_text",
         "dossier_markdown",
         "proposals",
@@ -2976,6 +2996,7 @@ _PAYLOAD_TYPES: dict[str, type] = {
     "ledger_add": list,
     "ledger_ops": list,
     "dialectic_ops": list,
+    "hypotheses": list,
     "proposals": list,
     "searches": list,
     "directions": list,
@@ -4110,6 +4131,17 @@ class _TickRun:
             dialectic_applied,
             dialectic_seen,
         )
+
+        # hypotheses — living findings serving the quest (gr674774); the
+        # logbook gets only a "raised fi<n>" pointer. Degrade-don't-crash.
+        try:
+            hypotheses_mod.mint_tick_hypotheses(
+                store, quest_id, payload.get("hypotheses"), by=by
+            )
+        except Exception:
+            log.exception(
+                "run_quest_tick: hypotheses mint raised for quest %s", quest_id
+            )
 
         # Proposals — log each candidate as a hypothesis (WORM). The
         # materialise + dispatch half is the `compute` stage.
