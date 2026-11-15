@@ -1846,16 +1846,33 @@ def _newest_landed_comment(store: Any, todo_id: int) -> str | None:
     return None
 
 
+def _newest_landed_sha(store: Any, todo_id: int) -> str | None:
+    """The sha (7-40 hex, lowercased) of the todo's newest ``landed:``
+    comment that names one, else ``None``. A ``landed: nothing — …`` (a
+    rebuild with no net diff, as after a REVERT) is skipped, not read as
+    the newest land: this is the reading of ``plan_dispatch._landed_sha``,
+    so the dispatcher and the reviewer agree on the commit under review."""
+    for c in reversed(_todo_chunks(store, todo_id)):
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        hit = _LANDED_SHA_RE.match(str(c.text or "").strip())
+        if hit is not None:
+            return hit.group(1).lower()
+    return None
+
+
 def _review_target_repo(
     store: Any, meta: Any, profile: _lanes.RepoProfile
 ) -> RepoReviewTarget | str:
     """The target of a reviewer of a ``profile`` (second-repo) slice, read
     from the STORE only: no git, no fetch, nothing in the precis clone
     (td659522 step 5). The targets are the todo ``meta.generate.from`` names
-    or, when that todo has no ``landed:`` comment of its own, its children
-    that have one. Each target needs ``meta.landed_repo == profile.name``
-    and a newest ``landed:`` comment naming a 7-40 hex sha (the lander
-    writes the first nine). Else a one-sentence refusal ending in ``next:``,
+    or, when that todo has no ``landed:`` comment naming a sha, its
+    children that have one. Each target needs ``meta.landed_repo ==
+    profile.name`` and a ``landed:`` comment naming a 7-40 hex sha (the
+    lander writes the first nine); the newest such comment is read, a newer
+    ``landed: nothing — …`` skipped (:func:`_newest_landed_sha`). Else a
+    one-sentence refusal ending in ``next:``,
     a ``str`` where success is a :class:`RepoReviewTarget`. A caller with
     several shas detaches at the fetched base tip: they are all ancestors
     of it (:func:`_ensure_review_tree`)."""
@@ -1869,11 +1886,11 @@ def _review_target_repo(
     if store.get_ref(kind="todo", id=target_id) is None:
         return f"review target td{target_id} does not exist; next: re-mint the review"
     ids = [target_id]
-    if _newest_landed_comment(store, target_id) is None:
+    if _newest_landed_sha(store, target_id) is None:
         kids = sorted(
             int(r.id)
             for r in store.recent_refs(["todo"], parent_id=target_id, limit=1000)
-            if _newest_landed_comment(store, int(r.id)) is not None
+            if _newest_landed_sha(store, int(r.id)) is not None
         )
         ids = kids or ids
     shas: list[str] = []
@@ -1893,13 +1910,14 @@ def _review_target_repo(
                 f"td{tid} landed in {owner!r}, not '{name}' ({_lanes.LANDED_REPO_KEY}); "
                 "next: review it in the repo it landed in"
             )
-        hit = _LANDED_SHA_RE.match(landed)
-        if hit is None:
+        sha = _newest_landed_sha(store, tid)
+        if sha is None:
             return (
                 f"td{tid}'s newest `landed:` comment names no commit "
-                f"({landed[:80]!r}); next: nothing landed, close the review"
+                f"({landed[:80]!r}), nor does an older one; next: nothing "
+                "landed, close the review"
             )
-        shas.append(hit.group(1).lower())
+        shas.append(sha)
         title = str(getattr(ref, "title", "") or "").strip()
         titles.append(f"td{tid}: {title}")
         body, latest = _brief_parts(store, tid)
@@ -1917,21 +1935,15 @@ def _review_target_repo(
     )
 
 
-def _review_sha(store: Any, target: RepoReviewTarget, tip: str) -> str:
+def _review_sha(target: RepoReviewTarget, tip: str) -> str:
     """The commit a second-repo reviewer's tree is cut at. Several landed
     commits: the fetched base tip, which has them all as ancestors. One: the
-    target todo's ``meta.landed_sha`` when it is 40 hex and starts with the
-    ``landed:`` comment's sha, else the comment's own (the lander writes
-    nine hex)."""
+    ``landed:`` comment's sha (the lander writes nine hex;
+    :func:`_ensure_review_tree` expands it in the clone). The full sha lives
+    only on the land job's ``meta.landed_sha``, never on the todo."""
     if len(target.shas) != 1:
         return tip
-    sha = target.shas[0]
-    if target.ids:
-        ref = store.get_ref(kind="todo", id=target.ids[0])
-        full = str(((getattr(ref, "meta", None) or {}).get("landed_sha")) or "").lower()
-        if re.fullmatch(r"[0-9a-f]{40}", full) and full.startswith(sha):
-            return full
-    return sha
+    return target.shas[0]
 
 
 def _ensure_review_tree(
@@ -1987,13 +1999,18 @@ def _render_repo_review_brief(
     target_title: str,
     target_brief: str,
     shas: Sequence[str] = (),
+    body: str = "",
+    latest: str | None = None,
 ) -> str:
     """The launch brief of a reviewer of a ``profile`` (second-repo) slice
     (td659522 step 5). The session works in a detached tree at ``sha``, off
     the network, and writes nothing; ``tip`` is the fetched base tip the
     later-changes query ends at. ``shas`` are the landed commits to read
-    (``sha`` alone when empty). The verdict is the first line of the final
-    message, in the grammar and with the marker of
+    (``sha`` alone when empty). ``body`` and ``latest`` are the review
+    node's own body and newest ``brief:``/``handoff:`` comment, inlined like
+    a precis brief's (:func:`_task_lines`) so coordinator steering reaches
+    the session; the repo rules above them still win. The verdict is the
+    first line of the final message, in the grammar and with the marker of
     :func:`_reviewer_close`'s verdict; poll posts that message as the
     ``handoff:`` comment and ``plan_dispatch._read_verdict`` reads it there."""
     from precis.plans.templates import REVIEW_GRAMMAR, REVIEW_READONLY_MARKER
@@ -2046,6 +2063,12 @@ def _render_repo_review_brief(
         "## The slice's brief",
         "",
         target_brief.strip() or "(the slice has no brief)",
+    ]
+    if body.strip():
+        lines += ["", "## This review's brief", "", body.strip()]
+    if latest and latest.strip():
+        lines += ["", "## Latest brief / handoff on this review", "", latest.strip()]
+    lines += [
         "",
         "## When done: your verdict",
         "",
@@ -2072,14 +2095,15 @@ def _cut_review_tree(
     profile: _lanes.RepoProfile,
     root: Path,
     brief_kwargs: dict[str, Any],
+    tip: str | None,
 ) -> tuple[Path, str | None]:
     """The launch half of a second-repo reviewer, after
-    :func:`_prepare_repo`: the fetched base tip, the review target again
-    (it may have changed since the submit-time check), the sha to review
-    (:func:`_review_sha`) and the detached tree at it. Fills
-    ``brief_kwargs["review"]`` for :func:`render_brief`. Returns the tree
-    and its head sha. Every refusal is a :class:`_ReviewRefusal`."""
-    tip = fetch_base_tip(profile, root)
+    :func:`_prepare_repo_tip`, whose fetched base tip sha is ``tip`` (the
+    launch fetches once): the review target again (it may have changed
+    since the submit-time check), the sha to review (:func:`_review_sha`)
+    and the detached tree at it. Fills ``brief_kwargs["review"]`` for
+    :func:`render_brief`. Returns the tree and its head sha. Every refusal
+    is a :class:`_ReviewRefusal`."""
     if tip is None:
         raise _ReviewRefusal(
             f"git fetch origin {profile.base} (or its oracle check) failed for "
@@ -2089,7 +2113,7 @@ def _cut_review_tree(
     target = _review_target_repo(store, todo.meta, profile)
     if isinstance(target, str):
         raise _ReviewRefusal(target)
-    sha = _review_sha(store, target, tip)
+    sha = _review_sha(target, tip)
     tree = _ensure_review_tree(profile, root, todo_id, sha, tip)
     if isinstance(tree, str):
         raise _ReviewRefusal(tree)
@@ -2462,7 +2486,9 @@ def render_brief(
                     "render_brief: a repo reviewer's brief needs review=; "
                     f"none for repo {profile.name!r}"
                 )
-            return _render_repo_review_brief(profile, todo_id=todo_id, **review)
+            return _render_repo_review_brief(
+                profile, todo_id=todo_id, body=body, latest=latest, **review
+            )
         if generator:
             raise ValueError(
                 "render_brief: generator briefs are precis-only; "
@@ -2930,8 +2956,9 @@ def _repo_param_rejection(
     non-default repo takes no generator node, except the reviewer of a
     profile that sets ``reviewer`` (step 5): it also needs a review target
     that resolves (:func:`_review_target_repo`; the refusal ends in
-    ``next:``), unless ``target`` is false (``submit`` checks it again at
-    launch, where a refusal burns no attempt). ``store=None`` checks only
+    ``next:``), unless ``target`` is false (``validate_submit`` and the
+    claim-time guard in ``submit``: the launch checks it, where a refusal
+    burns no attempt and is backed off). ``store=None`` checks only
     that the repo is known."""
     if _lanes.repo_profile(repo) is None:
         return (
@@ -2967,9 +2994,10 @@ def _repo_param_rejection(
                 return f"run_slice: todo {todo_id}: {got}"
             return None
         return (
-            f"run_slice: todo {todo_id}: generator and reviewer nodes are "
-            "precis-only until the repo reviewer exists (td659522 step 5); "
-            "next: build it in the precis repo or split out a builder node"
+            f"run_slice: todo {todo_id}: generator nodes are precis-only; in "
+            f"repo {repo!r} only a reviewer runs, and only when its profile "
+            "sets reviewer (td659522 step 5); next: build it in the precis "
+            "repo or split out a builder node"
         )
     return None
 
@@ -3000,7 +3028,15 @@ def validate_submit(
     reason = _repo_rejection(store, params.get("todo_id"))
     if reason is not None:
         return reason
-    reason = _repo_param_rejection(store, params.get("todo_id"), job_repo(params))
+    # td659522 step 5: a second-repo reviewer's target is not checked here.
+    # A refusal at submit mints no job, so it would earn no backoff, no
+    # attempt-free cap and no ask: the dispatcher would re-note it every
+    # tick and the release behind the reviewer would wait forever. submit's
+    # ``_cut_review_tree`` checks it at launch, where a refusal is an
+    # attempt-free ``_ReviewRefusal`` under the cap.
+    reason = _repo_param_rejection(
+        store, params.get("todo_id"), job_repo(params), target=False
+    )
     if reason is not None:
         return reason
     reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
@@ -3257,10 +3293,20 @@ def fetch_base_tip(profile: _lanes.RepoProfile, root: Path) -> str | None:
 
 
 def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
+    """:func:`_prepare_repo_tip`'s refusal alone: ``None`` when ready."""
+    return _prepare_repo_tip(profile, root)[0]
+
+
+def _prepare_repo_tip(
+    profile: _lanes.RepoProfile, root: Path
+) -> tuple[str | None, str | None]:
     """Ready a non-default repo's host clone before a worktree is cut.
-    ``None`` when ready, else a one-sentence refusal ending in ``next:``
-    (expected refusals do not raise). In order: ``root`` is a checkout whose
-    ``origin`` is ``profile.remote`` (the worker never clones; userinfo in
+    ``(None, tip)`` when ready, else ``(refusal, None)``: a one-sentence
+    refusal ending in ``next:`` (expected refusals do not raise). ``tip`` is
+    the fetched base tip sha, so a launch that needs it (a second-repo
+    reviewer's tree) fetches once; ``None`` when a public clone's tracking
+    ref cannot be read back after its fetch. In order: ``root`` is a
+    checkout whose ``origin`` is ``profile.remote`` (the worker never clones; userinfo in
     the URL refuses); the profile's ``exclude`` lines are in
     ``info/exclude``; ``origin/<base>`` is fetched (under the credential for
     a private repo); and, when ``profile.pin`` is set, the git rev the
@@ -3276,7 +3322,8 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
     ):
         return (
             f"{root} is not a git checkout of repo '{name}'; "
-            "next: clone it there, the worker never clones"
+            "next: clone it there, the worker never clones",
+            None,
         )
     got = _git(["remote", "get-url", "origin"], root)
     url = got.stdout.strip() if got.returncode == 0 else ""
@@ -3284,10 +3331,12 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
         return (
             f"origin of the '{name}' clone at {root} is not {profile.remote} "
             "or carries userinfo; next: git remote set-url origin to that "
-            "https URL without credentials"
+            "https URL without credentials",
+            None,
         )
     _ensure_info_exclude(root, profile.exclude)
     tip = f"origin/{profile.base}"
+    fetched: str | None
     if profile.private:
         # Credentialed fetch never runs git inside the clone (a session can
         # write its config): a fresh ops gitdir outside it fetches under the
@@ -3295,18 +3344,20 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
         if not _factory_git.factory_git_token():
             return (
                 f"no {_factory_git.SECRET_NAME} configured on this host, so the "
-                f"'{name}' clone cannot be fetched; next: set the factory git token"
+                f"'{name}' clone cannot be fetched; next: set the factory git token",
+                None,
             )
         sha = fetch_base_tip(profile, root)
         if sha is None:
             return (
                 f"git fetch origin {profile.base} (or its oracle check) failed "
                 f"for the '{name}' repo; next: check the network and the "
-                "factory git token"
+                "factory git token",
+                None,
             )
         # The pin check below reads the returned sha, not the tracking ref
         # a session could rewrite after the fetch.
-        tip = sha
+        tip = fetched = sha
     else:
         # An explicit refspec: the tracking ref moves whatever fetch refspec
         # the clone's config carries.
@@ -3316,26 +3367,35 @@ def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
             tail = " ".join((fetch.stderr or "").split())[-300:]
             return (
                 f"git fetch origin {profile.base} failed in the '{name}' clone "
-                f"({tail}); next: check the clone's network and the factory git token"
+                f"({tail}); next: check the clone's network and the factory git token",
+                None,
             )
+        # Read back at once: later checks and callers use this sha, not
+        # the tracking ref.
+        back = _git(["rev-parse", "--verify", "--quiet", f"{tip}^{{commit}}"], root)
+        out = back.stdout.strip() if back.returncode == 0 else ""
+        fetched = out if re.fullmatch(r"[0-9a-f]{40}", out) else None
+        tip = fetched or tip
     if profile.pin is None:
-        return None
+        return None, fetched
     lockfile, package = profile.pin
     shown = _git(["show", f"origin/main:{lockfile}"], slice_root())
     rev = pinned_git_rev(shown.stdout, package) if shown.returncode == 0 else None
     if rev is None:
         return (
             f"no git rev for '{package}' in {lockfile} on precis origin/main; "
-            "next: fix the lockfile pin or the repo profile"
+            "next: fix the lockfile pin or the repo profile",
+            None,
         )
     anc = _git(["merge-base", "--is-ancestor", rev, tip], root)
     if anc.returncode != 0:
         return (
             f"the '{name}' base origin/{profile.base} is behind the pin "
             f"{rev[:12]} (or does not know it); next: land the pinned commit "
-            f"on {profile.base} first"
+            f"on {profile.base} first",
+            None,
         )
-    return None
+    return None, fetched
 
 
 def _ensure_worktree(
@@ -4563,8 +4623,12 @@ def submit(ctx: Any, spec: Any) -> Any:
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
+    # A second-repo reviewer's detached tree once cut: every launch failure
+    # after that drops it (the run's own end drops it in poll).
+    review_tree: Path | None = None
     try:
         repo_root: Path | None = None
+        base_tip: str | None = None
         if profile is not None:
             if base != profile.base:
                 raise RuntimeError(
@@ -4572,15 +4636,16 @@ def submit(ctx: Any, spec: Any) -> Any:
                     f"{profile.base!r}; release-branch fixes are precis-only"
                 )
             repo_root = slice_root_for(repo)
-            not_ready = _prepare_repo(profile, repo_root)
+            not_ready, base_tip = _prepare_repo_tip(profile, repo_root)
             if not_ready is not None:
                 raise (_ReviewRefusal if repo_review else RuntimeError)(not_ready)
         review_head: str | None = None
         if repo_review:
             assert profile is not None and repo_root is not None
             tree, review_head = _cut_review_tree(
-                store, todo, todo_id, profile, repo_root, brief_kwargs
+                store, todo, todo_id, profile, repo_root, brief_kwargs, base_tip
             )
+            review_tree = tree
         else:
             _clear_slice_index_lock(
                 ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
@@ -4774,6 +4839,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         # refusal stamps the lane's backoff on this job (gr571395):
         # lane_backoffs skips the lane until then, and plan_dispatch never
         # counts the job as an attempt.
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
@@ -4810,6 +4877,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
         return None
@@ -7348,8 +7417,9 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
         _stamp_branch_files(ctx.store, todo_id, tree)
-        # The pre-land review (its branch push needs the credential) is
-        # precis-only until the repo reviewer exists (td659522 step 5).
+        # The pre-land review (its branch push needs the credential) stays
+        # precis-only: a second repo's reviewer runs after the land, in a
+        # detached tree at the landed sha (td659522 step 5).
         preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
         if preland is not None:
             # gr570506 (Reto 2026-11-12): the review gates the land — the

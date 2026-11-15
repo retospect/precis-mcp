@@ -1971,7 +1971,9 @@ def _read_verdict(
 
 
 def _landed_sha(store: Any, todo_id: int) -> str | None:
-    """The sha of the todo's newest ``landed: <sha>`` comment."""
+    """The sha of the todo's newest ``landed: <sha>`` comment; a newer
+    ``landed: nothing — …`` is skipped. ``run_slice._newest_landed_sha``
+    reads the same, so a second-repo reviewer reviews this commit."""
     for c in _comments(store, todo_id):
         m = _LANDED_RE.match(str(c.text).strip())
         if m:
@@ -6091,6 +6093,10 @@ def _step_dispatch(
         if _is_reviewer(n):
             # td659522 step 5: a reviewer runs in the repo its target landed
             # in; a mismatch would review one repo's sha in another's tree.
+            # A blocked or paused one is skipped first, quietly: until its
+            # target lands, the target has no landed_repo to agree with.
+            if plan.blocked(n) or plan.paused(n):
+                continue
             mismatch = _review_repo_mismatch(plan, n)
             if mismatch is not None:
                 res.notes.append(f"td{n.id}: not dispatched — {mismatch}")

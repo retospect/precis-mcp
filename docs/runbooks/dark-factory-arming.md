@@ -663,8 +663,14 @@ The other settings a slice host reads:
   only when the job's `params.repo` names it, the profile's `lander` is
   `land_slice`, `factory.open_repos` lists it and the todo's `repo:` tag
   agrees (`land_slice._repo_refusal`); it then hands the land to
-  `src/precis/workers/repo_land.py`. Generator and reviewer nodes are
-  refused for a non-default repo.
+  `src/precis/workers/repo_land.py`. For a non-default repo the only
+  generator admitted is a reviewer (`templates.mint_reviewer(repo=)`),
+  and only when the profile sets `reviewer` (catpath does, td659522 step
+  5): it runs read-only in a detached tree of the repo's clone at the
+  landed sha (`run_slice._cut_review_tree`) and leaves one verdict. Every
+  other generator node stays refused there. Its review target is checked
+  at launch, not at submit: a target that does not resolve yet is an
+  attempt-free `review-wait`, backed off under the attempt-free cap.
 - A non-default repo builds from its `lanes.RepoProfile`
   (`lanes.REPO_PROFILES`). `run_slice.submit` finds the clone through
   `PRECIS_SLICE_REPOS`, writes the profile's exclude lines into the
@@ -945,7 +951,15 @@ Known limits:
 - A `landed:` sha on such a todo belongs to the other repo
   (`meta.landed_repo`, `lanes.LANDED_REPO_KEY`). A plan for it must carry
   no `sha-in-prod` gate.
-- Generator and reviewer nodes for a second repo are still refused.
+- Of the generator nodes, a second repo admits only a reviewer, read-only
+  in a detached tree at the landed sha, on a profile that sets `reviewer`;
+  every other generator stays refused there. The read-only part is
+  advisory: the session runs with permissions bypassed like a builder,
+  and a commit or a dirty tree (`run_slice._review_violation`) only adds
+  a line to the job summary. Nothing is landed from the tree, and it is
+  removed after the run. "No credential" means the session's environment
+  only (no token, no MCP grant): `HOME` and `SSH_AUTH_SOCK` still pass,
+  the same exposure a builder has.
 - The gate runs as the worker's OS user: it holds no credential but is not
   sandboxed.
 

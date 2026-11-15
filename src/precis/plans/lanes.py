@@ -386,8 +386,8 @@ class RepoProfile:
     this repo's package after a release; ``None`` means the pin is moved by
     hand. ``reviewer`` is true when reviewer generator nodes may run in this
     repo (a read-only session in a detached tree at the landed sha); false
-    means ``run_slice`` refuses them. ``release_check_cmds`` are run credential-free in the release tree
-    before it pushes. ``ci_workflow`` is the workflow file whose run on the
+    means ``run_slice`` refuses them. ``release_check_cmds`` are run
+    credential-free in the release tree before it pushes. ``ci_workflow`` is the workflow file whose run on the
     release commit must be green before the tag. ``tag_prefix`` starts the
     release tag (``v`` plus the version).
     """
@@ -445,6 +445,10 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         # ``workers/job_types/pin_bump.py`` (td659522 step 4, switched on
         # after the gateway derive proof of 2026-11-15).
         pinner="pin_bump",
+        # Reviewed after the land by a read-only ``run_slice`` session in a
+        # detached tree at the landed sha (td659522 step 5); the node comes
+        # from ``templates.mint_reviewer(repo=)``, one per slice in a batch.
+        reviewer=True,
         release_check_cmds=("uv lock --check",),
         ci_workflow="ci.yml",
         tag_prefix="v",

@@ -10176,6 +10176,24 @@ def test_a_reviewer_in_the_repo_its_target_landed_in_passes_the_guard(
     assert not [n for n in res.notes if "review repo mismatch" in n]
 
 
+def test_a_blocked_catpath_reviewer_is_skipped_without_a_mismatch_note(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catpath reviewer whose catpath slice has not landed yet (no
+    ``landed_repo`` stamp, so it reads as the default repo) is blocked: it
+    is skipped quietly; if this fails every batch reviewer writes a
+    misleading "review repo mismatch" note on every tick until its slice
+    lands."""
+    use_lanes(monkeypatch)
+    mint = _release_plan(store)
+    b1, rb1 = mint.ids["b1"], mint.ids["rb1"]
+    for tid in (b1, rb1):
+        store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rb1) == []
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
 def test_a_precis_reviewer_of_a_precis_land_still_dispatches(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
