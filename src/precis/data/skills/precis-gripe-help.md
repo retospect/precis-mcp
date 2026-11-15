@@ -284,6 +284,19 @@ search(kind="gripe", tags=["STATUS:user_verify"])  # on main, a human checks it
 search(kind="gripe", tags=["STATUS:needs_spec"])
 ```
 
+Read the whole cohort — tags, whole body, every comment — in a few calls:
+`view='full'` (or `'body'`) with no `q=` packs many whole gripes per page
+(header `gripes 1-7 of 88`), ends with the exact continuation or `complete`:
+
+```python
+search(kind="gripe", status="needs_spec", view="full")
+search(kind="gripe", status="needs_spec", view="full", args={"offset": 7})
+get(kind="gripe", id=[42, 43, 44], view="full")  # same packer, same cursor
+```
+
+`args={'comments': 'rulings'}` keeps only the `Reto <date>:`, `Ruling`,
+`needs-spec:`, `spec:` and `resolved:` comments and says how many it hid.
+
 ## Find gripes marked won't-fix
 
 ```python

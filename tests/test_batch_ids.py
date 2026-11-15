@@ -26,6 +26,7 @@ below, so a new kind that adds ``edit`` must pick a policy.
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 from typing import Any
 
@@ -393,25 +394,29 @@ def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
     call — never a mid-text cut behind a more() cursor."""
     handler = GripeHandler(hub=hub)
     ids = [
-        id_of(handler.put(text=f"paged batch {i}\n" + "x" * 1200).body)
-        for i in range(4)
+        id_of(handler.put(text=f"paged batch {i}\n" + "x" * 6000).body)
+        for i in range(6)
     ]
     resp = handler.get(id=_batch(*ids), view="full")
     body = resp.body
-    assert body.startswith("# 4 gripe (batch, view='full')")
-    assert f"# gripe {ids[0]}" in body and f"# gripe {ids[1]}" in body
-    assert f"# gripe {ids[2]}" not in body and f"# gripe {ids[3]}" not in body
+    assert resp.result_count is not None
+    shown = resp.result_count
+    assert 1 <= shown < 6
+    assert body.startswith(f"# gripes 1-{shown} of 6 (batch, view='full')")
+    for gid in ids[:shown]:
+        assert f"# gripe {gid}" in body
+    for gid in ids[shown:]:
+        assert f"# gripe {gid}" not in body
+    rest_ids = ids[shown:]
     assert (
-        f"2 more — next: get(kind='gripe', id=[{ids[2]}, {ids[3]}], "
-        "view='full')" in body
+        f"{len(rest_ids)} more — next: get(kind='gripe', "
+        f"id=[{', '.join(map(str, rest_ids))}], view='full')" in body
     )
-    assert resp.result_count == 2
     # The named continuation is the remaining ids verbatim — re-issuing
     # it returns them whole, no cursor needed.
-    rest = handler.get(id=_batch(ids[2], ids[3]), view="full").body
-    assert rest.startswith("# 2 gripe (batch, view='full')")
-    assert f"# gripe {ids[2]}" in rest and f"# gripe {ids[3]}" in rest
-    assert "more — next:" not in rest
+    rest = handler.get(id=_batch(*rest_ids), view="full").body
+    for gid in rest_ids[:shown]:
+        assert f"# gripe {gid}" in rest
 
 
 def test_get_batch_view_unknown_view_raises(hub: Hub) -> None:
@@ -853,3 +858,89 @@ def test_edit_id_list_refused_on_file_kind(store: Store, tmp_path: Path) -> None
     assert "call edit once per id" in body
     assert "edit(kind='markdown', id='a'" in body
     assert "# A" in (tmp_path / "a.md").read_text(encoding="utf-8")
+
+
+# ── gr676097: batch/cohort full reads pack whole gripes to the budget ──
+
+
+def _fat_gripes(
+    hub: Hub, n: int, *, size: int = 2000
+) -> tuple[GripeHandler, list[int]]:
+    handler = GripeHandler(hub=hub)
+    ids = [
+        id_of(handler.put(text=f"fat gripe {i}\n" + "x" * size).body) for i in range(n)
+    ]
+    return handler, ids
+
+
+def test_batch_view_packs_to_budget(hub: Hub) -> None:
+    handler, ids = _fat_gripes(hub, 10)
+    seen: list[int] = []
+    pages = 0
+    cur: list[Any] = _batch(*ids)
+    while cur:
+        body = handler.get(id=cur, view="full").body
+        pages += 1
+        got = [i for i in cur if f"fat gripe {ids.index(i)}\n" in body]
+        if pages == 1:
+            assert len(got) >= 8
+        assert all("x" * 2000 in body for _ in got)
+        seen += got
+        marker = "next: get(kind='gripe', id=["
+        if marker not in body:
+            break
+        tail = body.split(marker)[1].split("]")[0]
+        cur = [int(t) for t in tail.split(",")]
+    assert seen == ids
+
+
+def test_batch_full_blocks_are_uncut(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="big gripe\n" + "b" * 6000).body)
+    for i in range(8):
+        handler.put(id=gid, text=f"comment number {i} " + "c" * 300)
+    body = handler.get(id=_batch(gid), view="full").body
+    assert "b" * 6000 in body
+    assert "chars cut" not in body
+    assert "elided" not in body
+    for i in range(8):
+        assert f"comment number {i} " in body
+    alone = handler.get(id=gid, view="full").body
+    assert "chars cut" in alone
+
+
+def test_cohort_full_view_pages_whole_cohort(hub: Hub) -> None:
+    handler, ids = _fat_gripes(hub, 30, size=1500)
+    for gid in ids:
+        handler.tag(id=gid, add=["STATUS:needs_spec"])
+    seen: list[int] = []
+    offset = 0
+    for _ in range(30):
+        args: dict[str, Any] = {"offset": offset} if offset else {}
+        body = handler.search(
+            status="needs_spec", view="full", page_size=10, **args
+        ).body
+        found = [int(n) for n in re.findall(r"fat gripe (\d+)\n", body)]
+        assert found
+        seen += [ids[n] for n in found]
+        if body.rstrip().endswith("complete"):
+            break
+        assert "next: search(kind='gripe', status='needs_spec'" in body
+        offset += len(found)
+    else:
+        raise AssertionError("cohort never completed")
+    assert sorted(seen) == sorted(ids)
+    assert len(seen) == len(set(seen))
+
+
+def test_rulings_filter_keeps_ruling_and_spec_comments(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="ruled gripe\nbody").body)
+    handler.put(id=gid, text="Reto 2026-11-14: build it")
+    handler.put(id=gid, text="dup-suggest: gr1 looks similar")
+    handler.put(id=gid, text="spec: do the thing")
+    body = handler.get(id=_batch(gid), view="full", comments="rulings").body
+    assert "Reto 2026-11-14: build it" in body
+    assert "spec: do the thing" in body
+    assert "dup-suggest" not in body
+    assert "1 comments hidden" in body

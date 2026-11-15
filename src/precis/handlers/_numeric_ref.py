@@ -560,10 +560,20 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 
 #: Page budget (chars) for the batch ``view=`` read (gr515524): only
 #: whole per-id blocks go on a page, so a block (a gripe's body or
-#: comment timeline) is never cut mid-text. Sized under the agent-context
-#: budget (~4 KiB) with headroom for the batch header and ``next:`` ids;
+#: comment timeline) is never cut mid-text. Sized under the ~24 kB
+#: response cap with headroom for the batch header and ``next:`` ids, so
 #: a single block over budget still renders whole.
 BATCH_VIEW_PAGE_CHARS = 3500
+
+#: Page budget for kinds whose batch/cohort blocks are whole records worth
+#: packing many per page (gripe, gr676097): under the ~24 kB response cap
+#: with headroom for the header and ``next:`` ids. A kind opts in through
+#: :attr:`NumericRefHandler.batch_page_chars`.
+RECORD_BATCH_PAGE_CHARS = 20_000
+
+#: Blocks rendered per cohort-read page before packing (the packer keeps
+#: what fits :data:`BATCH_VIEW_PAGE_CHARS`; the rest is the next page).
+_COHORT_WINDOW = 40
 
 
 @lru_cache(maxsize=1)
@@ -836,6 +846,14 @@ class NumericRefHandler(Handler):
     #: card + body, not the comments, so its hint names ``view='full'``).
     #: ``None`` means the bare get already is the complete read.
     complete_get_view: ClassVar[str | None] = None
+    #: ``search(view=…)`` spellings that read a queryless listing's whole
+    #: cohort through the batch packer (gr676097); empty = not offered.
+    cohort_read_views: ClassVar[frozenset[str]] = frozenset()
+    #: Extra kwargs the batch view passes each per-id ``get`` so a block
+    #: renders whole (gripe: no body clip, no comment elision).
+    batch_block_kw: ClassVar[dict[str, Any]] = {}
+    #: Page budget the batch/cohort packer fills with whole blocks.
+    batch_page_chars: ClassVar[int] = BATCH_VIEW_PAGE_CHARS
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
@@ -1355,6 +1373,9 @@ class NumericRefHandler(Handler):
         # (gr543639), flattened to a kwarg like every other args= key.
         # Base refuses (:meth:`_fold_project_arg`); gripe overrides it.
         project: str | None = None,
+        # ``args={'offset': N}`` — the cohort read's (``view='full'|'body'``
+        # with no q=) continuation cursor: rows already read (gr676097).
+        offset: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Fold the ``q='*'`` match-all spelling before any view dispatch
@@ -1371,6 +1392,11 @@ class NumericRefHandler(Handler):
         compact = view if view in ("ids", "list") else None
         if compact is not None:
             view = None
+        # ``view='full'|'body'`` on a queryless listing is the cohort
+        # read (gr676097): every row's block, packed to the page budget.
+        cohort_view: str | None = None
+        if view in self.cohort_read_views and not (q and q.strip()):
+            cohort_view, view = view, None
         view = plain_listing_view(view, self._search_view_names())
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         closed_after_dt = _parse_window_bound(closed_since, "closed_since")
@@ -1389,6 +1415,15 @@ class NumericRefHandler(Handler):
                     next=f"use one of {sorted(browse_sorts)} without q=",
                 )
         # A named browse sort also permits an unfiltered enumeration.
+        cohort_start = 0
+        if offset is not None:
+            try:
+                cohort_start = max(0, int(offset))
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['offset'] must be an integer, got {offset!r}",
+                    next=f"search(kind={self.kind!r}, view='full', args={{'offset': 0}})",
+                ) from None
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
         # stray page=0 doesn't blow the query up. Mirrors the convention
         # in _paper_search.py's ranked search path.
@@ -1541,6 +1576,26 @@ class NumericRefHandler(Handler):
                 # filter, not degrade to a subtree list (gr568264).
                 or (link is None and (include_ref_ids is not None or exclude_ref_ids))
             ):
+                if cohort_view is not None:
+                    return self._cohort_read(
+                        normalized_tags or [],
+                        view=cohort_view,
+                        start=cohort_start,
+                        exclude_tags=excluded,
+                        sort=sort or self.browse_default_sort,
+                        id_min=id_lo,
+                        id_max=id_hi,
+                        include_ref_ids=include_ref_ids,
+                        exclude_ref_ids=exclude_ref_ids,
+                        closed_after=closed_after_dt,
+                        closed_before=closed_before_dt,
+                        closed_values=self._closed_status_values()
+                        if closed_given
+                        else None,
+                        status=status,
+                        tags_arg=tags,
+                        kw={k: v for k, v in _kw.items() if k in ("comments",)},
+                    )
                 return self._list_by_tags(
                     normalized_tags or [],
                     page_size=page_size,
@@ -4834,26 +4889,11 @@ class NumericRefHandler(Handler):
         a self-describing cursor, instead of letting the result budget
         cut a block mid-text in a fitted body.
         """
-        blocks: list[str] = []
-        for rid in ref_ids:
-            handle = handle_registry.try_format(self.kind, rid) or str(rid)
-            try:
-                blocks.append(self.get(id=rid, view=view, **kw).body)
-            except NotFound:
-                blocks.append(f"{handle}  not found")
-            except Gone:
-                blocks.append(f"{handle}  deleted")
-        shown: list[str] = []
-        used = 0
-        for block in blocks:
-            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
-                break
-            shown.append(block)
-            used += len(block) + 2  # the "\n\n" join
+        shown, blocks = self._pack_batch_blocks(ref_ids, view=view, kw=kw)
         rest = ref_ids[len(shown) :]
         body = (
-            f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
-            + "\n\n".join(shown)
+            f"# {self._batch_range(len(shown), len(ref_ids))} (batch, view={view!r})"
+            "\n\n" + "\n\n".join(shown)
         )
         if rest:
             # The selectors kw carries (memory's rel/of_kind/direction,
@@ -4867,7 +4907,137 @@ class NumericRefHandler(Handler):
                 f"get(kind={self.kind!r}, "
                 f"id=[{', '.join(str(i) for i in rest)}], view={view!r}{cont})"
             )
-        return Response(body=body, result_count=len(shown))
+        return Response(
+            body=body,
+            result_count=len(shown),
+            result_budget_hint=self._lone_block_hint(shown, ref_ids, view),
+        )
+
+    def _batch_range(self, shown: int, total: int) -> str:
+        """``7 gripe`` when the page holds the whole batch, else
+        ``gripes 1-7 of 22``."""
+        if shown == total:
+            return f"{total} {self._sense()}"
+        return f"{self._sense()}s 1-{shown} of {total}"
+
+    def _pack_batch_blocks(
+        self, ref_ids: list[int], *, view: str, kw: dict[str, Any]
+    ) -> tuple[list[str], list[str]]:
+        """Render each id's ``view`` block and pack whole blocks under
+        :data:`BATCH_VIEW_PAGE_CHARS`; returns ``(shown, all_blocks)``.
+        A lone block over budget is the only one on its page."""
+        blocks: list[str] = []
+        for rid in ref_ids:
+            handle = handle_registry.try_format(self.kind, rid) or str(rid)
+            try:
+                blocks.append(
+                    self.get(id=rid, view=view, **kw, **self.batch_block_kw).body
+                )
+            except NotFound:
+                blocks.append(f"{handle}  not found")
+            except Gone:
+                blocks.append(f"{handle}  deleted")
+        shown: list[str] = []
+        used = 0
+        for block in blocks:
+            if shown and used + len(block) > self.batch_page_chars:
+                break
+            shown.append(block)
+            used += len(block) + 2  # the "\n\n" join
+        return shown, blocks
+
+    def _lone_block_hint(
+        self, shown: list[str], ref_ids: list[int], view: str
+    ) -> str | None:
+        """When one block alone overflows the page, the call that reads
+        it in pieces if the transport still cuts it."""
+        if len(shown) == 1 and len(shown[0]) > self.batch_page_chars:
+            return self._batch_overflow_hint(ref_ids[0], view)
+        return None
+
+    def _batch_overflow_hint(self, ref_id: int, view: str) -> str:
+        return f"get(kind={self.kind!r}, id={ref_id}, view={view!r}) reads it alone"
+
+    def _cohort_read(
+        self,
+        tags: list[str],
+        *,
+        view: str,
+        start: int,
+        exclude_tags: list[str] | None,
+        sort: str,
+        id_min: int | None,
+        id_max: int | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        closed_after: datetime | None,
+        closed_before: datetime | None,
+        closed_values: list[str] | None,
+        status: str | None,
+        tags_arg: list[str] | None = None,
+        kw: dict[str, Any],
+    ) -> Response:
+        """``search(status=…|tags=[…], view='full'|'body')`` with no q=:
+        the listing's cohort, in the listing's order, one whole block per
+        row packed to :attr:`batch_page_chars` (gr676097).
+
+        Header ``gripes 1-7 of 88 · STATUS:needs_spec``; the footer is
+        the exact ``next: search(…, args={'offset': 7})`` or ``complete``.
+        """
+        filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
+        if closed_values is not None or closed_after or closed_before:
+            filters["closed_after"] = closed_after
+            filters["closed_before"] = closed_before
+            filters["closed_values"] = closed_values
+        if include_ref_ids is not None:
+            filters["include_ref_ids"] = include_ref_ids
+        if exclude_ref_ids:
+            filters["exclude_ref_ids"] = exclude_ref_ids
+        total = self.store.count_refs(
+            kind=self.kind, tags=tags, id_min=id_min, id_max=id_max, **filters
+        )
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=tags,
+            limit=_COHORT_WINDOW,
+            offset=start,
+            order_by="closed_desc"
+            if "closed_values" in filters
+            else self._order_key_for_sort(sort),
+            id_min=id_min,
+            id_max=id_max,
+            **filters,
+        )
+        label = " ".join(tags) if tags else "all live"
+        if not refs:
+            return Response(
+                body=f"no {self._sense()} in the cohort at offset {start} "
+                f"({total} total · {label})\ncomplete",
+                result_count=0,
+            )
+        ids = [int(r.id) for r in refs]
+        kw = {k: v for k, v in kw.items() if v is not None}
+        shown, _ = self._pack_batch_blocks(ids, view=view, kw=kw)
+        last = start + len(shown)
+        head = f"# {self._sense()}s {start + 1}-{last} of {total} · {label}"
+        body = head + "\n\n" + "\n\n".join(shown)
+        if last < total:
+            call_args: list[str] = []
+            if status is not None:
+                call_args.append(f"status={status!r}")
+            if tags_arg:
+                call_args.append(f"tags={list(tags_arg)!r}")
+            call_args.append(f"view={view!r}")
+            extra = {**kw, "offset": last}
+            call_args.append(f"args={extra!r}")
+            body += f"\n\nnext: search(kind={self.kind!r}, {', '.join(call_args)})"
+        else:
+            body += "\n\ncomplete"
+        return Response(
+            body=body,
+            result_count=len(shown),
+            result_budget_hint=self._lone_block_hint(shown, ids, view),
+        )
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
         """``tag(id=[...])``: the same edit on every id, all or nothing.
