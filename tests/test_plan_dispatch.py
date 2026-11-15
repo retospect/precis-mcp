@@ -3119,6 +3119,32 @@ def test_digest_briefs_range_list_never_routes(
     assert _blocked_by_ids(store, task) == []
 
 
+def test_digest_briefs_undeclared_file_set_never_routes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr688291 (td688399 review): a non-pytest red infers an empty
+    write set — the digest still ships a ``File set:`` line with the
+    undeclared marker, so the changed-files-in-range table under it
+    stays context and a builder-deny path the range touched
+    (``scripts/ship``) does not route the fix to the coordinator."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(
+        store,
+        task,
+        "brief: release r321 is red at abc1234 (range a..b), check.yml run 1\n"
+        "== lint ==\n  ruff check failed\n\n"
+        "File set: — (undeclared: no recognized failure path)\n\n"
+        "changed files in a..b (ranked by suspicion — * is on the failure path):\n"
+        "   scripts/ship — 1 commit (+2/-0)\n"
+        "   src/precis/bystander.py — 1 commit (+5/-0)\n",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _blocked_by_ids(store, task) == []
+
+
 @pytest.mark.parametrize(
     "brief",
     [

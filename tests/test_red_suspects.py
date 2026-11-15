@@ -12,6 +12,7 @@ import pytest
 
 from precis.handlers._python_impact import ChangedSymbol
 from precis.plans import red_suspects as S
+from precis.utils import dispatch_score
 
 
 def _git(root: Path, *args: str) -> str:
@@ -326,6 +327,26 @@ def test_render_block_budget_never_drops_a_file_row_or_the_pointer() -> None:
     assert "more lines cut" in text
 
 
+def test_render_block_declares_the_undeclared_set() -> None:
+    """gr688291 (td688399 review): a red that named no recognized path —
+    a non-pytest red, a log with no repo paths — leaves the inferred
+    write set empty; the ``File set:`` line still ships with the
+    undeclared marker rather than dropping out and letting the range
+    table read as the file set again (the overlap hold and deny-path
+    routing would both trip on it)."""
+    rows = [
+        S.SuspectRow("scripts/ship", 2, 0, ("b" * 40,), (), False),
+        S.SuspectRow("src/precis/victim.py", 1, 0, ("a" * 40,), (), False),
+    ]
+    for file_set in (None, (), set()):
+        text = S.render_block(rows, "a..b", file_set=file_set)
+        assert text.startswith(f"File set: {S._UNDECLARED_SET}\n\n")
+        assert "ranked by suspicion" in text
+        # the marker declares nothing, so the table under it reads as
+        # context — never the write set
+        assert dispatch_score.brief_files(text) == frozenset()
+
+
 def test_render_block_lists_the_changed_symbols() -> None:
     """The python kind's diff rendered as a view: each file's changed
     symbols follow the table, marked like the impact view's rows."""
@@ -486,6 +507,39 @@ def test_suspects_block_flags_the_symbol_on_the_traceback(
     assert v.startswith(" *") and b.startswith("  ")
     assert "precis.victim.explode" in text
     assert "precis.bystander.calm" in text
+
+
+def test_suspects_block_declares_undeclared_for_a_non_pytest_red(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td688399 review: a non-pytest red — no failing ids, no traceback
+    frames, no repo path in the log — infers an empty write set; the
+    block still declares ``File set:`` so a deny-path row in the range
+    table (``scripts/ship``) stays context, not the fix's file set."""
+    base = _commit(
+        repo,
+        {
+            "src/precis/widgets.py": "A = 1\n",
+            "scripts/ship": "#!/bin/sh\ntrue\n",
+        },
+        "base",
+    )
+    tip = _commit(
+        repo,
+        {"src/precis/widgets.py": "A = 2\n", "scripts/ship": "#!/bin/sh\nexit 0\n"},
+        "tip",
+    )
+    rng = f"{base}..{tip}"
+    monkeypatch.setattr(S._gates, "read_ci_verdicts", lambda store: [])
+    log_text = (
+        "== lint ==\n"
+        "  ruff check failed\n"
+        "  ============= 0 failed, 0 passed in 1.0s =============\n"
+    )
+    text = S.suspects_block(_FakeStore(), repo, sha=tip, rng=rng, log_text=log_text)
+    assert text.startswith(f"File set: {S._UNDECLARED_SET}\n\n")
+    assert " * scripts/ship" not in text and "   scripts/ship" in text
+    assert dispatch_score.brief_files(text) == frozenset()
 
 
 def test_suspects_block_degrades_to_empty(

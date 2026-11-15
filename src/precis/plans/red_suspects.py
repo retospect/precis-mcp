@@ -597,6 +597,17 @@ def _fit(lines: list[str], budget: int | None, kept: int) -> str:
     return "\n".join(out)
 
 
+#: What ``render_block`` writes as the declared write set when the red
+#: named no recognized path — a non-pytest red, a log with no repo
+#: paths: the fix's write set is undeclared, but the ``File set:`` line
+#: still ships (gr688291, td688399 review: an omitted line lets the
+#: whole range table read as the file set again, re-tripping the
+#: overlap hold and deny-path routing). Em dash and plain words only —
+#: the marker itself must carry no token ``brief_files`` or
+#: ``deny_path_hit`` reads as a path.
+_UNDECLARED_SET = "— (undeclared: no recognized failure path)"
+
+
 def render_block(
     rows: list[SuspectRow],
     rng: str,
@@ -607,24 +618,24 @@ def render_block(
     write set (the failing tests' files plus the ``*`` suspects —
     gr688291: without it the range table's ~150 paths read as the
     fix's file set and trip the file-overlap hold and deny-path
-    routing), a blank line, then a header naming the range and
-    ordering, then one line per changed file in rank order — ``* path
-    — N commits (+a/-d) — grA, tdB`` — every file with its full
-    detail, then the fan-out pointer to the python kind's ``impact``
-    view and the range's changed symbols (:attr:`SuspectRow.symbols`,
-    detailed for the first :data:`_SYM_CAP`, the overflow's qualnames
-    still listed). ``budget`` (chars) bounds the block but can only
-    trim the symbol tail: the ``File set:`` line, the header, every
-    file row and the pointer always render — the brief is the fixer's
-    only copy of the complete table."""
-    lines: list[str] = []
+    routing; an empty inference renders :data:`_UNDECLARED_SET` rather
+    than dropping the line), a blank line, then a header naming the
+    range and ordering, then one line per changed file in rank order —
+    ``* path — N commits (+a/-d) — grA, tdB`` — every file with its
+    full detail, then the fan-out pointer to the python kind's
+    ``impact`` view and the range's changed symbols
+    (:attr:`SuspectRow.symbols`, detailed for the first
+    :data:`_SYM_CAP`, the overflow's qualnames still listed).
+    ``budget`` (chars) bounds the block but can only trim the symbol
+    tail: the ``File set:`` line, the header, every file row and the
+    pointer always render — the brief is the fixer's only copy of the
+    complete table."""
     declared = sorted(set(file_set or ()))
-    if declared:
-        lines.append(f"File set: {', '.join(declared)}")
-        lines.append("")
-    lines.append(
-        f"changed files in {rng} (ranked by suspicion — * is on the failure path):"
-    )
+    lines = [
+        f"File set: {', '.join(declared) if declared else _UNDECLARED_SET}",
+        "",
+        f"changed files in {rng} (ranked by suspicion — * is on the failure path):",
+    ]
     lines.extend(_row_line(r) for r in rows)
     base, _, head = rng.partition("..")
     if base and head:
@@ -702,7 +713,10 @@ def suspects_block(
         handles = {}
     # The declared write set (gr688291): the failing tests' files plus
     # the ``*`` suspects — what the fix may touch, so the range table
-    # below it stays context for ``brief_files``/deny-path routing.
+    # below it stays context for ``brief_files``/deny-path routing. A
+    # red with no recognized path (a non-pytest red) yields an empty
+    # set; ``render_block`` still ships the ``File set:`` line with the
+    # undeclared marker rather than exposing the table again.
     file_set = {f.path for f in files if f.path in on_path} | {
         tf for t in failures if (tf := _waiver.file_of_test(t))
     }
