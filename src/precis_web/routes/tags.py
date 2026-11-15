@@ -11,7 +11,7 @@ what conventions have crept into the corpus (which ``DREAM:*`` and
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -170,7 +170,7 @@ async def index(request: Request, q: str | None = None, page: int = 1) -> HTMLRe
     )
 
 
-@router.get("/refs", response_class=HTMLResponse)
+@router.get("/refs", response_class=HTMLResponse, response_model=None)
 async def refs_by_tag(
     request: Request,
     namespace: str | None = None,
@@ -179,18 +179,16 @@ async def refs_by_tag(
     tag: str | None = None,
     page: int = 1,
     page_size: int = _DEFAULT_PAGE_SIZE,
-) -> HTMLResponse:
+) -> HTMLResponse | RedirectResponse:
     """List refs matching a tag, a kind, or both, grouped by kind.
 
-    Four call shapes — all hit the same template:
+    Four call shapes — three hit the same template:
 
     * ``?namespace=NS&value=V`` — every ref carrying the tag (the
       original "Tags table → view N refs" pivot)
-    * ``?kind=K`` — every live ref of one kind (DRY with the tag-pivot
-      view above; no longer linked from the UI — the Status page's
-      "Refs by kind" chips now land on ``/drive?k=K&folder=*``, the
-      general browse surface, rather than opening this single-purpose
-      listing — but kept as a URL shape and as the tag+kind base)
+    * ``?kind=K`` — retired into Drive (gr664412): redirects to
+      ``/drive?k=K``, the same kind facet the Status page's
+      "Refs by kind" chips already land on
     * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
       kind that also carry the tag
     * ``?tag=NS:V`` — the chip-text form (gr575024): an eye viewer
@@ -215,6 +213,10 @@ async def refs_by_tag(
             status_code=400,
             detail="needs ?namespace=NS&value=V, ?tag=T, ?kind=K, or a mix",
         )
+    if kind is not None and namespace is None and value is None and tag is None:
+        # The kind-only pivot duplicated Drive's ``k=`` facet — send it
+        # there (gr664412). Tag-carrying shapes keep their listing below.
+        return RedirectResponse(url=f"/drive?k={quote_plus(kind)}&submitted=1")
     store = get_store(request)
     if tag is not None and namespace is None and value is None:
         resolved = resolve_tag_chip(store, tag)

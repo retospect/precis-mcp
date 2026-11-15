@@ -2,6 +2,7 @@
 
 from html.parser import HTMLParser
 from types import SimpleNamespace
+from urllib.parse import quote_plus
 
 from fastapi.testclient import TestClient
 
@@ -100,9 +101,6 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 assert drive.status_code == 200
                 assert f'href="/refs/{kind}/{ref.id}"' not in drive.text
                 assert f'href="{expected}"' in drive.text
-                pivot = client.get(f"/tags/refs?kind={kind}")
-                assert pivot.status_code == 200
-                assert f'href="/refs/{kind}/{ref.id}"' not in pivot.text
                 continue
             assert response.status_code in (200, 303), (kind, response.text[:300])
             if expected != f"/refs/{kind}/{ref.id}":
@@ -120,9 +118,13 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
             resolver = client.get(f"/r/{kind}/{ref.id}", follow_redirects=False)
             assert resolver.status_code == 303, (kind, resolver.text[:300])
             assert resolver.headers["location"] == expected
-            pivot = client.get(f"/tags/refs?kind={kind}")
-            assert pivot.status_code == 200
-            assert f'href="{expected}"' in pivot.text, kind
+            # The kind-only /tags/refs pivot retired into this same Drive
+            # facet (gr664412); the tag-carrying shapes keep their listing.
+            pivot = client.get(f"/tags/refs?kind={kind}", follow_redirects=False)
+            assert pivot.status_code in (302, 307, 308)
+            assert (
+                pivot.headers["location"] == f"/drive?k={quote_plus(kind)}&submitted=1"
+            )
 
 
 def test_orcid_person_and_held_papers_are_read_only(client, runtime, monkeypatch):

@@ -217,8 +217,9 @@ def test_quest_hub_neighbourhood_replaces_dossier_and_todo_link_scoped(
     # the count never links the unfiltered /refs/todo list.
     assert 'href="/todo?focus=1"' in resp.text
     assert 'href="/refs/todo"' not in resp.text
-    # The other retinue kinds scope to /refs/<kind>?serves=<qid> the same way.
-    assert 'href="/refs/concept?serves=97"' in resp.text
+    # The other retinue kinds scope to Drive's k= facet narrowed by the
+    # quest:<qid> tag — the /refs/<kind>?serves= listing retired into it.
+    assert "/drive?submitted=1&amp;k=concept&amp;tag=quest%3A97" in resp.text
 
 
 def test_todo_dashboard_serves_filter_keeps_served_subtrees(

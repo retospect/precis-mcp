@@ -5,8 +5,8 @@ as a small design language and *probes* it analytically, never pixels. This rout
 is the *human* affordance on the same data — see the solid rotate, click a
 feature, and edit it by natural-language instruction.
 
-* ``GET  /cad`` — retired into the unified Drive surface; redirects to the
-  ``kind=cad`` facet preset.
+* ``GET  /cad`` — retired into the unified Drive surface; the
+  ``kind=cad`` facet-preset redirect lives in ``routes/retired.py``.
 * ``GET  /cad/{slug}`` — one design: an interactive 3D viewer (parts coloured,
   cuts translucent) beside an analysis/export panel + the edit-by-prompt box.
 * ``GET  /cad/{slug}/model.gltf`` — the viewer/download glTF (features | solid).
@@ -379,14 +379,6 @@ def _require_ref(store: Store, slug: str) -> Any:
 
 
 # ── routes ───────────────────────────────────────────────────────────────
-@router.get("/cad", response_class=HTMLResponse)
-async def cad_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=cad`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/cad/{slug}`` and everything under it) is
-    unaffected.
-    """
-    return RedirectResponse(url="/drive?k=cad&folder=*&sort=recency")
 
 
 @router.get("/cad/{slug}", response_class=HTMLResponse)

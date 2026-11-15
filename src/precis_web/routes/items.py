@@ -4,16 +4,17 @@ The cross-kind search + facet + presenter engine this module built
 (the unified item view) is now served at
 ``/drive`` (``routes/drive.py``), grafted onto Drive's folder tree +
 CRUD + per-row actions per
-the web-UI rationalization's Drive workstream. This
-module keeps the ``/items`` path alive as a redirect (old bookmarks,
-saved searches, in-flight links) — WS1b/WS4 own its final retirement,
-not this slice.
+the web-UI rationalization's Drive workstream. ``/items`` (and the legacy
+``/items/tags/suggest`` alias) redirect from the shared retired-route
+table (``routes/retired.py``, gr664412) — this module now carries only
+helpers.
 
 The query-independent helpers below (``_DEFAULT_SOURCE_KINDS``,
 ``_parse_date``, ``_run_search``, ``_recent_rows``, ``_folder_options``,
 ``_tag_filter_string``, ``_PAGE_SIZE``) are unit-tested directly and
 imported by ``routes/drive.py`` as the reusable engine — kept here
-rather than duplicated.
+rather than duplicated. ``tags_suggest`` is mounted by Drive at
+``/drive/tags/suggest``.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
 from precis.handlers._paper_search import _representative_block_for_ref
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -35,7 +36,6 @@ from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-router = APIRouter(prefix="/items", tags=["items"])
 log = logging.getLogger(__name__)
 
 
@@ -510,13 +510,13 @@ def _folder_options(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-@router.get("/tags/suggest")
 async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     """Autocomplete backend for the tag-filter chips — substring tag
     matches as JSON ``[{label, tag}]`` (``tag`` is the filter string to
-    submit). Empty/1-char queries return nothing. Kept at both this
-    legacy path and ``/drive/tags/suggest`` (same function, two routes —
-    see ``routes/drive.py``)."""
+    submit). Empty/1-char queries return nothing. Mounted by Drive at
+    ``/drive/tags/suggest`` (``routes/drive.py``); the legacy
+    ``/items/tags/suggest`` path redirects there via
+    ``routes/retired.py``."""
     q = (q or "").strip()
     if len(q) < 2:
         return JSONResponse([])
@@ -528,13 +528,3 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
             for ns, val, _n in rows
         ]
     )
-
-
-@router.get("")
-@router.get("/")
-async def index(request: Request) -> Response:
-    """Redirect to ``/drive``, preserving every filter verbatim — the
-    merged Drive surface.
-    """
-    suffix = f"?{request.url.query}" if request.url.query else ""
-    return RedirectResponse(url=f"/drive{suffix}")

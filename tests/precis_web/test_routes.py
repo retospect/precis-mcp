@@ -3482,17 +3482,18 @@ def test_paper_detail_shows_lookup_path_when_held_but_missing(client) -> None:
 # ── refs (per-kind browse) ─────────────────────────────────────────
 
 
-def test_refs_index_lists(client) -> None:
-    resp = client.get("/refs/memory")
-    assert resp.status_code == 200
-    assert "A decision" in resp.text
-    assert "An idea" in resp.text
+def test_refs_index_redirects_to_drive_kind_facet(client) -> None:
+    """Every per-kind list folds into Drive's ``k=`` facet (gr664412);
+    the detail readers (``/refs/{kind}/{id}``) are unaffected."""
+    resp = client.get("/refs/memory", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=memory&submitted=1"
 
 
-def test_refs_index_search(client) -> None:
-    resp = client.get("/refs/memory", params={"q": "idea"})
-    assert resp.status_code == 200
-    assert "relevance" in resp.text  # search-mode banner
+def test_refs_index_search_carries_query_to_drive(client) -> None:
+    resp = client.get("/refs/memory", params={"q": "idea"}, follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=memory&submitted=1&q=idea"
 
 
 def test_refs_unknown_kind_rejected(client) -> None:
@@ -3746,15 +3747,16 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
         assert needle in resp.text, f"{needle!r} missing from rendered transcript"
 
 
-def test_refs_nav_tabs_present(client) -> None:
-    """After T12.6 the nav collapses memory/conv/gripe/pres into one Refs
-    tab. WS1b folded Oracle/Patents' own Browse-dropdown tabs into Drive
-    kind-facet presets (their per-kind list, not their detail reader) —
-    the consolidated Refs tab stays."""
-    resp = client.get("/refs/memory")
-    assert "/refs" in resp.text  # consolidated browser
-    assert "/refs/oracle" not in resp.text
-    assert "/refs/patent" not in resp.text
+def test_refs_index_serves_maps_to_quest_tag_facet(client) -> None:
+    """A bookmarked ``/refs/<kind>?serves=<qid>`` (the old quest retinue
+    link shape, gr541347) lands on the same scope its replacement
+    generates: Drive's ``k=`` facet narrowed by the ``quest:<qid>`` tag
+    every serves-link stamps (gr664412)."""
+    resp = client.get(
+        "/refs/structure", params={"serves": "97"}, follow_redirects=False
+    )
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=structure&submitted=1&tag=quest%3A97"
 
 
 def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:
@@ -3773,33 +3775,26 @@ def test_refs_patent_list_redirects_to_drive_kind_facet(client) -> None:
     assert resp.headers["location"] == "/drive?k=patent&submitted=1"
 
 
-def test_refs_consolidated_default_renders(client) -> None:
-    """``GET /refs`` (no args) lights the 4 default kinds and renders."""
-    resp = client.get("/refs")
-    assert resp.status_code == 200
-    # Default-checked kinds shown as checkbox labels.
-    for kind in ("memory", "conv", "gripe", "pres"):
-        assert f'value="{kind}"' in resp.text
-    # The all=1 escape hatch is in the form.
-    assert 'name="all"' in resp.text
+def test_refs_consolidated_redirects_to_drive(client) -> None:
+    """The consolidated cross-kind browser duplicated Drive's own kind
+    facets + search and retired into it (gr664412)."""
+    resp = client.get("/refs", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive"
 
 
-def test_refs_consolidated_all_flag_lights_every_kind(client) -> None:
-    """``?all=1`` selects every browsable kind, regardless of ``kinds``."""
-    resp = client.get("/refs?all=1")
-    assert resp.status_code == 200
-    # Non-default kinds (perplexity-research, paper, etc.) should show
-    # up as checked.
-    assert 'value="paper"' in resp.text
-    assert 'value="patent"' in resp.text
-    assert 'value="perplexity-research"' in resp.text
+def test_refs_consolidated_all_flag_also_redirects(client) -> None:
+    """``?all=1`` has no Drive equivalent — its default kind set already
+    spans the whole roster — so the flag drops with the list."""
+    resp = client.get("/refs?all=1", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive"
 
 
-def test_refs_consolidated_kinds_param_narrows(client) -> None:
-    resp = client.get("/refs?kinds=memory")
-    assert resp.status_code == 200
-    # All checkboxes render either way; what changes is which are checked.
-    assert 'value="memory"' in resp.text
+def test_refs_consolidated_kinds_map_to_repeated_k_facet(client) -> None:
+    resp = client.get("/refs?kinds=memory", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?submitted=1&k=memory"
 
 
 def test_refs_detail_renders_tag_strip_empty_state(client) -> None:

@@ -150,9 +150,9 @@ defaults to
 /downloads/mark-tried`` sinks opened rows. "Fetch next 25"
 (``POST /drive/requeue-stubs``) stamps ``meta.oa_requeued`` for ``fetch_oa``;
 ``cited_by=<draft>`` scopes to papers-to-fetch via
-``handlers/_citations_view.draft_fetch_ref_ids``. Bespoke lists
-(``/items``, ``/papers``, ``/drafts``, ``/papers-needed``,
-``/refs/{oracle,patent}``, ``/cfp``) 307 to Drive presets. ``/`` → ``/drive``.
+``handlers/_citations_view.draft_fetch_ref_ids``. Retired lists 307 to
+Drive presets (``routes/retired.py``, gr664412); ``/refs/quest`` keeps
+its serves-DAG tree. ``/`` → ``/drive``.
 
 **System (`/status?tab=health|services|models|budget|now`)** —
 ``routes/status.py::index`` dispatches on ``tab=``: health strip, the

@@ -670,21 +670,6 @@ class FigurePresenter(ItemPresenter):
         return badges
 
 
-class MermaidPresenter(ItemPresenter):
-    """``mermaid`` diagram — currently identical to the generic default.
-
-    Unlike ``figure``, ``MermaidLang.bounds_meta_key`` is unused
-    (``read_bounds``/``default_bounds`` are always ``None`` — mermaid
-    auto-lays-out, no coordinate frame — ``mermaid/mermaid.py``), so
-    ``ref.meta`` carries only ``{"render": "mermaid"}``: nothing free to
-    badge. A real per-row fact (node/edge count) lives only in the parsed
-    source text, which would mean reading + compiling the draft body chunk
-    per row — the per-row cost this pass rules out. This class exists as
-    the registered seam (so the eventual real datum has a home + this
-    docstring records why it isn't here yet), not because it renders
-    anything beyond :class:`ItemPresenter` today."""
-
-
 #: Per-kind presenter overrides — the registry seam for a kind whose
 #: hover/thumbnail/actions need more than the generic default. Grow this
 #: as kinds adopt a richer presenter; see the module docstring for why
@@ -697,7 +682,6 @@ _PRESENTER_CLASSES: dict[str, type[ItemPresenter]] = {
     "component": ComponentPresenter,
     "material": MaterialPresenter,
     "figure": FigurePresenter,
-    "mermaid": MermaidPresenter,
 }
 
 

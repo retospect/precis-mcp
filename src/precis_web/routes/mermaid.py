@@ -9,8 +9,8 @@ shared vocabulary + a chat on the right that drives the shared
 
 Routes:
 
-* ``GET  /mermaid`` — retired into the unified Drive surface; redirects to
-  the ``kind=mermaid`` facet preset.
+* ``GET  /mermaid`` — retired into the unified Drive surface; the
+  ``kind=mermaid`` facet-preset redirect lives in ``routes/retired.py``.
 * ``GET  /mermaid/{slug}`` — the editor.
 * ``GET  /mermaid/{slug}/full`` — full-size view: render and source fill the
   window, split by the shared ``pane-split.js`` grip (gr498614 follow-up).
@@ -33,7 +33,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.errors import NotFound
@@ -85,16 +85,6 @@ def _rendered_svg(source: str) -> str:
     except Exception as exc:
         log.warning("mermaid render failed (%s): %s", type(exc).__name__, exc)
         return ""
-
-
-@router.get("/mermaid", response_class=HTMLResponse)
-async def mermaid_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=mermaid`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/mermaid/{slug}`` and everything under it)
-    is unaffected.
-    """
-    return RedirectResponse(url="/drive?k=mermaid&folder=*&sort=recency")
 
 
 def _not_found(request: Request, slug: str) -> HTMLResponse:

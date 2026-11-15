@@ -196,7 +196,6 @@ def create_app(
         flags,
         graph,
         gripes,
-        items,
         learning,
         llm,
         manual,
@@ -204,7 +203,6 @@ def create_app(
         nanopub,
         needs_you,
         papers,
-        papers_needed,
         pcb,
         podcast,
         pourbaix,
@@ -212,6 +210,7 @@ def create_app(
         preview,
         python,
         refs,
+        retired,
         rxn,
         se_flow,
         se_print,
@@ -226,6 +225,10 @@ def create_app(
         work,
     )
 
+    # The retired-route table first: its literal paths (e.g.
+    # ``/papers/triage``) must shadow path-param routes in the modules
+    # below (``/papers/{ident}``).
+    app.include_router(retired.router)
     app.include_router(todo.router)
     app.include_router(needs_you.router)
     app.include_router(asks.router)
@@ -233,12 +236,10 @@ def create_app(
     app.include_router(cfp.router)
     app.include_router(pres.router)
     app.include_router(datasheets.router)
-    app.include_router(papers_needed.router)
     app.include_router(podcast.router)
     app.include_router(files.router)
     app.include_router(flags.router)
     app.include_router(favorites.router)
-    app.include_router(items.router)
     app.include_router(llm.router)
     app.include_router(llm.pages)
     app.include_router(drafts.router)

@@ -1,7 +1,8 @@
 """Papers tab — read PDFs in-browser (list/triage folded into Drive, WS1b).
 
 ``/papers`` and ``/papers/triage`` redirect to a Drive kind/tag preset
-(``/drive?k=paper…`` / ``/drive?tag=needs-triage&k=paper…``), keeping old
+(``/drive?k=paper…`` / ``/drive?tag=needs-triage&k=paper…``) from the
+shared retired-route table (``routes/retired.py``, gr664412), keeping old
 bookmarks working. The **reader** stays here: detail page embeds the
 browser's native PDF viewer at ``/papers/{id}/pdf``, streaming from
 ``corpus_dir`` (cluster NFS mount) via ref cite_key (``Ref.slug``) and
@@ -380,35 +381,6 @@ def _backlinks(store: LinksStore, ref_id: int) -> list[dict[str, Any]]:
             }
         )
     return out
-
-
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def index(q: str | None = None) -> Response:
-    """Retired into the unified Drive surface (WS1b) — redirects to the
-    ``kind=paper`` facet preset, carrying a live query through so a bare
-    ``?q=`` bookmark keeps searching. The keyword/semantic mode toggle and
-    the ``has_pdf``/``has_chunks`` list filters this route used to own
-    don't have a Drive equivalent and are dropped with the list (Drive's
-    own cross-kind search box replaces them); the reader (``/papers/{ident}``
-    and everything under it) is unaffected.
-    """
-    params: list[tuple[str, str]] = [("k", "paper"), ("submitted", "1")]
-    if q and q.strip():
-        params.append(("q", q.strip()))
-    return RedirectResponse(url="/drive?" + urlencode(params))
-
-
-@router.get("/triage", response_class=HTMLResponse)
-async def triage_queue() -> Response:
-    """Retired into the unified Drive surface (WS1b) — redirects to the
-    ``needs-triage`` tag preset (:data:`_TRIAGE_PRESET`), narrowed to
-    ``kind=paper``. Registered before ``/{ident}`` so the literal
-    ``triage`` segment isn't swallowed by the path param. Reached from
-    Needs-you's "view all" / "+N more" links (Risk R5) — both keep working
-    through this redirect.
-    """
-    return RedirectResponse(url=_TRIAGE_PRESET)
 
 
 #: Display label per ``refs.retraction_status`` value (the CHECK

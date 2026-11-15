@@ -1,13 +1,11 @@
-"""Refs tab(s) — browse durable ref kinds.
+"""Refs readers — the generic detail surface for durable ref kinds.
 
-One generic list/detail surface served per kind via ``/refs/{kind}``.
-Each browsable kind gets its own top-nav tab (see ``base.html.j2``),
-so the nav doubles as the kind selector — there is exactly one route
-module and one pair of templates behind every tab.
+The consolidated cross-kind browser (``/refs``) and the per-kind lists
+(``/refs/{kind}``) duplicated Drive and retired into it (gr664412): both
+redirect to the equivalent Drive facet — except ``/refs/quest``, which
+keeps its bespoke ``serves``-DAG tree (``_quest_index``; Drive has no
+equivalent, like ``/clusters``).
 
-* List reads off the DB: ``search_refs_lexical`` when a query is
-  present (ranked), else ``list_refs`` with the date / tag filters and
-  the whitelisted sort. Pagination is offset-based.
 * Detail accepts every stored kind, independently of the curated browse
   menu and optional handler availability. Shared reader URLs redirect native
   kinds; generic pages render handler output or stored content. ORCID reads
@@ -36,7 +34,6 @@ import logging
 import math
 import re
 from collections import Counter
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
@@ -89,9 +86,9 @@ router = APIRouter(prefix="/refs", tags=["refs"])
 
 log = logging.getLogger(__name__)
 
-#: Browsable ref kinds, in nav order: ``(kind, label)``. The nav in
-#: ``base.html.j2`` renders one tab per entry; adding a kind here +
-#: the nav loop is all it takes to expose another browser.
+#: Kind → display label for the detail page's header strip (the nav that
+#: used to render one tab per entry folded into Drive presets — the
+#: label map stays for the readers).
 REF_KINDS: tuple[tuple[str, str], ...] = (
     ("memory", "Memory"),
     ("conv", "Conversations"),
@@ -100,37 +97,14 @@ REF_KINDS: tuple[tuple[str, str], ...] = (
     ("patent", "Patents"),
     ("pres", "Presentations"),
 )
-_REF_KIND_SET = {k for k, _ in REF_KINDS}
 _REF_KIND_LABEL = dict(REF_KINDS)
-
-#: Date-window presets → lookback delta (``None`` = no date filter).
-DATE_PRESETS: tuple[tuple[str, str, timedelta | None], ...] = (
-    ("any", "Any time", None),
-    ("24h", "Last 24h", timedelta(hours=24)),
-    ("7d", "Last 7 days", timedelta(days=7)),
-    ("30d", "Last 30 days", timedelta(days=30)),
-    ("90d", "Last 90 days", timedelta(days=90)),
-)
-_DATE_DELTA = {key: delta for key, _, delta in DATE_PRESETS}
-
-#: Sort options exposed in the UI → ``Store.list_refs`` order_by keys.
-SORT_CHOICES: tuple[tuple[str, str], ...] = (
-    ("updated_desc", "Updated (newest)"),
-    ("updated_asc", "Updated (oldest)"),
-    ("created_desc", "Created (newest)"),
-    ("title_asc", "Title A–Z"),
-    ("id_desc", "ID (newest)"),
-)
-_SORT_KEYS = {k for k, _ in SORT_CHOICES}
-
-_PAGE_SIZE = 50
 
 
 def _require_kind(kind: str, request: Request) -> None:
     """Accept registered kinds, including optional handlers absent at boot.
 
-    ``profile`` is refused (gr490266): the generic browser lists, renders
-    and undeletes rows with no owner check, and profiles are owner-private
+    ``profile`` is refused (gr490266): the generic reader renders and
+    undeletes rows with no owner check, and profiles are owner-private
     — each user manages their own under ``/account``."""
     if kind == "profile":
         raise NotFound("profiles are managed under /account")
@@ -532,18 +506,22 @@ def _quest_todos_url(store: Store, qid: int, serving_todos: list[Any]) -> str:
 
 
 def _quest_server_kind_url(
-    kind: str, qid: int, quest_papers_url: str, quest_todos_url: str
-) -> str | None:
+    kind: str, quest_tag: str, quest_papers_url: str, quest_todos_url: str
+) -> str:
     """The retinue count's target for ``kind`` — the serving items of that
-    kind, never the unfiltered list (gr541347). ``None`` renders the count
-    as plain text (a kind with no browse surface at all)."""
+    kind, never the unfiltered list (gr541347). Every kind scopes to Drive's
+    ``k=`` facet narrowed by the ``quest:<id>`` tag each serves-link stamps
+    (``precis.quest.tagging``) — the ``/refs/<kind>?serves=`` listing this
+    used to target retired into the same surface (gr664412)."""
     if kind == "paper":
         return quest_papers_url
     if kind == "todo":
         return quest_todos_url
-    if kind == "quest" or kind in _FOLDED_TO_DRIVE:
-        return f"/refs/{kind}"
-    return f"/refs/{kind}?serves={qid}"
+    if kind == "quest":
+        # The serves-DAG tree — the one per-kind surface with no Drive
+        # equivalent.
+        return "/refs/quest"
+    return "/drive?" + urlencode([("submitted", "1"), ("k", kind), ("tag", quest_tag)])
 
 
 def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
@@ -860,9 +838,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     last_agentlog_id = _quest_last_agentlog_id(store, qid)
 
     # Servers-lite — kind counts replacing the raw handle dump. Linked to
-    # the kind's own browse tab when one exists (todo/paper/structure/…);
-    # a kind with no ``/refs/<kind>`` tab (e.g. concept) renders as plain
-    # text.
+    # the serving items of each kind, never the unfiltered list
+    # (``_quest_server_kind_url``).
     by_kind: dict[str, int] = {}
     for s in live_servers:
         by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
@@ -870,10 +847,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     # the ``quest:<id>`` tag every serves-link stamps — see
     # ``precis.quest.tagging``). Todos scope to ``/todo`` — the served
     # root's subtree when one holds them all, else the ``?serves=<qid>``
-    # filter (gr541347). Every other kind goes to ``/refs/<kind>?serves=``
-    # — the same "the serving items" scope — except the kinds folded to
-    # Drive (no serves facet there) and quest itself (its index is already
-    # the serves DAG).
+    # filter (gr541347).
     quest_papers_url = "/drive?" + urlencode(
         [("submitted", "1"), ("k", "paper"), ("tag", quest_tag)]
     )
@@ -895,7 +869,9 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         {
             "kind": k,
             "count": n,
-            "url": _quest_server_kind_url(k, qid, quest_papers_url, quest_todos_url),
+            "url": _quest_server_kind_url(
+                k, quest_tag, quest_papers_url, quest_todos_url
+            ),
         }
         for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
@@ -2663,16 +2639,10 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     )
 
 
-#: The kinds the Refs tab pre-checks by default — note-like, browsable,
-#: low-friction. The other checkbox-eligible kinds stay unchecked
-#: unless the operator opts in (via ``?all=1`` or by tickering them
-#: manually). Order pinned for stable rendering.
-_DEFAULT_REFS_KINDS: tuple[str, ...] = ("memory", "conv", "gripe", "pres")
-
-#: Every kind the consolidated Refs page knows how to render. Kept as
-#: a static list — extending it is a one-liner when a new browsable
-#: kind ships. We don't trust the hub's full ``kinds`` set here because
-#: it includes non-browsable kinds (calc / random / math) whose
+#: Every kind the generic detail reader (``/refs/{kind}/{id}``) serves.
+#: Kept as a static list — extending it is a one-liner when a new
+#: browsable kind ships. We don't trust the hub's full ``kinds`` set here
+#: because it includes non-browsable kinds (calc / random / math) whose
 #: ``list_refs`` would either error or render meaningless.
 _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "memory",
@@ -2734,8 +2704,6 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "material",
 )
 
-_PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
-
 #: Cache-backed kinds (``CacheBackedHandler`` subclasses) whose ``get``
 #: verb *fetches on a miss* — a paid, slow upstream call for the paid
 #: tiers. The read-only detail page must pass ``no_fetch=True`` so
@@ -2757,34 +2725,6 @@ _CACHE_BACKED_KINDS: frozenset[str] = frozenset(
         "youtube",
     }
 )
-
-#: Kinds whose refs do **not** live in the ``refs`` table, so the
-#: consolidated browser can't reach them through ``list_refs`` /
-#: ``search_refs_lexical`` (both return nothing — confirmed in prod:
-#: zero rows for either kind). They ARE searchable through their own
-#: ``search`` verb — ``skill`` over the on-disk skill files, ``tag``
-#: over the tag vocabulary — so the consolidated view dispatches that
-#: verb and renders its markdown result instead of a row grid.
-_HANDLER_SEARCHED_KINDS: frozenset[str] = frozenset({"skill", "tag"})
-
-#: Browsable kinds the consolidated browser does NOT offer as a checkbox.
-#: Two reasons: (a) it could only ever render empty — ``random`` mints on
-#: demand and ``provenance`` is a report over other refs, so neither has
-#: ``refs`` rows *or* a ``search`` verb; (b) the kind's browse surface is
-#: Drive (``pcb``/``component``/``material``), so a second grid here would
-#: be a duplicate control. Both groups stay in ``_REFS_BROWSABLE_KINDS`` —
-#: that set gates the *detail* route, which their Drive rows and hover
-#: previews still land on.
-_CONSOLIDATED_HIDDEN_KINDS: frozenset[str] = frozenset(
-    {"random", "provenance", "pcb", "component", "material"}
-)
-
-#: The kinds the consolidated browser offers as checkboxes / searches:
-#: every browsable kind minus the hidden ones.
-_CONSOLIDATED_KINDS: tuple[str, ...] = tuple(
-    k for k in _REFS_BROWSABLE_KINDS if k not in _CONSOLIDATED_HIDDEN_KINDS
-)
-
 
 # ---- References extraction (MVP for #188) ---------------------------
 #
@@ -2950,111 +2890,24 @@ def _expand_handle(
     }
 
 
-@router.get("", response_class=HTMLResponse)
-async def consolidated(
-    request: Request,
-    q: str | None = None,
-    kinds: str | None = None,
-    all: int = 0,
-) -> HTMLResponse:
-    """Consolidated cross-kind ref browser with kind checkboxes.
-
-    Replaces the old per-kind nav tabs for memory / conv / gripe / pres
-    — see ``T12.6`` in the session notes. Each kind has a checkbox;
-    when ``?all=1`` is set, every browsable kind lights regardless of
-    the ``kinds`` query param. The 🔍 loupe in the nav posts here with
-    ``?all=1`` so a global query hits everything we have local.
-
-    Per-kind detail (``/refs/{kind}/{ref_id}``) and the per-kind list
-    pages (``/refs/{kind}``) keep working — they're the long-form
-    affordances for pagination, date filters, sort. The consolidated
-    view is the casual "I half-remember something" surface.
-    """
-    if all:
-        selected: list[str] = list(_CONSOLIDATED_KINDS)
-    elif kinds:
-        # Tolerate trailing commas / whitespace / unknown kinds.
-        requested = {k.strip() for k in kinds.split(",") if k.strip()}
-        selected = [k for k in _CONSOLIDATED_KINDS if k in requested]
-        # Preserve the operator's ordering for kinds we didn't recognise
-        # so a future-added kind shows up when its checkbox is added.
-        for k in requested:
-            # profile is owner-private and this listing is unscoped (gr490266)
-            if k not in selected and k not in _CONSOLIDATED_KINDS and k != "profile":
-                selected.append(k)
-    else:
-        selected = list(_DEFAULT_REFS_KINDS)
-
-    store = get_store(request)
-    query = (q or "").strip()
-    by_kind: dict[str, list[dict[str, object]]] = {}
-    #: Handler-searched kinds (skill / tag) have no ``refs`` rows, so
-    #: they contribute a rendered-markdown block from their own ``search``
-    #: verb rather than a row grid.
-    by_kind_md: dict[str, str] = {}
-    for kind in selected:
-        if kind in _HANDLER_SEARCHED_KINDS:
-            # No refs rows to list — dispatch the kind's own search verb
-            # (skill files / tag vocabulary) and render its markdown.
-            # An empty query lists where the verb supports it (the skill
-            # index); a verb that requires q= on empty input just yields
-            # an error we skip, so the section drops out cleanly.
-            args: dict[str, Any] = {"kind": kind, "page_size": _PER_KIND_LIMIT}
-            if query:
-                args["q"] = query
-            try:
-                body, is_error = await await_dispatch(request, "search", args)
-            except Exception:
-                continue
-            if is_error or not (body or "").strip():
-                continue
-            by_kind_md[kind] = body
-            continue
-        try:
-            if query:
-                hits = store.search_refs_lexical(
-                    q=query, kind=kind, limit=_PER_KIND_LIMIT
-                )
-                refs = [ref for ref, _ in hits]
-            else:
-                refs = store.list_refs(kind=kind, limit=_PER_KIND_LIMIT)
-        except Exception:
-            # Unsupported / unregistered kind on this process — skip the
-            # whole bucket rather than 500 the page.
-            continue
-        if not refs:
-            continue
-        rows: list[dict[str, object]] = []
-        for r in refs:
-            rows.append(
-                {
-                    "id": r.id,
-                    "display_title": display_title(getattr(r, "title", ""))
-                    or "(untitled)",
-                    "url": _consolidated_ref_url(kind, r.id),
-                }
-            )
-        by_kind[kind] = rows
-
-    return templates.TemplateResponse(
-        request,
-        "refs/consolidated.html.j2",
-        {
-            "active_tab": "refs",
-            "q": query,
-            "selected": set(selected),
-            "all_browsable": list(_CONSOLIDATED_KINDS),
-            "default_kinds": list(_DEFAULT_REFS_KINDS),
-            "by_kind": by_kind,
-            "by_kind_md": by_kind_md,
-            "all_lit": bool(all),
-            "total": sum(len(v) for v in by_kind.values()),
-        },
-    )
-
-
-def _consolidated_ref_url(kind: str, ref_id: int) -> str:
-    return ref_url(kind, ref_id)
+@router.get("")
+async def consolidated(request: Request) -> RedirectResponse:
+    """Retired into Drive (gr664412): the cross-kind checkbox browser
+    duplicated Drive's own kind facets + search. ``kinds=a,b`` maps to
+    Drive's repeated ``k=`` facet, ``q`` to its search box; the ``all=1``
+    hack has no equivalent (Drive's default kind set already spans it).
+    Detail readers (``/refs/{kind}/{id}``) and the quest tree are
+    unaffected."""
+    params: list[tuple[str, str]] = []
+    for raw in (request.query_params.get("kinds") or "").split(","):
+        if kind := raw.strip():
+            params.append(("k", kind))
+    if q := (request.query_params.get("q") or "").strip():
+        params.append(("q", q))
+    if params:
+        params.insert(0, ("submitted", "1"))
+    target = "/drive" + ("?" + urlencode(params) if params else "")
+    return RedirectResponse(url=target)
 
 
 async def _quest_index(request: Request, store: Store) -> HTMLResponse:
@@ -3138,104 +2991,32 @@ async def _quest_index(request: Request, store: Store) -> HTMLResponse:
     )
 
 
-#: Per-kind lists folded into a Drive kind-facet preset (WS1b decision
-#: D2) — Oracle's "roll the dice" mint-a-new-reading affordance and
-#: Patents' OPS remote-search live in the MCP/CLI surface, not a web
-#: route, so there's no standalone UI feature to keep here; only the
-#: *list* retires. The detail readers (below) are unaffected.
-_FOLDED_TO_DRIVE: frozenset[str] = frozenset({"oracle", "patent"})
+@router.get("/quest", response_class=HTMLResponse)
+async def quest_index(request: Request) -> HTMLResponse:
+    """The ``serves``-DAG tree of live quests — the one per-kind surface
+    Drive has no equivalent for, kept while the flat ``/refs/{kind}``
+    lists retired into Drive kind facets (gr664412)."""
+    return await _quest_index(request, get_store(request))
 
 
-@router.get("/{kind}", response_class=HTMLResponse, response_model=None)
-async def index(
-    request: Request,
-    kind: str,
-    q: str | None = None,
-    tag: str | None = None,
-    since: str = "any",
-    sort: str = "updated_desc",
-    page: int = 1,
-    serves: int | None = None,
-) -> HTMLResponse | RedirectResponse:
-    """List / search one ref kind with date + tag filters and sort.
-
-    ``serves=<quest_id>`` narrows to the refs that ``serves`` that quest —
-    the retinue link target off ``/refs/quest/<id>`` (gr541347)."""
-    if kind in _FOLDED_TO_DRIVE:
-        params: list[tuple[str, str]] = [("k", kind), ("submitted", "1")]
-        if q and q.strip():
-            params.append(("q", q.strip()))
-        return RedirectResponse(url="/drive?" + urlencode(params))
+@router.get("/{kind}")
+async def index(request: Request, kind: str) -> RedirectResponse:
+    """Retired into Drive (gr664412) — the flat per-kind list duplicated
+    Drive's ``k=`` facet. ``q`` carries to Drive's search box and ``tag``
+    to its tag chips; ``serves=<qid>`` maps to the ``quest:<qid>`` tag
+    every serves-link stamps (``precis.quest.tagging``). The retired
+    date/sort/page controls drop with the list. Detail readers
+    (``/{kind}/{ref_id}`` and the POSTs) are unaffected; ``quest`` keeps
+    its serves-DAG tree just above."""
     _require_kind(kind, request)
-    store = get_store(request)
-
-    # Quests get a dedicated tree view (the `serves` DAG) instead of the
-    # generic flat list — see `_quest_index`.
-    if kind == "quest":
-        return await _quest_index(request, store)
-
-    tags = _parse_tags(tag)
-    since = since if since in _DATE_DELTA else "any"
-    sort = sort if sort in _SORT_KEYS else "updated_desc"
-    page = max(1, page)
-    offset = (page - 1) * _PAGE_SIZE
-
-    # ``?serves=<qid>`` — ids that serve that quest (live servers, one
-    # hop). A bogus/dead quest id narrows to the empty set, never 500s.
-    serve_ids: list[int] | None = None
-    if serves is not None:
-        serve_ids = sorted(
-            {
-                ln.src_ref_id
-                for ln in store.links_for(serves, direction="in", relation="serves")
-            }
-        )
-
-    query = (q or "").strip()
-    if query:
-        # Ranked title search; date / sort don't apply to a relevance
-        # ordering, so they're shown but inert while a query is active.
-        hits = store.search_refs_lexical(
-            q=query, kind=kind, tags=tags or None, limit=_PAGE_SIZE
-        )
-        refs = [ref for ref, _score in hits if serve_ids is None or ref.id in serve_ids]
-        has_next = False
-    else:
-        updated_after: datetime | None = None
-        delta = _DATE_DELTA.get(since)
-        if delta is not None:
-            updated_after = datetime.now(UTC) - delta
-        refs = store.list_refs(
-            kind=kind,
-            tags=tags or None,
-            updated_after=updated_after,
-            order_by=sort,
-            include_ref_ids=serve_ids,
-            limit=_PAGE_SIZE + 1,  # one extra row probes "has next page"
-            offset=offset,
-        )
-        has_next = len(refs) > _PAGE_SIZE
-        refs = refs[:_PAGE_SIZE]
-
-    return templates.TemplateResponse(
-        request,
-        "refs/index.html.j2",
-        {
-            "active_tab": f"refs:{kind}",
-            "kind": kind,
-            "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
-            "rows": [_row(r) for r in refs],
-            "q": query,
-            "tag": tag or "",
-            "since": since,
-            "sort": sort,
-            "page": page,
-            "has_next": has_next,
-            "serves": serves,
-            "date_presets": [(k, label) for k, label, _ in DATE_PRESETS],
-            "sort_choices": SORT_CHOICES,
-        },
-    )
+    params: list[tuple[str, str]] = [("k", kind), ("submitted", "1")]
+    if q := (request.query_params.get("q") or "").strip():
+        params.append(("q", q))
+    for t in _parse_tags(request.query_params.get("tag")):
+        params.append(("tag", t))
+    if (serves := request.query_params.get("serves") or "").isdigit():
+        params.append(("tag", f"quest:{serves}"))
+    return RedirectResponse(url="/drive?" + urlencode(params))
 
 
 def _orcid_meta(store: Store, ref: Any) -> dict[str, Any]:

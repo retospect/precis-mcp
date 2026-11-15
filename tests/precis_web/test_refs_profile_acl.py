@@ -82,12 +82,18 @@ def test_account_page_still_shows_owner_profile(
 
 
 @pytest.mark.parametrize("who", ["alice", "reto"])
-def test_refs_consolidated_kinds_profile_lists_nothing(
+def test_refs_consolidated_kinds_profile_redirects_to_drive(
     authed_client: TestClient, store: Any, who: str
 ) -> None:
+    """``/refs?kinds=…`` retired into Drive's ``k=`` facet (gr664412).
+    The profile privacy itself is Drive's ``viewer=`` filter (gr490266),
+    covered by the Drive ACL tests."""
     _seed(store)
-    r = authed_client.get("/refs?kinds=profile", headers=_basic(who, "pw"))
-    assert "SecretPalette" not in r.text
+    r = authed_client.get(
+        "/refs?kinds=profile", headers=_basic(who, "pw"), follow_redirects=False
+    )
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?submitted=1&k=profile"
 
 
 def _seed_path(store: Any) -> tuple[Any, int, int]:

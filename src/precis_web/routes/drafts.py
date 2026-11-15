@@ -11,7 +11,8 @@ Tier-A surface (document is *steered*, not hand-typed). Routes served
 from here:
 
 * ``GET /drafts`` — 307 into the ``kind=draft`` Drive facet
-  (``/drive?k=draft&submitted=1``).
+  (``/drive?k=draft&submitted=1``), served from the shared retired-route
+  table (``routes/retired.py``).
 * ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 into
   ``/smartdraft/{ident}``.
 * ``POST /drafts/{ident}/marks`` / ``/around`` / ``/request-ws`` — hand-driven
@@ -999,23 +1000,6 @@ def _chunk_handle(store: Store, handle: str) -> str | None:
     if chunk is None:
         return None
     return handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
-
-
-@router.get("/drafts", response_class=HTMLResponse)
-@router.get("/drafts/", response_class=HTMLResponse)
-async def index(q: str | None = None) -> Response:
-    """Retired into the unified Drive surface (nav restructure) — redirects
-    to the ``kind=draft`` facet preset, carrying a live query through so a
-    bare ``?q=`` bookmark keeps searching. Mirrors ``routes/papers.py``'s
-    WS1b retirement exactly. The reader (``/drafts/{ident}`` and
-    everything under it) and the "+ New draft" creation flow
-    (``POST /drafts/new``, still fed by :data:`_DOC_TYPES` via
-    ``drive.py::_doctypes``) are unaffected.
-    """
-    params: list[tuple[str, str]] = [("k", "draft"), ("submitted", "1")]
-    if q and q.strip():
-        params.append(("q", q.strip()))
-    return RedirectResponse(url="/drive?" + urlencode(params))
 
 
 def _parse_id(body: str) -> int | None:

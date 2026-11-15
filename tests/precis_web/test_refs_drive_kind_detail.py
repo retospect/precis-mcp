@@ -23,7 +23,6 @@ from precis.handlers.material import MaterialHandler
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from precis_web.item_view import ItemPresenter
-from precis_web.routes.refs import _CONSOLIDATED_KINDS
 
 
 @pytest.fixture
@@ -96,19 +95,14 @@ def test_refs_material_detail_renders_handler_card(kind_client, runtime_with_sto
     assert "Aluminum 6061-T6" in r.text
 
 
-def test_refs_list_route_renders_for_the_newly_browsable_kinds(kind_client):
-    """Making the kinds browsable also opens their ``/refs/<kind>`` list —
-    the quest dashboard's servers-lite chips link it (``_quest_detail``), so
-    it must render rather than 500."""
+def test_refs_list_route_redirects_for_the_drive_kinds(kind_client):
+    """The ``/refs/<kind>`` lists retired into Drive's ``k=`` facet
+    (gr664412) — these kinds were always detail-only on the refs side;
+    their quest retinue chips now generate the Drive URL directly."""
     for kind in ("pcb", "component", "material"):
-        assert kind_client.get(f"/refs/{kind}").status_code == 200
-
-
-def test_drive_kinds_stay_out_of_the_consolidated_browser() -> None:
-    """Detail-only: making the three kinds browsable must not add a second
-    browse grid beside Drive's own kind facet."""
-    for kind in ("pcb", "component", "material"):
-        assert kind not in _CONSOLIDATED_KINDS
+        r = kind_client.get(f"/refs/{kind}", follow_redirects=False)
+        assert r.status_code in (302, 307, 308)
+        assert r.headers["location"] == f"/drive?k={kind}&submitted=1"
 
 
 def test_component_supplier_block_is_lazy_and_never_cached(

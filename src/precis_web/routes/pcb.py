@@ -4,8 +4,8 @@ The pcb kind is otherwise a text/MCP surface (the LLM authors a netlist
 and reads graphs, never pixels). This route is the human affordance on the
 same data:
 
-* ``GET  /pcb`` — retired into the unified Drive surface; redirects to the
-  ``kind=pcb`` facet preset.
+* ``GET  /pcb`` — retired into the unified Drive surface; the
+  ``kind=pcb`` facet-preset redirect lives in ``routes/retired.py``.
 * ``GET  /pcb/{slug}`` — one design: the fab-level board render beside the
   net-label schematic, with the netlist/route/DRC vitals above.
 * ``GET  /pcb/{slug}/board.svg`` — the fab SVG (embedded via ``<object>``
@@ -76,7 +76,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.design import history
@@ -133,16 +133,6 @@ def _vitals(store: Store, ref_id: int) -> dict[str, Any]:
     """The numbers a reader wants above the pictures — the shared block
     (:func:`precis.pcb.argue.vitals`) the ``pcb_argue`` job quotes too."""
     return argue.vitals(store, ref_id)
-
-
-@router.get("/pcb", response_class=HTMLResponse)
-async def pcb_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the ``kind=pcb``
-    facet preset (same target as ``_drive_back.html.j2``'s back-link, so the
-    detail page's "back" arrow and this retired index agree). The workbench
-    (``/pcb/{slug}`` and its SVG endpoints below) is unaffected.
-    """
-    return RedirectResponse(url="/drive?k=pcb&folder=*&sort=recency")
 
 
 #: ``POST /pcb/import``'s upload cap (gr496699): an ``.epro2`` is a zip of

@@ -4,7 +4,9 @@
 chunkless paper-stub backlog directly; per the web-UI rationalization's
 fold-into-Drive decision it now just
 redirects to Drive's ``state=stub`` facet (the "papers to get" queue) —
-fully folded, no retained nav badge (the fetcher works the backlog
+the redirect lives in the shared retired-route table
+(``routes/retired.py``, gr664412), so this module carries only helpers.
+Fully folded, no retained nav badge (the fetcher works the backlog
 automatically; that was the original rationale for keeping it out of
 Needs-you too, see ``routes/needs_you.py``). The acquisition-provenance
 flag buttons (:data:`precis_web.routes.flags.ACQUIRE_FLAG_DEFS`) ride
@@ -20,11 +22,6 @@ from __future__ import annotations
 
 import plistlib
 from pathlib import Path
-
-from fastapi import APIRouter
-from fastapi.responses import RedirectResponse
-
-router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
 
 _WATCH_PLIST = Path("/Library/LaunchDaemons/com.precis.watch.plist")
 
@@ -90,13 +87,3 @@ _KIND_DROPZONES: tuple[tuple[str, str, str], ...] = (
         "presentations so the slug pattern differs.",
     ),
 )
-
-
-@router.get("", response_class=RedirectResponse)
-@router.get("/", response_class=RedirectResponse)
-async def index() -> RedirectResponse:
-    """Retired into the unified Drive surface (WS1b, decision D3) —
-    redirects to the ``state=stub`` facet (the old ``?awaiting=1``
-    next-pass narrowing has no Drive equivalent and is dropped with the
-    list; the fetcher already works the whole backlog automatically)."""
-    return RedirectResponse(url="/drive?state=stub")
