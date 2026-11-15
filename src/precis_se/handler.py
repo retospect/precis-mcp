@@ -2358,7 +2358,14 @@ class SeHandler(Handler):
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="se")
+            a = args or {}
+            return render_links_view(
+                self.store,
+                ref,
+                sense="se",
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
         raise BadInput(
             f"unknown se view {view!r}",
             next=_unknown_view_next(v),
@@ -8499,7 +8506,8 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
             "format",
         }
     ),
-    "links": frozenset(),
+    # view='links': limit/cursor page the shared link table (gr627629)
+    "links": frozenset({"limit", "cursor"}),
     "print": frozenset({"block", "fmt", "path", "scale"}),
     "fab": frozenset(),
     "ops": frozenset({"offset", "limit", "page", "page_size"}),

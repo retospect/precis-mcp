@@ -1086,6 +1086,11 @@ class _RingNeighbour:
     ref_id: int
     edges: int = 1
     passages: tuple[tuple[int, int | None], ...] = ()
+    #: The *focus*-side ``(chunk_id, ord)`` passages the folded edges pin
+    #: on this ref — ``via pc118 ~12`` on the row (gr627629: a chunk-
+    #: grounded rollup named the far passage but hid which of the focus's
+    #: own chunks carried the claim). ``()`` for ref-level edges.
+    via: tuple[tuple[int, int | None], ...] = ()
     log_entry: tuple[int, str] | None = None
     suspect: bool = False
     #: Distinct non-empty whys across the folded edges, first-seen order
@@ -1169,7 +1174,17 @@ def _render_ring(
         hub_handle=handle_registry.format_handle("memory", ref_id)
         if notes is not None
         else None,
+        via_kind=_focus_kind(store, ref_id),
     )
+
+
+def _focus_kind(store: Store, ref_id: int) -> str | None:
+    """The eye's focus kind — the chunk-code namespace the ``via``
+    handles on ring rows resolve in (:data:`_RingNeighbour.via`).
+    ``None`` when the focus can't be read, which drops every via tail."""
+    focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    kind = str(getattr(focus, "kind", "") or "")
+    return kind or None
 
 
 def _entity_handles_for_refs(refs: dict[int, Any]) -> dict[int, str]:
@@ -1419,16 +1434,16 @@ def _ring_kept(
     store: Store,
     ring: RingFilter,
     refs: dict[int, Any],
-    pairs: list[tuple[int, int | None, Any]],
-) -> list[tuple[int, int | None, Any]]:
-    """``pairs`` (``(neighbour ref, far chunk id, meta.reason)`` per edge)
-    narrowed by ``ring``: kind from the ref row, tags in one bulk read
-    (only when the filter uses a tag dimension)."""
+    pairs: list[tuple[int, int | None, Any, int | None]],
+) -> list[tuple[int, int | None, Any, int | None]]:
+    """``pairs`` (``(neighbour ref, far chunk id, meta.reason, own chunk
+    id)`` per edge) narrowed by ``ring``: kind from the ref row, tags in
+    one bulk read (only when the filter uses a tag dimension)."""
     out = pairs
     if ring.kinds is not None:
         out = [p for p in out if str(getattr(refs[p[0]], "kind", "")) in ring.kinds]
     if ring.spaces is not None or ring.tags is not None:
-        tag_of = _tag_sets(store, {o for o, _c, _w in out})
+        tag_of = _tag_sets(store, {p[0] for p in out})
         if ring.spaces is not None:
             want = {f"SPACE:{v}" for v in ring.spaces}
             out = [p for p in out if tag_of.get(p[0], frozenset()) & want]
@@ -1493,28 +1508,29 @@ def _suspect_edge_keys(store: Store, ref_id: int) -> set[tuple[int, int | None]]
 
 
 def _collapse_pairs(
-    pairs: list[tuple[int, int | None, Any]],
+    pairs: list[tuple[int, int | None, Any, int | None]],
     ords: dict[int, int],
     suspect: set[tuple[int, int | None]]
     | frozenset[tuple[int, int | None]] = frozenset(),
 ) -> list[_RingNeighbour]:
-    """``(ref, far chunk, meta.reason)`` per edge → one
+    """``(ref, far chunk, meta.reason, own chunk)`` per edge → one
     :class:`_RingNeighbour` per ref — first-seen order, every edge
     counted, far-end chunks deduped (gr524665: a claim hub's
     ``paper --corroborates--> hub`` fan-in grounds at N chunks
-    of one source and must render as one row, not N identical rows). A row
+    of one source and must render as one row, not N identical rows), and
+    the focus-side chunks deduped the same way into ``via`` (gr627629). A row
     is ``suspect`` when any folded edge's ``(ref, chunk)`` is in
     ``suspect``; its ``reasons`` are the folded edges' distinct non-empty
     whys, first-seen order (gr626896); its ``verdict`` the first
     ``considered`` verdict among them (gr662069)."""
-    acc: dict[int, tuple[int, list[int], bool, list[str], str | None]] = {}
+    acc: dict[int, tuple[int, list[int], bool, list[str], str | None, list[int]]] = {}
     order: list[int] = []
-    for oid, ck, why in pairs:
+    for oid, ck, why, own in pairs:
         slot = acc.get(oid)
         if slot is None:
-            acc[oid] = slot = (0, [], False, [], None)
+            acc[oid] = slot = (0, [], False, [], None, [])
             order.append(oid)
-        edges, chunks, sus, reasons, verdict = slot
+        edges, chunks, sus, reasons, verdict, own_chunks = slot
         text, v = _why_parts(why)
         acc[oid] = (
             edges + 1,
@@ -1522,9 +1538,12 @@ def _collapse_pairs(
             sus or (oid, ck) in suspect,
             reasons,
             verdict or v,
+            own_chunks,
         )
         if ck is not None and ck not in chunks:
             chunks.append(ck)
+        if own is not None and own not in own_chunks:
+            own_chunks.append(own)
         if text is not None and text not in reasons:
             reasons.append(text)
     return [
@@ -1535,6 +1554,7 @@ def _collapse_pairs(
             suspect=acc[oid][2],
             reasons=tuple(acc[oid][3]),
             verdict=acc[oid][4],
+            via=tuple((c, ords.get(c)) for c in acc[oid][5]),
         )
         for oid in order
     ]
@@ -1560,7 +1580,7 @@ def _first_hop(
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids(
-        {o for pairs in by_label.values() for o, _c, _why in pairs}
+        {o for pairs in by_label.values() for o, _c, _why, _own in pairs}
     )
     live = {
         key: [p for p in pairs if _live(refs, p[0])] for key, pairs in by_label.items()
@@ -1572,9 +1592,17 @@ def _first_hop(
             for key, pairs in live.items()
             if (kept := _ring_kept(store, ring, refs, pairs))
         }
+    # ``~<ord>`` suffixes resolve for both ends — the far-end passage
+    # handles and the focus-side ``via`` handles (gr627629).
     ords = _chunk_ords(
         store,
-        (c for pairs in live.values() for _o, c, _why in pairs if c is not None),
+        {
+            c
+            for pairs in live.values()
+            for _o, far_c, _why, own_c in pairs
+            for c in (far_c, own_c)
+            if c is not None
+        },
     )
     suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
@@ -1582,12 +1610,12 @@ def _first_hop(
     for key, pairs in live.items():
         ordinary = []
         seen: set[int] = set()
-        for oid, cid, why in pairs:
+        for oid, cid, why, own in pairs:
             entry = (
                 entries.get(cid) if cid is not None and key[1] == "cited-by" else None
             )
             if entry is None:
-                ordinary.append((oid, cid, why))
+                ordinary.append((oid, cid, why, own))
                 continue
             if cid in seen:
                 continue
@@ -1621,7 +1649,7 @@ def _first_hop(
 def _quest_log_entries(
     store: Store,
     ref_id: int,
-    pairs: dict[tuple[str, str], list[tuple[int, int | None, Any]]],
+    pairs: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
     refs: dict[int, Any],
 ) -> dict[int, tuple[int, str, str]]:
     """A structure's incoming log entries, keyed by the linked chunk.
@@ -1634,7 +1662,7 @@ def _quest_log_entries(
         cid
         for (_group, label), neighbours in pairs.items()
         if label == "cited-by"
-        for oid, cid, _why in neighbours
+        for oid, cid, _why, _own in neighbours
         if cid is not None
         and str(getattr(refs[oid], "kind", "")) == "quest"
         and not _scope_masks(refs[oid])
@@ -1766,15 +1794,16 @@ def _bucket_edges(
     store: Store,
     ref_id: int,
     edges: list[tuple[int, int, Any, int | None, int | None, Any]],
-) -> dict[tuple[str, str], list[tuple[int, int | None, Any]]]:
+) -> dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]]:
     """Group ``ref_id``'s ``(src, dst, relation, src_chunk, dst_chunk,
     reason)`` edges by ``(ring group, label as seen from here)``, listing
-    the other endpoint of each as ``(ref, far chunk id, meta.reason)`` —
-    the chunk the edge grounds at on the neighbour's side, and the why the
-    row appends (``None`` when the edge carries none). Dead ends included;
-    the caller filters by liveness and collapses."""
+    the other endpoint of each as ``(ref, far chunk id, meta.reason, own
+    chunk id)`` — the chunk the edge grounds at on the neighbour's side,
+    the why the row appends (``None`` when the edge carries none), and the
+    chunk it pins on the *focus's* side for the ``via`` tail (gr627629).
+    Dead ends included; the caller filters by liveness and collapses."""
     inverses, symmetric = _relation_reading(store)
-    by_label: dict[tuple[str, str], list[tuple[int, int | None, Any]]] = {}
+    by_label: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]] = {}
     for src, dst, rel, sck, dck, reason in edges:
         group = ring_group(str(rel)) if rel is not None else None
         if group is None:
@@ -1784,11 +1813,17 @@ def _bucket_edges(
         if other == ref_id:
             continue
         other_chunk = dck if outbound else sck
+        own_chunk = sck if outbound else dck
         label = _as_seen_from_here(
             str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
         )
         by_label.setdefault((group, label), []).append(
-            (other, int(other_chunk) if other_chunk is not None else None, reason)
+            (
+                other,
+                int(other_chunk) if other_chunk is not None else None,
+                reason,
+                int(own_chunk) if own_chunk is not None else None,
+            )
         )
     return by_label
 
@@ -1823,7 +1858,10 @@ def first_hop_shape(
             edges[end].append((int(src), int(dst), rel, sck, dck, None))
     buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
     others = {
-        o for b in buckets.values() for pairs in b.values() for o, _c, _why in pairs
+        o
+        for b in buckets.values()
+        for pairs in b.values()
+        for o, _c, _why, _own in pairs
     }
     refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r, _s, _k in rows})
     shape: dict[int, tuple[int, int, int]] = {}
@@ -1845,15 +1883,15 @@ def first_hop_shape(
             if src == r and rel == "supersedes" and not _live(refs, dst)
         }
         live_groups = [
-            {o for o, _c, _why in pairs if _live(refs, o)}
+            {o for o, _c, _why, _own in pairs if _live(refs, o)}
             for (_g, label), pairs in by_label.items()
             if not (r in hubs and label == _HUB_MEMBER_LABEL)
         ]
         live_all = [
-            {o for o, _c, _why in pairs if _live(refs, o)}
+            {o for o, _c, _why, _own in pairs if _live(refs, o)}
             for pairs in by_label.values()
         ]
-        every = {o for pairs in by_label.values() for o, _c, _why in pairs}
+        every = {o for pairs in by_label.values() for o, _c, _why, _own in pairs}
         live = set().union(*live_all) if live_all else set()
         shape[r] = (
             len(live),
@@ -1899,24 +1937,41 @@ def _expand_first_hop(
             [n.ref_id for n in ns if n.ref_id in refs]
         ).items()
     }
-    lines = [f"— linked (1 hop) · {label} ({len(ns)}) —"]
+    via_kind = _focus_kind(store, ref_id)
+    lines = [f"— linked (1 hop) · {label} ({_target_edge_tally(ns)}) —"]
     lines.extend(
-        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
         for n in ns[:_FIRST_HOP_EXPAND_CAP]
     )
     if len(ns) > _FIRST_HOP_EXPAND_CAP:
-        lines.append(f"    … +{len(ns) - _FIRST_HOP_EXPAND_CAP} more")
+        lines.append(
+            f"    … +{len(ns) - _FIRST_HOP_EXPAND_CAP} more · "
+            f"showing {_FIRST_HOP_EXPAND_CAP} of {len(ns)}"
+        )
     return "\n".join(lines)
 
 
-def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
-    """A collapsed row's tail (gr524665): ``  ×N`` when parallel edges folded
-    into it, plus the far-end chunk handles those edges ground at —
-    ``pc<id> ~<ord>``, the doc eye's form — first few, then ``· +N more``.
-    A kind with no chunk code (memory chunks are not agent-addressable)
-    drops the handle but keeps the count."""
+def _target_edge_tally(ns: list[_RingNeighbour]) -> str:
+    """``T`` targets alone, or ``T targets · E edges`` when parallel edges
+    fold into rows — a chunk-pinned fan-in must not read as N distinct
+    targets (gr627629)."""
+    targets = len(ns)
+    edges = sum(n.edges for n in ns)
+    if edges == targets:
+        return str(targets)
+    t = f"{targets} target" + ("s" if targets != 1 else "")
+    e = f"{edges} edge" + ("s" if edges != 1 else "")
+    return f"{t} · {e}"
+
+
+def _chunk_handles(chunks: tuple[tuple[int, int | None], ...], kind: str | None) -> str:
+    """``pc<id> ~<ord>`` handles joined `` · `` — first few, then
+    ``· +N more``. A kind with no chunk code (memory chunks are not
+    agent-addressable) drops the handle."""
+    if kind is None:
+        return ""
     handles: list[str] = []
-    for cid, ord_ in n.passages:
+    for cid, ord_ in chunks:
         h = handle_registry.try_format(kind, cid, chunk=True)
         if h is not None:
             handles.append(f"{h} ~{ord_}" if ord_ is not None else h)
@@ -1924,12 +1979,34 @@ def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
     listed = " · ".join(shown)
     if len(handles) > len(shown):
         listed += f" · +{len(handles) - len(shown)} more"
+    return listed
+
+
+def _passage_suffix(
+    n: _RingNeighbour, kind: str, *, via_kind: str | None = None
+) -> str:
+    """A collapsed row's tail (gr524665): ``  ×N`` when parallel edges folded
+    into it, plus the far-end chunk handles those edges ground at —
+    ``pc<id> ~<ord>``, the doc eye's form — first few, then ``· +N more``,
+    then ``via pc<id> ~<ord>`` naming the *focus's own* chunks the edges
+    pin on this side (gr627629). A kind with no chunk code drops the
+    handle but keeps the count."""
+    listed = _chunk_handles(n.passages, kind)
+    via = _chunk_handles(n.via, via_kind)
+    via = f" via {via}" if via else ""
     if n.edges > 1:
-        return f"  ×{n.edges} ({listed})" if listed else f"  ×{n.edges}"
-    return f"  ({listed})" if listed else ""
+        return f"  ×{n.edges} ({listed}){via}" if listed else f"  ×{n.edges}{via}"
+    return f"  ({listed}){via}" if listed else via
 
 
-def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -> str:
+def _ring_row(
+    ref: Any,
+    n: _RingNeighbour,
+    *,
+    chips: str = "",
+    size: str = "",
+    via_kind: str | None = None,
+) -> str:
     """One ring row: the neighbour label plus its collapsed-edge tail."""
     from precis.utils.surface_scope import masked_ref_placeholder
 
@@ -1943,7 +2020,7 @@ def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -
         handle = handle_registry.format_handle("quest", n.passages[0][0], chunk=True)
         return f"{handle} ~{ord_} — {preview}"
     row = _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
-        n, str(getattr(ref, "kind", "") or "")
+        n, str(getattr(ref, "kind", "") or ""), via_kind=via_kind
     )
     # gr568170: a folded edge whose target moved since it was asserted.
     if n.suspect:
@@ -1961,6 +2038,7 @@ def _render_first_hop(
     hub_members: dict[int, str] | None = None,
     more_hint: Any = None,
     hub_handle: str | None = None,
+    via_kind: str | None = None,
 ) -> str:
     chips = chips or {}
     sizes = sizes or {}
@@ -2009,11 +2087,11 @@ def _render_first_hop(
                         f"extent='fisheye+1hop', q='{label}')"
                     )
             continue
-        if len(live_ids) == 1:
+        if len(live_ids) == 1 and live_ids[0].edges == 1:
             n = live_ids[0]
             lines.append(
                 f"  {label}: "
-                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
             )
             continue
         # gr662069 / me626853: the scope's judged-out candidates are a
@@ -2021,14 +2099,23 @@ def _render_first_hop(
         # per-group row budget the useful rows get.
         cap = _CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP
         counts = _verdict_counts(live_ids) if group == "Considered" else ""
-        lines.append(f"  {label} ({len(live_ids)}{': ' + counts if counts else ''}):")
-        for n in live_ids[:cap]:
+        # gr627629: targets and edges are different counts — a chunk-
+        # pinned fan-in folds into one target row but is still N edges,
+        # and the header must say so or "1" reads as a single edge.
+        lines.append(
+            f"  {label} ({_target_edge_tally(live_ids)}{': ' + counts if counts else ''}):"
+        )
+        shown = min(cap, len(live_ids))
+        for n in live_ids[:shown]:
             lines.append(
-                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
             )
         if len(live_ids) > cap:
             more = more_hint(label, live_ids) if more_hint is not None else ""
-            lines.append(f"    … +{len(live_ids) - cap} more{more}")
+            lines.append(
+                f"    … +{len(live_ids) - cap} more{more} · "
+                f"showing {shown} of {len(live_ids)}"
+            )
     if hub_handle is not None and heading is not None:
         lines.append(
             f"search within: search(kind='memory', q='<terms>', "

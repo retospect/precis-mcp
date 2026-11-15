@@ -328,6 +328,8 @@ class OrcidHandler(Handler):
         untags: list[str] | None = None,
         rel: str | None = None,
         of_kind: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Bare get / q-only → search or listing, mirroring paper/oracle.
@@ -363,6 +365,8 @@ class OrcidHandler(Handler):
                 sense="orcid",
                 rel=rel,
                 of_kind=of_kind,
+                limit=limit,
+                cursor=cursor,
             )
 
         force_refresh = bool(refresh) or mode == "refresh"

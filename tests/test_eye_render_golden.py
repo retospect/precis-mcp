@@ -69,7 +69,7 @@ GOLDEN_GROUP_CAP = (
     "    <N5> — Related note 5\n"
     "    <N6> — Related note 6\n"
     "    <N7> — Related note 7\n"
-    "    … +2 more · get(kind='memory', id='<A>', extent='fisheye+1hop', q='related-to')"
+    "    … +2 more · get(kind='memory', id='<A>', extent='fisheye+1hop', q='related-to') · showing 8 of 10"
 )
 
 GOLDEN_OVERFLOW_LIVE_ONLY = (
@@ -263,7 +263,7 @@ GOLDEN_ROADMAP_ORDER = (
     "    <P3> — Paper 3\n"
     "    <P4> — Paper 4\n"
     "    <P5> — Paper 5\n"
-    "    … +3 more · get(kind='quest', id='<Q>', extent='fisheye+1hop', q='served-by')"
+    "    … +3 more · get(kind='quest', id='<Q>', extent='fisheye+1hop', q='served-by') · showing 8 of 11"
 )
 
 GOLDEN_QUEST_GIST = (

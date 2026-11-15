@@ -108,6 +108,71 @@ def test_claim_ring_collapses_source_and_lists_passage_handles(hub: Hub) -> None
     assert f"({other_handle} ~{other_block.ord})" in out
 
 
+def test_ring_row_names_focus_chunk(hub: Hub) -> None:
+    """gr627629 slice 2: a chunk-grounded edge keeps a route back to the
+    *focus's own* passage — the hub's row on the paper's eye names
+    ``via pc<id> ~<ord>``; a whole-paper edge renders no via."""
+    store = hub.live_store
+    paper = store.insert_ref(kind="paper", slug="via-paper", title="Evidence paper")
+    hub_ref = store.insert_ref(kind="finding", slug=None, title="claim hub")
+    block = store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="the carrying passage")]
+    )[0]
+    store.add_link(
+        src_ref_id=paper.id,
+        dst_ref_id=hub_ref.id,
+        relation="corroborates",
+        src_pos=block.ord,
+    )
+    plain = store.insert_ref(kind="memory", slug=None, title="plain note")
+    store.add_link(src_ref_id=paper.id, dst_ref_id=plain.id, relation="related-to")
+
+    out = render_eye(
+        store, handle_registry.format_handle("paper", paper.id), "fisheye+1hop"
+    )
+
+    pc = handle_registry.format_handle("paper", block.id, chunk=True)
+    claim_row = next(l for l in out.splitlines() if "claim hub" in l)
+    assert f"via {pc} ~0" in claim_row
+    plain_row = next(l for l in out.splitlines() if "plain note" in l)
+    assert "via" not in plain_row
+
+
+def test_ring_group_header_counts_targets_and_edges(hub: Hub) -> None:
+    """gr627629 slice 3: a target reached by two chunk-grounded edges of
+    the focus renders its group header as ``(1 target · 2 edges)`` — a
+    folded fan-in must not read as a single edge; equal counts stay
+    ``(N)``."""
+    store = hub.live_store
+    paper = store.insert_ref(kind="paper", slug="folded-src", title="Folded evidence")
+    hub_ref = store.insert_ref(kind="finding", slug=None, title="claim hub")
+    blocks = store.chunks.insert_chunks(
+        paper.id,
+        [
+            ChunkInsert(ord=0, text="passage one"),
+            ChunkInsert(ord=1, text="passage two"),
+        ],
+    )
+    for block in blocks:
+        store.add_link(
+            src_ref_id=paper.id,
+            dst_ref_id=hub_ref.id,
+            relation="corroborates",
+            src_pos=block.ord,
+        )
+    one = store.insert_ref(kind="memory", slug=None, title="note one")
+    two = store.insert_ref(kind="memory", slug=None, title="note two")
+    for target in (one, two):
+        store.add_link(src_ref_id=paper.id, dst_ref_id=target.id, relation="related-to")
+
+    out = render_eye(
+        store, handle_registry.format_handle("paper", paper.id), "fisheye+1hop"
+    )
+
+    assert "corroborates (1 target · 2 edges):" in out
+    assert "related-to (2):" in out
+
+
 def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Focus")
@@ -334,8 +399,10 @@ def test_eye_ring_collapses_parallel_chunk_edges_into_one_source_row(
         store, handle_registry.format_handle("memory", note.id), "fisheye+1hop"
     )
 
-    # the group count and the rows are unique sources, not raw edges
-    assert "  <-corroborates (3):" in out
+    # the group header counts targets and edges apart — 3 unique sources
+    # under 7 folded edges (gr627629); the rows are unique sources, not
+    # raw edges
+    assert "  <-corroborates (3 targets · 7 edges):" in out
     assert out.count("Magnetism in hybrid carbon nanostructures") == 1
     row = next(ln for ln in out.splitlines() if "Magnetism" in ln)
     assert "×5" in row

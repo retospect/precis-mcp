@@ -268,6 +268,8 @@ class MachineHandler(Handler):
         q: str | None = None,
         rel: str | None = None,
         of_kind: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -313,6 +315,8 @@ class MachineHandler(Handler):
                 sense="machine",
                 rel=rel,
                 of_kind=of_kind,
+                limit=limit,
+                cursor=cursor,
             )
         ref = self._resolve_ref(id)
         hb = self._heartbeat_map().get((ref.meta or {}).get("host", ""))

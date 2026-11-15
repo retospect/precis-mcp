@@ -235,6 +235,8 @@ class PatentHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         # List views — bare get() and the slash-prefixed handles.
@@ -281,7 +283,7 @@ class PatentHandler(Handler):
             return self._render_chunks(ref, chunk)
 
         if view is not None:
-            return self._render_view(ref, view)
+            return self._render_view(ref, view, limit=limit, cursor=cursor)
 
         return self._render_overview(ref)
 
@@ -669,7 +671,9 @@ class PatentHandler(Handler):
         lines.append(f"_Source: EPO OPS - {_espacenet_url(slug, family_id=family)}_")
         return Response(body="\n".join(lines))
 
-    def _render_view(self, ref: Ref, view: str) -> Response:
+    def _render_view(
+        self, ref: Ref, view: str, *, limit: Any = None, cursor: str | None = None
+    ) -> Response:
         meta = ref.meta or {}
         slug = ref.slug or "?"
         handle = handle_registry.format_handle("patent", ref.id)
@@ -718,9 +722,16 @@ class PatentHandler(Handler):
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
+            # args={'limit'|'cursor'} page it (gr627629).
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="patent")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="patent",
+                limit=limit,
+                cursor=cursor,
+            )
 
         raise Unsupported(
             f"unknown view {view!r} for kind='patent'",

@@ -636,6 +636,8 @@ class DraftHandler(Handler):
                 "page_size",
                 "rel",
                 "of_kind",
+                # view='links' exact continuation (gr627629)
+                "cursor",
                 # view='citations' diff mode (gr524227)
                 "against",
                 # spreadsheet-tables 1b — view='toon'/'table' filters
@@ -1117,6 +1119,8 @@ class DraftHandler(Handler):
             # chunk-scoped edges (if any land later) aren't rendered here.
             # args={'rel':…,'of_kind':…} narrow a hot ref's graph — the
             # unfiltered view runs to hundreds of KB (gr514335).
+            # args={'limit':…,'cursor':…} page it; the footer's ``next:``
+            # line carries the exact continuation (gr627629).
             from precis.handlers._links_render import render_links_view
             from precis.utils.relations import validate_relation
 
@@ -1131,6 +1135,8 @@ class DraftHandler(Handler):
                 sense="draft",
                 rel=rel,
                 of_kind=str(of_kind) if of_kind is not None else None,
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
             )
         if view == "integration":
             # Paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md

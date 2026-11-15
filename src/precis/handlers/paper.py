@@ -770,6 +770,13 @@ class PaperHandler(Handler):
                 "match",
                 "table",
                 "ord",
+                # ``view='links'`` (gr627629): args={'cursor': '<bucket>:
+                # <link_id>'} resumes the paged table where the footer's
+                # ``next:`` line left off; ``rel``/``of_kind`` filter the
+                # edge set like draft's links view.
+                "cursor",
+                "rel",
+                "of_kind",
                 # ``view='comments'`` note selectors (gr521094):
                 # ``args={'comment': K}`` one note, ``args={'comments':
                 # K}`` the newest K, ``args={'comments': 'A-B'}`` a
@@ -10590,9 +10597,26 @@ class PaperHandler(Handler):
             # some refs, checked in prod) were invisible to an agent
             # reading it. Shares the render with every numeric-ref kind
             # (``handlers/_links_render.py``) rather than forking it.
+            # args={'rel'|'of_kind'} narrow the graph; args={'limit'|
+            # 'cursor'} page it — the footer's ``next:`` line carries the
+            # exact continuation (gr627629).
             from precis.handlers._links_render import render_links_view
+            from precis.utils.relations import validate_relation
 
-            return render_links_view(self.store, ref, sense=self.spec.kind)
+            a = args or {}
+            rel = a.get("rel")
+            if rel is not None:
+                rel = validate_relation(str(rel), store=self.store)
+            of_kind = a.get("of_kind")
+            return render_links_view(
+                self.store,
+                ref,
+                sense=self.spec.kind,
+                rel=rel,
+                of_kind=str(of_kind) if of_kind is not None else None,
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
 
         if view == "dependants":
             # Mutation review (gr626866): who relies on this paper —

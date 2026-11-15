@@ -1065,6 +1065,9 @@ class StructureHandler(Handler):
                 # view='md': args={'run': N, 'trajectory': true} dumps the
                 # stored extXYZ frames (gr606465)
                 "trajectory",
+                # view='links' paging (gr627629)
+                "limit",
+                "cursor",
             }
         ),
     }
@@ -3146,7 +3149,13 @@ class StructureHandler(Handler):
             # every Handler-direct kind alongside the paper fix.
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="structure")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="structure",
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
         if view in _EXPORT_VIEWS:
             return self._render_export(view, scene, str(ref.slug or id), meta=ref.meta)
         if view in _NAV_VIEWS:

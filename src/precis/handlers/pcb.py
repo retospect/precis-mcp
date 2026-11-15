@@ -1370,6 +1370,9 @@ class PcbHandler(Handler):
                 "net_class",
                 "min_length",
                 "offset",
+                # view='links' paging (gr627629)
+                "limit",
+                "cursor",
             }
         ),
     }
@@ -5489,7 +5492,13 @@ class PcbHandler(Handler):
                     next="re-resolve the design: get(kind='pcb', id='slug', "
                     "view='links')",
                 )
-            return render_links_view(self.store, ref, sense="pcb")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="pcb",
+                limit=(args or {}).get("limit"),
+                cursor=(args or {}).get("cursor"),
+            )
         if view == "frames":
             return self._render_frames(ref_id, args)
         graph = pcb_session.sorted_graph(self._effective_graph(ref_id))

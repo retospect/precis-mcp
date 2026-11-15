@@ -165,7 +165,14 @@ the target's sha) — re-read the target, then re-link to clear
 
 Parallel edges to the **same** neighbour collapse into one row:
 `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`
-counts edges; the handles are passages to `get`.
+counts edges; the handles are the neighbour's passages to `get`. A
+chunk-grounded edge also names the *focus's own* chunk it pins on this
+side — `via pc118 ~12` — so a rolled-up relationship keeps a route back
+to the passage that carries it; a ref-level edge has no `via`. Group
+headers count targets and edges apart when they differ —
+`<-corroborates (1 target · 2 edges):` — and a capped block's
+`… +N more` line states `showing S of T` so a partial ring never reads
+as complete.
 
 A row's why is composed: a link's `reason` appends ` — <reason>` (also in
 the Links table and `view='links'`); a `considered` edge appends its
@@ -189,7 +196,9 @@ view='considerations')` — the ledger. `precis-link-reason-help`.
 | **Considered** (listed last) | `considered` (an inbound edge reads `<-considered`) | `get(kind='memory', id='me42', extent='fisheye+1hop')` → `Considered:` · `considered: pa5 — <title> — not useful (abstract, 2026-11-14): lithium-only; question is sodium`; on `pa5` the same edge reads `<-considered: me42 — … — not useful (abstract, 2026-11-14): …` |
 
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
-structural and not in the ring; `view='links'` lists everything.
+structural and not in the ring; `view='links'` lists everything — a page
+of rows, then `next:` with the exact `args={'cursor': …}` continuation
+until `complete`.
 
 ## Narrowing the rings — kinds, space, tags
 

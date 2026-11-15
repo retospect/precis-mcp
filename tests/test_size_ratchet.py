@@ -34,7 +34,7 @@ _SIZED_SITES: frozenset[str] = frozenset(
         "handlers/_numeric_ref.py::_render_hits_table",
         "handlers/_numeric_ref.py::_search_body_chunks",
         "handlers/_numeric_ref.py::_get_batch",
-        "handlers/_links_render.py::render_links_section",
+        "handlers/_links_render.py::_link_row",
         "handlers/memory.py::_render_hits_table",
         "handlers/memory.py::_search_inner",
         "handlers/memory.py::_index_listing",
