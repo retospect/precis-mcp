@@ -2,8 +2,9 @@
 
 The heartbeat census (:func:`precis.workers.heartbeat._admission_census`)
 folds ``ps``/``docker`` output into over-threshold load, matches it to
-live ``resource_slot_holds`` / running-job handles / init-parented
-daemons, and publishes ``meta.unadmitted`` (+``beats``), ``admitted_
+live ``resource_slot_holds`` local holder pids / running-job handles and
+container names / init-managed services, and publishes
+``meta.unadmitted`` (+``beats``), ``admitted_
 mem_mb``/``used_mem_mb`` and ``meta.footprint_drift`` on
 ``host_heartbeat``. Nursery's ``unadmitted-load`` fires only once an
 entry has persisted two beats; ``footprint-drift`` covers host drift and
@@ -34,12 +35,24 @@ def _row(pid, pgid, ppid, *, rss_mb=0.0, cpu=0.0, age_s=120.0, comm="proc"):
     }
 
 
-def _stub_census_io(monkeypatch, *, rows=None, containers=None):
-    """Fake the probe halves; DB reads stay real."""
+def _stub_census_io(
+    monkeypatch, *, rows=None, containers=None, container_pids=None, services=()
+):
+    """Fake the probe halves; DB reads stay real.
+
+    ``services`` is the set of pids the init system vouches for — the
+    ``_init_service`` verdict the declared-service test reads (anything
+    else resolves False: definitively not a managed service).
+    """
+    declared = set(services)
     monkeypatch.setattr(hb, "_collect_process_rows", lambda: rows or [])
     monkeypatch.setattr(hb, "_collect_containers", lambda: containers or [])
-    monkeypatch.setattr(hb, "_collect_container_pids", lambda: set())
+    monkeypatch.setattr(
+        hb, "_collect_container_pids", lambda: dict(container_pids or {})
+    )
     monkeypatch.setattr(hb, "_own_group_chain", lambda r: set())
+    monkeypatch.setattr(hb, "_launchd_service_pids", lambda: set())
+    monkeypatch.setattr(hb, "_init_service", lambda pid, launchd=None: pid in declared)
     monkeypatch.setattr(capability_probe, "_total_mem_mb", lambda: 8192)
     monkeypatch.setattr(capability_probe, "mem_used_pct", lambda: 50.0)
 
@@ -55,11 +68,19 @@ def _mint_running_job(store, host, *, handle=None, container=None):
     return int(ref.id)
 
 
-def _mint_hold(store, host, units, holder):
+def _mint_hold(store, host, units, holder, *, holder_identity=None):
     store.sync_host_resource_slots(host, {"mem_mb": 65536})
     with store.pool.connection() as conn:
         with conn.transaction():
-            insert_slot_hold(conn, host, "mem_mb", units, holder, 3600.0)
+            insert_slot_hold(
+                conn,
+                host,
+                "mem_mb",
+                units,
+                holder,
+                3600.0,
+                holder_identity=holder_identity,
+            )
 
 
 # ── parsers ──────────────────────────────────────────────────────────
@@ -98,16 +119,18 @@ def test_process_groups_thresholds():
         _row(300, 300, 7, rss_mb=10.0, cpu=60.0, age_s=120.0),
         # cpu-heavy but young → out
         _row(400, 400, 7, rss_mb=10.0, cpu=80.0, age_s=10.0),
-        # leaderless group → out
+        # leaderless group → in (its member roots feed the service test)
         _row(501, 500, 1, rss_mb=900.0),
         # pgid 1 (kernel/launchd domain) → out
         _row(1, 1, 0, rss_mb=9000.0),
     ]
     groups = {g["pgid"]: g for g in hb._process_groups(rows)}
-    assert set(groups) == {100, 300}
+    assert set(groups) == {100, 300, 500}
     assert groups[100]["rss_mb"] == 650.0
     assert groups[100]["leader_ppid"] == 7
     assert groups[300]["cpu"] == 60.0
+    assert groups[500]["leader_ppid"] == 0
+    assert groups[500]["members"] == {501: 1}
 
 
 # ── census matching ───────────────────────────────────────────────────
@@ -127,14 +150,59 @@ def test_census_flags_unmatched_group(store, monkeypatch):
     assert e["beats"] == 1 and e["rss_mb"] == 900.0
 
 
-def test_census_skips_daemon_and_own_groups(store, monkeypatch):
+def test_census_skips_managed_service_and_own_groups(store, monkeypatch):
     host = "census-h2"
     rows = [
-        _row(910, 910, 1, rss_mb=900.0),  # init-parented daemon → skip
+        _row(910, 910, 1, rss_mb=900.0),  # init-managed daemon → skip
         _row(920, 920, 7, rss_mb=900.0),  # claimant's own group → skip
     ]
-    _stub_census_io(monkeypatch, rows=rows)
+    _stub_census_io(monkeypatch, rows=rows, services={910})
     monkeypatch.setattr(hb, "_own_group_chain", lambda r: {920})
+    meta = hb._admission_census(store, host)
+    assert meta["unadmitted"] == []
+
+
+def test_census_flags_reparented_workload(store, monkeypatch):
+    """ppid == 1 alone declares nothing: an orphaned workload reparents
+    to init exactly like a daemon, so without the init system's verdict
+    it must face the admission match."""
+    host = "census-h2b"
+    _stub_census_io(
+        monkeypatch,
+        rows=[_row(905, 905, 1, rss_mb=900.0, comm="rogue")],
+        services=(),  # launchd/systemd does not vouch for pid 905
+    )
+    meta = hb._admission_census(store, host)
+    (e,) = meta["unadmitted"]
+    assert e["key"] == "pgid:905" and e["comm"] == "rogue"
+
+
+def test_census_flags_leaderless_orphan(store, monkeypatch):
+    """A group whose leader was reaped still faces the match — an
+    orphaned workload evades neither by losing its leader nor by its
+    members reparenting to init without a service verdict."""
+    host = "census-h2c"
+    rows = [
+        _row(1011, 1009, 1, rss_mb=800.0, comm="orphan"),
+        _row(1012, 1009, 1011, rss_mb=200.0, comm="orphan"),
+        # a second leaderless group whose root parent is a live pid
+        _row(1021, 1019, 777, rss_mb=900.0, comm="stray"),
+    ]
+    _stub_census_io(monkeypatch, rows=rows, services=())
+    meta = hb._admission_census(store, host)
+    assert {e["key"] for e in meta["unadmitted"]} == {"pgid:1009", "pgid:1019"}
+
+
+def test_census_skips_leaderless_service_tree(store, monkeypatch):
+    """The leaderless exception is narrow: EVERY reparented root member
+    must resolve to an init-managed service — a systemd unit whose main
+    pid died but whose service cgroup children survive."""
+    host = "census-h2d"
+    rows = [
+        _row(1011, 1009, 1, rss_mb=800.0),
+        _row(1012, 1009, 1011, rss_mb=200.0),
+    ]
+    _stub_census_io(monkeypatch, rows=rows, services={1011})
     meta = hb._admission_census(store, host)
     assert meta["unadmitted"] == []
 
@@ -159,6 +227,56 @@ def test_census_matches_running_job_handles(store, monkeypatch):
         rows=[_row(940, 940, 7, rss_mb=900.0), _row(941, 940, 940)],
     )
     assert hb._admission_census(store, host)["unadmitted"] == []
+
+
+def test_census_remote_holder_pid_stays_remote(store, monkeypatch):
+    """A remote client's hold on this host's slots names no local pid —
+    a same-numbered local pid must not hide unadmitted load. The units
+    still count in the ledger this host owes."""
+    host = "census-h4b"
+    _mint_hold(store, host, 2048, "otherhost:930")
+    _stub_census_io(
+        monkeypatch,
+        rows=[_row(930, 930, 7, rss_mb=900.0, comm="rogue")],
+    )
+    meta = hb._admission_census(store, host)
+    assert meta["admitted_mem_mb"] == 2048  # this host's ledger owes it
+    (e,) = meta["unadmitted"]
+    assert e["key"] == "pgid:930"
+
+
+def test_census_holder_host_column_decides(store, monkeypatch):
+    """The stamped ``holder_host`` outranks the free-text ``host:pid``
+    prefix both ways: a local prefix stamped remote stays remote, and a
+    non-prefixed holder stamped local admits its pid."""
+    host = "census-h4c"
+    # holder text says "local", the stamped column says remote → remote
+    _mint_hold(
+        store,
+        host,
+        512,
+        f"{host}:930",
+        holder_identity=("boot-1", "proc", "otherhost"),
+    )
+    # holder text has no host prefix, the stamped column says local → local
+    _mint_hold(
+        store,
+        host,
+        512,
+        "worker:931",
+        holder_identity=("boot-2", "proc", host),
+    )
+    _stub_census_io(
+        monkeypatch,
+        rows=[
+            _row(930, 930, 7, rss_mb=900.0, comm="rogue"),
+            _row(931, 931, 7, rss_mb=900.0, comm="admitted"),
+        ],
+    )
+    meta = hb._admission_census(store, host)
+    assert meta["admitted_mem_mb"] == 1024
+    keys = {e["key"] for e in meta["unadmitted"]}
+    assert keys == {"pgid:930"}
 
 
 def test_census_matches_job_container_and_flags_strays(store, monkeypatch):
@@ -202,6 +320,115 @@ def test_census_matches_job_container_and_flags_strays(store, monkeypatch):
     meta = hb._admission_census(store, host)
     keys = {e["key"] for e in meta["unadmitted"]}
     assert keys == {"container:stray", "container:oneshot"}
+
+
+def test_census_container_attributed_by_hold_pid(store, monkeypatch):
+    """A live hold whose holder pid lives inside the container (Linux
+    host-side pids) attributes it — an admitted container needs no
+    ``meta.container`` row."""
+    host = "census-h5b"
+    _mint_hold(store, host, 2048, f"{host}:4242")
+    _stub_census_io(
+        monkeypatch,
+        containers=[
+            {
+                "name": "admitted-box",
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            }
+        ],
+        container_pids={4242: "admitted-box"},
+    )
+    assert hb._admission_census(store, host)["unadmitted"] == []
+
+
+def test_census_container_attributed_by_job_handle(store, monkeypatch):
+    """A running job's ``compute_handle`` pid inside the container also
+    attributes it."""
+    host = "census-h5c"
+    _mint_running_job(store, host, handle={"pid": 4243})
+    _stub_census_io(
+        monkeypatch,
+        containers=[
+            {
+                "name": "job-box",
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            }
+        ],
+        container_pids={4243: "job-box"},
+    )
+    assert hb._admission_census(store, host)["unadmitted"] == []
+
+
+def test_census_container_attributed_by_job_name(store, monkeypatch):
+    """The deterministic ``--name <prefix>-<ref_id>`` a job launcher
+    stamps resolves to its running job — covers admitted containers that
+    never wrote ``meta.container`` (and every non-Linux host, where no
+    host-side pid exists)."""
+    host = "census-h5d"
+    ref_id = _mint_running_job(store, host)  # no handle, no container meta
+    _stub_census_io(
+        monkeypatch,
+        containers=[
+            {
+                "name": f"sandbox-{ref_id}",
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            },
+            {
+                "name": f"precis-job-{ref_id}",
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            },
+            {
+                "name": "stack-db-1",  # numeric suffix, not a job name
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            },
+        ],
+    )
+    meta = hb._admission_census(store, host)
+    assert {e["key"] for e in meta["unadmitted"]} == {"container:stack-db-1"}
+
+
+def test_census_container_member_group_defers(store, monkeypatch):
+    """On Linux a group containing any container member pid defers to the
+    container's own entry — the workload is judged once, by name."""
+    host = "census-h5e"
+    _stub_census_io(
+        monkeypatch,
+        rows=[_row(4242, 4242, 7, rss_mb=900.0, comm="rogue-in-box")],
+        containers=[
+            {
+                "name": "some-box",
+                "project": "",
+                "oneoff": False,
+                "rss_mb": 500.0,
+                "cpu": 10.0,
+                "comm": "img",
+            }
+        ],
+        container_pids={4242: "some-box"},
+    )
+    meta = hb._admission_census(store, host)
+    (e,) = meta["unadmitted"]
+    assert e["key"] == "container:some-box"
 
 
 def test_census_exempt_env(store, monkeypatch):

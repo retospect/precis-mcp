@@ -84,6 +84,7 @@ PROBES: dict[str, str] = {
     "memory_pressure": "macOS memory-pressure read",
     "nvidia-smi": "GPU state query or reset",
     "systemctl": "unit state query/restart; the unit is a declared daemon",
+    "launchctl": "launchd domain/service roster query (list/print)",
     "security": "macOS keychain item read",
     "exiftool": "PDF metadata read",
     "chktex": "LaTeX lint of one file",

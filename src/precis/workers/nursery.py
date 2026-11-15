@@ -89,8 +89,9 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   true positives on its first pass (gr452084); the count is still logged.
 * **unadmitted-load** (``warn``) — a fresh ``host_heartbeat`` census
   reports a process group or container over the load threshold with no
-  admitted holder (no live ``resource_slot_holds``, no running job's
-  ``compute_handle``/``meta.container``, not init-parented) for two
+  admitted holder (no live ``resource_slot_holds`` local pid, no running
+  job's ``compute_handle``/``meta.container``/container ``--name``, not
+  an init-managed service) for two
   consecutive beats (gr647996 S7b — the live admission check).
 * **footprint-drift** (``info``) — measured usage outrunning what was
   admitted: the census's per-host ``meta.footprint_drift`` rows, and
@@ -2023,8 +2024,11 @@ def _detect_unadmitted_load(store: Store) -> list[Symptom]:
     The live complement of the S7a static ratchets: the heartbeat census
     (:func:`precis.workers.heartbeat._admission_census`) matches every
     over-threshold process group / container to a live
-    ``resource_slot_holds`` row, a running job's ``compute_handle`` /
-    ``meta.container``, or an init-parented daemon, and writes what
+    ``resource_slot_holds`` row (a *local* holder pid — a remote client's
+    hold on this host's slots names no pid here), a running job's
+    ``compute_handle`` / ``meta.container`` / deterministic container
+    ``--name``, or an init-managed service (``ppid == 1`` alone doesn't
+    declare one — reparented orphans face the match too), and writes what
     matches nothing to ``host_heartbeat.meta.unadmitted`` with a
     consecutive-``beats`` counter. Fire per host on any entry persisting
     two beats (a transient compile is one beat; the gr601479-class

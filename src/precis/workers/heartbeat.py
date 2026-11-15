@@ -335,11 +335,13 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
 # The running-vs-admitted reconciliation the static ratchets (S7a) can't
 # see: once per beat, count this host's real load — every process group or
 # container above a threshold — and match each to an admitted holder: a
-# live ``resource_slot_holds`` row (``holder`` ``host:pid``), a running
-# job leased to this host (``meta.compute_handle.pgid``/``pid``,
-# ``meta.container``), or a declared standing daemon (a group whose leader
-# is parented to init — systemd unit mains and launchd daemons alike, and
-# the census process's own ancestry). What matches nothing lands in
+# live ``resource_slot_holds`` row (``holder`` ``host:pid`` with a matching
+# holder-host), a running job leased to this host
+# (``meta.compute_handle.pgid``/``pid``, ``meta.container``, or the
+# deterministic ``--name`` a job launcher stamps), or a declared standing
+# service — a group whose leader the *init system* manages (a systemd
+# ``*.service`` cgroup on Linux, the launchd domain roster on macOS), and
+# the census process's own ancestry. What matches nothing lands in
 # ``host_heartbeat.meta.unadmitted``; an entry's ``beats`` counts
 # consecutive beats seen, and nursery's ``unadmitted-load`` detector fires
 # once it persists two beats. ``admitted_mem_mb``/``used_mem_mb`` frame the
@@ -347,17 +349,27 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
 # over the admitted mem_mb by more than ``_DRIFT_MARGIN``) feeds the
 # predictor (S2).
 #
+# ``ppid == 1`` alone never declares a daemon: an orphaned workload
+# reparents to init exactly the same way, and a leaderless group (leader
+# reaped, members surviving) has no parentage to judge at all — both
+# evade a bare-parentage test, so the init system itself must vouch
+# (:func:`_declared_service_group`).
+#
 # ``docker``/``podman`` containers on a macOS gate host live inside the
 # colima VM — host ``ps`` never sees them, so containers are their own
 # census half via ``docker ps`` + ``docker stats``; on Linux a container's
-# processes DO appear in ``ps``, so its init pid is collected too and its
-# group defers to the container entry (no double flag). ``docker run``
-# one-shots and ``compose run`` one-offs are workload and must match a
-# job/hold; long-running compose *service* containers are declared
-# standing infra and skip. ``PRECIS_CENSUS_EXEMPT`` (comma-separated
-# regexes over comm/container names) names further declared residents —
-# e.g. the LLM servers deploy declares as host reserves, which carry no
-# holds by design.
+# processes DO appear in ``ps``, so its host-side pids are collected too
+# and any group containing one defers to the container entry (no double
+# flag). A container admits through ``meta.container``, through any of its
+# host-side pids matching a live hold or job handle, or through a
+# deterministic job ``--name`` resolving to a running job on this host —
+# a legitimately admitted container lacking ``meta.container`` is not
+# flagged. ``docker run`` one-shots and ``compose run`` one-offs are
+# workload and must match; long-running compose *service* containers are
+# declared standing infra and skip. ``PRECIS_CENSUS_EXEMPT``
+# (comma-separated regexes over comm/container names) names further
+# declared residents — e.g. the LLM servers deploy declares as host
+# reserves, which carry no holds by design.
 
 #: A process group counts as real load past this RSS …
 CENSUS_RSS_MB = 512.0
@@ -497,9 +509,12 @@ def _process_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     A group counts when its summed RSS exceeds :data:`CENSUS_RSS_MB`, or
     its summed CPU exceeds :data:`CENSUS_CPU_PCT` sustained past
-    :data:`CENSUS_CPU_MIN_AGE_S`. ``leader_ppid`` — the ppid of the member
-    whose pid is the pgid — is what the daemon test reads; a group with
-    no surviving leader skips (no parentage to judge).
+    :data:`CENSUS_CPU_MIN_AGE_S`. ``leader_pid``/``leader_ppid`` name the
+    surviving leader (the member whose pid is the pgid) and its parentage;
+    ``members`` maps each pid to its ppid. A group with no surviving
+    leader still returns — its member roots carry the parentage
+    :func:`_declared_service_group` judges, so an orphaned workload can't
+    evade by outliving its leader.
     """
     groups: dict[int, dict[str, Any]] = {}
     for r in rows:
@@ -508,33 +523,116 @@ def _process_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "pgid": r["pgid"],
                 "pids": set(),
+                "members": {},
                 "rss_mb": 0.0,
                 "cpu": 0.0,
                 "age_s": 0.0,
+                "leader_pid": 0,
                 "leader_ppid": 0,
                 "comm": r["comm"],
             },
         )
         g["pids"].add(r["pid"])
+        g["members"][r["pid"]] = r["ppid"]
         g["rss_mb"] += r["rss_mb"]
         g["cpu"] += r["cpu"]
         if r["pid"] == r["pgid"]:
+            g["leader_pid"] = r["pid"]
             g["leader_ppid"] = r["ppid"]
             g["age_s"] = max(g["age_s"], r["age_s"])
             g["comm"] = r["comm"]
-    # A group whose leader exited keeps members, but without the leader's
-    # ppid the daemon test can't run — conservatively skip (documented
-    # gap: reparented orphans evade until their holds expire).
     return [
         g
         for g in groups.values()
         if g["pgid"] > 1
-        and g["leader_ppid"]
         and (
             g["rss_mb"] > CENSUS_RSS_MB
             or (g["cpu"] > CENSUS_CPU_PCT and g["age_s"] > CENSUS_CPU_MIN_AGE_S)
         )
     ]
+
+
+def _launchd_service_pids() -> set[int] | None:
+    """Pids of services the caller's launchd domain manages (Darwin).
+
+    ``launchctl list`` is the unprivileged roster: a launchd-spawned
+    daemon's main pid appears; a workload merely *reparented* to launchd
+    never does (it is not a service). ``None`` when the query itself
+    fails — the caller must treat every init-parented pid as
+    indeterminate rather than flagging all of them at once.
+    """
+    try:
+        res = subprocess.run(
+            ["launchctl", "list"],
+            timeout=5,
+            **_PROBE_KW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    pids: set[int] = set()
+    for line in res.stdout.splitlines():
+        fields = line.split(None, 1)
+        if not fields:
+            continue
+        try:
+            pids.add(int(fields[0]))
+        except ValueError:
+            continue  # the header row and unloaded (``-``) entries
+    return pids
+
+
+def _init_service(pid: int, launchd: set[int] | None) -> bool | None:
+    """``pid`` is itself managed by the host init system — a declared
+    service, not a workload reparented to init.
+
+    Linux reads ``/proc/<pid>/cgroup``: a spawned service lives in a
+    ``*.service`` cgroup while an orphaned workload keeps its session
+    cgroup, so the two distinguish even though both read ``ppid == 1``.
+    macOS checks the launchd domain roster snapshot (``launchd`` from
+    :func:`_launchd_service_pids`, the caller's ``gui/<uid>`` domain —
+    system daemons other domains run are outside it and fall back to
+    ``PRECIS_CENSUS_EXEMPT``). ``None`` = indeterminate (probe failed or
+    unknown init); callers treat it as declared — a broken probe must
+    not flag every standing daemon at once.
+    """
+    system = platform.system()
+    if system == "Linux":
+        try:
+            cgroup = Path(f"/proc/{pid}/cgroup").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return None
+        return ".service" in cgroup
+    if system == "Darwin":
+        return None if launchd is None else pid in launchd
+    return None
+
+
+def _declared_service_group(g: dict[str, Any], launchd: set[int] | None) -> bool:
+    """Init-managed standing service group, not a reparented workload.
+
+    ``ppid == 1`` is necessary but never sufficient — an orphaned
+    workload reparents to init identically. The init system must vouch
+    for the pid (:func:`_init_service`). A group whose leader survives
+    is declared when the leader is init-parented AND resolves to a
+    service. A leaderless group (leader reaped, members alive) is
+    declared only when every root member — a member whose parent is
+    outside the group — is reparented to init AND resolves to a service;
+    anything else is an orphaned workload and faces the admission match.
+    An indeterminate verdict keeps the old pass rather than flagging
+    every daemon on a probe outage.
+    """
+    if g["leader_ppid"]:
+        if g["leader_ppid"] != 1:
+            return False
+        return _init_service(int(g["leader_pid"]), launchd) is not False
+    roots = [(pid, ppid) for pid, ppid in g["members"].items() if ppid not in g["pids"]]
+    return bool(roots) and all(
+        ppid == 1 and _init_service(pid, launchd) is not False for pid, ppid in roots
+    )
 
 
 _CONTAINER_PS_FMT = (
@@ -610,44 +708,101 @@ def _collect_containers() -> list[dict[str, Any]]:
     return containers
 
 
-def _collect_container_pids() -> set[int]:
-    """Host pids of running containers' init processes (Linux only).
+def _collect_container_pids() -> dict[int, str]:
+    """Host pid → container name for every running container (Linux only).
 
-    A container's processes appear in host ``ps``; marking the init pid's
-    process group as container-owned defers it to the container entry so
-    the same workload isn't flagged twice (and a matched ``meta.container``
-    exempts its tree).
+    A container's processes appear in host ``ps`` — the init pid via
+    ``inspect``, every member via ``top`` (a ``docker exec`` session gets
+    its own group). Groups holding any of these pids defer to the
+    container's own census entry (no double flag), and a live hold or
+    job handle stamped by one of them attributes the container to an
+    admission — the pid arm for admitted containers that never wrote
+    ``meta.container``.
     """
-    if platform.system() != "Linux" or not shutil.which("docker"):
-        return set()
+    if platform.system() != "Linux":
+        return {}
     try:
-        ids_res = subprocess.run(["docker", "ps", "-q"], timeout=5, **_PROBE_KW)
+        if shutil.which("docker"):
+            bin_ = "docker"
+            ids_res = subprocess.run(["docker", "ps", "-q"], timeout=5, **_PROBE_KW)
+        elif shutil.which("podman"):
+            bin_ = "podman"
+            ids_res = subprocess.run(["podman", "ps", "-q"], timeout=5, **_PROBE_KW)
+        else:
+            return {}
     except (OSError, subprocess.SubprocessError):
-        return set()
+        return {}
     if ids_res.returncode != 0:
-        return set()
+        return {}
     ids = [ln.strip() for ln in ids_res.stdout.splitlines() if ln.strip()]
     if not ids:
-        return set()
+        return {}
+    fmt = "{{.State.Pid}}\t{{.Name}}"
     try:
-        res = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Pid}}", *ids],
-            timeout=8,
-            **_PROBE_KW,
+        res = (
+            subprocess.run(
+                ["docker", "inspect", "--format", fmt, *ids],
+                timeout=8,
+                **_PROBE_KW,
+            )
+            if bin_ == "docker"
+            else subprocess.run(
+                ["podman", "inspect", "--format", fmt, *ids],
+                timeout=8,
+                **_PROBE_KW,
+            )
         )
     except (OSError, subprocess.SubprocessError):
-        return set()
+        return {}
     if res.returncode != 0:
-        return set()
-    pids: set[int] = set()
-    for line in res.stdout.splitlines():
+        return {}
+    out: dict[int, str] = {}
+    names: dict[str, str] = {}
+    for cid, line in zip(ids, res.stdout.splitlines(), strict=False):
+        pid_s, _, name = line.partition("\t")
+        name = name.strip().lstrip("/")
+        if name:
+            names[cid] = name
         try:
-            pid = int(line.strip())
+            pid = int(pid_s.strip())
         except ValueError:
             continue
-        if pid > 1:
-            pids.add(pid)
-    return pids
+        if pid > 1 and name:
+            out[pid] = name
+    for cid, name in names.items():
+        try:
+            top = (
+                subprocess.run(
+                    ["docker", "top", cid, "-eo", "pid="], timeout=5, **_PROBE_KW
+                )
+                if bin_ == "docker"
+                else subprocess.run(
+                    ["podman", "top", cid, "-eo", "pid="], timeout=5, **_PROBE_KW
+                )
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if top.returncode != 0:
+            continue
+        for ln in top.stdout.splitlines():
+            try:
+                pid = int(ln.strip())
+            except ValueError:
+                continue
+            if pid > 1:
+                out.setdefault(pid, name)
+    return out
+
+
+#: Deterministic ``--name`` prefixes job launchers stamp on containers —
+#: ``sandbox-<job_id>`` (claude_docker), ``precis-job-<ref_id>``
+#: (struct_relax), ``precis-route-<ref_id>``/``precis-fold-<ref_id>``
+#: (chem/bio compute). A matching ``STATUS:running`` job leased to this
+#: host attributes the container even when ``meta.container`` was never
+#: written.
+_JOB_CONTAINER_RE = re.compile(
+    r"(?:sandbox|precis-job|precis-route|precis-fold)-(\d+)\Z"
+)
 
 
 def _own_group_chain(rows: list[dict[str, Any]]) -> set[int]:
@@ -672,14 +827,19 @@ def _own_group_chain(rows: list[dict[str, Any]]) -> set[int]:
 def _live_admissions(store: Any, host: str) -> dict[str, Any]:
     """Live holds covering this host + this host's running jobs.
 
-    Holds match by pid: the ``host:<pid>`` holder suffix names a process
-    on this host (also ``holder``-prefix matches ``host='api'`` rows,
-    whose holder process still lives here). Jobs match by
+    Holds admit a *local* pid only when the holder is this host's own —
+    the stamped ``holder_host`` column when present, else the
+    ``host:<pid>`` holder prefix. A row selected via ``host = this
+    host`` whose holder names another host is a REMOTE client holding
+    this host's slots (``local_serving._acquire_remote`` reserves
+    against the serving host's row): its pid lives on the client, so
+    attributing it here would let a same-numbered local pid hide
+    unadmitted load. A remote hold's ``mem_mb`` units still count in
+    ``admitted_mem_mb`` — this host's ledger owes them — but never in
+    ``holder_mem``, the drift arm's local pid→holder map. Jobs match by
     ``meta.lease_host`` — ``meta.compute_handle`` ``pid``/``pgid``,
-    ``meta.container`` and the launcher ``meta.launcher_pid``. Also
-    returns ``admitted_mem_mb`` (the live ``mem_mb`` units the ledger
-    says this host owes) and per-holder admitted memory for the drift
-    compare.
+    ``meta.container``, ``ref_id`` (deterministic container ``--name``
+    resolution) and the launcher ``meta.launcher_pid``.
     """
     hold_pids: set[int] = set()
     holder_mem: dict[str, int] = {}
@@ -687,15 +847,19 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
     job_pgids: set[int] = set()
     job_pids: set[int] = set()
     job_containers: set[str] = set()
+    job_ref_ids: set[int] = set()
     with store.pool.connection() as conn:
         hold_rows = conn.execute(
-            "SELECT holder, resource, units FROM resource_slot_holds "
+            "SELECT holder, resource, units, host, holder_host "
+            "  FROM resource_slot_holds "
             "WHERE expires_at > now() "
-            "  AND (host = %(host)s OR holder LIKE %(prefix)s)",
+            "  AND (host = %(host)s OR holder LIKE %(prefix)s "
+            "       OR holder_host = %(host)s)",
             {"host": host, "prefix": f"{host}:%"},
         ).fetchall()
         job_rows = conn.execute(
-            "SELECT r.meta->'compute_handle' AS handle, "
+            "SELECT r.ref_id, "
+            "       r.meta->'compute_handle' AS handle, "
             "       r.meta->>'container' AS container "
             "  FROM refs r "
             "  JOIN ref_tags rt ON rt.ref_id = r.ref_id "
@@ -706,16 +870,22 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
             "   AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'",
             {"host": host},
         ).fetchall()
-    for holder, resource, units in hold_rows:
+    for holder, resource, units, row_host, holder_host in hold_rows:
         holder = str(holder)
-        pid_str = holder.rsplit(":", 1)[-1]
-        if pid_str.isdigit():
-            hold_pids.add(int(pid_str))
         units = int(units)
-        if str(resource) == "mem_mb":
+        local = (
+            str(holder_host) == host if holder_host else holder.startswith(f"{host}:")
+        )
+        if local:
+            pid_str = holder.rsplit(":", 1)[-1]
+            if pid_str.isdigit():
+                hold_pids.add(int(pid_str))
+            if str(resource) == "mem_mb" and str(row_host) == host:
+                holder_mem[holder] = holder_mem.get(holder, 0) + units
+        if str(resource) == "mem_mb" and str(row_host) == host:
             admitted_mem_mb += units
-            holder_mem[holder] = holder_mem.get(holder, 0) + units
-    for handle, container in job_rows:
+    for ref_id, handle, container in job_rows:
+        job_ref_ids.add(int(ref_id))
         if isinstance(handle, dict):
             for key in ("pid", "pgid"):
                 try:
@@ -735,6 +905,7 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
         "job_pgids": job_pgids,
         "job_pids": job_pids,
         "job_containers": job_containers,
+        "job_ref_ids": job_ref_ids,
     }
 
 
@@ -772,7 +943,12 @@ def _admission_census(store: Any, host: str) -> dict[str, Any]:
         log.warning("heartbeat: admission ledger read failed", exc_info=True)
         return {}
     own = _own_group_chain(rows)
+    launchd = _launchd_service_pids() if platform.system() == "Darwin" else None
     container_pids = _collect_container_pids()
+    container_member_pids = set(container_pids)
+    container_pid_names: dict[str, set[int]] = {}
+    for pid, cname in container_pids.items():
+        container_pid_names.setdefault(cname, set()).add(pid)
     drift: list[dict[str, Any]] = []
     unadmitted: dict[str, dict[str, Any]] = {}
 
@@ -788,10 +964,12 @@ def _admission_census(store: Any, host: str) -> dict[str, Any]:
 
     for g in _process_groups(rows):
         pgid = int(g["pgid"])
-        if g["leader_ppid"] == 1 or pgid in own:
-            continue  # declared daemon (init-parented) or the claimant
-        if pgid in container_pids:
-            continue  # a container's own group — the container entry decides
+        if pgid in own:
+            continue  # the census process's own claimant ancestry
+        if g["pids"] & container_member_pids:
+            continue  # a container member's group — the container entry decides
+        if _declared_service_group(g, launchd):
+            continue  # init-managed standing service, not a reparented orphan
         if g["pids"] & admitted["hold_pids"]:
             holder_mem = admitted["holder_mem"]
             # Drift: summed mem_mb held by any holder whose pid sits in
@@ -824,6 +1002,14 @@ def _admission_census(store: Any, host: str) -> dict[str, Any]:
         name = str(c["name"])
         if name in admitted["job_containers"]:
             continue
+        member_pids = container_pid_names.get(name)
+        if member_pids and member_pids & (
+            admitted["hold_pids"] | admitted["job_pids"] | admitted["job_pgids"]
+        ):
+            continue  # a live hold or job handle names a pid inside it
+        m = _JOB_CONTAINER_RE.search(name)
+        if m and int(m.group(1)) in admitted["job_ref_ids"]:
+            continue  # deterministic job --name; the job row is the admission
         if not c["oneoff"] and c["project"]:
             continue  # a declared compose *service* — standing infra
         if _census_exempt(name) or _census_exempt(str(c["comm"])):
