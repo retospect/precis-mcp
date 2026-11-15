@@ -883,8 +883,9 @@ How a second-repo batch is minted (`templates.mint_repo_batch`, the
 - `bump` (`auto`, `minor`, `patch`) is passed to the release node.
 - The mint is one transaction: a refusal leaves nothing behind.
 - It refuses until the repo's profile names a lander, a releaser and a
-  pinner. Minting dispatches nothing by itself in a closed repo: the
-  slices still wait on `factory.open_repos`.
+  pinner. catpath names all three (its pinner since 2026-11-15, after the
+  arming proof below). Minting dispatches nothing by itself in a closed
+  repo: the slices still wait on `factory.open_repos`.
 - If the door fails, a dev session calls `mint_repo_batch` with the same
   arguments on prod (Reto 2026-11-15).
 
@@ -918,6 +919,17 @@ within about 2 minutes. The factory never builds the image. Only the land
 host's image is checked. A hand close of the node, or a hand
 `scripts/ship … (td<pin>)` that closes it, ends the wait; the job then
 succeeds quietly and the dispatcher closes the open ask.
+
+Arming a pinner: before a profile names `pin_bump`, run the job's derive
+step once on the slice host against today's pin. As the worker's user, in
+the worker's environment, in a throwaway directory: a `git archive` of
+origin/prod, a throwaway catpath mirror filled by
+`factory_git_mirror.fetch_source_mirror`, the env from
+`pin_bump._detached_env`, then `uv lock --check`,
+`uv sync --frozen --extra catalyst` and `pin_bump.DERIVE_SCRIPT_PY` with
+the pinned version. The key it writes must equal the anchor literal
+committed in `tests/test_coverage_job.py`. catpath passed on 2026-11-15
+(autocatpath 0.50.0, 15 s).
 
 Known limits:
 

@@ -1229,7 +1229,7 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "pin_bump":
         # Mechanical pin bump of a released second-repo engine (td659522
         # step 4): edit, derive, commit, hand the branch to land_slice.
-        # Refused until a profile names a pinner.
+        # Runs for a repo whose profile names it as pinner (catpath).
         from precis.workers.job_types.pin_bump import SPEC
 
         _REGISTRY[name] = SPEC

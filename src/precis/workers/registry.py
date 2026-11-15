@@ -1435,8 +1435,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         placement=frozenset({"repo_checkout", "git"}),
         one_line="Move precis's pin of a released second-repo engine "
-        "mechanically, then hand the branch to land_slice (refused until a "
-        "profile names a pinner).",
+        "mechanically, then hand the branch to land_slice (repos whose "
+        "profile names it as pinner: catpath).",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(

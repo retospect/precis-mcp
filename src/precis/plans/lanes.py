@@ -441,6 +441,10 @@ REPO_PROFILES: dict[str, RepoProfile] = {
         # Released by ``workers/job_types/repo_release.py`` (td659522 step 3);
         # the node comes from ``templates.mint_repo_release``.
         releaser="repo_release",
+        # Precis's pin of autocatpath is moved by
+        # ``workers/job_types/pin_bump.py`` (td659522 step 4, switched on
+        # after the gateway derive proof of 2026-11-15).
+        pinner="pin_bump",
         release_check_cmds=("uv lock --check",),
         ci_workflow="ci.yml",
         tag_prefix="v",

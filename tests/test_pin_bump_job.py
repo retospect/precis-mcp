@@ -495,11 +495,11 @@ def test_a_closed_pin_node_or_a_wontdo_release_node_is_refused(pin: Pin) -> None
     assert pb.validate_submit(pin.store, params={**PARAMS, "release_todo": 80}) is None
 
 
-def test_no_real_profile_names_the_pinner_yet() -> None:
-    """If this fails a real profile now names pin_bump as its pinner: the
-    switch (R7) has landed, and this guard must go with it."""
-    assert [n for n, p in lanes.REPO_PROFILES.items() if p.pinner == pb.NAME] == []
-    assert "names no pinner" in str(
+def test_catpath_names_pin_bump_as_its_pinner() -> None:
+    """If this fails the R7 switch is undone: catpath's profile no longer
+    names pin_bump, and a catpath batch's pin node is refused."""
+    assert lanes.REPO_PROFILES["catpath"].pinner == pb.NAME
+    assert "names no pinner" not in str(
         pb.validate_submit(None, params={**PARAMS, "pin_repo": "catpath"})
     )
 

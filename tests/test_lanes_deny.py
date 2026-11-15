@@ -190,11 +190,13 @@ def test_pin_bump_job_is_factory_denied_before_it_exists() -> None:
     assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
 
 
-def test_no_repo_profile_names_a_pinner_yet() -> None:
-    """If this fails, a profile arms the pin bump before its switch round:
-    ``pinner`` defaults to None and no profile sets it."""
+def test_only_catpath_names_a_pinner() -> None:
+    """If this fails, a profile arms the pin bump without its own switch
+    round (td659522 R7 armed catpath only): ``pinner`` defaults to None."""
     assert lanes.RepoProfile(name="x").pinner is None
-    assert [n for n, p in lanes.REPO_PROFILES.items() if p.pinner] == []
+    assert {n: p.pinner for n, p in lanes.REPO_PROFILES.items() if p.pinner} == {
+        "catpath": "pin_bump"
+    }
 
 
 @pytest.mark.db
