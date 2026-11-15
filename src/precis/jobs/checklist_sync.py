@@ -3,7 +3,7 @@
 Modeled on :mod:`precis.jobs.oracle_sync` (sha256 content-state, advisory
 lock, idempotent) — that is the working precedent for an idempotent,
 content-hash-compared, advisory-locked, read-only-DSN-aware boot-time DB
-sync of file content (docs/backlog/checklist-kind.md). Wired at boot in
+sync of file content (me693927). Wired at boot in
 ``dispatch.py`` next to the oracle sync, behind the same
 ``mcp_read_only`` guard (:func:`precis.dispatch._boot_is_read_only`).
 

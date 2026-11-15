@@ -1,9 +1,11 @@
-# Thread files — the ordering layer over `docs/backlog/`
+# Thread files — the ordering layer over the open work
 
-`docs/backlog/` holds 400+ items. It answers "what is open?" and cannot
-answer "what do I do next, and why that?" — an index sorted by status and
-priority flag does not know that one item silently corrupts data while
-another is a convenience, or that three items share a root cause.
+The open work is the spec graph under the Specifications hub `me568215`
+(one spec root per specification, format `precis-spec-help`) plus the open
+gripes. Both answer "what is open?" and neither answers "what do I do
+next, and why that?" — a list sorted by status and priority flag does not
+know that one item silently corrupts data while another is a convenience,
+or that three items share a root cause.
 
 A **thread file** answers that, for one thread of work. It is a short,
 ordered list of **pointers with a rank rationale**. It owns order and
@@ -16,7 +18,7 @@ wait on each other — coordination reads one page, ranking stays per file.
 **Pointers only. Never content.**
 
 If you are explaining what an item *is*, you are writing in the wrong
-file — that belongs in the item (`docs/backlog/<slug>.md`) or the gripe.
+file — that belongs in the item (its spec root `me<N>`) or the gripe.
 A thread entry says where the thing is and why it sits at that rank, in
 one line. This is the rule that keeps the ordering layer from becoming a
 second backlog, which is the failure mode it exists to prevent.

@@ -1,6 +1,6 @@
 """``precis memory import | index`` — harness memory as ``SPACE:repo-dev`` nodes.
 
-The write and load halves of ``docs/backlog/memory-native-authoring.md``:
+The write and load halves of `me690866`:
 
 - ``precis memory import <dir>`` seeds the graph from a harness memory
   directory: ``<dir>/MEMORY.md`` plus the topic files its bullets name.

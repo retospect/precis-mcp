@@ -76,7 +76,7 @@ REGISTRY: dict[str, Evaluator] = {
     # reads the latest persisted geometric-DRC run (precis.pcb.drc),
     # never recomputes it.
     "netlist_drc_clean": netlist_drc_clean.evaluate,
-    # checklist-kind slice 2 (docs/backlog/checklist-kind.md) — every
+    # checklist-kind slice 2 (me693927) — every
     # blocking item of a checklist settled on the target, no fail.
     "checklist_clean": checklist_clean.evaluate,
 }

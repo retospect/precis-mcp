@@ -1,6 +1,6 @@
 """The survey/review numeric-extraction substrate.
 
-The "Next slice" of docs/backlog/measures-substrate.md, built on the
+The "Next slice" of me693370, built on the
 qu202467 pilot (paper-extraction-pilot/, kept as the reference
 implementation): a local reader proposes bindings chunk by chunk, the
 deterministic checks prove the mechanical claims, and a frontier model

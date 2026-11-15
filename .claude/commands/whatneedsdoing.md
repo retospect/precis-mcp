@@ -1,5 +1,5 @@
 ---
-description: "One honest 'what needs doing' across repo dev work (backlog, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
+description: "One honest 'what needs doing' across repo dev work (graph specs, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
 allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/secrets-check-review:*), Bash(scripts/prod-precis secret check:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/prod-precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
@@ -9,7 +9,8 @@ list, that is the trap this view exists to avoid. Optional focus: `$ARGUMENTS`.
 
 Host names are not kept in the repo: find them with `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
 
-- **Repo dev work** — the `docs/backlog/` backlog + the `gripe` bug tracker.
+- **Repo dev work** — the spec graph (spec roots and their plan todos under
+  the Specifications hub `me568215`) + the `gripe` bug tracker.
   These are about *this codebase / product*: MCP-surface bugs, features, infra
   fixes. You act on them by **editing code in a worktree → `/go`**. "Inert"
   here means: real, but no one is building it yet.
@@ -22,13 +23,13 @@ Host names are not kept in the repo: find them with `search(kind='memory', tags=
   because of a repo bug*. That failure is a symptom; the fix is dev work here.
   Call these out explicitly — they're where a `/go` clears a prod backlog.
 
-The backlog + gripes are *declared* repo dev work. Beyond them is *latent*
+The spec graph + gripes are *declared* repo dev work. Beyond them is *latent*
 repo dev work — bugs the LLM is hitting on prod right now that nobody has
 filed yet (step 5, the bug-hunt). Every recurring tool-call error is a fix
 waiting in a skill or the MCP surface; mining it feeds new items into
 substrate 1 (as gripes).
 
-Live backlog index (generated `docs/backlog/INDEX.md` — one line per item with status):
+Residual backlog files (generated `docs/backlog/INDEX.md` — threads plus the one legacy spec; the spec inventory itself is a graph read, step 1):
 !`scripts/docs-index >/dev/null 2>&1; grep -vE '^(<!--|#|\s*$)' docs/backlog/INDEX.md 2>/dev/null | head -60`
 
 Live GitHub — open PRs:
@@ -42,17 +43,20 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read the generated `docs/backlog/INDEX.md` index
-   (one line per item with status). Skip any item whose front-matter
-   `snooze-until: YYYY-MM-DD` date is still in the future — a deliberate park,
-   not open work. **Prune done gunk as you go** (same as closing a fixed gripe
-   in step 2): `scripts/backlog-lint` lists items whose *title* carries a
-   done-marker (DONE/RESOLVED/✅/SHIPPED-fully-cut-over) yet whose file still
-   sits in the dir — for each, confirm the work is on `main`, then **delete
-   the item's file** (git log + the topic memory hold the record). Don't leave
-   it marked "DONE": `docs/backlog/` is the *active* list, not an archive — a
-   left-in "DONE" item is the same append-only rot the docs triage cured. (The
-   lint excludes partially-open items that merely *mention* something shipped.)
+1. **Repo dev — specs.** Specs live in graph memory, not files (Reto
+   2026-11-05, `me568168`; format `precis-spec-help`). Read the inventory:
+   `search(kind='memory', tags=['spec:*'], view='toc')` for every spec root,
+   then `search(kind='todo', view='doable', args={'under': <programme todo
+   root>})` for the next doable slice per programme — the plan todos, not
+   the memory nodes, say what is actually open. Skip a slice whose todo
+   carries a future `due:YYYY-MM-DD` — a deliberate park, not open work.
+   **Prune built design as you go** (same as closing a fixed gripe in
+   step 2): a section whose behaviour is verifiably in code retires,
+   superseded by its code handle — the verdicts are the `docs-triage`
+   skill's. Don't leave it marked "DONE": the graph is the *active* design,
+   not an archive. `scripts/backlog-lint` still covers the residual files
+   in `docs/backlog/` (threads plus the one legacy spec) the same way, and
+   excludes partially-open items that merely *mention* something shipped.
    The dark-factory workstream is active.
    **Thread files and the active set.** The active roster is
    `grep -l '^roster: active' docs/backlog/threads/*.md` (`docs/roadmap.md`
@@ -64,7 +68,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    (`get(kind='gripe', id=N)`): a closed gripe still ranked is a stale
    pointer to delete in the owner's file (keep "soft-deleted, do not
    reopen" tombstones) — half the thread files were stale this way at the
-   2026-09-30 pillar review. Open gripes that no thread and no item names
+   2026-09-30 pillar review. Open gripes that no thread and no spec names
    are orphans; list them by pillar for `/pillar-review` rather than
    placing them here.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
@@ -80,7 +84,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    passing. A gripe stays open only if it is genuinely unfixed or unverified.
    Don't let resolved bugs inflate the backlog.
 3. **Repo dev — GitHub (PRs + Dependabot).** Declared repo dev work that
-   lives on GitHub, not in `docs/backlog/` — the inline previews above are the
+   lives on GitHub, not in the spec graph — the inline previews above are the
    fresh read; expand them here.
    - **Open PRs:** `gh pr list --state open` (add `--json
      number,title,author,isDraft,reviewDecision,statusCheckRollup` for CI +
@@ -92,10 +96,10 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      **P0** repo dev work (a dependency bump / patch), fixed here → `/go`. If
      the API 403s it needs a token with security-read scope — say so rather
      than silently reporting "none".
-     - **Honor snoozes.** A snoozed alert lives as a `docs/backlog/` item with
-       `snooze-until: YYYY-MM-DD` front-matter. **Suppress** any alert whose
-       item's date is still in the future (a known-held item, not new work) —
-       don't report it. If today ≥ its `snooze-until`, surface it as
+     - **Honor snoozes.** A snoozed alert lives as a `gripe` or `todo`
+       tagged `due:YYYY-MM-DD`. **Suppress** any alert whose held item's
+       date is still in the future (a known-held item, not new work) —
+       don't report it. If today ≥ that date, surface it as
        **recheck due**: re-probe the `Unblock-when` condition, then either act
        (`/go`) or bump the date +2 weeks. This is what keeps a blocked-upstream
        alert (e.g. #44, `transformers` capped by marker-pdf) from re-nagging
@@ -106,8 +110,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    - **Migration collisions** (`scripts/migration-check`) — a flagged number =
      two worktrees will collide on ship; renumber the **unshipped** one above
      main's max. (Known live case: the `email` worktree's `0074`.)
-   - **Backlog gunk** (`scripts/backlog-lint`) — done-marked items are
-     candidates for the `docs-triage` skill: verify shipped, then delete.
+   - **Backlog gunk** (`scripts/backlog-lint`) — done-marked residual files
+     are candidates for the `docs-triage` skill: verify shipped, then delete.
      Generated indexes (`docs/backlog/INDEX.md`, `docs/runbooks/INDEX.md`,
      `docs/codebase-map.md`) are gitignored and regenerate via
      `scripts/docs-index` at session start — never stale-in-git.
@@ -161,15 +165,15 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,
-     un-`rtk`'d firehoses, redundant calls), file findings to `docs/backlog/` /
-     gripes, then `scripts/token-review --stamp "<note>"`. Inside the 7-day
+     un-`rtk`'d firehoses, redundant calls), file findings as gripes (or a
+     spec section when design-sized), then `scripts/token-review --stamp "<note>"`. Inside the 7-day
      window it's quiet — skip it.
    - **Surface-review cadence** (`scripts/surface-review`) — on **DUE** (last
      pass >14 days ago) run `/surface-review`: mine the window with
      `scripts/mine-sessions/run.sh`, read the scoreboard, fan `forensics`
      agents over the evidence cards (plus the random arm), gate for
-     live-and-unfixed, then attach the measurement to the existing backlog
-     item / gripe — mint only what nothing covers. Then
+     live-and-unfixed, then attach the measurement to the existing spec
+     section / gripe — mint only what nothing covers. Then
      `scripts/surface-review --stamp "<note>"`. Inside the 14-day window it's
      quiet — skip it. Remit: the precis MCP surface (verbs, error messages, renders,
      vocabulary, capability gaps) — distinct from token-review's harness
@@ -180,7 +184,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      indexes · dead-tuple bloat), interpret outliers by *ratio* (lifetime
      `idx_scan=0` = safe to drop; a small table full-scanned often = throttle the
      caller, not an index; an unindexed fleet-wide GC = single-flight + index),
-     file findings to `docs/backlog/`/gripes, then
+     file findings as gripes, then
      `scripts/db-thrash-review --stamp "<note>"`. Inside the 14-day window it's
      quiet — skip it. (This cadence exists because an unindexed GC pegged the database host for
      hours unnoticed; migs 0077/0078.)
@@ -192,7 +196,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      executed queries, then LLM-eval whether each returned menu + the caller's
      selection made sense, and propose "better search bits" (skill H2/vocabulary
      edits, or a matcher change in `src/precis/handlers/skill.py`). File findings
-     to `docs/backlog/`/gripes, then
+     as gripes, then
      `scripts/skill-search-review --stamp "<note>"`. Inside the 30-day window
      it's quiet — skip it. (This cadence exists because skill search is agents' only
      discovery fallback when they don't know a slug, yet nothing logs how well it
@@ -222,8 +226,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      in minutes when a host is *actually* locked out — the script also prints any
      open count); this cadence is the proactive drift catch. (This exists because
      a `brew upgrade python` cdhash bump silently broke the agent-worker host's grant and
-     dark-ingested for days; see the runbook + the `docs/backlog/` agent-worker-host
-     daemon-NAS-lockout item.)
+     dark-ingested for days; see the runbook + the agent-worker-host
+     daemon-NAS-lockout item in the spec graph.)
    - **Credential-check cadence** (`scripts/secrets-check-review`) — on **DUE**
      (last check >7 days ago) run `scripts/prod-precis secret check`: the
      `/secrets` page's probes against the prod vault, one line per registry
@@ -458,7 +462,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      count:
      - **Demand a real `tool_result`.** Only count a match that appears inside a
        `tool_result` block with `"is_error":true`, tied to a `tool_use.id` — not
-       narration, a prior assistant message, or quoted gripe/backlog text.
+       narration, a prior assistant message, or quoted gripe/spec text.
        (`transcript LIKE '%tool_result%<err>%'` is a cheap first cut; confirm by
        walking the stream-json.)
      - **Pull the *real* occurrence timestamps.** `SELECT ref_id, created_at`

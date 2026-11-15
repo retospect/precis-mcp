@@ -33,7 +33,7 @@ persona correctly, repeatedly flags it ("written with markdown inside a
 draft, refactor to draft chunks"), and a ``plan_tick`` agent executing that
 change-request once actually "fixed" it, silently destroying the quest's
 attempt-tree ledger (quest 202469 / dossier 202546, Aug 2026 — see
-``docs/backlog/dossier-present-tense-refinement.md``). Both scanners that
+`me690577`). Both scanners that
 decide which drafts to fan review-todos over —
 :func:`precis.quest.review_fanout.mint_review_fanout` and
 :func:`precis.quest.weave_review.mint_weave_reviews` — call this before

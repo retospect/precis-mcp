@@ -226,7 +226,7 @@ def build_tag_filter(
 
 
 #: Canonical control tag for fenced, speculative dream output
-#: (docs/backlog/dreaming.md, §Inspire behavior). The ``DREAM`` axis is
+#: (gr690614, §Inspire behavior). The ``DREAM`` axis is
 #: a closed vocabulary; ``speculative`` is its low-confidence value.
 SPECULATIVE_TAG = "DREAM:speculative"
 _SPECULATIVE_NS = "DREAM"
@@ -238,7 +238,7 @@ def is_speculative_tag(tag: str) -> bool:
 
     Used to detect an *explicit* opt-in: a caller that lists this tag in
     ``tags=`` is asking to see fenced inspirations, so the fence lifts
-    for that query (docs/backlog/dreaming.md §Inspire — "surface on
+    for that query (gr690614 §Inspire — "surface on
     explicit ask").
     """
     return tag.strip() == SPECULATIVE_TAG
@@ -314,7 +314,7 @@ def wiki_fence(ref_alias: str = "r") -> str:
 
 
 #: Canonical control tag for the finding-search do-not-repropose ledger
-#: (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). Stamped
+#: (me690849 §"Refuted lifecycle"). Stamped
 #: on the negative-ruling finding a rejected hypothesis is
 #: ``retracts``/``superseded-by``-linked to. The ``STATUS`` axis is a
 #: closed vocabulary; ``refuted`` is one of its values.

@@ -114,7 +114,7 @@ class Health:
 # ── server fetch (shared) ─────────────────────────────────────────────
 
 
-#: Open tag on a backlog spec's placeholder todo (docs/backlog/quest-rollup.md).
+#: Open tag on a backlog spec's placeholder todo (me691000).
 BACKLOG_SPEC_TAG = "backlog-spec"
 
 

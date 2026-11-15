@@ -1,5 +1,5 @@
 """The `component` SERIES registry — standards families and their valid
-size tables (docs/backlog/se-off-the-shelf-fabrication.md, engine 1).
+size tables (me695392, engine 1).
 
 A `component` ref is one SKU. Hand-entering four hundred screws is not
 viable, so a **series** carries a family (ISO 4762 socket cap screws) plus

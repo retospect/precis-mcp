@@ -1,7 +1,7 @@
 """SPSO slice 6 — the operating-window robustness score and the Shapley
 vector as quest Pareto objectives, plus active anchor placement.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (§8.2 two levers, §8.4 reductions, Rulings 2026-10-13: HER is a mask rung
 AND its own Pareto objective; rung masks carry a tolerance ε on ΔG and a
 TOF floor stays a separate objective). The physics lives in

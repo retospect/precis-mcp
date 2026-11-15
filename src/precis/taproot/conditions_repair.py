@@ -1,6 +1,6 @@
 """Hand-launched repair: write a claim's missing conditions from its paper.
 
-Step 4 of ``docs/backlog/claim-conditions-completeness.md``. The measurement
+Step 4 of `me691778`. The measurement
 (2026-11-15, dr348633) found most electrochemical, DFT-step and photo-rate
 hub sentences missing a must-state condition
 (:func:`~precis.taproot.conditions.check_conditions`): the potential, its

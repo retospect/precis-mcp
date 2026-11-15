@@ -2,7 +2,7 @@
 
 ``PRECIS_ROOTS`` mounts skills and the harness memory as read-only
 ``markdown`` refs (``alias/<slug>``); this pass gives them graph edges so a
-walk or a fisheye reaches them (``docs/backlog/file-mirror.md`` in-scope 3):
+walk or a fisheye reaches them (`me693606` in-scope 3):
 
 - every mirror: ``related-to`` from a relative ``[Title](slug.md)`` link or
   a ``[[slug]]`` to a sibling file; an index bullet in ``MEMORY.md`` is

@@ -30,7 +30,8 @@ The territory is already well-populated — this pass's job is to put
   one turns a complete enumeration into a ranked filter and the count
   silently drops. Not `tags=['STATUS:open']`: that is the literal untriaged
   cohort, which auto-triage keeps empty.
-- `docs/backlog/INDEX.md`, the surface family: `mcp-surface-economy`,
+- the spec graph's surface family (`search(kind='memory', tags=['spec:*'],
+  view='toc')`): `mcp-surface-economy`,
   `capability-discovery-on-a-sprawling-surface`, `vocab-compaction`,
   `token-review-hook-gaps`, `llm-prompt-surface-audit`,
   `tick-tool-lists-and-discovery-reflex`, `skill-eval-executed-runner`;
@@ -95,8 +96,9 @@ finding you are about to file:
 
 ## 6. File — attach first, mint last
 
-- **Default:** append the measurement to the existing item. A backlog file
-  gets a dated section; a gripe gets a comment via
+- **Default:** append the measurement to the existing item. A spec section
+  takes the measurement in its body (one claim, `edit(kind='memory', …)`);
+  a gripe gets a comment via
   `put(kind='gripe', id=N, text='…')` (there is no `edit(kind='gripe')`).
 - **Mint a gripe** only for a confirmed-live cause nothing covers, and route
   it through the `gripe-filer` agent so its dedup step runs.
@@ -113,7 +115,7 @@ what shipped, what was filed>"`. That line (in
 `~/.cache/precis/surface-review.log`) is the cadence clock —
 `scripts/surface-review` reads it.
 
-Re-read `docs/backlog/friction-reflection-enable.md` and say in the stamp note
+Re-read gr690545 and say in the stamp note
 whether leaving `PRECIS_FRICTION_REFLECT` off is still the right call. It is
 the one lever that would turn this retrospective into a continuous feed.
 

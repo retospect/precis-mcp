@@ -1351,7 +1351,7 @@ def _inline_source_cite(
     """Patent-spec mode: render a prior-art reference **in-text** (no ``[n]``
     marker / no References section). A display-link's authored text wins
     (WYSIWYG); otherwise a patent formats to its citation string and a paper
-    to a light ``(Author, Year)``. See ``docs/backlog/patent-authoring-loop.md``."""
+    to a light ``(Author, Year)``. See `me690333`."""
     ctx.cite_run.interrupt()
     _flush_cites(ctx, paragraph)
     if surface:

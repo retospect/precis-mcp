@@ -3,7 +3,7 @@
 Every terminal ``STATUS:`` transition on a ``kind='job'`` ref stamps
 ``meta.footprint = {ru_maxrss_mb, wall_s, cpu_s}`` — the measured input
 the footprint-admission table derives from
-(``docs/backlog/cluster-scheduling.md`` Pillar 3b). The write side lives
+(`me695459` Pillar 3b). The write side lives
 in :func:`precis.store._tags_ops._stamp_job_completion`, the one funnel
 every terminal path already passes through (executor success/fail/
 cancel, the sweeper's reaps, a manual ``precis tag``), so a job

@@ -1,4 +1,4 @@
-"""Flow tab — the slice-2b particle player of docs/backlog/se-flow-kernel.md.
+"""Flow tab — the slice-2b particle player of me695207.
 
 * ``GET /se/{slug}/flow`` — the player page: a three.js scene of the
   chamber (floor topography receiving the shadows of the particles,

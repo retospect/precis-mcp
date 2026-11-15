@@ -1,6 +1,6 @@
 """Pick anything, get every level it belongs to — the reference grammar.
 
-The resolver half of ``docs/backlog/se-pick-hierarchy.md`` (gap 2), built
+The resolver half of `me694838` (gap 2), built
 for the case whose data already exists: an atom of a ``realize_chain``
 structure. One atom ordinal becomes a list of :class:`PickLevel` rows,
 innermost first — atom, residue, base pair, strand domain, strand, segment

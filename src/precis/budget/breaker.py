@@ -139,7 +139,7 @@ def gate_tier(
     billing. ⚠ The gate is correct; the *meter* is not yet: ``meter.spent_usd``
     still excludes every ``claude_p``/``claude_agent`` row as notional, so bare
     spend does not itself accumulate toward the cap it is now gated on —
-    ``docs/backlog/bare-rung-billing-accounting.md``.
+    `me690531`.
 
     ``transport=None`` (legacy callers, tests) falls back to the dollar gate,
     preserving the pre-split behaviour.

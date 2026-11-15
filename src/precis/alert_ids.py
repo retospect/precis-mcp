@@ -4,7 +4,7 @@
 *is* the failure id — but until this module existed it was implicit:
 f-string conventions scattered across a dozen producers, nothing
 enumerable, nothing an agent could ask about by name. This is the
-catalogue (``docs/backlog/alert-failure-id-registry.md``; the model is
+catalogue (`gr690110`; the model is
 PCB DRC's stable rule id + located subject):
 
 * a **rule** is a *source pattern* (``nursery:dead-worker``,

@@ -4,7 +4,7 @@
 # `sglang_serving` (see playbooks/49a-sglang.yml). This is the serving stack
 # that works on the GB10 (SM121): the stock vLLM image's Marlin MXFP4 MoE
 # kernel races on SM121 and produces corrupt output at every context window
-# (vllm-project/vllm#37030 — see docs/backlog/claude-code-on-local-serving.md
+# (vllm-project/vllm#37030 — see me695114
 # and the vllm role's `vllm_env` note). SGLang's `latest-cu130` image is
 # NVIDIA's showcased GB10 stack, serves gpt-oss 120B soundly (verified
 # 2026-10-14: identical temperature-0 replies at 1k/16k/66k-token prompts,

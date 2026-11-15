@@ -1,6 +1,6 @@
 """``land_slice`` — the lander: land one finished slice branch (dark factory).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Branches: who merges what, how"
+Spec: `me692430` § "Branches: who merges what, how"
 (the builder commits on its branch only; the lander lands it with
 ``scripts/ship`` and deletes the branch and its worktree). Mechanical: no
 LLM. :mod:`precis.workers.job_types.run_slice` mints one of these (idem key
@@ -220,7 +220,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   (gr647914).
 
 **Release fixes land on the release branch** (release-train T1,
-``docs/backlog/release-train.md``). A slice todo whose
+`me692603`). A slice todo whose
 ``meta.land_target`` (or a ``land target: release/r<N>`` brief line,
 :func:`land_target` → :func:`precis.plans.release.land_target_of`)
 names a release branch lands with ``scripts/ship --quick --onto

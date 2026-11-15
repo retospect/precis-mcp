@@ -563,7 +563,7 @@ def _servers_summary(store: Store, quest_id: int) -> list[str]:
 #: Token budget for the literature section — replaces a bare paper-count cap
 #: so a quest with many served papers (the audited qu164903 case had 852)
 #: still gets *some* detail without ballooning the tick prompt. See
-#: docs/backlog/quest-dossier-dialectic.md §"Tick diet fixes".
+#: me690849 §"Tick diet fixes".
 _LITERATURE_TOKEN_BUDGET = 1500
 #: Length bound on a served paper's abstract snippet.
 _PAPER_DETAIL_CHARS = 300

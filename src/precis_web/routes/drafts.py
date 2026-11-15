@@ -595,7 +595,7 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 
 
 #: Chunk kinds the inline editor may edit as raw text (slice 2a,
-#: docs/backlog/draft-inline-editor.md). Prose kinds + the verbatim-text kinds
+#: me694007). Prose kinds + the verbatim-text kinds
 #: (code / listing — you edit their source). Math is not a kind: display math
 #: is a `paragraph` carrying `$$…$$`, edited like any other paragraph. Excludes
 #: figure and table — both in ``draft_regex.NON_PROSE_KINDS`` (a figure's
@@ -1317,7 +1317,7 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
     shape both the read-only status route and the check-now route hand
     the export pane, so the client renders off one shape regardless of
     which one answered. Carries the DOI completeness/validity fields
-    (docs/backlog/draft-doi-completeness-check.md) alongside the
+    (gr690484) alongside the
     retraction ones — one walk, two signals."""
     checked_at = paper.checked_at
     doi_validated_at = paper.doi_validated_at
@@ -1364,7 +1364,7 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "unchecked": [_retraction_paper_json(p) for p in report.unchecked],
         "unresolved": report.unresolved,
         # DOI completeness/validity — advisory only, never affects
-        # blocks_export. See docs/backlog/draft-doi-completeness-check.md.
+        # blocks_export. See gr690484.
         "missing_doi": [_retraction_paper_json(p) for p in report.missing_doi],
         "doi_invalid": [_retraction_paper_json(p) for p in report.doi_invalid],
         "doi_unvalidated": [_retraction_paper_json(p) for p in report.doi_unvalidated],
@@ -1766,7 +1766,7 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
     the draft's cited papers via Crossref (TTL-gated); ``force=1``
     bypasses the TTL, else a same-day re-press is a silent no-op.
 
-    Same press validates DOIs (docs/backlog/draft-doi-completeness-check.md):
+    Same press validates DOIs (gr690484):
     ``draft_retraction_report`` reuses the retraction check's own Crossref
     round-trip for DOI-validity where that check already hit the network,
     falling back to ``check_refs_doi_validity`` only for TTL-fresh cites
@@ -3023,7 +3023,7 @@ async def edit_text_inline(
     base_sha: str = Form(""),
 ) -> JSONResponse:
     """Direct (non-LLM) in-place text edit of one draft block — the inline
-    editor's save (docs/backlog/draft-inline-editor.md, slice 2a).
+    editor's save (me694007, slice 2a).
 
     HARD-blocks (422, no write) a reference *this edit* newly breaks, so the
     editor can bounce the author back with the offending tokens ("comes back
@@ -3219,7 +3219,7 @@ async def add_block(
 ) -> JSONResponse:
     """Insert a new empty prose block right after ``after`` (same parent, a
     fractional ``pos`` between it and its next sibling) — the inline editor's
-    ``+`` affordance (docs/backlog/draft-inline-editor.md, slice 2b). Returns
+    ``+`` affordance (me694007, slice 2b). Returns
     the new block's handle so the client can hydrate and open it for editing.
 
     Uses ``DraftHandler.insert_blank_block`` rather than the ``put`` verb: the

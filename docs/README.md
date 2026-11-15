@@ -16,7 +16,9 @@ vocabulary's terms, and prefer deleting to archiving — git is the history,
 | Cluster topology / what runs where / cluster setup | `deploy/README.md` |
 | Cross-cutting invariants | `docs/conventions/` (citing sources: `citable-sources.md`) |
 | Controlled vocabulary | the prod taxonomy: one `taxon` per coined/overloaded term under root `tn559460`, `search(kind='taxon', q='<term>', args={'under': 'tn559460'})` (rule: `AGENTS.md` §Repo-dev graph memory) |
-| Work items (idea → ready) | `docs/backlog/` — one file per item |
+| Specifications (idea → ready → built) | graph memory under the Specifications hub `me568215` — a spec root plus linked section/ruling/gotcha nodes, state on its plan todo (`get(kind='skill', id='precis-spec-help')`) |
+| Small items — ideas, findings, annoyances | a `gripe` (`put(kind='gripe', text=…)`); `get(kind='skill', id='precis-gripe-help')` |
+| Work ordering per thread | `docs/backlog/threads/` — thread files, pointers only |
 | Pillars, active threads, retirement rules | `docs/roadmap.md` — the layer above `docs/backlog/threads/` (pointers and intent only) |
 | Operational procedures | `docs/runbooks/` |
 | Reference — generated (schema, config catalog) or hand-maintained (hooks) | `docs/reference/` |
@@ -26,15 +28,17 @@ vocabulary's terms, and prefer deleting to archiving — git is the history,
 | History, shipped plans, old decisions | `git log` — nothing else; no CHANGELOG, no archive dirs |
 
 There is no `docs/design/`, `docs/proposals/`, `docs/decisions/`, or
-`OPEN-ITEMS.md` — plans and decisions either live as backlog items (future),
-package docstrings (present truth + rationale), or git history (past).
+`OPEN-ITEMS.md` — plans and decisions either live as graph specs and gripes
+(future), package docstrings (present truth + rationale), or git history
+(past).
 
 ## Reading order
 
 1. `docs/codebase.md` — shape, lifecycle, seams, package map.
 2. The owning package's `__init__.py` docstring — subsystem detail.
 3. `search(kind='taxon', q='<term>', args={'under': 'tn559460'})` — when a term is unfamiliar or overloaded.
-4. `docs/backlog/INDEX.md` — what's planned (generated; see below).
+4. `search(kind='memory', tags=['spec:*'], view='toc')` — what's specced;
+   `get(kind='memory', id='me568215', view='toc')` for the programme map.
 
 ## Rules that keep it true
 
@@ -44,20 +48,20 @@ package docstrings (present truth + rationale), or git history (past).
   paragraphs hold rejected-alternatives rationale — condense, don't delete.
 - **Code-true names.** Docs use the names the code uses, always — retrieval
   breaks otherwise. A pending rename is noted in the term's taxon gloss and
-  tracked as a backlog item; the doc flips in the same commit as the code
+  tracked as a gripe; the doc flips in the same commit as the code
   rename and the old name becomes an alias.
-- **Backlog lifecycle.** An item is a few lines of prose (`# title` + what
-  and why). When it grows a real spec it stays in the same file; when it is
-  buildable, add `status: ready` front-matter (the fixer's pick signal;
-  branch `fix/<slug>`, optional `model:` and `blocked-by:` as before). On
-  ship: fold any surviving truth into the owning docstring, **delete the
-  file** in the same commit — the commit that completes the work, not an
-  early slice: a spec deleted mid-branch is unreadable to the sessions
-  still building it (read it back with `git show
-  <merge-base>:docs/backlog/<slug>.md`, gr515639).
-- **Delete on ship.** Applies to everything: backlog items, scratch notes,
-  superseded prose. A doc that describes shipped work is a lie waiting to
-  happen.
+- **Spec lifecycle.** A small item is a gripe. A real specification is a
+  spec root plus section nodes in graph memory under `me568215`, with
+  execution state on its plan todo —
+  `get(kind='skill', id='precis-spec-help')` has the shapes, the writer
+  procedure and the retirement step. On ship: fold any surviving truth
+  into the owning docstring, then retire the built section, superseded by
+  the `python:` handle of the symbol that now carries it. Nothing here
+  lives as a spec file; the one deliberate exception is named in
+  `docs/backlog/README.md`.
+- **Delete on ship.** Applies to everything: scratch notes, superseded
+  prose, built spec sections. A doc that describes shipped work is a lie
+  waiting to happen.
 - **Cite code by durable anchor** (`path/file.py::Sym`), never by line
   number. → `docs/conventions/code-anchors.md`.
 

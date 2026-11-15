@@ -122,7 +122,7 @@ Optional ship message from the user: `$ARGUMENTS`
 6. **Skip the /land ceremony — but carry the debt forward.** No doc-refresh
    pass, no reviewer, no issue-closer here; speed is the point. If this
    branch changed a contract that needs a doc/skill update, or shipped
-   something an open gripe/backlog item tracks, note it in one line so the
+   something an open gripe or spec slice tracks, note it in one line so the
    post-burst `/go` session settles it. Residual bugs found this session
-   still get persisted (`docs/backlog/` / `gripe`) — persistence is never
+   still get persisted (`gripe` / `kind='todo'`) — persistence is never
    skipped, only ceremony.

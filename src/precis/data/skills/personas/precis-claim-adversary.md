@@ -10,7 +10,7 @@ answers:
   - what do I do when I can't adjudicate a candidate conflict from the evidence in hand?
 flavor: persona
 status: active
-applies-to: claim-hub adjudication (kind='finding', tags=['TAPROOT:claim']); Phase 4 of docs/backlog/nanopub-corpus-remediation.md
+applies-to: claim-hub adjudication (kind='finding', tags=['TAPROOT:claim']); Phase 4 of me691969
 last-updated: 2026-08-19
 tags: [workflow]
 kinds: [finding]

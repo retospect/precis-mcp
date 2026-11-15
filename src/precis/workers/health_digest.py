@@ -1,6 +1,6 @@
 """``health_digest`` — the slow-rot liveness net.
 
-Design: ``docs/backlog/self-healing-spine.md`` Layer 2. Nursery owns the
+Design: `me691477` Layer 2. Nursery owns the
 *critical* page-immediately lane; this pass owns the slower "quiet for
 suspiciously long" lane — info/warn only, pushed (not polled).
 
@@ -143,7 +143,7 @@ LAST_PUSH_KEY = "health_digest:last_push"
 #: App-settings key holding the JSON snapshot of the last eval's full check
 #: set (:func:`_store_checks_snapshot`) — what the agent-facing health
 #: panel (:func:`health_panel`) reads instead of re-running the ~30 s of
-#: backlog aggregates (``docs/backlog/alert-failure-id-registry.md`` D3).
+#: backlog aggregates (`gr690110` D3).
 CHECKS_SNAPSHOT_KEY = "health_digest:checks_snapshot"
 
 #: The daily green-heartbeat cadence: push at least this often even when

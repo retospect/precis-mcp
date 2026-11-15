@@ -8,7 +8,7 @@ The redesign adds list fields (``invokes_personas:``) and adds
 validation on ``flavor:``, so the parser graduates into a typed
 :class:`SkillFrontmatter` dataclass.
 
-See ``docs/backlog/docs-and-skills-redesign.md`` decision 7 (flavour
+See `gr690464` decision 7 (flavour
 discriminator), decision 9 (runbook orchestration), decision 13
 (availability gating).
 """
@@ -142,7 +142,7 @@ class SkillFrontmatter:
     #: variant (:mod:`precis.skill_index.chunker`) alongside
     #: ``summary`` — embedded standalone so an agent's intent query
     #: matches question-to-question instead of question-to-prose. See
-    #: ``docs/backlog/mcp-surface-economy.md`` §1.
+    #: `me691324` §1.
     answers: tuple[str, ...] = ()
 
     #: ISO-ish date the skill was last edited. Authored manually.
@@ -197,13 +197,13 @@ class SkillFrontmatter:
     #: defaults to the slug's name-prefix stem (:func:`skill_family`).
     family: str | None = None
 
-    #: Parent skill in the skill tree (``docs/backlog/file-mirror.md``):
+    #: Parent skill in the skill tree (`me693606`):
     #: the mirror-links pass makes this skill ``part-of`` it. Optional;
     #: absent, ``precis.cli.mirror_links.skill_parents`` applies the
     #: default rule.
     parent: str | None = None
 
-    #: Whole-skill write fence (``docs/backlog/read-scope-skill-fencing.md``,
+    #: Whole-skill write fence (`me691026`,
     #: gr512233): ``write`` marks a skill that only teaches mutation — a
     #: read-scope connection is served a stub instead of the body.
     #: ``None``/``read`` is the default: every existing skill serves as

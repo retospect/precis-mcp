@@ -1174,7 +1174,7 @@ class CacheBackedHandler(Handler):
         """Tier-0 prompt-injection scan at the fetch gate.
 
         Every cache-backed body is external, attacker-writable text
-        (``docs/backlog/untrusted-input-injection-scan.md``). Scan
+        (`me692543`). Scan
         title + body inline (free regex) and stamp the verdict into
         ``cache_state.meta['inject']`` so ``_render`` can gate on it.
         The scan is a *signal* — content is never dropped; the verdict

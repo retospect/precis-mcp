@@ -10,7 +10,7 @@ taproot hub's evidence listing — instead wants a full prose line (applicant,
 title, publication number + kind code, year); that's
 :func:`format_patent_bibliography_entry`. All render from a ref's
 ``meta``/top-level fields. Pure — no store, no I/O.
-See ``docs/backlog/patent-authoring-loop.md`` (export reconciliation).
+See `me690333` (export reconciliation).
 """
 
 from __future__ import annotations

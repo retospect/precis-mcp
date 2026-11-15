@@ -48,7 +48,7 @@ store: :func:`~precis.cad.scene.expand_instances` inlines the referenced
 design into a flat spec, and the one production resolver lives outside
 this package in :mod:`precis.cad_resolve`. Everything downstream — probe,
 relate, inspect (:mod:`~precis.cad.inspect`: the ray/section/overlap
-inspection family, docs/backlog/cad-inspect.md), export, tessellate —
+inspection family, me691872), export, tessellate —
 therefore still sees a plain flat spec and never learns that instancing
 exists. A ``field:`` leaf is resolved the
 same way — an injected :data:`~precis.cad.dsl.FieldLoader` riding on

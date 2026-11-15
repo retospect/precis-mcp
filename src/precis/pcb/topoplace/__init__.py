@@ -1,5 +1,5 @@
 """topo-place — the fast topological layer in front of the geometry router
-(``topo.py``). Spec: docs/backlog/pcb-topo-place.md.
+(``topo.py``). Spec: me569095.
 
 **The model.** A design is one immutable snapshot
 (:class:`~.design.TopoDesign`): parts by index, pins as footprint-local

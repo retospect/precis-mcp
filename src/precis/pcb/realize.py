@@ -240,7 +240,7 @@ class RealizeResult:
     #: never by position (:func:`_realize_vector` builds ``unrouted`` and
     #: this together but does not promise they land in the same order).
     #: Closes "total routing failure produces no diagnostic at all"
-    #: (docs/backlog/pcb-engine-plan.md "BOARD TWO" finding 1): before
+    #: (me692624 "BOARD TWO" finding 1): before
     #: this, a caller saw a net name and nothing else, whether the real
     #: cause was a corridor that never existed, a race this connection
     #: lost to one that routed first, or an endpoint walled in on every
@@ -323,7 +323,7 @@ class UnroutedReason:
     """Why one segment ended up in :attr:`RealizeResult.unrouted` — a
     closed, small vocabulary a caller can branch on, rather than parsing
     prose. **Deliberately does NOT attempt the underlying width fix**
-    (docs/backlog/pcb-engine-plan.md decision 3b: per-net current applied
+    (me692624 decision 3b: per-net current applied
     uniformly to every segment of a star topology over-widens every leaf —
     a real, large, unbuilt slice). This is the diagnostic half only: when
     the router fails, it must say why, distinguishable by kind.
@@ -355,7 +355,7 @@ class UnroutedReason:
       outline to pour a plane INTO (:func:`_pour_planes`), so the
       connection has nowhere to land. Was previously folded into the
       generic ``unrouted`` bucket with no distinguishing cause at all —
-      see docs/backlog/pcb-engine-plan.md's "BOARD TWO" finding 2's
+      see me692624's "BOARD TWO" finding 2's
       sibling note.
     - ``'layer_lock'`` — this net's class names a ``"layers"`` restriction
       (Rulings 2026-09-19 item 7, e.g. the EWOD escape nets' ``["B.Cu"]``)
@@ -755,7 +755,7 @@ def _pour_planes(
     plane was authored on In1.Cu — 61 ``clearance`` ERRORS, every one
     ``pour[GND] <-> via[ARR1_RxCy]`` at -0.09mm, one per plaza via the
     fill swallowed. Same shape of miss as the router's own
-    (docs/backlog/pcb-escape-and-driver-chain.md item 2): a fixture the
+    (me690320 item 2): a fixture the
     pass cannot see is one it draws straight through.
     """
     layer_names = [str(layer.get("name")) for layer in ir.stackup]

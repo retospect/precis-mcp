@@ -141,7 +141,7 @@ used here as-is or extended with se's own cascades:
   definition, events recomputed on read; ``observe_ray`` stores only a
   digest. Observation only — no ray op touches geometry.
 
-Off-the-shelf rung 1 (docs/backlog/se-off-the-shelf-fabrication.md) adds
+Off-the-shelf rung 1 (me695392) adds
 the ops for things you *don't* make:
 
 - ``set_mode``        — assign a block's manufacturing mode
@@ -173,7 +173,7 @@ the ops for things you *don't* make:
   the ambiguity this avoids. Lines whose target is removed go with it
   (the vacancy rule ``remove_block``/``disconnect`` already follow).
 
-Slice 2 of docs/backlog/structural-solution-space.md adds the one
+Slice 2 of me695531 adds the one
 solver-backed op:
 
 - ``formfind``       — force-density form-finding over the axial
@@ -477,7 +477,7 @@ def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
 #: block's realization IS chemistry, so the thing it binds is an atomistic
 #: design. ``nm`` was legal here while that kind existed; the merge retired
 #: the kind and 0008 dropped it from the CHECK constraint too. ``pcb``
-#: arrived with the rough box (docs/backlog/pcb-se-binding.md v0): a
+#: arrived with the rough box (me692932 v0): a
 #: bound board's realization is derived at load by
 #: :func:`precis_se.persist.attach_boards` from ``mechanical_profile``.
 _BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part", "pcb")
@@ -652,7 +652,7 @@ class SeBlock(BlockNode):
     bound_kind: str | None = None
     bound: str | None = None
     #: The block's explicit material — a ``kind='material'`` ref slug
-    #: (gr514245, docs/backlog/se-native-fields.md ruling Q3),
+    #: (gr514245, me694928 ruling Q3),
     #: template-owned like ``mode``: an instance resolves it from its
     #: template (:func:`effective_material`). ``None`` = undeclared, and
     #: readers fall back to ``mode``'s ``family/material`` half; a slug

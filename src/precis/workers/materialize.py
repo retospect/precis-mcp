@@ -1,5 +1,5 @@
 """The demand materializer — §F cycle a
-(``docs/backlog/cluster-scheduling.md`` §F, ~L280-306).
+(`me695459` §F, ~L280-306).
 
 A scheduler :class:`~precis.workers.scheduler.Cadence` (300s, fleet-
 singleton via the lease claim, mirroring ``health_digest``'s shape) that

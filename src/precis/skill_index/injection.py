@@ -1,6 +1,6 @@
 """Bimodal skill injection — the perfect skill, or nothing.
 
-Implements §2 of ``docs/backlog/mcp-surface-economy.md``:
+Implements §2 of `me691324`:
 retrieval-as-infrastructure. Measured against prod, an agent almost never
 *decides* to search for a skill on its own (5 of ~19,853 jobs) — so the
 harness runs the first hop of skill RAG itself, at the handful of

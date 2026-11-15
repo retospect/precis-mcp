@@ -1125,7 +1125,7 @@ def _refresh_patent_claims_digest(
 ) -> None:
     """For a **patent** tick with a bound draft, stamp the freedom-to-operate
     claims digest onto the tick's ``meta.working_set`` so the planner injects
-    the prior-art claims (``docs/backlog/patent-authoring-loop.md``). Discovers
+    the prior-art claims (`me690333`). Discovers
     the draft's linked prior-art patents and writes one eye per claim chunk.
     Best-effort — a digest failure must never sink a tick."""
     try:

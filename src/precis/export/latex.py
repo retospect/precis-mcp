@@ -2616,7 +2616,7 @@ def render_body(
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
     ``doc_type='patent'`` renders prior-art references in-text (no
-    ``\\cite`` / no bibliography) — see ``docs/backlog/patent-authoring-loop.md``.
+    ``\\cite`` / no bibliography) — see `me690333`.
 
     ``footnote_refs=True`` (reMarkable send-to-tablet mode) turns every source
     citation into a self-contained numbered ``\\footnote`` — human cite +

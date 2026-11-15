@@ -1,6 +1,6 @@
 """Figure digitiser — calibrated, uncertainty-bearing numbers off a plotted series.
 
-``docs/backlog/figure-digitise.md`` (gr514185): papers print results only as
+`me695362` (gr514185): papers print results only as
 curves; precis can quote a caption but cannot turn the picture into numbers.
 The design rule is *deterministic geometry measures, a vision model only
 proposes* — nothing a model says becomes a number without passing a pixel

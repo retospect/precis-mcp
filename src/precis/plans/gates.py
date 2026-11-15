@@ -1,6 +1,6 @@
 """Gate evaluators — the predicates a plan's gate todos wait on.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans" (node table row *gate*,
+Spec: `me692430` § "Plans" (node table row *gate*,
 "The dispatcher tick" step 1). A gate is a todo with
 ``meta.gate = {kind, args}``; the dispatcher tick calls :func:`evaluate` for
 each and nothing is dispatched for it. Kinds:

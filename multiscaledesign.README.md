@@ -2,7 +2,7 @@
 
 Working note for the multiscale optimisation leg. Not a spec: the specs
 are in `docs/backlog/`, the method in
-`docs/backlog/multiscale-optimisation-method.md`. This file records
+me694543. This file records
 where the build stands so a session can resume without re-deriving it.
 
 ## Method (settled)

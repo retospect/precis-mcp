@@ -1,6 +1,6 @@
 """Radial-rings SVG projection of a :meth:`Store.neighbourhood` depth-2
 result — the picture behind ``GET /graph/<kind>/<id>``
-(``docs/backlog/web-graph-navigation.md`` slice 3).
+(`me694223` slice 3).
 
 Layout is computed in Python, not a force layout or a JS library: the
 focus sits at the centre, its hop-1 neighbours on the first ring evenly

@@ -476,7 +476,7 @@ def convert_needs_a_human(
     section in the returned body as ``- td<id>: <first line>`` lines so
     the filed report links into Reto's queue (``search(kind='todo',
     tags=['waiting-for:reto'])``) instead of leaving the ask stranded in
-    prose (``docs/backlog/doctor-report-and-alert-channel-quality.md``
+    prose (`me690520`
     piece B).
 
     A bullet is filed only when nothing already makes it findable: it

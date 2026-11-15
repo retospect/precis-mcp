@@ -17,7 +17,7 @@
 #      The serving node is the first host of the overlay's sglang_serving group.
 # Needs the serving node's SGLang to run with a context length well above 16k; a Claude
 # Code turn with CLAUDE.md plus tool schemas does not fit in 16k
-# (docs/backlog/claude-code-on-local-serving.md).
+# (me695114).
 set -euo pipefail
 . "$(dirname "$0")/lib/node-host.sh"
 serving="$(inventory_group_hosts sglang_serving | head -n 1)"

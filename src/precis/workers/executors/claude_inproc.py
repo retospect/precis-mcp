@@ -1260,7 +1260,7 @@ def _parent_todo_id(store: Store, job_ref_id: int) -> int | None:
 
 
 # ── Review-ledger writeback (rung 3b — pass-only, "no record = not
-# passed" per docs/backlog/paper-writing-pipeline.md §"Review — the
+# passed" per me689904 §"Review — the
 # memoized approval ledger") ───────────────────────────────────────────
 #
 # A review-mode plan_tick's parent todo carries meta.review=<persona> +

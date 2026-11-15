@@ -1,5 +1,5 @@
 """Clearance-hole **fit classes** — how big a hole a given thread passes
-through (docs/backlog/se-off-the-shelf-fabrication.md, engine 2).
+through (me695392, engine 2).
 
 A fit class is the one number that turns a `screw` mechanism into
 geometry: an M6 does not pass through a 6.0 mm hole, and *which* larger

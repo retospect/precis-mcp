@@ -6,7 +6,7 @@ the claims often do not say which. Claims, in the hub and in the final draft
 text, must be complete enough for an expert in the field to replicate them.
 No pedantry: conditions the field assumes by default (about 25 degC, 1 bar,
 air, standard states) stay implicit. Conditions with no default must be
-stated." (`docs/backlog/claim-conditions-completeness.md`.)
+stated." (me691778.)
 
 A read-only measurement over the 2771 live hubs cited by dr348633 found 57%
 of electrochemical-measurement hubs, 77% of DFT-step hubs and 48% of

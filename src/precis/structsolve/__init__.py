@@ -19,7 +19,7 @@ Modules:
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
 - :mod:`precis.structsolve.complementarity` — active-set unilateral
-  analysis (docs/backlog/complementarity-solver.md slices 1-3, core):
+  analysis (me694137 slices 1-3, core):
   given topology, per-member axial rate/free-length/sign-idiom and
   supports, finds the small-displacement equilibrium in which every
   tension-only, compression-only and must-contact member obeys its

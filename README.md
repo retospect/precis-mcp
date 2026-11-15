@@ -389,7 +389,7 @@ The `cad` / `se` kinds form one design surface, macro to molecular
 Where this is heading — one geometry currency from tolerance boxes
 to atoms, situations/verdict tables, pattern groups, cost-aware
 optimisation — is mapped in
-[`docs/backlog/multiscale-design-architecture.md`](docs/backlog/multiscale-design-architecture.md).
+me694206 (me694206).
 
 ## Design highlights
 
@@ -594,11 +594,11 @@ high-traffic ones:
 - The multiscale design programme (shared design core, block
   libraries with states, situation rule tables, pattern groups,
   cost-aware optimisation) —
-  [`docs/backlog/multiscale-design-architecture.md`](docs/backlog/multiscale-design-architecture.md)
+  me694206 (me694206)
   is the living map.
 - `book`, `rmk` file handlers. (`tex` and `docx` shipped.)
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`docs/backlog/`](docs/backlog/README.md)).
-- `voice` kind — STT/TTS bound to transcript refs (spec: [`docs/backlog/voice-kind-spec.md`](docs/backlog/voice-kind-spec.md)).
+- `voice` kind — STT/TTS bound to transcript refs (spec: me693173 (me693173)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
 
 ## Documentation

@@ -11,7 +11,7 @@ effort: medium
   check passed 2026-10-15).
 - **Blocked by:** No declared active owner.
 - **Unblocks:** A shared substrate for se, hexfold, PCB and CAD.
-- **Acceptance:** Use [pattern-groups](../pattern-groups.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use pattern-groups (me694030) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `multiscale-design-core`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -23,7 +23,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 **Status:** ends when the shared design substrate the se/hexfold/pcb/cad
 kinds stand on exists — design-state-core, pattern groups, complementarity,
 make tree, attached models — per spec `me628475`,
-with `backlog/multiscale-design-architecture.md` as the map. design-state-core
+with me694206 as the map. design-state-core
 has shipped (r37), and the make tree (`make` kind, migration 0154) and
 attached models (`analyzed-by`, migration 0153) shipped v1; pattern-groups
 remains, the piece every consumer kind (se-machine-design, pcb-platform) is
@@ -34,13 +34,13 @@ implicitly waiting on.
 
 ## Do next
 
-1. **backlog/pattern-groups.md**
-2. **backlog/reaction-kind-and-synthesis-cost.md** — the make tree's
+1. **me694030**
+2. **me694355** — the make tree's
    chemistry residue (synthesis routes must terminate in stock; fragment
    scores); ranked in chemistry (13), listed here because the make tree
    it extends is this thread's.
 3. (structure-workspaces moved to its own thread,
-   [structure-workspaces.md](structure-workspaces.md), 2026-10-22; no longer
+   structure-workspaces.md (me693174), 2026-10-22; no longer
    held behind pattern-groups.)
 4. **spec `me628475`** §5.4 — carve the inspection
    toolkit v1 as its own item; Reto 2026-10-21 named it the first carved
@@ -51,20 +51,20 @@ check passed — designs load and validate, no dangling_* in drc, checkpoint
 accepted. History: `git log -- src/precis/design src/precis_se`.)
 
 (pose-vector-units.md deleted 2026-10-13: every round shipped; the
-notation-robustness rerun moved to backlog/claude-code-on-local-serving.md.)
+notation-robustness rerun moved to me695114.)
 
 ## Horizon
 
-1. **backlog/multiscale-optimisation-method.md**
-2. **backlog/margin-budget-tree.md**
-3. **backlog/structural-solution-space.md** — the cad-sdf field export it
+1. **me694543**
+2. **me694057**
+3. **me695531** — the cad-sdf field export it
    was blocked on has shipped (se-machine-design's cad-sdf item, deleted;
    field leaf + `realize(strategy='simp')` bridge); sequenced here by
    choice.
-4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
+4. **me692057** — owned by
    term-taxonomy; consumed here for pocket specs. Seam, not a duplicate
    rank — see below.
-5. **backlog/njit-hot-loops.md** — numba kernels for the shared geometry
+5. **me693862** — numba kernels for the shared geometry
    loops (structure pair-MIC, hexfold stick relax shipped 2026-10-01); open:
    prod-data parity check (Reto), chain relax, pcb coupling pairs (pcb
    thread owns), serve warm-up.
@@ -79,7 +79,7 @@ notation-robustness rerun moved to backlog/claude-code-on-local-serving.md.)
 
 ## Seam
 
-`backlog/class-lattice-similarity-spaces-and-laws.md` is term-taxonomy's
+me692057 is term-taxonomy's
 item (a v2 section of its own taxonomy work); this file's Horizon 5 is a
 pointer to it, not a second ranking. se-machine-design also consumes it for
 pocket specs — three threads reading one item, one owner.

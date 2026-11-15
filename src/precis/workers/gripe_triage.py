@@ -1,6 +1,6 @@
 """``gripe_triage`` — the scheduled LLM triage tick over open gripes.
 
-Gripe pipeline v2 slice 3 (``docs/backlog/gripe-pipeline-v2.md`` §Triage
+Gripe pipeline v2 slice 3 (`me691700` §Triage
 tick; Reto approved 2026-10-25): the old daily comment-only suggestion
 pass became a 15-minute LLM tick, still fired by the ``gripe_triage``
 scheduler Cadence, still dark unless ``service_config`` lights

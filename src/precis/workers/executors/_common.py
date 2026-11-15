@@ -292,7 +292,7 @@ def _executor_lane_lock_key(executor: str, host: str) -> str:
     return f"claim-exec-cap:{executor}:{host}"
 
 
-# ── Job slicing (docs/backlog/relax-slices.md) ────────────────────────
+# ── Job slicing (me692466) ────────────────────────
 #: Feature flag — OFF by default until r91 shows a real checkpoint
 #: resume on prod. Enabled per lane by env OR ``app_state``
 #: ``claim.slicing.<executor>`` (a live flip, no redeploy). Off ⇒ no
@@ -3094,7 +3094,7 @@ def _finite_json(value: Any) -> Any:
     (e.g. an empty-set ``min()`` seeded with ``inf``) fails the whole write
     with ``InvalidTextRepresentation``. That once discarded 48 finished GPU
     seed results and misclassified them as ``infra:child-killed``
-    (docs/backlog/autocatpath-seed-health.md). ``None`` is
+    (gr614723). ``None`` is
     the honest jsonb spelling of "no finite value here".
     """
     if isinstance(value, float) and not math.isfinite(value):

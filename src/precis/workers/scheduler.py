@@ -1,6 +1,6 @@
 """The decentralized recurring-work trigger — one scheduler, no singleton.
 
-Design: ``docs/backlog/factory-console-and-scheduling.md`` §15i (Slice 10)
+Design: `gr690514` §15i (Slice 10)
 — its exactly-once guarantee belongs in Postgres, not a designated node
 (a SPOF: down when a fire is due ⇒ missed fire).
 
@@ -196,7 +196,7 @@ def _run_dream_agent(store: Store, batch_size: int) -> None:
 
 
 def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
-    """One draft_refresh scan tick (docs/backlog/draft-refresh.md Part 2),
+    """One draft_refresh scan tick (me693762 Part 2),
     fired from the host-agnostic ``draft_refresh_scan`` cadence — any live
     worker can win it, same as ``health_digest``/``materialize``.
     ``batch_size`` caps how many jobs get minted this fire (defensive;
@@ -231,7 +231,7 @@ def _run_gripe_parked(store: Store, batch_size: int) -> None:
 
 def _run_gripe_parents(store: Store, batch_size: int) -> None:
     """Fill ``meta.dup_parents`` on freshly embedded gripes — pipeline
-    v2 slice 2 (``docs/backlog/gripe-pipeline-v2.md`` §Intake). Host-
+    v2 slice 2 (`me691700` §Intake). Host-
     agnostic like ``materialize``: the lease is the fleet-singleton
     throttle, and the pass itself is one indexed ANN query per claimed
     gripe — ``spends`` stays False, no LLM and no embedder call."""
@@ -614,7 +614,7 @@ def _run_health_digest(store: Store, batch_size: int) -> None:
 
 
 def _run_materialize(store: Store, batch_size: int) -> None:
-    """One demand-materializer tick (§F cycle a, ``docs/backlog/cluster-scheduling.md`` §F), fired from the host-agnostic
+    """One demand-materializer tick (§F cycle a, `me695459` §F), fired from the host-agnostic
     ``materialize`` cadence (any live worker can win it — unpinned, like
     ``health_digest``). ``batch_size`` is unused. DARK unless
     ``PRECIS_MATERIALIZE_EMBED=1`` — see workers/materialize.py."""
@@ -1347,7 +1347,7 @@ CADENCES: tuple[Cadence, ...] = (
     Cadence(name="llm_suitability", interval_s=24 * 3600, run=_run_llm_suitability),
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
-    # docs/backlog/self-healing-spine.md Layer 2: the liveness-net digest.
+    # me691477 Layer 2: the liveness-net digest.
     # Host-agnostic like cron_tick/watch_poll — any live worker can win it;
     # §A's lease machinery IS the fleet-singleton throttle, so
     # workers/health_digest.py doesn't invent its own.
@@ -1357,7 +1357,7 @@ CADENCES: tuple[Cadence, ...] = (
     # opts out (workers/materialize.py::_materialize_enabled); this cadence
     # firing every 5 min is itself harmless — the pass no-ops when disabled.
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
-    # docs/backlog/gripe-pipeline-v2.md §Intake: the duplicate-parent
+    # me691700 §Intake: the duplicate-parent
     # backfill. Same 300 s as materialize — a filed gripe's embedding
     # lands inside that pass's window, so this rides the same latency
     # band the spec budgets (~5 min busy). Host-agnostic; spends=False
@@ -1417,7 +1417,7 @@ CADENCES: tuple[Cadence, ...] = (
         host_affinity=GATEWAY_AFFINITY,
         eligible=_anki_sync_eligible,
     ),
-    # docs/backlog/draft-refresh.md Part 2: the living-draft staleness
+    # me693762 Part 2: the living-draft staleness
     # scanner. Host-agnostic like health_digest/materialize — the lease
     # IS the fleet-singleton throttle. Off the exact hour (4h7m) so it
     # doesn't pile onto the same tick as the hourly cadences above.

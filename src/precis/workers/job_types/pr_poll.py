@@ -1,6 +1,6 @@
 """``pr_poll`` — mint one ``pr-intake`` plan per open pull request (td543749).
 
-Spec: ``docs/backlog/dark-factory.md`` § "9. Inbound pull requests". DB plus
+Spec: `me692430` § "9. Inbound pull requests". DB plus
 GitHub reads under ``job_inproc`` (the ``gripe_validate`` shape). One pass:
 
 1. The repo: ``params.repo``, else the ``release.repo`` setting, else the

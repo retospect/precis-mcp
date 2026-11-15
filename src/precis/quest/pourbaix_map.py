@@ -1,7 +1,7 @@
 """Surface-Pourbaix resting-state map (slice 2) — the validity-map read over
 stored coverage anchors.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (§Rulings 2026-10-12). Slice 1 (``precis_pathway.coverage_job`` +
 ``precis_pathway.surface_pourbaix``) pays for the anchors once per slab and
 stamps the pooled inner CHE sweep onto each scan job's ``meta.che_sweep``.

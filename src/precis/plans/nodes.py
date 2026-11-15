@@ -1,7 +1,7 @@
 """Plan node shapes on todo ``meta`` (dark-factory, td542092).
 
 A plan is a todo subtree; what a node *is* lives in five optional meta keys
-(``docs/backlog/dark-factory.md`` § "Node kinds, on existing fields"):
+(`me692430` § "Node kinds, on existing fields"):
 
 ==============  ==========================================================
 ``op``          str job_type name, or ``{type, params?}`` -- a task

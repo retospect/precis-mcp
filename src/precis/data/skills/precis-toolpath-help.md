@@ -48,7 +48,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Goal | Toolpath | Depth |
 |---|---|---|
 | Find content by topic | `search(q='...')` (cross-kind) or `search(kind='paper', q='...')` | `precis-search-help` |
-| Search this repo's own docs/backlog/skills prose | `search(kind='md', q='...')` | `precis-md-help` |
+| Search this repo's own docs and skills prose | `search(kind='md', q='...')` | `precis-md-help` |
 | Read a thing you can name | `get(kind='paper', id='wang2020state')` / `get(kind='todo', id=122)` | `precis-get-help` |
 | Read or tag several gripes/alerts/todos you already hold | `get(kind='gripe', id=[42, 43])` (one summary block per id, ≤50) / `tag(kind='todo', id=[...], add=[...])` (one transaction) | `precis-gripe-help` |
 | Read one section / chunk | `get(id='pa5~40')` or a chunk handle `get(id='pc890282')` | `precis-addressing-help` |

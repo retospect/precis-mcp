@@ -1,8 +1,8 @@
 """Tier-0 prompt-injection scan — free, inline regex, source-agnostic.
 
 The cheap first rung of the injection-scan cascade
-(``docs/backlog/untrusted-input-injection-scan.md``, generalized from the
-email kind's ``docs/backlog/email-kind.md``): loud, attacker-tell patterns in
+(`me692543`, generalized from the
+email kind's `me690001`): loud, attacker-tell patterns in
 external text that will reach an LLM holding *other* tools. It is
 deliberately **coarse** — it only ever says ``clean`` (no signal) or
 ``suspect`` (something fired). A confident ``high`` verdict is the job of

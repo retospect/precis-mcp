@@ -38,7 +38,7 @@ effort: medium
 
 **Status:** ends when an EWOD board can be designed, placed, routed, DRC'd,
 fabricated and driven as a testable system without a human pinning
-geometry, on the way to backlog/pcb-global-codesign-north-star.md. Today
+geometry, on the way to me569391. Today
 the dogfood board routes, but its measurements described an artifact (the
 sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
@@ -74,7 +74,7 @@ deploy, for steps 2, 3 and 5 below. Step 4 waits on nothing
 and is the first build on reopen. The sheet-job adapter waits on
 se-machine-design's input shape (Do-next).
 
-1. **Anneal best state vs routability** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
+1. **Anneal best state vs routability** → me690040 (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
 2. **ewod-dogfood-6 re-put (board retired 2026-10-26; applies to a fresh generated board)** (ARR1 stored
    v3, code v10). `op='route'` on the stale board is
@@ -135,11 +135,11 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    capacities 40/47); the 0.5 mm tile capacity brackets the fine grid
    without locating it, so plan corridors wait on a connectivity-based
    capacity (`pcb-global-plan-probe.md` Part 4 — deleted with the grid router; git history).
-0b. **backlog/pcb-anneal-best-state-vs-routability.md** — after
+0b. **me690040** — after
    0: only if routed/55 stays low and `best_at` stays near 0, route the
    anneal's start/best/last states and keep the most-routed (Reto
    2026-10-12; no routability cost term).
-0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
+0a. **gr689739**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
    identical parts shares one spot. What is left is small: a courtyard
@@ -155,13 +155,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    + 1.0 = 1.375 mm) leaves less than the ~1.75 mm a below-box refdes needs.
    Fixed 2026-10-03: `silk.refdes_label_slot_mm` (text height + 2 ×
    clearance + inset) sets the furniture margin's floor.
-0a. **backlog/pcb-stackup-regions.md** — `in-progress/high`, filed
+0a. **me693134** — `in-progress/high`, filed
    2026-10-16 with Reto's rulings. Slice 0 (pour-reaches-pad predicate in
    `realize._plane_fanout`) fixes the red `test_pcb_fab_render_all_layers[3]`
    GND regression and is being relanded by `router-lane-fix`; slice 1
    (via-to-plane measured on four boards) waits on it — same function.
    Slice 2 is a migration and lands via `/go`.
-1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02,
+1. **me569109** — built 2026-10-02,
    deployed in R16 (the "undeployed" and "do not re-route until it deploys"
    notes below are history as of round 6): the route job DRCs its own router copper and strips a
    violating net (`drc:<rule>`); `op='move'` on a generator member moves
@@ -214,7 +214,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    remains clean; this is snapshot evidence, not a new prod route.
    Measured 2026-10-02: `view='congestion'` reports 0 over-capacity gaps;
    the failures split 8 `congestion` / 17 `no_path`. So
-   backlog/pcb-placer-starves-the-escape-corridor.md lost its only
+   me691398 lost its only
    evidence (it came from the invalid placement) and is demoted to
    idea/low until a legal board shows an over-capacity gap. Also ruled out
    (2026-10-01): the escape layer lock. All 54 pins reach B.Cu through the
@@ -265,7 +265,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
      order/placement, not iterations. (A route put on the
      stale v3 expansion is REFUSED, not warned; the re-expansion is
      handoff item 2's blocker.)
-5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
+5. **me690320** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 4: both are
    the escape corridor, this one is where the primitive lives. Reto
@@ -273,7 +273,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Horizon
 
-1. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
+1. **me569109** implementation slices —
    no longer waits on anything: the placer fix it queued behind landed
    2026-10-01. Still the precondition for trusting any number below this
    line. Its cost prerequisite is gone: check_via_pad_keepout is indexed,
@@ -283,23 +283,23 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    the nearest points since 2026-10-01, so `pad[ARR1_R7C0]` no longer reads
    as an electrode when it is the driver's land.
    Reading nearby:
-   **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — what
+   **me691330** — what
    is left of the placer's obstacle set after authored VIAS became
    obstacles on 2026-10-01: authored tracks and pours are still
    invisible, and the seed is still blind (the anneal walks a part off a
    via and reports it when it could not, but `pcb_route` surfaces that
    nowhere). Belongs with the invariant because refusing to route an
    illegal placement is what closes it.
-2. **backlog/pcb-place-route-residuals.md** — layer count as a user call
+2. **gr689738** — layer count as a user call
    (the one open item); waits on 1 because each slice's acceptance is an "is the board still
    valid" claim.
-3. **backlog/pcb-congestion-driven-spread.md** — the escape-yield lever
+3. **me693129** — the escape-yield lever
    that is not a defect (per-layer preferred direction is ruled out,
    unified place-route Decision 2). The sink's pads have been real since
    2026-10-01; re-measure escape yield before tuning it, because every
    number it was ranked on was taken against synthesized bounds.
-4. **backlog/pcb-missing-constraint-classes.md** +
-   **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
+4. **me693086** +
+   **me693015** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
    a class becomes enforceable rather than advisory. (§F shipped in
    `ewod_pad_array` declares its five fabric invariants as
@@ -315,7 +315,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    behind pcb-component-model. Its recorded blocker is also gone: the
    prod `parts` catalog is no longer empty (~2.0M rows, low range
    refilled by the Open API walk).
-5. **backlog/checklist-kind.md** — `ready/high`; the argued, invalidating
+5. **me693927** — `ready/high`; the argued, invalidating
    ledger the seed items below instantiate (first instance: pcb
    pre-tapeout). Ranked beside its seed companion, not above 5: a ledger
    over unenforceable constraints is theatre either way.
@@ -333,34 +333,34 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    it but a human looking at the render. Same root gap as Do-next 4's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
-8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+8. **me690877** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-9. **backlog/ewod-synthesis-protocol.md** +
-   **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
+9. **me690494** +
+   **gr695313** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-10. **backlog/pcb-ewod-mechanical-sheets.md** — mech2d v1
+10. **me690228** — mech2d v1
     shipped; left: stencil bridges, channel-cutout variant, coating
     extent, `view='cutsheets'` (not `mechanical`, which is the fab view),
     generator-row persistence. Dimensions ruled 2026-10-21: items 1, 2, 4,
     5 buildable; 3's wait on the parylene extent is satisfied, so it is
     buildable too.
-13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
+13. **me692460** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
-14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +
-    **backlog/pcb-stackup-edit-orphans-a-class-layer-lock.md** (`low`) —
+14. **me692934** (`prio: medium`) +
+    **me692798** (`low`) —
     two ways a stored board is silently invalid: a pour island with none of
     its net's copper, a stackup edit that strands a net-class layer lock
     until route time. Wait on 1, where "stored board is valid" becomes a
     gate. Island policy ruled 2026-10-16: stitch to the net's plane, drop
     only when unreachable (pcb-stackup-regions' rulings).
-15. **backlog/component-followons.md** — `idea`; comparator/violator query,
+15. **gr695227** — `idea`; comparator/violator query,
     price-break costing on the shipped component kind. Waits on nothing; no
     pcb item depends on it.
-16. **backlog/pcb-argue-backport-se.md** — unblocked 2026-10-12
+16. **me690276** — unblocked 2026-10-12
     (pcb-argue-with-design slice 2 landed the shared job); se-machine-
     design Do-next 8, not ranked here; low, back-ports the argue box to se.
-17. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
+17. **me569391** — the arc all of the
     above serves; re-read when ranking the next round.
 
 - **oblique pads, remaining path** (2026-10-02). `pads_for_ir` now emits an
@@ -407,7 +407,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
   `realize.pad_board_wh` 2026-09-30, item deleted. The guarantee's
   argument (`BASELINE_DRC_ERRORS = 0`, "find the leak") held up: it is
   what made the measurement worth taking instead of tuning the cost term.
-- **pcb-se-binding seam (2026-10-21)** — [pcb-se-binding §Rough box (v0)](../pcb-se-binding.md) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; it touches no router, generator or realizer file. No action needed here.
+- **pcb-se-binding seam (2026-10-21)** — pcb-se-binding §Rough box (v0) (me692932) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; it touches no router, generator or realizer file. No action needed here.
 
 ## Seam
 

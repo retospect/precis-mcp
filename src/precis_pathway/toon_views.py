@@ -156,7 +156,7 @@ def steps_toon(meta: dict[str, Any]) -> str:
 _NUM_RE = re.compile(r"(?<![A-Za-z])[0-9]+(?:\.[0-9]+)?")
 
 #: Cap on distinct message templates rendered by ``warnings_toon``'s
-#: "messages" section (docs/backlog/pathway-conditions-effects-report.md
+#: "messages" section (me692126
 #: "Warnings" fix 1) — a long tail of one-off templates still shows as a
 #: trailing "(+K more templates)" count rather than being silently dropped.
 _MESSAGE_TEMPLATE_CAP = 25
@@ -301,7 +301,7 @@ def _warnings_summary(meta: dict[str, Any]) -> str:
 
 def warnings_toon(meta: dict[str, Any]) -> str:
     """Severity- and route-aware warnings view (spec:
-    docs/backlog/pathway-conditions-effects-report.md "Warnings" fix 1):
+    me692126 "Warnings" fix 1):
     the flat ``meta['warnings']`` prose list mixes informational marginal
     notes, a repeated data gap, off-route notes, and the few fatal on-route
     blockers, so on prod (2026-09-16, n=24) 16/24 pathways showed >10
@@ -1123,7 +1123,7 @@ def analysis_text(
 
 def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str:
     """Focused single-step view for a ``pw<id>~<source>→<target>`` selector
-    (Simulation step deep-links, docs/backlog/quest-dossier-dialectic.md).
+    (Simulation step deep-links, me690849).
     ``edge`` is one row of ``meta['graph']['links']`` — see
     :func:`precis.utils.reaction_graph._reaction_edges` for the shape."""
     refs = meta.get("structure_refs") or {}
@@ -1298,7 +1298,7 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
 
 def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     """Microkinetics digest for a computed pathway (Simulation step deep-links,
-    docs/backlog/quest-dossier-dialectic.md): Eyring rates + residence times +
+    me690849): Eyring rates + residence times +
     the largest electronic barrier, so a dossier can cite ``pw<id>~<label>``.
     A barrier maximum alone cannot establish rate control of the solved cycle.
 

@@ -22,7 +22,7 @@ A line whose inputs were not supplied is marked not-applicable and does not
 block ``card.ok`` — but ``line.applicable`` is False, so a stored card never
 silently claims a check it did not run.
 
-The **species group** (docs/backlog/se-multiphysics.md slice 1) rides on
+The **species group** (me694808 slice 1) rides on
 :attr:`RegimeCard.species` whenever any species input
 (``molecular_d``, ``k_s``, ``apparent_order``) is supplied:
 

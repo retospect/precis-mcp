@@ -1,6 +1,6 @@
 """pcb → geometry: a bound board's envelope, ports and segments, derived
 at read time from ``mechanical_profile`` — the consumer half of the 0041
-bridge (``docs/backlog/pcb-se-binding.md`` §Rough box v0).
+bridge (`me692932` §Rough box v0).
 
 **Everything here is pure**, and since pcb-workspace-code slice 0b the
 *derivation itself* is not here: :func:`precis_geom.pcb_shape.

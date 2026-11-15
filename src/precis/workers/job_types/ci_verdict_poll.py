@@ -1,6 +1,6 @@
 """``ci_verdict_poll`` — record check.yml's verdict on a release cut (td543733).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``poll`` node of the ``release-pass`` template. Mechanical, DB + one
 HTTPS read, under ``job_inproc`` (the ``gripe_validate`` shape), so the cut
 session never waits on CI and no lane is held while CI runs.

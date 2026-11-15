@@ -1,4 +1,4 @@
-"""Mesh upkeep evals — slice 0 of ``docs/backlog/local-mesh-upkeep.md``.
+"""Mesh upkeep evals — slice 0 of `me693504`.
 
 The question the package answers: can a *local* model do graph-memory
 upkeep well enough that a bigger model's review is cheap, or well enough

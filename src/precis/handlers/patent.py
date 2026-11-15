@@ -1,6 +1,6 @@
 """``PatentHandler`` — read-only patent kind backed by EPO OPS.
 
-Phase 1 surface (deferred items: ``docs/backlog/patent-kind-followons.md``):
+Phase 1 surface (deferred items: `me694332`):
 
 - ``search(q=..., tags=..., scope=..., page_size=...)`` — merged local +
   remote OPS hits with ``[local]`` markers.
@@ -307,7 +307,7 @@ class PatentHandler(Handler):
         # filters out hits whose DOCDB id is already in the local
         # store, so the agent sees only patents it hasn't fetched yet
         # — the natural "prior-art sweep" mode. See
-        # ``docs/backlog/search-future-filters.md`` §7.
+        # `me693699` §7.
         if reach not in ("both", "local", "remote"):
             raise BadInput(
                 f"invalid reach={reach!r} - expected 'both', 'local', or 'remote'",
@@ -693,7 +693,7 @@ class PatentHandler(Handler):
                 return Response(body=f"no body blocks stored for {slug}")
             want = "claim" if view == "claims" else "description"
             # Blocks ingested since slice 1 carry a ``patent_block`` meta
-            # marker (docs/backlog/patent-authoring-loop.md); filter to the
+            # marker (me690333); filter to the
             # requested section, and prefix each claim with its number +
             # independent/dependent structure. Patents ingested before the
             # marker have none — fall back to the historical full dump so

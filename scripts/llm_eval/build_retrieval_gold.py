@@ -1,6 +1,6 @@
 """Build the retrieval-eval gold set for one quest (prod, read-only).
 
-Slice 2 of ``docs/backlog/graph-gardener-value.md``: for each of the
+Slice 2 of `me693885`: for each of the
 quest's rubric questions, the chunks that answer it are gold. The builder
 pulls the rubric questions (``meta.rubric_objectives`` axes when set,
 else the title's ``Rubric:`` criteria), retrieves a candidate pool per

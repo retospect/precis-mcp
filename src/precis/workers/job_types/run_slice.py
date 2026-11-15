@@ -1,6 +1,6 @@
 """``run_slice`` — launch one slice headless on a lane (dark factory step 6).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Next steps" 6, § "Lanes:
+Spec: `me692430` § "Next steps" 6, § "Lanes:
 capacity shapes", § "Engine: ``claude -p`` or direct access?" and § "Job
 lifecycle per task". The todo holds the work state (what, prio, lease,
 loop comments); this job holds the run state. Tie it to its slice with

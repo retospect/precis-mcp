@@ -154,7 +154,7 @@ one discover source is verified once.
 flag works post-§L). Enable on exactly **one host**: the rejection memo
 is a read-modify-write on ``meta``.
 
-**Reground** (``docs/backlog/taproot-reground.md``) grows this same pass
+**Reground** (`gr693791`) grows this same pass
 from additive-only enrichment into full re-grounding — deliberately not a
 second worker; this is the one mechanism that improves an existing hub.
 Active :class:`RegroundConfig` adds five things onto the same
@@ -235,7 +235,7 @@ them into ``service prio``. Enable a service producer on **one host** —
   backstop); excludes composite hubs (evidence attaches to atoms only);
   discovers via corpus semantic ANN + citation-following; re-verifies each
   hub's own unverified edges per pass. Grown into **reground**
-  (``docs/backlog/taproot-reground.md``) — a strict per-edge KEEP/PRUNE/
+  (`gr693791`) — a strict per-edge KEEP/PRUNE/
   CONTRADICTS audit, deeper same-paper re-discovery, and removal through
   :func:`.hub.remove_evidence` — behind ``PRECIS_TAPROOT_REGROUND*``; the
   prune sub-stage additionally gates on :mod:`.slice_refine_eval` passing.
@@ -341,7 +341,7 @@ _CLAIM_HUB_SQL = claim_hub_predicate_sql()
 #: A hypothesis hub carries the same TAPROOT:claim + STATUS:canonical tags,
 #: so without this the widening pass would go hunting for evidence that
 #: supports a guess — a confirmation engine aimed at exactly the thing
-#: nothing supports yet (docs/backlog/nanopub-corpus-remediation.md).
+#: nothing supports yet (me691969).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 #: The "not a landscape sentence" clause (``taproot.claim_type`` policy
 #: ``widen=False``). A landscape hub states the common case for a whole
@@ -1409,7 +1409,7 @@ def _drop_patent_claim_blocks(
 
 # ══ reground — the audit/prune/re-discover/escalate extension ═══════
 #
-# docs/backlog/taproot-reground.md. Everything below extends the SAME
+# gr693791. Everything below extends the SAME
 # claim→discover→verify→write→stamp spine above; there is deliberately no
 # parallel producer. All of it is DARK: :meth:`RegroundConfig.from_env`
 # returns ``None`` unless an operator sets the flags, and the prune stage
@@ -1447,7 +1447,7 @@ _META_REGROUND_VERDICT = "reground_verdict"
 _META_REGROUND_INTENT = "reground_intent"
 
 #: Per-hub opt-in for the **destructive** retire/regenerate sub-stage.
-#: Two accepted forms, both checked (docs/backlog/taproot-reground.md's
+#: Two accepted forms, both checked (gr693791's
 #: "distinct flag for the sweep + a ``TAPROOT:reground-ok`` opt-in tag"):
 #: the spec's literal ``TAPROOT:reground-ok``, for a human who hand-tags a
 #: hub, and the side-channel ``TAPROOT_REGROUND_OK:1`` namespace that is
@@ -2829,7 +2829,7 @@ def apply_reground_plan(
 ) -> RegroundApplyResult:
     """Apply one hub's planned prunes — **after** its adds have committed.
 
-    The four deterministic requirements from docs/backlog/taproot-reground.md
+    The four deterministic requirements from gr693791
     §"Applier must enforce add-first in code, not in a prompt":
 
     1. **Read back** every add from ``links`` on a fresh connection — what
@@ -4986,7 +4986,7 @@ def run_hub_refine_pass(
             )
             _clear_refine_followups(store, hub_ref_id)
             # Prunes run only now — after the adds above are committed and
-            # can be read back (docs/backlog/taproot-reground.md's
+            # can be read back (gr693791's
             # add-first contract, enforced in code).
             for plan in plans:
                 applied = apply_reground_plan(store, plan)

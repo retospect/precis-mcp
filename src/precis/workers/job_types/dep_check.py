@@ -1,6 +1,6 @@
 """``dep_check`` — resolve a Dependabot PR's lock, never run it (td543749).
 
-Spec: ``docs/backlog/dark-factory.md`` § "9. Inbound pull requests"; the
+Spec: `me692430` § "9. Inbound pull requests"; the
 ``check`` node of a ``dependabot`` ``pr-intake`` plan. Mechanical, no LLM.
 A detached submit/poll pair under ``ssh_node`` (the ``release_cut`` shape):
 :func:`submit` launches ``python -m precis.workers.job_types.dep_check`` in

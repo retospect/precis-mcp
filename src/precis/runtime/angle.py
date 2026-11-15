@@ -1,4 +1,4 @@
-"""The angle spray and the dreamable-region view (docs/backlog/dreaming.md).
+"""The angle spray and the dreamable-region view (gr690614).
 
 ``AngleMixin`` carries ``search(angle=... | like=...)`` — the diverse-cone
 semantic sampler — and ``search(view='dreamable')`` — the salience-seed
@@ -45,7 +45,7 @@ class AngleMixin(RuntimeShape):
     """The ``angle=``/``like=`` spray and the ``view='dreamable'`` region."""
 
     # Default dream-target kinds for the angle spray when the caller
-    # doesn't pin one (docs/backlog/dreaming.md, §Scope). ``draft`` is
+    # doesn't pin one (gr690614, §Scope). ``draft`` is
     # in here so the dreamer wanders the project write-up we're actively
     # building — the live prose we think about most, not just the frozen
     # corpus (paper) and crystallised thoughts (memory).
@@ -62,7 +62,7 @@ class AngleMixin(RuntimeShape):
         (``argmax(last_seen - last_dreamt)`` over target kinds), return
         its nearest neighbourhood, and **stamp ``last_dreamt`` on every
         surfaced chunk** so the region rotates out and a different one
-        tops the next run (docs/backlog/dreaming.md, §view='dreamable').
+        tops the next run (gr690614, §view='dreamable').
         No sub-clustering — the cosine ring *is* the region. Unlike the
         angle spray this does **not** bump salience: looking at a region
         counts as *dreaming* it, not as an external access.
@@ -134,7 +134,7 @@ class AngleMixin(RuntimeShape):
         ``search(q=... | like=<id>, angle=<float>, n=<int>)`` — seed by
         a query string or an existing item's stored vector, then return
         ``n`` mutually-distinct items at the requested cosine from the
-        seed (docs/backlog/dreaming.md, §The ``angle`` spray). Card
+        seed (gr690614, §The ``angle`` spray). Card
         chunks are valid snap targets so a memory's only embedding is
         reachable. Surfacing bumps salience (suppressed for the dreamer).
         """

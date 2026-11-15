@@ -743,7 +743,7 @@ def register_aliases_and_maybe_upgrade(
 
     # ── 2. Stub upgrade / markup printable-attach.
     #
-    # Markup-first ingest (docs/backlog/dark-features-activation.md) splits the
+    # Markup-first ingest (gr690306) splits the
     # historical single case ("stub gets a PDF → set hash + write
     # chunks") into two, distinguished by whether the ref already has
     # *body* chunks (``ord >= 0``):

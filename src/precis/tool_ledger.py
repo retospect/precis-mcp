@@ -885,7 +885,7 @@ def sessions_rollup(
 ) -> dict[str, Any]:
     """Per-session roll-up of the ledger — the block-navigation slice-2
     meter ("hops, bytes and budget refusals per session",
-    ``docs/backlog/block-navigation.md``).
+    `me694125`).
 
     One row per ``session_id`` (0209's key; NULL-session rows — CLI,
     inproc — correlate by ``agentlog_id`` instead and stay out): call

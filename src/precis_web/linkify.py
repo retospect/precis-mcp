@@ -38,7 +38,7 @@ Three sibling maps, precedence-ordered (a head can appear in only one in
 practice, but ``refuted`` wins if it doesn't): ``pending_claims`` — head
 resolves to a finding, not yet a hub — hollow muted-violet ``◇`` to the
 finding. ``refuted_claims`` — head tagged ``STATUS:refuted``
-(docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — filled
+(me690849 §"Refuted lifecycle") — filled
 RED ``◆`` to the finding, wins over live/pending. ``hypothesis_claims`` —
 hub has ``refs.meta.artifact_type == 'hypothesis'``
 (docs/backlog/hypothesis-cites-render-not-stored.md) — fuchsia ``◈`` to
@@ -180,7 +180,7 @@ _CLAIM_PENDING_ANCHOR_CLS = (
 _CLAIM_PENDING_SIGIL = "◇"
 
 #: A finding cite whose head is tagged ``STATUS:refuted`` — the
-#: do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
+#: do-not-repropose ledger (me690849
 #: §"Refuted lifecycle"). Red, filled — "the claim as stated is dead" —
 #: so every cite site turns red automatically the moment the underlying
 #: finding is stamped refuted, with no per-surface rendering work. Wins
@@ -591,7 +591,7 @@ def _render_claim_hub(
     linking to the refuted finding itself (``/r/finding/<id>``, the same
     href convention the pending branch uses — there is no separate refuted
     page), ``title="refuted — see ruling"``. This is the do-not-repropose
-    ledger's cite-site rendering (docs/backlog/quest-dossier-dialectic.md
+    ledger's cite-site rendering (me690849
     §"Refuted lifecycle") — "red = the claim as stated is dead", not "this
     document is wrong".
 

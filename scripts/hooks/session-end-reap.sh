@@ -26,7 +26,7 @@
 # this is pure side effect and never reports back. Backstopped by
 # scripts/reap-worktrees on the NEXT SessionStart if this is skipped/fails.
 #
-# gr260192 / docs/backlog/reaper-removed-live-session-worktree.md (proposals
+# gr260192 / gr692372 (proposals
 # 1+2): scripts/reap-worktrees, the SIBLING-session backstop, now re-verifies
 # the bucket after a grace-period sleep and treats a fresh `.claude/purpose`
 # as a tripwire before removing someone ELSE's worktree, because it's

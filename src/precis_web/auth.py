@@ -5,7 +5,7 @@ mutation route — was served to anything that could reach the port, with
 tailnet membership as the only boundary. This module is the lock on that
 door. It is deliberately coarse: **every row in ``web_users`` is fully
 authorized**. Per-route ACLs, roles and per-user ask-routing are a
-separate, deferred design (``docs/backlog/identity-and-access.md``).
+separate, deferred design (`me690624`).
 
 Three responses:
 

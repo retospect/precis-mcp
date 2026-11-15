@@ -103,7 +103,7 @@ HANDLER_LEVEL_OPS = (
     # write to another kind, never deferred.
     "make_steps",
     # The flat-pack box generator (:mod:`precis_se.flatpack.se_op`,
-    # docs/backlog/flatpack-furniture-generator.md build 3): mints one
+    # me694692 build 3): mints one
     # cad design per panel under ``<design>-<panel>`` slugs — store-write
     # deferred like ``realize`` — and hands its ``Flatpack.params`` back
     # through ``flatpack_params`` for the handler's ``meta['flatpack']``
@@ -196,7 +196,7 @@ def apply_ops_with_atomic(
     ``finish_generate`` follows for its own deferred half).
 
     **``realize(strategy='simp'|'manufacture')`` is validated here and
-    run/enqueued by the caller** (docs/backlog/structural-solution-space.md
+    run/enqueued by the caller** (me695531
     slice 4 bridge): :func:`precis_se.simp_bridge.prepare_simp` /
     :func:`precis_se.manufacture.prepare_manufacture` run the op's whole
     refusal set against the in-memory tree, and the resulting request

@@ -26,8 +26,8 @@ The `pcb` kind's LLM-guided topological place-and-route system in
 `src/precis/pcb/`. The design spec `docs/backlog/pcb-guided-place-route.md`
 was retired 2026-10-25 and deleted 2026-11 (git history holds it): shipped
 state lives in the `src/precis/pcb/__init__.py` docstring and `git log`,
-open work in `docs/backlog/pcb-topo-place.md` and
-`docs/backlog/pcb-place-route-residuals.md` — the paper quotes that state
+open work in me569095 and
+gr689738 — the paper quotes that state
 as of writing and will go stale against it.
 
 ## Open threads

@@ -114,7 +114,7 @@ KIND_CODES: dict[str, str] = {
     # One ref per fleet host (gr549585, migration 0273) — a slug entity
     # addressed ``ma_<host>``; ``ma`` is material's, so ``mh``.
     "machine": "mh",
-    # Sourced reaction-fact store (docs/backlog/reaction-kind-and-synthesis-cost.md)
+    # Sourced reaction-fact store (me694355)
     # — a slug entity; per-value sourced facts live in measures, not a chunk
     # table, so no CHUNK_CODES entry, same as material/component. The kind is
     # `rxn`, not `reaction`: "reaction" is already an edge-kind value in the

@@ -2,7 +2,7 @@
 id: pillar-review
 family: work
 title: precis — reconcile the roadmap against backlog, gripes and threads
-summary: product-plan review per session-restart wave — reconcile docs/roadmap.md with backlog items, open gripes and active threads; relink orphan gripes, prune closed pointers, then write three disjoint commits after the user's go
+summary: product-plan review per session-restart wave — reconcile docs/roadmap.md with graph specs, open gripes and active threads; relink orphan gripes, prune closed pointers, then write three disjoint commits after the user's go
 answers:
   - how do I run the pillar review on a session-restart wave?
   - how do I reconcile roadmap pillars with the backlog and open gripes?
@@ -61,7 +61,7 @@ them to start step 3.
 
 Dispatch one `Explore` agent per pillar in one message, each with the
 pillar's end-state paragraph verbatim and this brief: enumerate the
-backlog items relevant to the pillar (slug, status, prio, threaded or
+spec roots and open slices relevant to the pillar (handle, status, prio, threaded or
 not, spec/slice/small, one-line intent), list the runtime surface that
 exists (skills, kinds, paths), and list the gaps between the end state
 and any filed item, citing the closest existing item for each. Plus one
@@ -143,5 +143,5 @@ rulings and what is still waiting on Reto.
 ## See also
 
 - [[whatneedsdoing]] — the read-side scan this review complements.
-- [[docs-triage]] — the item-level verdicts backlog files get.
+- [[docs-triage]] — the item-level verdicts spec sections get.
 - [[gripe-fleet]] — the coordinator mechanics a wave's gripes run on.

@@ -1,6 +1,6 @@
 """**Threads into soft material** — what a screw meets at the far end of
 a stack when the member it lands in was printed
-(docs/backlog/se-off-the-shelf-fabrication.md, engine 2b / rung 3c).
+(me695392, engine 2b / rung 3c).
 
 The sibling of :mod:`precis.fit_classes`, and the split is worth naming:
 fit classes answer *how big a hole this screw passes through*, which is a

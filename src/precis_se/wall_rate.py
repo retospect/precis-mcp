@@ -1,5 +1,5 @@
 """The ``wall_rate`` op — the catpath → ``wall-rate-constant`` binding of
-docs/backlog/se-multiphysics.md slice 1.
+me694808 slice 1.
 
 Handler-level because it reads the store (the same reason
 ``layout_chain`` is): ``{"op":"wall_rate","block":…,"datum":"patch:…",

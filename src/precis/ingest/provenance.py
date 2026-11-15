@@ -1613,7 +1613,7 @@ def check_refs_retraction(
 # TTL-gated DOI-validity check — the DOI-completeness twin of the block above
 # ---------------------------------------------------------------------------
 #
-# docs/backlog/draft-doi-completeness-check.md: DOI *presence* (does this ref
+# gr690484: DOI *presence* (does this ref
 # carry a DOI at all) is a pure read off ``ref_identifiers`` and needs no
 # network — see ``precis.export.retraction``. DOI *validity* (does the DOI
 # actually resolve upstream) is the one piece that does, and mirrors

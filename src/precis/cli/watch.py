@@ -1676,7 +1676,7 @@ def _is_pdf(path: Path) -> bool:
 
 
 #: Markup trigger extensions (single-suffix) and the tarball suffixes we
-#: treat as LaTeX e-print bundles. See ``docs/backlog/dark-features-activation.md``.
+#: treat as LaTeX e-print bundles. See `gr690306`.
 _MARKUP_SUFFIXES: frozenset[str] = frozenset({".xml", ".tex", ".ltx", ".html", ".htm"})
 _MARKUP_TARBALL_SUFFIXES: tuple[str, ...] = (".tar.gz", ".tgz", ".tar")
 

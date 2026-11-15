@@ -40,16 +40,19 @@ or map to your runtime's equivalent; Kimi maps commands via `/skill:<name>`.
 
 2. **Spec.** For anything architectural, multi-file, ambiguous, or where more
    than one reasonable approach exists — write it down before coding. The
-   item lives as `<slug>.md` in the backlog dir: start as an idea (a few
-   lines), grow the spec **in the same file** (front-matter `status: draft`
-   per the backlog `TEMPLATE.md`; mint via the `scaffold` agent —
-   boilerplate, never content). Put the plan there when the work will span
+   spec lives in **graph memory**: a spec root plus section nodes under the
+   Specifications hub, with execution state on its plan todo
+   ([[precis-spec-help]] has the shapes, the writer procedure and the
+   slicing). A small item — an idea or a one-paragraph annoyance — is a
+   gripe instead. Put the plan on the plan todo when the work will span
    more than one session, so it survives compaction. Whether a spec is even
    needed is the same kind of judgment call as [[bug]]'s three-bucket triage.
 
-3. **Spec review.** Spawn `ready` against the backlog spec before flipping
-   `status: draft` → `ready` (the fixer's pick signal; branch `fix/<slug>`).
-   Iterate on blockers; advisories are your call. Skip this for a spec you
+3. **Spec review.** Spawn `ready` against the spec root and its sections
+   before the first slice is dispatched: it judges build-readiness against
+   the section contract — concrete trigger, expected result, acceptance
+   evidence, with missing fixtures or thresholds already named as decisions
+   on the plan. Iterate on blockers; advisories are your call. Skip this for a spec you
    and the user finalized together in conversation (e.g. via `ExitPlanMode`)
    — `ready` exists for specs nobody adversarially checked yet.
 
@@ -72,8 +75,8 @@ or map to your runtime's equivalent; Kimi maps commands via `/skill:<name>`.
    and destroyed hours of unstaged work), so nobody commits unless you do.
 
 5. **Ship.** `[[land]]` (ship only) or `[[go]]` (ship + deploy). On ship, fold
-   surviving truth into the owning package docstring and **delete the backlog
-   item** in the same commit (`docs/README.md` §Backlog lifecycle — the
+   surviving truth into the owning package docstring and **retire the built
+   spec section**, superseded by the code handle that now carries it (the
    verdicts are [[docs-triage]]'s). **Both commands already own the next two
    stages internally** — do not spawn `reviewer` or `issue-closer` yourself
    before calling one of them:
@@ -84,7 +87,7 @@ or map to your runtime's equivalent; Kimi maps commands via `/skill:<name>`.
      (e.g. mid-session, before you're ready to land).
    - **Closing resolved issues** is a background `issue-closer` spawn inside
      `[[land]]`/`[[go]]`, after a green ship — it checks the shipped diff
-     against open gripes and backlog items and closes what it's confident
+     against open gripes and spec slices and closes what it's confident
      this ship fixed, then relays a one-line note. Nothing else to do here.
 
 6. **Report.** `[[land]]`/`[[go]]`'s own closing steps (residual harvest, then
@@ -102,6 +105,6 @@ front of every edit.
 ## See also
 
 - [[bug]] — the same "does this need a spec" judgment, on the fix side.
-- [[docs-triage]] — verdicts for the backlog items this flow creates and deletes.
+- [[docs-triage]] — verdicts for the spec nodes this flow creates and retires.
 - [[coder-chain]] — when the Coding stage is too big for one coder call.
 - [[next]] — picking which open item to flow.

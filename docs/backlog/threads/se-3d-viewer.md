@@ -20,7 +20,7 @@ effort: medium
 **Status:** ends when a reader can click any block of an se design and
 read its pose, envelope, ports, findings and load path in one panel, and
 the same scene yields publishable figures. It FEEDS
-backlog/se-feasibility-and-cost.md and does not own it — INDEX.md records
+me694377 and does not own it — INDEX.md records
 that as the far end all three se threads serve. Today the affordances work
 and are verified by canvas pixel-diff at the deployed sha. As of 2026-09-30
 that is no longer only against local fixtures: prod's `unicycle-c1` was
@@ -135,17 +135,17 @@ up:
    `strain`'s nightly `progress_*` checks never hit the 30 s stall text or
    the 2 min 2D fallback (need a slow server), and `progress_build_repaints`
    has no fixture over 1000 atoms (the small drum has 1304 — try it).
-3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+3. **gr695506**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    No reproducer yet: the live-level-change report looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+4. **gr695506**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-5. **backlog/se-mechanical-drc.md** — validator and render both built
+5. **me694687** — validator and render both built
    (the "tool volumes" toggle fetches `tool-volumes.json` on demand; the
    scene never runs `fasten`), and `probe` now pixel-diffs the toggle
    nightly — the seed mints the fixture's bound ISO fasteners first,
@@ -159,7 +159,7 @@ up:
    to 1.39 s; the render slice must not add to that. The flange_bolt_left
    error is an assembly-order fact (it goes in before the pinch bolt);
    whether to model order is open in the backlog item.
-6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+6. **gr695527** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
@@ -178,7 +178,7 @@ up:
    (`/se/{slug}/atoms.xyz|pdb`). The writer scale, the print check and the
    atom geometry are se-machine-design's: after their print-file button
    (`routes/se_print.py`) and writer scale. Atom geometry is in
-   `backlog/printable-atomic-models.md`. The floor is computed on the
+   me694168. The floor is computed on the
    server (one source of truth), so the dialog asks the route for it and
    does not hard-code 1e7/5e7.
 8. **Realized-geometry rung** (triaged 2026-10-28; symptom + dogfood: box3). The viewer draws envelopes at every rung, so hollow parts
@@ -226,7 +226,7 @@ ports, properties, findings, load path in one panel" — spans 1
 (se-interface-reaction-forces); the properties row depends on
 the region property layer in spec `me629029` (pocket-from-molecule).
 
-1. **backlog/se-pick-hierarchy.md** — click anything, get every level it
+1. **me694838** — click anything, get every level it
    belongs to. Keystone: three parked and two Do-next items have nowhere to
    render until a block can be selected and addressed. Unblocked today
    (id/name unification shipped). Seam with se-nucleic-chain (its Do-next
@@ -238,37 +238,37 @@ the region property layer in spec `me629029` (pocket-from-molecule).
    atom raycast, pick panel, "cite" into the design chat, and both tint
    gaps below closed. Left: shift-click shortcut, marking the picked atom
    on the canvas, the hexfold region level, the datum glyph.
-2. **backlog/se-3d-viewer-ux-batch.md**, selection inspector + per-block
+2. **gr695506**, selection inspector + per-block
    findings + honesty banner — waits on 1; the first panel where a block's
    pose, envelope, ports, connects and findings read at once; unparks three
    parked items in one go.
-3. **backlog/se-interface-reaction-forces.md** — waits on 2 for somewhere to
+3. **me694623** — waits on 2 for somewhere to
    put the number; delivers Reto's original ask and the load-path data 4
    needs.
-4. **backlog/se-mechanical-drc.md** beyond fastener_insertion_path — the
+4. **me694687** beyond fastener_insertion_path — the
    declared per-fastener install-order exception is ruled and buildable
    now (2026-10-21); phase 2 load-path tuning waits on 3.
-5. **backlog/se-container-block-is-not-first-class.md** — three subsystems
+5. **me694112** — three subsystems
    each guess what a container is. Waits on nothing; ranked here because
    the payoff shows only once viewer, validator and DRC all read
    containers (from 4 on).
-6. **backlog/se-view-figures.md** — waits on 1–2 to know what a figure
+6. **me694873** — waits on 1–2 to know what a figure
    captures; publishable figures out of the same scene.
-7. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
+7. **me694377** — the far end the arc serves;
    waits on 3 and 4.
 
 ## Parked
 
-- **[se3d-rev-meshes](../se3d-rev-meshes.md)** — `?rev=` on a past revision draws the live cad design's meshes (Do-next 8 residue); unparks on Reto's refuse-vs-snapshot ruling.
-- **backlog/se-3d-viewer-ux-batch.md**, colour-channel selector / clip
+- **se3d-rev-meshes (me694775)** — `?rev=` on a past revision draws the live cad design's meshes (Do-next 8 residue); unparks on Reto's refuse-vs-snapshot ruling.
+- **gr695506**, colour-channel selector / clip
   plane — unparks with Horizon 2, when a block-selection surface exists.
-- **backlog/se-3d-viewer-ux-batch.md**, hide the picking dropdown + label the
+- **gr695506**, hide the picking dropdown + label the
   tree icons — CSS-and-copy only; unparks the next time that template is
   edited for another reason.
 
 ## No action needed
 
-- **backlog/se-3d-viewer-ux-batch.md**, client-side isolate — shipped, and
+- **gr695506**, client-side isolate — shipped, and
   re-verified 2026-09-30 on prod's own `unicycle-c1` copied down via
   `view='ops'`: n=44829 on isolate with NO scene refetch, pixel-identical
   when cleared. The LIVE-LEVEL half of the same item is settled too, after
@@ -370,7 +370,7 @@ and for a text field that is focus and caret, not just the value.
 
 Core response bounding (`src/precis/_result_budget.py::fit_result_body`;
 it replaced the removed `_pagination.py`, see
-[block-navigation](../block-navigation.md#what-exists-code-view-2026-10-28))
+block-navigation (me694125))
 is not owned here. This thread once adopted the old chunking file because
 no thread owned core response chunking and its dogfooding found the bug.
 Reto's call (2026-09-30): that code belongs to a runtime/platform thread,

@@ -17,7 +17,7 @@
 # remove` unconditionally refuses a locked worktree, so this unlocks first.
 #
 # Two belt-and-braces guards around that bucketing, both mechanical fallout
-# of gr260192 / docs/backlog/reaper-removed-live-session-worktree.md
+# of gr260192 / gr692372
 # (proposals 1+2 — proposal 3, ship re-asserting its own lock, already
 # shipped) and docs/backlog/reaper-liveness-race.md: a lockless+clean+merged
 # tree is `safe_remove` even when its session is mid-turn (a dropped lock, a

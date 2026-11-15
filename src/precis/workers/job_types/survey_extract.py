@@ -1,5 +1,5 @@
 """``survey_extract`` + ``measure_accept`` — the survey/review numeric
-extraction pass (docs/backlog/measures-substrate.md, "Next slice").
+extraction pass (me693370, "Next slice").
 
 ``survey_extract`` walks one paper's chunks — the main ref's plus its
 live ``part-of`` supplements' (gr632957) — in slices. Each live chunk

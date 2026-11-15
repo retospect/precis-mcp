@@ -1,5 +1,5 @@
 """The shared scene-level spatial eye (structure-workspaces slice 2e,
-docs/backlog/structure-workspaces.md §Structure fisheye).
+me693174 §Structure fisheye).
 
 One merged bond graph — a block's own ``scene.bonds`` plus the ``seam``
 edges a ``kind='bond'`` connect adds — rendered the same way for the se

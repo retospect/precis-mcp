@@ -136,7 +136,7 @@ class ValidationIssue:
     #: reference); ``None`` outside Engine 3.
     suggested_fix: str | None = None
     #: Render hook for a finding that can be *seen* — the swept solids of
-    #: ``fastener_insertion_path`` (docs/backlog/se-mechanical-drc.md rulings
+    #: ``fastener_insertion_path`` (me694687 rulings
     #: 5/6): ``[{role: 'body'|'tool'|'hand', envelope, pose, rot, blocker}]``
     #: in the world frame. ``None`` for every other finding, and a consumer
     #: must omit the key when it is ``None`` so existing serialisations are
@@ -749,7 +749,7 @@ def validate(
             )
 
     # 6. sign-aware completeness under each declared load case — the
-    # complementarity bridge (docs/backlog/complementarity-solver.md
+    # complementarity bridge (me694137
     # slice 2), folded in the same warn-first way as drc's rule 4e. A
     # tie a case drives into compression is a topology error named by
     # member and case; a path that cannot run the solve reports "not

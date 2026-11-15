@@ -5,7 +5,7 @@ Pure pieces the ``struct_md`` job and the ``mode='md'`` mint share — the
 gripe's gap is that relax (EMT/xTB/MACE/CHGNet) and CI-NEB exist but no
 molecular-dynamics rung does, so ML-MD for membranes and electrode
 interfaces could not run (the 2026-11-09 ALCHEM Lab gap analysis;
-``docs/backlog/electrochem-mlip-ladder.md``):
+`me568778`):
 
 - :func:`normalize_md_params` — the engine knob set with defaults. Strict:
   an unknown key raises rather than dropping a typo'd knob. Request-context

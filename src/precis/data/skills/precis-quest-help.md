@@ -504,7 +504,7 @@ deprecated dossier on quests not yet converted — see above), and may
 **propose candidate materials**.
 
 A tick does not edit repo files. To land prose in a repo file (docs, a
-skill, a backlog spec), file a gripe carrying the text; a session applies it.
+skill, a spec section), file a gripe carrying the text; a session applies it.
 
 To re-measure ONE named candidate on demand — a deliberate rerun to test a
 credited pass's reproducibility — call

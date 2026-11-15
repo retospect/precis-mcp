@@ -1,4 +1,4 @@
-"""The pcb batch upload door (gr520323, ``docs/backlog/pcb-upload-door.md``).
+"""The pcb batch upload door (gr520323, `me694901`).
 
 A board script's ``Board.to_batch()`` for a 50-part board is ~36 KB of
 JSON, and tool args are the wrong pipe for it: clients truncate,
@@ -32,7 +32,7 @@ Why this shape:
   too) refuse naming the fix; ``title``/``tags`` ride the put call.
 * No table, no ref kind: the staged file is the record and the daily
   sweep drops it after 24 h. The source-bundle programme
-  (``docs/backlog/source-bundles.md``) adds immutable snapshots and a
+  (`me695350`) adds immutable snapshots and a
   ``source`` stamp on the batch put beside this, under the same staging
   dir with its own token sentinel.
 

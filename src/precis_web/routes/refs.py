@@ -691,7 +691,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     eye_body = linkify_handles(eye_text, exclude={self_handle}) if not eye_error else ""
 
     # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
-    # exists. Nothing mints it yet (docs/backlog/paper-writing-pipeline.md);
+    # exists. Nothing mints it yet (me689904);
     # the hub just links it when some other writer has.
     pid = dossier_mod.paper_ref_id(store, qid)
     paper_url = _quest_draft_url(store, pid) if pid is not None else None
@@ -1447,7 +1447,7 @@ def _pathway_warnings_sections(
     results: dict[str, Any], warnings_list: list[str]
 ) -> dict[str, Any]:
     """Severity- and route-aware warnings, re-derived for the detail page
-    (spec: docs/backlog/pathway-conditions-effects-report.md "Warnings" fix
+    (spec: me692126 "Warnings" fix
     1 — the flat ``warnings`` list mixed marginal/off-route/data-gap prose
     with the few real fatal-on-route blockers, so 16/24 prod pathways showed
     >10 warnings). Mirrors ``precis_pathway.toon_views.warnings_toon``'s

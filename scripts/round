@@ -193,7 +193,7 @@ from pathlib import Path
 from typing import Any, cast
 
 FINAL = ("in", "none")
-# Release-record states (docs/backlog/release-train.md §5): a record is *open*
+# Release-record states (me692603 §5): a record is *open*
 # while it can take fixes, then moves through the deploy journal to terminal.
 # The strict reader in scripts/lib/round_state.py validates the same sets —
 # keep them in sync (a test pins it).

@@ -2066,7 +2066,7 @@ class StructureHandler(Handler):
         """``put(id=<is-slug>, mode='neb', args={'final': '<fs-slug>',
         'images': 7, 'path_seeds': 2, 'model': 'mace_mp', 'fmax': 0.05})`` —
         queue one CI-NEB edge between two agent-authored endpoints
-        (gr512126, slice 3; ``docs/backlog/neb-structure-builder.md``).
+        (gr512126, slice 3; `me689902`).
 
         The pair gates — the same :meth:`_render_pair` table — run first
         and zero-compute: a failed gate refuses with that row's ``next=``

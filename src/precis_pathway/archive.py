@@ -1,6 +1,6 @@
 """Portable, inspectable evidence archive for one stored pathway seed run.
 
-The paper-facing half of ``docs/backlog/catpath-repro-bundle.md``: from the
+The paper-facing half of `me690648`: from the
 stored-seed envelope (:func:`precis_pathway.bundle.build_envelope`) plus the
 frozen pathway snapshot, stage the paper-first subset of the bundle layout —
 explicit file inventory, ``MANIFEST.sha256``, RO-Crate metadata (RO-Crate 1.3

@@ -2,7 +2,7 @@
 
 Used by :class:`~precis.handlers.taxon.TaxonHandler` and, later, the seed
 writer, so hand-put and seeded nodes are byte-identical. No DB, no I/O. The
-fixed key set is the one in `docs/backlog/term-taxonomy.md` §Design.
+fixed key set is the one in me693578 §Design.
 """
 
 from __future__ import annotations

@@ -21,7 +21,7 @@ silently dropping a declaration lets connections recreate it unbound. Physical
 footprint pad duplicates remain geometry, not separate electrical identities.
 Re-put is create-or-extend, not a pin editor or historical-data repair — pin
 SEMANTICS on an existing instance are edited via :meth:`pcb_patch_pins`
-(``op='pins'``; docs/backlog/pcb-datasheet-review.md slice 2).
+(``op='pins'``; me692814 slice 2).
 
 Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 ``self.insert_ref``/``self.get_ref``.
@@ -2300,7 +2300,7 @@ class PcbMixin:
                 courtyard = (
                     courtyard if courtyard is not None else resolved.get("courtyard")
                 )
-        # `pin_swap_groups` (docs/backlog/pcb-ewod-multitile.md "Rulings
+        # `pin_swap_groups` (me692460 "Rulings
         # 2026-09-19" item 6) rides `meta` the same way `pcb_instances.meta`
         # already carries `group`/`pattern` — a caller-declared admissible
         # pin-swap set (a generator's sink instance, or a hand-authored
@@ -2548,8 +2548,8 @@ class PcbMixin:
     ) -> int:
         """Declare a pin for every pad the component's cached footprint
         names and the component did not declare — "a package should always
-        have all the pins" (docs/backlog/pcb-lazy-netlist-and-checks.md
-        Slice 2; Defect A of docs/backlog/ewod-controller-and-hv-supply.md,
+        have all the pins" (me693232
+        Slice 2; Defect A of me690877,
         taken over by that slice).
 
         Without this, :func:`precis.pcb.realize.pads_for_ir`'s per-pin loop
@@ -2886,7 +2886,7 @@ class PcbMixin:
             n += result.rowcount
         return n
 
-    #: ``op='pins'`` (docs/backlog/pcb-datasheet-review.md slice 2) — the
+    #: ``op='pins'`` (me692814 slice 2) — the
     #: pin-annotation dict's allowed keys. ``pad`` is deliberately absent:
     #: pad binding stays with the canonical-pad rule — this op edits a
     #: pin's SEMANTICS (what the ERC rules read), never its geometry, and

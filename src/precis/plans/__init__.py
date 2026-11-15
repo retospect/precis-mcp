@@ -1,6 +1,6 @@
 """precis.plans — plans as todo subtrees (dark factory step 3).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans: the job lifecycle and the
+Spec: `me692430` § "Plans: the job lifecycle and the
 plan graph". A plan is a todo subtree whose nodes are typed by ``meta``
 on existing fields, never by a new kind:
 

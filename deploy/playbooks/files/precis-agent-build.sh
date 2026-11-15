@@ -9,7 +9,7 @@
 # and the only evidence anyone has is host-side CPU/network/disk, which is
 # flat during a build that then completes normally (that inference was wrong
 # twice in one session). A slow success has to leave evidence too.
-# See docs/backlog/agent-image-build-stalls-on-mirror-fallback.md.
+# See me691271.
 #
 # WHY A SCRIPT, NOT INLINE PLAYBOOK SHELL. Portability is the whole problem:
 # the gateway is macOS, where `timeout(1)` does not exist and `stat` is BSD,

@@ -8,7 +8,7 @@
 # door, driven by scripts/agent-cli-update), lay ~/.pgpass (19-pgpass),
 # or install colima on a Mac (precis_worker_agent's provision half).
 # Those are playbook/coordinator steps — see
-# docs/backlog/builder-hosts.md.
+# me691785.
 
 # The account the worker unit, the lane CLIs, the checkout and the tunnel run
 # as. `deploy` (the default) is the gateway's account and is provisioned by

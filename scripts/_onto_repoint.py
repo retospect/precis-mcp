@@ -1,6 +1,6 @@
 """onto-repoint — re-point live measures, merge/retire the Q8 taxa.
 
-Carries out Reto's ontology-v2 Q8 rulings (``docs/backlog/ontology-v2.md``,
+Carries out Reto's ontology-v2 Q8 rulings (`me693381`,
 decisions log): "Merged/retired before slice 1: duplicate bore diameter
 and maximum service temperature, length→overall length, price per gram→
 cost per unit mass; retired delta length, unit length, persistence

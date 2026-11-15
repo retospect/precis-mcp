@@ -355,8 +355,8 @@ Then judge each near hit:
   than adding a third.
 
 **File `disputes`, not `contradicts`.** `contradicts` is
-adjudication-derived (claim-graph disagreement, Part 2 of
-`docs/backlog/disputes-edge-nonblocking-disagreement.md`, not built) —
+adjudication-derived (claim-graph disagreement, Part 2 of the disputes
+split — spec `me693328`, not built) —
 a live one blocks the hub's nanopub mint, and you don't have the
 warrant to file it by hand. `disputes` is the free, always-safe move:
 "these two claims appear to conflict; someone should look" — it never

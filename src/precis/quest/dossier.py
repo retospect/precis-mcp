@@ -137,7 +137,7 @@ _RELATION = "dossier-of"
 #: dossier (the dossier is the internal thinking substrate; the paper is
 #: what a human reads). Mirrors ``dossier-of`` exactly (asymmetric,
 #: auto-mirrored inverse ``has-paper``), but this module does not mint the
-#: paper draft — that pipeline is unbuilt (docs/backlog/paper-writing-pipeline.md). :func:`paper_ref_id` is a read-only resolver so callers
+#: paper draft — that pipeline is unbuilt (me689904). :func:`paper_ref_id` is a read-only resolver so callers
 #: (the quest web dashboard) can link to a paper when one exists and
 #: degrade gracefully when it doesn't. Keep in sync with the `relations`
 #: seed in migration 0089_paper_of_relation.sql.

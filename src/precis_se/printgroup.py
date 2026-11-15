@@ -1,5 +1,5 @@
 """Print groups — one build frame and one 3MF for an fdm ancestor block
-(docs/backlog/structural-solution-space.md §Slice 4 bridge, the print
+(me695531 §Slice 4 bridge, the print
 ``intent`` table; round B1 = ``model``).
 
 A **print group** is an ancestor block in an fdm mode that carries a print

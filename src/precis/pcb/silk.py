@@ -235,7 +235,7 @@ synthesized pad is (:func:`precis.pcb.gerber.export_fab` refuses those
 outright) — but real silk primitives already sit unparsed in
 ``part_footprints.raw`` (EasyEDA ``TEXT``/``CIRCLE``/``ARC``/
 ``SOLIDREGION``, a separate future slice — see
-``docs/backlog/pcb-engine-plan.md``), and a merged board should be able to
+`me692624`), and a merged board should be able to
 tell a generated refdes apart from an ingested outline on the same side.
 This flag is that seam, not a promise anything reads it yet.
 

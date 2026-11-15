@@ -1,6 +1,6 @@
 """``plan_dispatch`` job_type — the dark-factory tick that drives plan subtrees.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans" → "The dispatcher tick" and
+Spec: `me692430` § "Plans" → "The dispatcher tick" and
 "Job lifecycle per task"; the kill switch is step 7's. A plan is a todo
 subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 

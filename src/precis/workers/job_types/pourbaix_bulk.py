@@ -3,7 +3,7 @@ quest candidate's host phase over a U/pH window.
 
 The job half of the bulk Pourbaix gate; the engine, verdict vocabulary and
 pymatgen workaround are documented in :mod:`precis_dft.pourbaix_bulk`. The
-quest gate (``docs/backlog/pourbaix-quest-gate.md``: dispatch, harvest,
+quest gate (`me692864`: dispatch, harvest,
 rule-out) reads the verdict from this job's ``meta.verdict``, the same
 pattern as the autocatpath harvest. Its first quest slice dispatches only
 when human-set operating conditions exist and stamps successful results as

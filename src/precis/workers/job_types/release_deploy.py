@@ -1,6 +1,6 @@
 """``release_deploy`` — deploy an approved, green cut pinned (td543733).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``deploy`` node of the ``release-pass`` template. Mechanical, no LLM;
 detached submit/poll under ``ssh_node``, same launcher as ``release_cut``.
 

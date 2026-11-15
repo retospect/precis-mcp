@@ -104,7 +104,7 @@ cycle; shapely crosses only through :mod:`precis.pcb.geom`, never as an
 STRtree/spatial index).
 
 **``alignment`` (2026-09-01) is the first "preference field"**
-(``docs/backlog/pcb-global-codesign-north-star.md``'s invariant 3): a
+(`me569391`'s invariant 3): a
 weak, numerous, purely aesthetic pressure with no hard-rule counterpart
 to relax, which is exactly why it rides :class:`Family.MONEY` (summed)
 rather than :class:`Family.MARGIN` (max) — a max aggregate only ever

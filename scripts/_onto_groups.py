@@ -1,6 +1,6 @@
 """onto-groups — ontology-v2 slice 1: measurand quantity-class groups.
 
-Carries out Reto's Q8 ruling (``docs/backlog/ontology-v2.md``, decisions
+Carries out Reto's Q8 ruling (`me693381`, decisions
 log, 2026-10-22): **13** quantity-class groups under ``measurand``, with
 the member mapping table exactly as ruled — no regrouping. For every live
 direct leaf the driver adds a ``specialises -> group`` edge with
@@ -70,7 +70,7 @@ _EDGE_META = {"axis": _AXIS, "migration": _MARK}
 
 #: The 13 ruled quantity-class groups and their member taxon titles,
 #: verbatim from the Q8 member-mapping table in
-#: ``docs/backlog/ontology-v2.md`` (Reto 2026-10-22). ``length -> overall
+#: `me693381` (Reto 2026-10-22). ``length -> overall
 #: length`` and ``price per gram -> cost per unit mass`` name the merge
 #: winners, so the winners are the members. The table's ``new:`` entries
 #: (BET surface area, ECSA, band gap, overpotential, Tafel slope, onset

@@ -184,8 +184,6 @@ _HOSTNAME_EXEMPT: dict[str, str] = {
     "src/precis/data/design-tree/processes.yaml": _EDM_TERM,
     "src/precis/data/design_rules.json": _EDM_TERM,
     "src/precis/utils/public_scan.py": "the pattern source itself",
-    "docs/backlog/april-corpus-nas-migration.md": "a real directory name on the NAS",
-    "docs/backlog/claude-code-on-local-serving.md": _VENDOR_NAME,
     "docs/runbooks/gb10-node-bringup.md": _VENDOR_NAME,
     "scripts/classify/clusters.csv": _BIBLIO_DATA,
     "tests/test_deploy_tree_no_secrets.py": "this gate's own samples",
@@ -199,8 +197,9 @@ _PACKAGED_CASE = "byte-matches the packaged pathway repro case"
 #: ``test_hostname_file_lists_have_no_stale_entries`` fails once the file is
 #: clean. Remove when the file is clean.
 _HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
-    "docs/backlog/serving-agent-lane.md": _LANE_RENAME,
-    "docs/backlog/serving-llm-routing.md": _LANE_RENAME,
+    # The two serving backlog files left on 2026-11-15 with the rest of the
+    # specs (me568215); their graph roots me695333 and me695510 carry the
+    # lane names as roles, so the rename no longer waits on a file here.
     "scripts/claude-local": _LANE_RENAME,
     "scripts/hooks/guard-worktree-path.py": _LANE_RENAME,
     "tests/fixtures/pathway/repro_case.json": _PACKAGED_CASE,

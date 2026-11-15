@@ -23,7 +23,7 @@ from domain mixins, each owning one slice of the persistence surface:
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
 reached **only** as ``store.drafts.*``; the flat delegations are gone
-(see ``docs/backlog/codereview-store-decomposition.md``). ``chunks``
+(see `me690468`). ``chunks``
 (:class:`precis.store._chunks_ops.ChunkStore`) is the second —
 reached **only** as ``store.chunks.*``.
 
@@ -243,7 +243,7 @@ class Store(
     def drafts(self) -> DraftStore:
         """The drafts domain, composed rather than mixed in — see the
         module docstring and
-        ``docs/backlog/codereview-store-decomposition.md``. Cached so
+        `me690468`. Cached so
         every access returns the same :class:`DraftStore` instance
         (it's stateless beyond the shared ``core``/``host``
         references, but a fresh instance per call would be wasteful)."""

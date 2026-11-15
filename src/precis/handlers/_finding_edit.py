@@ -1,7 +1,7 @@
 """``edit(kind='finding', ...)`` — pick_candidate / title / meta={'scope'} /
 unacquirable_note / testable_by+motivation / the body edit.
 
-Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
+Split out of ``finding.py`` (me690495):
 this state machine (~350 lines across the mutually-exclusive ops) only
 ever touched ``self.store``/``self.kind``, never any other handler state,
 so it moves as free functions taking the store (and the finding kind

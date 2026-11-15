@@ -1,6 +1,6 @@
 """``release_cut`` — cut ``release/r<N>`` and return (dark release pass, td543733).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``cut`` node of the ``release-pass`` template. Mechanical, no LLM. A
 detached submit/poll pair under ``ssh_node``:
 

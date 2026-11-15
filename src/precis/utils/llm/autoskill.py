@@ -1,6 +1,6 @@
 """Autoskill — router-side warm start from similar sessions.
 
-Spec: ``docs/backlog/autoskill.md`` (supersedes the "bimodal only" rule of
+Spec: `me691549` (supersedes the "bimodal only" rule of
 ``mcp-surface-economy.md`` §2 for router-routed agent calls).
 
 Every tool-using :func:`precis.utils.llm.router.route` call is embedded once

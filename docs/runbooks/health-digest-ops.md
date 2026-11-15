@@ -1,6 +1,6 @@
 # Health digest ops — fire mechanics, check sources, routing, push, dead-man's-switch
 
-When operating `health_digest` (`docs/backlog/self-healing-spine.md`
+When operating `health_digest` (me691477
 Layer 2): running it ad hoc, understanding what each of its four check
 sources actually watches, tuning the remediation-gripe router, changing
 push policy, or setting up the external dead-man's-switch.

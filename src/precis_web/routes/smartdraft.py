@@ -600,7 +600,7 @@ def _hub_and_citation_stats(
     try:
         handler = get_runtime(request).hub.handler_for("draft")
         # ``_taproot_hub_scoreboard`` takes resolved cited-paper ref_ids
-        # (docs/backlog/draft-doi-completeness-check.md's Hygiene-footer
+        # (gr690484's Hygiene-footer
         # refactor shares the chunk-token mining with the DOI line) —
         # mine once via the same helper the outline's own scoreboard uses.
         cited_ref_ids = handler._cited_paper_ref_ids(nodes)

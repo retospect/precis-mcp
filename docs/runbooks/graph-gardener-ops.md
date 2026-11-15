@@ -1,7 +1,7 @@
 # Graph gardener on prod — pause, resume, re-route, read the logs
 
 **When.** The graph gardener (`graph_garden` service; spec
-[`docs/backlog/graph-gardener-value.md`](../backlog/graph-gardener-value.md),
+me693885 (me693885),
 skill `precis-gardener-help`) is running on prod with its proposer on a
 local model and you need to stop it, restart it, change where its LLM calls
 go, or find out what it did. State as of 2026-11-01: lit since 2026-10-21,

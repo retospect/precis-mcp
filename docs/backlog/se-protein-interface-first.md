@@ -168,9 +168,9 @@ the software exit criteria.
 
 Related: pocket spec `me628986`, spec
 `me629051` (graph memory),
-[molecular-workspace-code](molecular-workspace-code.md). The protein
+molecular-workspace-code (me694745). The protein
 constructor can later realize a catalytic pocket, but binding alone
-does not establish catalytic activity. [se-protein-chain-import](se-protein-chain-import.md)
+does not establish catalytic activity. se-protein-chain-import (gr695518)
 is a visualization/import consumer, not a prerequisite for construction.
 
 ## Intent record

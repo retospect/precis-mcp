@@ -24,7 +24,7 @@ gr595539 adds the rest of the mint-time stamps — ``meta.share_key``
 ``<job_type>[:<params.pass>]``), ``meta.task_kind``/``meta.consequence``
 (run_slice's recipe row), ``meta.size`` (the type's named size
 parameter, the ``(job_type, meta.size)`` footprint-table key of
-``docs/backlog/cluster-scheduling.md`` Pillar 3b) and
+`me695459` Pillar 3b) and
 ``meta.submitter`` (the bound MCP session + client). Both doors call
 :func:`job_mint_marks` so the row carries the same matrix whichever way
 it was minted.

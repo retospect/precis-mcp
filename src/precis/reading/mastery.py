@@ -7,7 +7,7 @@ cards carry `meta.anki_stats` (interval / ease / lapses, refreshed by every
 ``meta.mastery`` ∈ [0,1] and derives ``meta.state`` from it — the scalar v1 of
 the design doc's mastery field (the event-sourced vector stays the deferred
 richer option). Cheap SQL + arithmetic, no LLM. See
-docs/backlog/reading-prep-loop.md §Mastery as a field.
+me690334 §Mastery as a field.
 
 The card-strength model, deliberately simple:
 

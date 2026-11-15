@@ -73,7 +73,7 @@ count so a declared process contradicting the stackup refuses rather
 than checks against the wrong process.
 :func:`process_layer_counts` is that check's accessor.
 
-**``ipc2221b_conductor_spacing_mm``** (docs/backlog/pcb-ewod-multitile.md
+**``ipc2221b_conductor_spacing_mm``** (me692460
 "Rulings 2026-09-19" item 10) is a SEPARATE top-level key, not a
 per-process row — IPC-2221B Table 6-1's minimum electrical conductor
 spacing is a function of PEAK working voltage and coating/layer alone, not
@@ -352,7 +352,7 @@ def conductor_spacing_mm(
     ignored in that case. ``layer='external'`` reads B4 (``coated=True``)
     or B2 (``coated=False``). ``voltage_v`` above the table's own top band
     (500V) is refused outright — per-volt extrapolation past a table this
-    coarse is out of scope (docs/backlog/pcb-ewod-multitile.md "Rulings
+    coarse is out of scope (me692460 "Rulings
     2026-09-19" item 10); a design that needs it must supply its own
     ``hv_separation`` override rather than have one invented here. Valid
     only below 3050m altitude (this table's own scope — see the JSON

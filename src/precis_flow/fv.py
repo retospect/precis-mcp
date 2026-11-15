@@ -1,6 +1,6 @@
 """Cell-centred finite-volume assembly on a :class:`Domain`.
 
-The operator taken out of ``flow.solve`` (docs/backlog/se-multiphysics.md
+The operator taken out of ``flow.solve`` (me694808
 shared machinery): pressure (``T = h³``), conduction (``hk``) and species
 (``h𝔻``) all assemble the same way — harmonic-mean face transmissivities,
 Dirichlet / no-flux / prescribed-flux boundary cells, a direct sparse

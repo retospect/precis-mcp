@@ -1,6 +1,6 @@
 """inject_scan — depth-1/2 model injection scan + quarantine ladder (slice 4).
 
-The LLM lane of the email kind (docs/backlog/email-kind.md), the deep rung of
+The LLM lane of the email kind (me690001), the deep rung of
 the cascade whose depth-0 regex sibling runs inline in ``mail_poll``. Each pass:
 
 1. **Claim** depth-0 verdicts a deeper scan hasn't reached

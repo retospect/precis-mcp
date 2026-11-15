@@ -2,7 +2,7 @@
 id: surface-review
 family: work
 title: precis — mine sessions for MCP surface friction
-summary: cadence mining pass over recent agent sessions and prod tool-call logs — find where the precis MCP surface confused agents or lacked capability, gate every finding, then attach evidence to a backlog item or file a gripe
+summary: cadence mining pass over recent agent sessions and prod tool-call logs — find where the precis MCP surface confused agents or lacked capability, gate every finding, then attach evidence to the owning spec section or file a gripe
 answers:
   - how do I run the MCP surface review for a window?
   - what is the signal on this surface — errors or something else?
@@ -112,8 +112,9 @@ finding you are about to file:
 
 ## 6. File — attach first, mint last
 
-- **Default:** append the measurement to the existing item. A backlog file
-  gets a dated section; a gripe gets a comment via
+- **Default:** append the measurement to the existing item. A spec section
+  takes the measurement in its body (one claim, `edit(kind='memory', …)`);
+  a gripe gets a comment via
   `put(kind='gripe', id=N, text='…')` (there is no `edit(kind='gripe')`).
 - **Mint a gripe** only for a confirmed-live cause nothing covers, and route
   it through the `gripe-filer` agent so its dedup step runs.
@@ -130,7 +131,7 @@ what shipped, what was filed>"`. That line (in
 `~/.cache/precis/surface-review.log`) is the cadence clock —
 `scripts/surface-review` reads it.
 
-Re-read the `friction-reflection-enable` item in the backlog dir and say in
+Re-read the `friction-reflection-enable` spec in the graph and say in
 the stamp note whether leaving `PRECIS_FRICTION_REFLECT` off is still the
 right call. It is the one lever that would turn this retrospective into a
 continuous feed.

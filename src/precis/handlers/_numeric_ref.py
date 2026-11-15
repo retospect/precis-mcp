@@ -677,7 +677,7 @@ class NumericRefHandler(Handler):
     #: (``ord=-1``) holding the ref's text so the embed worker
     #: vectorizes it and semantic search finds neighbours. Scoped to
     #: ``memory`` for the dreaming capability (see
-    #: docs/backlog/dreaming.md); widen to other note-like kinds later.
+    #: gr690614); widen to other note-like kinds later.
     emits_card: ClassVar[bool] = False
 
     #: Create-time hooks (default: identity / empty). A subclass that stores

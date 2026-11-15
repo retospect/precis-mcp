@@ -1,6 +1,6 @@
 """inbound_ground — a newly ingested paper is checked against the claim set.
 
-Part (b) of ``docs/backlog/taproot-inbound-grounding.md``: the claim-hub
+Part (b) of `gr693782`: the claim-hub
 variant of inbound completeness. ``workers/inbound_chase.py`` (part a)
 finds support along the *citation graph* — who cites this paper — and so
 cannot see a paper that supports a claim without any citation edge to it.

@@ -1,5 +1,5 @@
 """cite_resolve — chunk→paper ``cites`` links from in-text citation
-markers (gr513768, docs/backlog/citation-resolution-skill.md slices 1–2, 4).
+markers (gr513768, me690820 slices 1–2, 4).
 
 Where ``bib_mark`` (``workers/bib_mark.py``) records *which* inline
 ``[N]`` markers a body chunk uses (``chunk_citations``) and

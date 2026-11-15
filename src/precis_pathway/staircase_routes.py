@@ -1,6 +1,6 @@
 """Surface-Pourbaix slice 3 — the ``che_affine`` → staircase adapter.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (§7 linked panels) and the 2026-10-13 sign-convention ruling: every rung
 is affine in the CHE potential, ``delta_g(U) = delta_g0 + n_e * U_RHE``
 with ``n_e`` proton-electron pairs **consumed** (positive for a

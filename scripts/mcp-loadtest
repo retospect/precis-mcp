@@ -17,7 +17,7 @@
 #       harness refuses to start unless the target already holds a corpus.
 #
 # The --url mode for a live server (Reto's prod run) runs harness.py on the
-# host instead; the exact command is in docs/backlog/mcp-concurrency-load-test.md.
+# host instead; the exact command is in me691729.
 #
 # Env:
 #   PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY   the interactive embed budget

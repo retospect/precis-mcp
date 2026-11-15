@@ -32,7 +32,7 @@ into the content address (a constrained plan is a distinct cache row),
 and screened *lexically* over each step's free-text ``conditions`` —
 ``ok`` / ``check`` / ``unscreened``, never a silent pass. Structured
 conditions + constraint-aware search are the follow-ups
-(``docs/backlog/chem-tools-integration.md``).
+(`me694029`).
 
 One canonical ``route`` IR, every engine normalizes to it: LinChemIn
 runs *inside* the engine container (or a standalone normalizer container

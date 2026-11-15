@@ -1464,7 +1464,7 @@ class StructureMixin:
     # `struct_neb_runs` / `struct_neb_images` (migration 0250) are the
     # compute record for one CI-NEB edge between two agent-authored
     # endpoints — deliberately NOT `struct_runs`, whose readers treat
-    # `energy` as a relaxed minimum. See docs/backlog/neb-structure-builder.md
+    # `energy` as a relaxed minimum. See me689902
     # §Data model.
 
     def struct_neb_record_run(

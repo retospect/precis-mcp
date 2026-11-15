@@ -131,7 +131,7 @@ Note from the user: `$ARGUMENTS`
 8. **Close and reopen.** `scripts/round close`, then step 1 for the next
    round if the user asked for a loop. Persist the round's residuals first:
    a red gate you worked around, a peer still mid-land, an incident — as a
-   gripe or a backlog item, and the resume pointer in `.claude/purpose`.
+   gripe or a spec slice, and the resume pointer in `.claude/purpose`.
 
 ## Release fixes (`scripts/ship --release`)
 

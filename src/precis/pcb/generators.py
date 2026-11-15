@@ -145,7 +145,7 @@ policy by comparing this module's own :attr:`GeneratorExpansion.
 canonical_params` against the ``pcb_generators`` row from the PREVIOUS
 apply; this module never decides whether to write anything.
 
-**What is deliberately NOT here yet** (docs/backlog/pcb-ewod-multitile.md's
+**What is deliberately NOT here yet** (me692460's
 decisions log records which "still open" items this slice resolved —
 plaza slot capacity, via :func:`_plaza_capacity` below — and which remain
 open; the ones below are this module's own scope boundary, not
@@ -221,7 +221,7 @@ necessarily still-open spec questions):
   ``channels_per_sink`` USABLE electrode escapes, assigned in
   **serpentine (boustrophedon) chain order** — the discovery loop's own
   row-major order, direction alternating on odd rows — and split into
-  as-equal-as-possible shares (``docs/backlog/pcb-ewod-multitile.md``
+  as-equal-as-possible shares (`me692460`
   "Rulings 2026-09-18" item 2: square-block ``per_tiles`` binning could
   land a 9x9 field's 72 electrodes as a lopsided 64+8 across two
   64-channel sinks; balancing by chain order instead gives 36+36).
@@ -322,7 +322,7 @@ _DEFAULT_STUB_WIDTH_MM = 0.20
 #: corner INWARD (never protruding outward, so it cannot newly violate
 #: any OTHER already-tuned clearance) until the corridor reopens.
 #:
-#: **docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1 —
+#: **me692460 "Rulings 2026-09-18" item 1 —
 #: the corridor is now RULE-DERIVED, not a fixed margin on top of ``gap``.**
 #: Round 4's number (a flat +0.01mm on top of ``gap``, formerly a module
 #: constant here) was calibrated for a TAPERED footprint-pad neck
@@ -459,7 +459,7 @@ class GeneratorExpansion:
     #: (pcb-pre-place-route-blocks Slice 2, :func:`_stub_track_row`/
     #: :func:`_via_row`) is the first real emitter.
     copper: list[dict[str, Any]] = field(default_factory=list)
-    #: docs/backlog/pcb-missing-constraint-classes.md §F (ruled
+    #: me693086 §F (ruled
     #: 2026-10-12) — the generator's fabric invariants as ``pcb_measures``
     #: rows at ``strength='invariant'`` (``put``-insertable shape, keyed
     #: to this call by ``meta.generator``/``operands[{'generator':
@@ -491,7 +491,7 @@ def expand(generator: str, name: str, params: dict[str, Any]) -> GeneratorExpans
 
 
 # ── plaza slot capacity ───────────────────────────────────────────────────
-#: docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 8 —
+#: me692460 "Rulings 2026-09-19" item 8 —
 #: absolute step (not relative to ``half``) for the small, deterministic
 #: numeric search :func:`_plaza_family` runs to pick ``(a, b)``. Small
 #: enough that ``min_pitch`` moves by well under the ruling's own 0.05mm
@@ -623,7 +623,7 @@ def _plaza_capacity(
     gap: float, via_dia: float, hv_separation: float
 ) -> dict[str, float]:
     """The REAL plaza floor, chosen from a two-parameter AXIS-ALIGNED
-    slot family (docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19"
+    slot family (me692460 "Rulings 2026-09-19"
     item 8) rather than round 2/4's single uniform 8-slot ring: cardinal
     slots (N/E/S/W) at distance ``a`` from the plaza centre on the axes,
     diagonal slots (NE/NW/SE/SW) at ``(+-b, +-b)``. The ring was chosen
@@ -697,7 +697,7 @@ def _plaza_capacity(
         "slot_a": a,
         "slot_b": b,
         # Alias for any reader still keyed on the pre-ruling-8 ring name
-        # (docs/backlog/pcb-ewod-multitile.md's own instruction) --
+        # (me692460's own instruction) --
         # `precis.pcb.svg`'s capability-map view draws a single schematic
         # ring off this and is explicitly NOT the fab-accurate geometry
         # (its own docstring), so approximating every slot at radius `a`
@@ -809,7 +809,7 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # capped here (once; :func:`_expand_ewod_pad_array` no longer repeats
     # this clamp).
     stub_width = min(stub_width_uncapped, gap)
-    # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1 --
+    # me692460 "Rulings 2026-09-18" item 1 --
     # there is NO corridor cap here any more (the corridor itself is now
     # sized FROM the fab minimum, below -- see `plaza_corner_chamfer`),
     # only the fab's own absolute floor: copper narrower than this is not
@@ -854,7 +854,7 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
         )
     half = (pitch - gap) / 2.0
 
-    # Plaza-corner chamfer -- docs/backlog/pcb-ewod-multitile.md "Rulings
+    # Plaza-corner chamfer -- me692460 "Rulings
     # 2026-09-18" item 1: RULE-DERIVED, not a fixed margin on top of
     # `gap` (round 4's superseded formula, see _stub_track_row's sibling
     # notes and this module's own history for the fixed-margin version
@@ -991,7 +991,7 @@ def _edge_sign(
     same nominal ``+-half`` corner every flat wall already uses) is what
     keeps the polygon a single closed, non-self-intersecting ring.
 
-    **``margin_t0``/``margin_t1`` — docs/backlog/pcb-ewod-multitile.md
+    **``margin_t0``/``margin_t1`` — me692460
     "Rulings 2026-09-18" item 1's own wall re-solve.** A meshing wall
     whose ``[t0, t1]`` is already the CHAMFERED (shrunk) extent
     (:func:`_electrode_polygon`'s ``_chamfer_inset``) used to get its
@@ -1372,7 +1372,7 @@ def _electrode_polygon(
     only past the span's own true corners, the same as a single pad's.
 
     **Plaza-corner chamfer (round 4, generalised round 6, RULE-DERIVED
-    since docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item
+    since me692460 "Rulings 2026-09-18" item
     1).** Where a FLAT wall (facing a plaza) meets a MESH wall (facing an
     electrode neighbour) at one of the span's own 4 OUTER corners, that
     corner is exactly the point a DIFFERENT electrode's own diagonal
@@ -1428,7 +1428,7 @@ def _electrode_polygon(
     chamfer_es = _needs_plaza_corner_chamfer(kind_e(r1), kind_s(c1))
     chamfer_sw = _needs_plaza_corner_chamfer(kind_s(c0), kind_w(r1))
 
-    # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1's own
+    # me692460 "Rulings 2026-09-18" item 1's own
     # wall re-solve, PART TWO (the mirror side of a chamfered corner).
     # `chamfer_*` above is TRUE only for the electrode that itself owns a
     # flat wall at that corner (e.g. a plaza's cardinal N/S/E/W neighbour)
@@ -1793,7 +1793,7 @@ def _plaza_slot_point(layout: _Layout, pr: int, pc: int, direction: str) -> Poin
     perspective (i.e. this is the plaza-to-electrode direction the slot
     physically sits toward -- see :data:`_OPPOSITE`).
 
-    docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 8 —
+    me692460 "Rulings 2026-09-19" item 8 —
     the family is axis-aligned, not a uniform ring: a CARDINAL direction
     (exactly one of ``dr``/``dc`` non-zero, already unit length) sits at
     distance ``slot_a`` from the plaza centre; a DIAGONAL direction
@@ -2141,7 +2141,7 @@ def _coating_verdict(name: str, width_mm: float, height_mm: float) -> dict[str, 
     fab cap" was generous, there was no board-extent cap of any kind.
 
     **The polarity, stated because a screen is only sound in one
-    direction** (docs/backlog/pcb-lazy-netlist-and-checks.md section
+    direction** (me693232 section
     1g-bis). What is measured here is the ARRAY's mask extent, and the
     finished board is always at least that large — outline margin,
     connectors and the sink grid all sit outside it. So:
@@ -2472,7 +2472,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 ledger_pads[pin]["span"] = [r1 - r0 + 1, c1 - c0 + 1]
                 ledger_pads[pin]["cells"] = [[cr, cc] for cr, cc in cells]
             if chamfer_count:
-                # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18"
+                # me692460 "Rulings 2026-09-18"
                 # item 1: each plaza-corner chamfer removes a right
                 # isoceles triangle of copper (legs = plaza_corner_chamfer)
                 # from this electrode's own body -- reported so the
@@ -2619,7 +2619,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         )
 
     # -- sink grid: bottom-side switch/connector instances, BALANCED BY
-    # CHAIN ORDER (docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18"
+    # CHAIN ORDER (me692460 "Rulings 2026-09-18"
     # item 2 -- replaces the old square-block `per_tiles` binning, which
     # could land a 9x9 field's 72 driven electrodes as a lopsided 64+8
     # across two 64-channel sinks instead of a balanced 36+36). Emitted
@@ -3158,7 +3158,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
 
 
 # ── generator-declared fabric invariants (gr345859) ──────────────────────
-# docs/backlog/pcb-missing-constraint-classes.md §F, ruled 2026-10-12: the
+# me693086 §F, ruled 2026-10-12: the
 # rules the EWOD fabric must never break ("one via per electrode", "no
 # via-in-pad", "a merged pad may never cover a plaza", "HV separation sets
 # the pitch floor", "matched stub lengths") live in prose and in this

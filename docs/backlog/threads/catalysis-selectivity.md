@@ -75,7 +75,7 @@ the dated detail is in `git log` and the owning items):**
   rule stands that margins compare only on equal engine version
   (`frontier.same_network_basis`). Open: fold `results.corrections` into
   that basis as item 24's "correction-set id" —
-  `backlog/pathway-correction-basis.md` (spec plus strict-xfail tests).
+  me568810 (spec plus strict-xfail tests).
 - **Restale.** `frontier.apply_network_demotion` takes the pinned basis
   (`compute._pinned_network_basis`: pin/env version plus the quest's
   resolved neb template); any stamped key on an older engine demotes to
@@ -94,7 +94,7 @@ the dated detail is in `git log` and the owning items):**
 - **Surface-Pourbaix (SPSO).** Wave A (catpath 0.25.0 coverage scan and
   `che_affine` export; slices 2, 4, 5), wave B (anchors rung, staircase
   panel, window/Shapley/HER objectives) and wave C slice 7 are built; the
-  item `backlog/surface-pourbaix-staircase-optimizer.md` owns the status.
+  item me692414 owns the status.
   The paper-date collision is ruled (Reto, 2026-10-30): November is
   `td459589` (draft:validation-paper, "Reproducing published catalysis
   results with autocatpath", cases A–D); the SPSO paper (`td462597`) has no
@@ -140,7 +140,7 @@ the dated detail is in `git log` and the owning items):**
    jobs on the GPU node were running for this quest on 2026-10-29 and cannot be
    attributed to restale. At the lift, restore the cap (default 2) in the
    same step as the first re-run.
-2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
+2. **me692729** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
    Pd(111). Stages 0–2 done. The pilot pair is built
    (`scratch/pdh-pilot/`), and its NEB runs are held until the
@@ -149,7 +149,7 @@ the dated detail is in `git log` and the owning items):**
    known (Reto, item 23). The PBE check of the H flight from Ta agrees with
    MACE, so the emptied-site rule stands (§22f; Reto accepted, item 27). Precis-side fixes (struct_relax
    lattice write-back, preflight on H-loaded slabs) can start.
-3. **backlog/catpath-desorption-link-kind.md** (moved here from chemistry
+3. **gr695176** (moved here from chemistry
    Horizon 2) — independent of 1, parallel. The step-annotations spec
    closed 2026-10-21: the web half (fold + label inference) shipped, and
    catpath `ledger.py::link_fields` now emits `added`/`removed`/`link_type`
@@ -161,7 +161,7 @@ the dated detail is in `git log` and the owning items):**
      landing on the level it feeds, with one grey label per shared column.
 
 4. **src/precis/workers/job_types/pourbaix_bulk.py** →
-   **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
+   **me692864** — Reto asked for it next after the
    network (2026-10-02); independent of 1–3. A candidate whose bulk
    dissolves across the operating window cannot be the catalyst, so it is
    ruled out before selectivity is spent on it (qu202468 (Convert NO to
@@ -182,12 +182,12 @@ the dated detail is in `git log` and the owning items):**
      re-verdict); the leached proposal, leaderboard flags and tick prose
      are the next slice. qu202468's
      operating point is set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10.
-5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
+5. **me568760** — the objective Reto
    named; blocked by 1 and 2 because a window over an incomplete network
    or the wrong substrate is the wrong window. Post-processing only, so cheap once 1 lands. Also
    owns a screening criterion that ranks: R2 (2026-10-02) measured that
    thermo-only margins do not.
-6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
+6. **me568655** — where barriers are
    spent; needs 5's `U_sel` to pick the decisive edges.
 7. **backlog/crowded-surface-experiment.md** — transferred to graph
    memory on 2026-11-11 (Reto's ruling me568168): the spec is the root
@@ -231,13 +231,13 @@ the dated detail is in `git log` and the owning items):**
 
 ## Horizon
 
-1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — owned by
+1. **gr695038** — owned by
    chemistry (its Horizon 1); Do-next 6 decides where NEB runs, this
    item makes NEB run at all. Kinetic margins wait on it.
-2. **backlog/pathway-conditions-effects-report.md** — chemistry's report
+2. **me692126** — chemistry's report
    for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
-3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto, 2026-10-02
+3. **me692414** (Reto, 2026-10-02
    file only; lifted 2026-10-07, build plan approved 2026-10-13,
    slices 1–7 built; slice 8, Fe-doped Pd end to end, has a contract (v4) that
    passed design review on 2026-10-30 and the second vet's fixes, split into
@@ -265,12 +265,12 @@ the dated detail is in `git log` and the owning items):**
    - It reuses `precis_surface` + `hexfold.smooth` for the cage
      generator, and leaves hexfold-toolkit's and nanobuds-paper's items
      alone. F2 is flagged as touching the nanobuds paper.
-5. **backlog/electrochem-kinetics-beyond-che.md** (Reto, 2026-10-16:
+5. **me568711** (Reto, 2026-10-16:
    pile, needs design) — β·U and surface-charge terms in catpath kinetics,
    ported from the CatMAP/CatmapInterface.jl stack, plus a CatMAP parity
    export. Ranked last: Do-next 5–6 define the window and the decisive
    edges it would make U-dependent, and Horizon 1 supplies the barriers.
-5a. **backlog/kinetics-engine-v2.md** — transferred to graph memory on
+5a. **me568528** — transferred to graph memory on
    2026-11-05 (Reto's ruling me568168): the spec is the root me568528
    with its section, ruling and gotcha nodes; open work is the plan todo
    td568706 under the kinetics programme root td568263; the file is a
@@ -283,29 +283,29 @@ the dated detail is in `git log` and the owning items):**
    Reto on 2026-10-24. Holds 25 and 23 are the ruling nodes me568380 and
    me568381; the recompute policy is me568382; the transfer campaign node
    is me568399.
-5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
+5b. **me690648** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing
    else; slice 3's tolerance contract is `autocatpath.manifest` (catpath
    v0.38.0: `ValidationManifest.tolerances`, `compare`). Ranked after 5a
    because it consumes the validation manifest.
-6. **backlog/electrochem-mlip-ladder.md** (filed 2026-10-19 from Ringe's
+6. **me568778** (filed 2026-10-19 from Ringe's
    talk, draft) — the σ side of Horizon 5: `a_i = ∂ΔE_i/∂σ` from three
    GC-DFT points (tier 0), a σ-conditioned fine-tuned MACE (tier 1),
    explicit double-layer MD (tier 2), one `Ω(U, pH, cation)` contract for
    states and TS. Ranked with Horizon 5 because it supplies the energies
    that item and the KINETICS spec consume; its slices 1–2 are pure
    modules shippable behind `response: off`.
-7. **backlog/quest-batch-coverage-scan.md** — a quest-tier op to
+7. **me691584** — a quest-tier op to
    scan a named list of candidates × models; convenience over the documented
    per-candidate put recipe, so it ranks below the experiments that use it.
-8. **backlog/spin-polarised-fe-dft-check.md** (Reto 2026-10-29, review item
+8. **me690670** (Reto 2026-10-29, review item
    -30; filed 2026-10-30) — one spin-polarised DFT point on an Fe anchor of
    slice 8's subject A; the slice-8 table carries "spin check: pending" until
    it lands. Needs a single-point mode, a `dft` params pass-through and
    per-species initial magmoms in the GPAW path, and a measured wall time
    before any run.
-9. **backlog/pathway-explorer-controls.md** (Reto 2026-11-03, from
+9. **me568527** (Reto 2026-11-03, from
    pw549461; draft, prio high) — the explorer's two control boxes
    (environment on the Pourbaix slider bank, visual filters), per-step
    kinetics on the diagram, BEP humps, one environment record, the compute
@@ -318,7 +318,7 @@ the dated detail is in `git log` and the owning items):**
    results through, and nothing in them touches the engine. Slice 6
    (gr559351, the environment box) is in build on worktree `envbox`
    (td567073) as of 2026-11-05.
-10. **backlog/slab-environment-optimizer.md** (Reto 2026-11-03; draft,
+10. **me568454** (Reto 2026-11-03; draft,
    prio high) — the inner loop of Horizon 3 widened to the whole
    environment and run by the quest per slab: three goals as Pareto
    objectives with masks, a derivative table per axis, a three-layer

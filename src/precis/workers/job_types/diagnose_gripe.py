@@ -8,7 +8,7 @@ that raw state. This pass upgrades the gripe *in place* with a pinned root
 cause + evidence anchors + a proposed-fix sketch, so whichever rail picks
 it up next starts from a one-line cause instead of a blank slate. It is
 the per-gripe sibling of the self-healing spine's Layer-3 doctor
-(``docs/backlog/self-healing-spine.md`` §doctor), at its report rung. The
+(`me691477` §doctor), at its report rung. The
 fix_gripe lane its ``auto-fix`` tag once fed was dropped 2026-10-02 (Reto,
 td460703); the diagnosis now serves the session that fixes the gripe.
 

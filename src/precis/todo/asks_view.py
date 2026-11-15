@@ -3,7 +3,7 @@
 ``search(kind='todo', view='asks')`` and the web ``/asks`` + Needs-you
 landing read one model (:func:`asks_model`): rows grouped by class, then
 by quest, then by thread. Dark-factory step 1b (td540847,
-``docs/backlog/dark-factory.md``). A question for the owner is an
+`me692430`). A question for the owner is an
 ``ask-user`` todo carrying ``meta.ask`` (td541979); there is no file
 source — the review-queue directory is retired.
 

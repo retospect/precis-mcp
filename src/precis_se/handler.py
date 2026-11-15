@@ -10,7 +10,7 @@ invariant tier: joints (kinematic class × mechanism —
 (:mod:`precis_se.notes`) and design-freedom vocabulary (interval
 measures, ``origin: user|proposed|generated``, relation ``scale``, the closed unit
 registry — :mod:`precis_se.freedom`). Maps onto the verbs as of this
-round (se slices 1-3 + 4's store half, docs/backlog/se-kind.md "Ship
+round (se slices 1-3 + 4's store half, me694842 "Ship
 order"):
 
 - ``put``    — create/replace a design from a JSON payload
@@ -69,7 +69,7 @@ needs it off uses ``PRECIS_KINDS_DISABLED``, the one general control,
 rather than a private per-kind switch. Direct construction (as in tests) is
 unaffected by the flag; it only gates the registry.
 
-See ``docs/backlog/se-kind.md`` for the full design. The agent-facing
+See `me694842` for the full design. The agent-facing
 skill lands last, after behavior exists (ship order step 7 — a skill
 describing target state misdirects agents).
 
@@ -7023,7 +7023,7 @@ def _render_drc(
             f for f in report.findings if f.rule not in chain_extra.supersedes
         ]
     report.findings.extend(chain_extra.rows)
-    # Flat-pack checks (docs/backlog/flatpack-furniture-generator.md build
+    # Flat-pack checks (me694692 build
     # 3): read the design's meta['flatpack'] params home — store-aware,
     # so they live here, not in the store-free drc() — and are appended
     # after the other store-aware passes like the precedent/kinematics

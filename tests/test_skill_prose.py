@@ -186,16 +186,9 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-taproot-backfill-help": 1,
         "precis-taproot-help": 2,
     },
-    "backlog": {
-        "precis-link-help": 1,
-        "precis-md-help": 1,
-        "precis-overview": 1,
-        "precis-relations": 1,
-        "precis-rxn-help": 1,
-        "precis-taproot-help": 1,
-        "precis-taproot-mint-help": 1,
-        "precis-toolpath-help": 1,
-    },
+    # Emptied 2026-11-15: the backlog specs moved into graph memory (me568168),
+    # so every skill that named a docs/backlog path now names a handle.
+    "backlog": {},
     "operator": {
         "precis-anki-help": 2,
         "precis-auto-todo-help": 2,

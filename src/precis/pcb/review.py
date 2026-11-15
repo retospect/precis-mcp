@@ -1,5 +1,5 @@
 """The pcb re-check pass — ``pcb_review``'s queue, evidence, prompt and
-verdict write (docs/backlog/pcb-datasheet-review.md slice 7, in-scope 7).
+verdict write (me692814 slice 7, in-scope 7).
 
 The work queue is the status of ``pcb-tapeout`` and applicable
 ``pcb-mech-env`` on one design

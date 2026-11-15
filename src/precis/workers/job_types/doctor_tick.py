@@ -1,6 +1,6 @@
 """``doctor_tick`` job_type — one LLM judgment pass over the fleet's own
 published health surfaces (self-healing spine Layer 3,
-``docs/backlog/doctor-tick-report.md``, ``docs/backlog/self-healing-spine.md``
+``docs/backlog/doctor-tick-report.md``, `me691477`
 §Layer 3).
 
 Layers 0-2 of the spine are deterministic, zero-LLM, and never reasoned
@@ -14,7 +14,7 @@ walks, and acts ONLY by filing/annotating gripes — never by raising an alert
 itself (machinery-only write path, decided 2026-08-12).
 
 **Starting dial: ``report``.** Per
-``docs/backlog/self-healing-spine.md``'s autonomy dial, this ships at the
+`me691477`'s autonomy dial, this ships at the
 report rung only: gather + classify + diagnose + author the daily report +
 file/annotate gripes. ``heal``/``draft`` are a later slice.
 

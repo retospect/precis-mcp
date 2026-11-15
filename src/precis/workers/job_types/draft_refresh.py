@@ -1,5 +1,5 @@
 """``draft_refresh`` job_type — one bounded, section-scoped refresh of a
-living draft (docs/backlog/draft-refresh.md, Part 1: the job + skill; the
+living draft (me693762, Part 1: the job + skill; the
 scheduler cadence that mints these jobs is a separate, later round).
 
 Given ``{'draft': '<slug>', 'scope': 'dc<id>'}`` (``scope`` a heading
@@ -506,7 +506,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     gate = narrative_growth_gate(prev_words, new_words, progress_evidence)
     if not gate.ok:
         # The section is left untouched on a gate refusal. Its idem_key (the
-        # scheduler side, docs/backlog/draft-refresh.md) encodes the
+        # scheduler side, me693762) encodes the
         # section's current min chunk created_at, so THIS exact job never
         # re-fires until the chunks actually change — a refused rewrite
         # does not naturally re-arm on the next cadence tick. Acceptable

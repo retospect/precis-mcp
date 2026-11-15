@@ -199,7 +199,7 @@ def add_parser(subparsers: Any) -> None:
         "repair-evidence",
         help="Re-ground evidence edges that assert support while anchoring "
         "no passage (meta.source_handle = jsonb null, src_chunk_id NULL) -- "
-        "docs/backlog/evidence-edge-verification.md. "
+        "me694224. "
         "DRY-RUN BY DEFAULT: writes a JSONL proposal and makes zero DB "
         "writes unless --apply is given. A source with no supporting "
         "passage is recorded as verify-rejected; the claim is NEVER edited.",

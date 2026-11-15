@@ -9,8 +9,8 @@ effort: medium
 
 - **Next:** Reto deploys `49a-sglang.yml` on the local-serving node (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize` and `llm.chain.small` — and read `/placement` after 24 h. `chase:verify` is separately routed through its local per-operation chain per Reto's 2026-10-22 ruling; the old tier-wide `llm.chain.medium` candidate is superseded.
 - **Blocked by:** Reto's deploy + settings writes (above). NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
-- **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
-- **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
+- **Unblocks:** Local serving for knowledge-mesh (me693314) and graph maintenance.
+- **Acceptance:** Use [the latest handoff](#thread-context) and llm-capacity-plan (me695246); verify the summarise-only chain’s placement and local-vs-cloud measurements.
 - **Worktree:** `local-compute`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -23,7 +23,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Host lanes, 2026-10-15 (Reto):** The local-serving node = vLLM (superseded 2026-10-16: SGLang, 49a-sglang.yml) + heartbeat only (out of `compute` and `agent_sandbox_hosts`; no compute fallback lane); the second DGX node + the GPU node = autocatpath/MACE seeds; fold and dft on the second DGX node; retrosynth, `job_claude_docker` and image builds on the GPU node. The repo enforces it: `host_lane_exclusive_groups` keeps an LLM host out of `compute`, and the per-host budget (`docs/runbooks/oom-lockout-hardening.md`) fails a play past 121 GiB. The overlay move and apply order are in /tmp/gripe-fleet/host-lanes-overlay.sh; the 0.80 raise stays open until the local-serving node runs measured clean at 0.60/0.70 without the science lanes.
 
-**Flipped 2026-10-12 ~19:20Z (Reto: "can we flip soonish"):** `llm.op.llm_summarize` rung 0 is now `openai/gpt-oss-120b` local (the local-serving node, slot 32), rung 1 the agent host's `glm-4.7-flash` local, rung 2 cloud. Verification read is the llm_call_log model/placement/error split for `llm_summarize` after the flip. REVERTED 20:58Z the same day: the local-serving node produced corrupted output after its restart to a 131072 window (see `backlog/claude-code-on-local-serving.md`); re-flip once a local-serving node window is shown sound by three identical temperature-0 replies. Next flips, in order: `llm.chain.small` rung 0 to the local-serving node; medium (`chase:verify`) after the 40-task compare.
+**Flipped 2026-10-12 ~19:20Z (Reto: "can we flip soonish"):** `llm.op.llm_summarize` rung 0 is now `openai/gpt-oss-120b` local (the local-serving node, slot 32), rung 1 the agent host's `glm-4.7-flash` local, rung 2 cloud. Verification read is the llm_call_log model/placement/error split for `llm_summarize` after the flip. REVERTED 20:58Z the same day: the local-serving node produced corrupted output after its restart to a 131072 window (see me695114); re-flip once a local-serving node window is shown sound by three identical temperature-0 replies. Next flips, in order: `llm.chain.small` rung 0 to the local-serving node; medium (`chase:verify`) after the 40-task compare.
 
 **Rule, Reto 2026-10-12 (chat):** "cold machine is useless machine." The local-serving node never idles: coding helpers (`scripts/claude-local`, item 0 above) and librarian lanes share it. Librarian lanes already specified and waiting on the local-serving node, in order: taxonomy-bootstrap agreement test (knowledge-mesh Do next 2, $0 on the local-serving node), local-mesh-upkeep slice 0 categorise set (its eval doubles as the quality gate for every lane below), then op overrides to the local-serving node for `taproot:classify` (claim_type), `conflict_search:negate`, `taproot:reground-judge` ($64/30 d on Haiku), and `chase:verify` after the 40-task compare. The 30-day spend read (2026-10-12): dream $429 (Sonnet, 29k chars/call), chase:verify $205, review:structural $66, quest_tick $66, doctor_tick $66, reground-judge $65, summarise $56 (now local). Nine BIG sources average 45k–90k request chars, above the local-serving node's 16k context until the restart raises it.
 
@@ -89,11 +89,11 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
 
 ## Do next
 
-0. **[Claude Code on local serving](../claude-code-on-local-serving.md)** —
+0. **Claude Code on local serving (me695114)** —
    filed 2026-10-12 from Reto's credits ask: proxy the local-serving node's gpt-oss 120B as
    an Anthropic endpoint for Sonnet-class fleet roles, measure against
    Sonnet on a gripe batch, then decide on a cheap cloud fallback plan.
-   Successor: **[serving-agent-lane](../serving-agent-lane.md)** (draft,
+   Successor: **serving-agent-lane (me695333)** (draft,
    2026-10-22) — answers the proxy question (`scripts/claude-local` +
    shim, no LiteLLM/CCR), splits agent lane vs batch lane, slice 0 is a
    10-gripe pilot with a measured pass rate; ranked here because it is
@@ -106,7 +106,7 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
    deploy (567f207f):** 7 days, 0/366,218 calls landed local (0.0%), $338
    billed — small 354,373 calls / $28, medium 11,301 / $96, big 537 /
    $210, frontier 7 / $3.
-2. **backlog/llm-capacity-plan.md** — what model runs where, on what
+2. **me695246** — what model runs where, on what
    memory and slots, against what demand, with the competing GPU/container
    work and the planned external-HPC row (Reto 2026-10-02,
    `reto-llm-capacity-1`). Ranked above 3-5 because each of them picks a
@@ -175,7 +175,7 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
    Python environment cannot be installed there. Minimal footprint is one
    image per workload, per-job writes on node-local scratch only, stage
    deleted after collect. **Specced 2026-10-21** in
-   `backlog/slullama-hpc-placement.md` § Batch runner (B1 runner gaps, B2
+   me695656 § Batch runner (B1 runner gaps, B2
    `hpc_batch` job type on `ssh_node`, B3 collect into records, B4 live
    pilot) and § Apptainer image (I1–I5 = SIF-1..5). B1 (runner gaps) landed
    73334fe8a. Next: B2 (`hpc_batch` job type), then I1 for
@@ -201,11 +201,11 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
    `scripts/inode-census` is a dependency-free, read-only python3 script
    Reto runs on the login node to see which directories and which
    environments/caches hold the files, by age. The uses:
-   - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
+   - (a) LLM operations: the slullama rung, me695656
      leg 2.
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,
      fetch), not tunnel-and-serve. It is the fired "second backend" trigger
-     (`backlog/slullama-hpc-placement.md` §From precis-dispatch): extract the
+     (me695656 §From precis-dispatch): extract the
      runner seam from the second DGX node relax, shaped by both cases.
      - Precondition, chemistry's: one GPAW relax must complete in prod on
        the second DGX node first. None has, and the MPI image is still on branch
@@ -239,7 +239,7 @@ task set.
    into one exclusive big model, one local embeddings and one GPU science
    lanes. Ruled 22:03Z (local-compute-5): **local-serving node big model, second DGX node
    science, GPU node embeddings**. In order:
-   a. **backlog/gb10-provisioning.md §Host items** — the
+   a. **me695270 §Host items** — the
       `/mnt/cluster` NFS hang (server: the database host) hits only the Linux GB10 nodes;
       the Macs read it fine. The database host's nfsd is healthy, so the approved
       restart (local-compute-6) stopped at its read-only gate. The leading
@@ -247,7 +247,7 @@ task set.
       Tailscale tunnel (MTU 1280) while the GB10 nodes send to the database host directly on
       the LAN (design note §6). Any fix goes to Reto as its own review item.
       Then the GPU node host prep. These are duty prerequisites, not bench prep.
-      **Then backlog/cluster-fileserver-move.md** — Reto ruled
+      **Then me695259** — Reto ruled
       (local-compute-7/8/9) that no Mac or GB10 node serves files and that the
       FS fix is a priority now ("it is when it is", no round window).
       - Plan approved with phase 1 revised: no retained DB backups on the
@@ -266,7 +266,7 @@ task set.
         no local copy to fall back on, and a `b2_postgres_source` on the
         NAS changes B2 retention and layout.
       - The database host nfsd restart (local-compute-6) stays held.
-   b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
+   b. **me695305 Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
       one box (spec in its decisions log). **Runs on the local-serving node now, from local
       NVMe, independent of the NFS move** (Reto 2026-10-02,
@@ -287,7 +287,7 @@ task set.
         running (Docker Hub reachable from the local-serving node 2026-10-03). Next: the quality
         check on knowledge-mesh's task set (km-8 taxonomy first; Reto
         2026-10-03, co-owned with knowledge-mesh). Spec:
-        `backlog/local-mesh-upkeep.md` slice 0; its categorise task IS
+        me693504 slice 0; its categorise task IS
         this check, run once for both threads. Open: the bench server is
         loopback-only, so the eval needs a serving window where
         `llm_eval` can reach the local-serving node (a LAN bind plus a `resource_slots`
@@ -304,11 +304,11 @@ task set.
         `worktree-agent-aad7be76ec69cd553` (role `vllm`, playbook
         `49-vllm.yml`, model as a variable) is with the orchestrator, held
         until the model pick. It is untested on a host.
-      It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
-   c. **backlog/gb10-provisioning.md** — nvidia docker runtime in a role,
+      It picks the model 3 may run on, and unblocks 5 and 6. Also **gr695328** (moved here 2026-10-01).
+   c. **me695270** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three GB10 nodes inside the round
       deploy window (Reto's ruling 4).
-   d. **backlog/gpu-fleet-embedder.md** — Reto ruled the split
+   d. **me695280** — Reto ruled the split
       2026-10-02 (local-compute-5, option 1): local-serving node big model, second DGX node
       science, GPU node embeddings. The GPU node's role is a fleet LAN embedder that
       replaces the per-node loopback copies, in a new `embedder` group, NOT
@@ -316,10 +316,10 @@ task set.
       All machines, the file server included, are in
       `llm-capacity-plan.md`. Ad-hoc heavy compute goes to the GPU node at half
       its cores, never the agent host (ruled, local-compute-7).
-5. **backlog/local-rungs-small-medium.md** — unblocked (Reto 2026-10-21):
+5. **me695247** — unblocked (Reto 2026-10-21):
    small chain goes local gpt-oss now, medium stays Claude pending a per-op
    trial; the remainder waits on the maintenance queue and sensitivity gate.
-6. **backlog/llm-lane-scheduler.md** — one allocator per box
+6. **me695298** — one allocator per box
    (absorbed `llm-dispatch-feedback-controller.md` 2026-10-23): class
    lanes — user first (up to 4), classify and the gardener floored at 2,
    the gardener soaking every idle slot as a pull generator (Reto
@@ -346,23 +346,23 @@ task set.
 
 ## Horizon
 
-1. **backlog/graph-gardener-value.md** slice 5 — the idle-filler workload
+1. **me693885** slice 5 — the idle-filler workload
    (absorbed graph-maintenance-queue 2026-10-21); supersedes
-   `backlog/cluster-scheduling.md`'s tear-down clause. Ranked in
+   me695459's tear-down clause. Ranked in
    knowledge-mesh; waits on local capacity existing (1-4).
-2. **backlog/content-sensitivity-placement.md** — precondition for anything
+2. **gr695234** — precondition for anything
    proprietary going local at all.
-3. **backlog/slullama-hpc-placement.md** §From precis-dispatch — the
+3. **me695656** §From precis-dispatch — the
    compute-runner seam extraction (fired trigger) and its open GPAW risks;
    first consumer is the chemistry thread (DFT relax).
-4. **backlog/router-cost-coverage.md**
-5. **backlog/llm-judge-reliability.md** — needed before a local judge is
+4. **me695186**
+5. **me695316** — needed before a local judge is
    trusted.
-6. **backlog/vllm-per-node-serving.md Slices 3–4** (the metrics scrape is
+6. **me695305 Slices 3–4** (the metrics scrape is
    shared with llm-lane-scheduler S0; the retraction health check),
-   **backlog/llamacpp-fleet-ops.md** — Slices 0–2 shipped (SGLang on
+   **gr695276** — Slices 0–2 shipped (SGLang on
    the local-serving node); per-node model choice against a measured ceiling.
-7. **backlog/torch-extras-conflict.md** — venv hygiene on the GB10 nodes
+7. **gr695342** — venv hygiene on the GB10 nodes
    (gb10-provisioning moved up into Do-next 4c).
 8. *(moved up to Do-next 2b on 2026-10-03.)* On Reto's "done" for the tunnel
    key, verify the tunnel and the login-node daemon-reaping risk. Git
@@ -377,10 +377,10 @@ task set.
 
    Waiting on nanobuds-paper's Perplexity report on candidate models. It
    feeds the cluster re-layout (Do-next 2).
-9. **backlog/curation-gate.md** — owned by serving-programme; consumed
+9. **me695348** — owned by serving-programme; consumed
    here (seam below).
-10. **backlog/dreaming.md**
-11. **backlog/llm-cost-accounting.md**
+10. **gr690614**
+11. **gr695291**
 12. **The capacity-idle monitor — residuals** — ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned
     here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
@@ -389,7 +389,7 @@ task set.
     outcomes per host/process plus queue depth by executor. Still open: GPU
     busy fraction and queue depth per tier in `host_heartbeat_log`, and the
     `precis stats --utilization` row.
-13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
+13. **gr695308** — idea (Reto 2026-10-04); last
     because it needs the standing local-serving-node server and has no quality number.
 14. **Context planner for batch jobs** (parked, 2026-11-08): a small agent
     plans the fisheye queries a task needs, freezes the bundle with a

@@ -9,7 +9,7 @@ answers:
   - where do rulings, metrics, red lists and specs go?
   - what do I do when a file has no precis home?
   - how do I clean up a session's loose files before handing off?
-applies-to: put (kind='gripe'|'todo'|'checklist'|'memory'|'measure'), backlog files, repo branches
+applies-to: put (kind='gripe'|'todo'|'checklist'|'memory'|'measure'), memory spec nodes, repo branches
 tags: [workflow]
 kinds: [gripe, todo, checklist, memory, measure, perplexity-research, finding]
 status: active
@@ -28,7 +28,7 @@ its home. When emptying a directory, every file leaves it or is gripe'd.**
 
 | file is… | home | how |
 |---|---|---|
-| a spec / design for repo work | a backlog item in the repo, committed in a task worktree and landed; find existing ones with `search(kind='md', q=…)` | open work only; shipped parts become a "shipped as" table pointing at code |
+| a spec / design for repo work | a spec root plus section nodes in `memory` under the Specifications hub, state on a plan todo ([[precis-spec-help]]); find existing ones with `search(kind='memory', tags=['spec:*'], view='toc')` | open design only; a built section retires, superseded by the code handle that carries it |
 | a ruling log / changelog of decisions | comments on the gripe or todo that owns the work | one comment per ruling set, Reto's words kept; `put(kind='gripe', id=N, text=…)` |
 | a red list / review queue | `checklist` on the target ref, or a comment on the finding concerned | a red list derivable from data is a query, not a file |
 | run metrics, costs, measured numbers | a gripe/todo comment; `measure` rows when the number is a property of a subject | per-batch tables may ride along in the repo as provenance |

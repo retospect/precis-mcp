@@ -295,7 +295,7 @@ _RUNG_NEXT = (
 )
 
 #: Allowed values for ``meta.rung.benign`` (roadmap-tick.py's terminal-rung
-#: "benign gate" — ``docs/backlog/bootstrap-roadmap-quest.md`` §"Terminal
+#: "benign gate" — `me691652` §"Terminal
 #: vs intermediate rungs"). ``"required"`` is the only value with meaning:
 #: :func:`~precis.quest.roadmap_tick.rung_is_terminal` honours it as an
 #: upward-only override — present it forces a rung terminal even when its

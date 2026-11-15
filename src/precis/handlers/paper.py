@@ -1848,7 +1848,7 @@ class PaperHandler(Handler):
         :meth:`put`); this method does the work. A dream (or anyone)
         notices the corpus keeps citing a paper it doesn't hold and mints
         a **stub** so the existing fetch pipeline takes over
-        (``docs/backlog/dreaming.md`` §Acquire) — never ingests inline, no
+        (`gr690614` §Acquire) — never ingests inline, no
         download, no Marker, in the dream turn.
 
         1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:``/

@@ -17,7 +17,7 @@ class* to the left of the hyphen (`[A-Za-z]-\d`). Over the corpus: **146
 wrong rewrites against 3 right ones** — `Fe-ZSM-5` matched the substring
 `M-5` and misread `M` as a unit, corrupting material names (`MOF-74` →
 `MOF⁻⁷⁴`, `UiO-66` → `UiO⁻⁶⁶`, and more). Caught by a corpus dry run
-before any production write; see `docs/backlog/nanopub-corpus-remediation.md`.
+before any production write; see me691969.
 
 The fix: require the whole standalone token left of the hyphen to be a
 member of a **closed accepted-denominator set**

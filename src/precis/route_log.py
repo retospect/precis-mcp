@@ -69,7 +69,7 @@ _ROLLUP_WATERMARK_KEY = "route_log:rollup_watermark"
 _ROLLUP_HOURS_BUDGET = 48
 
 #: ``autoskill_sessions`` retention (days, migration 0264; spec
-#: docs/backlog/autoskill.md) and its per-statement / per-pass row limits.
+#: me691549) and its per-statement / per-pass row limits.
 #: Rows are small and ts-indexed, so the same batched-delete shape as the
 #: call-log phase applies.
 AUTOSKILL_RETENTION_DAYS = 60

@@ -164,7 +164,7 @@ class PresInput:
 class MarkupInput:
     """Structured full text (JATS / Elsevier XML / arXiv HTML / LaTeX).
 
-    Markup-first ingest (docs/backlog/dark-features-activation.md): the body
+    Markup-first ingest (gr690306): the body
     chunks come from ``markup_path`` via
     :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
     is never run**.
@@ -860,7 +860,7 @@ def _ingest_pdf(
             # the row is a stub (``pdf_sha256 IS NULL``), upgrade it
             # by promoting this PDF to canonical and inserting the
             # extracted chunks. See db_writer.register_aliases_and_maybe_upgrade
-            # for the contract and docs/backlog/finding-chase.md
+            # for the contract and gr690649
             # §"Stub upgrade" for the rationale (chase findings
             # waiting on this stub resume on the next chase pass
             # without any extra plumbing).

@@ -36,8 +36,8 @@ nightly build ⋅ main on CI):
 - **Migration collisions** (`scripts/migration-check`) — a flagged number =
   two worktrees will collide on ship; renumber the **unshipped** one above
   main's max. (Known live case: the `email` worktree's `0074`.)
-- **Backlog gunk** (`scripts/backlog-lint`) — done-marked items are
-  candidates for the [[docs-triage]] skill: verify shipped, then delete.
+- **Backlog gunk** (`scripts/backlog-lint`) — done-marked residual files
+  are candidates for the [[docs-triage]] skill: verify shipped, then delete.
   Generated indexes (the `INDEX.md` files under the backlog dir and
   `docs/runbooks/`, plus `docs/codebase-map.md`) are gitignored and
   regenerate via `scripts/docs-index` at session start — never
@@ -95,8 +95,8 @@ nightly build ⋅ main on CI):
 - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
   >7 days ago) run the session-tightness scan: read recent large local
   transcripts for repeated token-waste (context bloat, wrong-tier agents,
-  un-`rtk`'d firehoses, redundant calls), file findings as backlog items /
-  gripes, then `scripts/token-review --stamp "<note>"`. Inside the 7-day
+  un-`rtk`'d firehoses, redundant calls), file findings as gripes (or a
+  spec section when design-sized), then `scripts/token-review --stamp "<note>"`. Inside the 7-day
   window it's quiet — skip it.
 
 ## Surface, db and search cadences
@@ -105,8 +105,8 @@ nightly build ⋅ main on CI):
   pass >14 days ago) run the [[surface-review]] pass: mine the window with
   `scripts/mine-sessions/run.sh`, read the scoreboard, fan `forensics`
   agents over the evidence cards (plus the random arm), gate for
-  live-and-unfixed, then attach the measurement to the existing backlog
-  item / gripe — mint only what nothing covers. Then
+  live-and-unfixed, then attach the measurement to the existing spec
+  section / gripe — mint only what nothing covers. Then
   `scripts/surface-review --stamp "<note>"`. Inside the 14-day window it's
   quiet — skip it. Remit: the precis MCP surface (verbs, error messages, renders,
   vocabulary, capability gaps) — distinct from token-review's harness
@@ -117,7 +117,7 @@ nightly build ⋅ main on CI):
   indexes · dead-tuple bloat), interpret outliers by *ratio* (lifetime
   `idx_scan=0` = safe to drop; a small table full-scanned often = throttle the
   caller, not an index; an unindexed fleet-wide GC = single-flight + index),
-  file findings as backlog items / gripes, then
+  file findings as gripes, then
   `scripts/db-thrash-review --stamp "<note>"`. Inside the 14-day window it's
   quiet — skip it. (This cadence exists because an unindexed GC pegged the database host for
   hours unnoticed; migs 0077/0078.)
@@ -129,7 +129,7 @@ nightly build ⋅ main on CI):
   executed queries, then LLM-eval whether each returned menu + the caller's
   selection made sense, and propose "better search bits" (skill H2/vocabulary
   edits, or a matcher change in `src/precis/handlers/skill.py`). File findings
-  as backlog items / gripes, then
+  as gripes, then
   `scripts/skill-search-review --stamp "<note>"`. Inside the 30-day window
   it's quiet — skip it. (This cadence exists because skill search is agents' only
   discovery fallback when they don't know a slug, yet nothing logs how well it
@@ -164,8 +164,8 @@ nightly build ⋅ main on CI):
   host is *actually* locked out — the script also prints any open count);
   this cadence is the proactive drift catch. (This exists because a
   `brew upgrade python` cdhash bump silently broke the agent-worker host's grant and
-  dark-ingested for days; see the runbook + the backlog item on the agent-worker host's
-  daemon NAS lockout.)
+  dark-ingested for days; see the runbook + the spec graph's item on the
+  agent-worker host's daemon NAS lockout.)
 - **Credential-check cadence** (`scripts/secrets-check-review`) — on **DUE**
   (last check >7 days ago) run `scripts/prod-precis secret check`: the
   `/secrets` page's probes against the prod vault, one line per registry

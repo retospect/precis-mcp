@@ -15,7 +15,7 @@ row), plus one line per live job. Then the strategic roots that serve no
 quest ("unassigned"); then the fleet hosts and when they last reported.
 A todo that serves the quest directly while also sitting inside another
 served root renders once, in the larger tree. Dark-factory step 1
-(td540840, ``docs/backlog/dark-factory.md``): every later step reads
+(td540840, `me692430`): every later step reads
 this tree.
 
 :func:`work_model` computes the hierarchy once as frozen dataclasses

@@ -79,7 +79,7 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   failures) · poster genre (shipped 2026-10-15, spec closed 2026-10-21;
   left: Reto's manual eyeball of one exported poster after deploy) ·
   `draft-section-styles`.
-- **Prose framework** — [terse-prose-framework](../terse-prose-framework.md)
+- **Prose framework** — terse-prose-framework (me652550)
   (idea, Reto 2026-10-14: tag-driven prose lint + story graph + card; not
   hit by the October paper).
 - **Content model** — spreadsheet-tables (graph spec me685600, plan

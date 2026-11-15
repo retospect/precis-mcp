@@ -1,6 +1,6 @@
 """Surface-Pourbaix slice 7 — the guaranteed-reset hysteresis contour.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (prompt §6.2 estimation order, §6.3 series composition, and the slice-7
 contract). Pure numpy + dataclasses — the same layer as
 :mod:`precis_pathway.staircase_masks`, whose ``Route``/``Rung``/

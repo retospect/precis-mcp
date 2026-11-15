@@ -7,8 +7,8 @@ keyed by DOI. It is one unreviewed gpt-6.1-sol pass, so the report is
 AGREEMENT, not precision/recall: per paper it buckets every live output
 measure and every ALCHEM value as match / value≠ / unit≠ / ours-only /
 theirs-only, with the disagreements and the unmapped-ALCHEM-term list as
-the fix queue for docs/backlog/table-numeric-extraction.md and
-docs/backlog/measures-substrate.md. Re-run it as extraction improves.
+the fix queue for me694409 and
+me693370. Re-run it as extraction improves.
 
 Usage (via the ``alchem-diff`` shell wrapper):
 

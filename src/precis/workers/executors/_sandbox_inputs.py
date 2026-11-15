@@ -7,7 +7,7 @@ Called by ``sandbox_run.validate_submit`` (so a bad ref refuses at
 dispatch-minted job never passed through ``put``, and the ref may have
 changed since).
 
-``code_ref`` rules (decided 2026-10-18, docs/backlog/sandbox-python-script.md):
+``code_ref`` rules (decided 2026-10-18, me692178):
 
 * a ``plaintext`` ref is its whole body, staged as ``/work/main.py``;
 * a ``markdown`` ref is its single ```` ```python ```` fenced block; zero

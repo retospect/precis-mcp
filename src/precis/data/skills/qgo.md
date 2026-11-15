@@ -141,7 +141,7 @@ runtime's equivalent watcher.
    it means `qgo` bought nothing here and `qland` would have done.
 
 8. **Residuals still get persisted.** Speed removes ceremony, not memory. A
-   latent bug found this session becomes a backlog item or a gripe
+   latent bug found this session becomes a gripe or a `todo` row
    before you finish — free text does not survive compaction. A red repair
    gate is itself a residual: fix it in the next cycle rather than leaving
    main red for a sibling to trip over.

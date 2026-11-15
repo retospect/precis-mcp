@@ -72,7 +72,7 @@ class PrecisConfig(BaseSettings):
     Defaults to ``"reto"`` (Reto ruling on gr508499, 2026-10-23): the
     earlier ``"owner"`` placeholder meant owner-routed work — e.g.
     title-fix todos' ``waiting-for:<login>`` tag — filed to a login
-    nobody claims. See ``docs/backlog/identity-and-access.md``.
+    nobody claims. See `me690624`.
 
     Set via ``PRECIS_OWNER`` in the env.
     """
@@ -241,7 +241,7 @@ class PrecisConfig(BaseSettings):
     ``memory`` at ``work/foo.md`` is addressed ``memory/work--foo``; a
     ``:ro`` root refuses put/edit/delete. Alias ``workspace`` stands in
     for ``root`` when ``PRECIS_ROOT`` is unset. Set via ``PRECIS_ROOTS``
-    (``docs/backlog/file-mirror.md``).
+    (`me693606`).
     """
 
     python_roots: str | None = None
@@ -517,7 +517,7 @@ def load_config() -> PrecisConfig:
 # directory (and edgar on a User-Agent string) via ``KindSpec.requires_env``
 # — so a kind that a host could trivially do showed as "unavailable" only
 # because a cache dir any host can create wasn't wired. These are the
-# *incidental* class (docs/backlog/factory-console-and-scheduling.md §3): not
+# *incidental* class (gr690514 §3): not
 # real scarcity, so we default them and drop the gate. The genuinely-scarce
 # gates stay (patent still needs the EPO OPS credentials, which resolve
 # through the secrets vault). Callers read these instead of the raw env.

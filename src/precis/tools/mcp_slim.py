@@ -2,7 +2,7 @@
 
 ``tools/core.py``'s verb functions double as FastMCP tool schemas, so their
 ~100 kind-specific parameters were paid for by every turn of every session
-(docs/backlog/mcp-verb-schema-diet.md). This module registers a *slim*
+(me690774). This module registers a *slim*
 twin per verb: only the CORE parameters (chosen from 30 days of the prod
 tool-call ledger) are advertised; everything else rides ``args={...}``.
 

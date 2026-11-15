@@ -1,7 +1,7 @@
 """Geometrically nonlinear axial-network continuation — snap-through /
 limit-point tracing and an honest energy-barrier estimate along the
 traced equilibrium branch. This is
-docs/backlog/structural-solution-space.md slice 5's CORE, and it is the
+me695531 slice 5's CORE, and it is the
 deferral target both :mod:`precis.structsolve.complementarity`'s barrier
 estimate and that doc itself name explicitly: "a real snap-through
 barrier needs the geometrically nonlinear sweep."

@@ -1,6 +1,6 @@
 """Taxonomy bootstrap — generate a measurand list from corpus usage.
 
-Implements `docs/backlog/taxonomy-bootstrap.md`: the five stages that turn a
+Implements me692282: the five stages that turn a
 frozen corpus snapshot into a versioned `list.vN.yaml`, plus the computed
 subject axes. The list is an **output anyone can regenerate**, not a
 hand-maintained table; what a human signs off is the procedure and the

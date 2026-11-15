@@ -1,7 +1,7 @@
 """The review ledger and the revision log (migration 0185). Mixin on
 :class:`precis.store.Store`.
 
-Backs docs/backlog/local-mesh-upkeep.md §2 and §2b:
+Backs me693504 §2 and §2b:
 
 - ``reviews`` — who reviewed a chunk, ref or link (a human, or a model at
   a version), at which content sha, with which verdict. A review is
@@ -17,7 +17,7 @@ Write helper: :meth:`record_target_review`. Read helpers:
 :meth:`target_sha`, :meth:`reviews_for`, :meth:`revisions_for`,
 :meth:`state_at`, :meth:`unrecorded_revision_count`.
 
-Trust state (migration 0214, docs/backlog/graph-node-trust-state.md slice
+Trust state (migration 0214, me691024 slice
 1): every ref and link carries ``trust_origin`` / ``trust_confidence`` /
 ``trust_write_version``, stamped by triggers from the write context, and
 its acts land in ``revisions.trust_acts``. :meth:`trust_state` and

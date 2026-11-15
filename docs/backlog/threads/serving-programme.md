@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Collect the N=32 profile before choosing process topology (Do next 1).
 - **Blocked by:** Nothing; active under Pillar 5 Operations from 2026-10-17.
 - **Unblocks:** Measured MCP capacity and the evaluation spine.
-- **Acceptance:** Use [mcp-concurrency-load-test](../mcp-concurrency-load-test.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use mcp-concurrency-load-test (me691729) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `serving-programme`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -35,16 +35,16 @@ and five orphan gripes)
 
 ## Do next
 
-1. **backlog/mcp-concurrency-load-test.md §Still owed** — GIL holder and
+1. **me691729 §Still owed** — GIL holder and
    the prod-shaped re-measure are both answered (2026-10-15/16 and
    2026-10-21): the deliberate 4-permit `PRECIS_MCP_TOOL_CONCURRENCY`
    dispatch cap binds first, Postgres fan-out cost behind it, the GIL
    out of reach while calls are IO-heavy. Remaining there: slice 2
    (needs a serving vLLM + cluster compute) and the `--url` prod run,
    which is Reto's.
-2. **backlog/eval-run-spine.md** — items 1-3 and 6 (run versioning, sequence
+2. **me695330** — items 1-3 and 6 (run versioning, sequence
    numbers, verdict column) have no host dependency and unblock
-   curation-gate and `backlog/model-qualification.md` (which writes its
+   curation-gate and gr692206 (which writes its
    promote/reject into the verdict column).
 
 ## Horizon
@@ -53,20 +53,20 @@ Written from the 2026-09-29 resume pointer; the shared-server owners
 correct it.
 
 1. **session-mcp-shared-server end state** (that thread's
-   backlog/session-mcp-http-server.md) — waits on Do next 1's topology answer; the
+   me691707) — waits on Do next 1's topology answer; the
    end of the per-session container and the install-watchdog-exit-visibility
    class of defect that motivated it.
-2. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
+2. **me695330 items 4, 8, 9** (blob store, contamination
    detection, frozen eval world) — waits on Do next 3 and on local-compute's
    the GPU node prerequisites (the `/mnt/cluster` NFS hang and the GPU node host prep,
    `gb10-provisioning.md` §Host items); reproducible, comparable
-   eval runs. `backlog/model-qualification.md` (unthreaded) is its first
+   eval runs. gr692206 (unthreaded) is its first
    consumer.
-3. **backlog/curation-gate.md** (+ its prerequisite
-   backlog/review-container-readonly-role.md) — waits on the verdict column;
+3. **me695348** (+ its prerequisite
+   me690951) — waits on the verdict column;
    the reviewer loop the roadmap and taxonomy threads park on.
 4. **2-3 `precis serve` processes behind a balancer** (no item yet; the
-   measurement is backlog/mcp-concurrency-load-test.md's multi-process arm,
+   measurement is me691729's multi-process arm,
    N=8-12 sessions per process) — waits on Do next 1's topology answer;
    spec it as its own item when that answer lands.
 
@@ -78,7 +78,7 @@ correct it.
 
 ## No action needed
 
-- **backlog/session-mcp-http-server.md** — in flight under the
+- **me691707** — in flight under the
   session-mcp-shared-server thread; not ranked here.
 - mcp-concurrency-load-test — multi-process arm measured 2026-10-15 on the
   dev DB (3 processes ~3.2x throughput); the `--url` prod run is Reto's.

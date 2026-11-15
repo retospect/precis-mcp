@@ -1325,7 +1325,7 @@ def newly_dangling(
     debt, not this edit's regression, so they are excluded.
 
     This is the shared core of the inline-editor validation gate
-    (``docs/backlog/draft-inline-editor.md``): the web editor turns the same
+    (`me694007`): the web editor turns the same
     old-vs-new diff into a **hard** save-block ("comes back at you if you
     broke something serious"), while the MCP/CLI edit path
     (`dangling_edit_hint`) surfaces it as a **non-blocking** ⚠ so an

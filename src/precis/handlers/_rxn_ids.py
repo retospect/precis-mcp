@@ -1,7 +1,7 @@
 """Canonical identity keys for a reaction, and the reaction-SMILES parse.
 
 Two keys, because one is not enough (design-of-record
-``docs/backlog/reaction-kind-and-synthesis-cost.md``):
+`me694355`):
 
 ``uid_strict``
     Over the **whole balanced equation** — every reactant and every product.

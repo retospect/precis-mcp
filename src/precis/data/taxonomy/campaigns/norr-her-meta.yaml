@@ -1,4 +1,4 @@
-# Campaign configuration for norr-her-meta (docs/backlog/norr-her-meta.md).
+# Campaign configuration for norr-her-meta (me690599).
 #
 # This file is the ONLY place chemistry is allowed to appear in the taxonomy
 # bootstrap (taxonomy-bootstrap.md AC8). src/precis/taxonomy/ code stays

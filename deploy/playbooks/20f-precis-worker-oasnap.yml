@@ -1,6 +1,6 @@
 ---
 # 20f-precis-worker-oasnap.yml — the dedicated OpenAlex-snapshot worker lane
-# (docs/backlog/openalex-snapshot-cites.md, slice 3).
+# (me693596, slice 3).
 #
 # WHY A SEPARATE UNIT, NOT `worker_system`. The pass reads the public
 # `s3://openalex` works dump — 675 GB gzip on a full release, ~2 h of

@@ -12,7 +12,7 @@ autocatpath pipeline **in-process on EMT** (cheap, qualitative), and persists:
 Regen is content-addressed: re-``put``ting an unchanged config is a no-op
 cache hit. Fan-out across ``(model, seed)`` and heavy backends move to the
 precis compute lane in later slices (see
-``docs/backlog/autocatpath-integration.md`` in precis-mcp). Native `structure`
+`me690505` in precis-mcp). Native `structure`
 refs per intermediate (the ``pathway-node`` link) are slice 1 — deferred
 here because link relations are a closed `Relation` Literal in precis core
 and need a core edit to extend.
@@ -61,7 +61,7 @@ log = logging.getLogger(__name__)
 
 
 #: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
-#: (docs/backlog/pathway-conditions-effects-report.md Phase 1 item 1;
+#: (me692126 Phase 1 item 1;
 #: 'staircase' re-tilts the affine export — SPSO slice 3).
 _POTENTIAL_VIEWS = ("analysis", "profile", "compare", "staircase")
 

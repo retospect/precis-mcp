@@ -3622,7 +3622,7 @@ class JobHandler(NumericRefHandler):
                 )
 
         if target is not None:
-            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # Taxon hierarchy rules (me693578): this
             # create path writes its own link, so it calls the shared guard.
             guard_taxon_hierarchy(
                 self.store, None, target, relation, src_kind=self.kind

@@ -446,7 +446,7 @@ def _nbh_edge(
 #
 # A stored edge adds value only when it holds something retrieval cannot
 # recompute on demand — stance, a connection below the similarity floor,
-# a settled judgment, provenance (docs/backlog/graph-gardener-value.md,
+# a settled judgment, provenance (me693885,
 # "The argument"). Per the 2026-10-21 ruling there is **one door**: the
 # gate lives inside the trust-state link admission,
 # :meth:`LinksMixin.add_link`, not in a separate checker a caller could

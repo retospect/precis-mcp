@@ -118,7 +118,7 @@ Relation = Literal[
     # sync with the `relations` seed in 0056_plan_kind.sql.
     "plan-of",
     "has-plan",
-    # Concept graph — migration 0063 (reading-prep loop, docs/backlog/reading-prep-loop.md;
+    # Concept graph — migration 0063 (reading-prep loop, me690334;
     # supersedes decision 7's objectives-as-todos).
     # Concepts (kind='concept') form a personal knowledge graph.
     # `has-prerequisite` (Y has-prerequisite X ⇒ learn X before Y) is the
@@ -155,7 +155,7 @@ Relation = Literal[
     # substrate; the paper is what a human reads). Modeled 1:1 on
     # `dossier-of`: asymmetric, `has-paper` inverse, auto-mirrored.
     # Resolved read-only by `quest.dossier.paper_ref_id`; nothing yet
-    # *creates* the paper draft (docs/backlog/paper-writing-pipeline.md).
+    # *creates* the paper draft (me689904).
     # Keep in sync with the `relations` seed in 0089_paper_of_relation.sql.
     "paper-of",
     "has-paper",
@@ -174,7 +174,7 @@ Relation = Literal[
     "qualifies",
     "qualified-by",
     # Integration ledger — migration 0085 (paper-writing pipeline rung 2,
-    # docs/backlog/paper-writing-pipeline.md §"The integration ledger").
+    # me689904 §"The integration ledger").
     # Disposition of a paper's relationship to a topic dossier `draft`,
     # ridden on the paper→dossier link edge (src=paper, dst=dossier,
     # optionally its section chunk). All four are asymmetric with NO
@@ -1350,7 +1350,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
-            # Refuted lifecycle (docs/backlog/quest-dossier-dialectic.md
+            # Refuted lifecycle (me690849
             # §"Refuted lifecycle"). Terminal, no transition machinery —
             # applied via the existing tag verb, not the chase worker. A
             # rejected hypothesis finding gets `retracts`/`superseded-by`
@@ -1449,7 +1449,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # a typo (``WATCH:dialy``) fails loud at write time instead of
     # silently dropping the row from the sweep. (gripe:3681 phase 4.)
     "WATCH": frozenset({"hourly", "daily", "weekly", "monthly"}),
-    # Dreaming provenance (docs/backlog/dreaming.md). Agent-authored
+    # Dreaming provenance (gr690614). Agent-authored
     # rows carry a DREAM: axis so they're identifiable and fenceable:
     #   * ``DREAM:consolidated`` — a survivor minted by a ``supersede``
     #     merge (stays visible in default search).
@@ -1549,7 +1549,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # blocking STATUS: transition. No author-facing `TRUST:` axis in v1 —
     # trust is the absence of a concern edge (§4, R3).
     "STALE": frozenset({"retracted-premise"}),
-    # Taproot Phase-2 predecessor (open #11, docs/backlog/taproot.md).
+    # Taproot Phase-2 predecessor (open #11, me694691).
     # A `finding`-ref discriminator written by
     # the `axis:taproot` classifier pass (data/axes/taproot.yaml): `TAPROOT:claim`
     # = a grounded world-claim (the taproot claim hub + evidence edges attach
@@ -1575,7 +1575,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # wrongly register a phantom ``axis:attempt`` service in
     # ``/categorizers``.
     "ATTEMPT": frozenset({"open", "active", "tried", "ruled-out", "idea"}),
-    # Memory space (docs/backlog/memory-native-authoring.md): which corpus a
+    # Memory space (me690866): which corpus a
     # node belongs to. ``research`` is the default stamp on a ``memory``
     # (``MemoryHandler.default_tags_on_create``); ``repo-dev`` marks the
     # dev-harness memory (``precis memory mirror import``); ``personal``

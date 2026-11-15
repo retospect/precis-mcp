@@ -1,5 +1,5 @@
 """MeasureHandler — read and search the ``measures`` table, one sourced number
-per row (``docs/backlog/measures-substrate.md``, pilot Build B).
+per row (`me693370`, pilot Build B).
 
 A measure is a row, not a ref, so this is a handler-searched kind like ``tag``
 and ``skill``: addressed by ``measures.id`` (``12`` or the handle ``mx12``).

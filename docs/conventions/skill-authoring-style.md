@@ -2,7 +2,7 @@
 
 **Audience**: anyone writing or rewriting a file under
 `src/precis/data/skills/`.
-**Companion**: [`docs-and-skills-redesign.md`](../backlog/docs-and-skills-redesign.md)
+**Companion**: `docs-and-skills-redesign.md` (gr690464)
 covers the ingest substrate (chunker, alias groups, `FLAVOR:` tags,
 boot-time scan). This file covers the *prose* that goes inside.
 **Scope**: the cut-list, the "describe consequences, not algorithms"
@@ -499,7 +499,7 @@ different *because of this sentence*?" If no, cut it.
 
 ## See also
 
-- [`docs-and-skills-redesign.md`](../backlog/docs-and-skills-redesign.md) —
+- `docs-and-skills-redesign.md` (gr690464) —
   ingest, chunking, alias groups, `FLAVOR:` tags, static gates.
 - `src/precis/utils/skill_common.py:parse_frontmatter` — the only
   authoritative list of front-matter fields the loader honors.

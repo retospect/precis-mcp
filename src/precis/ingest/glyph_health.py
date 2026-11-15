@@ -7,7 +7,7 @@ V/mm, 6 μm → 6 m, i.e. 10^3–10^6×) into clean-looking ASCII that no
 downstream text scan can catch.
 
 Two distinct failure modes, both settled in
-``docs/backlog/ingest-strips-greek-glyphs.md``:
+`me690638`:
 
 * **mode "a"** — a *lying* ``/ToUnicode``: the font (e.g.
   ``KKLGAD+AdvP7DA6``) names its μ glyph ``/m`` and maps code ``<6d>`` to

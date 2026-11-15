@@ -1,4 +1,4 @@
-"""Mesh fit check — the engine for ``docs/backlog/se-fit-check-and-probe.md``.
+"""Mesh fit check — the engine for `me694521`.
 
 Checks use real cad geometry (ruling A): each component is tessellated once
 (:mod:`precis.cad.tessellate` at a scale-relative chord, Decision 2), its

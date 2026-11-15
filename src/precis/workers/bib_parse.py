@@ -775,7 +775,7 @@ def ensure_bib_cites_links(
     to the row that justified it. For bib_parse callers the key is the
     ``paper_bib_entries.id`` and ``meta_key`` its default
     ``"bib_entry_id"``; the OpenAlex-snapshot minter (slice 2 of
-    docs/backlog/openalex-snapshot-cites.md) passes the staging edge's
+    me693596) passes the staging edge's
     ``"W111>W333"``-form W-id pair under ``meta_key="openalex_edge"``.
     Self-cites (``held_ref_id == ref_id``) are skipped — the schema
     refuses a ref-level self-loop anyway — as are targets retired since

@@ -1,6 +1,6 @@
 """Connection scope for recipe surfaces — ``read`` vs ``write``.
 
-gr512233 (``docs/backlog/read-scope-skill-fencing.md``; Reto's option-B
+gr512233 (`me691026`; Reto's option-B
 ruling 2026-10-25): a read-only *connection* must not be shown write
 recipes — skill sections, ``Next:`` rows, ``next=`` hints. Scope is a
 property of the process/connection, never a per-request flag an agent

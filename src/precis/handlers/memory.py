@@ -764,7 +764,7 @@ class MemoryHandler(NumericRefHandler):
 
     # Every memory lands in a space; a caller's own ``SPACE:`` tag replaces
     # this (closed tags add with ``replace_prefix``). ``repo-dev`` is the
-    # dev-harness memory (docs/backlog/memory-native-authoring.md).
+    # dev-harness memory (me690866).
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("SPACE:research",)
 
     # The body lives in a `memory_body` chunk (ord>=0), embedded + keyworded
@@ -2023,7 +2023,7 @@ class MemoryHandler(NumericRefHandler):
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
         if target is not None:
-            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # Taxon hierarchy rules (me693578): this
             # create path writes its own link, so it calls the shared guard.
             guard_taxon_hierarchy(
                 self.store, None, target, relation, src_kind=self.kind
@@ -5288,7 +5288,7 @@ class MemoryHandler(NumericRefHandler):
         """Consolidate >=2 near-duplicate memories into one survivor.
 
         The single guarded compress-only merge a dream uses instead of raw
-        ``delete`` (docs/backlog/dreaming.md, §Consolidate). In one
+        ``delete`` (gr690614, §Consolidate). In one
         transaction: mint a new ``memory`` (title + ``memory_body`` chunk +
         merged tags), migrate every link off each original onto the survivor,
         add ``survivor --supersedes--> original`` edges, stamp

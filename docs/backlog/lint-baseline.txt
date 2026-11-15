@@ -3,9 +3,13 @@
 # or grows past the count recorded here, so new crowding is never lost in
 # standing noise. Bump a count when the family is reviewed and kept as-is,
 # or after it shrinks.
-draft 11
-hexfold 15
-pcb 45
-quest 10
-se 27
-taproot 10
+#
+# Emptied 2026-11-15: the 522 spec files moved into graph memory (ruling
+# me568168), so every recorded family (draft 11, hexfold 15, pcb 45,
+# quest 10, se 27, taproot 10) is gone from this directory. The counts are
+# not history worth keeping — a stale number here silently suppresses the
+# warning for a family that regrows. Crowding in the graph is a hub-size
+# question instead: the spec format caps a hub at 40 members
+# (precis-spec-help), and `search(kind='memory', tags=['spec:*'],
+# view='toc')` lists the roots. Re-add a line here only for a family that
+# crowds the residual files in this directory.

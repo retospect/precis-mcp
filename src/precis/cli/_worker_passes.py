@@ -417,7 +417,7 @@ def build_ref_passes(
         ref_passes.append(_chase_trigger_pass)
 
     # inbound_ground — the claim-hub half of inbound completeness
-    # (docs/backlog/taproot-inbound-grounding.md part b): a paper whose
+    # (gr693782 part b): a paper whose
     # body just finished embedding is ANN-matched against the claim-hub
     # index, each near pair verified through the shared chase verifier,
     # and a certified corroborates/disputes edge written — support with
@@ -900,7 +900,7 @@ def build_ref_passes(
     # PRECIS_PAPER_GLOSSARY_ENABLED as the live gate): a
     # corpus-wide backfill is a deliberate, node-targeted batch, like
     # classify. Model defaults to the cheap `summarizer` alias. See
-    # workers/paper_glossary.py + docs/backlog/reading-prep-loop.md.
+    # workers/paper_glossary.py + me690334.
     if _register("paper_glossary"):
         from precis.utils.llm.router import DispatchClient as _DispatchClient
         from precis.utils.llm.router import Tier as _Tier
@@ -1251,7 +1251,7 @@ def build_ref_passes(
             ref_passes.append(_briefing_audio_pass)
 
     # cast_audio — narrate the daily *casts* (morning reading-brief + evening
-    # nidra) onto the podcast feed (docs/backlog/reading-prep-loop.md §Audio).
+    # nidra) onto the podcast feed (me690334 §Audio).
     # Same substrate as briefing_audio: TTS-host-only, container-first,
     # self-scheduling off an un-narrated cast draft, idempotent via
     # meta.audio_episode_id. Default-OFF (`service prio` or --only
@@ -1510,7 +1510,7 @@ def build_ref_passes(
         ref_passes.append(_parts_refresh_pass)
 
     # openalex_snapshot — the OpenAlex works-dump cites refresh (slice 3,
-    # docs/backlog/openalex-snapshot-cites.md). Same shape as parts_refresh:
+    # me693596). Same shape as parts_refresh:
     # this registration is for a manual/dedicated `--only openalex_snapshot`
     # run only (no `default_profiles`, no `enable_env`). The STANDING runner
     # is the `worker-oasnap` unit (playbook 20f) on the
@@ -1991,7 +1991,7 @@ def build_ref_passes(
 
         ref_passes.append(_dream_agent_pass)
 
-    # health_digest — docs/backlog/self-healing-spine.md Layer 2. Same shape
+    # health_digest — me691477 Layer 2. Same shape
     # as dream_agent just above: this registration is for a manual/ad-hoc
     # `--only health_digest` run only (no `default_profiles`, no
     # `enable_env`). The STANDING trigger is the `health_digest`
@@ -2007,7 +2007,7 @@ def build_ref_passes(
 
         ref_passes.append(_health_digest_pass)
 
-    # materialize — §F cycle a (docs/backlog/cluster-scheduling.md
+    # materialize — §F cycle a (me695459
     # §F). Same shape as health_digest just above: this registration is
     # for a manual/ad-hoc `--only materialize` run only (no
     # `default_profiles`, no `enable_env`). The STANDING trigger is the

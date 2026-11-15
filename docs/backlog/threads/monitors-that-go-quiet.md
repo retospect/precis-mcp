@@ -120,20 +120,20 @@ a soft-deleted gripe)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-3. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
+3. **me690357** (filed 2026-10-03 for the
    orchestrator; draft, do not build yet). The nightly B2 sync failed on
    every run for 7 weeks into a log nobody reads. The fix is a
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
-4. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
+4. **gr472019** (filed 2026-10-10 from
    two untracked alert sources; the router tracker binding shipped, what is left
    is the OTS batch 7 re-stamp). It ranks below 1–3 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
-5. **backlog/db-exporters-role.md** (option (b) of the dead-alert-rules fix) —
+5. **me690504** (option (b) of the dead-alert-rules fix) —
    the role shipped; waits on Reto's vault DSNs and `prometheus_reader`
    login (2026-10-22), then the deploy steps in that item. Ranks last
    because the gate already stops the false NodeDown/PostgresDown.
-6. **backlog/host-session-events.md** (filed 2026-10-19 from the builder-session mass exit;
+6. **gr690572** (filed 2026-10-19 from the builder-session mass exit;
    IDEA, nothing specced). Record host reboot, network loss and regain, power
    events and session exits, with a per-host timeline view. Ranks last: it
    adds history, not a missing page.
@@ -150,17 +150,17 @@ a soft-deleted gripe)
    attribution event per claim instead of refusing.
    The unattributed-claimant alert shipped (7b83f2e5b); Reto 2026-10-21
    ruled the alert sufficient and the unnamed-container item closed.
-2. **backlog/alert-failure-id-registry.md** — fully shipped (agent ack via
+2. **gr690110** — fully shipped (agent ack via
    `tag(kind='alert', add=['ack:6h'])`, 2026-10-15); only its read-cost
    revisit triggers are left.
-3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
+3. **me691477** — Layer 1 owns worker identity, Layer 2
    the condition registry; a host has no durable identity separating
    "ephemeral by design" from "vanished", so attributability-by-container
    is a slice here. Last: largest, no
    independently shippable piece touching this thread.
 4. Unify `/alerts`, `/gripes` and `/needs-you` into one triage surface:
    a design question in Reto's queue as td479394, not a defect.
-5. **backlog/doctor-report-and-alert-channel-quality.md** — doctor and alert
+5. **me690520** — doctor and alert
    output quality, agent-lane container env, worker_logs ts index; the
    channel the detectors above report through. Platform pass 2026-10-02.
 

@@ -60,7 +60,7 @@ never just 404s.
 
 The anchored-notes layer arrived via
 docs/backlog/se-topology-cloud-and-surface-notes.md slice 2, re-shaped by
-docs/backlog/pcb-argue-backport-se.md (one always-present argue box, not a
+me690276 (one always-present argue box, not a
 per-selection panel):
 
 * ``POST /se/{slug}/note/rewrite`` — AI-assisted intent capture: a raw
@@ -1802,7 +1802,7 @@ def _build_scene3d(
 async def _tool_volumes_response(
     request: Request, kind: str, slug: str, *, rev: int | None
 ) -> Response:
-    """The 3D page's "tool volumes" toggle (docs/backlog/se-mechanical-drc.md
+    """The 3D page's "tool volumes" toggle (me694687
     rulings 5/6): every fasten finding that carries swept volumes
     (``fastener_insertion_path``'s body/tool/hand sweeps), as one
     ``Shapes`` group (:func:`~precis_web.blocktree_3d.tool_volume_group`)
@@ -3018,7 +3018,7 @@ async def se_pick(
 
 # ── argue box → interview note (slice 2 of
 #    docs/backlog/se-topology-cloud-and-surface-notes.md, re-shaped by
-#    docs/backlog/pcb-argue-backport-se.md: one box, many anchors) ────────
+#    me690276: one box, many anchors) ────────
 
 #: The kinds the web comment box can mint. An ``answer`` needs a ``re``
 #: target picked from the existing ledger — out of scope for a viewer

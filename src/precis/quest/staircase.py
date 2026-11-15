@@ -1,7 +1,7 @@
 """Surface-Pourbaix slice 3 — structure-side helpers for the linked
 reaction-staircase panel.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (§7.2 map → staircase; the campaign carry-over asks for the resting
 termination at U and the coads-mismatch verdict). Lives in core for the
 same reason :mod:`precis.quest.pourbaix_map` does: the structure

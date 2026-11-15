@@ -276,7 +276,7 @@ reference are supplied by this ledger.
 ## Not in this slice
 
 Route scoring, cost vectors, stock termination, and bulk import are later
-rungs — see `docs/backlog/reaction-kind-and-synthesis-cost.md`. Today `rxn` is
+rungs — see me694355. Today `rxn` is
 the fact store those will read from.
 
 ## See also

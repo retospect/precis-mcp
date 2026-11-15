@@ -1450,7 +1450,7 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # stamps per trust-stamp correction (gr592893) — a list of dicts,
         # already dropped by ``_numeric``; listed for clarity.
         "trust_stamp_log",
-        # substrate-variant provenance (docs/backlog/pd-hydride-substrate.md):
+        # substrate-variant provenance (me692729):
         # the bare candidate this one was derived from (a ref id — numeric,
         # so it would otherwise rank as a measure) and the substrate level
         # dict ({phase, x, a, U_step}).

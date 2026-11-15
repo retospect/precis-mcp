@@ -82,7 +82,7 @@ _STRUCTURE_VIEWS = ("compare",)
 
 #: Named here (not built) so the unknown-view error can point at what's
 #: coming without silently pretending it exists. See the module docstring
-#: and docs/backlog/estimate-kind-ms-chemistry-workup.md.
+#: and me690660.
 _PLANNED_VIEWS = (
     "shape",
     "orbitals",

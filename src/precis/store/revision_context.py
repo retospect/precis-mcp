@@ -1,7 +1,7 @@
 """Who changed a ref or link, with which model, and why — for the revisions log.
 
 Migration 0185's triggers write one ``revisions`` row per transaction that
-changes a covered part of a ref or link (docs/backlog/local-mesh-upkeep.md
+changes a covered part of a ref or link (me693504
 §2b). The trigger cannot see Python, so the reason, actor and model reach
 it as transaction-local settings: ``precis.reason``, ``precis.actor``,
 ``precis.model`` and ``precis.event`` (``'merged-into'`` is the only
@@ -19,7 +19,7 @@ Outside any context nothing is sent; a covered write then logs
 of those rows names the write paths still to wrap. Nested contexts merge:
 an inner field that is ``None`` inherits the outer one.
 
-**Trust (migration 0214, docs/backlog/graph-node-trust-state.md slice 1).**
+**Trust (migration 0214, me691024 slice 1).**
 The same context carries the producer's trust origin
 (``precis.trust_origin``: human | extracted | computed | generated), the
 actor type (``precis.trust_actor_type``) and at most one explicit
@@ -36,7 +36,7 @@ active context on every checkout, so a nested context does not leak into the
 outer writes that follow it. :func:`trust_producer` converts a shared write
 door without overriding a caller that is already converted.
 
-**Writer (migration 0279, docs/backlog/write-attribution.md).** ``writer`` is
+**Writer (migration 0279, me692808).** ``writer`` is
 the attribution stamp (``precis.writer``, JSON in the shape of
 ``meta.filed_by``) that lands on ``revisions.writer``. It is not ``model``:
 a model on a generated context routes a link through the machine-edge gate,

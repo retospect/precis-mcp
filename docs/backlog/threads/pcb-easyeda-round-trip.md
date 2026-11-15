@@ -188,10 +188,10 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    `meta.epro_rules` and the writer emits it back byte-identical;
    `RULE_SELECTOR` records would ride the same passthrough, applied to
    nothing, with a warning (their body shape was never observed).
-   `backlog/pcb-keepout-does-not-bind.md` stays a real gap (the ftype
+   me692901 stays a real gap (the ftype
    binds nothing) but this board has no keepout to test it with; it
    stays in Horizon.
-3. **backlog/pcb-missing-constraint-classes.md** §E-1 router half —
+3. **me693086** §E-1 router half —
    realize/maze draw to per-net clearance and cannot express a pairwise
    term, so the router lays copper view='drc' only flags afterwards.
    Re-routing to a corrected spec is the reason for importing; outranks the
@@ -243,17 +243,17 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    VERIFIED (import clean). The earlier LAYER/ATTR parse crashes were
    fixed first; the one remaining gap (unfilled pours) is now covered by
    `POURED` fill passthrough, tested in the structural diff.
-5. **backlog/pcb-export-dir-confinement.md** — **landed 2026-10-21**
+5. **me692877** — **landed 2026-10-21**
    (bug-papers-pcb): `_export_dir(slug, args)` confines `args['dir']` to
    the corpus `pcb/` root or the temp dir for all five export sites
    (the spec's four plus `_render_fab_package`), with `safe_stem` file
    stems and BadInput refusal otherwise.
-6. **backlog/pcb-epro-mcp-roundtrip.md** — verify, the
+6. **me690047** — verify, the
    download route and `op='import_epro'` are built per Reto's rulings;
    left: real-board export timing, and gerber/fab downloads (go given
    2026-10-21, buildable).
    Below 5: nothing here writes outside the export root.
-7. **backlog/pcb-realize-silk-version-stamp.md** — nothing versions
+7. **me691594** — nothing versions
    realized copper, so a router change is invisible on stored boards.
    Needed before any router change goes default-on (negotiation's R3).
    The router half is this thread's; the silk half is ewod-pcb's.
@@ -277,7 +277,7 @@ export/fab if this file outgrows itself.
    `test_taz15_import_export_reimport_structural` (gitignored-file-gated)
    + the committed-fixture twin in `test_pcb_epro_export.py`. Still the
    right regression: it diffs structure end to end at 0.5 um.
-7. **backlog/pcb-engine-plan.md** §5 — 2-layer and n-layer stackups; enqueue
+7. **me692624** §5 — 2-layer and n-layer stackups; enqueue
    refuses len(stackup) != 4 while the processor already handles 2. Waits on
    nothing; removes the wall a colleague's 2-layer .epro2 hits at import.
 8. **edge_mate residue (from the closed side-insertion gripe)** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
@@ -288,7 +288,7 @@ export/fab if this file outgrows itself.
    mid-board part is shown, not refused). Left: the `.epro2` import never
    sets it (a re-imported USB-C loses its constraint); a small package
    table (USB/card-edge/barrel) to default `face` from the footprint name.
-9. **backlog/pcb-freeze-mechanicals-and-parts.md** — Reto, 2026-09-30:
+9. **me693126** — Reto, 2026-09-30:
    "All should be able to be frozen — nuts, holes etc for sure. But also
    parts ... But only actually freeze when needed."
    `pcb_instances.fixed` is real; `pcb_features.fixed` is unconstrained
@@ -300,13 +300,13 @@ export/fab if this file outgrows itself.
    heater-base-test. Footprint holes now follow their part, so the
    hole-side fix shipped; what remains is a part aligned to a fixed
    datum (not a hole) being placed there and frozen before the anneal.
-10. **backlog/pcb-free-pad-model.md** — Reto, 2026-09-30: "just to
+10. **me693028** — Reto, 2026-09-30: "just to
     measure. we should add a free pad model." His board's 6 plated free
     pads on GND are probe points with no precis model, so the import drops
     them and their net loses those connections every time. Waits on
     nothing; overlaps the inert `ftype='testpoint'`, which the item says
     to resolve rather than duplicate.
-11. **backlog/pcb-datasheet-review.md** — provenance folded in there
+11. **me692814** — provenance folded in there
     (in-scope 12); **slice 1 SHIPPED here 2026-10-14** (LCSC C-number →
     `part_lcsc`, value → label, MPN/mfr/supplier/link → `meta.part`,
     `Pin Type` → pin `etype`, `NO_CONNECT` → `nc`, local-first footprint
@@ -315,8 +315,8 @@ export/fab if this file outgrows itself.
     source's own topology). Still open there: slices 2+ (op='pins',
     margin rules, fact shapes, pcb_review). Datasheet-chunk citations
     behind each pin/net spec the re-route trusts.
-12. **backlog/pcb-flexboard.md** — waits on 6; the flex half of "all of them".
-13. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
+12. **gr689726** — waits on 6; the flex half of "all of them".
+13. **me692901** — `ftype='keepout'` binds
     nothing in placer, router or DRC. Demoted from Do next 2026-10-02:
     the real board's "keepout" records look like its rule table (Do next
     2). The placer half belongs to ewod-pcb's obstacle-set item; this
@@ -329,4 +329,4 @@ export/fab if this file outgrows itself.
   history; findings live in `src/precis/pcb/epro.py`'s module docstring) —
   resolved 2026-09-29 against the real board; R2 and R3 stay open inside
   items 4 and 2.
-- **pcb-se-binding seam (2026-10-21)** — [pcb-se-binding §Rough box (v0)](../pcb-se-binding.md) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; no EasyEDA reader/writer file changes. The cross-design align case still rides the later pcb-se-binding passes.
+- **pcb-se-binding seam (2026-10-21)** — pcb-se-binding §Rough box (v0) (me692932) is ready (se-machine-design builds it). It reads `mechanical_profile` and instance `footprint`/`height_mm` read-only and adds `src/precis/pcb/package_heights.py`; no EasyEDA reader/writer file changes. The cross-design align case still rides the later pcb-se-binding passes.

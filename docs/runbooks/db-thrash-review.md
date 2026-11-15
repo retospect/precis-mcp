@@ -92,7 +92,7 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 - **Deliberate keeps — don't re-flag:** `chunks_keywords_gin` (backs
   `mode='verbatim'`) and `tag_embeddings_vector_hnsw` (backs ANN below the size
   threshold). A 13-row table (`app_settings`) with huge seq_scan counts means a
-  hot caller (`docs/backlog/db-resident-settings.md`), not a missing index.
+  hot caller (gr690347), not a missing index.
 
 ## Log
 

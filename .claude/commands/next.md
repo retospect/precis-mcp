@@ -24,8 +24,8 @@ durable: reference it by locator and stop.** Do not restate its content in
 either block, and specifically do not do it framed as "here's what I saved,
 don't re-carry it" — narrating a fact in order to tell the next session not
 to carry it *is* carrying it, at full token cost. If a claim now lives in
-`docs/backlog/`, a `todo`/`gripe`, a docstring, or any on-disk note, the
-pointer (slug / id / path) is the entire job; the bytes are on disk. This is
+a `todo`/`gripe`, a memory spec node, a docstring, or any on-disk note,
+the pointer (handle / id / path) is the entire job; the bytes are on disk. This is
 the single most common way both blocks bloat — one durable locator replaces
 a paragraph.
 
@@ -56,7 +56,7 @@ it, then let it shape the whole handoff:
 
 - **Interpret it against real state first.** Resolve vague or playful phrasing
   ("do the factory with the flubber") to concrete artifacts before you write
-  anything — the matching worktree, `docs/backlog/` item, `kind='todo'` /
+  anything — the matching worktree, spec slice, `kind='todo'` /
   memory thread. Use the tools you have (git, Read/Grep,
   `precis get`/`search`) to pin it down. If you genuinely can't map it to
   anything, say so and ask rather than inventing a target.
@@ -84,12 +84,13 @@ it, then let it shape the whole handoff:
    Before anchoring the handoff to durable artifacts, make them actually
    durable. Anything this session surfaced but never wrote down — a residual
    bug, a daemon left down, a design gap, a diagnosis not yet re-verified —
-   gets a `kind='todo'` / `gripe` row or a `docs/backlog/` item now, the same
+   gets a `kind='todo'` / `gripe` row now, the same
    "persist first" move `/go` step 10 makes after a ship. Conversely, if this
    session's work already resolved something durable-list-worthy (a gripe a
-   landed commit fixed, a `docs/backlog/` item whose fix has merged), close
-   it now — `resolved: <sha> …` comment plus `STATUS:done` for a gripe, delete-the-file
-   for `docs/backlog/` (per `/whatneedsdoing`'s convention) — rather than
+   landed commit fixed, a spec slice whose fix has merged), close
+   it now — `resolved: <sha> …` comment plus `STATUS:done` for a gripe,
+   `STATUS:done` on the slice todo and the built section retired (per
+   `docs-triage`) — rather than
    leaving it dangling for the recovery prompt to route around. Don't
    persist things that don't need it: a next step you're about to hand off
    in the recovery prompt anyway, and that only this session need act on, can
@@ -97,7 +98,7 @@ it, then let it shape the whole handoff:
 
 3. **Anchor to durable artifacts.** The recovery prompt must point at things
    that survive compaction, not at "as we discussed": the worktree path +
-   branch, the files touched, the relevant `docs/backlog/` item, any
+   branch, the files touched, the relevant spec root or section handle, any
    `kind='todo'` / `gripe` ids, and — when the work belongs to a thread —
    the thread file (`docs/backlog/threads/<slug>.md`) plus its line in
    `docs/roadmap.md` (which pillar, active or dormant). If this session
@@ -105,7 +106,7 @@ it, then let it shape the whole handoff:
    (delete what shipped, insert what was filed at rank) before the handoff
    points at it; a stale thread file produces a stale handoff. If a next step
    isn't persisted anywhere durable and matters, note that gap to the user (they
-   may want it in `docs/backlog/` or a todo before compacting).
+   may want it as a gripe or a todo before compacting).
 
    Emit the two blocks **in the order the user runs them**: the `/compact`
    retention argument first, then the recovery prompt.
@@ -143,7 +144,7 @@ it, then let it shape the whole handoff:
    2. <concrete step>
    3. <…>
 
-   **Re-read to reground:** <files / docs/backlog/ item / todo ids / docs>.
+   **Re-read to reground:** <files / spec handles / todo ids / docs>.
    **Watch out:** <any gotcha, gate quirk, or in-flight sibling worktree that bites>.
 
    Start by reading the "Re-read to reground" pointers, then do step 1.

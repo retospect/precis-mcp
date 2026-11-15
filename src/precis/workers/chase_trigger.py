@@ -106,7 +106,7 @@ _CLAIM_HUB_SQL = claim_hub_predicate_sql()
 #: A hypothesis hub carries the same TAPROOT:claim + STATUS:canonical tags,
 #: so without this the widening pass would go hunting for evidence that
 #: supports a guess — a confirmation engine aimed at exactly the thing
-#: nothing supports yet (docs/backlog/nanopub-corpus-remediation.md).
+#: nothing supports yet (me691969).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 #: The "not a landscape sentence" clause (``taproot.claim_type`` policy
 #: ``widen=False``). A landscape hub states the common case for a whole

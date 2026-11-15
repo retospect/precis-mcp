@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Read-only fleet reporter: one row per agent session on THIS host.
 
-Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
+Step 1 of me690606. No DB, no precis
 writes: it reads tmux, git worktrees, Claude transcripts
 (`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`), Codex
 rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) and Kimi Code session

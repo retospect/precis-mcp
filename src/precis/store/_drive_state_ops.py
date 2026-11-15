@@ -2,7 +2,7 @@
 
 Mixin on :class:`precis.store.Store`. Migration
 ``0220_drive_return_showcase.sql`` defines the three tables; the spec is
-``docs/backlog/drive-filter-hierarchy.md`` (slice 1 of 3: store and
+`me690816` (slice 1 of 3: store and
 migration; the open beacon and the ``/drive`` task scoping come later).
 
 * ``web_ref_views`` — when a user last opened a ref in a full reader.

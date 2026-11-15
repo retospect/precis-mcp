@@ -1,5 +1,5 @@
 """Package-class maximum body heights — pure data, mm, for the pcb→se
-rough box (``docs/backlog/pcb-se-binding.md`` §Rough box v0).
+rough box (`me692932` §Rough box v0).
 
 The table and :func:`height_mm` now live in
 :mod:`precis_geom.pcb_shape` — the one derivation the workspace

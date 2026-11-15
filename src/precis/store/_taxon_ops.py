@@ -1,5 +1,5 @@
 """Store ops for the ``taxon`` hierarchy (stage B of
-docs/backlog/term-taxonomy.md): traversal over the ``specialises`` /
+me693578): traversal over the ``specialises`` /
 ``generalises`` DAG by recursive CTE. No closure table, no materialised
 view, no index.
 

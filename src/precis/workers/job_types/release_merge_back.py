@@ -1,6 +1,6 @@
 """The release merge-back (release-train T3): ``release/r<N>`` into main.
 
-Spec: ``docs/backlog/release-train.md`` § "Merge back" and slice T3. A
+Spec: `me692603` § "Merge back" and slice T3. A
 release's fixes land on ``release/r<N>`` only (T1), so once it deploys
 prod carries commits main lacks and ``release_poll``'s ``compare
 prod...main`` reads ``diverged`` — no next pass would ever mint. This

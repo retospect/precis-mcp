@@ -79,7 +79,7 @@ Resolution, per dispatch (in order)
    default; a non-boolean degrades the *whole* chain to the default (a
    billing switch must not flip on a typo); inert + warned on a non-claude
    transport. ⚠ ``meter.spent_usd`` does not yet count bare spend —
-   ``docs/backlog/bare-rung-billing-accounting.md``.
+   `me690531`.
 5. **Chain filters** — per-request ``LlmRequest.placement``
    (``'local'``/``'cloud'``, strict: emptying a nonempty chain is an
    *error* — the caller asked for a rung the chain lacks); the cloud

@@ -1,7 +1,7 @@
 """The panel model: a box with shelves as 2-D rectilinear outlines with their
 fingers, slots and dog-bones, each with its 3-D placement.
 
-Geometry rules (docs/backlog/flatpack-furniture-generator.md, Reto's
+Geometry rules (me694692, Reto's
 rulings se-machine-design-4/-5) — every figure here derives from the sheet
 thickness ``t``:
 

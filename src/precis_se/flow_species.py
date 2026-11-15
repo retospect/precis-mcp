@@ -20,7 +20,7 @@ from precis_se.measures import SCOPE_SEP
 
 # ── species BCs and the slice-1 species computers ─────────────────────
 #
-# (docs/backlog/se-multiphysics.md slice 1) Boundary conditions are
+# (me694808 slice 1) Boundary conditions are
 # patch measures — a measure whose ``datum`` is a ``patch:`` selector on
 # the chamber block, scoped to one species by its name
 # ``<species>/<prop>`` (the qualified ``<block>.<species>/<prop>`` of the

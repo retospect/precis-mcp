@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Check pending publishers; resume module moves when the agreed hold lifts.
 - **Blocked by:** Module hold expired 2026-10-16; publisher correction belongs to Reto.
 - **Unblocks:** Packaging for the November catpath paper.
-- **Acceptance:** Use [plugin-split-runtime-shell](../plugin-split-runtime-shell.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use plugin-split-runtime-shell (me690684) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -20,7 +20,7 @@ effort: medium
 **Status:** ends when `pip install precis-util <one-model>` boots a serve
 exposing that model's kinds and skills with no precis-mcp installed, and
 catpath is the reference model in its own repo — specced in
-`backlog/plugin-split-runtime-shell.md`; it is the packaging half of
+me690684; it is the packaging half of
 `docs/mission.md`'s "machine-usable tools" for agents, since an installed
 model adds kinds to a constant 7-verb surface rather than tools to an
 agent's budget. The module-move hold (Reto's 30-day rule) expired 2026-10-16. Steps 1–5 of the backlog
@@ -119,7 +119,7 @@ Milestones 2–4 and 6 are specced inside plugin-split-runtime-shell.md's
 post-10-16 ordering and share its pointer (6 pairs it with the fold-in's
 own item); they become items as each comes into reach.
 
-1. **backlog/plugin-split-runtime-shell.md** — the 2026-10-16 gate, now
+1. **me690684** — the 2026-10-16 gate, now
    mostly closed. Reto ruled 2026-10-01: package-split is **superseded**
    (deleted; its prep lifted as the item's steps 6–8) and "private until
    paper" means **invisible** — the catpath precedent, no separate
@@ -129,22 +129,22 @@ own item); they become items as each comes into reach.
    day: a minimal package releasable publicly *and* fully useful inside
    precis, plus a hope that modularity shrinks the deploy jam — which the
    item records as only partly supported (59% of commits touch core).
-2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — had only
+2. **me690684**, hexfold out first — had only
    the 10-16 hold (expired) to wait on; the import-boundary gate it also wanted landed 2026-10-01, and
    the restart precondition it used to carry turned out not to
    exist. Proves the entry-point mechanics at zero API risk.
-3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on
+3. **me690684**, precis_surface out — waits on
    2; folds the marching-cubes tables into geom so the boundary is
    exercised, not declared.
-4. **backlog/plugin-split-runtime-shell.md**, the precis-geom wheel
+4. **me690684**, the precis-geom wheel
    (cad/structure/design/blocktree + se) — waits on 3; the load-bearing
    layer (948 KB, se at 138 geometry imports).
-5. **backlog/plugin-split-runtime-shell.md** — `pip install precis-util
+5. **me690684** — `pip install precis-util
    <one-model>` boots a serve exposing that model's kinds and skills with no
    precis-mcp installed. Waits on 4; the acceptance criterion the whole
    split is judged against.
-6. **backlog/pathway-presentation-shared-module.md +
-   backlog/plugin-split-runtime-shell.md** — catpath as the reference
+6. **me692580 +
+   me690684** — catpath as the reference
    model, private until paper; waits on 5, which answers where shared
    presentation logic lives. Needs a catpath version bump + wheel
    redeploy.

@@ -148,9 +148,9 @@ directly, and check the same selection beforehand with
 6. **Skip the land ceremony — but carry the debt forward.** No doc-refresh
    pass, no reviewer, no issue-closer here; speed is the point. If this
    branch changed a contract that needs a doc/skill update, or shipped
-   something an open gripe/backlog item tracks, note it in one line so the
+   something an open gripe or spec slice tracks, note it in one line so the
    post-burst `go` session settles it. Residual bugs found this session
-   still get persisted (a backlog item / `gripe`) — persistence is never
+   still get persisted (a `gripe` / `todo` row) — persistence is never
    skipped, only ceremony.
 
 ## See also

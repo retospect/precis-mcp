@@ -5,7 +5,7 @@
 # on-demand command — hook output is injected once and then carried on every
 # later turn, so it pays for a pointer, not a roster (gr499042; the list
 # returned via `precis memory index`, recall via search(kind='memory')).
-# docs/backlog/memory-native-authoring.md.
+# me690866.
 #
 # Wired as a SessionStart hook in .claude/settings.json. It prints only once
 # the harness MEMORY.md carries the graph marker (the cutover: MEMORY.md becomes

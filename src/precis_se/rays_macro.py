@@ -1,5 +1,5 @@
 """The macro leg of se observation rays (structure-workspaces slice 2r.2,
-docs/backlog/structure-workspaces.md §Macro leg).
+me693174 §Macro leg).
 
 The same world ray :mod:`precis_se.rays` dispatches, at macro scale: a
 non-structure block's solid is its **bound cad design** when it binds one

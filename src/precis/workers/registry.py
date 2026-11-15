@@ -1,7 +1,7 @@
 """The factory service registry — one declarative row per thing that runs.
 
 This is the single source of truth the *factory console* + capability
-scheduler are built on (docs/backlog/factory-console-and-scheduling.md,
+scheduler are built on (gr690514,
 slice 1). Before it, "what runs where, gated how" was spread across four
 parallel lists that drifted:
 
@@ -358,7 +358,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-nursery-help",
     ),
     ServiceSpec(
-        # docs/backlog/self-healing-spine.md Layer 2. Fleet-singleton via the
+        # me691477 Layer 2. Fleet-singleton via the
         # `health_digest` scheduler cadence (workers/scheduler.py, hourly,
         # host-agnostic) — NOT `default_profiles`, mirroring `dream_agent`
         # below: a cadence-fired pass registers here only for a manual
@@ -377,7 +377,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-health-digest-help",
     ),
     ServiceSpec(
-        # §F cycle a (docs/backlog/cluster-scheduling.md §F). Fleet-
+        # §F cycle a (me695459 §F). Fleet-
         # singleton via the `materialize` scheduler cadence (workers/
         # scheduler.py, 300s) — same shape as `health_digest` just above:
         # NOT `default_profiles`, so this registration is for a manual
@@ -847,7 +847,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-help",
     ),
     ServiceSpec(
-        # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb
+        # me690151 slice 2: answer a pcb
         # design's open argument notes in place — resolve each question's
         # handles through precis.pcb.argue, run the real machinery (one
         # live geometric DRC run + measures + part-pair distances), and
@@ -884,7 +884,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-datasheet-help",
     ),
     ServiceSpec(
-        # docs/backlog/pcb-datasheet-review.md slice 7: the re-check pass —
+        # me692814 slice 7: the re-check pass —
         # work a design's not-checked/stale pcb-tapeout judgment items, one
         # fresh-context MEDIUM-tier call each (in-process router, no
         # `requires`), machine verdicts anchored + quoted.
@@ -926,7 +926,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-youtube-help",
     ),
     ServiceSpec(
-        # docs/backlog/measures-substrate.md "Next slice": the survey/
+        # me693370 "Next slice": the survey/
         # review numeric-extraction pass — a local reader walks a paper's
         # chunks proposing anchored measure runs, then a spawned
         # measure_accept child samples the batch. put(kind='job',
@@ -1916,7 +1916,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-part-select-help",
     ),
     ServiceSpec(
-        # docs/backlog/openalex-snapshot-cites.md slice 3: the standing
+        # me693596 slice 3: the standing
         # refresh over the public OpenAlex works dump. Same shape as
         # parts_refresh just above: no `default_profiles`, so this registers
         # a pass only for a manual/dedicated `--only openalex_snapshot` run —

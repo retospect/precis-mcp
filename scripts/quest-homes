@@ -2,7 +2,7 @@
 """scripts/quest-homes — quest-rollup slice 0 (td681396), DRY RUN: propose a
 home quest for every live backlog spec and every live gripe, as TSV.
 
-Rules are docs/backlog/quest-rollup.md "Homes", first match wins.
+Rules are me691000 "Homes", first match wins.
 
 Specs (``draft``/``ready``/``in-progress``):
   front-matter  ``quest: quNNN`` in the spec

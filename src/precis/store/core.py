@@ -8,7 +8,7 @@ its own connection pool. The :class:`~precis.store.store.Store` facade
 owns the one true :class:`StoreCore` and aliases its ``pool`` /
 ``dsn`` / ``hint_bus`` attributes onto itself so existing call sites
 (``store.pool``, ``store.hint_bus = ...``) keep working unchanged. See
-``docs/backlog/codereview-store-decomposition.md`` for the carve plan.
+`me690468` for the carve plan.
 """
 
 from __future__ import annotations

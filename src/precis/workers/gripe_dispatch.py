@@ -1,6 +1,6 @@
 """``gripe_dispatch`` — turn fixable gripes into ``gripe-fix-direct`` chains.
 
-The dark factory's intake (``docs/backlog/dark-factory.md``, td564019 cut
+The dark factory's intake (`me692430`, td564019 cut
 3; Reto 2026-11-04: "the codex chain should run indep of claude"): until
 now a gripe reached a build lane only when someone typed
 ``put(kind='todo', mode='plan', args={'template': 'gripe-fix-direct',

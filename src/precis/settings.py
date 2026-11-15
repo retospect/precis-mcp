@@ -1,6 +1,6 @@
 """DB-resident settings — the non-secret sibling of :mod:`precis.secrets`.
 
-Why (``docs/backlog/db-resident-settings.md``): non-secret config reaches
+Why (`gr690347`): non-secret config reaches
 code as env vars, and env has to survive a chain of launchers before code
 sees it — ansible template → launchd plist / systemd unit → asa's stdio MCP
 ``env`` block → spawned ``precis serve`` → sometimes a ``claude -p`` child.

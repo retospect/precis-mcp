@@ -1,6 +1,6 @@
 """Lanes — the scheduler slots ``run_slice`` launches a slice on.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Lanes: capacity shapes". A lane
+Spec: `me692430` § "Lanes: capacity shapes". A lane
 is an adapter plus a credential pool plus a concurrency cap (Reto
 2026-10-30, td541982). Model, effort and temperature are per-job choices
 inside a lane; the lane itself is a field on the job (``meta.lane``),

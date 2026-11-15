@@ -140,7 +140,7 @@ def _file_cap_gripe(store: Store, spec: HealSpec, attempts: int) -> int | None:
         f"Autonomous heal cap reached ({attempts}/{spec.cap} attempts) — "
         "latched terminal; human intervention required. The latch ages out "
         f"after {spec.reset_after_s / 3600:.0f}h of quiet.\n"
-        "Design: docs/backlog/self-healing-spine.md Layer 2."
+        "Design: me691477 Layer 2."
     )
     title = f"[bounded-heal] {spec.key} capped: {spec.title}"
     if len(title) > 200:

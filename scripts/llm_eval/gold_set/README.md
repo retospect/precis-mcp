@@ -4,7 +4,7 @@
 - `local/` — gitignored; model-built sets that carry sampled prod text
   (`build_*_gold.py` output). Never commit.
 - `retrieval_qu164903.jsonl` — kg-mesh-loop slice 0
-  (`docs/backlog/kg-mesh-loop.md`): retrieval gold for quest qu164903,
+  (me690203): retrieval gold for quest qu164903,
   the Pd-hydride / Pd(111) HER cluster (hubs fi504759–fi504782, pilot
   ledger me504790). Hand-written from the cited findings and chunks;
   questions and answers are paraphrased, no verbatim chunk text, so it is

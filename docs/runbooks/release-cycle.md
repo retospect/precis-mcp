@@ -137,6 +137,6 @@ through `--confirm-runtime SHA --runtime-evidence TEXT` before retirement —
 that is the hand path. When the factory is armed, `release_confirm` attests
 the same release's runtime mechanically instead, with no rollback.
 Without a release, main selection remains. Installed metadata and a rollout
-receipt do not prove process reload; [deploy-assertions](../backlog/deploy-assertions.md)
+receipt do not prove process reload; deploy-assertions (gr690387)
 owns the remaining live-process health hardening. End-to-end live acceptance
 and dogfood remain required.

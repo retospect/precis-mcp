@@ -444,7 +444,7 @@ _GENERATED_RECORD_KEYS = (
 
 #: ``meta["generated"]`` keys a *workspace* block's record carries instead
 #: of a generator's topology (structure-workspaces slice 0,
-#: docs/backlog/structure-workspaces.md §Import boundary): which agent,
+#: me693174 §Import boundary): which agent,
 #: which workspace, which script made it.
 WORKSPACE_GENERATED_KEYS = (
     "workspace",

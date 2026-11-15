@@ -1,5 +1,5 @@
 """Quest results table — a lineage-ordered, one-row-per-candidate context
-block for the tick prompt (docs/backlog/pathway-conditions-effects-report.md
+block for the tick prompt (me692126
 decision 4).
 
 The tick is a single structured LLM call with no live ``get``/``search``

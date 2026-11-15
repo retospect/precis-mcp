@@ -21,7 +21,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Status:** ends when every claim has one identity, every evidence edge is
 checked against its source, contradictions are ruled on, and the hub corpus is
-publishable (`backlog/claim-publication-nanopub-ots.md`). Triaged 2026-10-02
+publishable (me691903). Triaged 2026-10-02
 against the code: every item below was read and its named code checked; none
 is fully shipped, six carry a confirmed bug, and the rest order along four
 dependency chains.
@@ -128,7 +128,7 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
 
 ## Horizon
 
-1. **backlog/serving-finding-reader.md** (draft) — a local-serving-node background job
+1. **me693872** (draft) — a local-serving-node background job
    that mints cited claim hubs from full-text papers through the canon
    cascade; unblocks qu509651's qualitative answers (0/62 papers read).
    Waits on Reto's ruling on its open questions.

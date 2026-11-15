@@ -241,7 +241,7 @@ check their state first.
    hand. 8765 was refused for 24 s, so every connected session on the agent host
    gave up at 15:04:29Z and needed `/mcp`. `wait_mcp` now takes
    `PRECIS_MCP_ENSURE`, and its test never reaches the real script.
-2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
+2. **me691707** — AC2 passes now: it was written
    as "precis-status reports the new sha", which the watched-checkout fix made unpassable,
    and the 11:10Z banner
    (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
@@ -283,11 +283,11 @@ check their state first.
 
 ## Horizon
 
-1. **backlog/mcps-venv-deploy-gaps.md** — the shared server is a hand-rolled
+1. **gr692199** — the shared server is a hand-rolled
    dev-machine service by decision (Reto, 2026-09-29); whether the fleet
    mcps role adopts this shape decides if the ensure script stays a wrapper
    or becomes an Ansible role. Until then the two must not entangle.
-2. **backlog/session-mcp-http-server.md** §From
+2. **me691707** §From
    mcp-shared-server-multiprocess — `--workers 1` is correct and is the
    ceiling; the inventory of what must leave process memory first. Arc,
    not work.
@@ -298,15 +298,15 @@ check their state first.
    2026-09-30, not yet wired; prerequisite for every future claim about
    pool headroom, because without it entry 3 cannot tell "pool starved"
    from "something else slow".
-5. **backlog/context-navigation.md §7** — the per-session selector is the twin; owned by thread context-navigation.
+5. **me690580 §7** — the per-session selector is the twin; owned by thread context-navigation.
 7. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
     reads at the newest20 comments; `view='comments'` exposes full history.
     R14 source is prepared; deployed replay remains pending.
-8. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
+8. **gr692188** — title round-trip
     assert plus an MCP staleness banner; guards the stale-process class.
-9. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
+9. **gr690594** — replace regex-on-ack
     with structured Response fields.
-10. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
+10. **gr692426** — serverInfo.title blocked upstream on
     FastMCP; still blocked, so last.
 
 ## Parked
@@ -323,7 +323,7 @@ check their state first.
   evidence of pool starvation, so until it lands the 17/100-connections
   reading and every other pool-headroom statement stay inference from
   backend counts and should be re-derived, not inherited.
-- **K-parallel exercise-mcp load harness** — `backlog/mcp-concurrency-load-test.md`;
+- **K-parallel exercise-mcp load harness** — me691729;
   the role gap is decided and fairness is built; unparks once the round-2
   deploy loads fairness.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second

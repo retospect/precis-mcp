@@ -6,7 +6,7 @@
 # supplementary groups (so NOT the docker group — it is root-equivalent),
 # home 0700. It never gets deploy's vault file or ssh keys, and
 # deploy's home stays deploy-only. What it DOES hold is listed in
-# docs/backlog/builder-hosts.md ("Builder user").
+# me691785 ("Builder user").
 
 - name: Refuse to manage the deploy account here
   ansible.builtin.assert:
@@ -37,7 +37,7 @@
 # A standard (non-admin) account with its own primary group, the same shape
 # as the Linux one. Written against the stock tools (dseditgroup, sysadminctl,
 # createhomedir) but not exercised on a Mac in CI: first run on a real host
-# is the check (docs/backlog/builder-hosts.md).
+# is the check (me691785).
 - name: Builder user account (macOS)
   when: os_family == "darwin"
   become: true

@@ -14,7 +14,7 @@ Host strip (load / worker-alive per machine) over one list per category
 of services — every pass / job-type / compute / daemon / serving row from
 the one `ServiceSpec` registry, joined to its live `service_config` prio
 and its last-success / last-failure from `worker_logs`
-(docs/backlog/factory-console-and-scheduling.md, slices 3–4).
+(gr690514, slices 3–4).
 
 * **Slice 3 (read):** the host strip + the total service list + last
   activity, all degrading to empty on a schema surprise (status-tab

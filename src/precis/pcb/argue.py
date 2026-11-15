@@ -1,6 +1,6 @@
 """Argue with a pcb design: handle grammar, resolution, the LLM turn.
 
-docs/backlog/pcb-argue-with-design.md (Reto, 2026-09-15): one text box
+me690151 (Reto, 2026-09-15): one text box
 on the board page accumulates *handles* as the user clicks the render —
 "this pad, not that one" typed in the user's own sentence order, in a
 form an agent resolves without guessing. This module is the kind-side

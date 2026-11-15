@@ -1,6 +1,6 @@
 """``release_confirm`` — the factory attests the deployed runtime (td573432).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``confirm`` node of the ``release-pass`` template
 (:func:`precis.plans.templates.mint_release_pass`). Mechanical, no LLM; a
 detached submit/poll pair under ``ssh_node``, the same launcher as

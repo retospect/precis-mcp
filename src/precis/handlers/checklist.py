@@ -1,7 +1,7 @@
 """ChecklistHandler — Checklist-Manifesto gates for LLM agents (``checklist``
 kind).
 
-Design-of-record: ``docs/backlog/checklist-kind.md`` (slice 1: "checklist
+Design-of-record: `me693927` (slice 1: "checklist
 kind core"). A checklist is a named, versioned set of **items**; any ref
 (pcb, cad, se, ...) can be explicitly **assigned** one or more checklists,
 and per-target, per-item **verdicts** accumulate in an append-only ledger

@@ -1,6 +1,6 @@
 """The ``checklist`` kind's status engine and per-kind bridges.
 
-Design-of-record: ``docs/backlog/checklist-kind.md`` (slices 1-3). The
+Design-of-record: `me693927` (slices 1-3). The
 tables, verbs and sync live in ``handlers/checklist.py``,
 ``store/_checklist_ops.py`` and ``jobs/checklist_sync.py``; this package
 holds the one piece two callers need identically — **how a target's

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Smoke test for the Flow tab's payload half (static/se-flow-frames.js,
-// docs/backlog/se-flow-kernel.md slice 2b): decode, frame advance and
+// me695207 slice 2b): decode, frame advance and
 // interpolation, scene height over deepened floor, colours, the clock.
 // Run by tests/test_se_flow_frames_js.py (skips without node). Exits 0
 // when every check passes, 1 on the first failure.

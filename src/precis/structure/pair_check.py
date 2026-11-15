@@ -2,7 +2,7 @@
 
 A read-only, zero-compute gate table telling an agent *why* an initial/final
 structure pair is not NEB-ready before any NEB exists. One row per gate in
-the spec's Validation table (``docs/backlog/neb-structure-builder.md``):
+the spec's Validation table (`me689902`):
 the measured input, the threshold, ``pass``/``fail``/``warn``/``n/a``, and a
 working ``next`` for every failed gate. A ``fail`` blocks a later
 ``mode='neb'`` mint (slice 3); a ``warn`` is advisory and never blocks.

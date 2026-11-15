@@ -2,7 +2,7 @@
 slab-first atom order (gr512126, slice 3).
 
 Three pure pieces the ``struct_neb`` job and the ``mode='neb'`` mint both
-need (``docs/backlog/neb-structure-builder.md`` §Compute placement):
+need (`me689902` §Compute placement):
 
 - :func:`normalize_neb_params` — the engine knob set with spec defaults.
   Strict: an unknown key raises rather than silently dropping a typo'd

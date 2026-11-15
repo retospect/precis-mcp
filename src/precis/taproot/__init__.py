@@ -28,7 +28,7 @@ the **claim type** (:mod:`.claim_type`, ``refs.meta.claim_type``: measurement
 / definition / capability / mechanism / landscape) — a static per-type policy
 table; a *landscape* hub (the common case for a class, review material)
 dedups on sentence alone, is never widened or a ``disputes`` counterparty,
-is consensus-verified and not publishable. Design: ``docs/backlog/taproot.md``;
+is consensus-verified and not publishable. Design: `me694691`;
 governance: taproot evidence relations (+ the living citation pins).
 
 Unsigned claim title/scope and hypothesis-prose edits keep the hub identity

@@ -60,7 +60,7 @@ gardener passes.
 search(kind="python", mode="pattern", q="<symbol>")        # structure first, grep second
 get(kind="python", id="main::<qualname>")                  # signature, callers, callees
 get(kind="md", id="main/docs/codebase.md")                 # repo shape → owning package __init__.py
-get(kind="md", id="main/docs/backlog/INDEX.md")            # open work; threads/<slug>.md = campaign resume state
+search(kind="memory", tags=["spec:*"], view="toc")         # open specs; threads/<slug>.md = campaign resume state
 ```
 
 `wt-<tree>::<qualname>` reads your worktree; `scripts/coderef

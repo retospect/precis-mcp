@@ -1,7 +1,7 @@
 """Taproot Phase 2c — seniority derivation over a claim hub's evidence.
 
-Build ticket: ``docs/backlog/taproot.md`` (slice 2c);
-design: ``docs/backlog/taproot.md`` §"Seniority is derived, not stored".
+Build ticket: `me694691` (slice 2c);
+design: `me694691` §"Seniority is derived, not stored".
 
 **Pure read/derive — no writes.** The evidence edges themselves are
 written through the single door (:mod:`precis.taproot.hub`); this module

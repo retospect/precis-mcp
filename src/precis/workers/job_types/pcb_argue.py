@@ -1,6 +1,6 @@
 """``pcb_argue`` job_type — the LLM acts on a design's open arguments.
 
-docs/backlog/pcb-argue-with-design.md slice 2, following gr335242 comment
+me690151 slice 2, following gr335242 comment
 1's playbook: an argument note is an instruction, not just a record — "so
 the llm can fix problems". This job reads the open argument notes on ONE
 pcb design (:func:`precis.utils.notes.open_questions` over

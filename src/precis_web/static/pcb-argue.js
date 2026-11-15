@@ -1,4 +1,4 @@
-// pcb-argue.js — the board page's one text box (docs/backlog/pcb-argue-with-design.md).
+// pcb-argue.js — the board page's one text box (me690151).
 //
 // The board render is an <object type="image/svg+xml"> on purpose (its
 // layer-toggle legend script must run as its own document), so a

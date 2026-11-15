@@ -3,7 +3,7 @@
 The `meta` shape, the embeddable card text, and name/definition parsing — used by
 both the concept handler (manual put) and the promotion pass (rich write) so they
 build byte-identical nodes. Pure (no DB, no I/O). See
-docs/backlog/reading-prep-loop.md.
+me690334.
 """
 
 from __future__ import annotations

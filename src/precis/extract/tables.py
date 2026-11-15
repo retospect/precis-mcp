@@ -17,7 +17,7 @@ The citation/footnote/unit helpers are *detection*, never trust: a
 header or row label carrying a citation marker (``et al.``,
 ``<sup>56</sup>``, ``[12]``, ``ref.``) flags the column or row as
 ``cited_work`` whatever a later recipe claims (decision 6 of
-``docs/backlog/table-numeric-extraction.md``).
+`me694409`).
 """
 
 from __future__ import annotations

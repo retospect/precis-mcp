@@ -79,7 +79,7 @@ disqualified regardless of cost. This module never calls
   call-order-independent for a multi-instance move (SWAP). Only
   overlapping pairs are cached.
 - ``alignment`` (2026-09-01, the first SUMMED "preference field" —
-  ``docs/backlog/pcb-global-codesign-north-star.md`` invariant 3):
+  `me569391` invariant 3):
   piggybacks courtyard_overlap's OWN grid/3x3-neighbourhood query rather
   than a second spatial index — :func:`~precis.pcb.cost.
   alignment_pair_term`'s "nearby" gate is the SAME ``_courtyard_cell_mm``
@@ -945,7 +945,7 @@ def _cluster_instances(ir: PcbIR, *, max_cluster_size: int) -> list[list[int]]:
 def _merge_pattern_clusters(ir: PcbIR, clusters: list[list[int]]) -> list[list[int]]:
     """Union-merge any :func:`_cluster_instances` clusters that share a
     PATTERN-group member — a real, measured defect
-    (docs/backlog/pcb-engine-plan.md's nano fixture repro, 2026-09):
+    (me692624's nano fixture repro, 2026-09):
     connectivity clustering has no notion of "pattern" membership, and a
     tile's genuine netlist edges (say, a diode-to-transistor-to-connector
     star) can lose the GREEDY heaviest-edge-first union to an unrelated,

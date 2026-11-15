@@ -2,7 +2,7 @@
 ordered ``make`` tree, one step per transition, so the protocol a design
 implies (illuminate at 405 nm, then at 365 nm, …) exists as a thing another
 tool can consume — the zone compiler of
-``docs/backlog/ewod-synthesis-protocol.md`` reads exactly this shape.
+`me690494` reads exactly this shape.
 
 The walk is greedy over the block's stored transitions: from ``start``
 take the first declared edge to a state not yet visited, repeat until no

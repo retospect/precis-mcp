@@ -294,7 +294,7 @@ def ingest_patent(
                       so they carry the current block metadata, notably
                       the slice-1 ``patent_block`` claim markers the
                       freedom-to-operate digest reads
-                      (docs/backlog/patent-authoring-loop.md). Used by the
+                      (me690333). Used by the
                       claim-marking backfill (``precis jobs
                       reingest-patents``) to re-mark patents ingested
                       before the marker existed. The ref itself is kept
@@ -436,7 +436,7 @@ def ingest_patent(
     # carries a ``chunks.meta`` marker (``patent_block`` = description |
     # claim) so ``view='claims'`` can retrieve claims on their own and
     # the freedom-to-operate loop can address a single prior-art claim
-    # (docs/backlog/patent-authoring-loop.md). Claim blocks additionally
+    # (me690333). Claim blocks additionally
     # record the derived independent/dependent structure.
     block_seeds: list[ParsedBlock] = []
     block_metas: list[dict[str, Any]] = []

@@ -9,7 +9,7 @@ rather than mixing into ``Store``. Every structural write logs a
 
 ``Store`` carries no flat delegation for drafts — reached only as
 ``store.drafts.*`` (the migration this module itself once needed is
-done; see ``docs/backlog/codereview-store-decomposition.md``). One level
+done; see `me690468`). One level
 down, the same carve is mid-flight: the review ledger (``record_review``,
 ``reviewable_chunks``, ...) is carved into
 :class:`~precis.store._draft_review_ops.DraftReviewStore`

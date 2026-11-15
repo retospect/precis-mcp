@@ -1039,7 +1039,7 @@ _advise_unrendered() {
 # reclaimed only after PRECIS_DEPLOY_LOCK_STEAL_MIN minutes. The steal is
 # atomic (lock_steal rename-pins the inspected dir and re-judges it before
 # destroying) and the release is ownership-checked (lock_release) — the two
-# halves of the race docs/backlog/deploy-concurrency.md records.
+# halves of the race me690552 records.
 # shellcheck source=scripts/lib/lock-holder.sh
 source "${REPO_ROOT}/scripts/lib/lock-holder.sh"
 _LOCK_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy.lock"
@@ -1677,7 +1677,7 @@ _deploy_owner_preflight() {
         *) flag=false ;;
     esac
     if [[ "$owner" == "precis_owner" && "$flag" != true ]]; then
-        die "owner-preflight: public._migrations on prod is owned by precis_owner (the db-own cutover has run) but the overlay does not declare precis_db_own_cutover_done: true — the migrate play would log in as agent_rw and refuse, after the pgpass/userlist renders had already run (2026-11-14, gr678404). Set precis_db_own_cutover_done: true plus the owner/ingress/system password vars in the overlay (docs/backlog/multi-user-overhaul.md §Owner DSN), then re-run."
+        die "owner-preflight: public._migrations on prod is owned by precis_owner (the db-own cutover has run) but the overlay does not declare precis_db_own_cutover_done: true — the migrate play would log in as agent_rw and refuse, after the pgpass/userlist renders had already run (2026-11-14, gr678404). Set precis_db_own_cutover_done: true plus the owner/ingress/system password vars in the overlay (me691019 §Owner DSN), then re-run."
     fi
     if [[ "$owner" != "precis_owner" && "$flag" == true ]]; then
         die "owner-preflight: the overlay declares precis_db_own_cutover_done: true but public._migrations on prod is owned by ${owner} — the cutover has not run (or was rolled back); run scripts/db-own-cutover --apply first, or set the flag back to false."

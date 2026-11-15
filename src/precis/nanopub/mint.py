@@ -120,7 +120,7 @@ def approve(
         raise BadInput(
             f"fi{hub_ref_id} is a {hub_type} claim — mesh-internal, not "
             "publishable as a nanopub "
-            "(docs/backlog/taproot-claim-model-v2.md)",
+            "(me690796)",
             next=(
                 "cite it as [fi<id>] in drafts; reclassify on /claim/<head> "
                 "if the type is wrong"

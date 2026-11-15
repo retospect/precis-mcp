@@ -2,14 +2,14 @@
 id: whatneedsdoing
 family: work
 title: precis — triage what needs doing across both substrates
-summary: one honest 'what needs doing' — declared repo dev work (backlog, gripes, GitHub PRs/Dependabot) on one side, the prod factory todo queue plus fleet health and latent-bug mining on the other; the bunched repo-hygiene scans live in whatneedsdoing-scans
+summary: one honest 'what needs doing' — declared repo dev work (graph specs, gripes, GitHub PRs/Dependabot) on one side, the prod factory todo queue plus fleet health and latent-bug mining on the other; the bunched repo-hygiene scans live in whatneedsdoing-scans
 answers:
   - what needs doing right now across the repo and the prod factory?
   - how do I keep repo dev work and the prod factory queue from merging into one flat list?
   - when is an open gripe actually fixed and closable?
   - how do I read the prod worker-log err/warn histogram for a hot pass?
   - how do I prove a mined LLM-confusion error is live and unfixed before filing it?
-applies-to: one honest 'what needs doing' across the repo backlog + the prod factory queue
+applies-to: one honest 'what needs doing' across the repo's spec graph + the prod factory queue
 status: active
 tags: [workflow]
 kinds: [todo, gripe, alert, job, agentlog, draft]
@@ -22,7 +22,7 @@ Work lives in **two different substrates** — do not merge them into one
 flat list; that merge is the trap this view exists to avoid. Optional
 focus: `$ARGUMENTS`.
 
-- **Repo dev work** — the backlog dir + the `gripe` bug tracker. About
+- **Repo dev work** — the spec graph + the `gripe` bug tracker. About
   *this codebase / product*: MCP-surface bugs, features, infra fixes. You
   act on them by **editing code in a worktree → [[go]]**. "Inert" here
   means: real, but no one is building it yet.
@@ -36,7 +36,7 @@ focus: `$ARGUMENTS`.
   here. Call these out explicitly — they're where a [[go]] clears a prod
   backlog.
 
-The backlog + gripes are *declared* repo dev work; beyond them is *latent*
+The spec graph + gripes are *declared* repo dev work; beyond them is *latent*
 work — bugs the prod LLM is hitting right now that nobody filed (the
 bug-hunt step below). Every recurring tool-call error is a fix waiting in
 a skill or the MCP surface; mining it feeds substrate 1 as gripes.
@@ -49,7 +49,7 @@ command is Devin's auto-approve marker; the command itself is identical.)
 
 Live state at invocation:
 
-- Backlog index (generated `INDEX.md` under the backlog dir, one line per
+- Residual backlog files (generated `INDEX.md` under the backlog dir, one line per
   item with status):
   !`scripts/docs-index >/dev/null 2>&1; grep -vE '^(<!--|#|\s*$)' "$(find docs -path '*backlog*' -name INDEX.md -print -quit)" 2>/dev/null | head -60`
 - GitHub — open PRs:
@@ -57,21 +57,23 @@ Live state at invocation:
 - GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
   !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-## Repo dev — backlog and gripes
+## Repo dev — specs and gripes
 
-1. **Backlog.** Read the generated backlog `INDEX.md` (one line per item
-   with status). Skip any item whose front-matter
-   `snooze-until: YYYY-MM-DD` date is still in the future — a deliberate
-   park, not open work. **Prune done gunk as you go** (same as closing a
-   fixed gripe in step 2): `scripts/backlog-lint` lists items whose
-   *title* carries a done-marker (DONE/RESOLVED/✅/SHIPPED-fully-cut-over)
-   yet whose file still sits in the dir — for each, confirm the work is on
-   `main`, then **delete the item's file** (git log + the topic memory
-   hold the record). Don't leave it marked "DONE": the backlog dir is the
-   *active* list, not an archive — a left-in "DONE" item is the same
-   append-only rot the docs triage cured. (The lint excludes
-   partially-open items that merely *mention* something shipped.) The
-   dark-factory workstream is active.
+1. **Specs.** Specifications live in graph memory, not files
+   ([[precis-spec-help]]). Read the inventory —
+   `search(kind='memory', tags=['spec:*'], view='toc')` for every spec
+   root, then `search(kind='todo', view='doable', args={'under':
+   '<programme todo root>'})` for the next doable slice per programme: the
+   plan todos, not the memory nodes, say what is actually open. Skip a
+   slice whose todo carries a future `due:YYYY-MM-DD` — a deliberate park,
+   not open work. **Prune built design as you go** (same as closing a
+   fixed gripe in step 2): a section whose behaviour is verifiably in code
+   retires, superseded by its code handle — the verdicts are
+   [[docs-triage]]'s. Don't leave it marked "DONE": the graph is the
+   *active* design, not an archive. `scripts/backlog-lint` still covers
+   the residual files in the backlog dir (thread files plus one legacy
+   spec) the same way, and excludes partially-open items that merely
+   *mention* something shipped. The dark-factory workstream is active.
    **Thread files and the active set.** The active roster is the thread
    files carrying `roster: active` in front matter (`docs/roadmap.md`
    only links its generated view); `scripts/inflight` shows which have a
@@ -82,7 +84,7 @@ Live state at invocation:
    closed gripe still ranked is a stale pointer to delete in the owner's
    file (keep "soft-deleted, do not reopen" tombstones) — half the thread
    files were stale this way at the 2026-09-30 pillar review. Open gripes
-   that no thread and no item names are orphans; list them by pillar for
+   that no thread and no spec names are orphans; list them by pillar for
    [[pillar-review]] rather than placing them here.
 2. **Gripes.** `get(kind='gripe', id='/open')` (the bug tracker). Tracked
    but **not auto-worked** — flag stale or high-impact ones. **Close the
@@ -100,7 +102,7 @@ Live state at invocation:
 ## Repo dev — GitHub, then hygiene
 
 3. **GitHub (PRs + Dependabot).** Declared repo dev work that lives on
-   GitHub, not in the backlog dir — the inline previews above are the
+   GitHub, not in the spec graph — the inline previews above are the
    fresh read; expand them here.
    - **Open PRs:** `gh pr list --state open` (add `--json
      number,title,author,isDraft,reviewDecision,statusCheckRollup` for CI +
@@ -112,10 +114,10 @@ Live state at invocation:
      **P0** repo dev work (a dependency bump / patch), fixed here → [[go]]. If
      the API 403s it needs a token with security-read scope — say so rather
      than silently reporting "none".
-     - **Honor snoozes.** A snoozed alert lives as a backlog item with
-       `snooze-until: YYYY-MM-DD` front-matter. **Suppress** any alert whose
-       item's date is still in the future (a known-held item, not new work) —
-       don't report it. If today ≥ its `snooze-until`, surface it as
+     - **Honor snoozes.** A snoozed alert lives as a `gripe` or `todo`
+       tagged `due:YYYY-MM-DD`. **Suppress** any alert whose held item's
+       date is still in the future (a known-held item, not new work) —
+       don't report it. If today ≥ that date, surface it as
        **recheck due**: re-probe the `Unblock-when` condition, then either act
        ([[go]]) or bump the date +2 weeks. This is what keeps a blocked-upstream
        alert (e.g. #44, `transformers` capped by marker-pdf) from re-nagging
@@ -293,7 +295,7 @@ Live state at invocation:
      count:
      - **Demand a real `tool_result`.** Only count a match that appears inside a
        `tool_result` block with `"is_error":true`, tied to a `tool_use.id` — not
-       narration, a prior assistant message, or quoted gripe/backlog text.
+       narration, a prior assistant message, or quoted gripe/spec text.
        (`transcript LIKE '%tool_result%<err>%'` is a cheap first cut; confirm by
        walking the stream-json.)
      - **Pull the *real* occurrence timestamps.** `SELECT ref_id, created_at`

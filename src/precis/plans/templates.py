@@ -1,6 +1,6 @@
 """Plan templates: functions that mint a todo subtree (dark-factory, td542095).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans" → "Templates". A template
+Spec: `me692430` § "Plans" → "Templates". A template
 is registered in :data:`TEMPLATES` under its name; ``put(kind='todo',
 mode='plan', args={'template': name, ...})`` calls it.
 
@@ -2416,7 +2416,7 @@ def mint_release_fix(
 ) -> PlanMint:
     """digest (``ci_red_digest``) -> fix(es) -> poll (``ci_verdict_poll``),
     td543855; the mechanical digest op replaced the LLM triage in
-    td573431; the release train (``docs/backlog/release-train.md`` T1)
+    td573431; the release train (`me692603` T1)
     dropped the re-cut and moved the fixes onto the release branch.
 
     The digest runs ``scripts/ci-failed`` on the plan's newest red

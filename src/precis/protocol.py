@@ -75,7 +75,7 @@ def tolerates_extra_kwargs(func: Any) -> Any:
 #: An agent copes with "this kind is not installed, here is why" and copes
 #: badly with silence — it retries or invents. So a mismatch darks the kind
 #: at boot with a reason the cold-start banner shows
-#: (``docs/backlog/plugin-split-runtime-shell.md`` step 5).
+#: (`me690684` step 5).
 PLUGIN_API: int = 1
 #: The oldest plugin contract this core still honours.
 PLUGIN_API_MIN: int = 1
@@ -233,7 +233,7 @@ class KindSpec:
     #: instead of ``requires_env`` for behavior flags / config that should be
     #: fleet-uniform: DB row → registry env var → compiled default, so
     #: availability doesn't depend on which launcher spawned this process
-    #: (``docs/backlog/db-resident-settings.md`` slice 3). A bool-typed key
+    #: (`gr690347` slice 3). A bool-typed key
     #: resolving ``False`` (or unset with no compiled default) counts as
     #: unavailable, same as an unset ``requires_env`` var.
     requires_setting: tuple[str, ...] = ()

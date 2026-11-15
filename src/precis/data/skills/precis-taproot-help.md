@@ -51,8 +51,8 @@ alongside `established` chase findings.
 Papers attach to a hub as one of three typed edges (ADR 0073):
 `establishes` (originator), `corroborates`, `contradicts`. A live
 `contradicts` edge touching the hub blocks its nanopub mint, from ANY
-counterpart ref kind and either direction — post-split (`docs/backlog/
-disputes-edge-nonblocking-disagreement.md`), source-kind no longer
+counterpart ref kind and either direction — post-split (spec
+`me693328`), source-kind no longer
 filters the gate, since `contradicts` is now adjudication-derived only
 (Part 2, not built) and is itself the warrant for blocking. A milder,
 non-blocking disagreement — an unadjudicated hunch, a review critique, a

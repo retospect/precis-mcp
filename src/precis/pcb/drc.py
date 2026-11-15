@@ -13,7 +13,7 @@ check, not the main event. Both emit
 ``eyes.drc_lite`` is superseded and retired.
 
 Two NETLIST-level rules report on the same surface since Slice 2 of
-docs/backlog/pcb-lazy-netlist-and-checks.md (§1g: one check surface, not
+me693232 (§1g: one check surface, not
 two — an ERC finding is the same row with ``margin_mm`` empty):
 :func:`check_unconnected_pins`, phase-aware through
 :func:`derive_phase`/``PHASES``, and :func:`check_undeclared_pads`, the
@@ -942,7 +942,7 @@ def check_clearance(
 
     ``net_voltages`` (net NAME -> peak working voltage, ``pcb_nets.
     working_voltage_v``) adds the PAIRWISE term
-    ``docs/backlog/pcb-missing-constraint-classes.md`` §E-1 specifies:
+    `me693086` §E-1 specifies:
     required spacing is a function of ``|V_a - V_b|`` (IPC-2221B Table 6-1,
     via :func:`precis.pcb.capabilities.conductor_spacing_mm`), a property
     of the *pair*, not of either net — a 20 V net beside another 20 V net
@@ -2102,7 +2102,7 @@ def check_via_pad_keepout(
     # test every via against every pad, measured at 1.9 s of a 1.9 s
     # :func:`run_geometric_drc` on ONE 8x8 EWOD tile and 30 s at four tiles,
     # which is what made "run geometric DRC at every board mutation"
-    # (docs/backlog/pcb-always-valid-board-invariant.md) unaffordable.
+    # (me569109) unaffordable.
     #
     # The index is a PRUNE, not a different question: this rule's own
     # condition ``gap < required`` with ``gap = pad_poly.distance(centre) -
@@ -3519,7 +3519,7 @@ def check_keepout_copper(
     model: dict[str, Any], keepouts: Sequence[Keepout] = ()
 ) -> list[DrcFinding]:
     """Copper inside an authored keep-out region is an error — the binding
-    half of ``ftype='keepout'`` (``docs/backlog/pcb-keepout-does-not-bind.md``):
+    half of ``ftype='keepout'`` (`me692901`):
     until this rule, a keepout was recorded data the se fit check warned
     about (:class:`~precis_geom.pcb_shape.Keepout`'s own docstring) and no
     check read. Tracks, vias and pours whose polygon
@@ -4367,7 +4367,7 @@ def check_unrouted(
 
 # ── netlist-level rules on the same check surface ──────────────────────
 #
-# docs/backlog/pcb-lazy-netlist-and-checks.md §1g ("one check surface, not
+# me693232 §1g ("one check surface, not
 # two") + §1j (intent markers): the rules below need no geometry — they
 # judge the netlist — but they report on THIS surface, as the same
 # ``DrcFinding`` row (``margin_mm=None``), because splitting the surface
@@ -4889,7 +4889,7 @@ def _bend_zone_geom(
     """One ``bend_zones`` entry's checked geometry: the fold line widened
     by the bend allowance — the arc length of board surface the fold
     consumes, ``radius_mm * |angle_deg|`` radians, split evenly either
-    side of the fold (docs/backlog/pcb-flexboard.md's "fold line widened
+    side of the fold (gr689726's "fold line widened
     by the bend allowance"). Returns ``(label, fold_unit_dir, area)`` —
     ``area`` the flat-capped strip, ``fold_unit_dir`` the direction
     perpendicularity is measured against. ``None`` on a malformed row: a
@@ -4939,7 +4939,7 @@ def check_bend_zones(
     model: dict[str, Any],
     courtyards: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
-    """Flex bend-zone rules (gr520329; docs/backlog/pcb-flexboard.md's
+    """Flex bend-zone rules (gr520329; gr689726's
     fold-zone DRC), off ``model["bend_zones"]`` — the builder's
     ``bend_zone`` features as extracted by
     :func:`precis.pcb.session.fab_layers_from_features`:

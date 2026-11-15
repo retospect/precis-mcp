@@ -168,7 +168,7 @@ _HOME_FWD = 12
 #: decimal parse, rather than folded into the registry's grammar.
 _SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
 
-#: The closed ``SPACE:`` tag axis (``docs/backlog/file-mirror.md``
+#: The closed ``SPACE:`` tag axis (`me693606`
 #: §Pillar-review deltas) — the partition a ``space=`` ring filter selects
 #: inside. Derived from the store's closed vocabulary so a new SPACE value
 #: (e.g. ``design-conventions``) is filterable everywhere at once; kept as

@@ -1,5 +1,5 @@
 """The ``structure`` kind's spatial eye — ``st<id>~<focus>``
-(structure-workspaces slice 2e, docs/backlog/structure-workspaces.md
+(structure-workspaces slice 2e, me693174
 §Structure fisheye).
 
 A bare structure ref is one pseudo-block (block name ``''``) — the same

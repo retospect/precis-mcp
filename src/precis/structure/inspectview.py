@@ -1,5 +1,5 @@
 """The atomic leg of the one inspect family (molecular-workspace-code
-slice 6, docs/backlog/molecular-workspace-code.md §Inspect).
+slice 6, me694745 §Inspect).
 
 :mod:`precis.cad.inspect`'s four probes — ``ray``, ``section``,
 ``overlap``, ``thickness`` — marched over the union of van der Waals

@@ -168,7 +168,7 @@ name the allowed functions, what a cap measures) are in
    live in `fleet_panes.LAUNCH_PERMISSION_MODE`), `--kimi` for
    `scripts/kimi-tree`. `--dry-run` prints the
    argv. Launch fails if a footer placeholder is unfilled. When the brief
-   names a spec file in the backlog dir (`<slug>.md`), launch claims it
+   names the one remaining spec file in the backlog dir (`<slug>.md`), launch claims it
    for the tree:
    `status: ready` → `in-progress` + `claimed-by: NAME` in one pushed
    commit on main, the tree's `.claude/purpose` seeded with the claim,

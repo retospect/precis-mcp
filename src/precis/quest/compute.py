@@ -126,7 +126,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       screening on coadsorbed: a 2026-10-02 replay of 213 neb candidates
       with barriers stripped showed thermo-only margins on coadsorbed rank
       no better (Spearman 0.139 vs the barrier-based margin) at ~1.9× the
-      structures (``docs/backlog/pathway-selectivity-u-ph-window.md``).
+      structures (`me568760`).
     * ``neb`` — straight-to-NEB, overlaid with autocatpath's fast-screening
       NEB stack (three ``search`` knobs, each a *default* an explicit
       caller key overrides; a caller-pinned ``neb_schedule`` suppresses the
@@ -145,7 +145,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer vs.
         dense-Hessian BFGS — ~5× fewer MLIP evals for the same barrier on
         Pd(111)+N* in the screening regime
-        (docs/backlog/autocatpath-seed-health.md).
+        (gr614723).
       - ``neb_batched=True`` (0.9, MACE-dtype fix 0.9.1, tether-guard fix
         0.11): one MLIP forward per step over all interior images instead
         of serial — physics-identical, runtime self-check degrades to
@@ -1847,7 +1847,7 @@ def dispatch_autocatpath(
     machine. The two-level nesting (seed job → seed todo → T_agg, not
     direct) is load-bearing: a bare seed job as T_agg's direct child would
     satisfy ``child_job_succeeded`` on the first seed's success, not the
-    aggregate's. See ``docs/backlog/autocatpath-integration.md`` §3.8.
+    aggregate's. See `me690505` §3.8.
 
     The aggregate job (``precis_pathway.aggregate_job``) combines seed
     partials in-process (pure numpy, ``aggregate_partials``, no ML deps) and

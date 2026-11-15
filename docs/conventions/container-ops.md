@@ -198,7 +198,7 @@ the plain shape is the one that never surprises.
 `github`, `git_sha` and similar word-boundary near-misses pass. The
 worktree-isolation guard is a harness built-in; the upstream asks are
 tracked in
-`docs/backlog/worktree-path-guard-false-positives.md`.
+gr456287.
 
 Package availability / licence checks are one plain command each — the
 refusal is the loop/`cd` wrapper, never the check (gr514219):

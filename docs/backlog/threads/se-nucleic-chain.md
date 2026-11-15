@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Dormant from 2026-10-17 (Reto): no commit since 2026-10-03. Continue DNA wrap-around-part once hexfold integration is available.
 - **Blocked by:** [Hexfold integration](hexfold-toolkit.md#resume).
 - **Unblocks:** DNA scaffolds around designed carbon parts.
-- **Acceptance:** Use [se-chain-wrap-around-part](../se-chain-wrap-around-part.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use se-chain-wrap-around-part (me694058) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `se-nucleic-chain`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -54,7 +54,7 @@ worktree's code against the prod DB (not the deployed code).
 
 ## Do next
 
-1. **backlog/se-chain-wrap-around-part.md** — blocked-by spec
+1. **me694058** — blocked-by spec
    `me628772` (the retired hexfold-integration); DNA-SE session evidence for the want.
 
 ## Horizon
@@ -64,22 +64,22 @@ worktree's code against the prod DB (not the deployed code).
    structure-level findings on a bound segment (bond geometry, clashes)
    still say `aO44` — extend them the same way through
    `atomic/validate.py::chain_atom_name` when one bites in a dogfood.
-2. **backlog/ewod-synthesis-protocol.md** (ewod-pcb thread's) — the zone
+2. **me690494** (ewod-pcb thread's) — the zone
    compiler that consumes make_steps' make tree (live on prod since
    5ca0cfff); the first end-to-end design → dispense protocol.
-3. **backlog/nanostructure-check-tiers.md** §"Chains: the physics tier is
+3. **me694324** §"Chains: the physics tier is
    oxDNA" — oxDNA as a rented relax rung against relax_chain's block-scale
    settle; waits on 1–2 and the oxDNA binary in the image; the only
    honesty check relax_chain has (and the one that would relax the
    stretched step across a deleted base).
 4. **caDNAno round trip** (unfiled) — settle the handedness reflection
    against a real file; waits on a file to compare.
-5. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
+5. **gr695518** — proteins on the same block tree;
    waits on a protein-bearing design being wanted.
 6. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
    walker dogfood (td458169) is its protocol figure's source.
 
-7. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
+7. **me694838** — its render half (atom pick on the
    se page, popup, ask-box insertion) is se-3d-viewer's Horizon 1; the
    resolver it calls is built here (`precis_se/pick.py`). Waits on that
    thread's ranking; nothing owed from this side until it starts.

@@ -19,7 +19,7 @@ mint/reword time (`taproot/authoring.py::seed_claim_hub`,
 `taproot/hub.py::refine_claim_sentence`) so a caller can fix notation
 before it silently forks a hub.
 
-**Canon v2** (`docs/backlog/nanopub-corpus-remediation.md` Phase 0/1) adds
+**Canon v2** (me691969 Phase 0/1) adds
 a closed ASCII->UTF-8 fallback table -- ``+/-``, ``ug``/``micro``,
 ``degrees C``, ``Ohm``, ``Angstrom``, ``micrometer``/``micron``, ``1e3``
 scientific notation -- each a *symbol respelling*, not a unit conversion,
@@ -259,7 +259,7 @@ _ASCII_MULT_RE = re.compile(r"\d\s*x\s*10")
 #: `~` before a numeral, digit run NOT immediately followed by `/` --
 #: `~19` (approximation) fires, `~ 1/W` (proportionality -- an expression,
 #: not a bare quantity, on the right) does not. Canon: "`~` is overloaded"
-#: (`docs/backlog/nanopub-corpus-remediation.md` Phase 0). A second
+#: (me691969 Phase 0). A second
 #: carve-out lives in `lint_notation`: a `~<digits>` whose left neighbour
 #: names an addressable thing is a section/chunk selector, exempt via
 #: `_is_tilde_selector_base` (gr674776).
@@ -410,7 +410,7 @@ _CARET_EXPONENT_RE = re.compile(r"\^(?![A-Z])")
 # ── canon v2: ASCII -> UTF-8 symbol-respelling table ────────────────────
 # Each of these is a spelling fix, not a unit conversion -- explicitly
 # exempt from the "never convert the paper's unit" carve-out (canon v2,
-# `docs/backlog/nanopub-corpus-remediation.md` Phase 0).
+# me691969 Phase 0).
 
 #: A numeral immediately left of a spelled-out unit name, with an optional
 #: single space or hyphen between. SI writes a unit *symbol* with a

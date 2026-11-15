@@ -133,11 +133,14 @@ name the allowed functions, what a cap measures) are in
    `--permission-mode dangerous` — Reto's always-bypass ruling; both modes
    live in `fleet_panes.LAUNCH_PERMISSION_MODE`), `--kimi` for
    `scripts/kimi-tree`. `--dry-run` prints the
-   argv. Launch fails if a footer placeholder is unfilled. When the brief
-   names a `docs/backlog/<slug>.md` spec, launch claims it for the tree:
-   `status: ready` → `in-progress` + `claimed-by: NAME` in one pushed
-   commit on main, the tree's `.claude/purpose` seeded with the claim,
-   and a row in `$FLEET_STATE/claims.tsv` (gr509461). `close` flips the
+   argv. Launch fails if a footer placeholder is unfilled. Specs live in
+   graph memory now (`precis-spec-help`), so a slice is claimed on its
+   **plan todo** — the `claimed-by:` lease and `STATUS:` — and the file
+   claim below fires only for a brief naming the one remaining
+   `docs/backlog/<slug>.md` spec: launch flips `status: ready` →
+   `in-progress` + `claimed-by: NAME` in one pushed commit on main, seeds
+   the tree's `.claude/purpose` with the claim, and writes a row in
+   `$FLEET_STATE/claims.tsv` (gr509461). `close` flips the
    claim back to `ready` when the tree is removed or already gone.
    A builder that picks up a gripe comments `in progress <tree> —
    covers all asks` on it (or names which asks the tree covers) — the

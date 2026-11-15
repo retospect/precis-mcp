@@ -5,7 +5,7 @@ sheet job (:mod:`precis.sheet`).
 
 The third way a maker builds a thing after solids (se) and printed fields:
 flat parts cut from one sheet and slotted together. Design and Reto's
-rulings: docs/backlog/flatpack-furniture-generator.md (laser first; 3 mm
+rulings: me694692 (laser first; 3 mm
 corrugated cardboard first; finger joints default, plain butt edge as the
 option; the first box is a 50 mm cube; a shared sheet job under the
 generator from build 1).

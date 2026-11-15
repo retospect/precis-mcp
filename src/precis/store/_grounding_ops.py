@@ -1,5 +1,5 @@
 """Stored typed groundings and the term admit act (migration 0235;
-docs/backlog/graph-node-trust-state.md slice 2b, Reto rulings 2026-10-21).
+me691024 slice 2b, Reto rulings 2026-10-21).
 Mixin on :class:`precis.store.Store`.
 
 A ``groundings`` row is a target's CURRENT typed grounding — ``defined``,

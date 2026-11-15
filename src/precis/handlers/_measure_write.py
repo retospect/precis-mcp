@@ -1,5 +1,5 @@
 """Write-side parsing for ``kind='measure'`` (pilot Build C,
-``docs/backlog/measures-substrate.md``).
+`me693370`).
 
 ``put(kind='measure', text=<output literal>, meta={...}, items=[...])`` carries
 a run as plain dicts; this module turns them into the

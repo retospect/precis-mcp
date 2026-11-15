@@ -1,7 +1,7 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
-Build ticket: ``docs/backlog/taproot.md``; governance:
-taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core
+Build ticket: `me694691`; governance:
+taproot evidence relations; design: `me694691` §"The core
 model".
 
 **Single write path.** Every hub-finding and every
@@ -1330,7 +1330,7 @@ def attach_evidence(
 # ── reground: the edge-REMOVAL door ─────────────────────────────────
 #
 # ``attach_evidence`` above is the single *write* door; until reground
-# (docs/backlog/taproot-reground.md) there was no *removal* door at all,
+# (gr693791) there was no *removal* door at all,
 # because ``hub_refine`` was strictly additive. Reground audits existing
 # edges and auto-removes proxy grounding, so removal needs the same
 # single-choke-point treatment — plus one thing attach doesn't need: an
@@ -1340,7 +1340,7 @@ def attach_evidence(
 
 
 #: ``finding.meta`` key carrying a claim hub's reground audit trail
-#: (docs/backlog/taproot-reground.md stage 2): an append-only list of
+#: (gr693791 stage 2): an append-only list of
 #: :func:`reground_log_entry` records — one per removal, disputes
 #: re-attach, or deliberately *withheld* action. Read by the claim page /
 #: any human asking "why is this edge gone?".
@@ -1420,7 +1420,7 @@ class EvidenceHandle:
     ``(source ref, grounding chunk, relation)``.
 
     Deliberately **not** the ``links.link_id`` surrogate: the applier's
-    read-back (docs/backlog/taproot-reground.md §"Applier must enforce
+    read-back (gr693791 §"Applier must enforce
     add-first") has to compare an *intent* it formed before the write
     against state it re-read after the commit, and an intent has no
     link_id. ``src_chunk_id`` is ``None`` for a ref-level (``pa<id>``)
@@ -1439,7 +1439,7 @@ def live_evidence_handles(conn: Any, hub_ref_id: int) -> set[EvidenceHandle]:
 
     No ``retired_at IS NULL`` filter — ``links`` has no such column, and
     adding one to the predicate *errors* rather than merely
-    under-returning (docs/backlog/taproot-reground.md §"applier
+    under-returning (gr693791 §"applier
     contract"). Every row here is live by construction.
     """
     rows = conn.execute(
@@ -1603,7 +1603,7 @@ def append_reground_log(
     Read-modify-write on ``meta`` (``update_ref``'s ``meta_patch`` merges
     only top-level, so the list is rebuilt whole) — same lost-update
     exposure as ``hub_refine``'s ``taproot_rejected`` memo under concurrent
-    passes on one hub (unresolved, docs/backlog/taproot-reground.md; run
+    passes on one hub (unresolved, gr693791; run
     reground on one host per the enablement runbook). A vanished hub is a
     silent no-op, not a raise — the log is an audit nicety, never worth
     failing a removal that already happened.
@@ -1641,7 +1641,7 @@ class WouldStrandHub(BadInput):
     A hub SHOULD be allowed to reach zero (that's how "questionable" is
     expressed — emergent ``unverified`` via ``.trust``), but only as a
     deliberate, authorized RETIRE, never the accidental residue of a
-    half-applied add-first prune plan (docs/backlog/taproot-reground.md —
+    half-applied add-first prune plan (gr693791 —
     two hubs really were pruned to zero this way before a human caught it).
     The door refuses by default; the caller has to say so out loud.
     """
@@ -2112,7 +2112,7 @@ def attach_motivation(
     motivation out of :data:`HUB_ROLES` is load-bearing: ``hub_refine``
     widens a claim by searching for supporting evidence, and aiming that at
     a conjecture makes a confirmation engine of it
-    (``docs/backlog/nanopub-corpus-remediation.md``) — a motivator prompted the
+    (`me691969`) — a motivator prompted the
     guess, never supports it.
 
     ``meta['source_handle']`` grounds the edge at a specific passage,

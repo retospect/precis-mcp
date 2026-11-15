@@ -160,7 +160,7 @@ class TaxonHandler(NumericRefHandler):
             "get(view='path') shows the chains up to the start nodes; "
             "search(q=) matches name and definition, search(under=, axis=, "
             "depth=) lists descendants. Ids: 42, tn42, or a path "
-            "'measurand/temperature'. See docs/backlog/term-taxonomy.md."
+            "'measurand/temperature'. See me693578."
         ),
         supports_get=True,
         supports_search=True,

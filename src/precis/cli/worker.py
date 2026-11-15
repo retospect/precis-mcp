@@ -761,7 +761,7 @@ def run(args: argparse.Namespace) -> None:
         # Profile membership + the extra ``PRECIS_*_ENABLED`` gates are
         # now declared once in ``workers/registry.py`` (the ServiceSpec
         # table) — the source of truth the factory console + capability
-        # scheduler read too (docs/backlog/factory-console-and-scheduling.md).
+        # scheduler read too (gr690514).
         # ``system`` = every node's rotation (embed/summarize/… + the
         # coordinator/ssh_node/clusterize/reconcile passes that ship on
         # every node); ``agent`` = the agent host's OAuth worker (the opus

@@ -120,7 +120,7 @@ def _vec_param(query_vec: list[float] | Vector) -> Vector:
 
     A plain ``list[float]`` falls to psycopg's generic array dumper, which
     dispatches a dumper per element in pure Python under the GIL — 59% of
-    serve's GIL time at N=32 (docs/backlog/mcp-concurrency-load-test.md,
+    serve's GIL time at N=32 (me691729,
     py-spy section). ``Vector`` takes the dumper ``register_vector``
     installed in ``pool.configure``: one numpy ``tobytes``. Same float4
     values reach the server either way (the old ``float8[]::vector`` cast
@@ -1283,7 +1283,7 @@ class ChunkStore:
         Fence by default. Lift it when the caller forces inclusion
         (``include_speculative=True``) or explicitly lists the
         ``DREAM:speculative`` tag in ``tags=`` — listing the control
-        tag *is* the opt-in (docs/backlog/dreaming.md §Inspire: "surface
+        tag *is* the opt-in (gr690614 §Inspire: "surface
         on explicit ask").
         """
         if include_speculative:
@@ -1314,7 +1314,7 @@ class ChunkStore:
         """Whether to apply the ``STATUS:refuted`` fence to a search.
 
         Fence by default so a rejected hypothesis (the do-not-repropose
-        ledger, docs/backlog/quest-dossier-dialectic.md §"Refuted
+        ledger, me690849 §"Refuted
         lifecycle") never resurfaces in default or cross-kind search.
         Lift it when the caller lists the ``STATUS:refuted`` control tag
         in ``tags=`` — the opt-in mirrors ``DREAM:speculative`` /
@@ -3334,7 +3334,7 @@ class ChunkStore:
         """Record an external access for a result page (set-based). One
         in-DB ``bump_salience(ids)`` call advances ``last_seen=now()`` +
         ``accesses += 1`` for the whole page in one round-trip
-        (docs/backlog/dreaming.md, §Access accounting). Metadata-only —
+        (gr690614, §Access accounting). Metadata-only —
         never touches ``chunks.text`` — the one write permitted on the
         search path. SECURITY DEFINER since migration 0137, so it also
         works from a read-only connection (``write:none`` resolves to
@@ -3389,7 +3389,7 @@ class ChunkStore:
         Run-end rotation step shared by every attention actor (dream,
         watch, …): everything the loop surfaced is stamped so its
         ``last_seen - last_<actor>`` score drops and a *different* region
-        tops the next run (docs/backlog/dreaming.md, §Selection;
+        tops the next run (gr690614, §Selection;
         the watcher). The act of looking *is* the anti-repeat
         mechanism. ``actor`` selects the rotation column via
         :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError).
@@ -3543,7 +3543,7 @@ class ChunkStore:
     ) -> list[int]:
         """Most-due salient chunks for ``actor``:
         ``argmax(last_seen - last_<actor>)``. The shared
-        attention-selection primitive (docs/backlog/dreaming.md, §Target
+        attention-selection primitive (gr690614, §Target
         selection; the watcher mirrors it) — knob-free, no decay, no
         sampling. ``actor`` selects the rotation column via
         :data:`_ATTENTION_COLUMNS` (unknown actor → KeyError), restricted
@@ -3637,7 +3637,7 @@ class ChunkStore:
         n: int = 12,
     ) -> tuple[int | None, list[tuple[ChunkRow, Ref, float]]]:
         """The focus region: the salience seed + its ANN neighbourhood.
-        Backs ``search(view='dreamable')`` (docs/backlog/dreaming.md,
+        Backs ``search(view='dreamable')`` (gr690614,
         §view='dreamable'). Picks the most-due seed via
         :meth:`select_dream_seed`, returns the ``n`` nearest embedded
         chunks (seed included) over ``kinds`` — a single cosine
@@ -3799,7 +3799,7 @@ class ChunkStore:
         (:func:`precis.utils.angle.angle_anchors`), ANN-snaps each to its
         nearest not-yet-seen real chunk over ``kinds``, dedups. **Not a
         cluster** — ``n`` points spread around the seed's cone, each
-        snapped to a real item (docs/backlog/dreaming.md, §The ``angle``
+        snapped to a real item (gr690614, §The ``angle``
         spray).
 
         Card chunks (``ord=-1``) are **included** as snap targets (unlike

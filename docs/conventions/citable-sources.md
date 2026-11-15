@@ -3,8 +3,10 @@
 Reto 2026-09-16: "As a rule, be sure to maintain citable sources please."
 A spec claim without a source becomes an unsourced claim in a draft.
 
-- Every theorem, algorithm or prior-art statement in `docs/backlog/*`, spec
-  files, ADR-style docs and skills carries a reference.
+- Every theorem, algorithm or prior-art statement in a spec section node,
+  ADR-style doc or skill carries a reference. In the graph that is a
+  `cites`/`derived-from` edge plus the `[pa<N>]` mention — at most three
+  typed edges per node (`precis-spec-help`).
 - Search `kind='paper'` first and cite the store id. If the paper is absent,
   import by DOI (`put kind='paper' mode='import'`, a sanctioned prod write),
   then cite the id.

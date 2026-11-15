@@ -119,7 +119,7 @@ def cite_heads_in(text: str) -> list[str]:
 def _refuted_ref_ids_bulk(store: Store, ref_ids: Iterable[int]) -> set[int]:
     """The subset of ``ref_ids`` carrying ``STATUS:refuted`` — one bulk
     query, same shape as :func:`~precis.taproot.seniority.is_claim_hub_bulk`
-    (docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle"). Used by
+    (me690849 §"Refuted lifecycle"). Used by
     :func:`claim_cite_head_sets` to compute the ``refuted`` head set
     alongside the hub check, so a window's cite-head resolution stays a
     bounded number of queries regardless of head count."""

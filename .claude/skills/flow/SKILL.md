@@ -22,15 +22,20 @@ manufacture ceremony for a small change.
 
 2. **Spec.** For anything architectural, multi-file, ambiguous, or where more
    than one reasonable approach exists — write it down before coding. The
-   item lives in `docs/backlog/<slug>.md`: start as an idea (a few lines),
-   grow the spec **in the same file** (front-matter `status: draft` per
-   `docs/backlog/TEMPLATE.md`; mint via the `scaffold` agent —
-   boilerplate, never content). Put the plan there when the work will span
-   more than one session, so it survives compaction.
+   spec lives in **graph memory**: a spec root plus section nodes under the
+   Specifications hub `me568215`, with execution state on its plan todo
+   (shapes, writer procedure and slicing in
+   `get(kind='skill', id='precis-spec-help')`; ruling `me568168`). A small
+   item — an idea or a one-paragraph annoyance — is a **gripe** instead.
+   Put the plan on the plan todo when the work will span more than one
+   session, so it survives compaction.
 
-3. **Spec review.** Spawn `ready` against the `docs/backlog/` spec before
-   flipping `status: draft` → `ready` (the fixer's pick signal; branch
-   `fix/<slug>`). Iterate on blockers; advisories are your call. Skip this
+3. **Spec review.** Spawn `ready` against the spec root and its sections
+   before the first slice is dispatched. `ready` judges build-readiness
+   against the section contract — concrete trigger, expected result,
+   acceptance evidence, with missing fixtures or thresholds already named
+   as decisions on the plan. Iterate on blockers; advisories are your
+   call. Skip this
    for a spec you and the user finalized together in conversation (e.g. via
    `ExitPlanMode`) — `ready` exists for specs nobody adversarially checked yet.
 
@@ -52,8 +57,9 @@ manufacture ceremony for a small change.
    and destroyed hours of unstaged work), so nobody commits unless you do.
 
 5. **Ship.** `/land` (ship only) or `/go` (ship + deploy). On ship, fold
-   surviving truth into the owning package docstring and **delete the
-   backlog item** in the same commit (`docs/README.md` §Backlog lifecycle).
+   surviving truth into the owning package docstring and **retire the built
+   spec section**, superseded by the code handle that now carries it
+   (`docs/README.md` §Spec lifecycle; verdicts in `docs-triage`).
    **Both commands already own the next two stages internally** — do not
    spawn `reviewer` or `issue-closer` yourself before calling one of these:
    - **Code review** is size/risk-gated inside `/land`/`/go` (their own
@@ -63,7 +69,7 @@ manufacture ceremony for a small change.
      (e.g. mid-session, before you're ready to land).
    - **Closing resolved issues** is a background `issue-closer` spawn inside
      `/land`/`/go`, after a green ship — it checks the shipped diff against
-     open gripes/`docs/backlog/` items and closes what it's confident this
+     open gripes and spec slices and closes what it's confident this
      ship fixed, then relays a one-line note. Nothing else to do here.
 
 6. **Report.** `/land`/`/go`'s own closing steps (residual harvest, then

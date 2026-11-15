@@ -7,7 +7,7 @@ channel is a wheelhouse seeded by `scripts/deploy` (gr263082). General deploy:
 1. **Bump catpath's version** (pyproject) — mandatory. Hosts `uv pip install`
    the wheelhouse wheel, and a same-version wheel with new code is a **no-op on
    already-seeded hosts** (the version-reuse trap in
-   `docs/backlog/catpath-wheel-version-reuse.md`). Catpath convention: ruff +
+   me690566). Catpath convention: ruff +
    full pytest green first, then commit + push + tag `vX.Y.Z`.
 2. **Trap:** running `uv run` in catpath after the bump rewrites catpath's own
    `uv.lock` self-version → dirty checkout → deploy's wheel preflight dies.

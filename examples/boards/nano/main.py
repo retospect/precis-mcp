@@ -234,53 +234,53 @@ def build() -> pcb.Board:
         "GATE1",
         current=0.001,
         voltage=30.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); gate sits ~10 V over the 20 V source",
     )
     out1 = b.net(  # board='nano-usb-pd-test'
         "OUT1",
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate2 = b.net(  # board='nano-usb-pd-test'
         "GATE2",
         current=0.001,
         voltage=30.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); gate sits ~10 V over the 20 V source",
     )
     out2 = b.net(  # board='nano-usb-pd-test'
         "OUT2",
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate3 = b.net(  # board='nano-usb-pd-test'
         "GATE3",
         current=0.001,
         voltage=30.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); gate sits ~10 V over the 20 V source",
     )
     out3 = b.net(  # board='nano-usb-pd-test'
         "OUT3",
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate4 = b.net(  # board='nano-usb-pd-test'
         "GATE4",
         current=0.001,
         voltage=30.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); gate sits ~10 V over the 20 V source",
     )
     out4 = b.net(  # board='nano-usb-pd-test'
         "OUT4",
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (me695012 §Topology); 20 V / 5 A envelope",
     )
     cc1 = b.net(  # board='nano-usb-pd-test'
         "CC1",
@@ -2125,7 +2125,7 @@ def build() -> pcb.Board:
                 "etype": "input",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     q1 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q1",
@@ -2156,7 +2156,7 @@ def build() -> pcb.Board:
                 "etype": "power_out",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     r_gs1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS1",
@@ -2257,7 +2257,7 @@ def build() -> pcb.Board:
                 "etype": "input",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     q2 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q2",
@@ -2288,7 +2288,7 @@ def build() -> pcb.Board:
                 "etype": "power_out",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     r_gs2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS2",
@@ -2389,7 +2389,7 @@ def build() -> pcb.Board:
                 "etype": "input",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     q3 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q3",
@@ -2420,7 +2420,7 @@ def build() -> pcb.Board:
                 "etype": "power_out",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     r_gs3 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS3",
@@ -2521,7 +2521,7 @@ def build() -> pcb.Board:
                 "etype": "input",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     q4 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q4",
@@ -2552,7 +2552,7 @@ def build() -> pcb.Board:
                 "etype": "power_out",
             },
         ],
-        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
+        note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (me695012); this choice is geometry, not validation",
     )
     r_gs4 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS4",
@@ -2761,7 +2761,7 @@ def build() -> pcb.Board:
 
     b.meta.update(
         {
-            "spec": "docs/backlog/pcb-usb-c-pd-nano-testboard.md",
+            "spec": "me695012",
             "outline_mm": [100.0, 80.0],
             "pd_contract": "STUSB4500 negotiates 20 V; V15/V9/V5 are bucks from VBUS (one contract, "
             "derived rails; fixed PDO set 5/9/15/20)",

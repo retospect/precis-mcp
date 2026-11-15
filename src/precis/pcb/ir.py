@@ -357,7 +357,7 @@ class PcbIR:
     #: (``power_in``/``power_out``/``input``/``output``/``bidi``/
     #: ``passive``/``open_drain``/``tristate``/``nc``), read off the
     #: pin's tags; ``None`` when undeclared. Slice 5 of
-    #: docs/backlog/pcb-lazy-netlist-and-checks.md — the ERC rules
+    #: me693232 — the ERC rules
     #: read it back off the graph rows; the IR carries it so a
     #: netlist-level consumer (firmware export, Slice 7) never re-joins
     #: ``pcb_pins``.

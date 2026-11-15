@@ -2,8 +2,9 @@
 
 **Audience**: anyone writing/editing docs an agent reads to *develop this
 repo* — `CLAUDE.md`, `docs/codebase.md`, package `__init__.py` docstrings, the vocabulary taxa,
-`AGENTS.md`, `docs/backlog/`, and files under
-`.claude/{agents,skills,commands}/`.
+`AGENTS.md`, the repo-dev memory graph (spec roots, sections, rulings and
+gotchas under `me568215` — `precis-spec-help`), `docs/backlog/threads/`,
+and files under `.claude/{agents,skills,commands}/`.
 
 **These arch/design docs are LLM-guidance-first, human-second.** Written to
 be *acted on* by an agent, not read for narrative. So: no filler, no

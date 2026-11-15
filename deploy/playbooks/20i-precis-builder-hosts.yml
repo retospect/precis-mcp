@@ -24,7 +24,7 @@
 #   * 00-users (the deploy account), 19-pgpass (deploy's DB logins); a
 #     non-deploy builder user (`precis_builder_user: coder`) is created by
 #     the role with its own ~/.pgpass, rootless docker and no docker group,
-#     so it needs neither (docs/backlog/builder-hosts.md, "Builder user");
+#     so it needs neither (me691785, "Builder user");
 #   * this play imports precis_worker/provision itself — same venv
 #     (/opt/precis/venv), same service seed, idempotent on a host that
 #     already runs a worker;
@@ -34,7 +34,7 @@
 #
 # PER-HOST SIZING. `claim.executor_cap.ssh_node.<heartbeat host>` via
 # the claim-setting door (put kind='job' mode='setting') — the spec
-# (docs/backlog/builder-hosts.md) carries the formula and the exact
+# (me691785) carries the formula and the exact
 # coordinator lines. No cap key → the code default 8 applies.
 #
 # IN THE REDEPLOY FLOW. redeploy-precis.yml imports this play right after

@@ -1,6 +1,6 @@
 """Release-pass plumbing for the dark release ops (td543733).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven".
+Spec: `me692430` § "4. Release pass, event-driven".
 The ``release-pass`` template (:func:`precis.plans.templates.mint_release_pass`)
 mints cut -> poll -> gate ``tests-green`` -> approval ask -> deploy; the three
 mechanical ops (``release_cut``, ``ci_verdict_poll``, ``release_deploy``) share

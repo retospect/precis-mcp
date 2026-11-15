@@ -1,6 +1,6 @@
 """Taproot Phase 1 — flat claim canonicalization (the gate).
 
-Design: ``docs/backlog/taproot.md`` §"The crux — canonicalization = flat
+Design: `me694691` §"The crux — canonicalization = flat
 claim dedup". Acceptance bar: the fixture eval scores **zero over-merges**
 (``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
@@ -131,7 +131,7 @@ def not_hypothesis_predicate_sql(*, ref_alias: str = "r") -> str:
     apart — for *reading* the corpus a hypothesis is a claim hub. It
     matters for passes that go looking for supporting evidence: widening a
     conjecture (``hub_refine``) is a confirmation engine
-    (``docs/backlog/nanopub-corpus-remediation.md``) — it manufactures the
+    (`me691969`) — it manufactures the
     evidence a hypothesis's own gates refuse it.
 
     Reads ``refs.meta->>'artifact_type'``
@@ -243,7 +243,7 @@ class CanonicalClaim:
     claim_type: str | None = None
 
 
-#: The closed claim-sort set (``docs/backlog/taproot-claim-model-v2.md``).
+#: The closed claim-sort set (`me690796`).
 #: Defined here, not in :mod:`precis.taproot.claim_type`, because the
 #: extractor prompt below embeds the definitions and ``claim_type`` imports
 #: this module. The strings are stored verbatim in ``refs.meta.claim_type``.
@@ -717,7 +717,7 @@ Rules — the claim will be read ALONE, without this passage:
 
 #: Why the prompt's mechanism rule is "its own atom + an ``explains`` pair"
 #: (P2-13, then the 2026-10-03 causal split,
-#: ``docs/backlog/taproot-compound-migration.md``): "X because Y" says one
+#: `me691011`): "X because Y" says one
 #: fact (X) and its explanation (Y). P2-13 first kept the clause folded into
 #: the atom it explains, because the only relation :mod:`precis.taproot.migrate`
 #: minted between atoms of a split was ``conjunct-of`` — "these are peers of
@@ -1652,7 +1652,7 @@ def judge_candidates(
 #: Hub-mint (agent put door) neighbours farther than this cosine distance
 #: are not offered to :func:`containment_judge` (same-passage neighbours
 #: bypass it). 0.30 covers the calibration pair fi530867/fi350175 (0.294);
-#: recalibrate with docs/backlog/hub-duplicate-reconcile.md item 3.
+#: recalibrate with me690507 item 3.
 CONTAINMENT_MAX_DISTANCE = 0.30
 #: At most this many ANN neighbours go to the containment judge per put.
 CONTAINMENT_MAX_CANDIDATES = 3

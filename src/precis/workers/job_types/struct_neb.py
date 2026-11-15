@@ -1,6 +1,6 @@
 """``struct_neb`` job_type — one CI-NEB edge between two agent-authored
 endpoints, in-process on the GPU node (gr512126, slice 3,
-``docs/backlog/neb-structure-builder.md``).
+`me689902`).
 
 The ``structure`` handler's ``mode='neb'`` mint writes a ``struct_neb_runs``
 row (status ``queued``) plus this job; the dispatch here loads both endpoint

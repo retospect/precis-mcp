@@ -1,7 +1,7 @@
 """Glyph-outline fingerprinting: recover the true character of a flagged glyph.
 
 Recovery half of the Greek-strip defect (gr228652; plan in
-``docs/backlog/ingest-strips-greek-glyphs.md`` §Recovery, ruled 2026-10-11).
+`me690638` §Recovery, ruled 2026-10-11).
 :mod:`precis.ingest.glyph_health` detects a font whose encoding lies (mode
 "a": ``/ToUnicode`` echoes a glyph named ``m`` that is drawn as ``μ``;
 mode "b": no ``/ToUnicode``, positional names, C0 residue). The text layer

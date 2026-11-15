@@ -38,7 +38,7 @@ the node the focus hangs on by its kind's up relation
 (``utils/refeye.py::UP_RELATIONS`` via ``resolve_up``), or the rule's
 reason when the kind has none.
 
-Slice 4 (``docs/backlog/web-graph-navigation.md``): the filter axes —
+Slice 4 (`me694223`): the filter axes —
 ``rels``, ``kinds``, ``since``/``until``, ``trust`` and ``depth`` — are
 one parsed :class:`_Filters` applied to the same
 :meth:`Store.neighbourhood` call on all three surfaces, so a filter set

@@ -225,7 +225,7 @@ WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
 DEAD_WORKER_LOOKBACK_DAYS = 30
 
 #: A host's freshest ``host_heartbeat`` row older than this is dark — gr186752
-#: (``docs/backlog/self-healing-spine.md`` Layer 2). Slightly wider than
+#: (`me691477` Layer 2). Slightly wider than
 #: ``DEAD_WORKER_SILENCE_MIN`` (10 vs the daemon-level 10) since a host-level
 #: verdict should not trip on the same jitter a single-daemon check would;
 #: kept equal for now (no observed need to separate them) but named

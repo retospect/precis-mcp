@@ -1,5 +1,5 @@
 """``embed_batch`` job_type — a bounded work order draining the derived
-embed queue (§F, ``docs/backlog/cluster-scheduling.md`` §F).
+embed queue (§F, `me695459` §F).
 
 The derived queue is respected: the *fine-grained* queue stays the derived
 ``chunks``/``chunk_embeddings`` predicate with its own per-chunk

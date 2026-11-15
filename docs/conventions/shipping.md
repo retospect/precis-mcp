@@ -13,9 +13,9 @@ CLAUDE.md carries the short form of the ship path and the hard rules;
 this file is the mechanics. The skills (`/land`, `/go`, `/qland`, `/qgo`,
 `/round`) carry the step-by-step.
 
-When a backlog item ships and its file is deleted, append a shipping comment
-to each associated gripe naming the landed **main commit SHA**, instead of
-using the deleted backlog path as the resolution pointer; the coordinator
+When specced work ships and its spec section retires, append a shipping
+comment to each associated gripe naming the landed **main commit SHA**,
+instead of a path or handle that is about to go away; the coordinator
 adds this after landing if a task branch is handed off. Preserve earlier
 comments as history. Audit stale citations with
 `scripts/gripe-dangling-backlog --comments comments.jsonl` from the checkout
@@ -299,7 +299,7 @@ time, but the train pipelines (release-train §5): once release N is deploying,
 a differing tree). A `/go` whose sha an in-flight release contains exits 0
 (rides along); any other exits 0 with "rides the next cut" — the driver cuts
 N+1 at deploy start, there is no queue. Release CI has no diff-coverage gate or mutation pass yet
-(`docs/backlog/release-ci-diff-coverage.md`); the local full gate with
+(gr692382); the local full gate with
 both is still `scripts/ship --mutate --full` + `scripts/deploy <.ship-sha>
 --pinned`, now off the `/go` path. Exit-code table: `.claude/commands/go.md`
 step 7.
@@ -664,7 +664,7 @@ reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
 log, or `set -o pipefail`.
 
 **Commit messages: `type(scope): what changed`** (aim ≤72 chars, hard limit 120;
-feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
+feat/fix/docs/test/chore/refactor…; `docs(backlog)` for thread files), optional
 short why as body, then the required Co-Authored-By/session footer. Write
 the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
 …)"` recipe trips the shell rules and breaks on apostrophes (gr513763).

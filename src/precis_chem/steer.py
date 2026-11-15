@@ -33,7 +33,7 @@ entry (:func:`cache_entry`) and show in ``view='steer'``. Weights live in
 :data:`PRERANK_WEIGHTS`. The pre-rank runs only on the put/job path,
 inside :func:`steer`; the view renders what was cached.
 
-Spec and later slices: ``docs/backlog/steer-strategy-route-planning.md``.
+Spec and later slices: `me695379`.
 """
 
 from __future__ import annotations

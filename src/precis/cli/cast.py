@@ -1,7 +1,7 @@
 """``precis cast`` — compose + schedule the daily audio *casts*.
 
 Two standing casts ride the produce → narrate → publish spine (see
-docs/backlog/reading-prep-loop.md §Audio):
+me690334 §Audio):
 
 - ``reading`` — the morning situational-awareness brief (voice ``bm_george``).
 - ``nidra``   — the evening conceptual-walk meditation (voice ``af_nicole``).

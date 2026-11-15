@@ -24,7 +24,7 @@ numpy) back into :func:`run_pathway`'s artifact shape.
 ``autocatpath_seed``/``autocatpath_aggregate`` job_types
 (``precis_pathway.seed_job``/``.aggregate_job``) call these two
 functions. Heavy backends move to the compute lane the same way
-(``docs/backlog/autocatpath-integration.md`` in precis-mcp).
+(`me690505` in precis-mcp).
 """
 
 from __future__ import annotations
@@ -2147,7 +2147,7 @@ def run_kinetics_subprocess(
     eleven hours.
 
     The cause is not established (see
-    ``docs/backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md``), which is
+    `gr694966`), which is
     the second reason for the subprocess: a timeout lands a *legible*
     ``kinetics_error`` where today there is only silence, so the next
     occurrence identifies itself instead of needing another archaeology pass.

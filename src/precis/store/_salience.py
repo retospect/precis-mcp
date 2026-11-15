@@ -3,7 +3,7 @@
 The salience signal (``last_seen``) must reflect **external** access
 only. If a background loop's own searches advanced ``last_seen`` it
 would heat the region it is currently wandering into an echo chamber
-(docs/backlog/dreaming.md, §Access accounting: "Dream-actor reads
+(gr690614, §Access accounting: "Dream-actor reads
 excluded ... otherwise the dreamer heats its own wandering").
 
 The dreamer was the first such loop; the **watcher**

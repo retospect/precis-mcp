@@ -1,7 +1,7 @@
 """Claim type — the persisted sort of a claim hub, and what each sort
 changes about how the graph treats the hub.
 
-``docs/backlog/taproot-claim-model-v2.md`` (design decided 2026-10-10).
+`me690796` (design decided 2026-10-10).
 The extractor sorts every claim into one of :data:`CLAIM_TYPES`;
 :func:`~precis.taproot.hub.mint_hub` persists it as ``refs.meta.claim_type``
 with ``claim_type_by='llm'``. A human may reclassify through the web form

@@ -1,5 +1,5 @@
 """DB-backed ``ws-<slug>`` roots for the python kind —
-structure-workspaces slice 2p (docs/backlog/structure-workspaces.md
+structure-workspaces slice 2p (me693174
 §Join with the python kind).
 
 A structure workspace's code is a ``folder`` ref — ``meta['workspace']``

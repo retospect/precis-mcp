@@ -3000,7 +3000,7 @@ class QuestHandler(NumericRefHandler):
         the measure difference down a block is attributable to that axis.
 
         Nothing enumerates a grid — the agent owns which series to run
-        (docs/backlog/pathway-conditions-effects-report.md decision 4); this
+        (me692126 decision 4); this
         only names the series the data already contains, and says so plainly
         when there are none. Budgeted like ``view='results'``."""
         from precis.quest import frontier as frontier_mod

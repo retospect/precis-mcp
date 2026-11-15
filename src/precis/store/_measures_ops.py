@@ -1,7 +1,7 @@
 """The measures substrate (migration 0187). Mixin on
 :class:`precis.store.Store`.
 
-Backs ``docs/backlog/measures-substrate.md`` (pilot Build A). ``measures`` is
+Backs `me693370` (pilot Build A). ``measures`` is
 one append-only sourced-number record for any subject ref; ``material_values``
 and ``component_spec_values`` are compatibility views over it
 (:mod:`precis.store._material_ops` / :mod:`precis.store._component_ops` keep
@@ -1659,7 +1659,7 @@ class MeasuresMixin:
 
         Read-only — the verdict stays on the job ref because a measure row's
         ``meta`` is frozen, so acceptance can never be stamped on the rows it
-        covers (docs/backlog/corpus-quantitative-extraction.md, finding 2).
+        covers (me694248, finding 2).
 
         A finished ``measure_accept`` verdict records its coverage:
         ``papers`` (the papers in the sampling frame) and ``max_id`` (the

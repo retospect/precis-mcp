@@ -1,6 +1,6 @@
 """Advisory admissibility/grammar lint for taproot claim sentences and scope.
 
-The 2026-08-19 corpus audit (`docs/backlog/nanopub-corpus-remediation.md`)
+The 2026-08-19 corpus audit (me691969)
 found the 1,527-hub claim corpus broadly unpublishable in ways
 `taproot/notation.py::lint_notation` does not touch: bibliography stubs
 minted as claims, "the same group"-style dangling references, sentences
@@ -581,7 +581,7 @@ _VERB_SHAPE_RE = re.compile(r"^[A-Za-z]+(?:s|ed|es)$")
 #: sentence's main verb -- plural nouns (`applications`, `results`, ...)
 #: and attributive past-participles used as adjectives (`laminated card`,
 #: not "X laminated Y"). Corpus-specific and deliberately extend-as-needed
-#: (per `docs/backlog/nanopub-corpus-remediation.md`'s prod lint run);
+#: (per me691969's prod lint run);
 #: false-negative-biased -- an omission here just means a truly verbless
 #: sentence slips through, never a real claim wrongly flagged.
 _VERB_SHAPE_EXCEPTIONS: frozenset[str] = frozenset(
@@ -1295,7 +1295,7 @@ _AUTHOR_NAME_RE = re.compile(
 )
 
 #: Terseness budget. Corpus median 147 chars, p90 249, max 506
-#: (`docs/backlog/nanopub-corpus-remediation.md` audit table). 250 sits
+#: (me691969 audit table). 250 sits
 #: just above p90: terse is a rule, not a preference -- a sentence past
 #: this length is disproportionately likely to be the multi-clause-collapse
 #: shape the remediation doc names (a joined "and"-claim, a bibliography

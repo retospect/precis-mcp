@@ -3,7 +3,7 @@
 The coordinator's working state for a builder wave — which batch a gripe
 is in, the brief that assigned it, where the builder stopped, the review
 verdict, who is working it, the landed sha — lives on the gripe itself
-(Reto 2026-10-26; ``docs/backlog/gripe-fix-loop-on-the-gripe.md``). This
+(Reto 2026-10-26; `me691588`). This
 module is the state model behind ``edit(kind='gripe', mode='fix')``,
 the ``fix:`` card line, ``view='fix'`` and the ``/queue`` and ``/batch``
 list views in :mod:`precis.handlers.gripe`.

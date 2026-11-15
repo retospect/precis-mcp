@@ -10,8 +10,8 @@ human review, so this module reports **agreement**, never
 precision/recall: per paper, every live output measure and every ALCHEM
 value lands in one of ``match`` / ``value≠`` / ``unit≠`` / ``ours-only``
 / ``theirs-only``. The diff is the fix queue for
-``docs/backlog/table-numeric-extraction.md`` and
-``docs/backlog/measures-substrate.md`` — the unmapped-measurand list and
+`me694409` and
+`me693370` — the unmapped-measurand list and
 the unparsed-unit disagreements are enumerable and meant to shrink, so
 the script is built to be re-run as extraction improves.
 

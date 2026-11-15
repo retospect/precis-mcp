@@ -303,7 +303,7 @@ def guard_taxon_hierarchy(
     src_meta: dict[str, Any] | None = None,
 ) -> None:
     """Enforce the taxon hierarchy rules on an add-mode ``specialises`` /
-    ``generalises`` link (docs/backlog/term-taxonomy.md AC 3-4). Shared by
+    ``generalises`` link (me693578 AC 3-4). Shared by
     every add-mode link door, beside
     :func:`guard_and_route_contradicts_disputes`.
 

@@ -1,5 +1,5 @@
 """The MCP surface of graph trust state, slice 1 (migration 0214;
-docs/backlog/graph-node-trust-state.md).
+me691024).
 
 Two doors, both on existing verbs (no new verb):
 

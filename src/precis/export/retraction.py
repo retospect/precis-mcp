@@ -154,7 +154,7 @@ def summarize_doi_completeness(
 @dataclass(frozen=True, slots=True)
 class CitedPaper:
     """One paper a draft cites, with its retraction state and DOI
-    completeness/validity (docs/backlog/draft-doi-completeness-check.md)."""
+    completeness/validity (gr690484)."""
 
     ref_id: int
     slug: str
@@ -232,7 +232,7 @@ class CitedPaper:
 @dataclass(frozen=True, slots=True)
 class DraftRetractionReport:
     """What the draft's cited papers look like, retraction- and
-    DOI-completeness-wise (docs/backlog/draft-doi-completeness-check.md)."""
+    DOI-completeness-wise (gr690484)."""
 
     papers: list[CitedPaper] = field(default_factory=list)
     #: Cited slugs that resolve to no ref at all. Not a retraction
@@ -405,7 +405,7 @@ def draft_retraction_report(
     mailto: str | None = None,
 ) -> DraftRetractionReport:
     """Retraction state — and DOI completeness/validity — of everything
-    ``ref`` cites (docs/backlog/draft-doi-completeness-check.md).
+    ``ref`` cites (gr690484).
 
     ``check=False`` (the export path) reads stored state only — no
     network. ``check=True`` (the button) re-checks each cite through the

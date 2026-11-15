@@ -3237,7 +3237,7 @@ class DispatchMixin(RuntimeShape):
             self._maybe_hint_tag_shaped_q(args)
 
         # Focus region: ``search(view='dreamable')`` is the salience
-        # seed + its ANN ring (docs/backlog/dreaming.md, §view='dreamable'),
+        # seed + its ANN ring (gr690614, §view='dreamable'),
         # not the lexical+RRF path. Intercept before kind resolution —
         # it picks its own seed and cross-kind target set.
         if verb == "search" and str(args.get("view") or "").strip() == "dreamable":
@@ -3358,7 +3358,7 @@ class DispatchMixin(RuntimeShape):
             return self._dispatch_search_plan(kind, dict(args))
 
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
-        # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
+        # diverse-cone semantic sampler (gr690614), not
         # the lexical+RRF path. Intercept before kind resolution — it
         # owns its own seed resolution and cross-kind target set.
         if verb == "search" and ("angle" in args or "like" in args):

@@ -4,7 +4,7 @@
 ``precis-geom[pcb-kernel]`` without dragging the catalog's store/HTTP
 half along (pcb-workspace-code slice 4).
 
-(docs/backlog/pcb-datasheet-review.md slice 3, in-scope 4: "a
+(me692814 slice 3, in-scope 4: "a
 passive's rating and dielectric parsed from the part catalog
 description — C1525 → 100nF 16V X7R"). The catalog ``description`` is
 free text in jlcparts' house order — ``"100nF ±10% 16V X7R 0402

@@ -82,7 +82,7 @@ when no subagent runtime exists.
    Before landing, run the tests you touched with `scripts/test <path or -k>`
    — a red release blocks every session's next deploy, not only yours.
    Release CI has no diff-coverage gate yet
-   (the `release-ci-diff-coverage` backlog item): changed `src/` lines need
+   (the `release-ci-diff-coverage` spec): changed `src/` lines need
    tests all the same. When the tree already equals `origin/main`
    (everything qlanded), ship lands nothing; go straight to step 7 — `go`
    is also the settle-up after a `qland` burst.
@@ -180,7 +180,7 @@ when no subagent runtime exists.
    is no new shipped sha to check. Otherwise spawn a background
    `issue-closer` agent with the sha just confirmed in step 8 (not a
    re-derived `git rev-parse main` — use the same sha you verified against
-   `origin/main`). It checks open gripes and the backlog dir against the
+   `origin/main`). It checks open gripes and open spec slices against the
    diff and closes only what it's confident this ship fixed. Don't wait for
    it — continue to step 10 immediately; relay its one-line note (or
    "nothing to close") whenever it completes.
@@ -207,7 +207,7 @@ when no subagent runtime exists.
       soft-delete), don't file or chase it. (Skipping this once sent an
       already-fixed `edit()`-° incident to a full root-cause pass — `gr175738`.)
     - **Persist first — it must survive compaction.** Before anything else,
-      record every harvested residual durably: a backlog item
+      record every harvested residual durably: a `todo` or `gripe` row
       and/or `kind='todo'` / `gripe` rows. Free-text residuals get
       summarized away on the next auto-compaction; persisted ones don't. The
       persisted list — not your memory — is the source of truth for the loop
@@ -231,7 +231,7 @@ when no subagent runtime exists.
     session ran long *or* there are next steps to resume, emit a **full
     handoff block** per the [[next]] skill's steps 4–5 (the copy →
     `/compact` → paste recovery prompt), drawing its pointers from the
-    **persisted** source (the backlog dir / `kind='todo'` / memory), never a
+    **persisted** source (`kind='todo'` / `gripe` / memory), never a
     recap of this conversation — the durable artifact is what survives
     compaction. Skip the handoff when the session was short and nothing is
     open; don't manufacture ceremony.

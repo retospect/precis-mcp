@@ -614,7 +614,7 @@ A repo-wide coverage percentage is still not a merge criterion — a big
 number on a mature tree proxies nothing. What **is** gated (since
 2026-08-24): **changed `src/` lines must be executed by a test.** The
 full-suite ship path (bare `scripts/ship`, `--full`; no longer `/go`, whose
-gate is release CI — `docs/backlog/release-ci-diff-coverage.md`) runs pytest under
+gate is release CI — gr692382) runs pytest under
 pytest-cov in the gate container, then `diff-cover` on the **host** (the
 warm gate container has no `.git` — source arrives via `git archive`, so
 the container can't compute the diff; `relative_files = true` in pyproject

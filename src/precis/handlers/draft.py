@@ -1023,7 +1023,7 @@ class DraftHandler(Handler):
             return self.find_in_ref(id=id, view=view, q=q)
         if project is not None:
             # Reverse lookup (paper-writing pipeline rung 4,
-            # docs/backlog/paper-writing-pipeline.md §Gap-analysis —
+            # me689904 §Gap-analysis —
             # backlog_draft_by_project): the draft(s) bound to a project
             # todo via the ``draft-of`` link create_draft() mints.
             if id is not None:
@@ -1143,7 +1143,7 @@ class DraftHandler(Handler):
                 cursor=a.get("cursor"),
             )
         if view == "integration":
-            # Paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md
+            # Paper-writing pipeline rung 2 (me689904
             # §"The integration ledger") — a topic
             # dossier's woven-in papers (INTEGRATED) vs its topic:-tagged
             # papers with no disposition edge yet (PENDING).
@@ -1151,7 +1151,7 @@ class DraftHandler(Handler):
 
             return render_integration_view(self.store, ref)
         if view == "review":
-            # Paper-writing pipeline rung 3 (docs/backlog/paper-writing-pipeline.md
+            # Paper-writing pipeline rung 3 (me689904
             # §"Review — the memoized approval
             # ledger") — per-chunk checker status, dirty-for-human flagged.
             from precis.handlers._review_view import render_review_view
@@ -3215,7 +3215,7 @@ class DraftHandler(Handler):
                 body=f"auto-author {'ON' if on else 'OFF'} for {ref.slug or ref.id}"
             )
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
-        # docs/backlog/paper-writing-pipeline.md §"Document classes"): lays
+        # me689904 §"Document classes"): lays
         # down a genre's standard section skeleton, the
         # same table the web ``/drafts/new`` picker uses — id is the slug
         # (or any handle in the draft), not a single chunk.
@@ -3345,7 +3345,7 @@ class DraftHandler(Handler):
         ):
             _reject_dry_run("structural", _base)
         if review is not None:
-            # Review ledger (rung 3, docs/backlog/paper-writing-pipeline.md
+            # Review ledger (rung 3, me689904
             # §"Review — the memoized approval
             # ledger"): records that `review=` (the checker, e.g. 'human',
             # 'cites', 'flow') evaluated this chunk at its *current*
@@ -6309,7 +6309,7 @@ class DraftHandler(Handler):
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
         A sixth line — DOI completeness/validity over the same cited
-        papers (docs/backlog/draft-doi-completeness-check.md), advisory
+        papers (gr690484), advisory
         only — see :meth:`_hygiene_doi_line`.
 
         A seventh line — cited papers whose byline never came from
@@ -6978,7 +6978,7 @@ class DraftHandler(Handler):
     def _hygiene_condition_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
         """Warn-only: bullets citing a claim hub whose title omits must-state
         conditions (:func:`~precis.draft.lint.find_condition_gap_cites`,
-        docs/backlog/claim-conditions-completeness.md). One summary line
+        me691778). One summary line
         (hubs and bullets per family), then one ``⚠ conditions:`` line per
         bullet; ``limit`` caps the per-bullet lines with a ``view='hygiene'``
         pointer, ``None`` lists all. ``[]`` when nothing is flagged."""
@@ -7607,7 +7607,7 @@ class DraftHandler(Handler):
         """``(newly-broken chunk-ref tokens, newly-broken finding slugs)``.
         See :func:`~precis.draft.lint.newly_dangling` — the
         shared core of the inline-editor validation gate
-        (``docs/backlog/draft-inline-editor.md``)."""
+        (`me694007`)."""
         return _draft_lint.newly_dangling(self.store, new_text, old_text)
 
     def _raise_on_new_dangling_refs(self, new_text: str, old_text: str = "") -> None:

@@ -1,6 +1,6 @@
 """``precis_geom.inspect`` (``pg.inspect``) — one probe family at both scales
-(molecular-workspace-code slice 6, docs/backlog/molecular-workspace-code.md
-§Inspect; the probes' design is docs/backlog/cad-inspect.md).
+(molecular-workspace-code slice 6, me694745
+§Inspect; the probes' design is me691872).
 
 ``ray`` / ``section`` / ``overlap`` / ``thickness`` take a :class:`Geom` and
 dispatch on :attr:`Geom.atomic`: a macro object marches the folded cad SDF

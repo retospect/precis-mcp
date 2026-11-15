@@ -1035,7 +1035,7 @@ class RefsMixin:
 
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
-        reuse it (docs/backlog/dreaming.md, §Acquire).
+        reuse it (gr690614, §Acquire).
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,

@@ -1,5 +1,5 @@
 """se → precis_flow adapter — the slice-2 half of
-docs/backlog/se-flow-kernel.md.
+me695207.
 
 A thin chamber arrives as a block's posed cad **envelope** (or, for the
 kernel-facing entry point, any ray-queryable solid — a ``Placed``

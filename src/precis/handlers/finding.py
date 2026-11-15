@@ -66,7 +66,7 @@ The chase worker (C5: ``precis.workers.chase``) does not live here
 ``links`` graph + ``chunks`` table directly; it does **not** create
 ``citation`` records under Path B (B-ii).
 
-Module split (docs/backlog/codereview-residuals.md):
+Module split (me690495):
 ``FindingHandler`` still subclasses
 :class:`~precis.handlers._numeric_ref.NumericRefHandler` — it genuinely
 uses the shared CRUD contract (``tag``/``delete``, ``get``'s view
@@ -1553,7 +1553,7 @@ class FindingHandler(NumericRefHandler):
         ``'dead_chain'``, ``'*'`` = all); desugars to
         ``tags=['STATUS:<value>']``, unioned with any explicit ``tags=``.
         ``status='refuted'`` reaches the do-not-repropose ledger
-        (``docs/backlog/quest-dossier-dialectic.md`` §Refuted lifecycle) —
+        (`me690849` §Refuted lifecycle) —
         fenced out of the default cohort and every cross-kind search
         (``store/_tag_filter.py::refuted_fence``), same as
         ``DREAM:speculative``/``ORIGIN:wikipedia``; the ``STATUS:refuted``

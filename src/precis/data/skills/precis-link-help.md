@@ -121,7 +121,7 @@ put(
 ```
 
 `contradicts` is adjudication-derived (claim-graph disagreement, Part 2 of
-`docs/backlog/disputes-edge-nonblocking-disagreement.md`, not built) and
+the disputes split — spec `me693328`, not built) and
 not something to file by hand between a memory and a paper — `disputes`
 is the free, non-blocking way to flag "these disagree" (`precis-relations`
 has the full split; memory↔memory `contradicts` is a separate, unaffected

@@ -1,5 +1,5 @@
 """Construction-trace reads — ``view='trace'`` and the ``frame:`` selector
-(structure-workspaces slice 2t, docs/backlog/structure-workspaces.md
+(structure-workspaces slice 2t, me693174
 §Construction traces).
 
 The stored form is one ``ws_trace`` chunk per workspace run

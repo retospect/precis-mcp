@@ -486,7 +486,7 @@ class PlaintextHandler(Handler):
         self.embedder = hub.embedder
         self.root = root.resolve()
         #: ``PRECIS_ROOTS`` mirrors: alias → root. Their refs are slugged
-        #: ``<alias>/<flat slug>`` (``docs/backlog/file-mirror.md``).
+        #: ``<alias>/<flat slug>`` (`me693606`).
         self.mirrors: dict[str, MirrorRoot] = dict(mirrors or {})
         self._aliases = frozenset(self.mirrors)
 

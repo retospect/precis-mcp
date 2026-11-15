@@ -482,7 +482,7 @@ def _load_taproot_backfill() -> JobTypeSpec:
 def _load_reground_claim() -> JobTypeSpec:
     # Dispatch glue for the taproot reground pass (audit/prune +
     # deeper re-discovery + the add-first applier). Thin: the mechanism
-    # lives in workers/hub_refine.py — docs/backlog/taproot-reground.md's
+    # lives in workers/hub_refine.py — gr693791's
     # DRY invariant is that there is exactly one hub-improver.
     from precis.workers.job_types import reground_claim
 
@@ -764,7 +764,7 @@ def _load_datasheet_pull() -> JobTypeSpec:
 
 
 def _load_pcb_argue() -> JobTypeSpec:
-    # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb design's
+    # me690151 slice 2: answer a pcb design's
     # open argument notes in place (resolve handles, run the real
     # machinery, store origin='proposed' answer notes). Plugin dispatch
     # under job_inproc.
@@ -774,7 +774,7 @@ def _load_pcb_argue() -> JobTypeSpec:
 
 
 def _load_pcb_review() -> JobTypeSpec:
-    # docs/backlog/pcb-datasheet-review.md slice 7: work the pcb-tapeout
+    # me692814 slice 7: work the pcb-tapeout
     # judgment items that are not checked or stale, one fresh-context
     # call each, machine verdicts anchored + quoted. Plugin dispatch
     # under job_inproc.

@@ -1,6 +1,6 @@
 """``get(kind='paper', view='ops')`` + ``precis paper dump`` — one ref's
 full stored state as a ``precis-paper-dump/1`` JSON block (gr517423,
-slice 1 of docs/backlog/paper-backup-pdf-transfer.md).
+slice 1 of me693922).
 
 Before ``drop_body``/``clear_abstract``/``split_body``/``move_body_to``
 ran on 25 refs (gr513878), the executor had to write hand-built SQL

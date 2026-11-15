@@ -32,7 +32,7 @@ is ``profile='plug'``, the kernel default. ``profile='parabolic'`` instead
 weights the horizontal step by the Hele-Shaw gap profile ``6 psi (1 - psi)``
 (1.5x at mid-gap, 0 at floor and lid) so sheared heights spread a tracer pulse
 by Taylor dispersion; the vertical model is unchanged (Q4,
-docs/backlog/se-flow-kernel.md).
+me695207).
 
 The *first* time ``z~`` crosses the domain's tracking plane is recorded, with
 the crossing ``(x*, y*)`` located by sub-step linear interpolation (accuracy
@@ -228,7 +228,7 @@ def _velocity(
     travel at different speeds — the shear that spreads a tracer pulse (Taylor
     dispersion). The vertical velocity ``w~`` stays the continuity-reconstructed
     *depth-averaged* field either way; the profile touches only the horizontal
-    advection (Q4, docs/backlog/se-flow-kernel.md).
+    advection (Q4, me695207).
     """
     z = pos[:, 2]
     ux, uy, h, b, bx, by = _sample(field, pos[:, 0], pos[:, 1])
@@ -289,7 +289,7 @@ def trace(
     regime card or the caller states it; there is no hidden default.
 
     ``profile`` selects the horizontal velocity profile (Q4,
-    docs/backlog/se-flow-kernel.md). ``'plug'`` (the kernel default — it keeps
+    me695207). ``'plug'`` (the kernel default — it keeps
     the cfdtest-calibrated behaviour of the landed slice-1 tracer) moves every
     particle at the depth-averaged speed. ``'parabolic'`` weights the
     horizontal step by the Hele-Shaw gap profile ``6 psi (1 - psi)``, the shear

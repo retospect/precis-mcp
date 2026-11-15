@@ -17,8 +17,8 @@ design or narrative.
   one; `scripts/coderef check docs` flags drift.
 - **Keep the right doc current, don't append history.** A subsystem change
   updates the owning package's `__init__.py` docstring (and `docs/codebase.md` if the
-  *shape* changed). A resolved `docs/backlog/` item's file is *deleted*, not
-  annotated. No CHANGELOG, no done-log.
+  *shape* changed). A built spec section is *retired*, superseded by its
+  code handle, not annotated. No CHANGELOG, no done-log.
 - **Skills are runtime docs** served to product agents — edit
   `src/precis/data/skills/` only when the change alters that agent-facing surface.
 
@@ -50,8 +50,8 @@ over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
 for code you just changed and non-Python files (shell scripts aren't indexed).
 
 ## Stay in your lane
-- **Do:** sync package docstrings/codebase/glossary/backlog/skills to a made change;
-  terse reference and how-to prose; backlog-spec *body* fill-in from a decided design.
+- **Do:** sync package docstrings/codebase/glossary/skills to a made change;
+  terse reference and how-to prose; spec-section *body* fill-in from a decided design.
 - **Don't:** write mission/pitch/positioning prose (`docs/mission.md` is Reto's
   voice — kick up), decide what shipped, or invent architecture. When the brief
   needs a design or narrative call, stop and report the question.

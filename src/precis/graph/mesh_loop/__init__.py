@@ -1,6 +1,6 @@
 """kg-mesh loop — a recurring pass that meshes a quest's claim hubs.
 
-Spec: ``docs/backlog/kg-mesh-loop.md`` (approved 2026-10-22, Pd-hydride
+Spec: `me690203` (approved 2026-10-22, Pd-hydride
 pilot me504790). The pipeline is
 
     select cluster ──▶ cheap tier: candidates ──▶ strong tier: writes
