@@ -1668,3 +1668,15 @@ def test_extract_prompt_carries_the_mechanism_split_rule() -> None:
     assert "is listed here as its own assertion" in flat
     # the template still formats: only {excerpt} is a placeholder
     assert "PASSAGE:\nsome text" in canon._EXTRACT_PROMPT.format(excerpt="some text")
+
+
+def test_claim_form_rules_carry_state_variable_conditions() -> None:
+    """Rule 3 keeps the state variables a value depends on (potential with
+    its reference electrode, electrolyte, illumination, temperature), never
+    invents them, and the shared rules reach the extract and qualify prompts."""
+    flat = " ".join(canon.CLAIM_FORM_RULES.split())
+    assert "reference electrode" in flat
+    assert "vs RHE" in flat
+    assert "Never invent a condition" in flat
+    assert "reference electrode" in " ".join(canon._EXTRACT_PROMPT.split())
+    assert "at -0.5 V vs RHE in 0.5 M K₂SO₄" in " ".join(canon._EXTRACT_PROMPT.split())

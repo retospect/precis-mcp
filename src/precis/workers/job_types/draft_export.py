@@ -379,6 +379,24 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 "view='hygiene').",
             )
 
+    # Conditions-completeness advisory (claim-conditions-completeness.md
+    # step 5): counted only, never blocking, never record_failure.
+    try:
+        from precis.draft.lint import find_condition_gap_cites
+
+        gap_cites = find_condition_gap_cites(ctx.store, ref.id)
+        if gap_cites:
+            ctx.append_chunk(
+                "job_event",
+                f"advisory: {len({c.chunk_id for c in gap_cites})} bullet(s) cite "
+                f"{len({c.hub_ref_id for c in gap_cites})} claim hub(s) whose "
+                "statement omits must-state conditions — see get(kind='draft', "
+                f"id='dr{ref.id}', view='hygiene'); fix with precis taproot "
+                f"conditions-sweep --draft {ref.id}.",
+            )
+    except Exception:  # an advisory must never fail an export
+        log.warning("draft_export: conditions advisory failed", exc_info=True)
+
     # Serialize the file-writing half per draft (gr592838): two exports
     # of one slug claimed in the same sweep ran latexmk in the same
     # export dir and clobbered each other's aux/log files. The lock

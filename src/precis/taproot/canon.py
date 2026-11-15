@@ -702,6 +702,15 @@ Rules — the claim will be read ALONE, without this passage:
    states only the practice, claim = null.
 3. Specific: keep the numbers, materials, and conditions the passage
    states; drop empty intensifiers ("extraordinary", "remarkable").
+   A value that depends on a state variable carries that variable in the
+   claim when the passage (or its surrounding context) states it: applied
+   potential WITH its reference electrode ("-0.6 V vs RHE"; for computed
+   free energies the potential and model, "at U = 0 V vs RHE
+   (computational hydrogen electrode)"), electrolyte and concentration or
+   pH, illumination (source, wavelength) for photo results, temperature
+   for thermal catalysis. Field defaults (room temperature, ambient
+   pressure, adsorption descriptors at 0 V) need not be stated. Never
+   invent a condition the text does not state.
 4. Plain text, no TeX: the claim renders without a math engine — write
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
    -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs")."""
@@ -805,6 +814,12 @@ Examples:
 - "Single-wall carbon nanocones were observed with opening angles of
   approximately 19, 39, 60, 85, and 113 degrees."  -> GOOD (specific,
   self-contained).
+- "Ammonia was produced with a Faradaic efficiency of 85% at -0.5 V vs
+  RHE in 0.5 M K₂SO₄ with 0.1 M KNO₃."  -> BAD "The catalyst reaches a
+  Faradaic efficiency of 85% for ammonia." (drops potential, reference
+  electrode, electrolyte); GOOD "The catalyst reaches a Faradaic
+  efficiency of 85% for ammonia at -0.5 V vs RHE in 0.5 M K₂SO₄ with
+  0.1 M KNO₃."
 - "Graphene exhibits extraordinary tensile strength."  -> weak; if the
   passage states the value, prefer "Graphene exhibits a tensile strength
   of ~130 GPa."

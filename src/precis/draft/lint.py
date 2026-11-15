@@ -1736,6 +1736,79 @@ def find_drifted_cites(store: Store, draft: str | int) -> tuple[list[DriftedCite
     return drifted, unstamped
 
 
+@dataclass(frozen=True)
+class ConditionGapCite:
+    """One draft chunk citing a claim hub whose title leaves out must-state
+    conditions (:func:`precis.taproot.conditions.check_conditions`)."""
+
+    dc: str  # citing chunk handle, e.g. "dc4821"
+    chunk_id: int
+    hub_ref_id: int
+    title: str
+    gaps: tuple[Any, ...]  # tuple[ConditionGap, ...]
+
+
+def find_condition_gap_cites(store: Store, draft_ref_id: int) -> list[ConditionGapCite]:
+    """Every (chunk, hub) ``cites`` edge from the draft to a live finding hub
+    whose TITLE the conditions checker flags. Advisory only. One batched
+    ref fetch; the checker runs once per distinct hub."""
+    from precis.taproot.conditions import check_conditions
+
+    links = store.links_for(draft_ref_id, direction="out", relation="cites")
+    if not links:
+        return []
+    refs_by_id = store.fetch_refs_by_ids(
+        list({link.dst_ref_id for link in links}), include_deleted=False
+    )
+    # Only live TAPROOT:claim hubs: the conditions-sweep cohort, so the fix
+    # hint applies (a chase-tree finding is not a hub).
+    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
+
+    with store.pool.connection() as conn:
+        hub_ids = {
+            int(r[0])
+            for r in conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE r.ref_id = ANY(%(ids)s) "
+                f"AND r.kind = 'finding' AND r.retired_at IS NULL "
+                f"AND {claim_hub_predicate_sql()}",
+                {"ids": list(refs_by_id), **CLAIM_HUB_PREDICATE_PARAMS},
+            ).fetchall()
+        }
+    cache: dict[int, tuple[Any, ...]] = {}
+    out: list[ConditionGapCite] = []
+    seen: set[tuple[int, int]] = set()
+    for link in links:
+        ref = refs_by_id.get(link.dst_ref_id)
+        if (
+            ref is None
+            or ref.kind != "finding"
+            or link.dst_ref_id not in hub_ids
+            or link.src_chunk_id is None
+        ):
+            continue
+        key = (link.src_chunk_id, link.dst_ref_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        gaps = cache.get(link.dst_ref_id)
+        if gaps is None:
+            gaps = tuple(check_conditions(ref.title or ""))
+            cache[link.dst_ref_id] = gaps
+        if gaps:
+            out.append(
+                ConditionGapCite(
+                    dc=handle_registry.format_handle(
+                        "draft", link.src_chunk_id, chunk=True
+                    ),
+                    chunk_id=link.src_chunk_id,
+                    hub_ref_id=link.dst_ref_id,
+                    title=ref.title or "",
+                    gaps=gaps,
+                )
+            )
+    return out
+
+
 def _resolve_draft_ref_id(store: Store, draft: str | int) -> int:
     """``draft`` (ref id / numeric string / slug) → live draft ref_id, for
     :func:`find_drifted_cites`. Mirrors the ``isinstance``-then-slug

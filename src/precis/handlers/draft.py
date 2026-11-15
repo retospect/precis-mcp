@@ -6405,6 +6405,7 @@ class DraftHandler(Handler):
         out.extend(hub_posture)
 
         out.extend(self._hygiene_drift_lines(ref_id, limit=limit))
+        out.extend(self._hygiene_condition_lines(ref_id, limit=limit))
 
         # A figure caption's ``Reproduced from [pc…]`` credits an image's
         # source; it is not a claim, so no hub can stand in for it. Those
@@ -6971,6 +6972,48 @@ class DraftHandler(Handler):
             out.append(
                 f"ℹ {unstamped} cite(s) to a claim hub predate version pinning "
                 "(stamped before this check existed) — drift status unknown."
+            )
+        return out
+
+    def _hygiene_condition_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
+        """Warn-only: bullets citing a claim hub whose title omits must-state
+        conditions (:func:`~precis.draft.lint.find_condition_gap_cites`,
+        docs/backlog/claim-conditions-completeness.md). One summary line
+        (hubs and bullets per family), then one ``⚠ conditions:`` line per
+        bullet; ``limit`` caps the per-bullet lines with a ``view='hygiene'``
+        pointer, ``None`` lists all. ``[]`` when nothing is flagged."""
+        cites = _draft_lint.find_condition_gap_cites(self.store, ref_id)
+        if not cites:
+            return []
+        fam_hubs: dict[str, set[int]] = {}
+        fam_bullets: dict[str, set[int]] = {}
+        for c in cites:
+            fam = c.gaps[0].family
+            fam_hubs.setdefault(fam, set()).add(c.hub_ref_id)
+            fam_bullets.setdefault(fam, set()).add(c.chunk_id)
+        per_family = ", ".join(
+            f"{fam}: {len(fam_hubs[fam])} hub(s)/{len(fam_bullets[fam])} bullet(s)"
+            for fam in sorted(fam_hubs)
+        )
+        all_hubs = {c.hub_ref_id for c in cites}
+        all_bullets = {c.chunk_id for c in cites}
+        out = [
+            f"⚠ conditions: {len(all_bullets)} bullet(s) cite {len(all_hubs)} "
+            f"claim hub(s) whose statement omits must-state conditions "
+            f"({per_family}). Fix: precis taproot conditions-sweep "
+            f"--draft {ref_id}; read the paper's Methods for the values."
+        ]
+        shown = cites if limit is None else cites[:limit]
+        for c in shown:
+            g = c.gaps[0]
+            out.append(
+                f"⚠ conditions: {c.dc} cites fi{c.hub_ref_id} ({g.family}): "
+                f"no {', '.join(g.missing)} — {g.hint}"
+            )
+        if limit is not None and len(cites) > limit:
+            out.append(
+                f"ℹ (+{len(cites) - limit} more — see get(kind='draft', "
+                "id=<slug>, view='hygiene') for the full list)."
             )
         return out
 

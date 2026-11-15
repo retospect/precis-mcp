@@ -448,6 +448,33 @@ def test_dispatch_succeeds_with_unsigned_hub_advisory_only(
     assert any("1 cited claim hub" in t for _k, t in ctx.events)
 
 
+def test_dispatch_conditions_gap_is_advisory_only(hub: Hub, monkeypatch: Any) -> None:
+    """A cite of a hub missing must-state conditions adds an advisory event;
+    the export still succeeds."""
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    _cite_hub_in_draft(
+        hub,
+        slug,
+        "DFT calculations show introducing Pd on Cu turns the *NOH to *NHOH "
+        "step from uphill 0.34 eV on Cu to downhill −0.17 eV on the Cu−Pd "
+        "heterojunction.",
+    )
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert not ctx.failures, ctx.failures
+    assert any(
+        "1 bullet(s) cite 1 claim hub(s)" in t and "conditions" in t
+        for _k, t in ctx.events
+    )
+
+
 def test_dispatch_resyncs_links_before_reading_edges(
     hub: Hub, monkeypatch: Any
 ) -> None:

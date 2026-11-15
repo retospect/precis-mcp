@@ -117,6 +117,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from precis.taproot.conditions import check_conditions
 from precis.taproot.numeral_audit import absent_numerals
 
 __all__ = [
@@ -1520,6 +1521,13 @@ def lint_claim_sentence(
             "otherwise a bare point beside a range reads as an invented "
             "midpoint. Advisory only -- this check has no access to the "
             "source and cannot confirm which case applies."
+        )
+
+    for gap in check_conditions(sentence):
+        warnings.append(
+            f"conditions-incomplete:{gap.family}: no {', '.join(gap.missing)} "
+            f"stated -- {gap.hint} Conditions the field assumes by default "
+            "stay implicit. Advisory only."
         )
 
     return warnings
