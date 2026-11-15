@@ -2876,6 +2876,7 @@ class TodoHandler(NumericRefHandler):
         id: str | int | None = None,
         args: dict[str, Any] | None = None,
         reason: str | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -2901,6 +2902,28 @@ class TodoHandler(NumericRefHandler):
         # seeded folders). The check is on key presence so adding
         # new builtins doesn't need a new guard.
         guards.check_not_builtin(self.store, ref_id)
+        # Mutation review (gr626866): the rely-side walk runs before the
+        # cascade retires anything.
+        deps = self.store.dependants(ref_id, limit=10)
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry run: would delete {self._sense()} id={ref_id} "
+                    "(nothing written)\n\n"
+                    + dependants_block(
+                        self.store,
+                        kind=self.kind,
+                        ref_id=ref_id,
+                        id_arg=str(ref_id),
+                        page=deps,
+                    )
+                )
+            )
         # Cascading soft delete: a live child under a deleted parent
         # is invisible to the nursery orphan walk (it needs a live
         # parent chain) yet rots forever as a stuck-doable leaf — the
@@ -2918,7 +2941,8 @@ class TodoHandler(NumericRefHandler):
                 payload={"reason": reason.strip()},
             )
         suffix = f" (+{n_desc} descendant todos)" if n_desc else ""
-        return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}")
+        line = dependants_summary(self.store, ref_id=ref_id, page=deps)
+        return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}\n{line}")
 
     # ── links view: synthesize the virtual parent edge ───────────
 

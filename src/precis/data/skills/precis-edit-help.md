@@ -239,6 +239,16 @@ edit(
 returns the post-edit region with `> ` markers. Validation gates run
 during dry-run, so you see whether the edit *would* validate.
 
+## Check dependants before a ref edit
+
+For store-backed kinds (`memory`, `finding`, `paper`), an `edit` dry-run
+appends a `## Dependants` block — the refs that rely on the target,
+walked to depth 2 — and the real ack ends with a `dependants: X shown
+of Y` line, marked `INCOMPLETE` when the walk was cut. Page the full
+set with `get(kind=..., id=N, view='dependants')`; an incomplete count
+is not "no dependants". Edits never refuse on dependants — the block
+is review surface, not a gate.
+
 ## When find= matches more than once
 ## Disambiguate an ambiguous match
 

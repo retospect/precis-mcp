@@ -56,6 +56,23 @@ row on a whole-draft delete, the chunk's `retired` event for one chunk;
 delete(kind="memory", id=42, reason="stale duplicate, folded into me77")
 ```
 
+## Check dependants before you delete
+
+`delete(kind=..., id=N, dry_run=True)` previews a soft-delete — nothing
+written — and ends with a `## Dependants` block: the refs that rely on
+the target (a hub that cites it, a draft grounded on it), walked
+depth-first to 2 hops and page-capped. The real delete's ack ends with
+a `dependants: X shown of Y` line that says `INCOMPLETE` when the walk
+was cut — an incomplete count is not "no dependants". Page the full
+set yourself:
+
+```python
+get(kind="memory", id=42, view='dependants', args={'depth': 2, 'limit': 25})
+```
+
+Deletion never refuses on dependants — the block is review surface,
+not a gate.
+
 ## Retire a memory without leaving stale claims behind
 
 Dry-run the delete, fix the listed nodes, then retire:

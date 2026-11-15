@@ -146,6 +146,7 @@ _FILLER_FIRST_LINE = re.compile(
 #: dispatch.
 _BASE_VIEWS: tuple[str, ...] = (
     "links",
+    "dependants",
     "log",
     "raw",
     "history",
@@ -1117,6 +1118,12 @@ class NumericRefHandler(Handler):
         # full — the follow-up the elision line prints when a top-level
         # meta value outgrows :data:`_RAW_META_ELIDE_CHARS`.
         meta_key: str | None = None,
+        # ``view='dependants'``'s walk args (gr626866):
+        # ``args={'depth'|'limit'|'cursor'}`` — named like the other
+        # view extras so the args-gate doesn't typo-refuse them.
+        depth: int | str | None = None,
+        limit: int | str | None = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         if (closed_since is not None or closed_until is not None) and not (
@@ -1141,6 +1148,17 @@ class NumericRefHandler(Handler):
                 next=(
                     f"get(kind={self.kind!r}, id=<id>, view='raw', "
                     f"args={{'meta_key': {meta_key!r}}})"
+                ),
+            )
+        if (depth is not None or limit is not None or cursor is not None) and (
+            view != "dependants" or isinstance(id, list)
+        ):
+            raise BadInput(
+                "args={'depth'|'limit'|'cursor'} bound a single-ref "
+                f"view='dependants' walk, not id={id!r} view={view!r}",
+                next=(
+                    f"get(kind={self.kind!r}, id=<id>, view='dependants', "
+                    "args={'depth': 2, 'limit': 25})"
                 ),
             )
         if isinstance(id, list):
@@ -1222,6 +1240,26 @@ class NumericRefHandler(Handler):
                     next=(
                         f"views available for {self.kind!r}: {', '.join(_BASE_VIEWS)}"
                     ),
+                )
+            if view == "dependants":
+                from precis.handlers._dependants_view import (
+                    render_dependants_view,
+                )
+
+                walk_args: dict[str, Any] = {}
+                if depth is not None:
+                    walk_args["depth"] = depth
+                if limit is not None:
+                    walk_args["limit"] = limit
+                if cursor is not None:
+                    walk_args["cursor"] = cursor
+                return render_dependants_view(
+                    self.store,
+                    kind=self.kind,
+                    sense=self._sense(),
+                    ref_id=ref.id,
+                    id_arg=str(ref.id),
+                    args=walk_args,
                 )
             if view == "links":
                 if rel is not None:
@@ -3846,6 +3884,7 @@ class NumericRefHandler(Handler):
         *,
         id: str | int,
         reason: str | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         """Soft-delete a numeric ref by id.
@@ -3860,8 +3899,11 @@ class NumericRefHandler(Handler):
         as a ``deleted`` ``ref_events`` row — the tombstone trail a
         later ``get``'s ``Gone`` reads to point at the survivor
         (gr503546).
+
+        ``dry_run=True`` previews the delete — nothing written — with
+        the Dependants block mutation review wants first (gr626866).
         """
-        return self._delete(id, reason=reason)
+        return self._delete(id, reason=reason, dry_run=dry_run)
 
     def tag(  # type: ignore[override]
         self,
@@ -4524,7 +4566,13 @@ class NumericRefHandler(Handler):
                 ) from None
             raise
 
-    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
+    def _delete(
+        self,
+        id: str | int | None,
+        *,
+        reason: str | None = None,
+        dry_run: bool = False,
+    ) -> Response:
         if id is None:
             raise BadInput(
                 "delete requires id=",
@@ -4532,10 +4580,34 @@ class NumericRefHandler(Handler):
             )
         ref_id = self._coerce_id(id)
         self._resolve_ref_for_delete(ref_id)
+        # Mutation review (gr626866): who relies on this ref — computed
+        # before any write so a delete that severs edges still reports
+        # what they fed.
+        deps = self.store.dependants(ref_id, limit=10)
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry run: would delete {self._sense()} id={ref_id} "
+                    "(nothing written)\n\n"
+                    + dependants_block(
+                        self.store,
+                        kind=self.kind,
+                        ref_id=ref_id,
+                        id_arg=str(ref_id),
+                        page=deps,
+                    )
+                )
+            )
         with self.store.tx() as conn:
             self._record_delete_reason(ref_id, reason, conn=conn)
             self.store.retire_ref(ref_id, conn=conn)
-        return Response(body=f"deleted {self._sense()} id={ref_id}")
+        line = dependants_summary(self.store, ref_id=ref_id, page=deps)
+        return Response(body=f"deleted {self._sense()} id={ref_id}\n{line}")
 
     def _record_delete_reason(
         self, ref_id: int, reason: str | None, *, conn: Connection
@@ -4912,6 +4984,12 @@ class NumericRefHandler(Handler):
         ref_ids = self._coerce_ids(ids)
         lines: list[str] = []
         with self.store.atomic():
+            # Mutation review (gr626866): the per-id first line would drop
+            # the dependants block a dry-run preview appends and the
+            # summary line a real edit appends — carry them indented
+            # under the id's outcome line.
+            from precis.handlers._dependants_view import dependants_portion
+
             for rid in ref_ids:
                 handle = handle_registry.try_format(self.kind, rid) or str(rid)
                 try:
@@ -4924,6 +5002,7 @@ class NumericRefHandler(Handler):
                     exc.args = (exc.cause,)
                     raise
                 lines.append(f"{handle}: {resp.body.splitlines()[0]}")
+                lines.extend(f"  {l}" for l in dependants_portion(resp.body))
         head = f"edited {len(ref_ids)} {self._sense()} in one transaction"
         return Response(body=head + "\n" + "\n".join(lines))
 

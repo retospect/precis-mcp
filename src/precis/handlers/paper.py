@@ -54,7 +54,7 @@ import re
 import shlex
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import psycopg
 
@@ -161,6 +161,9 @@ from precis.utils.title_merge import (
 from precis.utils.title_views import title_md, title_plain
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
+
+if TYPE_CHECKING:
+    from precis.store._dependants import DependantsPage
 
 log = logging.getLogger(__name__)
 
@@ -379,6 +382,7 @@ _SUPPORTED_VIEWS = (
     "comments",
     "retired",
     "tags",
+    "dependants",
     # ``status`` delegates to the same fetch-state table the batch get
     # and ``search(view='status', ids=[…])`` serve (gr635828).
     "status",
@@ -5585,6 +5589,70 @@ class PaperHandler(Handler):
         the change labels. Papers take none."""
         return []
 
+    def _dep_ref_id_for_edit(self, id: str | int) -> int | None:
+        """Best-effort ref_id for the pre-door dependants walk.
+
+        Doors like retire/merge/redirect legitimately target tombstones
+        and merge-alias spellings the live resolver refuses — the walk
+        still wants that ref's rely-side page (a tombstone's dependants
+        resolve fine). Only a spelling no ref answers yields ``None``;
+        the door's own, more specific error then stands alone.
+        """
+        try:
+            return self._resolve_paper_ref_id(id)
+        except (BadInput, Gone, NotFound):
+            pass
+        try:
+            if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
+                ref = self.store.fetch_refs_by_ids([int(id)], include_deleted=True).get(
+                    int(id)
+                )
+                return (
+                    ref.id if ref is not None and ref.kind == self.spec.kind else None
+                )
+            raw = _maybe_resolve_doi(self.store, str(id))
+            slug, _chunk_sel, _path_view = _parse_paper_id(raw, self.spec.kind)
+            ref = self.store.get_ref(kind=self.spec.kind, id=slug, include_deleted=True)
+            return ref.id if ref is not None else None
+        except (BadInput, Gone, NotFound):
+            return None
+
+    def _with_deps(
+        self,
+        ref_id: int | None,
+        id_arg: str,
+        resp: Response,
+        *,
+        dry: bool,
+        page: DependantsPage | None = None,
+    ) -> Response:
+        """Append the dependants surface (gr626866) to an edit response:
+        the ``## Dependants`` block on a dry-run preview, the one-line
+        ``dependants:`` summary on a real ack. ``ref_id``/``page`` are
+        pre-computed when the caller resolved before the write; a
+        ``None`` ``ref_id`` (unresolvable spelling) returns ``resp``
+        untouched."""
+        if ref_id is None:
+            return resp
+        from dataclasses import replace
+
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry:
+            block = dependants_block(
+                self.store,
+                kind=self.spec.kind,
+                ref_id=ref_id,
+                id_arg=id_arg,
+                page=page,
+            )
+            return replace(resp, body=f"{resp.body}\n\n{block}")
+        line = dependants_summary(self.store, ref_id=ref_id, page=page)
+        return replace(resp, body=f"{resp.body}\n{line}")
+
     def edit(  # type: ignore[override]
         self,
         *,
@@ -5781,33 +5849,44 @@ class PaperHandler(Handler):
                     next=f"make the {door} call alone, then edit the rest",
                 )
             reason = str(raw_args.get("reason") or _kw.get("reason") or "").strip()
+            # Resolve + walk before the door runs — a retire/merge leaves
+            # the caller's spelling unresolvable and migrates the edges
+            # the rely-side count reads (gr626866). Tombstone-tolerant:
+            # the door owns the live-target refusals.
+            dep_ref_id = self._dep_ref_id_for_edit(id)
+            dep_page = (
+                self.store.dependants(dep_ref_id, limit=10)
+                if dep_ref_id is not None
+                else None
+            )
+            resp: Response
             if door == "cite_key":
-                return self._rekey(
+                resp = self._rekey(
                     id, raw_args["cite_key"], reason=reason, dry=bool(dry_mode)
                 )
-            if door == "retire":
-                return self._retire_stub(
+            elif door == "retire":
+                resp = self._retire_stub(
                     id,
                     raw_args["retire"],
                     reason=reason,
                     dry=bool(dry_mode),
                     force=_args_truthy(raw_args.get("force")),
                 )
-            if door == "redirect_to":
-                return self._repoint_supersede(
+            elif door == "redirect_to":
+                resp = self._repoint_supersede(
                     id,
                     raw_args["redirect_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "merge_into":
-                return self._merge_duplicate_into(
+            elif door == "merge_into":
+                resp = self._merge_duplicate_into(
                     id,
                     raw_args["merge_into"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "drop_body":
+            elif door == "drop_body":
                 keep_raw = raw_args.get("keep_pdf")
                 keep_pdf = (
                     str(keep_raw).strip().lower() not in ("false", "0", "no", "")
@@ -5822,86 +5901,90 @@ class PaperHandler(Handler):
                         "{'drop_body': True, 'keep_pdf': True, 'pdf_sha256': "
                         f"'{raw_args['pdf_sha256']}', 'reason': '<why>'}})",
                     )
-                return self._drop_body(
+                resp = self._drop_body(
                     id,
                     reason=reason,
                     dry=bool(dry_mode),
                     keep_pdf=keep_pdf,
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "reextract":
-                return self._reextract(
+            elif door == "reextract":
+                resp = self._reextract(
                     id,
                     reason=reason,
                     dry=bool(dry_mode),
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "move_body_to":
-                return self._move_body_to(
+            elif door == "move_body_to":
+                resp = self._move_body_to(
                     id,
                     raw_args["move_body_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "move_pdf_to":
-                return self._move_pdf_to(
+            elif door == "move_pdf_to":
+                resp = self._move_pdf_to(
                     id,
                     raw_args["move_pdf_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "attach_pdf":
-                return self._attach_pdf(
+            elif door == "attach_pdf":
+                resp = self._attach_pdf(
                     id,
                     raw_args["attach_pdf"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "pdf_pointer":
-                return self._pdf_pointer(
+            elif door == "pdf_pointer":
+                resp = self._pdf_pointer(
                     id,
                     raw_args["pdf_pointer"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "split_body":
-                return self._split_body(
+            elif door == "split_body":
+                resp = self._split_body(
                     id,
                     raw_args["split_body"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "convert_to":
-                return self._convert_to(
+            elif door == "convert_to":
+                resp = self._convert_to(
                     id,
                     raw_args["convert_to"],
                     subtype=raw_args.get("subtype"),
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "drop_identifier":
-                return self._drop_identifier(
+            elif door == "drop_identifier":
+                resp = self._drop_identifier(
                     id,
                     raw_args["drop_identifier"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "move_identifier_to":
-                return self._move_identifier_to(
+            elif door == "move_identifier_to":
+                resp = self._move_identifier_to(
                     id,
                     raw_args["move_identifier_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "clear":
-                return self._clear_fields(
+            elif door == "clear":
+                resp = self._clear_fields(
                     id,
                     raw_args["clear"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            return self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
+            else:
+                resp = self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
+            return self._with_deps(
+                dep_ref_id, str(id), resp, dry=bool(dry_mode), page=dep_page
+            )
         ref_id = self._resolve_paper_ref_id(id)
         # gr514995: an explicit blank abstract used to be a silent no-op
         # (a *wrong* abstract had no removal door). Blank means "keep"
@@ -5940,8 +6023,13 @@ class PaperHandler(Handler):
                     "supplement_of= cannot be combined with other edit fields",
                     next="make the supplement_of= call alone, then edit the rest",
                 )
-            return self._declare_supplement(
-                ref_id, str(supplement_of).strip(), dry=bool(dry_mode)
+            return self._with_deps(
+                ref_id,
+                str(id),
+                self._declare_supplement(
+                    ref_id, str(supplement_of).strip(), dry=bool(dry_mode)
+                ),
+                dry=bool(dry_mode),
             )
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = normalize_authors(authors) if authors else None
@@ -6015,9 +6103,14 @@ class PaperHandler(Handler):
             and not arxiv_clear
         ):
             if extra_changes:
-                return Response(
-                    body=f"updated {self.spec.kind} id={ref_id}: "
-                    f"{', '.join(extra_changes)}."
+                return self._with_deps(
+                    ref_id,
+                    str(id),
+                    Response(
+                        body=f"updated {self.spec.kind} id={ref_id}: "
+                        f"{', '.join(extra_changes)}."
+                    ),
+                    dry=bool(dry_mode),
                 )
             raise BadInput(
                 f"edit(kind='{self.spec.kind}') needs at least one field to change",
@@ -6027,16 +6120,21 @@ class PaperHandler(Handler):
                 ),
             )
         if dry_mode:
-            return self._render_paper_dry_run(
+            return self._with_deps(
                 ref_id,
-                new_title=new_title,
-                year=year,
-                new_authors=new_authors,
-                meta_patch=meta_patch,
-                doi=doi if has_doi else None,
-                arxiv=arxiv if has_arxiv else None,
-                doi_clear=doi_clear,
-                arxiv_clear=arxiv_clear,
+                str(id),
+                self._render_paper_dry_run(
+                    ref_id,
+                    new_title=new_title,
+                    year=year,
+                    new_authors=new_authors,
+                    meta_patch=meta_patch,
+                    doi=doi if has_doi else None,
+                    arxiv=arxiv if has_arxiv else None,
+                    doi_clear=doi_clear,
+                    arxiv_clear=arxiv_clear,
+                ),
+                dry=True,
             )
         changed: list[str] = []
         identity_warnings = (
@@ -6163,7 +6261,7 @@ class PaperHandler(Handler):
             )
             if doi_warning:
                 body = f"{body}\n{doi_warning}"
-        return Response(body=body)
+        return self._with_deps(ref_id, str(id), Response(body=body), dry=False)
 
     def _clear_worker_stamps(
         self,
@@ -10495,6 +10593,22 @@ class PaperHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             return render_links_view(self.store, ref, sense=self.spec.kind)
+
+        if view == "dependants":
+            # Mutation review (gr626866): who relies on this paper —
+            # the bounded rely-side walk every numeric-ref kind serves.
+            # ``id_arg`` echoes the caller's own address (slug or
+            # handle) so the printed continue-call pastes as-is.
+            from precis.handlers._dependants_view import render_dependants_view
+
+            return render_dependants_view(
+                self.store,
+                kind=self.spec.kind,
+                sense=self.spec.kind,
+                ref_id=ref.id,
+                id_arg=str(ref.slug or ref.id),
+                args=args,
+            )
 
         if view == "status":
             # "State of this paper" asked on the get verb — the same

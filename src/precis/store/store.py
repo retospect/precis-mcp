@@ -7,6 +7,7 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
 * :class:`precis.store._tags_ops.TagsMixin`               — three tag tables
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
+* :class:`precis.store._dependants.DependantsMixin`       — bounded rely-side walk (``dependants``)
 * :class:`precis.store._taxon_ops.TaxonMixin`             — taxon hierarchy traversal (recursive CTEs)
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
@@ -65,6 +66,7 @@ from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
 from precis.store._consideration_ops import ConsiderationMixin
+from precis.store._dependants import DependantsMixin
 from precis.store._draft_ops import DraftStore
 from precis.store._drive_state_ops import DriveStateMixin
 from precis.store._email_ops import EmailAccountMixin
@@ -134,6 +136,7 @@ class Store(
     TagsMixin,
     TaxonMixin,
     LinksMixin,
+    DependantsMixin,
     ConsiderationMixin,
     CacheMixin,
     IdentifiersMixin,

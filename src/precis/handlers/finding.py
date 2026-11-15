@@ -2216,6 +2216,38 @@ class FindingHandler(NumericRefHandler):
                     replace=True,
                 )
             resp = self._facts_note(resp, facts_deferred)
+        # Mutation review (gr626866): every edit preview carries the
+        # Dependants block; every real ack the one-line summary — the
+        # mutation surface never hides who relies on the edited hub.
+        if id is not None:
+            from dataclasses import replace
+
+            from precis.handlers._dependants_view import (
+                dependants_block,
+                dependants_summary,
+            )
+
+            dep_ref_id = _finding_edit._resolve_finding_ref_id(
+                self.store, kind=self.kind, raw_id=id
+            )
+            if normalize_dry_run(dry_run) is not None:
+                resp = replace(
+                    resp,
+                    body=resp.body
+                    + "\n\n"
+                    + dependants_block(
+                        self.store,
+                        kind=self.kind,
+                        ref_id=dep_ref_id,
+                        id_arg=str(id),
+                    ),
+                )
+            else:
+                resp = replace(
+                    resp,
+                    body=resp.body
+                    + f"\n{dependants_summary(self.store, ref_id=dep_ref_id)}",
+                )
         return resp
 
     def _refine_now(

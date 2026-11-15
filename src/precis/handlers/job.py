@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
+from psycopg import Connection
+
 from precis.errors import BadInput, Denied, NotFound
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
@@ -3898,7 +3900,13 @@ class JobHandler(NumericRefHandler):
 
     # ── retry: re-run a failed job via the parent todo ─────────────
 
-    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
+    def _delete(
+        self,
+        id: str | int | None,
+        *,
+        reason: str | None = None,
+        dry_run: bool = False,
+    ) -> Response:
         """Refuse to retire a live job: its worker keeps the reservation
         and executor, so the row would vanish while work still runs.
 
@@ -3910,49 +3918,89 @@ class JobHandler(NumericRefHandler):
         can't see a status the retire then makes stale (gr496191).
         """
         if id is None:
-            return super()._delete(id, reason=reason)
+            return super()._delete(id, reason=reason, dry_run=dry_run)
         job_id = self._coerce_id(id)
         # a missing / other-kind id falls through to the base refusal
         if self.store.get_ref(kind=self.kind, id=job_id) is None:
-            return super()._delete(id, reason=reason)
+            return super()._delete(id, reason=reason, dry_run=dry_run)
+        # Mutation review (gr626866): the rely-side walk runs before the
+        # write so the ack still reports what the severed edges fed.
+        deps = self.store.dependants(job_id, limit=10)
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry_run:
+            # The refusals precede the preview — "would delete" on a job
+            # the write path refuses is a false ack (review td681243).
+            with self.store.tx() as conn:
+                self._refuse_job_delete(job_id, conn=conn)
+            return Response(
+                body=(
+                    f"dry run: would delete {self._sense()} id={job_id} "
+                    "(nothing written)\n\n"
+                    + dependants_block(
+                        self.store,
+                        kind=self.kind,
+                        ref_id=job_id,
+                        id_arg=str(job_id),
+                        page=deps,
+                    )
+                )
+            )
         with self.store.tx() as conn:
             conn.execute(
                 "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE",
                 (job_id,),
             )
             self._record_delete_reason(job_id, reason, conn=conn)
-            status = _status_of(self.store.tags_for(job_id, conn=conn))
-            if status is not None and status not in _TERMINAL_STATUSES:
-                raise BadInput(
-                    f"job id={job_id} is STATUS:{status}; deleting a "
-                    "non-terminal job leaves its worker running",
-                    next=(
-                        # a queued job is never claimed, so cancel_requested
-                        # would strand it (gr494725): cancel it directly
-                        f"tag(kind='job', id={job_id}, add=['STATUS:cancelled']) "
-                        "- a queued job was never claimed; then delete"
-                        if status == "queued"
-                        else f"tag(kind='job', id={job_id}, "
-                        "add=['STATUS:cancel_requested']) to stop it, then "
-                        "delete once it is STATUS:cancelled"
-                    ),
-                )
-            meta_row = conn.execute(
-                "SELECT meta ? 'run_record' FROM refs WHERE ref_id = %s",
-                (job_id,),
-            ).fetchone()
-            if meta_row and meta_row[0]:
-                raise BadInput(
-                    f"job id={job_id} carries a pcb run record "
-                    "(meta.run_record) — the design-rerun archive "
-                    "(design-rerun-pull S1) lives on terminal job refs, "
-                    "so deleting it would reap a replayable run",
-                    next="keep it — the record is how an unchanged "
-                    "resubmit replays this run; if the run is wrong, "
-                    "re-run op='place' with changed params instead",
-                )
+            self._refuse_job_delete(job_id, conn=conn)
             self.store.retire_ref(job_id, conn=conn)
-        return Response(body=f"deleted {self._sense()} id={job_id}")
+        line = dependants_summary(self.store, ref_id=job_id, page=deps)
+        return Response(body=f"deleted {self._sense()} id={job_id}\n{line}")
+
+    def _refuse_job_delete(self, job_id: int, *, conn: Connection) -> None:
+        """The refusals a job delete must survive — a non-terminal
+        STATUS leaves its worker running; ``meta.run_record`` is the pcb
+        design-rerun archive.
+
+        The real delete calls this under the refs row's ``FOR UPDATE``
+        lock so the executor claim (``FOR UPDATE OF r SKIP LOCKED``)
+        cannot flip the status between check and retire (gr496191); the
+        dry-run preview calls it under a plain read snapshot — a status
+        that flips afterwards is simply re-checked at write time.
+        """
+        status = _status_of(self.store.tags_for(job_id, conn=conn))
+        if status is not None and status not in _TERMINAL_STATUSES:
+            raise BadInput(
+                f"job id={job_id} is STATUS:{status}; deleting a "
+                "non-terminal job leaves its worker running",
+                next=(
+                    # a queued job is never claimed, so cancel_requested
+                    # would strand it (gr494725): cancel it directly
+                    f"tag(kind='job', id={job_id}, add=['STATUS:cancelled']) "
+                    "- a queued job was never claimed; then delete"
+                    if status == "queued"
+                    else f"tag(kind='job', id={job_id}, "
+                    "add=['STATUS:cancel_requested']) to stop it, then "
+                    "delete once it is STATUS:cancelled"
+                ),
+            )
+        meta_row = conn.execute(
+            "SELECT meta ? 'run_record' FROM refs WHERE ref_id = %s",
+            (job_id,),
+        ).fetchone()
+        if meta_row and meta_row[0]:
+            raise BadInput(
+                f"job id={job_id} carries a pcb run record "
+                "(meta.run_record) — the design-rerun archive "
+                "(design-rerun-pull S1) lives on terminal job refs, "
+                "so deleting it would reap a replayable run",
+                next="keep it — the record is how an unchanged "
+                "resubmit replays this run; if the run is wrong, "
+                "re-run op='place' with changed params instead",
+            )
 
     def _wake_job(
         self,

@@ -609,6 +609,49 @@ def test_edit_batch_memory_replaces_bodies(hub: Hub) -> None:
         assert "the new body" in handler.get(id=rid).body
 
 
+def test_edit_batch_carries_dependants_lines(hub: Hub) -> None:
+    """Review td681243 / gr626866: the per-id first-line trim dropped
+    the ``dependants:`` ack every real edit appends — it now rides
+    indented under the id's outcome line."""
+    handler = MemoryHandler(hub=hub)
+    m1 = id_of(handler.put(text="first cited note").body)
+    m2 = id_of(handler.put(text="second uncited note").body)
+    dep = handler.store.insert_ref(
+        kind="finding", slug=None, title="claim relying on m1"
+    ).id
+    handler.store.add_link(src_ref_id=dep, dst_ref_id=m1, relation="cites")
+    body = handler.edit(id=_batch(m1, m2), mode="replace", text="new body").body
+    assert body.startswith("edited 2 memory in one transaction")
+    # the cited memory reports its dependant, the plain one reports 0 —
+    # neither line may silently vanish.
+    assert "dependants: 1 shown of 1" in body
+    assert "dependants: 0 shown of 0" in body
+
+
+def test_edit_batch_dry_run_keeps_dependants_block(hub: Hub) -> None:
+    """The batch's dry-run previews likewise carry their
+    ``## Dependants`` block, indented under each per-id outcome."""
+    handler = MemoryHandler(hub=hub)
+    m1 = id_of(handler.put(text="alpha one").body)
+    m2 = id_of(handler.put(text="alpha two").body)
+    dep = handler.store.insert_ref(
+        kind="finding", slug=None, title="claim relying on m1"
+    ).id
+    handler.store.add_link(src_ref_id=dep, dst_ref_id=m1, relation="cites")
+    body = handler.edit(
+        id=_batch(m1, m2),
+        mode="find-replace",
+        find="alpha",
+        text="omega",
+        dry_run=True,
+    ).body
+    assert body.count("## Dependants") == 2
+    assert f"fi{dep}" in body
+    # nothing written: the bodies keep their alpha
+    for rid in (m1, m2):
+        assert "alpha" in handler.get(id=rid).body
+
+
 def test_edit_batch_todo_retitles_all(hub: Hub) -> None:
     handler = TodoHandler(hub=hub)
     ids = [rid for i in range(2) if (rid := handler.put(text=f"batch todo {i}").ref_id)]

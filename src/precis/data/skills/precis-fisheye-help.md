@@ -280,6 +280,14 @@ not proof of absence. A second-hop group pools links from the whole
 direct ring: verify a member's provenance path before attributing it
 to the focus.
 
+For **mutation review** — "who relies on this ref before I edit or
+delete it" — `view='dependants'` is the paged answer, not the eye:
+`get(kind=..., id=N, view='dependants', args={'depth': 2, 'limit': 25})`
+lists rely-side refs (direct + transitive) with an explicit `complete` /
+`INCOMPLETE` footer and a `next:` cursor call. The fisheye rings stay
+the exploratory read — they fold at render caps and never claim a
+rely-side census.
+
 ## Read the same neighborhood in a browser
 
 `/eye/<handle>?extent=<rung>` renders the same text the `get` returns,

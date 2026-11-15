@@ -942,9 +942,12 @@ class MemoryHandler(NumericRefHandler):
     ) -> Response:
         # Log offsets count events, or payload characters when event_id
         # selects one event. Keep members' independent cursor contract.
-        if depth is not None and (view not in {"members", "toc"} or q is not None):
+        if depth is not None and (
+            view not in {"members", "toc", "dependants"} or q is not None
+        ):
             raise BadInput(
-                "depth= only applies to get(kind='memory', view='members' or 'toc')",
+                "depth= only applies to get(kind='memory', "
+                "view='members', 'toc' or 'dependants')",
                 next="get(kind='memory', id=N, view='members', args={'depth': 1})",
             )
         if any(v is not None for v in (hops, mermaid)) and (
@@ -963,10 +966,11 @@ class MemoryHandler(NumericRefHandler):
                 next="get(kind='memory', id=N, view='log', args={'offset': 0})",
             )
         if limit is not None and (
-            view not in {"log", "considerations"} or q is not None
+            view not in {"log", "considerations", "dependants"} or q is not None
         ):
             raise BadInput(
-                "limit= only applies to memory view='log' or 'considerations'",
+                "limit= only applies to memory view='log', 'considerations' "
+                "or 'dependants'",
                 next="get(kind='memory', id=N, view='log')",
             )
         if event_id is not None and (view != "log" or q is not None):
@@ -1193,6 +1197,11 @@ class MemoryHandler(NumericRefHandler):
             rel=rel,
             of_kind=of_kind,
             direction=direction,
+            # ``depth``/``limit`` are memory's own view args — forward them
+            # to the base only when the view is the dependants walk they
+            # actually bound (gr626866); every other view keeps them.
+            depth=depth if view == "dependants" else None,
+            limit=limit if view == "dependants" else None,
             **_kw,
         )
         if view is None and q is None and id is not None and not isinstance(id, list):
@@ -2379,6 +2388,20 @@ class MemoryHandler(NumericRefHandler):
                     lines.extend(f"- {title}" for title in finding.titles)
         return replace(ack, body=ack.body + "\n\n" + "\n".join(lines))
 
+    def _dependants_preview(self, ref_id: int) -> str:
+        """``## Dependants`` block for edit dry-runs (gr626866)."""
+        from precis.handlers._dependants_view import dependants_block
+
+        return dependants_block(
+            self.store, kind=self.kind, ref_id=ref_id, id_arg=str(ref_id)
+        )
+
+    def _dependants_ack(self, ref_id: int) -> str:
+        """The ``dependants: X shown of Y`` ack line (gr626866)."""
+        from precis.handlers._dependants_view import dependants_summary
+
+        return dependants_summary(self.store, ref_id=ref_id)
+
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Lead the create-ack trailer with the title/first-line convention,
         a duplicate-thread nudge when the new ``section:threads`` node's
@@ -2786,6 +2809,7 @@ class MemoryHandler(NumericRefHandler):
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
             if new_title is not None:
                 out += f". title now: {new_title!r}"
+            out += f"\n\n{self._dependants_ack(ref.id)}"
             return self._after_status_write(
                 ref.id,
                 meta_clean,
@@ -2831,6 +2855,7 @@ class MemoryHandler(NumericRefHandler):
         )
         if lead:
             body += f"\n\nhint: {lead}"
+        body += f"\n\n{self._dependants_ack(ref.id)}"
         body += render_next_section(link_hints(self, ref.id))
         return self._after_status_write(
             ref.id,
@@ -3436,8 +3461,11 @@ class MemoryHandler(NumericRefHandler):
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             if new_title is not None:
                 body += f"\n(title would become {new_title!r})"
+            resp_body = "\n".join(
+                [*header, "", body, "", self._dependants_preview(ref.id)]
+            )
             return self._with_shape_advisory(
-                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+                Response(body=resp_body), shape, dry_run=True
             )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
@@ -3484,6 +3512,7 @@ class MemoryHandler(NumericRefHandler):
         )
         if lead:
             ack += f"\n\nhint: {lead}"
+        ack += f"\n\n{self._dependants_ack(ref.id)}"
         ack += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
@@ -3567,8 +3596,11 @@ class MemoryHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            resp_body = "\n".join(
+                [*header, "", body, "", self._dependants_preview(ref.id)]
+            )
             return self._with_shape_advisory(
-                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+                Response(body=resp_body), shape, dry_run=True
             )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
@@ -3601,6 +3633,7 @@ class MemoryHandler(NumericRefHandler):
         )
         if lead:
             ack += f"\n\nhint: {lead}"
+        ack += f"\n\n{self._dependants_ack(ref.id)}"
         ack += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
@@ -3715,8 +3748,11 @@ class MemoryHandler(NumericRefHandler):
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             if new_title is not None:
                 body += f"\n(title would become {new_title!r})"
+            resp_body = "\n".join(
+                [*header, "", body, "", self._dependants_preview(ref.id)]
+            )
             return self._with_shape_advisory(
-                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+                Response(body=resp_body), shape, dry_run=True
             )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
@@ -3757,6 +3793,7 @@ class MemoryHandler(NumericRefHandler):
         )
         if lead:
             ack += f"\n\nhint: {lead}"
+        ack += f"\n\n{self._dependants_ack(ref.id)}"
         ack += render_next_section(link_hints(self, ref.id))
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
@@ -5044,6 +5081,14 @@ class MemoryHandler(NumericRefHandler):
             )
         ref_id = self._coerce_id(id)
         self._resolve_ref_for_delete(ref_id)
+        # Mutation review (gr626866): walk the rely-side graph before the
+        # retire tx severs/migrates its edges.
+        deps = self.store.dependants(ref_id, limit=10)
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
         with self.store.tx() as conn:
             row = conn.execute(
                 "SELECT retired_at, meta FROM refs WHERE ref_id = %s "
@@ -5079,7 +5124,17 @@ class MemoryHandler(NumericRefHandler):
                     f"; successor {successor_handle}" if successor_handle else ""
                 )
                 return Response(
-                    body=f"dry run: {verdict} memory id={ref_id}{replacement}\n{receipt}"
+                    body=(
+                        f"dry run: {verdict} memory id={ref_id}"
+                        f"{replacement}\n{receipt}\n\n"
+                        + dependants_block(
+                            self.store,
+                            kind=self.kind,
+                            ref_id=ref_id,
+                            id_arg=str(ref_id),
+                            page=deps,
+                        )
+                    )
                 )
             if blocked:
                 raise BadInput(
@@ -5136,7 +5191,10 @@ class MemoryHandler(NumericRefHandler):
                 else "no links to remove"
             )
         return Response(
-            body=f"deleted {self._sense()} id={ref_id} — {detail}\n{receipt}"
+            body=(
+                f"deleted {self._sense()} id={ref_id} — {detail}\n{receipt}\n"
+                + dependants_summary(self.store, ref_id=ref_id, page=deps)
+            )
         )
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
