@@ -4331,12 +4331,18 @@ def test_poll_worker_commit_mints_a_checked_land(seams: dict[str, Any]) -> None:
     assert seams["land_checked"] == [True]
 
 
-def test_poll_tests_not_run_marker_fails_the_gate(
+def test_poll_tests_not_run_marker_lands_checked(
     seams: dict[str, Any],
 ) -> None:
-    """gr595545 (review td655142): ``tests: NOT RUN — <why>`` on a code
-    run that left commits is a failed tests gate, not a checked land —
-    the every-run gate replaced the gr573563 checked-fallback."""
+    """gr674798: ``tests: NOT RUN — <why>`` on a code run that left
+    commits is an honest non-observation, not a refused receipt — the
+    sandbox that could not run a step no longer burns the retry
+    ladder. The gate reads unobservable, the run succeeds, and the
+    land mints ``checked`` — a request ``ship_flag`` honours as
+    ``--checked`` only when its spot selection allows, else the land
+    runs ``--quick`` and the release gate's CI supplies the suite
+    (gr599427; the gr573563 checked-fallback, restored for the
+    declared case)."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -4345,10 +4351,51 @@ def test_poll_tests_not_run_marker_fails_the_gate(
     _finish(handle, 0, json.dumps({"is_error": False, "result": result}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert seams["land_checked"] == [True]
+    assert "attempt:1" not in store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is None
+    assert rec["tests_observed"] is None
+    assert rec["gate_pass"] is True
+
+
+def test_poll_validate_not_run_marker_fails_the_gate(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr674798: the declaration reprieve is the code run's alone — a
+    validate run whose deliverable IS the test run still fails the
+    tests gate on ``tests: NOT RUN`` (review td655142). The
+    different-model pick is stood empty; the gate is what is under
+    test."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "validated: the fix holds\ntests: NOT RUN — no db",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert seams["lands"] == []
     assert pctx.failure is not None and "tests_ran" in pctx.failure
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    assert "STATUS:done" not in store.tag_strings(42)
     rec = pctx.meta_set["outcome"]
     assert rec["gates"]["tests_ran"] is False
     assert rec["gate_pass"] is False
@@ -7340,6 +7387,37 @@ def test_tests_ran_reads_the_last_marker(text: str | None, want: bool) -> None:
     marker says ``ran`` — the receipt the quick lane takes. No marker,
     ``not run`` or a red run all land checked."""
     assert run_slice.tests_ran(text) is want
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("Done.\ntests: NOT RUN — scripts/test cannot reach docker", True),
+        ("tests: not run — no docker socket", True),
+        ("tests: not-run — no docker", True),
+        ("tests: NOT RUN", True),
+        ("Done.\ntests: ran", False),
+        ("tests: red", False),
+        ("tests: FAILED — 2 errors", False),
+        # ``not`` must introduce ``run`` — other ``not`` words are not it
+        ("tests: not installed", False),
+        ("tests: nothing to run", False),
+        # the LAST marker decides, like tests_ran
+        ("tests: ran\ntests: NOT RUN — final gate", True),
+        ("tests: NOT RUN — first try\ntests: ran", False),
+        ("no marker at all", False),
+        (None, False),
+        ("", False),
+        ("tests:", False),
+        ("unrelated: not run", False),
+    ],
+)
+def test_tests_not_run_reads_the_last_marker(text: str | None, want: bool) -> None:
+    """gr674798: ``True`` only when the last ``tests:`` marker declares
+    ``NOT RUN`` — the honest non-observation a code run mints its land
+    ``checked`` for. No marker, a green receipt and a red run are all
+    ``False``."""
+    assert run_slice.tests_not_run(text) is want
 
 
 def _vendor_lane(

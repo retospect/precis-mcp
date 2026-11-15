@@ -242,6 +242,27 @@ def test_hard_gates_tests_ran_none_without_obligation() -> None:
     assert outcome.gate_pass(gates, denied=None, budget_note=None, test_failure=None)
 
 
+def test_hard_gates_tests_ran_none_on_declared_not_run() -> None:
+    """gr674798: ``tests_observed=None`` — the code run declared
+    ``tests: NOT RUN — <why>`` — records the tests gate as
+    unobservable, not failed: a sandbox that could not run a step is
+    no conviction; the land mints ``checked`` for the evidence —
+    honoured as ``--checked`` only when ``ship_flag``'s spot
+    selection allows, else the release gate's CI is the witness
+    (gr599427)."""
+    gates = outcome.hard_gates(
+        compiled=True,
+        is_error=False,
+        vanished=False,
+        num_turns=12,
+        max_turns=40,
+        tests_observed=None,
+        tests_expected=True,
+    )
+    assert gates["tests_ran"] is None
+    assert outcome.gate_pass(gates, denied=None, budget_note=None, test_failure=None)
+
+
 def test_hard_gates_cap_and_error_signals() -> None:
     gates = outcome.hard_gates(
         compiled=False,
@@ -1044,6 +1065,39 @@ def test_build_outcome_suspicious_cheap_flags() -> None:
         cost_usd=0.0,  # reported $0 against a $2.00 decile floor
     )
     assert "suspicious-cheap" in rec["review"]["reasons"]
+
+
+def test_build_outcome_records_the_not_run_tri_state() -> None:
+    """gr674798: the record keeps the tri-state — ``tests_observed``
+    ``None`` and the ``tests_ran`` gate ``None`` on a declared
+    ``tests: NOT RUN — <why>``, so the pass-rate table is not charged
+    a gate failure the run never owed."""
+    conn = _Conn([("SELECT count(*)", [(3,)])])
+    store = _Store(conn)
+    store.add(_Ref(1, "todo", {"auto_close": True}))
+    task = store.add(_Ref(2, "todo", {"task_class": "code"}, parent_id=1))
+    rec = outcome.build_outcome(
+        store,
+        job_id=99,
+        job_meta={"task_kind": "gripe.fix"},
+        todo_id=task.id,
+        handle={"started_at": "2026-11-20T00:00:00Z"},
+        exit_code=0,
+        is_error=False,
+        denied=None,
+        vanished=False,
+        budget_note=None,
+        test_failure=None,
+        tests_observed=None,
+        nothing=None,
+        clean=True,
+        max_turns=40,
+        cost_usd=0.5,
+        tests_expected=True,
+    )
+    assert rec["tests_observed"] is None
+    assert rec["gates"]["tests_ran"] is None
+    assert rec["gate_pass"] is True
 
 
 # ── verdict + rollups ─────────────────────────────────────────────

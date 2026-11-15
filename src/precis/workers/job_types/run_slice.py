@@ -5395,6 +5395,31 @@ def tests_ran(text: str | None) -> bool:
     return last is not None and last.group(1).lower() == "ran"
 
 
+#: The declared "could not run in this sandbox" receipt — the marker's
+#: ``tests: NOT RUN — <why>`` form; the gap between ``not`` and ``run``
+#: takes spaces, a hyphen or an em-dash (gr674798).
+_TESTS_NOT_RUN_RE = re.compile(r"\btests:\s*not[\s\-—]*run\b", re.IGNORECASE)
+
+
+def tests_not_run(text: str | None) -> bool:
+    """``True`` when the LAST ``tests:`` marker in ``text`` declares
+    ``NOT RUN`` — the session's explicit "this sandbox could not run
+    the step" receipt (gr674798). Same last-marker-wins read as
+    :func:`tests_ran`. Distinct from no marker at all: on a code run
+    the declaration is an honest non-observation the every-run gate
+    records as unobservable (``tests_observed=None``), so the run does
+    not burn the retry ladder; its land mints ``checked`` — honoured
+    as ``--checked`` only when ``ship_flag``'s spot selection allows,
+    else ``--quick`` leaves the suite to the release gate's CI
+    (gr599427). A marker-free hand-off still owes the receipt."""
+    if not text:
+        return False
+    last = None
+    for match in _TESTS_MARKER_RE.finditer(text):
+        last = match
+    return last is not None and _TESTS_NOT_RUN_RE.match(text, last.start()) is not None
+
+
 #: The ``compiled`` gate's probe: byte-compile the slice's changed
 #: ``.py`` files on the worker (gr595545 — review td655142: exit 0
 #: proved the session ended, not that its produce parses).
@@ -7121,6 +7146,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         summary.append(f"Tests: {test_failure}.")
     elif worker_tests_ran:
         summary.append("Tests: supplied acceptance tests passed on the worker.")
+    elif tests_not_run(result):
+        # gr674798: legible on the summary either way the rule lands —
+        # a code run's checked mint or a validate run's failed gate.
+        summary.append("Tests: session declared `tests: NOT RUN` (gr674798).")
     clean = (
         exit_code == 0
         and not is_error
@@ -7157,7 +7186,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     compiled = None
     corrected = False
     tests_expected = False
-    tests_observed = bool(worker_tests_ran or tests_ran(result))
+    tests_observed: bool | None = bool(worker_tests_ran or tests_ran(result))
     # ``ctx.meta`` is the claim-time snapshot: the usage this terminal
     # pass just stamped (claude's whole envelope lands only here —
     # ``num_turns`` included) is invisible to ``_job_num_turns`` unless
@@ -7184,6 +7213,18 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             # that left no commits owes none — the empty/no-commit
             # arms own that shape.
             tests_expected = bool(commits) and no_commit is None
+            if not tests_observed and tests_not_run(result):
+                # gr674798: a code run that declared ``tests: NOT RUN —
+                # <why>`` honestly reported its sandbox could not run
+                # a step — an unobservable gate (``None``), not the
+                # refused receipt a marker-free hand-off still fails
+                # on. Its evidence comes from the checked mint below —
+                # ``--checked`` when ``ship_flag``'s spot selection
+                # allows, else ``--quick`` and the release gate's CI
+                # run (gr599427). Only the code class may declare:
+                # a validate run's NOT RUN stays a failed gate — the
+                # test session's deliverable IS the test run.
+                tests_observed = None
         compiled = _compile_gate(tree, branch_paths)
         corrected = any(not p.startswith("tests/") for p in branch_paths or ())
         gates = _outcome.hard_gates(
@@ -7610,7 +7651,13 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         # checked when the worker committed the tree the builder left
         # or the hand-off carries no green marker. Supplied acceptance tests
         # cover the ask, not the impacted-test gate after a worker commit.
-        # ``--checked`` re-runs the impacted tests before land.
+        # ``--checked`` re-runs the impacted tests before land — but
+        # only when ``ship_flag``'s spot selection allows; a wider
+        # answer lands ``--quick`` and the release gate's CI run is
+        # the gate (gr599427).
+        # gr674798: a declared ``tests: NOT RUN — <why>`` reaches here —
+        # the code run's gate read it unobservable, not refused, so this
+        # checked mint asks for the run's missing test evidence.
         checked = (
             (committed is not None and committed.startswith(WORKER_COMMITTED))
             or not tests_ran(result)

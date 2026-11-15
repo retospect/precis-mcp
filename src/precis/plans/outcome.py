@@ -104,7 +104,7 @@ def hard_gates(
     vanished: bool,
     num_turns: int | None,
     max_turns: int | None,
-    tests_observed: bool,
+    tests_observed: bool | None,
     tests_expected: bool,
 ) -> dict[str, bool | None]:
     """The four cheap checks the spec names, as observed facts.
@@ -116,14 +116,27 @@ def hard_gates(
       failure; ``False`` is the lie this gate exists for: a session
       that reported done while its tree does not compile.
     * ``tests_ran`` — acceptance tests ran on the worker or the
-      session's own ``tests: ran`` marker. ``None`` when the run owed
-      no tests: a class outside :data:`TEST_EXPECTED_CLASSES` (a
+      session's own ``tests: ran`` marker. ``tests_observed`` is
+      tri-state (gr674798): ``True`` the receipt says ran; ``False``
+      no receipt at all — the owed marker was never honoured, a
+      failure; ``None`` the session DECLARED ``tests: NOT RUN —
+      <why>``, an honest non-observation in a sandbox that could
+      not run the step, so the gate records ``None`` (not
+      observable). The land mints ``checked`` for the evidence —
+      a request ``ship_flag`` honours as ``--checked`` only when
+      its spot selection allows, else the land runs ``--quick``
+      and the release gate's CI supplies the suite (gr599427).
+      ``None`` is also the gate's answer when the run owed no
+      tests: a class outside :data:`TEST_EXPECTED_CLASSES` (a
       review, a brief — recording False there would read as a gate
       failure it never owed), or a code run that left no commits —
       nothing to test. A code run that produced owes the receipt
       whether or not its ask named test paths (review td655142:
       the every-run gate; a later lander check is no substitute for
-      THIS run's evidence).
+      THIS run's evidence). The caller decides which runs may
+      declare: the poll maps NOT RUN to ``None`` on code runs only
+      — a validate run's NOT RUN stays ``False``; its deliverable
+      IS the test run.
     * ``no_exceptions`` — no adapter-reported error and the worktree
       did not vanish under the run.
     * ``within_step_cap`` — the session ended before ``max_turns``;
@@ -135,7 +148,11 @@ def hard_gates(
         within_cap = num_turns < max_turns
     return {
         "compiled": compiled,
-        "tests_ran": (bool(tests_observed) if tests_expected else None),
+        "tests_ran": (
+            (None if tests_observed is None else bool(tests_observed))
+            if tests_expected
+            else None
+        ),
         "no_exceptions": no_exceptions,
         "within_step_cap": within_cap,
     }
@@ -526,7 +543,7 @@ def build_outcome(
     vanished: bool,
     budget_note: str | None,
     test_failure: str | None,
-    tests_observed: bool,
+    tests_observed: bool | None,
     nothing: str | None,
     clean: bool,
     max_turns: int | None,
@@ -545,7 +562,10 @@ def build_outcome(
     probe); ``corrected`` says a test session left non-test changes
     over the code sibling's produce; ``tests_expected`` overrides the
     class-level obligation (a code run owes tests once it left
-    commits)."""
+    commits). ``tests_observed`` is the tri-state :func:`hard_gates`
+    documents — ``None`` is the declared ``tests: NOT RUN — <why>``
+    (gr674798), kept on the record as ``None``, not folded to
+    ``False``."""
     task_class = CODE_TASK_CLASS
     try:
         todo = store.get_ref(kind="todo", id=int(todo_id))
@@ -626,7 +646,7 @@ def build_outcome(
         "cost_usd": cost_usd,
         "wall_s": wall_s,
         "num_turns": num_turns,
-        "tests_observed": bool(tests_observed),
+        "tests_observed": (None if tests_observed is None else bool(tests_observed)),
         "tests_expected": tests_expected,
         "corrected": corrected,
         "at": _utcnow(),
