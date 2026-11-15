@@ -219,9 +219,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ancestor's, else :data:`DEFAULT_SCORE`, and a human-set ``prio``
    multiplies it (never the key). So a release-pass root stamped
    ``RELEASE_SCORE`` mints (and reaches the lanes) before a default
-   gripe build, whichever root is older. A run_slice whose brief file
-   set overlaps an in-flight land's is held until that land finishes
-   (td603849 — the ``_inflight_land_ids``/``_brief_file_sets`` check).
+   gripe build, whichever root is older. A build whose file set
+   overlaps a started, unlanded build's in any plan — building, held for
+   its pre-land review, or landing — is held until that one is on main
+   (td603849, widened 2026-11-15 — the ``_started_slices``/
+   ``_brief_file_sets`` check; a started build's files are its stamped
+   ``meta.branch_files`` plus its brief's).
    A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
@@ -3952,6 +3955,19 @@ def _node_repos(plan: _Plan, n: _Node) -> list[str]:
     return []
 
 
+def _node_repo(plan: _Plan, n: _Node) -> str:
+    """The one repo ``n`` builds in: its first governing ``repo:`` tag,
+    else the default repo."""
+    repos = _node_repos(plan, n)
+    return repos[0] if repos else _lanes.DEFAULT_REPO
+
+
+def _is_generator(n: _Node) -> bool:
+    """``n`` is a generator (triage, brief, reviewer, analyst): its session
+    commits nothing, so it neither holds nor waits in the overlap hold."""
+    return node_kind(n.meta) == "generator"
+
+
 def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
 
@@ -5668,17 +5684,66 @@ def _step_brief_holds(
             )
 
 
-def _inflight_land_ids(plan: _Plan) -> list[int]:
-    """Todo ids with a live ``land_slice`` job — the slices currently
-    landing (td603849)."""
-    return [
-        n.id
-        for n in plan.todos()
-        if any(
-            j.status not in _JOB_TERMINAL and j.meta.get("job_type") == "land_slice"
-            for j in plan.jobs(n)
+@dataclass(frozen=True)
+class _Started:
+    """A build whose work has started and not landed (the overlap hold's
+    blocker): ``state`` is ``landing``, ``in pre-land review`` or
+    ``building``; ``branch_files`` the paths its branch touched when it
+    last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
+    empty before then."""
+
+    state: str
+    branch_files: tuple[str, ...]
+
+
+def _started_slices(store: Any) -> dict[int, _Started]:
+    """Every build with started, unlanded work, factory-wide (td603849,
+    widened 2026-11-15 from in-flight lands): a live ``land_slice`` or
+    ``run_slice`` job, or a finished build held for its pre-land review
+    (``meta.pending_land``) — an hour of build plus review in which a
+    second slice editing the same file used to start on a main that
+    would not have the first. Generators (triage, brief, reviewer)
+    commit nothing and never count. One query, not the loaded plan: a
+    held build can sit outside the loaded subtrees."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH live AS (
+                SELECT j.parent_id, bool_or(j.meta->>'job_type' = 'land_slice')
+                       AS landing
+                  FROM refs j
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
+                   AND j.meta->>'job_type' = ANY(%s)
+                   AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%s))
+                 GROUP BY j.parent_id
+            )
+            SELECT r.ref_id, COALESCE(live.landing, FALSE),
+                   jsonb_typeof(r.meta->%s) = 'object', r.meta->%s
+              FROM refs r LEFT JOIN live ON live.parent_id = r.ref_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND NOT COALESCE(r.meta ? 'generate', FALSE)
+               AND (live.parent_id IS NOT NULL
+                    OR jsonb_typeof(r.meta->%s) = 'object')
+            """,
+            (
+                [DEFAULT_OP, "land_slice"],
+                sorted(_JOB_TERMINAL),
+                _templates.PENDING_LAND_KEY,
+                _templates.BRANCH_FILES_KEY,
+                _templates.PENDING_LAND_KEY,
+            ),
+        ).fetchall()
+    out: dict[int, _Started] = {}
+    for rid, landing, pending, files in rows:
+        state = (
+            "landing" if landing else "in pre-land review" if pending else "building"
         )
-    ]
+        paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
+        out[int(rid)] = _Started(state, paths)
+    return out
 
 
 def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
@@ -5871,33 +5936,52 @@ def _step_dispatch(
 ) -> None:
     if now is None:
         now = datetime.now(UTC)
-    held_ids = _inflight_land_ids(plan)
+    started = _started_slices(w.store)
     candidates = [
         n
         for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
         if _dispatchable(plan, n) and n.status == "open"
     ]
-    # td603849 file-overlap hold: a run_slice whose brief file set
-    # overlaps an in-flight land's scores below it until that land
-    # finishes — i.e. held this pass, never outranking the land (two
-    # slices rebuilding the same file re-conflicted at the mint-barrier
-    # land). The held land's own todo is never a candidate (it has a
-    # live job).
+    # td603849 file-overlap hold, widened 2026-11-15 (Reto: sequence the
+    # slices): a build whose files overlap a build that has STARTED and not
+    # landed — building, held for its pre-land review, or landing, in any
+    # plan — waits until that one is on main, so it is built on top of it
+    # instead of re-conflicting at its own land. Only started work holds,
+    # never another waiting candidate, so two candidates never hold each
+    # other; the started one always ends (lands or fails) and the hold
+    # lifts on the next tick. A started build's files are its branch's
+    # real diff when it has exited clean once, plus its brief's guess.
+    # Lands made from a human worktree are invisible here: those still
+    # meet the rebase brief at land time.
+    builds = [
+        n
+        for n in candidates
+        if _resolve_op(n)[0] == DEFAULT_OP and not _is_generator(n)
+    ]
     overlap_files = (
-        _brief_file_sets(w.store, held_ids + [n.id for n in candidates])
-        if held_ids
+        _brief_file_sets(w.store, list(started) + [n.id for n in builds])
+        if started and builds
         else {}
     )
-    held: dict[int, int] = {}
-    if held_ids:
-        held_sets = {i: overlap_files.get(i) or frozenset() for i in held_ids}
-        for n in candidates:
-            if _resolve_op(n)[0] != DEFAULT_OP:
-                continue
+    held: dict[int, tuple[int, frozenset[str]]] = {}
+    if overlap_files:
+        held_sets = {
+            i: (overlap_files.get(i) or frozenset())
+            | _dscore.brief_files("\n".join(s.branch_files))
+            for i, s in started.items()
+        }
+        for n in builds:
             mine = overlap_files.get(n.id) or frozenset()
-            for hid, hfiles in held_sets.items():
-                if hid != n.id and mine and mine & hfiles:
-                    held[n.id] = hid
+            if not mine:
+                continue
+            repo = _node_repo(plan, n)
+            for hid in sorted(held_sets):
+                other = plan.nodes.get(hid)
+                if other is not None and _node_repo(plan, other) != repo:
+                    continue
+                shared = mine & held_sets[hid]
+                if hid != n.id and shared:
+                    held[n.id] = (hid, shared)
                     break
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text. The
@@ -5922,10 +6006,16 @@ def _step_dispatch(
                 res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
                 continue
         if n.id in held:
+            hid, shared = held[n.id]
+            # Full paths read best; the basename/two-segment keys are
+            # the same files again.
+            named = sorted(p for p in shared if "/" in p) or sorted(shared)
             res.notes.append(
-                f"td{n.id}: file-overlap hold — brief names files in "
-                f"td{held[n.id]}'s in-flight land; scored below it until "
-                "that land finishes"
+                f"td{n.id}: file-overlap hold — waits on td{hid} "
+                f"({started[hid].state}): both touch "
+                f"{', '.join(f'`{p}`' for p in named[:3])}"
+                f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
+                "is on main"
             )
             continue
         job_type, params = _resolve_op(n)

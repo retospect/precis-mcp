@@ -1073,6 +1073,27 @@ def _land_params(
     return params
 
 
+#: Cap on the paths :func:`_stamp_branch_files` keeps: a sweeping slice
+#: past it already overlaps nearly everything it could hold.
+_BRANCH_FILES_CAP = 200
+
+
+def _stamp_branch_files(store: Any, todo_id: int, tree: Path) -> None:
+    """Stamp ``meta.branch_files`` — the paths the slice branch touched
+    against its land base — on a clean exit, for ``plan_dispatch``'s
+    overlap hold (:data:`~precis.plans.templates.BRANCH_FILES_KEY`). Best
+    effort: git unable to answer leaves the last stamp, and the hold falls
+    back to the brief's file guess."""
+    from precis.plans.templates import BRANCH_FILES_KEY
+
+    try:
+        paths = changed_paths(tree, _land_base(store, todo_id))
+        if paths is not None:
+            store.stamp_ref_meta(todo_id, {BRANCH_FILES_KEY: paths[:_BRANCH_FILES_CAP]})
+    except Exception:
+        log.warning("run_slice: branch_files stamp for td%d failed", todo_id)
+
+
 def _mint_land(
     ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
 ) -> int:
@@ -6939,6 +6960,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or not tests_ran(result)
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
+        _stamp_branch_files(ctx.store, todo_id, tree)
         # The pre-land review (its branch push needs the credential) is
         # precis-only until the repo reviewer exists (td659522 step 5).
         preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)

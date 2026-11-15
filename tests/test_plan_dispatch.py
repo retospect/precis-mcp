@@ -8350,6 +8350,90 @@ def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     assert any(f"td{clean.ids['task']}" in n for n in dispatched)
 
 
+def test_file_overlap_hold_waits_for_a_live_build_and_lifts_when_it_ends(
+    store: Store,
+) -> None:
+    """2026-11-15 (Reto: sequence the slices): a build still building —
+    not yet landing — holds an overlapping build in another plan, the
+    note names the blocker, its state and the shared file; once the
+    blocker's job ends the hold lifts on the next pass."""
+    building = _file_plan(store, "Rebuilt src/precis/workers/run_slice.py")
+    job = _slice_job(store, building.ids["task"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store, dry_run=True)
+    hold = [n for n in res.notes if "file-overlap hold" in n]
+    assert hold == [
+        f"td{waiting.ids['task']}: file-overlap hold — waits on "
+        f"td{building.ids['task']} (building): both touch "
+        "`workers/run_slice.py`; dispatches "
+        f"once td{building.ids['task']} is on main"
+    ]
+    _set_job_status(store, job, "failed")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+
+
+def test_file_overlap_hold_reads_a_held_builds_branch_files(store: Store) -> None:
+    """A finished build held for its pre-land review (``pending_land``) is
+    started work: its stamped ``branch_files`` — the real diff — hold a
+    build whose brief names one of them, though its own brief named
+    none."""
+    held = _file_plan(store, "Build the thing.")
+    task = held.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "pending_land": {"todo_id": task, "branch": f"slice/{task}"},
+            "branch_files": ["src/precis/plans/templates.py"],
+        },
+    )
+    _mark_done(store, task)
+    waiting = _file_plan(store, "Edit src/precis/plans/templates.py")
+    res = pd.run_pass(store, dry_run=True)
+    notes = "\n".join(res.notes)
+    assert (
+        f"td{waiting.ids['task']}: file-overlap hold — waits on td{task} "
+        "(in pre-land review)"
+    ) in notes
+
+
+def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
+    store: Store,
+) -> None:
+    """Only started work holds: two open builds naming the same file both
+    dispatch (neither has started), so the hold cannot deadlock."""
+    first = _file_plan(store, "Fix src/precis/workers/land_slice.py")
+    second = _file_plan(store, "Also src/precis/workers/land_slice.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    dispatched = "\n".join(n for n in res.notes if "would dispatch" in n)
+    assert f"td{first.ids['task']}" in dispatched
+    assert f"td{second.ids['task']}" in dispatched
+
+
+def test_file_overlap_hold_skips_generators(store: Store) -> None:
+    """A generator (triage, brief, reviewer) commits nothing: its live job
+    holds no build, and it is never held itself."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "gen",
+            "Triage it",
+            {"op": "run_slice", "generate": {"role": "triage", "from": "gr1"}},
+            body="Read src/precis/workers/run_slice.py",
+        )
+
+    gen = T._run(store, None, build)
+    _slice_job(store, gen.ids["gen"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any(
+        f"td{waiting.ids['task']}: file-overlap hold" in n for n in res.notes
+    )
+    assert pd._started_slices(store) == {}
+
+
 def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the table to the seed's codex and claude-sub lanes, the two
     vendors the review-vendor tests below were written against (the seed

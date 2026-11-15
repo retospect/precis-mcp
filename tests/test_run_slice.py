@@ -2467,6 +2467,28 @@ def test_review_target_names_followups_on_main(
     assert "not already fixed" not in target
 
 
+def test_stamp_branch_files_records_the_branch_diff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A clean exit stamps the branch's real file set for plan_dispatch's
+    overlap hold; git unable to answer leaves the last stamp in place."""
+    store = _Store()
+    store.add_todo(7, "Build it", body="Build.")
+    seen: list[str] = []
+
+    def fake_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
+        seen.append(base)
+        return ["src/a.py", "tests/test_a.py"]
+
+    monkeypatch.setattr(run_slice, "changed_paths", fake_paths)
+    run_slice._stamp_branch_files(store, 7, tmp_path)
+    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
+    assert seen == ["origin/main"]
+    monkeypatch.setattr(run_slice, "changed_paths", lambda tree, base="": None)
+    run_slice._stamp_branch_files(store, 7, tmp_path)
+    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
+
+
 def test_review_target_fetches_a_preland_branch_and_names_its_head(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
