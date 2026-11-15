@@ -60,6 +60,7 @@ scripts/mcp-image-refresh::wait_serving 1
 scripts/mcp-token-check::container_uid 1
 scripts/mcp_loadtest/harness.py::start_server 1
 scripts/mine-sessions/extract.py::_run_prod_psql 1
+scripts/near-dups::run 1
 scripts/pcb-batch-to-board::main 1
 scripts/pcb-snapshot::<module> 1
 scripts/precis-chat::castor_base 1
