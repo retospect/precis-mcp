@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from precis import settings as psettings
@@ -25,6 +26,7 @@ from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.utils import http as _http
 from precis.workers import factory_git as _fg
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_poll as rp
@@ -209,6 +211,64 @@ def test_mints_when_ahead_and_idle(
     calls = _fake_github(monkeypatch)
     again = rp.run_pass(store, repo=REPO, now=NOW)
     assert calls == [] and again.blocker == f"release-pass td{root} is open"
+
+
+@pytest.mark.parametrize("token_source", ["vault", "env", "missing"])
+def test_release_compare_with_exhausted_unauthenticated_budget(
+    store: Store, monkeypatch: pytest.MonkeyPatch, token_source: str
+) -> None:
+    """gr653626: a fresh pass opens even when anonymous reads get 403.
+
+    Exercise the actual compare and HTTP refusal path, rather than only
+    checking the headers on the release-ref listing.
+    """
+    token = "test-" + "release-credential"
+    if token_source == "env":
+        monkeypatch.setenv("GH_TOKEN", token)
+    elif token_source == "vault":
+        monkeypatch.setattr(_fg, "factory_git_token", lambda: token)
+    seen: list[str] = []
+
+    def send(
+        url: str, params: dict[str, Any], headers: dict[str, str]
+    ) -> httpx.Response:
+        seen.append(url)
+        if headers.get("Authorization") != f"Bearer {token}":
+            return httpx.Response(
+                403,
+                headers={
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Limit": "60",
+                    "X-RateLimit-Reset": "1794000000",
+                },
+                json={"message": "API rate limit exceeded"},
+            )
+        data: Any = []
+        if "/compare/prod..." in url:
+            data = {"status": "ahead", "ahead_by": 1, "behind_by": 0}
+        return httpx.Response(200, json=data)
+
+    monkeypatch.setattr(P, "_send", send)
+    monkeypatch.setattr(_http, "_take_token", lambda *a, **kw: None)
+    _http.reset_circuit()
+    try:
+        res = rp.run_pass(store, repo=REPO, now=NOW)
+    finally:
+        _http.reset_circuit()
+    assert seen[0] == f"{API}/compare/prod...{MAIN_SHA}"
+    if token_source == "missing":
+        assert res.minted is None
+        assert res.blocker is not None
+        assert "remaining=0 limit=60" in res.blocker
+        assert "reset=2026-11-06T21:20:00Z" in res.blocker
+        assert len(seen) == 1
+    else:
+        assert res.minted is not None, res.blocker
+        assert f"release-main:{MAIN_SHA[:12]}" in _tags(store, res.minted)
+        assert seen == [
+            f"{API}/compare/prod...{MAIN_SHA}",
+            f"{API}/git/matching-refs/heads/release/",
+        ]
 
 
 def test_a_merge_back_alone_mints_no_pass_a_real_land_after_it_does(
