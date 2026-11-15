@@ -465,6 +465,12 @@ def enter_rescue(
 # hand-worked node the dispatch tick could never mint for (gr659982),
 # and a live job parked on ``not_before`` — a run_slice outage park or
 # a land_slice deferral — whose owning poll owns the wake (gr643076).
+# The dispatcher's own deliberate silences are holds too (gr681342,
+# review td688453): a queued job the ``parent_not_paused`` gate refuses
+# (a ``_DOABLE_EXCLUSION_TAGS`` tag or a live ``claimed-by:`` lease on
+# the parent), the coordinator's ``hold:no-dispatch``, the td603849
+# file-overlap sequence, the free-failure backoff and a
+# ``child-failed:``-latched transient park's ``retry_after``.
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
@@ -966,9 +972,10 @@ def _lane_verdict(
     return f"no enabled lane fits {task_class}"
 
 
-#: How long past a dispatcher hold's end (free backoff, ``retry_after``)
-#: the node still reads as waiting: the tick runs about once a minute, so
-#: a node this far past its ready time with no job minted is a real stall.
+#: How long past a dispatcher hold's end (free backoff, a transient
+#: ``child-failed:`` park's ``retry_after``) the node still reads as
+#: waiting: the tick runs about once a minute, so a node this far past
+#: its ready time with no job minted is a real stall.
 #: The idle clock restarts at the hold's end with this window, not the
 #: 20-minute stage deadline (gr681342).
 DISPATCH_GRACE = timedelta(minutes=5)
@@ -987,17 +994,50 @@ def _retry_after(j: Any) -> datetime | None:
     return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
 
 
+def _transient_park(n: Any, jobs: list[Any]) -> tuple[datetime, str] | None:
+    """``(wake, reason)`` for ``n``'s ``child-failed:``-latched transient
+    park, or ``None``.
+
+    ``meta.retry_after`` binds ONLY this park — mirror of
+    :func:`precis.workers.sweeper._transient_retry_after`: every job a
+    live ``child-failed:<id>`` tag names must be one of the node's jobs
+    and carry the stamp; the wake is the latest of them, and one named
+    job without it returns to the exponential cool-down's rules. The
+    dispatch tick never reads the stamp — ``plan_dispatch._EXCLUSIONS``
+    drops ``child-failed:`` precisely so the tick owns plan retries —
+    so a bare ``retry_after`` on the newest job is no hold; honouring
+    one parked a genuinely stalled node for the stamp's whole horizon
+    (review td688453)."""
+    latched = [v for v in n.open_tags if v.startswith("child-failed:")]
+    if not latched:
+        return None
+    by_id = {j.id: j for j in jobs}
+    stamps: list[datetime] = []
+    for v in sorted(latched):
+        tail = v.split(":", 1)[1]
+        job = by_id.get(int(tail)) if tail.isdigit() else None
+        stamp = _retry_after(job) if job is not None else None
+        if stamp is None:
+            return None
+        stamps.append(stamp)
+    ids = [v.split(":", 1)[1] for v in sorted(latched)]
+    return max(stamps), f"retry_after on {', '.join(f'jo{i}' for i in ids)}"
+
+
 def _dispatcher_hold(
-    now: datetime, plan: Any, n: Any, newest: Any
+    now: datetime, plan: Any, n: Any, jobs: list[Any]
 ) -> tuple[datetime, str] | None:
     """``(ready time, reason)`` while the dispatcher is deliberately not
     minting for this node, or ``None``. Two holds: the free-failure
     backoff (:func:`plan_dispatch.free_backoff_ready_at`, the dispatch
-    step's own formula) and a ``retry_after`` on the newest job. The
-    later ready time wins, and a hold still counts for
-    :data:`DISPATCH_GRACE` after its end (the idle clock restarts there)."""
+    step's own formula) and a ``child-failed:``-latched transient park
+    (:func:`_transient_park`, the sweeper's own wake time — the only
+    place ``meta.retry_after`` binds). The later ready time wins, and a
+    hold still counts for :data:`DISPATCH_GRACE` after its end (the
+    idle clock restarts there)."""
     from precis.workers.job_types import plan_dispatch as pd
 
+    newest = jobs[-1] if jobs else None
     if newest is None:
         return None
     holds: list[tuple[datetime, str]] = []
@@ -1006,17 +1046,73 @@ def _dispatcher_hold(
         ready = pd.free_backoff_ready_at(newest.created_at, run)
         if ready is not None:
             holds.append((ready, f"free-backoff: '{free_reason}' x{run}"))
-    retry = _retry_after(newest)
+    retry = _transient_park(n, jobs)
     if retry is not None:
-        holds.append((retry, f"retry_after on jo{newest.id}"))
+        holds.append(retry)
     live = [h for h in holds if now < h[0] + DISPATCH_GRACE]
     return max(live, key=lambda h: h[0]) if live else None
 
 
-def _parent_gate_tag(n: Any) -> str | None:
+def _no_dispatch_hold(plan: Any, n: Any) -> str | None:
+    """``hold:no-dispatch`` on ``n`` or an ancestor — the coordinator's
+    park rides the whole subtree through the tick's exclusion walk
+    (``plan_dispatch._excluded``; gr645524). The reason names the tag's
+    holder."""
+    for node in (n, *plan.ancestors(n)):
+        if "hold:no-dispatch" in node.open_tags:
+            return "hold:no-dispatch" + (f" on td{node.id}" if node is not n else "")
+    return None
+
+
+def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
+    """The td603849 file-overlap hold's reason while a started, unlanded
+    build in the same repo touches a file this build's brief names —
+    ``_step_dispatch`` refuses the mint until the blocker is on main.
+    Same inputs as the dispatch step's ``held`` computation, evaluated
+    for this one candidate: only ``run_slice`` tasks wait (generators
+    commit nothing), a node never holds itself, and the blocker's
+    governing ``repo:`` must match."""
+    from precis.utils import dispatch_score as _dscore
+    from precis.workers.job_types import plan_dispatch as pd
+
+    if pd._resolve_op(n)[0] != pd.DEFAULT_OP or pd._is_generator(n):
+        return None
+    started = pd._started_slices(store)
+    started.pop(n.id, None)
+    if not started:
+        return None
+    files = pd._brief_file_sets(store, [n.id, *started])
+    mine = files.get(n.id) or frozenset()
+    if not mine:
+        return None
+    repo = pd._node_repo(plan, n)
+    for hid in sorted(started):
+        s = started[hid]
+        if s.repo != repo:
+            continue
+        shared = mine & (
+            (files.get(hid) or frozenset())
+            | _dscore.brief_files("\n".join(s.branch_files))
+        )
+        if not shared:
+            continue
+        named = sorted(p for p in shared if "/" in p) or sorted(shared)
+        return (
+            f"file-overlap hold — waits on td{hid} ({s.state}): both touch "
+            f"{', '.join(f'`{p}`' for p in named[:3])}"
+            f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
+            "is on main"
+        )
+    return None
+
+
+def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
     """The open tag on ``n`` that makes ``parent_not_paused`` refuse to
-    claim its jobs, or ``None`` (the shared ``_DOABLE_EXCLUSION_TAGS`` set;
-    a terminal parent is exempt, as in the gate itself, gr575883)."""
+    claim its jobs, or ``None`` — the shared ``_DOABLE_EXCLUSION_TAGS``
+    set plus a live ``claimed-by:`` lease (``ref_tags.expires_at`` in
+    the future, matching the clause's lease arm; an unstamped legacy
+    claim row does not gate). A terminal parent is exempt, as in the
+    gate itself (gr575883)."""
     from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 
     if n.status in TERMINAL_TODO_STATUSES:
@@ -1025,7 +1121,20 @@ def _parent_gate_tag(n: Any) -> str | None:
         for t in _DOABLE_EXCLUSION_TAGS:
             if v == t or (t.endswith(":") and v.startswith(t)):
                 return str(v)
-    return None
+    if not any(v.startswith("claimed-by:") for v in n.open_tags):
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+             WHERE rt.ref_id = %s AND t.namespace = 'OPEN'
+               AND t.value LIKE 'claimed-by:%%'
+               AND rt.expires_at IS NOT NULL AND rt.expires_at > %s
+             ORDER BY rt.expires_at DESC LIMIT 1
+            """,
+            (n.id, now),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def _stage_for(
@@ -1074,7 +1183,7 @@ def _stage_for(
                 f"job jo{live.id} parked until {_iso(parked_at)}{why}",
             )
         if live.status == "queued":
-            gate_tag = _parent_gate_tag(n)
+            gate_tag = _parent_gate_tag(store, now, n)
             if gate_tag is not None:
                 # The claim gate (``parent_not_paused``) refuses this job
                 # until the tag clears — its silence is the gate's, and
@@ -1102,6 +1211,17 @@ def _stage_for(
                 "stage review silent past its deadline",
             )
         return "stalled", "build", live, "stage build silent past its deadline"
+    tag_hold = _no_dispatch_hold(plan, n)
+    if tag_hold is not None:
+        # The coordinator's no-dispatch hold (or one on an ancestor) —
+        # the tick's first exclusion, before lanes or mints: the node's
+        # silence is the hold's (review td688453).
+        return "parked", "parked", j, f"waiting ({tag_hold})"
+    overlap = _overlap_hold(store, plan, n)
+    if overlap is not None:
+        # The td603849 sequence: a started, unlanded build owns the
+        # shared files first; the tick re-tries the mint every pass.
+        return "parked", "parked", j, f"waiting ({overlap})"
     job_type, params = pd._resolve_op(n)
     if job_type == pd.DEFAULT_OP:
         verdict = _lane_verdict(store, now, plan, n, params)
@@ -1109,7 +1229,7 @@ def _stage_for(
             if verdict.startswith("parked"):
                 return "parked", "parked", j, verdict
             return "stalled", "idle", j, verdict
-    hold = _dispatcher_hold(now, plan, n, j)
+    hold = _dispatcher_hold(now, plan, n, jobs)
     if hold is not None:
         ready, why = hold
         if ready > now:
