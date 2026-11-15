@@ -1641,6 +1641,25 @@ def _fetch_review_branch(branch: str) -> None:
         pass
 
 
+def _preland_head(branch: str) -> str | None:
+    """Fetch ``origin/main`` and ``origin/<branch>`` into the slice
+    checkout and return the branch head, ``None`` when unreadable
+    (gr681634). The worker fetches because a sandboxed reviewer lane
+    cannot write the checkout's ``FETCH_HEAD``: left to its own
+    ``git fetch`` it read whatever head this checkout last saw, and a
+    branch pushed from another clone was reviewed stale. A stale
+    ``origin/main`` would also widen the three-dot diff with main's own
+    commits once the branch is rebased past it."""
+    _fetch_review_branch("main")
+    _fetch_review_branch(branch)
+    try:
+        proc = _git(["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root())
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return None
+    head = proc.stdout.strip()
+    return head if proc.returncode == 0 and head else None
+
+
 def _review_target(store: Any, meta: Any) -> str | None:
     """What a reviewer judges, inlined so a lane without the precis MCP can
     review (td564019 cut 1): the reviewed todo's title, its newest
@@ -1707,12 +1726,21 @@ def _review_target(store: Any, meta: Any) -> str | None:
             else f"slice/{target_id}"
         )
         if pending:
+            head = _preland_head(branch)
             lines.append(
                 "Pre-land review (gr570506): nothing is on main yet — the "
-                f"diff is td{target_id}'s branch, pushed to origin. Run "
-                f"`git fetch -q origin`, then read `git diff origin/main..."
-                f"origin/{branch}`."
+                f"diff is td{target_id}'s branch, pushed to origin. This "
+                "checkout fetched it before your session started: read "
+                f"`git diff origin/main...origin/{branch}`. A `git fetch` "
+                "of your own may be refused by the sandbox; you do not "
+                "need one."
             )
+            if head:
+                lines.append(
+                    f"The branch head is `{head}`. If `git rev-parse "
+                    f"origin/{branch}` prints another sha, the checkout is "
+                    "stale: say so and judge nothing."
+                )
         else:
             lines.append(
                 f"td{target_id} has no `landed:` comment yet: nothing is on "

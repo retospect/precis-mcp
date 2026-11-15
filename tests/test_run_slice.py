@@ -2467,6 +2467,52 @@ def test_review_target_names_followups_on_main(
     assert "not already fixed" not in target
 
 
+def test_review_target_fetches_a_preland_branch_and_names_its_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr681634: a sandboxed reviewer lane cannot write the checkout's
+    ``FETCH_HEAD``, so its own ``git fetch`` fails and it reads the head
+    this checkout last saw. The worker fetches main and the held branch
+    before the session starts and names the head, so a stale checkout is
+    visible instead of reviewed. An unreadable head names none."""
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        meta={"pending_land": {"todo_id": 7, "branch": "slice/7"}},
+    )
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+    calls: list[list[str]] = []
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args[:1] == ["rev-parse"]:
+            return _proc("1075dbbc71144ae1d14630f3185a691ea543fc99\n")
+        return _proc()
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    fetched = [a[-1] for a in calls if a[:1] == ["fetch"]]
+    assert fetched == [
+        "+refs/heads/main:refs/remotes/origin/main",
+        "+refs/heads/slice/7:refs/remotes/origin/slice/7",
+    ]
+    assert "git diff origin/main...origin/slice/7" in target
+    assert "1075dbbc71144ae1d14630f3185a691ea543fc99" in target
+    assert "Run `git fetch" not in target
+
+    def no_ref(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return _proc("", rc=1) if args[:1] == ["rev-parse"] else _proc()
+
+    monkeypatch.setattr(run_slice, "_git", no_ref)
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "git diff origin/main...origin/slice/7" in target
+    assert "The branch head is" not in target
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
