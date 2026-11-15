@@ -195,8 +195,8 @@ def test_census_flags_leaderless_orphan(store, monkeypatch):
 
 def test_census_skips_leaderless_service_tree(store, monkeypatch):
     """The leaderless exception is narrow: EVERY reparented root member
-    must resolve to an init-managed service — a systemd unit whose main
-    pid died but whose service cgroup children survive."""
+    must itself be an init-managed service pid. Inherited service cgroup
+    membership alone does not qualify surviving children."""
     host = "census-h2d"
     rows = [
         _row(1011, 1009, 1, rss_mb=800.0),

@@ -339,8 +339,8 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
 # holder-host), a running job leased to this host
 # (``meta.compute_handle.pgid``/``pid``, ``meta.container``, or the
 # deterministic ``--name`` a job launcher stamps), or a declared standing
-# service — a group whose leader the *init system* manages (a systemd
-# ``*.service`` cgroup on Linux, the launchd domain roster on macOS), and
+# service — a group whose leader the *init system* manages (the systemd
+# unit's MainPID on Linux, the launchd domain roster on macOS), and
 # the census process's own ancestry. What matches nothing lands in
 # ``host_heartbeat.meta.unadmitted``; an entry's ``beats`` counts
 # consecutive beats seen, and nursery's ``unadmitted-load`` detector fires
@@ -512,7 +512,8 @@ def _process_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     :data:`CENSUS_CPU_MIN_AGE_S`. ``leader_pid``/``leader_ppid`` name the
     surviving leader (the member whose pid is the pgid) and its parentage;
     ``members`` maps each pid to its ppid. A group with no surviving
-    leader still returns — its member roots carry the parentage
+    leader still returns, using the oldest surviving member's age for
+    the CPU threshold — its member roots carry the parentage
     :func:`_declared_service_group` judges, so an orphaned workload can't
     evade by outliving its leader.
     """
@@ -536,10 +537,10 @@ def _process_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         g["members"][r["pid"]] = r["ppid"]
         g["rss_mb"] += r["rss_mb"]
         g["cpu"] += r["cpu"]
+        g["age_s"] = max(g["age_s"], r["age_s"])
         if r["pid"] == r["pgid"]:
             g["leader_pid"] = r["pid"]
             g["leader_ppid"] = r["ppid"]
-            g["age_s"] = max(g["age_s"], r["age_s"])
             g["comm"] = r["comm"]
     return [
         g
@@ -587,9 +588,10 @@ def _init_service(pid: int, launchd: set[int] | None) -> bool | None:
     """``pid`` is itself managed by the host init system — a declared
     service, not a workload reparented to init.
 
-    Linux reads ``/proc/<pid>/cgroup``: a spawned service lives in a
-    ``*.service`` cgroup while an orphaned workload keeps its session
-    cgroup, so the two distinguish even though both read ``ppid == 1``.
+    Linux uses ``/proc/<pid>/cgroup`` to identify the unit, then requires
+    systemd's ``MainPID`` to equal ``pid``. Cgroup membership is inherited
+    by worker children, including unadmitted orphans, so it proves no
+    service identity on its own. User units query the user manager.
     macOS checks the launchd domain roster snapshot (``launchd`` from
     :func:`_launchd_service_pids`, the caller's ``gui/<uid>`` domain —
     system daemons other domains run are outside it and fall back to
@@ -605,7 +607,37 @@ def _init_service(pid: int, launchd: set[int] | None) -> bool | None:
             )
         except OSError:
             return None
-        return ".service" in cgroup
+        units: list[str] = []
+        for line in cgroup.splitlines():
+            fields = line.split(":", 2)
+            if len(fields) == 3 and fields[1] in {"", "name=systemd"}:
+                units = [p for p in fields[2].split("/") if p.endswith(".service")]
+                break
+        if not units:
+            return False
+        user_manager = any(part.startswith("user@") for part in units[:-1])
+        try:
+            res = subprocess.run(
+                [
+                    "systemctl",
+                    *(["--user"] if user_manager else []),
+                    "show",
+                    "--property=MainPID",
+                    "--value",
+                    "--",
+                    units[-1],
+                ],
+                timeout=5,
+                **_PROBE_KW,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if res.returncode != 0:
+            return None
+        try:
+            return int(res.stdout.strip()) == pid
+        except ValueError:
+            return None
     if system == "Darwin":
         return None if launchd is None else pid in launchd
     return None
