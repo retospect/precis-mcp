@@ -1692,9 +1692,13 @@ def _paired_table(
     baseline: str,
     per_call: float,
     budget: float,
+    arms: Iterable[str],
 ) -> list[str]:
-    """The primary-metric table for one headline group: each arm against
-    ``baseline`` under ``cost = tokens + per_call x calls``."""
+    """The primary-metric table for one headline group: each arm in
+    ``arms`` — the report's whole arm set, not only this group's — against
+    ``baseline`` under ``cost = tokens + per_call x calls``. An arm with no
+    rows in the group still lists, every baseline task counting as
+    missing rather than the comparison silently dropping."""
     base = arms_rows.get(baseline, {})
     lines = [
         f"### Found within budget — {_group_label(group)} "
@@ -1704,8 +1708,10 @@ def _paired_table(
         "sign p | missing |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for arm in _arms_in_order(arms_rows):
-        p = paired_within_budget(arms_rows[arm], base, budget=budget, per_call=per_call)
+    for arm in arms:
+        p = paired_within_budget(
+            arms_rows.get(arm, {}), base, budget=budget, per_call=per_call
+        )
         name = f"{arm} (baseline)" if arm == baseline else arm
         lines.append(
             f"| {name} | {p['paired']} | {p['both']} | {p['arm_only']} | "
@@ -1801,12 +1807,22 @@ def _cost_block(results: Mapping[str, Any], *, baseline: str) -> list[str]:
     if not groups:
         return []
     budget = float(results["header"].get("token_budget") or TOKEN_BUDGET)
+    arms = arm_order(
+        row
+        for arms_rows in groups.values()
+        for tasks in arms_rows.values()
+        for row in tasks.values()
+    )
     out: list[str] = []
     for group, arms_rows in groups.items():
         out += [""] + _paired_table(
-            arms_rows, group, baseline=baseline, per_call=COST_PER_CALL,
+            arms_rows,
+            group,
+            baseline=baseline,
+            per_call=COST_PER_CALL,
             budget=budget,
-        )  # fmt: skip
+            arms=arms,
+        )
         out += [""] + _recall_cost_table(
             arms_rows, group, per_call=COST_PER_CALL, budget=budget
         )
