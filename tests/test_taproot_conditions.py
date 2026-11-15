@@ -485,3 +485,13 @@ def test_chemical_steps_need_no_potential() -> None:
         "step with ΔG = 0.62 eV on Cu(111)."
     )
     assert check_conditions(pds)[0].missing == ("potential",)
+
+
+def test_her_free_energy_is_the_neutral_descriptor() -> None:
+    for s in (
+        "DFT calculations on N-doped SiC nanotubes give the most favorable HER "
+        "Gibbs free energy change, ΔG = −0.072 eV.",
+        "Scandium vacancies in Sc2CF2/MoSTe optimize the DFT-computed hydrogen "
+        "evolution reaction free energy to −0.29 eV.",
+    ):
+        assert check_conditions(s) == [], s

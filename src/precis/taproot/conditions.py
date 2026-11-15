@@ -102,7 +102,10 @@ _STEP_CLAIM = re.compile(
 #: ΔG_H*, ΔG*H, ΔG(NO3*), "adsorption (free) energy": U = 0 V by convention.
 _ADSORPTION = re.compile(
     r"ΔG[\s_{(]*(abs|ads)|ΔG[\s_{(]*\*\s*[A-Za-z]|ΔG[\s_{(]*[A-Za-z][\w₀-₉]*\s*\*|ΔG[\s_{(]*H\b|"
-    r"adsorption (free )?energ|binding (free )?energ",
+    r"adsorption (free )?energ|binding (free )?energ|"
+    # The HER descriptor under its other names (ΔG_H*, 2026-11-15 dry run:
+    # fi349617 "HER Gibbs free energy change", fi349666).
+    r"\bHER (Gibbs )?free[- ]energ|hydrogen evolution (reaction )?(Gibbs )?free[- ]energ",
     _I,
 )
 #: Charged adsorbates: the free energy depends on potential (electron transfer).

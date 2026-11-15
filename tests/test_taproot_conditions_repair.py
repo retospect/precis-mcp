@@ -183,7 +183,10 @@ def test_unexplained_insertion_is_rejected(store: Any) -> None:
 
 
 def test_not_reported_adds_the_marker_in_code(store: Any, tmp_path: Any) -> None:
-    hub = _hub(store, methods=None)
+    # Methods text is held (so absence is evidence) but names no condition.
+    hub = _hub(
+        store, methods="The working electrode was Cu foil in a two-compartment cell."
+    )
     out = tmp_path / "o.jsonl"
 
     def fn(cand: Any, paper_text: str) -> dict[str, Any]:
@@ -197,6 +200,19 @@ def test_not_reported_adds_the_marker_in_code(store: Any, tmp_path: Any) -> None
     assert check_conditions(title) == []
     (row,) = _rows(out)
     assert row["status"] == "not-reported" and row["added"] == []
+
+
+def test_not_reported_without_methods_text_is_ambiguous(store: Any) -> None:
+    """Absence proves nothing when the paper's methods are not held
+    (fi348800, 2026-11-15)."""
+    hub = _hub(store, methods=None)
+
+    def fn(cand: Any, paper_text: str) -> dict[str, Any]:
+        return {"verdict": "not_reported", "reason": "methods not in excerpts"}
+
+    summary = run_conditions_sweep(store, apply=True, propose_fn=fn)
+    assert summary["counts"] == {"ambiguous": 1}
+    assert _title(store, hub) == OLD
 
 
 def test_ambiguous_writes_nothing(store: Any, tmp_path: Any) -> None:

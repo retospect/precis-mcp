@@ -403,6 +403,7 @@ def build_context(
     chunks, abstracts = paper_chunks(store, papers)
     sizes = heading_sizes(chunks)
     rx = _keyword_rx(cand.gap.family, cand.gap.missing)
+    dft = cand.gap.family.startswith("dft")
     blocks: list[str] = []
     for i, paper in enumerate(papers, 1):
         pick = _Picker(per_paper)
@@ -423,10 +424,15 @@ def build_context(
             )
             score = len(rx.findall(_fold_keep_len(c.text)))
             is_methods = tier == TIER_METHODS
-            if score or is_methods:
-                # keyword hits in a methods chunk first, then hits
-                # elsewhere, then methods chunks with none.
-                rank = 0 if (score and is_methods) else 1 if score else 2
+            # A DFT claim's potential lives in the computational details,
+            # which rarely say "V vs RHE": show that chunk first.
+            comp = dft and bool(_COMPUTATIONAL_METHODS.search(c.text))
+            if score or is_methods or comp:
+                # computational details (dft), then keyword hits in a
+                # methods chunk, then hits elsewhere, then methods chunks.
+                rank = (
+                    -1 if comp else 0 if (score and is_methods) else 1 if score else 2
+                )
                 ranked.append((rank, -score, c.ord, c))
         for _, _, _, c in sorted(ranked, key=lambda t: t[:3]):
             pick.take(c.chunk_id, _window(c.text, rx))
@@ -707,6 +713,38 @@ def _keyword_hits(
     return hits
 
 
+#: Computational-details markers: a DFT paper whose held text has none of
+#: these never showed its methods, so a missing potential proves nothing.
+_COMPUTATIONAL_METHODS = re.compile(
+    r"\bVASP\b|Quantum ESPRESSO|\bGPAW\b|\bCP2K\b|Gaussian ?\d\d|\bPBE\b|\bRPBE\b|"
+    r"\bBEEF|\bHSE06\b|\bB3LYP\b|projector[- ]augmented|cut-?off energy|"
+    r"k-point|Monkhorst|generalized gradient approximation|\bGGA\b",
+    re.IGNORECASE,
+)
+#: Experimental-section markers for measured families.
+_EXPERIMENTAL_METHODS = re.compile(
+    r"working electrode|counter electrode|reference electrode|electrochemical "
+    r"(measurements|tests|experiments) were|electroly[sz]is (was|were)|"
+    r"potentiostat|electrochemical workstation|H-type cell|flow cell|"
+    r"Xe lamp|photocatalytic (tests|experiments|activity) (was|were)|"
+    r"fixed[- ]bed|quartz (tube )?reactor|mass flow",
+    re.IGNORECASE,
+)
+
+
+def _methods_present(store: Store, cand: ConditionsCandidate) -> bool:
+    """Whether any evidence paper's held body text includes its methods
+    (computational for ``dft-*`` families, experimental otherwise)."""
+    rx = (
+        _COMPUTATIONAL_METHODS
+        if cand.gap.family.startswith("dft")
+        else _EXPERIMENTAL_METHODS
+    )
+    papers = list(dict.fromkeys(p for p, _, _ in cand.evidence))
+    chunks, _ = paper_chunks(store, papers)
+    return any(rx.search(c.text) for c in chunks)
+
+
 def _with_marker(old: str, names: Sequence[str]) -> str:
     """``old`` with the "not reported" marker before its terminal period."""
     body = old.rstrip()
@@ -796,6 +834,20 @@ def _conditions_one(
                     "ambiguous",
                     verdict=verdict,
                     reason=f"paper mentions {', '.join(hit)} terms; human check",
+                ),
+                1,
+            )
+        if not _methods_present(store, cand):
+            # Absence is only evidence when the methods text is held: a
+            # paper without it in the corpus cannot show "not reported"
+            # (2026-11-15 dry run, fi348800: "the computational methods
+            # section is not included in the provided excerpts").
+            return (
+                row(
+                    "ambiguous",
+                    verdict=verdict,
+                    reason="no methods text held for the paper; not-reported "
+                    "cannot be shown",
                 ),
                 1,
             )
