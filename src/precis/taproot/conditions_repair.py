@@ -304,13 +304,18 @@ _MINUS_TRANS = str.maketrans(
 )
 _WS_RE = re.compile(r"\s+")
 _VERSUS_RE = re.compile(r"\bversus\b|\bvs\.", re.IGNORECASE)
+# TeX markup in parsed papers: ``$\text{Na}_2\text{SO}_4$`` folds to
+# ``Na2SO4`` (2026-11-15 apply: two valid electrolyte adds rejected).
+_TEX_CMD_RE = re.compile(r"\\[A-Za-z]+")
+_TEX_SCRIPT_RE = re.compile(r"[_^](?=[{\w+\-−])")
 
 
 def _fold(text: str) -> str:
     """NFKC (``K₂SO₄`` to ``K2SO4``), unicode minus/dashes to ``-``,
     whitespace collapsed, casefolded. Applied to both sides of every
     comparison, so it only makes two spellings of one thing equal."""
-    out = unicodedata.normalize("NFKC", text).translate(_MINUS_TRANS)
+    out = _TEX_SCRIPT_RE.sub("", _TEX_CMD_RE.sub("", text))
+    out = unicodedata.normalize("NFKC", out).translate(_MINUS_TRANS)
     out = _VERSUS_RE.sub("vs", out)
     return _WS_RE.sub(" ", out).strip().casefold()
 

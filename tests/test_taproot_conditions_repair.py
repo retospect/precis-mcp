@@ -565,3 +565,23 @@ def test_quote_with_markdown_and_tex_markup_validates() -> None:
     ]
     failed, details = validate_add(old, new, added, paper, missing=("potential",))
     assert "quote-mismatch" not in failed, details
+
+
+def test_tex_subscript_formula_quote_validates() -> None:
+    """``$\\text{Na}_2\\text{SO}_4$`` in the parsed paper is the same text
+    as ``Na₂SO₄`` / ``Na2SO4`` (fi348676/fi348677, 2026-11-15 apply)."""
+    from precis.taproot.conditions_repair import validate_add
+
+    old = "Co3O4 nanosheets reach an NH3 Faradaic efficiency of 90% at −0.6 V vs RHE."
+    paper = (
+        "Electrochemical tests were performed in 0.5 M  $\\text{Na}_2\\text{SO}_4$ "
+        " with or without  $\\text{NO}_2^-$ at −0.6 V vs RHE."
+    )
+    quote = "in 0.5 M  $\\text{Na}_2\\text{SO}_4$"
+    for spelled in ("Na₂SO₄", "Na2SO4"):
+        new = old[:-1] + f" in 0.5 M {spelled}."
+        added = [
+            {"condition": "electrolyte", "text": f"in 0.5 M {spelled}", "quote": quote}
+        ]
+        failed, details = validate_add(old, new, added, paper, missing=("electrolyte",))
+        assert failed == [], details
