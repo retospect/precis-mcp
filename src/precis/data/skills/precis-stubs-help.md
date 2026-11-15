@@ -149,7 +149,7 @@ lit-fetch — instead wait their ranked turn, and their re-requests
 stay under the 24 h re-stamp guard.) A fetch pass whose legs were
 refused by our own limiter or a provider's breaker
 (`rate_limited`/`circuit_open`/`provider_wait`) doesn't count toward
-the fetch backoff — only real provider answers do. An identifier no resolver knows — S2, plus Crossref/DataCite for
+the fetch backoff — only real provider answers do. An identifier no resolver knows — S2, plus Crossref/DataCite/JaLC for
 a DOI — is rejected up front (pass
 `verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no
@@ -175,6 +175,10 @@ cached, so a topic never `get`-searched before returns nothing.
 `reach=` (patent/EDGAR's local-vs-remote knob) has no effect here — it's
 silently swallowed like any unhonoured kwarg — so this *is* the
 local-cache-only leg; `get` is the only way to reach S2 live.
+
+The full title/byline/abstract → verified-publication ladder (when a
+plain S2 search misses or false-positives) is
+[[precis-identify-publication-help]].
 
 ## What don't we have yet, on this topic?
 
@@ -228,5 +232,6 @@ id='pa<N>')`, which shows the status on the ref.
 ## See also
 
 - [[precis-paper-help]] — read, cite, search held papers (+ S2 nav)
+- [[precis-identify-publication-help]] — abstract/byline/citation to a verified manuscript
 - [[precis-finding-help]] — chasing un-ingested DOIs
 - [[precis-search-help]] — search args incl. view=

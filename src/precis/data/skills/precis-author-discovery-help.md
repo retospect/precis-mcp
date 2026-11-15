@@ -100,4 +100,5 @@ scoring heuristic, then promote to a recurring planner.
 
 - [[precis-orcid-help]] — the ORCID node + LLM-gated enqueue
 - [[precis-stubs-help]] — the stub → fetch pipeline
+- [[precis-identify-publication-help]] — identify the publication behind a citation
 - [[precis-decomposition-help]] — when to split / block / wait

@@ -230,7 +230,7 @@ def _s2_lookup(doi: str) -> dict[str, Any] | None:
 
 
 def _registry_lookup(doi: str) -> dict[str, Any] | None:
-    """Crossref/DataCite record for the DOI (propagates registry faults —
+    """Crossref/DataCite/JaLC record for the DOI (propagates registry faults —
     mirrors ``handlers.paper._lookup_doi_registry``; patched in tests)."""
     from precis import settings
     from precis.ingest.doi_registry import resolve_registry_doi

@@ -81,6 +81,9 @@ The string goes to Crossref's bibliographic query. Exactly one record
 matching every part of it (year, volume, first page, journal) is stubbed
 by its DOI. Anything weaker returns candidates with a `conf=` score and
 mints nothing; pick one and `put(kind="paper", doi="<its DOI>")`.
+Starting from something thinner — a conference title, byline or abstract
+fragment — the identification ladder lives in
+[[precis-identify-publication-help]].
 
 ## How do I get a paper's handle?
 
@@ -800,6 +803,7 @@ per hop.)
 - [[precis-overview]] — verbs and kinds
 - [[precis-search-help]] — search mechanics
 - [[precis-literature-search-help]] — the end-to-end lit-search procedure
+- [[precis-identify-publication-help]] — abstract/byline/citation to a verified manuscript
 - [[precis-relations]] — related-to, disputes between papers
 - [[precis-tags]] — axis vocabulary
 - [[precis-paper-tag-axes]] — paper-specific axes

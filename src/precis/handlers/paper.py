@@ -705,7 +705,7 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
 def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
     """DOI registration-agency fallback for a genuine S2 miss (gr486090).
 
-    Crossref then DataCite via :mod:`precis.ingest.doi_registry` — the
+    Crossref, DataCite, then JaLC via :mod:`precis.ingest.doi_registry` — the
     fetch goes through ``safe_get`` because the DOI is agent-supplied.
     Returns the normalized metadata dict or ``None`` when no registry
     knows the DOI. ``RegistryLookupError`` propagates so the caller can
@@ -723,7 +723,7 @@ def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
 #: Display names for the ``meta.source`` tags ``resolve_registry_doi``
 #: returns — surfaced in the acquire response so the caller can see
 #: which registry vouched for the DOI.
-_REGISTRY_LABELS = {"crossref": "Crossref", "datacite": "DataCite"}
+_REGISTRY_LABELS = {"crossref": "Crossref", "datacite": "DataCite", "jalc": "JaLC"}
 
 
 class PaperHandler(Handler):
