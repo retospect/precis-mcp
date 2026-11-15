@@ -54,7 +54,11 @@ pinned to that host the same way.
   re-cut and republish the same sha, so the same jobless run re-read as
   red every iteration until the cap. :func:`_infra_done` re-reads the
   run live instead: green now → record the green and close the fix
-  nodes moot; still red → fire ``gh run rerun`` once per run
+  nodes moot; the run's head not the current release head → superseded
+  (gr685062), no rerun and no park — close the fix nodes moot and
+  succeed, never firing a rerun that would cancel the live gate run on
+  the current head through the branch concurrency group; still red →
+  fire ``gh run rerun`` once per run
   (``--failed`` only when failed jobs exist — it cannot re-fire jobs
   that never concluded) and park on the rerun, so the loop waits
   without burning an iteration; a run that stays infra past
@@ -163,8 +167,10 @@ _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 #: changes the answer: status/conclusion (green now?), the jobs list
 #: (a jobless or skipped-only run is gr611682's startup failure) and the
 #: attempt counter (``attempt`` ≥ 2 means a rerun was already fired — by
-#: this node or by hand — so never fire another).
-_RUN_STATE_JSON = "status,conclusion,jobs,attempt"
+#: this node or by hand — so never fire another). ``headSha`` feeds the
+#: superseded guard (gr685062): the rerun may only fire when the run's
+#: head IS the current release head.
+_RUN_STATE_JSON = "status,conclusion,jobs,attempt,headSha"
 
 #: The digest node's once-per-run marker, ``meta.<key> = {run_id, at}``:
 #: a node that already fired ``gh run rerun`` for a run never fires it
@@ -602,7 +608,12 @@ def _infra_done(
     cap. The digest asks for the rerun once — ``gh run rerun``;
     ``--failed`` only when failed jobs exist but their logs are
     unreadable — and parks on it, so the loop waits without burning an
-    iteration. A run green now is recorded and the fix nodes close
+    iteration, and only when the run's head IS the current release head:
+    a superseded run (the branch moved) gets no rerun and no park — the
+    fix nodes close ``moot`` and the job succeeds (gr685062 — a rerun of
+    a superseded run cancels the live gate run through the branch
+    concurrency group); an unreadable release head parks, firing
+    nothing. A run green now is recorded and the fix nodes close
     moot; a run that stays infra past :data:`_PARK_CAP` fails the job —
     the tick retries within the node's retries, then files the
     coordinator ask."""
@@ -636,6 +647,41 @@ def _infra_done(
         )
         ctx.set_status("succeeded")
         return True
+    run_head = str((state or {}).get("headSha") or "").lower()
+    if run_head:
+        # gr685062: the rerun may only fire on the current release head.
+        # A superseded run (the release branch moved after this run
+        # started) gets no rerun — rerunning it cancels the live gate run
+        # on the current head through the branch concurrency group — and
+        # no park: the fix nodes close moot, the job succeeds.
+        head = _cvp.release_branch_head(ctx.store, rel)
+        if head is None:
+            return _park_for_run(
+                ctx,
+                handle,
+                run_id,
+                log_text,
+                waiting="the release head is unreadable for the superseded check",
+                stuck="the release head still unreadable for the superseded check",
+            )
+        if not (run_head.startswith(head) or head.startswith(run_head)):
+            old9, new9 = run_head[:9], head[:9]
+            for tid in targets:
+                _rs._append_comment(
+                    ctx.store,
+                    tid,
+                    f"moot: run {run_id} is at {old9}, release head is "
+                    f"{new9}; superseded",
+                )
+                _rs.close_todo(ctx.store, tid, None)
+            ctx.append_chunk(
+                "job_summary",
+                f"{NAME}: {rn} red at {sha9} (run {run_id}) is an infra red "
+                f"but the run's head {old9} is not the release head "
+                f"{new9} — superseded; no rerun, fix node(s) closed moot",
+            )
+            ctx.set_status("succeeded")
+            return True
     if int(handle.get("parks") or 0) >= _PARK_CAP:
         # Still nothing to digest after the whole wait: the infra
         # ruling is terminal.

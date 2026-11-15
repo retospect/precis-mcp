@@ -930,14 +930,14 @@ def record_ci_verdict(
     return f"ci verdict recorded: {sha[:9]} {verdict}"
 
 
-def newest_red_run(store: Store, sha: str) -> str | None:
+def newest_red_run_row(store: Store, sha: str) -> dict[str, Any] | None:
     """The newest ``release.ci_verdicts`` row on ``sha`` (the tests-green
-    gate's prefix match) that is red and carries a run id, else ``None``.
-    Shared by ``ci_red_digest`` (the run to digest) and ``ci_rerun`` (the
-    run whose failed legs a ``validated:`` non-repro re-fires once,
-    gr588028)."""
+    gate's prefix match) that is red and carries a run id, else ``None`` —
+    the full row; ``row['sha']`` is the run's head at verdict time, which
+    the rerun's superseded guard compares with the live release head
+    (gr685062)."""
     best: tuple[str, int] | None = None
-    run_id: str | None = None
+    best_row: dict[str, Any] | None = None
     for i, row in enumerate(read_ci_verdicts(store)):
         if row["verdict"] != "red":
             continue
@@ -946,8 +946,17 @@ def newest_red_run(store: Store, sha: str) -> str | None:
             continue
         key = (str(row.get("at") or ""), i)
         if best is None or key >= best:
-            best, run_id = key, rid
-    return run_id
+            best, best_row = key, row
+    return best_row
+
+
+def newest_red_run(store: Store, sha: str) -> str | None:
+    """The newest red verdict row's run id on ``sha``, else ``None``.
+    Shared by ``ci_red_digest`` (the run to digest) and ``ci_rerun`` (the
+    run whose failed legs a ``validated:`` non-repro re-fires once,
+    gr588028)."""
+    row = newest_red_run_row(store, sha)
+    return str(row["run_id"]).strip() if row else None
 
 
 def ci_rerun_fired(store: Store, run_id: str) -> bool:

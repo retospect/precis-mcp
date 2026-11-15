@@ -40,6 +40,12 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     psettings.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def _release_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The release branch head reads as the cut sha unless a test moves it."""
+    monkeypatch.setattr(cir._cvp, "fetch_head", lambda repo, branch: SHA)
+
+
 class Ctx:
     """The DispatchContext surface the op uses (test_release_ops' shape)."""
 
@@ -159,6 +165,39 @@ def test_submit_refuses_a_supplied_run_id(
     assert checkout["argv"] == []
     refusal = cir.validate_submit(store, params={"todo_id": it["fix"], "run_id": "77"})
     assert refusal is not None and "run_id is not accepted" in refusal
+
+
+def test_submit_refuses_a_superseded_run(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685062: the run newest_red_run picks must be at the current
+    release head — a moved head means the run is superseded: the job
+    fails with a superseded reason and launches no script (a rerun of a
+    superseded run cancels the live gate run through the branch
+    concurrency group)."""
+    _mint, it = _fix_plan(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    monkeypatch.setattr(cir._cvp, "fetch_head", lambda repo, branch: "f" * 40)
+    ctx = Ctx(store, {"todo_id": it["fix"]})
+    assert cir.submit(ctx, None) is None
+    assert "superseded" in ctx.failures[0]
+    assert SHA[:9] in ctx.failures[0]
+    assert checkout["argv"] == []
+
+
+def test_submit_fails_soft_when_the_release_head_is_unreadable(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685062: an unreadable release head means the superseded check
+    cannot run — the job fails soft (the plan tick retries) and fires
+    nothing."""
+    _mint, it = _fix_plan(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    monkeypatch.setattr(cir._cvp, "fetch_head", lambda repo, branch: None)
+    ctx = Ctx(store, {"todo_id": it["fix"]})
+    assert cir.submit(ctx, None) is None
+    assert "unreadable" in ctx.failures[0]
+    assert checkout["argv"] == []
 
 
 def test_submit_refuses_a_plan_without_release_meta(

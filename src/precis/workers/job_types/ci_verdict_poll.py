@@ -276,6 +276,28 @@ def fetch_head(repo: str, branch: str) -> str | None:
     return sha if _FULL_SHA_RE.match(sha) else None
 
 
+def release_branch_head(store: Any, rel: dict[str, Any]) -> str | None:
+    """The live head of ``rel``'s release branch (``meta.release``: the
+    ``rN`` plus the cut's recorded repo, falling back to the
+    ``release.repo`` setting), else ``None`` when unverifiable — no
+    recorded repo, or GitHub unreadable. The rerun superseded guard
+    (gr685062) reads it before any ``gh run rerun``: a rerun may only
+    fire on a run whose head IS the current release head — rerunning a
+    superseded run cancels the live gate run through the branch
+    concurrency group."""
+    rn = str(rel.get("rN") or "")
+    if not rn:
+        return None
+    from precis import settings
+
+    repo = _release.valid_repo(rel.get("repo")) or _release.valid_repo(
+        settings.get_str("release.repo", store=store)
+    )
+    if not repo:
+        return None
+    return fetch_head(repo, f"release/{rn}")
+
+
 #: A ``landed: <sha>`` comment line — the record a fixer's land_slice
 #: leaves on the fix todo (``land_slice._LANDED_COMMENT_RE``). An
 #: all-zeros sha is the gate's PENDING_SHA placeholder, not a land.
@@ -1074,6 +1096,7 @@ __all__ = [
     "fetch_runs",
     "load",
     "poll_interval",
+    "release_branch_head",
     "resolve_target",
     "verdict_of",
 ]

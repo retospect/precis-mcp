@@ -3547,6 +3547,110 @@ def test_digest_infra_red_fires_one_rerun_and_parks_the_loop(
     assert _status(store, fix_id) == "open"
 
 
+def test_digest_infra_red_on_a_superseded_run_closes_moot_without_rerun(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685062: the infra rerun may only fire on the current release
+    head — rerunning a superseded run cancels the live gate run through
+    the branch concurrency group. A run state whose headSha is not the
+    release branch's head means: no ``gh run rerun``, no
+    ``ci_infra_rerun`` marker, the fix nodes close moot and the job
+    succeeds."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [],
+            "attempt": 1,
+            "headSha": SHA,
+        }
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA2)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert calls == [["run", "view", "31", "--json", crd._RUN_STATE_JSON]]
+    assert _meta(store, digest_id).get(crd._INFRA_RERUN_KEY) is None
+    assert _status(store, fix_id) == "done"
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("moot:")
+    assert "run 31 is at" in comments[0]
+    assert f"release head is {SHA2[:9]}" in comments[0]
+    assert "superseded" in comments[0]
+
+
+def test_digest_infra_red_parks_when_the_release_head_is_unreadable(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685062: an unreadable release head means the superseded check
+    cannot run — the job parks (firing nothing) and re-reads instead of
+    guessing."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [],
+            "attempt": 1,
+            "headSha": SHA,
+        }
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: None)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is False  # parked, nothing fired
+    assert not any(c[:2] == ["run", "rerun"] for c in calls)
+    assert _meta(store, digest_id).get(crd._INFRA_RERUN_KEY) is None
+    assert _status(store, fix_id) == "open"
+    assert handle.get("not_before") and handle["parks"] == 1
+
+
+def test_digest_infra_red_on_the_current_head_reruns_as_before(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685062: when the run's head IS the release head the guard
+    changes nothing — the rerun fires once, the marker is stamped and
+    the loop parks on the verdict."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [],
+            "attempt": 1,
+            "headSha": SHA,
+        }
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is False  # parked on the rerun, not done
+    assert calls == [
+        ["run", "view", "31", "--json", crd._RUN_STATE_JSON],
+        ["run", "rerun", "31"],
+    ]
+    assert _meta(store, digest_id)[crd._INFRA_RERUN_KEY]["run_id"] == "31"
+    assert _status(store, fix_id) == "open"
+
+
 def test_digest_infra_red_uses_failed_rerun_when_jobs_failed(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
