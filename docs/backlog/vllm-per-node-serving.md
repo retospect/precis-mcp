@@ -1,6 +1,6 @@
 ---
 status: draft
-title: vLLM per-node serving on castor — one model per box, replication as the throughput lever
+title: vLLM per-node serving on the local-serving node — one model per box, replication as the throughput lever
 pillar: local-compute
 prio: normal
 ---
@@ -8,10 +8,10 @@ prio: normal
 # vLLM per-node serving
 
 Design session 2026-09-29 (Reto + agent, big-model-manage worktree). Start on
-**castor alone**; add pollux for throughput only if one box proves
+**the local-serving node alone**; add the second DGX node for throughput only if one box proves
 insufficient.
 
-**Scope (narrowed 2026-10-23).** Owns the serving role on castor
+**Scope (narrowed 2026-10-23).** Owns the serving role on the local-serving node
 (`deploy/roles/sglang`, playbook `49a-sglang.yml`; `deploy/roles/vllm`
 parked), the metrics scrape into `host_heartbeat_log` (Slice 3), the
 preemption/retraction health check (Slice 4) and replication as the
@@ -40,7 +40,7 @@ which asks for an `openai_compatible`/`vllm` executor that does not exist in
 
 **Replication, not sharding, is the throughput lever.** Sharding a model
 across two boxes does not multiply throughput — it lets you run a model that
-does not fit, at a latency cost. Published measurements put two-Spark
+does not fit, at a latency cost. Published measurements put two-GB10-node
 collectives over the ConnectX link in the high-teens GB/s (allgather ~18.8,
 allreduce ~21.5) against 273 GB/s of local LPDDR5x, roughly 13× slower, so
 tensor-parallel across the link makes every token slower. If the model fits
@@ -58,7 +58,7 @@ about 450 out tok/s, knee at 64; SGLang KV-full at 64.
 **Slice 1 — serving: shipped.** `deploy/roles/sglang` +
 `49a-sglang.yml` (a121538d4): `lmsysorg/sglang:latest-cu130`, gpt-oss
 120B, `--mem-fraction-static 0.80 --max-running-requests 32`
-(gr485635: the 0.86/64 trial hung castor; do not raise),
+(gr485635: the 0.86/64 trial hung the local-serving node; do not raise),
 `--context-length 131072`, gpt-oss reasoning/tool parsers, runai
 streaming loader. vLLM (`deploy/roles/vllm`, `49-vllm.yml`) is parked:
 vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10 (vllm-project/vllm
@@ -68,7 +68,7 @@ stored once.
 
 **Slice 2 — router integration: shipped.** Card lm162513 with a
 `source="static"` `served_by`, prod `resource_slots` row
-`castor | llm:openai/gpt-oss-120b | 32`; `llm.op.llm_summarize` and
+`<serving-node> | llm:openai/gpt-oss-120b | 32`; `llm.op.llm_summarize` and
 `llm.chain.small` rung 0 local, `chase:verify` on its per-op local chain
 (Reto 2026-10-22). Keeping card `max_parallel`, slot capacity and the
 server limit one number is `llm-lane-scheduler.md`'s capacity slice.
@@ -118,7 +118,7 @@ where preemption rate is high enough that aggregate throughput drops.
   `cluster-scheduling.md` §F.
 * Retiring llama.cpp. The two coexist; llama.cpp keeps whatever it still
   serves.
-* Bringing `spark` back on cluster duty is its own change (review item
+* Bringing the GPU node back on cluster duty is its own change (review item
   local-compute-5, the role split), not part of this item. The 2026-08-29
   paper-box rule was reversed on 2026-10-02 (decisions log).
 * Choosing the model on paper. Slice 0 measures; `scripts/llm_eval/`
@@ -128,7 +128,7 @@ where preemption rate is high enough that aggregate throughput drops.
 
 * Slice 0 produces an aggregate-tok/s-versus-concurrency curve for the
   candidate and the control, and the concurrency at which each plateaus.
-* A model serves on castor through vLLM with tool calling working end to end
+* A model serves on the local-serving node through vLLM with tool calling working end to end
   from a real agent session.
 * `llm.chain.big` (or the chosen tier) resolves to the local rung on the
   serving host and falls to cloud elsewhere, with zero `llm_call_log` errors
@@ -161,8 +161,8 @@ local placement).
 ## Open questions / decisions log
 
 **Decided 2026-10-02 (Reto, review item local-compute-4), supersedes the
-spark-as-bench-only framing below where they conflict.**
-- spark is back on cluster duty. The three Sparks (castor, pollux, spark;
+GPU-node-as-bench-only framing below where they conflict.**
+- The GPU node is back on cluster duty. The three GB10 nodes (the local-serving node, the second DGX node, the GPU node;
   all GB10 Blackwell, so NVFP4 runs on any of them) split into one
   exclusive big model, one local embeddings and one GPU science-lanes box.
   Which host takes which role: review item local-compute-5.
@@ -173,17 +173,17 @@ spark-as-bench-only framing below where they conflict.**
   and peak KV use at each level. The 32-stream target and the feedback
   controller that holds it: `llm-lane-scheduler.md` (capacity section).
 
-**Decided 2026-09-29 (Reto):** castor first, pollux later for throughput if
+**Decided 2026-09-29 (Reto):** the local-serving node first, the second DGX node later for throughput if
 needed; replication over sharding; one model fully resident per box.
 
-**Superseded 2026-10-02: Slice 0 runs on castor, from local NVMe** (Reto,
-review item local-compute-9). castor is the big-model box under the role
-split (local-compute-5), and it serves nothing today. spark now carries
+**Superseded 2026-10-02: Slice 0 runs on the local-serving node, from local NVMe** (Reto,
+review item local-compute-9). The local-serving node is the big-model box under the role
+split (local-compute-5), and it serves nothing today. The GPU node now carries
 embeddings and ad-hoc compute, and its share is hung. Slice 0 does not need
-`/mnt/cluster`: weights and images go to castor's local disk. The frozen
+`/mnt/cluster`: weights and images go to the local-serving node's local disk. The frozen
 eval world stays wherever `eval-run-spine.md` places it.
 
-**Slice 0 result, vLLM arm, Nemotron 3 Super NVFP4 on castor (2026-10-03).**
+**Slice 0 result, vLLM arm, Nemotron 3 Super NVFP4 on the local-serving node (2026-10-03).**
 vLLM v0.20.1, `--trust-remote-code`, no other flag changes; server start
 641 s to `/health`; no `precis-aizynth` container ran during any level.
 Output tok/s is the bench's `output_throughput`; per-stream is 1000 / mean
@@ -201,15 +201,15 @@ TPOT.
 - 3.5 tok/s per stream at the 32-stream target is slow for interactive use;
   acceptable only for bulk work where aggregate counts.
 - C=1 TTFT p95 7.8 s is likely first-request warm-up (p50 0.9 s).
-- Raw results: castor `/home/deploy/slice0/results/`. <!-- home-path: allow — the deploy account's home on the node -->
+- Raw results: the local-serving node `/home/deploy/slice0/results/`. <!-- home-path: allow — the deploy account's home on the node -->
 
-**Slice 0 result, vLLM arm, gpt-oss 120B MXFP4 on castor (2026-10-03).**
+**Slice 0 result, vLLM arm, gpt-oss 120B MXFP4 on the local-serving node (2026-10-03).**
 Same run script and settings (max-model-len 16384, max-num-seqs 64,
 gpu-memory-utilization 0.8); server start 505 s; 0 failed requests; no
 `precis-aizynth` container during any level. vLLM's gpt-oss path loads the
 harmony tokenizer vocab from the internet at startup and the container
 cannot reach it: stage `o200k_base.tiktoken` and `cl100k_base.tiktoken` on
-the host, mount them read-only, set `TIKTOKEN_ENCODINGS_BASE` (castor:
+the host, mount them read-only, set `TIKTOKEN_ENCODINGS_BASE` (the local-serving node:
 `/home/deploy/slice0/tiktoken/`). Any serving role for gpt-oss needs the <!-- home-path: allow — the deploy account's home on the node -->
 same.
 
@@ -237,8 +237,8 @@ same.
   grows fivefold. KV is not the limit (75% at 256); decode compute is.
   The 32-stream setpoint gets 65% of the ceiling at 9.6 tok/s per stream;
   64 gets 89% at 6.7 (ruling below).
-**Slice 0 result, SGLang arm on castor (2026-10-03).** `lmsysorg/sglang:latest-cu130`
-(v0.5.21, pulled on castor directly after 7 TLS-timeout retries; Docker
+**Slice 0 result, SGLang arm on the local-serving node (2026-10-03).** `lmsysorg/sglang:latest-cu130`
+(v0.5.21, pulled on the local-serving node directly after 7 TLS-timeout retries; Docker
 Hub is flaky from the LAN, not blocked). Same prompts and client as vLLM;
 `--mem-fraction-static 0.8 --max-running-requests 256`, defaults otherwise;
 0 failed requests, no aizynth contamination.
@@ -282,8 +282,8 @@ level that matters, and gpt-oss on vLLM leads everything (ceiling about
   `llm_eval` compare harness; the km-8 taxonomy set goes first. No separate
   quality set here.
 
-**Bench host: spark — superseded 2026-10-02** (Slice 0 ran on castor from
-local NVMe). spark's host traps (nvidia runtime not in a role, Docker Hub
+**Bench host: the GPU node — superseded 2026-10-02** (Slice 0 ran on the local-serving node from
+local NVMe). The GPU node's host traps (nvidia runtime not in a role, Docker Hub
 egress, the hung `/mnt/cluster` mount, the orphaned `/opt/precis`) live in
 `spark-provisioning.md`; the eval world's placement is `eval-run-spine.md`.
 

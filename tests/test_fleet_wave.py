@@ -1714,23 +1714,23 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
 ) -> None:
     env = _with_gripe_fix(env, tmp_path)
     _windows(env, {})
-    _pane_alive(env, "codex-castor-s2")
+    _pane_alive(env, "codex-cedar-s2")
     proc = _run(
-        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex",
         "--tier", "W", "--settle", "0",
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     nw = next(c for c in _tmux_calls(env) if c[0] == "new-window")
-    assert nw[nw.index("-n") + 1] == "codex-castor-s2"
+    assert nw[nw.index("-n") + 1] == "codex-cedar-s2"
     # exactly scripts/fleet-authority's tier-W codex flags, nothing appended
     assert nw[-1].startswith(
         "codex --sandbox workspace-write --ask-for-approval never 'Read "
     )
     assert nw[-1].count("--ask-for-approval") == 1
     assert "scratch/codex-brief.md" in nw[-1]
-    tree = Path(env["FLEET_WORKTREES"]) / "castor-s2"
+    tree = Path(env["FLEET_WORKTREES"]) / "cedar-s2"
     brief = (tree / "scratch" / "codex-brief.md").read_text(encoding="utf-8")
-    assert brief.startswith("# batch castor-s2") and "NO precis MCP access" in brief
+    assert brief.startswith("# batch cedar-s2") and "NO precis MCP access" in brief
     # gr567689: a tier-W codex sandbox cannot write the board log — the note
     # routes status through .claude/purpose + scratch/handoff.txt instead.
     # (The appended builder footer still names scripts/board post — that
@@ -1749,14 +1749,14 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
     assert "locked" in locked
     log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
     assign = json.loads(log.splitlines()[1])
-    assert assign[assign.index("--session") + 1] == "codex:codex-castor-s2"
-    assert "launched codex-castor-s2" in proc.stdout
+    assert assign[assign.index("--session") + 1] == "codex:codex-cedar-s2"
+    assert "launched codex-cedar-s2" in proc.stdout
 
 
 def test_launch_codex_refuses_tier_r(env: dict[str, str], tmp_path: Path) -> None:
     env = _with_gripe_fix(env, tmp_path)
     _windows(env, {})
-    proc = _run(env, "launch", "castor-s2", "--batch", "castor-s2", "--codex")
+    proc = _run(env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex")
     assert proc.returncode == 2
     assert "REFUSED --codex at tier R" in proc.stderr and "--tier W" in proc.stderr
     assert not any(c[0] == "new-window" for c in _tmux_calls(env))
@@ -1768,13 +1768,13 @@ def test_launch_codex_refuses_a_window_that_died(
     env: dict[str, str], tmp_path: Path
 ) -> None:
     env = _with_gripe_fix(env, tmp_path)
-    _windows(env, {})  # no pane for codex-castor-s2: the window is gone
+    _windows(env, {})  # no pane for codex-cedar-s2: the window is gone
     proc = _run(
-        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex",
         "--tier", "W", "--settle", "0",
     )  # fmt: skip
     assert proc.returncode == 3, proc.stdout
-    assert "REFUSED codex-castor-s2: window gone" in proc.stderr
+    assert "REFUSED codex-cedar-s2: window gone" in proc.stderr
     assert "launched" not in proc.stdout
     log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
     assert "assign" not in log

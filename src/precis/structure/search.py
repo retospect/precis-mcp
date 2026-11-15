@@ -51,7 +51,7 @@ real count). Whether ``budget`` should count evaluations instead is an
 open call for slice 2 — until then, read it as iterations.
 
 **Measured on the cluster (2026-09-20, job 366641):** Pd(111) 3×3×4 seed,
-``add={Pd:2,N:1,O:1}``, gofee, budget 200, ``mace_mp`` on pollux — 10
+``add={Pd:2,N:1,O:1}``, gofee, budget 200, ``mace_mp`` on the second DGX node — 10
 distinct candidates in **37 min** wall, best −199.56 eV vs −184.25 eV for
 seed + isolated atoms. The wall goes to the CPU-side GPR relaxations
 (four ray actors at ~50 %); the GPU idles between oracle calls.

@@ -17,7 +17,7 @@ side).
 
 ## Motivation / why
 
-The local box is about to have capacity: castor runs gpt-oss 120B at 290
+The local box is about to have capacity: the local-serving node runs gpt-oss 120B at 290
 out tok/s over 32 streams (Slice 0, 2026-10-03), and the graph always has
 more upkeep work than anyone does. Nothing measures whether a local model
 does that work well enough, and nothing records who checked the result.
@@ -77,8 +77,8 @@ once, held out and never used to tune a prompt. The shape is
 `llm-judge-reliability.md` §4. Without it the auto-apply bar measures
 agreement with the frontier, not correctness.
 
-**Candidates.** castor gpt-oss 120B and Nemotron 3 Super (vLLM; Slice 0
-throughput done, quality not), melchior glm-4.7-flash (llama-swap, slot
+**Candidates.** local-serving gpt-oss 120B and Nemotron 3 Super (vLLM; Slice 0
+throughput done, quality not), agent-host glm-4.7-flash (llama-swap, slot
 cap 4). The frontier arm is the cloud chain each action runs on today.
 The taxonomy task is local-compute's Slice 0 quality check ("km-8
 taxonomy first", local-compute Do-next 4b), so it runs once for both
@@ -387,16 +387,16 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
 ## Slices
 
 0. **Eval, no schema.** Port the taxonomy scorer, build categorise and
-   merge sets first (gold exists), then links and findings. Run on castor
-   when Slice 0 serves. Costs only the frontier grading sample. Castor's
+   merge sets first (gold exists), then links and findings. Run on the local-serving node
+   when Slice 0 serves. Costs only the frontier grading sample. The local-serving node's
    bench server binds 127.0.0.1 and has no `resource_slots` row, so
    `llm_eval` cannot reach it. local-compute opens a serving window (a LAN
-   bind plus a temporary slot row, or the harness run on castor) after its
+   bind plus a temporary slot row, or the harness run on the local-serving node) after its
    above-64-stream load test, and pings when it is open.
    **BUILT 2026-10-14** (`mesh-evalsets` worktree): `src/precis/mesh_eval/`
    + `scripts/llm_eval/build_mesh_*.py` + `precis mesh
    eval|usefulness|retest`. What remains open on this slice is the *run*:
-   no candidate has been scored yet — castor's serving window is still not
+   no candidate has been scored yet — the local-serving node's serving window is still not
    open (the runner accepts any OpenAI-compatible endpoint by config, so
    any bench URL works when one exists). Details in the decisions log.
 1. **Ledger and history** (1a in migration 0185, 1b after it deploys;
@@ -500,7 +500,7 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
 - **[open]** Whether `reviews` should also replace `refs.human_verified_*`
   (27 rows). Leaning yes, as `target_kind='ref'`, `model` NULL.
 - **[decided 2026-10-14, Reto — sampled sign-off]** The production review
-  shape is: Sparks draft (categorise, link-add, merge/split proposals,
+  shape is: GB10 nodes draft (categorise, link-add, merge/split proposals,
   summarise, numeric extraction) → cheap deterministic checks → a frontier
   model judges a **stratified sample per batch plus every merge/split**;
   the batch is accepted when the sampled error rate is under the bar;

@@ -28,7 +28,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
   ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
   :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
-  static-wide selection on melchior OOM-killed a worker twice, gr567471;
+  static-wide selection on the agent host OOM-killed a worker twice, gr567471;
   ``PRECIS_TEST_NPROC`` carries the same count to any ``scripts/test``
   run inside the ship). Every child the lander spawns starts from
   :func:`land_env` — an allowlist env, never the worker's whole env, so
@@ -704,7 +704,7 @@ def ship_bin(tree: Path) -> str:
 
 #: xdist workers for the lander's ``--checked`` pytest when
 #: ``PRECIS_LAND_TEST_NPROC`` is unset: half of scripts/test's default six.
-#: A 5k–8k static-wide selection OOM-killed a worker at -n6 on melchior
+#: A 5k–8k static-wide selection OOM-killed a worker at -n6 on the agent host
 #: twice (gr567471, Reto 2026-11-05 "ship it").
 DEFAULT_TEST_NPROC = 3
 
@@ -3548,7 +3548,7 @@ def _launch_ship(
                 # worker's Python line:
                 # with no .venv in a slice tree uv takes the newest
                 # interpreter satisfying
-                # requires-python — Homebrew 3.15 on melchior, for which
+                # requires-python — Homebrew 3.15 on the agent host, for which
                 # rdkit has no wheel, so the frozen sync fails and
                 # gen-devin-hooks' check reads as "stale" (jo551780
                 # event 6).
@@ -3981,7 +3981,7 @@ def _drift_preflight(
     str}`` — ``age`` is the helper's stdout (hours, or empty for unknowable),
     ``diag`` its one stderr line with the exit code appended.
 
-    gr549328/gr550941: ship refused the land on melchior while the same main
+    gr549328/gr550941: ship refused the land on the agent host while the same main
     read green elsewhere. Ship treats an unknowable lookup as "do not refuse"
     (a GitHub outage must not stop the fleet); an *unattended* land must not
     ride that — :func:`_gate_unknown` parks it instead. ``ran`` is False when
@@ -4027,7 +4027,7 @@ def _drift_preflight(
         cp = subprocess.run(
             [
                 # The worker's own interpreter, not the helper's `uv run`
-                # shebang: on melchior the deploy user's uv cache is
+                # shebang: on the agent host the deploy user's uv cache is
                 # root-owned and uv exits 2 before the helper starts, which
                 # ship's guard reads as "none green" (gr551238). The helper
                 # is stdlib-only. ``-I`` isolates it: no script dir or cwd

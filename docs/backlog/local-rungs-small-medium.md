@@ -26,7 +26,7 @@ by default — `src/precis/utils/llm/live_config.py`: "a tier left with no
 at lines 57-59). The 2026-08-15 cutover applied
 `SMALL = z-ai/glm-4.7-flash`, cloud-only. The DGX-pair
 `llama-server` has been stopped and disabled since 2026-08-23
-(`vllm-per-node-serving.md:17`). No lane is local today (last local LLM call 2026-09-10, the melchior
+(`vllm-per-node-serving.md:17`). No lane is local today (last local LLM call 2026-09-10, the agent host
 summariser model; the shipped local summarise chain (`workers/job_types/derived_drain.py`) is the dedicated slice that brings it
 back) — everything in the compiled ladder either runs cloud or pauses.
 
@@ -43,7 +43,7 @@ eval's output as a standalone capability with no consumer.
 
 - Once `vllm-per-node-serving.md`'s Slice 0 (concurrency-scale measurement,
   the model-choice gate — that item owns Slice 0, not `local-serving-eval.md`)
-  picks a model that fits one spark, write local rungs under SMALL and
+  picks a model that fits one GPU node, write local rungs under SMALL and
   MEDIUM for: chunk summarise, classify, and pre-search/condense (the
   pre-filter tier `router-cost-coverage.md` already names as wanted, ahead
   of paid escalation).

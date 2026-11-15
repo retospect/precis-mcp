@@ -1172,7 +1172,7 @@ def test_run_pass_empty_summary_aggregates_warning(
     """A *persistently* blank completion (every in-process retry also empty — a
     sustained backend window) is recorded failed but logged ONCE per batch at
     WARNING — never a per-chunk ERROR traceback. Per-chunk ERRORs flooded
-    ~7k/day on melchior and read as an outage on /status even though summaries
+    ~7k/day on maple and read as an outage on /status even though summaries
     were landing. Guards that regression."""
     monkeypatch.setattr("precis.workers.llm_summarize.EMPTY_RETRY_BACKOFF_S", 0.0)
     conn = _FakeConn(

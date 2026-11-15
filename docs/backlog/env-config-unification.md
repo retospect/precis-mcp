@@ -11,7 +11,7 @@ Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keep
 
 _Grouped 2026-09-26; was `env-resolution-fragmentation`, status proposed._
 
-Prompted by the retraction-button timeout of 2026-08-12: melchior's `precis
+Prompted by the retraction-button timeout of 2026-08-12: the agent host's `precis
 web` process had no `PRECIS_CROSSREF_MAILTO`, so the draft's Crossref walk ran
 outside the polite pool and blew its 90s budget. Nothing was misconfigured in
 the sense of a wrong value — the value simply wasn't *in that process*. The

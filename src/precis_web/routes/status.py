@@ -1810,7 +1810,7 @@ def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
     """The per-operation ``llm.op.<source>`` pins ``/llm/chain`` lists beside
     the tier cards (gr623033). A source steered by an operator op row walks
     its own ladder in place of the tier chain, so the local rung that row
-    pins (e.g. castor's gpt-oss-120b serving whole lanes) never appears on a
+    pins (e.g. the local-serving node's gpt-oss-120b serving whole lanes) never appears on a
     ``resolve_chain``-only page — without this section a cloud-only tier
     card hides where local capacity actually lands.
 

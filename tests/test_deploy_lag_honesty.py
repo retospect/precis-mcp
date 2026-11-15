@@ -23,7 +23,7 @@ This landed in two independent commits that collided on `main`:
     run's own PLAY RECAP and writes the success marker (clearing the attempt
     stamp) as soon as every ROLLOUT host converges, even when the whole
     invocation still exits non-zero because a LATER, unrelated play died on a
-    host outside that set (the balthazar sandbox podman-pull residual).
+    host outside that set (the alder sandbox podman-pull residual).
     Without this graft, the attempt-stamp design alone still leaves every
     ship footer saying "uncertain" forever the moment that residual task goes
     red — the stamp never clears because step 3 (the success write) never
@@ -168,7 +168,7 @@ exit 0
 # $FAKE_PLAY_SCENARIO:
 #   ok            — every host clean, exit 0 (full success, base design).
 #   residual_fail — the 5 rollout hosts clean, but an extra host OUTSIDE that
-#                   set (a stand-in for the balthazar sandbox residual) shows
+#                   set (a stand-in for the alder sandbox residual) shows
 #                   failed=1 — the exact gr332009 collision shape. Overall
 #                   exit non-zero (ansible-playbook fails the whole run on
 #                   ANY host failure), but the rollout itself converged.
@@ -184,7 +184,7 @@ scheduler                  : ok=10   changed=2    unreachable=0    failed=0    s
 data                       : ok=8    changed=1    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
 inference                  : ok=10   changed=2    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
 serving                    : ok=5    changed=1    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
-balthazar                  : ok=2    changed=0    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0
+alder                  : ok=2    changed=0    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0
 RECAP
     exit 2
     ;;
@@ -299,7 +299,7 @@ def test_deploy_writes_marker_and_clears_stamp_when_rollout_converges_despite_re
 ) -> None:
     """Case (a): the exact collision shape — the rollout itself converged
     (every rollout host clean in the PLAY RECAP) but a later, unrelated play
-    on an outside host (balthazar) failed. The graft must write the success
+    on an outside host (alder) failed. The graft must write the success
     marker AND clear the attempt stamp before the caller's `|| die` fires, so
     the ship footer doesn't say "uncertain" forever."""
     repo, cluster_dir = deploy_repo

@@ -2779,7 +2779,7 @@ def _pass_wall_s() -> float:
     first stub always runs). A stub in flight is not interrupted; its legs
     carry their own timeouts. Unstarted stubs hold no lease — the claim's
     row locks end with its connection — so they stay claimable next pass.
-    gr479615: on melchior a 32-stub batch took ~31 min (TLS-handshake
+    gr479615: on the agent host a 32-stub batch took ~31 min (TLS-handshake
     timeouts × retries), holding the serial worker loop ~60 min and making
     every hourly cadence it owns fire 1–2 h apart. Same shape as
     ``hub_refine._pass_wall_s``. ``0`` or less disables the budget.

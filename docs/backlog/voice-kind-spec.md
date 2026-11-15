@@ -20,8 +20,8 @@ Agents on the cluster need two voice capabilities that don't exist yet:
    replies (Discord attachment, push-to-talk web UI, local `afplay`).
 
 Both must run **locally** — no cloud round-trips, no API keys, no PII
-leakage. The cluster has the hardware: melchior's M2 Ultra runs Kokoro on
-CPU comfortably and Whisper-large-v3 via Metal; spark's GB10 runs
+leakage. The cluster has the hardware: the agent host's M2 Ultra runs Kokoro on
+CPU comfortably and Whisper-large-v3 via Metal; the GPU node's GB10 runs
 faster-whisper at 30×+ realtime.
 
 A standalone `voice-mcp` package was considered and rejected — see
@@ -54,7 +54,7 @@ get(kind="voice", q="Hello, world.")
 get(kind="voice", q="Hello, world.", view="af_bella")
 get(kind="voice", q="Hello.", view="af_bella:mp3")
 # → "[audio: /opt/nfs/shared/voice/synth/hello-a3f9.wav, 1.2s]
-#    URL: https://melchior.local/voice/synth/hello-a3f9.wav
+#    URL: https://<host>.local/voice/synth/hello-a3f9.wav
 #    Voice: af_bella · Model: kokoro-v1.0 · Cached"
 
 # ── STT: transcribe and persist ──────────────────────────────────────
@@ -134,7 +134,7 @@ Cache entry meta:
 ```json
 {
   "audio_path": "/opt/nfs/shared/voice/synth/<key>.wav",
-  "audio_url":  "https://melchior.local/voice/synth/<key>.wav",
+  "audio_url":  "https://<host>.local/voice/synth/<key>.wav",
   "audio_sha256": "...",
   "duration_s": 1.2,
   "voice": "af_bella",
@@ -232,7 +232,7 @@ script can pre-pull.
 ```
 PRECIS_VOICE_OUTPUT_DIR=/opt/nfs/shared/voice         # cluster default
                                                       # or ~/.cache/precis/voice/out
-PRECIS_VOICE_OUTPUT_URL_BASE=https://melchior.local/voice    # optional
+PRECIS_VOICE_OUTPUT_URL_BASE=https://<host>.local/voice    # optional
 ```
 
 Layout:
@@ -260,7 +260,7 @@ To be added in `roles/nginx/templates/cluster_proxy.conf.j2`.
 
 ### Cleanup
 
-LaunchDaemon timer on melchior:
+LaunchDaemon timer on the agent host:
 
 - `find $VOICE_OUTPUT_DIR/synth/ -mtime +$PRECIS_VOICE_TTL_DAYS -delete`
   (default 30 days)
@@ -295,7 +295,7 @@ Cluster MCP config snippet:
   "args": ["serve"],
   "env": {
     "PRECIS_VOICE_OUTPUT_DIR": "/opt/nfs/shared/voice",
-    "PRECIS_VOICE_OUTPUT_URL_BASE": "https://melchior.local/voice",
+    "PRECIS_VOICE_OUTPUT_URL_BASE": "https://<host>.local/voice",
     "PRECIS_VOICE_DEVICE": "auto"
   }
 }
@@ -403,7 +403,7 @@ acceptable for "click to play" UX.
 ## Build order
 
 1. `voice` handler scaffold + tests with mock backends
-2. `_synth` path with kokoro-onnx — verify on melchior
+2. `_synth` path with kokoro-onnx — verify on the agent host
 3. `_transcribe` path with faster-whisper — verify against sample wav
 4. Skill doc + `precis-voice-help.md`
 5. Registry wiring + optional-deps gating

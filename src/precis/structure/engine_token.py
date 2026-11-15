@@ -36,7 +36,7 @@ import re
 #: as an ops escape hatch (force a re-key without a ship); the constant is a
 #: last-resort fallback for a venv with no precis dist metadata. Remaining
 #: caveat (unchanged from before): the token tracks the *pin*, not what
-#: spark's GPU venv actually runs — an engine release adopted without a pin
+#: the GPU node's GPU venv actually runs — an engine release adopted without a pin
 #: bump still dedup-pins stale jobs, so keep bumping the pin with every
 #: adoption.
 _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"

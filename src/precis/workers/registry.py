@@ -45,7 +45,7 @@ class ServiceKind(StrEnum):
 
 #: The worker ``--profile`` names a pass can run under in the *default*
 #: rotation (no ``--only``). ``system`` = every node; ``agent`` =
-#: melchior's OAuth-bearing worker. A pass in neither is cron-/env-driven.
+#: the agent host's OAuth-bearing worker. A pass in neither is cron-/env-driven.
 Profile = str
 
 
@@ -335,7 +335,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # anki-sync) into the worker via a DB-lease conditional advance
         # (exactly-once, no designated node). LIVE on both profiles — the
         # agent profile must run it too, or a host-pinned cadence
-        # (dream_agent, anki_sync — both melchior) never has an eligible
+        # (dream_agent, anki_sync — both on the agent host) never has an eligible
         # claimant.
         name="scheduler",
         label="Recurring trigger (decentralized)",
@@ -344,7 +344,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         default_profiles=_SYS | _AGT,
         ref_pass=True,
         one_line="Decentralized cadences: cron tick, watch poll, dream_agent, "
-        "anki_sync (host-pinned melchior).",
+        "anki_sync (host-pinned to the agent host).",
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
@@ -590,7 +590,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         "stubs so acquisition chases the relevant ones first.",
         doc_skill="precis-overview",
     ),
-    # ── Agent-worker passes (melchior / OAuth) ──────────────────────
+    # ── Agent-worker passes (agent host / OAuth) ──────────────────────
     ServiceSpec(
         # gr192752: cadence-fired via the `structural` scheduler lease
         # (workers/scheduler.py) — NOT `default_profiles`, mirroring
@@ -807,7 +807,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # (summarize/classify) as a minted job. `requires=frozenset()`
         # DELIBERATELY (unlike embed_batch's {'embedder'}): concurrency is capped
         # at the ROUTER's local-serving slot per call, so reserving an executor
-        # slot here would double-count. Melchior-pinned via params.target_node;
+        # slot here would double-count. Agent-host-pinned via params.target_node;
         # llm_summarize rides its local-first llm.op.llm_summarize chain (cloud
         # rung is slot-overflow only). Minted by the materialize SMALL bands.
         name="derived_drain",
@@ -817,7 +817,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         cost_sources=("llm_summarize", "classify"),
         one_line="Bounded work order draining a SMALL-tier derived LLM queue "
-        "(summarize/classify) — melchior-pinned, router-capped.",
+        "(summarize/classify) — agent-host-pinned, router-capped.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
@@ -1959,7 +1959,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # scores it with a local model (+ optional depth-2 escalate), and raises
         # an alert on `high`. DARK — no default profile; lit by a `service
         # prio` row (PRECIS_INJECT_SCAN_ENABLED is not read live and the deploy
-        # seed task does not seed it) on the agent host (melchior) where the
+        # seed task does not seed it) on the agent host where the
         # local model proxy resolves, alongside mail_poll.
         name="inject_scan",
         label="Email injection scan (depth 1/2)",
@@ -1994,7 +1994,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_external=("anthropic",),
         prompt_env="PRECIS_DREAM_PROMPT_PATH",
         one_line="Reflective memory pass — §A scheduler-lease cadence "
-        "(host-pinned melchior, PRECIS_DREAM_AGENT), default 15-min knob.",
+        "(host-pinned to the agent host, PRECIS_DREAM_AGENT), default 15-min knob.",
         doc_skill="precis-overview",
         introspect=AgentIntrospect(
             # §A: the standalone com.precis.dream LaunchDaemon (dream-pass.sh)
@@ -2045,7 +2045,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Web UI (uvicorn)",
         category="daemon",
         kind=ServiceKind.DAEMON,
-        one_line="The precis_web browser UI (melchior).",
+        one_line="The precis_web browser UI (the web host).",
         doc_skill="precis-overview",
     ),
     ServiceSpec(
@@ -2126,7 +2126,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="compute",
         kind=ServiceKind.COMPUTE,
         requires=frozenset({"gpu"}),
-        one_line="AlphaFold3 structure prediction on spark.",
+        one_line="AlphaFold3 structure prediction on the GPU node.",
         doc_skill="precis-overview",
     ),
 )

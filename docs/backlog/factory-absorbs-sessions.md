@@ -146,7 +146,7 @@ Ordered by what it unlocks. "Exists" names code to extend, not rebuild.
    to `run_slice` on `claude-sub` (spend)? Who owns the land queue that
    day (BUILDER or the lander)? Needs Reto's OK: the lanes and tmux are
    his spend and attention.
-4. **Deploy-user provisioning on melchior** (td551398): `scripts/build-image
+4. **Deploy-user provisioning on the agent host** (td551398): `scripts/build-image
    precis-dev` as deploy with `GH_TOKEN`; then the first factory land.
 
 ## D. Stays human, by design

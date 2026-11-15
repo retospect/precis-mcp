@@ -376,7 +376,7 @@ def test_service_gated_cadence_host_lit_still_alerts(store, monkeypatch) -> None
         (_service_cadence("c-hostlit", "c_hostlit"),),
     )
     set_service_prio(store, "*", "c_hostlit", 0)
-    set_service_prio(store, "melchior", "c_hostlit", 5)
+    set_service_prio(store, "maple", "c_hostlit", 5)
     _seed_lease(store, "c-hostlit", interval_s=60, overdue_s=100000)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-hostlit")
@@ -665,7 +665,7 @@ def _log_runner_batch(store, *, handler: str, ok: int, claimed: int) -> None:
         conn.execute(
             """
             INSERT INTO worker_logs (host, pass, level, message, payload)
-            VALUES ('melchior', 'runner', 'INFO', 'worker: batch',
+            VALUES ('maple', 'runner', 'INFO', 'worker: batch',
                     jsonb_build_object('handler', %s::text, 'claimed', %s::int,
                                        'ok', %s::int, 'failed', 0::int))
             """,
@@ -3011,7 +3011,7 @@ def test_health_panel_reruns_hosts_alive_live(store) -> None:
         store,
         [
             CheckResult(
-                "infra", "hosts_alive", "stale", "hosts alive: pollux dark", "warn"
+                "infra", "hosts_alive", "stale", "hosts alive: poplar dark", "warn"
             )
         ],
     )
@@ -3068,8 +3068,8 @@ def test_health_panel_names_open_critical_alerts(store) -> None:
     crit, _ = raise_alert(
         store,
         source="nursery:host-dark",
-        fingerprint="host-dark:castor",
-        title="castor host-dark",
+        fingerprint="host-dark:cedar",
+        title="cedar host-dark",
         severity="critical",
     )
     raise_alert(
@@ -3081,7 +3081,7 @@ def test_health_panel_names_open_critical_alerts(store) -> None:
     )
     panel = health_digest.health_panel(store)
     assert panel["open_alerts"]["critical"] == 1
-    assert panel["open_critical"] == [{"ref_id": crit, "title": "castor host-dark"}]
+    assert panel["open_critical"] == [{"ref_id": crit, "title": "cedar host-dark"}]
 
 
 def test_run_pass_persists_the_checks_snapshot(store, monkeypatch) -> None:

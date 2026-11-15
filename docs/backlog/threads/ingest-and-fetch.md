@@ -222,7 +222,7 @@ is verified done on prod.
    `edit(kind='paper', args={'retire': True, 'reason': …})` — refuses a
    ref with body, PDF, external id or live inbound cites; `retire:
    False` undoes.
-4. **Fetch ref-pass confirmation** — `pass-dead:melchior/precis-worker/fetch`. The
+4. **Fetch ref-pass confirmation** — `pass-dead:<agent-host>/precis-worker/fetch`. The
    outbound-policy work shipped in full 2026-10-23 (spec deleted; the
    model lives in `utils/outbound_policy.py`, the gate in
    `invariants.md` §Outbound): limiter/slot waits bound themselves to

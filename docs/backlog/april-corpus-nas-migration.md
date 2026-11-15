@@ -5,7 +5,7 @@ pillar: platform
 
 # April-era paper corpus never migrated to the NAS canonical corpus
 
-5,335 PDFs + extracts from `caspar:/opt/nfs/shared/data/papers` (citekey
+5,335 PDFs + extracts from `<db-host>:/opt/nfs/shared/data/papers` (citekey
 layout) predate the NAS canonical corpus and were never merged into it —
 only 253/5,335 match byte-identical on NAS. Five files appear truncated
 vs. their archived originals (same citekey, different size/hash):

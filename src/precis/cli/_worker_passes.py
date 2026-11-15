@@ -556,7 +556,7 @@ def build_ref_passes(
     # job_ssh_node — drains the `kind='job'` queue for jobs whose
     # meta.executor=='ssh_node'. Each runs a plugin dispatch that
     # shells out to a remote node (precis-dft's gpaw_relax → ssh
-    # spark docker run) and blocks until it finishes, so the cap is
+    # GPU-node docker run) and blocks until it finishes, so the cap is
     # small. See workers/executors/ssh_node.py.
     if _register("job_ssh_node"):
         from precis.workers.executors.ssh_node import run_ssh_node_pass
@@ -749,7 +749,7 @@ def build_ref_passes(
         # rungs (glm-4.7-flash → summarizer) are non-thinking small models,
         # so the empty-return hazard the old `summarizer` pin guarded
         # against no longer applies — and an `llm.op.classify` row steers
-        # it live (e.g. onto castor). PRECIS_CLASSIFY_MODEL still overrides
+        # it live (e.g. onto the local-serving node). PRECIS_CLASSIFY_MODEL still overrides
         # via the registry's env hatch. Per-chunk high volume ⇒ a lite row
         # (metadata, no replay blob).
         _cls_client = _DispatchClient(
@@ -1193,7 +1193,7 @@ def build_ref_passes(
     # feed (the first automatic audio producer). Default-OFF (`service prio` or --only briefing_audio — §L retired
     # PRECIS_BRIEFING_AUDIO_ENABLED as the live gate)
     # and TTS-host-only: it needs the precis-tts container image +
-    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on melchior. Decoupled
+    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on the TTS host. Decoupled
     # from the briefing *job* (which runs on the agent worker, no TTS): this
     # pass reads the persisted `briefing-<date>` ref and self-schedules off
     # its existence, idempotent via a `meta.audio_episode_id` marker. See
@@ -1252,7 +1252,7 @@ def build_ref_passes(
 
     # cast_audio — narrate the daily *casts* (morning reading-brief + evening
     # nidra) onto the podcast feed (docs/backlog/reading-prep-loop.md §Audio).
-    # Same substrate as briefing_audio: TTS-host-only (melchior), container-first,
+    # Same substrate as briefing_audio: TTS-host-only, container-first,
     # self-scheduling off an un-narrated cast draft, idempotent via
     # meta.audio_episode_id. Default-OFF (`service prio` or --only
     # cast_audio — §L retired PRECIS_CAST_AUDIO_ENABLED as the live gate)
@@ -1664,7 +1664,7 @@ def build_ref_passes(
     # watch poll, and now the host-pinned dream_agent / anki_sync
     # cadences too) into the worker via a DB-lease conditional advance
     # (exactly-once across the fleet, no designated node). It must run on
-    # the agent profile too, or a host-pinned melchior cadence never has
+    # the agent profile too, or a host-pinned agent-host cadence never has
     # an eligible claimant. gr518349: the STANDING trigger is the
     # dedicated `start_scheduler_thread` (cli/worker.py) — this
     # in-rotation pass stays as a backstop so one long sibling pass
@@ -1955,7 +1955,7 @@ def build_ref_passes(
 
         ref_passes.append(_quota_check_pass)
 
-    # Disk-check pass — gripe 191008: caspar's DB SSD hit 100%, psycopg
+    # Disk-check pass — gripe 191008: the database host's DB SSD hit 100%, psycopg
     # DiskFull stalled ALL prod writes ~1.5h before anyone noticed (the
     # Prometheus 90% rule reached no one). System profile, every node:
     # dfs the configured watch paths (default "/") and raises a
@@ -1976,10 +1976,10 @@ def build_ref_passes(
     # registration is for a manual/ad-hoc `--only dream_agent` run only —
     # gated by PRECIS_DREAM_AGENT=1, same as always. The STANDING trigger
     # is now the `dream_agent` scheduler cadence (§A, host-pinned
-    # melchior — workers/scheduler.py), which calls run_dream_pass
+    # the agent host — workers/scheduler.py), which calls run_dream_pass
     # directly; the old standalone hermes-pinned 15-min LaunchDaemon
     # (dream-pass.sh, precis_dream role) is retired. The worker-agent
-    # role now installs PRECIS_DREAM_AGENT on melchior's agent-profile
+    # role now installs PRECIS_DREAM_AGENT on the agent host's agent-profile
     # plist instead. The persona is packaged
     # (data/prompts/dream-persona.md) with no env override.
     if _register("dream_agent"):

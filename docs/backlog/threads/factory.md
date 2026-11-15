@@ -46,7 +46,7 @@ quality-of-life and container items.
    inline `code`, PyPI wheel lock, `--network none`, harvest on any exit)
    shipped 2026-10-18, slice 2 (`inputs`, `code_ref`, a read-only MCP
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
-   live until slice 4 lights castor + pollux, which first needs async
+   live until slice 4 lights both DGX nodes, which first needs async
    staging and the package allow-list review.
 4. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
    budget so a checkpointed long relax gives the lane a turn; in
@@ -156,10 +156,10 @@ quality-of-life and container items.
 
 - **The fix_gripe lane and the gripe-loop arming ladder** — closed by Reto
   2026-10-02 (td460703, "Drop the lane, we run locally session here"). Lane
-  OFF: prod `service_config` melchior/`backlog_groom` prio 5 to 0 at
+  OFF: prod `service_config` <agent-host>/`backlog_groom` prio 5 to 0 at
   2026-10-02 22:04Z; re-arm only on Reto's say with
-  `precis service prio melchior backlog_groom 5`. Code stays;
-  `diagnose_scan` is off too (melchior prio 0, Reto 2026-10-02); owning thread sessions fix gripes. Deleted
+  `precis service prio <agent-host> backlog_groom 5`. Code stays;
+  `diagnose_scan` is off too (<agent-host> prio 0, Reto 2026-10-02); owning thread sessions fix gripes. Deleted
   `backlog/fix-gripe-oauth-instead-of-api-key.md` and
   `backlog/dark-factory-arming.md` as moot. `fixer-salvage-failed-builds`,
   `prioritization-auto-scoring` and `backlog-groomer-items-half` presume the

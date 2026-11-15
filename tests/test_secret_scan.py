@@ -45,7 +45,7 @@ NEGATIVES = {
     "uuid": "id 123e4567-e89b-12d3-a456-426614174000 done",
     "sha256 checksum": "sha256: "
     + "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-    "user@host": "ssh reto@hephaestus and postgresql://reto@db:5432/x",
+    "user@host": "ssh reto@hazel and postgresql://reto@db:5432/x",
     "redacted url": "postgresql://u:***@h/db and postgres://u:<redacted>@h and x://u:$PW@h",
     "password placeholder": "password: $DB_PASSWORD, password=<secret>, password: required",
     "vault reference": "password lives in ~/.secrets/pw/DB_PASS",

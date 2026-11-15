@@ -10,8 +10,8 @@ from __future__ import annotations
 
 
 def test_sync_upserts_present_capabilities(store) -> None:
-    store.sync_host_resource_slots("melchior", {"gpu": 1, "podman": 2})
-    slots = {s.resource: s for s in store.resource_slots_for_host("melchior")}
+    store.sync_host_resource_slots("maple", {"gpu": 1, "podman": 2})
+    slots = {s.resource: s for s in store.resource_slots_for_host("maple")}
     assert slots["gpu"].capacity == 1
     assert slots["gpu"].free == 1  # nothing reserved yet
     assert slots["gpu"].kind == "hard"
@@ -21,20 +21,20 @@ def test_sync_upserts_present_capabilities(store) -> None:
 
 def test_sync_deletes_absent_capabilities(store) -> None:
     """A capacity of 0 retracts the row (host definitively can't)."""
-    store.sync_host_resource_slots("caspar", {"gpu": 1})
-    assert any(s.resource == "gpu" for s in store.resource_slots_for_host("caspar"))
+    store.sync_host_resource_slots("birch", {"gpu": 1})
+    assert any(s.resource == "gpu" for s in store.resource_slots_for_host("birch"))
     # next cycle: gpu gone (0), podman appears
-    store.sync_host_resource_slots("caspar", {"gpu": 0, "podman": 2})
-    resources = {s.resource for s in store.resource_slots_for_host("caspar")}
+    store.sync_host_resource_slots("birch", {"gpu": 0, "podman": 2})
+    resources = {s.resource for s in store.resource_slots_for_host("birch")}
     assert resources == {"podman"}
 
 
 def test_sync_leaves_unknown_untouched(store) -> None:
     """A None verdict (probe couldn't tell) must not retract a live row."""
-    store.sync_host_resource_slots("spark", {"gpu": 1})
+    store.sync_host_resource_slots("spruce", {"gpu": 1})
     # a transient probe failure reports gpu=None; the row must survive
-    store.sync_host_resource_slots("spark", {"gpu": None})
-    slots = store.resource_slots_for_host("spark")
+    store.sync_host_resource_slots("spruce", {"gpu": None})
+    slots = store.resource_slots_for_host("spruce")
     assert [s.resource for s in slots] == ["gpu"]
     assert slots[0].capacity == 1
 
@@ -47,61 +47,61 @@ def test_embedder_probe_timeout_leaves_row_untouched(store, monkeypatch) -> None
     gate."""
     from precis.workers import capability_probe as cap
 
-    store.sync_host_resource_slots("melchior", {"embedder": 1})
+    store.sync_host_resource_slots("maple", {"embedder": 1})
     monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181")
     monkeypatch.delenv("PRECIS_EMBEDDER_SLOTS", raising=False)
     monkeypatch.setattr(cap, "_embedder_ready", lambda url: False)
 
     verdict = cap._probe_embedder()
     assert verdict is None
-    store.sync_host_resource_slots("melchior", {"embedder": verdict})
+    store.sync_host_resource_slots("maple", {"embedder": verdict})
 
-    slots = store.resource_slots_for_host("melchior")
+    slots = store.resource_slots_for_host("maple")
     assert [s.resource for s in slots] == ["embedder"]
     assert slots[0].capacity == 1
 
 
 def test_capacity_change_adjusts_free_by_delta(store) -> None:
     """Growing capacity grows free by the same delta (no stomp)."""
-    store.sync_host_resource_slots("melchior", {"podman": 2})
+    store.sync_host_resource_slots("maple", {"podman": 2})
     # simulate slice-6c reserving one slot out of band
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE resource_slots SET free = 1 "
-            "WHERE host = 'melchior' AND resource = 'podman'"
+            "WHERE host = 'maple' AND resource = 'podman'"
         )
         conn.commit()
     # capacity bumped 2 → 4: free should follow the +2 delta (1 → 3),
     # NOT reset to capacity (which would drop the live reservation).
-    store.sync_host_resource_slots("melchior", {"podman": 4})
-    slot = store.resource_slots_for_host("melchior")[0]
+    store.sync_host_resource_slots("maple", {"podman": 4})
+    slot = store.resource_slots_for_host("maple")[0]
     assert slot.capacity == 4
     assert slot.free == 3
 
 
 def test_capacity_shrink_never_exceeds_capacity(store) -> None:
     """Shrinking capacity keeps the free<=capacity invariant."""
-    store.sync_host_resource_slots("melchior", {"gpu": 4})
-    store.sync_host_resource_slots("melchior", {"gpu": 1})
-    slot = store.resource_slots_for_host("melchior")[0]
+    store.sync_host_resource_slots("maple", {"gpu": 4})
+    store.sync_host_resource_slots("maple", {"gpu": 1})
+    slot = store.resource_slots_for_host("maple")[0]
     assert slot.capacity == 1
     assert slot.free <= slot.capacity
 
 
 def test_all_resource_slots_orders_by_host_then_resource(store) -> None:
-    store.sync_host_resource_slots("melchior", {"tts": 1, "gpu": 1})
-    store.sync_host_resource_slots("caspar", {"podman": 2})
+    store.sync_host_resource_slots("maple", {"tts": 1, "gpu": 1})
+    store.sync_host_resource_slots("birch", {"podman": 2})
     rows = [(s.host, s.resource) for s in store.all_resource_slots()]
     # both hosts present, sorted
-    assert ("caspar", "podman") in rows
-    assert ("melchior", "gpu") in rows
-    assert ("melchior", "tts") in rows
+    assert ("birch", "podman") in rows
+    assert ("maple", "gpu") in rows
+    assert ("maple", "tts") in rows
     assert rows == sorted(rows)
 
 
 def test_sync_kinds_override(store) -> None:
-    store.sync_host_resource_slots("melchior", {"mem": 64}, kinds={"mem": "soft"})
-    slot = store.resource_slots_for_host("melchior")[0]
+    store.sync_host_resource_slots("maple", {"mem": 64}, kinds={"mem": "soft"})
+    slot = store.resource_slots_for_host("maple")[0]
     assert slot.resource == "mem"
     assert slot.kind == "soft"
 

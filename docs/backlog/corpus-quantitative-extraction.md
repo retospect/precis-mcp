@@ -109,14 +109,14 @@ summary. A severity rank is not needed. What is needed is a count per
 drop reason in the job's `summary_meta`, so a trial can be read without
 paging through 200 lines. It is a small change, part of slice T1.
 
-### Castor trial results (gardener-value slice 5) — HOOK
+### Local-model trial results (gardener-value slice 5) — HOOK
 
-> **Pending.** The coordinator will paste the castor `survey_extract`
+> **Pending.** The coordinator will paste the local-model `survey_extract`
 > trial (about 100 jobs over held full-text papers of active quests)
 > here: rows written per paper, drops by reason, acceptance per batch,
 > and the Opus failure classes. Use it to decide (a) whether T1 or the
 > prose-path fixes (findings 1–3 above, the `value_form` bug) come
-> first, (b) whether tables are where castor's errors are (then T1
+> first, (b) whether tables are where the local-serving node's errors are (then T1
 > before T2), and (c) the `sample_n`/bar for filler batches. Until it
 > lands, the order below is a default, not a ruling.
 
@@ -181,7 +181,7 @@ ref, so rows from several papers about one catalyst become one
   lexical name/alias matcher). One hit → that ref. No hit or several →
   a gardener-ledger proposal (`action='promote'`, payload `{paper,
   label, candidates, measure_ids}`), structural, never a direct write;
-  castor may draft the material title and aliases, Opus reviews per
+  the local-serving node may draft the material title and aliases, Opus reviews per
   the gardener rulings.
 - **Write:** the promoted row is a new `measures` row with
   `subject_ref_id` = the material, the same literal, measurand, inputs

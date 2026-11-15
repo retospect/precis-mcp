@@ -5606,7 +5606,7 @@ class StructureHandler(Handler):
         # renders both lists from topology (precis_capabilities.dft /
         # .autocatpath) into every minting daemon's env. Deliberately no
         # node-literal fallback — a hardcoded default outlives the node it names
-        # (the 2026-08-29 spark retirement left jobs minting against a ghost for
+        # (the 2026-08-29 GPU-node retirement left jobs minting against a ghost for
         # days), so unset refuses loudly.
         from precis.workers.job_types.struct_relax import target_node_for
 

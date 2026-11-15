@@ -129,7 +129,7 @@ allowlist of measure keys would be safer (design review §20.7).
 `frontier.py` (level in the basis, ranking by operating point), a stage-0
 script or job. No catpath change for the first pass.
 
-Compute, on castor+pollux:
+Compute, on both DGX nodes:
 - stage 0: ≈ 1 GPU-h;
 - β re-run, top 10 at one level: ≈ 15 GPU-h;
 - strain controls: ≈ 15 GPU-h per control set at neb tier, or ≈ 1 GPU-h at

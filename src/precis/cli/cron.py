@@ -39,7 +39,7 @@ def add_parser(subparsers: Any) -> None:
         "tick",
         help=(
             "Fire due recurring ticks (spawn + push delivery). "
-            "Launchd timer runs this every 60s on melchior."
+            "Launchd timer runs this every 60s on the agent host."
         ),
     )
 

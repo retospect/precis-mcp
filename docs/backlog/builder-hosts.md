@@ -58,7 +58,7 @@ marked UNVERIFIED. Vendor CLI linux-arm64 claims are web-verified
   unless the dir is NFS-shared; kimi/codex/devin lanes need no grant
   (`adapter.mcp=False`), scoped read grant is optional.
 
-### How melchior is provisioned today
+### How the agent host is provisioned today
 
 - `20g-precis-worker-slices.yml`: one launchd unit (service_unit role)
   `precis worker --only job_ssh_node --only plan_tick --batch-size 1`, env
@@ -170,13 +170,13 @@ Coordinator steps); no key → the code default (8) and the unsuffixed
 
 ## Canary plan
 
-spark first with one kimi slot → pollux → castor → non-DB Macs → DB host
+The GPU node first with one kimi slot → the second DGX node → the local-serving node → non-DB Macs → DB host
 last, conservative cap.
 
 ## Coordinator steps (do not run here)
 
-- inventory: add `[builder_hosts]` spark, pollux, castor, <macs>, <db-host>
-  (canary order — spark first with one kimi slot, DB host last with a
+- inventory: add `[builder_hosts]` the GPU node, the second DGX node, the local-serving node, <macs>, <db-host>
+  (canary order — the GPU node first with one kimi slot, DB host last with a
   conservative cap).
 - group_vars/builder_hosts.yml:
   ```yaml

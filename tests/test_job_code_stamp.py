@@ -35,13 +35,13 @@ def test_job_view_renders_ran_on_from_lease_meta(store: Store) -> None:
         meta={
             "job_type": "pcb_place",
             "executor": "job_inproc",
-            "lease_host": "melchior",
+            "lease_host": "maple",
             "lease_code": "8.33.0@8e0099fc",
         },
     )
     store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="agent")
     body = JobHandler(hub=hub).get(id=job.id).body
-    assert "ran_on: melchior (code 8.33.0@8e0099fc)" in body
+    assert "ran_on: maple (code 8.33.0@8e0099fc)" in body
 
 
 def test_job_view_flags_an_unstamped_pre_fix_row(store: Store) -> None:
@@ -52,7 +52,7 @@ def test_job_view_flags_an_unstamped_pre_fix_row(store: Store) -> None:
         kind="job",
         slug=None,
         title="old",
-        meta={"job_type": "pcb_place", "lease_host": "melchior"},
+        meta={"job_type": "pcb_place", "lease_host": "maple"},
     )
     body = JobHandler(hub=hub).get(id=job.id).body
-    assert "ran_on: melchior (code unstamped)" in body
+    assert "ran_on: maple (code unstamped)" in body

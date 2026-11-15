@@ -189,7 +189,7 @@ def test_convert_needs_a_human_mints_one_todo_per_bullet(store: Store) -> None:
     body = _body_with_asks(
         "Confirm the nursery fix landed (gr111)",
         "Decide whether to raise PRECIS_BACKLOG_GROOM_REFRESH_HOURS",
-        "Look at worker_logs for host melchior",
+        "Look at worker_logs for host maple",
     )
 
     new_body = doctor_report.convert_needs_a_human(store, body)
@@ -292,10 +292,10 @@ def test_doctor_ask_key_dedups_reworded_asks_by_referent() -> None:
     """gr452203: four re-authored bullets naming one commit are one ask."""
     key = doctor_report._doctor_ask_key
     keys = {
-        key("Deploy melchior to pick up b58a18a0 (gr346813) and 3fdae04c"),
-        key("Deploy b58a18a0 to melchior"),
-        key("Deploy main@b58a18a0 to melchior to land the fix."),
-        key("Deploy commit b58a18a0 to melchior (observability fix)"),
+        key("Deploy maple to pick up b58a18a0 (gr346813) and 3fdae04c"),
+        key("Deploy b58a18a0 to maple"),
+        key("Deploy main@b58a18a0 to maple to land the fix."),
+        key("Deploy commit b58a18a0 to maple (observability fix)"),
     }
     assert len(keys) == 1
     assert key("Look at gr111 again") == key("Please review gr111 today")
@@ -376,10 +376,10 @@ def test_reworded_ask_naming_the_same_referent_does_not_mint_again(
     store: Store,
 ) -> None:
     doctor_report.convert_needs_a_human(
-        store, _body_with_asks("Deploy melchior to pick up b58a18a0 (gr346813)")
+        store, _body_with_asks("Deploy maple to pick up b58a18a0 (gr346813)")
     )
     second = doctor_report.convert_needs_a_human(
-        store, _body_with_asks("Deploy commit b58a18a0 to melchior")
+        store, _body_with_asks("Deploy commit b58a18a0 to maple")
     )
 
     asks = _open_asks(store)
@@ -403,13 +403,13 @@ def test_ask_naming_an_open_td_reuses_it(store: Store) -> None:
 
 def test_done_ask_does_not_block_a_fresh_one(store: Store) -> None:
     doctor_report.convert_needs_a_human(
-        store, _body_with_asks("Deploy b58a18a0 to melchior")
+        store, _body_with_asks("Deploy b58a18a0 to maple")
     )
     (first,) = _open_asks(store)
     store.add_tag(int(first.id), Tag.closed("STATUS", "done"), set_by="system")
 
     doctor_report.convert_needs_a_human(
-        store, _body_with_asks("Deploy b58a18a0 to melchior again")
+        store, _body_with_asks("Deploy b58a18a0 to maple again")
     )
 
     assert len(_open_asks(store)) == 1
@@ -466,7 +466,7 @@ def test_ask_about_a_closed_gripe_still_mints(store: Store) -> None:
     doctor_report.convert_needs_a_human(
         store,
         _body_with_asks(
-            f"Confirm gr{done.id}'s fix reached melchior",
+            f"Confirm gr{done.id}'s fix reached maple",
             f"Decide whether gr{wontfix.id} should be reopened",
         ),
     )

@@ -289,7 +289,7 @@ def test_attest_thread_warns_once_when_no_row(
     monkeypatch.setattr(hb, "_probe_nas", lambda: {"nas_ok": True, "nas_path": "/p"})
     monkeypatch.setattr(hb, "_NAS_ATTEST_INTERVAL_SECONDS", 0.02)
     monkeypatch.delenv("PRECIS_NAS_ATTEST_INTERVAL_SECONDS", raising=False)
-    monkeypatch.setenv("PRECIS_HOST_NAME", "caspar-x")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "birch-x")
     stop = threading.Event()
     store = _AttestStore(landed=False)
     with caplog.at_level("WARNING", logger=hb.log.name):
@@ -301,7 +301,7 @@ def test_attest_thread_warns_once_when_no_row(
         t.join(timeout=5)
     warns = [r for r in caplog.records if "nowhere to land" in r.getMessage()]
     assert len(warns) == 1
-    assert "caspar-x" in warns[0].getMessage()
+    assert "birch-x" in warns[0].getMessage()
 
 
 def test_attest_thread_survives_store_error(monkeypatch: pytest.MonkeyPatch) -> None:

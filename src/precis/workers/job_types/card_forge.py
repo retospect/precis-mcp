@@ -3,7 +3,7 @@
 Third weekly reading-loop job beside ``reading_brief`` (02:30) and ``meditation``
 (21:00); scheduled at 01:30 so the week's cards exist before the brief composes
 (its recall lane reports them). Deterministic in-process producer under
-``claude_inproc`` (melchior — the authoring calls use a nice model via the
+``claude_inproc`` (the agent host — the authoring calls use a nice model via the
 litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'30 1 * * 1'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='card_forge'``). Calls

@@ -36,56 +36,56 @@ pytestmark = pytest.mark.db
 
 
 def test_set_reserve_then_reserve_active_true(store: Store) -> None:
-    expires_at = set_reserve(store, "melchior", hours=1.0, actor="test")
+    expires_at = set_reserve(store, "maple", hours=1.0, actor="test")
     assert expires_at is not None
     with store.pool.connection() as conn:
-        assert reserve_active(conn, "melchior") is True
-        assert reserve_active(conn, "caspar") is False  # exact-host only
+        assert reserve_active(conn, "maple") is True
+        assert reserve_active(conn, "birch") is False  # exact-host only
 
 
 def test_wildcard_reserve_gates_every_host(store: Store) -> None:
     set_reserve(store, ALL_HOSTS, hours=1.0, actor="test")
     with store.pool.connection() as conn:
-        assert reserve_active(conn, "melchior") is True
-        assert reserve_active(conn, "caspar") is True
-        assert reserve_active(conn, "spark") is True
+        assert reserve_active(conn, "maple") is True
+        assert reserve_active(conn, "birch") is True
+        assert reserve_active(conn, "spruce") is True
 
 
 def test_clear_reserve_removes_row(store: Store) -> None:
-    set_reserve(store, "melchior", hours=1.0)
-    assert clear_reserve(store, "melchior") is True
-    assert clear_reserve(store, "melchior") is False  # already gone
+    set_reserve(store, "maple", hours=1.0)
+    assert clear_reserve(store, "maple") is True
+    assert clear_reserve(store, "maple") is False  # already gone
     with store.pool.connection() as conn:
-        assert reserve_active(conn, "melchior") is False
+        assert reserve_active(conn, "maple") is False
 
 
 def test_expired_reserve_is_inert(store: Store) -> None:
     """A row whose expires_at is already in the past behaves as if absent —
     reserve_active's predicate alone is the auto-expiry, no reaper needed."""
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE service_config SET expires_at = now() - interval '1 second' "
             "WHERE host = %s AND service = 'reserve'",
-            ("melchior",),
+            ("maple",),
         )
         conn.commit()
-        assert reserve_active(conn, "melchior") is False
+        assert reserve_active(conn, "maple") is False
 
 
 def test_set_reserve_rejects_out_of_bounds_hours(store: Store) -> None:
     with pytest.raises(ValueError):
-        set_reserve(store, "melchior", hours=0)
+        set_reserve(store, "maple", hours=0)
     with pytest.raises(ValueError):
-        set_reserve(store, "melchior", hours=-1)
+        set_reserve(store, "maple", hours=-1)
     with pytest.raises(ValueError):
-        set_reserve(store, "melchior", hours=169)
+        set_reserve(store, "maple", hours=169)
 
 
 def test_reserve_row_visible_in_list_service_config(store: Store) -> None:
-    set_reserve(store, "melchior", hours=2.0, actor="reto")
+    set_reserve(store, "maple", hours=2.0, actor="reto")
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    row = rows[("melchior", "reserve")]
+    row = rows[("maple", "reserve")]
     assert row["prio"] == 1
     assert row["expires_at"] is not None
 
@@ -110,13 +110,13 @@ def _queue_job(store: Store, *, executor: str) -> int:
 
 def test_active_reserve_blocks_ssh_node_style_claim(store: Store) -> None:
     rid = _queue_job(store, executor="ssh_node")
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
             executor="ssh_node",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             respect_reserve=True,
         )
         conn.commit()
@@ -132,13 +132,13 @@ def test_active_reserve_blocks_ssh_node_style_claim(store: Store) -> None:
 
 def test_active_reserve_blocks_claude_docker_style_claim(store: Store) -> None:
     _queue_job(store, executor="claude_docker")
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
             executor="claude_docker",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             respect_reserve=True,
         )
         conn.commit()
@@ -149,13 +149,13 @@ def test_active_reserve_blocks_job_inproc_style_claim(store: Store) -> None:
     """§F cycle a: ``job_inproc`` passes ``respect_reserve=True`` too — the
     box-heavy bounded lane, same as ``ssh_node``/``claude_docker``."""
     rid = _queue_job(store, executor="job_inproc")
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
             executor="job_inproc",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             respect_reserve=True,
         )
         conn.commit()
@@ -173,13 +173,13 @@ def test_reserve_does_not_gate_a_call_that_opts_out(store: Store) -> None:
     """coordinator / claude_inproc never pass respect_reserve — the light
     cloud lane keeps running even while the box is reserved."""
     _queue_job(store, executor="coordinator")
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
             executor="coordinator",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             # respect_reserve defaults to False
         )
         conn.commit()
@@ -188,19 +188,19 @@ def test_reserve_does_not_gate_a_call_that_opts_out(store: Store) -> None:
 
 def test_expired_reserve_row_lets_claims_resume(store: Store) -> None:
     _queue_job(store, executor="ssh_node")
-    set_reserve(store, "melchior", hours=1.0)
+    set_reserve(store, "maple", hours=1.0)
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE service_config SET expires_at = now() - interval '1 second' "
             "WHERE host = %s AND service = 'reserve'",
-            ("melchior",),
+            ("maple",),
         )
         conn.commit()
         rows = claim_executor_jobs(
             conn,
             executor="ssh_node",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             respect_reserve=True,
         )
         conn.commit()
@@ -209,13 +209,13 @@ def test_expired_reserve_row_lets_claims_resume(store: Store) -> None:
 
 def test_exact_host_reserve_does_not_gate_another_host(store: Store) -> None:
     _queue_job(store, executor="ssh_node")
-    set_reserve(store, "melchior", hours=1.0)  # reserves melchior, not spark
+    set_reserve(store, "maple", hours=1.0)  # reserves maple, not spruce
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
             executor="ssh_node",
             limit=10,
-            reserve_host_id="spark",
+            reserve_host_id="spruce",
             respect_reserve=True,
         )
         conn.commit()
@@ -231,7 +231,7 @@ def test_no_reserve_row_is_byte_identical(store: Store) -> None:
             conn,
             executor="ssh_node",
             limit=10,
-            reserve_host_id="melchior",
+            reserve_host_id="maple",
             respect_reserve=True,
         )
         conn.commit()

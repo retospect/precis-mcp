@@ -69,7 +69,7 @@ restart me*. Docker's own restart policy takes that job:
 `docker run -d --name precis-mcp-http --restart unless-stopped` (**not**
 `--rm` — the two flags are mutually exclusive), serving
 `precis serve --transport streamable-http --host 127.0.0.1 --port 8765`.
-Port 8765 is `server.main`'s own default and is free on melchior (checked
+Port 8765 is `server.main`'s own default and is free on the agent host (checked
 against `lsof -iTCP -sTCP:LISTEN`).
 
 A named, non-ephemeral container pins its env at *creation*, so changing
@@ -205,7 +205,7 @@ env override (`store/store.py::Store.connect` /
   invisible *and* leave every client on a stale tool list.
 - **Not a prod change.** Cluster daemons keep their own stdio/venv path
   and the existing `site-packages` install watchdog. Only the developer
-  session MCP on melchior moves.
+  session MCP on the agent host moves.
 - **No per-worktree source views.** All sessions share one `/app`
   snapshot of the main checkout — the same as today, where every
   container bind-mounts the same `REPO`.

@@ -79,7 +79,7 @@ Pipeline, deterministic first:
    ref-level on the cited side, written with `add_link(relation='cites',
    src_pos=<chunk ord>, set_by=…, meta={'marker': …, 'marker_order': …})`.
    Cheap and idempotent, so safe to run for any accessed paper.
-4. **Passage match (LLM, castor local). Gate ruled (Reto 2026-10-24):
+4. **Passage match (LLM, local-serving node). Gate ruled (Reto 2026-10-24):
    `cites` is exempt from the machine-edge co-retrievable refusal;
    `meta.evidence` + writer annotation stay required — see decisions log.**
    Deterministic layers proceed.
@@ -113,12 +113,12 @@ Pipeline, deterministic first:
 6. **Routing.** The passage match is an LLM operation registered in
    `src/precis/utils/llm/operations.py::LLM_OPERATIONS` as
    `cite_resolve:passage` (tier `BIG`, `model=None`, label/description/note in
-   the `chase:verify` entry's shape). The operator steers it to castor's
+   the `chase:verify` entry's shape). The operator steers it to the local-serving node's
    local gpt-oss lane by writing the `app_settings` row
-   `llm.op.cite_resolve:passage` with the castor chain, exactly as the
+   `llm.op.cite_resolve:passage` with the local-serving node chain, exactly as the
    2026-10-22 ruling did for `chase:verify` (its entry's `note`). Call site
    sets `source='cite_resolve:passage'`, pins no `model=`, goes through
-   `route()` so it logs to `llm_call_log`. Reto's explicit choice: castor
+   `route()` so it logs to `llm_call_log`. Reto's explicit choice: the local-serving node
    local, not a cloud tier.
 7. **Triggers.** Access-driven: first `get` of a paper marks it
    (`CITERES:pending`, closed tag, same shape as `mark_paper_active`); a
@@ -154,14 +154,14 @@ not); every chunk-sourced `cites` link carries `meta.marker_order` and a
 chunk's links render in occurrence order; author-year parse leaves no stored
 row anywhere; an access never triggers `bib_parse`. The LLM pass (gate ruled
 — `cites` is exempt; evidence + annotation stand) writes no link without a `meta.evidence` pin and
-runs only on the castor chain (`llm_call_log.model` shows the local model).
+runs only on the local-serving node chain (`llm_call_log.model` shows the local model).
 
 ## Slices (smallest first)
 
 | # | Slice | Acceptance |
 |---|---|---|
 | 5 | Access trigger (`CITERES:pending`, drain pass, per-chunk version marker). Never bumps `bib_parse`. | Reading a paper marks it once; the pass processes only marked papers; ship dark; an unmarked paper is never touched (test on the claim query); a paper with no entries is skipped, no parse enqueued. |
-| 6 | **Machine-edge gate ruled (exempt — see decisions log); the eval question stays open.** Passage layer: `cite_resolve:passage` op, top-5 candidate pick, chunk→chunk upgrade, `none` memo. | Registered in `LLM_OPERATIONS` (registry test passes); with the castor row set, calls log to the local model; link carries `meta.evidence` + `why`; `none` is memoized and not retried. |
+| 6 | **Machine-edge gate ruled (exempt — see decisions log); the eval question stays open.** Passage layer: `cite_resolve:passage` op, top-5 candidate pick, chunk→chunk upgrade, `none` memo. | Registered in `LLM_OPERATIONS` (registry test passes); with the local-serving node row set, calls log to the local model; link carries `meta.evidence` + `why`; `none` is memoized and not retried. |
 | 7 | On-request job with ETA ("deep link this set"); the only path that bumps `bib_parse` for a named paper lacking entries. | Job over N papers reports queued/ETA, outranks the access queue, bumps `bib_parse` only for the named papers, finishes with a per-paper count of resolved/ambiguous/unheld. |
 
 ## Target + blast radius
@@ -172,7 +172,7 @@ one `LLM_OPERATIONS` entry. Touches `handlers/paper.py` (the mark call,
 beside `mark_paper_active`), `workers/registry.py` (new pass, default off),
 no migration (author-year is not stored). Link volume:
 bounded by accessed papers × citations per paper; the LLM lane is bounded
-by the castor slot the router takes.
+by the local-serving node slot the router takes.
 
 ## Open questions / decisions log
 
@@ -242,7 +242,7 @@ Resolved since draft:
   `meta.cite_resolve_progress`; the per-paper
   `{resolved, ambiguous, unheld}` count on `meta.cite_resolve`.
 - **Passage layer (slice 6, built).** `cite_resolve:passage` registered
-  in `LLM_OPERATIONS` (BIG, castor steer); `cites` added to
+  in `LLM_OPERATIONS` (BIG, the local-serving node steer); `cites` added to
   `MACHINE_EDGE_STANCE` per ruling #1; `run_passage_sweep` upgrades
   ref-level links to chunk→chunk and memos `none` on
   `links.meta.passage`. Gate: `PRECIS_CITE_RESOLVE_PASSAGE_ENABLED`
@@ -250,6 +250,6 @@ Resolved since draft:
 
 Open:
 
-2. **Eval.** Passage-layer precision on castor gpt-oss vs a frontier judge
+2. **Eval.** Passage-layer precision on the local-serving node gpt-oss vs a frontier judge
    (see `llm-judge-reliability.md`): is a sampled review gate wanted before
    the link is shown, as for `chase:verify`?

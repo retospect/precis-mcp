@@ -6,7 +6,7 @@ one hub per transaction, resumable, via :func:`apply_dry_run` (per-verdict
 routing: its own docstring).
 
 **Quiet window (an operator step, not code)**: pause ``hub_refine``/
-``chase_trigger`` and avoid 02:00-03:30 UTC (nightly backup + caspar's
+``chase_trigger`` and avoid 02:00-03:30 UTC (nightly backup + the database host's
 reboot) before ``precis taproot-migrate apply``
 (``docs/backlog/taproot-compound-migration.md`` §Strategy, "Quiet window").
 :func:`apply_dry_run` has no opinion on *when*; it only assumes nothing

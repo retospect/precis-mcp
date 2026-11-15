@@ -2,7 +2,7 @@
 
 **When.** You need a **real** docx/PDF/EndNote artifact built from prod data
 with *unshipped worktree code* — fast feedback on a brittle format before it
-ships. This beats "ship + deploy, then download from the melchior web UI" when
+ships. This beats "ship + deploy, then download from the web host's UI" when
 the output needs a human's eyes first.
 
 **Recipe.** Connect a `Store` straight to prod from the host and run the

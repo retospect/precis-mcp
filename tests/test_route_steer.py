@@ -260,7 +260,7 @@ def test_put_records_strategy_and_returns_at_once(
     """Compute lane: the put records the strategy and returns at once — no
     LLM call in the request (the rerank runs in the job), and the page notes
     the pending rerank."""
-    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spruce")
     h = _try(RouteHandler, hub=Hub(store=route_store))
     assert h is not None
     calls: list[str] = []
@@ -322,7 +322,7 @@ def test_dispatch_reranks_fresh_plan_and_summary_names_pick(
         "engine_version": "stub-v1",
         "cache_key": "retrosynth:k",
         "strategy": "avoid acid chlorides",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -369,7 +369,7 @@ def test_dispatch_skips_engine_when_plan_already_landed(
         "engine_version": "stub-v1",
         "cache_key": "retrosynth:k",
         "strategy": "fewest steps",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -390,7 +390,7 @@ def test_two_puts_differing_only_in_strategy_share_one_run(
 ) -> None:
     """put s1 → job plans + ranks; put s2 → cache hit mints a steer-only job
     that ranks s2 without re-running the engine."""
-    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spruce")
     calls: list[str] = []
     monkeypatch.setattr(steer, "router_ask", _fake_ask(calls))
     plans: list[str] = []
@@ -499,7 +499,7 @@ def test_route_page_leads_with_strategy_pick(
         "engine": "stub",
         "engine_version": "stub-v1",
         "cache_key": "retrosynth:k",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     monkeypatch.setattr(StubEngine, "plan", lambda self, t, **kw: _graph())
     ctx = _FakeCtx(store=route_store, params=params)

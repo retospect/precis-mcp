@@ -101,7 +101,7 @@ class TestParser:
         job_ssh_node (2026-08-08) and job_inproc (gr208523) tests above
         pin: worker.py's registration comment promised the flag while the
         argparse ``choices`` tuple never carried it, so the unit exit-2
-        crash-looped on castor's first boot (2026-09-06)."""
+        crash-looped on cedar's first boot (2026-09-06)."""
         monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "job_claude_docker", "--once"])
@@ -876,7 +876,7 @@ class TestControlCutoverGateDefaults:
     def test_a_no_row_runs_iff_the_structural_default_says_so(self, store):
         from precis.workers.service_config import ServiceConfigResolver
 
-        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        resolver = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
         # A profile-rotation pass (minter) with no row: on.
         assert resolver.enabled("minter", default_on=True) is True
         # A formerly-env-gated pass (hub_refine) with no row: §L retired the
@@ -889,8 +889,8 @@ class TestControlCutoverGateDefaults:
             set_service_prio,
         )
 
-        set_service_prio(store, "melchior", "minter", 0, actor="test")
-        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        set_service_prio(store, "maple", "minter", 0, actor="test")
+        resolver = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
         assert resolver.enabled("minter", default_on=True) is False
 
     def test_c_prio_nonzero_enables_a_formerly_env_gated_pass_with_no_env(
@@ -907,7 +907,7 @@ class TestControlCutoverGateDefaults:
 
         assert _should_register(None, "hub_refine", profile_passes=frozenset())
         set_service_prio(store, "*", "hub_refine", 5, actor="test")
-        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        resolver = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
         # default_on mirrors `_profile_default_on("hub_refine")` == False
         # (no default_profiles, and the env fallback is retired).
         assert resolver.enabled("hub_refine", default_on=False) is True
@@ -919,9 +919,9 @@ class TestControlCutoverGateDefaults:
         )
 
         set_service_prio(store, "*", "hub_refine", 5, actor="test")
-        set_service_prio(store, "melchior", "hub_refine", 0, actor="test")
-        r_mel = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
-        r_cas = ServiceConfigResolver(store, host="caspar", ttl_s=0.0)
+        set_service_prio(store, "maple", "hub_refine", 0, actor="test")
+        r_mel = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
+        r_cas = ServiceConfigResolver(store, host="birch", ttl_s=0.0)
         assert r_mel.enabled("hub_refine", default_on=False) is False  # exact 0 wins
         assert r_cas.enabled("hub_refine", default_on=False) is True  # falls to '*'
 

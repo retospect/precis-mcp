@@ -30,7 +30,7 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 #: ``ChainableUndefined`` is the defensive choice: a missing context
 #: key renders as empty string and tolerates chained access
 #: (``missing.foo.bar`` → empty, not 500). The trigger was the live
-#: incident on melchior — a stale process omitted ``usage`` from the
+#: incident on the web host — a stale process omitted ``usage`` from the
 #: status context and Jinja's default ``Undefined`` raised
 #: ``UndefinedError`` on ``usage.get(...)``, blanking the whole page.
 #: Routes still pass full context dicts; this only catches the

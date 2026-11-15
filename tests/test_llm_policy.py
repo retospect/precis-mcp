@@ -341,13 +341,13 @@ class TestFreeLocal:
         from precis.utils.llm.policy import _model_price
 
         # card-level served_by → free even with no price on the card
-        assert _model_price({"served_by": [{"host": "spark"}]}) == 0.0
+        assert _model_price({"served_by": [{"host": "spruce"}]}) == 0.0
         # offering-nested served_by → also free (§6 nests it under the offering)
         assert (
             _model_price(
                 {
                     "offerings": [
-                        {"transport": "openai_tools", "served_by": [{"host": "spark"}]}
+                        {"transport": "openai_tools", "served_by": [{"host": "spruce"}]}
                     ]
                 }
             )
@@ -374,7 +374,7 @@ class TestFreeLocal:
             "local-served",
             tier_floor="big",
             offerings=[{"transport": "openai_tools"}],
-            served_by=[{"host": "spark", "max_parallel": 2}],
+            served_by=[{"host": "spruce", "max_parallel": 2}],
             capability={"code": 4},
         )
         sel = select_offering(
@@ -407,7 +407,7 @@ class TestFreeLocal:
             "local-big",
             tier_floor="big",
             offerings=[{"transport": "openai_tools"}],
-            served_by=[{"host": "spark"}],
+            served_by=[{"host": "spruce"}],
             capability={"code": 4},
         )
         sel = select_offering(
@@ -429,7 +429,7 @@ class TestLocalOfferingSelection:
             model_id,
             tier_floor="medium",
             offerings=[{"transport": "openai_compat", "price_in": 0.5}],
-            served_by=[{"host": "castor", "max_parallel": 4}],
+            served_by=[{"host": "cedar", "max_parallel": 4}],
             capability={"code": 3},
         )
 
@@ -437,12 +437,12 @@ class TestLocalOfferingSelection:
         from precis.utils.llm.policy import select_offering
 
         self._served_card(clean_catalog)
-        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        _seed_heartbeat(clean_catalog, "cedar", minutes_ago=0)
         sel = select_offering(clean_catalog, _req(tier_floor="medium"))
         assert sel.from_catalog and sel.model == "oss-served"
         assert sel.offering is not None
         assert sel.offering["transport"] == "local"
-        assert sel.offering["served_by"][0]["host"] == "castor"
+        assert sel.offering["served_by"][0]["host"] == "cedar"
 
     def test_dark_host_falls_back_to_the_cloud_offering(
         self, clean_catalog: Any
@@ -450,7 +450,7 @@ class TestLocalOfferingSelection:
         from precis.utils.llm.policy import select_offering
 
         self._served_card(clean_catalog)
-        _seed_heartbeat(clean_catalog, "castor", minutes_ago=60)  # stale past HOST_DARK
+        _seed_heartbeat(clean_catalog, "cedar", minutes_ago=60)  # stale past HOST_DARK
         sel = select_offering(clean_catalog, _req(tier_floor="medium"))
         assert sel.offering is not None
         assert sel.offering["transport"] == "openai_compat"
@@ -469,7 +469,7 @@ class TestLocalOfferingSelection:
         from precis.utils.llm.policy import select_offering
 
         self._served_card(clean_catalog)
-        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        _seed_heartbeat(clean_catalog, "cedar", minutes_ago=0)
         sel = select_offering(
             clean_catalog, _req(tier_floor="medium", transport="local")
         )
@@ -485,7 +485,7 @@ class TestLocalOfferingSelection:
         from precis.utils.llm.policy import select_offering
 
         self._served_card(clean_catalog)
-        _seed_heartbeat(clean_catalog, "castor", minutes_ago=60)
+        _seed_heartbeat(clean_catalog, "cedar", minutes_ago=60)
         sel = select_offering(
             clean_catalog, _req(tier_floor="medium", transport="local")
         )
@@ -498,7 +498,7 @@ class TestLocalOfferingSelection:
         from precis.utils.llm.policy import select_offering
 
         self._served_card(clean_catalog)
-        _seed_heartbeat(clean_catalog, "castor", minutes_ago=0)
+        _seed_heartbeat(clean_catalog, "cedar", minutes_ago=0)
         sel = select_offering(
             clean_catalog, _req(tier_floor="medium", transport="openai_compat")
         )

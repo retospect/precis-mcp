@@ -977,7 +977,7 @@ def test_notify_critical_alert_queues_message_when_target_set(
 
     monkeypatch.setenv("PRECIS_OPS_ALERT_TARGET", "discord/1/2/3")
     ok = notify_critical_alert(
-        store, "dead-worker: agent on melchior", "silent 12h", fingerprint="dw:m:agent"
+        store, "dead-worker: agent on maple", "silent 12h", fingerprint="dw:m:agent"
     )
     assert ok is True
     with store.pool.connection() as conn:
@@ -1054,7 +1054,7 @@ def test_raise_alert_stamps_registered_rule_id(store: Store) -> None:
     aid, _ = raise_alert(
         store,
         source="nursery:dead-worker",
-        fingerprint="dead-worker:melchior:precis-worker",
+        fingerprint="dead-worker:maple:precis-worker",
         title="dead",
         severity="critical",
     )
@@ -1065,7 +1065,7 @@ def test_raise_alert_stamps_registered_rule_id(store: Store) -> None:
     raise_alert(
         store,
         source="nursery:dead-worker",
-        fingerprint="dead-worker:melchior:precis-worker",
+        fingerprint="dead-worker:maple:precis-worker",
         title="dead (still)",
         severity="critical",
     )
@@ -1133,13 +1133,13 @@ def test_handler_composite_id_open_shows_live_row_and_recurrence(
     aid, _ = raise_alert(
         store,
         source="nursery:host-dark",
-        fingerprint="host-dark:caspar",
-        title="[host-dark] caspar",
+        fingerprint="host-dark:birch",
+        title="[host-dark] birch",
         detail="no heartbeat 40min",
         severity="critical",
     )
-    body = handler.get(id="nursery:host-dark/host-dark:caspar").body
-    assert body.startswith("# nursery:host-dark/host-dark:caspar [open]")
+    body = handler.get(id="nursery:host-dark/host-dark:birch").body
+    assert body.startswith("# nursery:host-dark/host-dark:birch [open]")
     assert f"open: alert {aid} · severity critical · seen_count 1" in body
     assert "no heartbeat 40min" in body
     assert "recurrence: 1 row(s)" in body
@@ -1148,7 +1148,7 @@ def test_handler_composite_id_open_shows_live_row_and_recurrence(
 
 def test_handler_composite_id_splits_on_first_slash(hub: Hub, store: Store) -> None:
     """Fingerprints may contain ``/`` (prod convention — llm-degraded,
-    pass-dead, ``caspar:/``); only the first slash separates source."""
+    pass-dead, ``birch:/``); only the first slash separates source."""
     handler = AlertHandler(hub=hub)
     raise_alert(
         store,
@@ -1161,8 +1161,8 @@ def test_handler_composite_id_splits_on_first_slash(hub: Hub, store: Store) -> N
     ).body
     assert "[open]" in body
     assert "rule: watchdog:condition/llm-degraded:{model}/{transport}/{tier}" in body
-    body = handler.get(id="disk_check/caspar:/").body
-    assert body.startswith("# disk_check/caspar:/ [not open]")
+    body = handler.get(id="disk_check/birch:/").body
+    assert body.startswith("# disk_check/birch:/ [not open]")
 
 
 def test_handler_composite_id_unregistered_says_so(hub: Hub) -> None:
@@ -1221,7 +1221,7 @@ def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
         "computed_at": datetime(2026, 10, 14, 8, 0, tzinfo=UTC),
         "snapshot_age_hours": 0.5,
         "open_alerts": {"warn": 1, "critical": 2},
-        "open_critical": [{"ref_id": 489172, "title": "castor host-dark"}],
+        "open_critical": [{"ref_id": 489172, "title": "cedar host-dark"}],
         "checks": [
             {
                 "id": "watchdog:discovery/embed",
@@ -1260,7 +1260,7 @@ def test_handler_health_view_terse_ok_rows(hub: Hub, monkeypatch: Any) -> None:
     # gr489193: an ok row's age carries its resolved budget
     assert "- watchdog:reading/card_forge [warn, 82.1h of 170h]" in body
     # gr489194: the critical count names its alerts; the cap overflow points on
-    assert "## open critical (2)\n- al489172 castor host-dark" in body
+    assert "## open critical (2)\n- al489172 cedar host-dark" in body
     assert "- more: get(kind='alert', id='/open')" in body
 
 
@@ -1405,7 +1405,7 @@ def _resolved(store: Store, ref_id: int) -> tuple[Any, Any]:
     ("source", "fingerprint", "quiet_s"),
     [
         ("budget", "cap-hourly", alerts_mod.QUIET_RESOLVE_BUDGET_S),
-        ("sweeper", "off-lane-pin:castor/dft", alerts_mod.QUIET_RESOLVE_OFF_LANE_S),
+        ("sweeper", "off-lane-pin:cedar/dft", alerts_mod.QUIET_RESOLVE_OFF_LANE_S),
     ],
 )
 def test_resolve_quiet_alerts_closes_only_past_window(

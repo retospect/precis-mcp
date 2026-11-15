@@ -81,11 +81,11 @@ precis taproot repair-evidence --draft dr42995 --limit 20 --out /tmp/repair-dr42
 
 #### Blocker, found 2026-08-21: it cannot be run from an interactive SSH session
 
-Deployed and attempted on melchior. **All 20 edges errored**, every one with
+Deployed and attempted on the agent host. **All 20 edges errored**, every one with
 `claude -p … "result":"Not logged in · Please run /login"`. Four escalating
 attempts all failed the same way:
 
-1. plain `ssh melchior` as the operator → not logged in
+1. plain `ssh <agent-host>` as the operator → not logged in
 2. `+ HOME=/Users/deploy` (the daemon's home, `.claude` present) → not logged in <!-- home-path: allow — the daemon's real env value -->
 3. `--tier small` with the daemon's full `EnvironmentVariables` exported → **HTTP
    401, "Missing…"** — the OpenRouter key is not in that plist either
@@ -105,7 +105,7 @@ which is idleness, not failure.)
 - as a **worker job**, in the process context that already dispatches
   successfully — the architecturally right answer, but `repair-evidence` is not
   a registered job type yet; or
-- **by a human on melchior in a logged-in session**, which is the cheap answer
+- **by a human on the agent host in a logged-in session**, which is the cheap answer
   for a one-off backfill.
 
 **The tool itself behaved correctly under total dispatch failure** and this is

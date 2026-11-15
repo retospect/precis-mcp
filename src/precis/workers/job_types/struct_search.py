@@ -108,7 +108,7 @@ DESCRIPTION = (
     "top-K distinct candidates as structure rows."
 )
 
-#: The Linux DFT node mounts caspar's export at /shared (macOS nodes use
+#: The Linux DFT node mounts the database host's export at /shared (macOS nodes use
 #: /opt/shared) — mirrors struct_relax._NFS_ROOT so search scratch lives
 #: alongside relax scratch on the same shared root.
 _NFS_ROOT = os.environ.get("PRECIS_DFT_NFS_ROOT", "/shared")

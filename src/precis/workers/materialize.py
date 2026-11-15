@@ -114,7 +114,7 @@ _TICK_BUCKET_S = 300
 # ── SMALL-LLM derived-drain bands (docs/backlog/small-llm-derived-drain-band.md)
 # A different minting POLICY from embed's backlog high-water: keep a BAND of
 # 20–50 live `derived_drain` jobs per SMALL queue (summarize / classify) while
-# backlog remains, so melchior's job_inproc always has a next low-prio job to
+# backlog remains, so the agent host's job_inproc always has a next low-prio job to
 # claim. Per-source (each SMALL queue is its own band), default-OFF.
 _SMALL_BAND_SUMMARIZE_ENV = "PRECIS_SMALL_BAND_SUMMARIZE"
 _SMALL_BAND_CLASSIFY_ENV = "PRECIS_SMALL_BAND_CLASSIFY"
@@ -124,7 +124,7 @@ _SMALL_DRAIN_LIMIT_ENV = "PRECIS_SMALL_DRAIN_LIMIT"
 _SMALL_DRAIN_CONCURRENCY_ENV = "PRECIS_SMALL_DRAIN_CONCURRENCY"
 #: The host whose local SMALL model these jobs pin to (params.target_node — a
 #: job_inproc claim-gate node pin). MUST match that host's PRECIS_NODE claim
-#: identity, else the job strands unclaimed. Default melchior (the SMALL server).
+#: identity, else the job strands unclaimed. Default: the agent host (the SMALL server).
 _SMALL_TARGET_NODE_ENV = "PRECIS_SMALL_DRAIN_TARGET_NODE"
 
 _DEFAULT_BAND_LOW = 20
@@ -157,7 +157,7 @@ def _small_drain_limit() -> int:
 
 def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
     """A ``params_fn`` for a SMALL derived_drain source — carries the pass
-    discriminator, the per-job chunk limit, and the melchior host pin.
+    discriminator, the per-job chunk limit, and the agent-host pin.
 
     ``params.concurrency`` is minted ONLY from an explicit
     ``PRECIS_SMALL_DRAIN_CONCURRENCY``: unset → the key is absent and the
@@ -614,7 +614,7 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
     live = _live_jobs(store, src.job_type, params_pass=src.params_pass)
     if live >= low:
         # Band full → not minting. That's NORMAL while jobs drain, but STUCK if
-        # the band is full of jobs NOTHING is claiming (dead melchior worker or
+        # the band is full of jobs NOTHING is claiming (dead agent-host worker or
         # a target_node that no host's claim-gate matches) while backlog remains
         # — the band-policy analogue of the high-water WARN (there's no
         # count-vs-4×HIGH here; "full but 0 running" is the precise signal).
@@ -645,7 +645,7 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
                 "materialize: %s band full (%d live) but 0 running with "
                 "free lane capacity (%d/%s running) and backlog=%d — "
                 "nothing is draining; check target_node pin / the "
-                "melchior worker (band=[%d,%d])",
+                "agent-host worker (band=[%d,%d])",
                 src.name,
                 live,
                 lane_running,

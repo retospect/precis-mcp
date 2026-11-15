@@ -196,7 +196,7 @@ def test_main_no_op_when_no_correction_needed(monkeypatch, capsys) -> None:
     assert out is None
 
 
-class TestCastorLane:
+class TestCedarLane:
     """gr506125: with PRECIS_CASTOR_LANE set (scripts/claude-local), file
     tools refuse paths outside the session's task tree — the gpt-oss
     re-pilot aimed every Edit at the main checkout and stalled on refusals
@@ -221,7 +221,7 @@ class TestCastorLane:
 
     def test_main_only_path_without_twin_is_denied(self, monkeypatch, capsys):
         # evaluate() left it alone (a deliberate main-only path in a normal
-        # session); the castor lane denies instead.
+        # session); the cedar lane denies instead.
         rc, out = self._run(monkeypatch, capsys, f"{MAIN}/src/new.py")
         assert rc == 0
         hso = out["hookSpecificOutput"]

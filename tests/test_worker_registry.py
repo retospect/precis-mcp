@@ -368,7 +368,7 @@ def test_axis_service_config_row_overrides_default_off(store) -> None:
     from precis.workers.service_config import ServiceConfigResolver, set_service_prio
 
     set_service_prio(store, "*", "axis:material", 5, actor="test")
-    resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    resolver = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
 
     assert resolver.enabled("axis:material", default_on=False) is True
     assert resolver.enabled("axis:domain", default_on=False) is False

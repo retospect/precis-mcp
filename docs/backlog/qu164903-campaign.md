@@ -209,10 +209,10 @@ over once catpath 0.17 exists.
    311) and the `catalyst-gpu` extra's `autocatpath[mace]>=0.13.0` (~line
    321), re-lock, ship. CANNOT ship while the package is private — `uv lock`
    has to resolve the pin from PyPI. After this ships + deploys, DELETE the
-   wheelhouse wheels (`/opt/precis/wheels/autocatpath-*.whl` on spark/
-   castor/pollux) — a lingering wheel overrides any newer published pin.
-3. **Deploy the code**: `scripts/deploy` (cluster venvs + melchior — the
-   dispatch/harvest side of s3 lives in precis, so melchior needs it) AND
+   wheelhouse wheels (`/opt/precis/wheels/autocatpath-*.whl` on the GPU node,
+   the local-serving node, the second DGX node) — a lingering wheel overrides any newer published pin.
+3. **Deploy the code**: `scripts/deploy` (cluster venvs + the agent host — the
+   dispatch/harvest side of s3 lives in precis, so the agent host needs it) AND
    `ansible-playbook playbooks/44-autocatpath.yml` from the synced main
    tree's `deploy/` (sparks' worker venvs: reinstalls precis-mcp@main +
    engine; NOT covered by `redeploy-precis.yml` — `catpath-dev-deploy` in
@@ -233,7 +233,7 @@ over once catpath 0.17 exists.
 5. **Re-key + redispatch**: `precis quest reset-compute 164903` then
    `precis quest redispatch 164903` (the CLI's `id` arg is the numeric
    ref id, not the `qu`-prefixed handle; prod one-off CLI, `prod-one-off-
-   cli-write` recipe in memory — DSN from the melchior web plist,
+   cli-write` recipe in memory — DSN from the agent host's web plist,
    `--database-url`, run remotely). Re-keying is already guaranteed by the
    `_AUTOCATPATH_SUMMARY_REV` bump to `s3` shipped alongside this slice
    (`precis/quest/compute.py`) — a pre-s3 aggregate carries none of the
@@ -255,8 +255,8 @@ over once catpath 0.17 exists.
   them (`kind='job'`, `job_type='autocatpath_aggregate'`, succeeded, note
   LIKE 'engine 0.13%' or missing `kinetics_trusted`) and re-run just those
   candidates. Cheapest correct lever: install the 0.17 wheel into
-  melchior's venvs too (fixes the engine-version token dispatch stamps
-  into idem keys — melchior's pure-[catalyst] autocatpath is still 0.13),
+  the agent host's venvs too (fixes the engine-version token dispatch stamps
+  into idem keys — the agent host's pure-[catalyst] autocatpath is still 0.13),
   then `redispatch` — but ONLY once the batch has drained, because the new
   version token re-keys EVERYTHING and would orphan in-flight work.
 - **TOF ≈ 0 candidates read as untrusted, not measured-dead**: barriers
@@ -290,8 +290,8 @@ over once catpath 0.17 exists.
   and the frontier hub (`/refs/quest/164903`) plots the new axes by
   default (no `?fx=&fy=` override needed).
 - The quest's dispatch is un-suspended and ticking again.
-- Fan-out proven (the last unproven piece of the 3-spark cutover): fresh
-  `autocatpath_seed` jobs spread across spark/castor/pollux — check
+- Fan-out proven (the last unproven piece of the 3-GB10-node cutover): fresh
+  `autocatpath_seed` jobs spread across the GPU node, the local-serving node and the second DGX node — check
   `target_node` distribution on new rows (`kind='job'`,
   `meta->>'job_type'='autocatpath_seed'`, `retired_at IS NULL`).
 

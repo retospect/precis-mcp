@@ -1,16 +1,16 @@
-# Prod DB down after a caspar reboot — stale `postmaster.pid`
+# Prod DB down after the database host reboot — stale `postmaster.pid`
 
 **Symptom.** asa/precis goes fully silent — no morning news, no responses, no
-briefing. Every `claude_inproc` job stalls (they run on melchior's agent
+briefing. Every `claude_inproc` job stalls (they run on the agent host's agent
 worker) and asa-bot is mute. The cause is not the worker: it is the **prod DB
 being down**.
 
-caspar reboots nightly at 03:00 UTC (`daily-update-reboot.sh`, hardening
+The database host reboots nightly at 03:00 UTC (`daily-update-reboot.sh`, hardening
 role), so this class of failure surfaces as a morning outage.
 
 ## Diagnostic chain
 
-1. pgbouncer on caspar `$PGB_HOST:6432` answers but returns
+1. pgbouncer on the database host `$PGB_HOST:6432` answers but returns
    `client_login_timeout (server down)` → the backend Postgres on `5432` is
    down, not the pooler.
 2. Check `uptime` — a reboot in the last few hours is the tell.
@@ -36,7 +36,7 @@ how we asked" from "down" first:
 ## Immediate recovery
 
 `rm` the stale `postmaster.pid`. KeepAlive restarts Postgres within ~10s — no
-sudo needed, the file is `deploy`-owned. The agent worker (melchior,
+sudo needed, the file is `deploy`-owned. The agent worker (the agent host,
 `/opt/mcps/venv`, find it with `pgrep -lf "profile agent"`) self-recovers on
 its next poll; nothing else needs bouncing.
 
@@ -58,7 +58,7 @@ the original was a hand-edit the role would have overwritten.
 
 **Known drift.** The role's `restart postgresql` handler is `kickstart -k`,
 which uses the cached job definition and does not hot-swap the plist: a
-converge *stages* the new plist and the nightly reboot *activates* it. caspar's
+converge *stages* the new plist and the nightly reboot *activates* it. The database host's
 live definition may therefore still point at the hand-edited
 `/opt/homebrew/etc/pg17-guarded-start.sh`, orphaned once the role deploys the
 `pg-guarded-start.sh` name. Original plist backed up at
@@ -66,12 +66,12 @@ live definition may therefore still point at the hand-edited
 
 ## Ops notes
 
-- `sudo -n` works passwordless for `deploy` on caspar.
+- `sudo -n` works passwordless for `deploy` on the database host.
 - Reloading a system LaunchDaemon needs `launchctl bootout system/com.postgresql`
   then `bootstrap system <plist>` — `kickstart -k` won't re-read the plist.
 - A bootstrap immediately after a bootout often fails `EIO 5` (label not yet
   released) — **retry after a short sleep**.
-- Only caspar hosts Postgres; this does not apply to the DB-less nodes.
+- Only the database host hosts Postgres; this does not apply to the DB-less nodes.
 
 Related: [`prod-one-off-cli`](./prod-one-off-cli.md),
 [`restart-worker-and-watch`](./restart-worker-and-watch.md).

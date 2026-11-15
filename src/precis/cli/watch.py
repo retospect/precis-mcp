@@ -824,7 +824,7 @@ def _check_elsevier_truncation(
 #: "this has become a 100%-fallback regime" signal an operator needs —
 #: weeks of per-PDF ``log.warning`` calls rotted unseen (the incident
 #: this hardens against: surya-ocr 0.22.1's new hard llama-server
-#: requirement broke every Marker invocation on melchior for weeks and
+#: requirement broke every Marker invocation on the agent host for weeks and
 #: ingest silently kept eating PDFs via the fitz fallback).
 _MARKER_FALLBACK_ALERT_SOURCE = RULES_BY_ID[
     "ingest:marker-fallback/marker-fallback"
@@ -1511,7 +1511,7 @@ def _run_in_process_group(
     marker-pdf 2.0 runs ``surya`` as a *detached* inference server; if
     this batch subprocess is OOM-killed, that server reparents to init
     and keeps holding ~19 GB of unified memory — an unbounded leak that
-    thrash-locks the host (root-caused on spark: global kernel OOM +
+    thrash-locks the host (root-caused on a GB10 GPU node: global kernel OOM +
     NVRM GPU-memory exhaustion). ``start_new_session=True`` makes *cmd*
     (and any grandchildren, including a detached surya) a new
     session/group leader, so the group id equals its pid — a ``killpg``

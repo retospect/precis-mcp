@@ -12,7 +12,7 @@ pillar: platform
 
 ## What happened
 
-melchior's overlay working copy (`/Users/reto/git_deploy_helper`, which <!-- home-path: allow — the real path on the named host -->
+the agent host's overlay working copy (`/Users/reto/git_deploy_helper`, which <!-- home-path: allow — the real path on the named host -->
 `precis-mcp/deploy/inventory` symlinks to) had
 `group_vars/all/vault.yml` **truncated from 29 keys to 15** on
 2026-08-18 08:32, with a `vault.yml.bak-20260817` written the same
@@ -32,21 +32,21 @@ vault_google_api_key         vault_email_user         vault_openclaw_webhook_sec
 
 ## The open question
 
-**Any play launched *on melchior* between 18 and 22 Aug rendered its
+**Any play launched *on the agent host* between 18 and 22 Aug rendered its
 templates without those 14 values.** A deploy launched from the Mac was
 unaffected — the Mac's copy was intact throughout. So the blast radius
-is exactly "what was deployed from melchior in that window", which is
+is exactly "what was deployed from the agent host in that window", which is
 not yet established.
 
 At least one such run exists: a full `redeploy-precis.yml` started on
-melchior at 18:59 UTC on 2026-08-21 and completed. precis-web itself is
+the agent host at 18:59 UTC on 2026-08-21 and completed. precis-web itself is
 known-good (redeployed from the Mac on 2026-08-22 with the full set).
 
 To answer this:
 
-1. Find melchior-launched plays in the window — the Mac's
+1. Find agent-host-launched plays in the window — the Mac's
    `.deploy-logs/` will NOT have them (that is why this went unnoticed);
-   check shell history on melchior and `/Users/reto/precis-mcp`. <!-- home-path: allow — the real path on the named host -->
+   check shell history on the agent host and `/Users/reto/precis-mcp`. <!-- home-path: allow — the real path on the named host -->
 2. For each role touched, check whether it references any of the 14 keys
    and whether it uses `| default(...)` (renders empty, silent) or fails
    on undefined (loud, so it would already have been noticed).

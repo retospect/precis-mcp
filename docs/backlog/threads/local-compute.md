@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Reto deploys `49a-sglang.yml` on castor (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize` and `llm.chain.small` — and read `/placement` after 24 h. `chase:verify` is separately routed through its local per-operation chain per Reto's 2026-10-22 ruling; the old tier-wide `llm.chain.medium` candidate is superseded.
+- **Next:** Reto deploys `49a-sglang.yml` on the local-serving node (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize` and `llm.chain.small` — and read `/placement` after 24 h. `chase:verify` is separately routed through its local per-operation chain per Reto's 2026-10-22 ruling; the old tier-wide `llm.chain.medium` candidate is superseded.
 - **Blocked by:** Reto's deploy + settings writes (above). NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
 - **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
@@ -19,22 +19,22 @@ effort: medium
 
 Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
-**Castor serving, 2026-10-11 (Reto):** model picked by ruling: **gpt-oss 120B** (vLLM), skipping the km-8 quality gate. castor serves it via `49-vllm.yml` (`vllm.service`, port 8000, `--max-num-seqs 64`, gpu-memory-utilization 0.70 until castor leaves the science lanes, then 0.80). Tool calling verified from melchior over the LAN. Card lm162513 carries a `source="static"` `served_by` (max_parallel 32) and prod `resource_slots` has `castor | llm:openai/gpt-oss-120b | 32`. No chain routes to it yet. The overlay does not yet carry the `vllm_serving` group; the run used a layered extra inventory. Castor exclusive (autocatpath/aizynth → pollux, compute/sandbox units stopped) is ruled and queued for the round-24 deploy with the coordinator. Stale DeepSeek-V4-Flash `served_by` (dead castor :8080) and its caspar slot row removed.
+**Local serving, 2026-10-11 (Reto):** model picked by ruling: **gpt-oss 120B** (vLLM), skipping the km-8 quality gate. The local-serving node serves it via `49-vllm.yml` (`vllm.service`, port 8000, `--max-num-seqs 64`, gpu-memory-utilization 0.70 until the local-serving node leaves the science lanes, then 0.80). Tool calling verified from the agent host over the LAN. Card lm162513 carries a `source="static"` `served_by` (max_parallel 32) and prod `resource_slots` has `<serving-node> | llm:openai/gpt-oss-120b | 32`. No chain routes to it yet. The overlay does not yet carry the `vllm_serving` group; the run used a layered extra inventory. The local-serving node exclusive (autocatpath/aizynth → the second DGX node, compute/sandbox units stopped) is ruled and queued for the round-24 deploy with the coordinator. Stale DeepSeek-V4-Flash `served_by` (dead the local-serving node :8080) and its the database host slot row removed.
 
-**Host lanes, 2026-10-15 (Reto):** castor = vLLM + heartbeat only (out of `compute` and `agent_sandbox_hosts`; no compute fallback lane); pollux + spark = autocatpath/MACE seeds; fold and dft on pollux; retrosynth, `job_claude_docker` and image builds on spark. The repo enforces it: `host_lane_exclusive_groups` keeps an LLM host out of `compute`, and the per-host budget (`docs/runbooks/oom-lockout-hardening.md`) fails a play past 121 GiB. The overlay move and apply order are in /tmp/gripe-fleet/host-lanes-overlay.sh; the 0.80 raise stays open until castor runs measured clean at 0.60/0.70 without the science lanes.
+**Host lanes, 2026-10-15 (Reto):** The local-serving node = vLLM + heartbeat only (out of `compute` and `agent_sandbox_hosts`; no compute fallback lane); the second DGX node + the GPU node = autocatpath/MACE seeds; fold and dft on the second DGX node; retrosynth, `job_claude_docker` and image builds on the GPU node. The repo enforces it: `host_lane_exclusive_groups` keeps an LLM host out of `compute`, and the per-host budget (`docs/runbooks/oom-lockout-hardening.md`) fails a play past 121 GiB. The overlay move and apply order are in /tmp/gripe-fleet/host-lanes-overlay.sh; the 0.80 raise stays open until the local-serving node runs measured clean at 0.60/0.70 without the science lanes.
 
-**Flipped 2026-10-12 ~19:20Z (Reto: "can we flip soonish"):** `llm.op.llm_summarize` rung 0 is now `openai/gpt-oss-120b` local (castor, slot 32), rung 1 melchior's `glm-4.7-flash` local, rung 2 cloud. Verification read is the llm_call_log model/placement/error split for `llm_summarize` after the flip. REVERTED 20:58Z the same day: castor produced corrupted output after its restart to a 131072 window (see `backlog/claude-code-on-local-serving.md`); re-flip once a castor window is shown sound by three identical temperature-0 replies. Next flips, in order: `llm.chain.small` rung 0 to castor; medium (`chase:verify`) after the 40-task compare.
+**Flipped 2026-10-12 ~19:20Z (Reto: "can we flip soonish"):** `llm.op.llm_summarize` rung 0 is now `openai/gpt-oss-120b` local (the local-serving node, slot 32), rung 1 the agent host's `glm-4.7-flash` local, rung 2 cloud. Verification read is the llm_call_log model/placement/error split for `llm_summarize` after the flip. REVERTED 20:58Z the same day: the local-serving node produced corrupted output after its restart to a 131072 window (see `backlog/claude-code-on-local-serving.md`); re-flip once a local-serving node window is shown sound by three identical temperature-0 replies. Next flips, in order: `llm.chain.small` rung 0 to the local-serving node; medium (`chase:verify`) after the 40-task compare.
 
-**Rule, Reto 2026-10-12 (chat):** "cold machine is useless machine." castor never idles: coding helpers (`scripts/claude-local`, item 0 above) and librarian lanes share it. Librarian lanes already specified and waiting on castor, in order: taxonomy-bootstrap agreement test (knowledge-mesh Do next 2, $0 on castor), local-mesh-upkeep slice 0 categorise set (its eval doubles as the quality gate for every lane below), then op overrides to castor for `taproot:classify` (claim_type), `conflict_search:negate`, `taproot:reground-judge` ($64/30 d on Haiku), and `chase:verify` after the 40-task compare. The 30-day spend read (2026-10-12): dream $429 (Sonnet, 29k chars/call), chase:verify $205, review:structural $66, quest_tick $66, doctor_tick $66, reground-judge $65, summarise $56 (now local). Nine BIG sources average 45k–90k request chars, above castor's 16k context until the restart raises it.
+**Rule, Reto 2026-10-12 (chat):** "cold machine is useless machine." The local-serving node never idles: coding helpers (`scripts/claude-local`, item 0 above) and librarian lanes share it. Librarian lanes already specified and waiting on the local-serving node, in order: taxonomy-bootstrap agreement test (knowledge-mesh Do next 2, $0 on the local-serving node), local-mesh-upkeep slice 0 categorise set (its eval doubles as the quality gate for every lane below), then op overrides to the local-serving node for `taproot:classify` (claim_type), `conflict_search:negate`, `taproot:reground-judge` ($64/30 d on Haiku), and `chase:verify` after the 40-task compare. The 30-day spend read (2026-10-12): dream $429 (Sonnet, 29k chars/call), chase:verify $205, review:structural $66, quest_tick $66, doctor_tick $66, reground-judge $65, summarise $56 (now local). Nine BIG sources average 45k–90k request chars, above the local-serving node's 16k context until the restart raises it.
 
-**Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at melchior's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
+**Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at the agent host's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
 
-**classify → castor, 2026-10-23 (Reto 4-step go, tree g4-classify-castor):** `classify` left EXCLUDED_OPERATIONS for the op registry (SMALL, `env=PRECIS_CLASSIFY_MODEL`; the worker pass had already dropped the `summarizer` pin, so default routing is unchanged). The Tier-2 escalate client moved to `classify:escalate` — unregistered on purpose so `PRECIS_CLASSIFY_ESCALATE_MODEL`'s pin survives (the re-judge must differ from tier 1). Step (b): ~200-chunk gold check castor gpt-oss-120b (`reasoning_effort low`, `max_tokens 512`) vs the glm `llm.chain.small` row before any prod `llm.op.classify` write.
+**classify → the local-serving node, 2026-10-23 (Reto 4-step go, tree g4-classify-castor):** `classify` left EXCLUDED_OPERATIONS for the op registry (SMALL, `env=PRECIS_CLASSIFY_MODEL`; the worker pass had already dropped the `summarizer` pin, so default routing is unchanged). The Tier-2 escalate client moved to `classify:escalate` — unregistered on purpose so `PRECIS_CLASSIFY_ESCALATE_MODEL`'s pin survives (the re-judge must differ from tier 1). Step (b): ~200-chunk gold check the local-serving node gpt-oss-120b (`reasoning_effort low`, `max_tokens 512`) vs the glm `llm.chain.small` row before any prod `llm.op.classify` write.
 
-**Castor sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off melchior and put it on one of the sparks"):**
+**The local-serving node sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off the agent host and put it on one of the sparks"):**
 
-- **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung castor under load 2026-10-14 — scheduler 100% CPU; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
-- **Placement (c7be07641):** small tier moves off the big Mac onto castor — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `castor | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). pollux stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on melchior) — noted for Reto in `llm-capacity-plan.md`.
+- **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung the local-serving node under load 2026-10-14 — scheduler 100% CPU; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
+- **Placement (c7be07641):** small tier moves off the big Mac onto the local-serving node — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `<serving-node> | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). The second DGX node stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on the agent host) — noted for Reto in `llm-capacity-plan.md`.
 - **Routing fix (this branch):** `local_serving.acquire` now (a) waits up to `PRECIS_LOCAL_SLOT_WAIT_S` (default 10 s, `0` restores old behavior) for a slot to free, and (b) spills to every other LAN-routable `served_by` host for the model — before the router ever sees `paused` and overflows to cloud. This is the cap-4 cause of the ~78% routed-local→cloud fall-through.
 - **A real blocker the eval exposed:** the `local` wire's default `max_tokens` is the summarizer's 220; gpt-oss spends it all on reasoning and returns empty content, every call. Rungs now carry an optional `max_tokens` (parsed into `Rung`, applied when the request doesn't pin one). **The staged writes below carry `"max_tokens":1600`; under the pre-branch code that key is silently ignored — apply only after this branch is deployed.**
 - **chase:verify eval (40-task gold `chase_verify_v1`, each arm twice, scratch DB — no prod writes):**
@@ -47,35 +47,35 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
   gpt-oss is 6 points under the incumbent's own rerun self-agreement, with the whole gap in the fuzzy `partial` stratum (haiku self-agrees only 16/24 there). Reads: fine for summarize/small, a judgment call for medium — Reto decides, per the 2026-10-03 keep-judgment-on-Claude plan.
 
-- **chase:verify batch eval, landed 2026-10-21:** batch verify shipped 7c769aebd; Reto ruled on 2026-10-22 to route this plain completion to castor, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. The live op chain already points to the castor local model; a six-item fixture measured 1,177 prompt tokens/item for singles vs 2,021 total (337/item) batched, a 71.4% reduction.
+- **chase:verify batch eval, landed 2026-10-21:** batch verify shipped 7c769aebd; Reto ruled on 2026-10-22 to route this plain completion to the local-serving node, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. The live op chain already points to the local-serving node local model; a six-item fixture measured 1,177 prompt tokens/item for singles vs 2,021 total (337/item) batched, a 71.4% reduction.
 
 - **Staged settings writes (prod-psql; DO NOT apply until the sglang deploy AND this branch are live — see the max_tokens note above):**
 
   ```sql
-  -- llm.op.llm_summarize: rung 0 castor gpt-oss, rung 1 glm standby, rung 2 cloud
+  -- llm.op.llm_summarize: rung 0 the local-serving node gpt-oss, rung 1 glm standby, rung 2 cloud
   UPDATE app_settings SET value = '{"chain":[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"transport":"local","model":"glm-4.7-flash","placement":"local"},{"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}' WHERE key='llm.op.llm_summarize';
   -- revert:
   UPDATE app_settings SET value = '{"chain":[{"transport":"local","model":"glm-4.7-flash","placement":"local"},{"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}' WHERE key='llm.op.llm_summarize';
 
-  -- llm.chain.small: rung 0 castor gpt-oss, rung 1 the hosted glm
+  -- llm.chain.small: rung 0 the local-serving node gpt-oss, rung 1 the hosted glm
   UPDATE app_settings SET value = '[{"transport":"local","model":"openai/gpt-oss-120b","placement":"local","max_tokens":1600},{"placement":"cloud","model":"z-ai/glm-4.7-flash","transport":"openai_compat"}]' WHERE key='llm.chain.small';
   -- revert:
   UPDATE app_settings SET value = '[{"placement":"cloud","model":"z-ai/glm-4.7-flash","transport":"openai_compat"}]' WHERE key='llm.chain.small';
 
   -- llm.chain.medium is unchanged: chase:verify now uses its per-operation
-  -- local chain (Reto 2026-10-22), not a tier-wide castor override.
+  -- local chain (Reto 2026-10-22), not a tier-wide local-serving-node override.
   ```
 
-  Note the melchior `glm-4.7-flash` rung stays as a local standby in the op chain: after the wait/spill fix it serves only when castor's 32 slots are saturated, keeping ~all traffic off the big Mac while preserving a local escape before cloud spend.
+  Note the agent host's `glm-4.7-flash` rung stays as a local standby in the op chain: after the wait/spill fix it serves only when the local-serving node's 32 slots are saturated, keeping ~all traffic off the big Mac while preserving a local escape before cloud spend.
 
 **Status:** ends when the local box continuously improves the graph
 (summarise, insert, mesh, link, categorise) on local rungs, with frontier
 review as the gate, and the local-vs-cloud share is a number. Today 0% of
 LLM traffic is local: 406,527 calls in the 7 days to 2026-10-01 all went
-cloud (~$298); the castor/pollux/spark LLM servers have been stopped, GPUs
-idle, DeepSeek-V4-Flash and Qwen3 weights staged on castor, last local call
+cloud (~$298); the local-serving node, the second DGX node and the GPU node LLM servers have been stopped, GPUs
+idle, DeepSeek-V4-Flash and Qwen3 weights staged on the local-serving node, last local call
 2026-09-10. Order: make the share measurable, bring the summariser back,
-then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2026-10-02), then the rungs that consume them.
+then the three GB10 nodes back on duty (big model, embeddings, science lanes; Reto 2026-10-02), then the rungs that consume them.
 **Last reviewed:** 2026-10-02
 **Worktree:** `local-compute`
 **Allocation decision (historical):** yes (2026-10-01, Reto: "Bring it back we will").
@@ -90,14 +90,14 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 ## Do next
 
 0. **[Claude Code on local serving](../claude-code-on-local-serving.md)** —
-   filed 2026-10-12 from Reto's credits ask: proxy castor's gpt-oss 120B as
+   filed 2026-10-12 from Reto's credits ask: proxy the local-serving node's gpt-oss 120B as
    an Anthropic endpoint for Sonnet-class fleet roles, measure against
    Sonnet on a gripe batch, then decide on a cheap cloud fallback plan.
    Successor: **[castor-agent-lane](../castor-agent-lane.md)** (draft,
    2026-10-22) — answers the proxy question (`scripts/claude-local` +
    shim, no LiteLLM/CCR), splits agent lane vs batch lane, slice 0 is a
    10-gripe pilot with a measured pass rate; ranked here because it is
-   the Claude-quota relief Reto asked for and reuses the lit castor route.
+   the Claude-quota relief Reto asked for and reuses the lit local-serving-node route.
 
 1. **Local share is measurable**: `get(kind='llm', id='/placement')`
    (routed vs landed, per tier and day). `placement_routed` (migration 0179)
@@ -111,10 +111,10 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    work and the planned external-HPC row (Reto 2026-10-02,
    `reto-llm-capacity-1`). Ranked above 3-5 because each of them picks a
    placement this table is the input for: the summariser slice (3), the
-   big-model slot (4), embedder load (7), and the Spark role split (4). First rows already read
+   big-model slot (4), embedder load (7), and the GB10 node role split (4). First rows already read
    (decisions log in the item).
    **Cluster re-layout (Reto 2026-10-03 ~21:50Z, via the orchestrator).** He asked
-   whether the big Mac should become a 192 GB LLM box, whether another Spark
+   whether the big Mac should become a 192 GB LLM box, whether another GB10 node
    should serve a medium model, and what a greenfield allocation of all
    machines would look like. Deliverables:
    - an options note in `reviews/local-compute.md`: the greenfield layout plus
@@ -127,7 +127,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    write it down for now, as a plan for later."
    - The plan is recorded in `llm-capacity-plan.md` § "Agreed layout plan, NOT
      scheduled".
-   - Nothing in it is built until he reopens it. castor stays the big-model
+   - Nothing in it is built until he reopens it. The local-serving node stays the big-model
      box, so (b) below is off.
    - (c)'s 27B drop is part of A's hardening, so it is off too.
    - Reto 22:18Z confirmed: "continue with the work … But don't reorganize the
@@ -150,7 +150,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
        `{"chain": [{"transport":"local","model":"glm-4.7-flash","placement":"local"},
        {"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}`.
        Then read `/placement` before and after.
-   - (b) **Medium on castor** once km-8 picks the model.
+   - (b) **Medium on the local-serving node** once km-8 picks the model.
    - (c) **Big-Mac hardening**, a deploy-role branch to the orchestrator:
      - drop the idle 27B from llama-swap;
      - add a Docker VM disk alert at >85%. ship-gate-ci owns the refusal
@@ -179,7 +179,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    `hpc_batch` job type on `ssh_node`, B3 collect into records, B4 live
    pilot) and § Apptainer image (I1–I5 = SIF-1..5). B1 (runner gaps) landed
    73334fe8a. Next: B2 (`hpc_batch` job type), then I1 for
-   the ML-potential image; the GPAW image waits on the pollux completion
+   the ML-potential image; the GPAW image waits on the second DGX node completion
    in (b).
    **Storage answer for Reto (2026-10-12, from td471801's 2026-10-05 quota
    read and the twins' image inventory):** the project space is 10,000
@@ -206,9 +206,9 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,
      fetch), not tunnel-and-serve. It is the fired "second backend" trigger
      (`backlog/slullama-hpc-placement.md` §From precis-dispatch): extract the
-     runner seam from the pollux relax, shaped by both cases.
+     runner seam from the second DGX node relax, shaped by both cases.
      - Precondition, chemistry's: one GPAW relax must complete in prod on
-       pollux first. None has, and the MPI image is still on branch
+       the second DGX node first. None has, and the MPI image is still on branch
        `chemistry-dft-mpi-env`.
    - (c) ML-potential relaxes (MACE-MP; GFN-xTB rides the same jobs) for
      hexfold-toolkit's nanobud geometry vetting: many short jobs, so they
@@ -222,7 +222,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
 set, then pick model and server (4b); (2) Slice 1: a permanent managed
-service on castor, castor exclusive to it, with its own `resource_slots`
+service on the local-serving node, exclusive to it, with its own `resource_slots`
 capacity row (`vllm-per-node-serving.md`); (3) local rungs in the tier
 ladder with cloud overflow (5; after round 2 carries the placement guard);
 (4) the feedback controller holding about 32 in flight, graph maintenance
@@ -233,22 +233,22 @@ local target: the medium tier plus graph maintenance; big stays on the
 cloud until its own check. The model pick still waits on knowledge-mesh's
 task set.
 
-4. **Three Sparks back on duty; Slice 0 picks model + server.** Reto
+4. **Three GB10 nodes back on duty; Slice 0 picks model + server.** Reto
    2026-10-02 (review item local-compute-4, ruled 21:03Z) reversed the
-   2026-08-29 paper-box rule: castor, pollux and spark (all GB10) split
+   2026-08-29 paper-box rule: the local-serving node, the second DGX node and the GPU node (all GB10) split
    into one exclusive big model, one local embeddings and one GPU science
-   lanes. Ruled 22:03Z (local-compute-5): **castor big model, pollux
-   science, spark embeddings**. In order:
+   lanes. Ruled 22:03Z (local-compute-5): **local-serving node big model, second DGX node
+   science, GPU node embeddings**. In order:
    a. **backlog/spark-provisioning.md §Host items** — the
-      `/mnt/cluster` NFS hang (server caspar) hits only the Linux Sparks;
-      the Macs read it fine. caspar's nfsd is healthy, so the approved
+      `/mnt/cluster` NFS hang (server: the database host) hits only the Linux GB10 nodes;
+      the Macs read it fine. The database host's nfsd is healthy, so the approved
       restart (local-compute-6) stopped at its read-only gate. The leading
-      suspect is asymmetric routing: caspar's replies to the Sparks take the
-      Tailscale tunnel (MTU 1280) while the Sparks send to caspar directly on
+      suspect is asymmetric routing: the database host's replies to the GB10 nodes take the
+      Tailscale tunnel (MTU 1280) while the GB10 nodes send to the database host directly on
       the LAN (design note §6). Any fix goes to Reto as its own review item.
-      Then spark host prep. These are duty prerequisites, not bench prep.
+      Then the GPU node host prep. These are duty prerequisites, not bench prep.
       **Then backlog/cluster-fileserver-move.md** — Reto ruled
-      (local-compute-7/8/9) that no Mac or Spark serves files and that the
+      (local-compute-7/8/9) that no Mac or GB10 node serves files and that the
       FS fix is a priority now ("it is when it is", no round window).
       - Plan approved with phase 1 revised: no retained DB backups on the
         DB node.
@@ -265,16 +265,16 @@ task set.
         that mode, a same-day re-run truncates the day's NAS archive with
         no local copy to fall back on, and a `b2_postgres_source` on the
         NAS changes B2 retention and layout.
-      - The caspar nfsd restart (local-compute-6) stays held.
+      - The database host nfsd restart (local-compute-6) stays held.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
-      one box (spec in its decisions log). **Runs on castor now, from local
+      one box (spec in its decisions log). **Runs on the local-serving node now, from local
       NVMe, independent of the NFS move** (Reto 2026-10-02,
       local-compute-9: "why is local llm gated on filesystem stuff?"). It
       never needed the share. The gate came from sequencing: the bench was
-      on spark, and spark's host-prep list put "unhang the NFS mount"
-      first for the eval-run-spine. castor is the box the model will
-      serve on anyway. castor's docker has the GPU (local-compute-11),
+      on the GPU node, and the GPU node's host-prep list put "unhang the NFS mount"
+      first for the eval-run-spine. The local-serving node is the box the model will
+      serve on anyway. The local-serving node's docker has the GPU (local-compute-11),
       both weight sets and the vLLM image are on local disk.
       - **vLLM × Nemotron done 2026-10-03:** 14 / 56 / 108 / 142 out tok/s
         at 1 / 8 / 32 / 64 streams; 3.5 tok/s per stream at 32; KV 50% at
@@ -284,15 +284,15 @@ task set.
         64. About 2.8× Nemotron throughout. Needs the harmony vocab staged
         offline (item has the recipe). Above 64: ceiling about 450 out
         tok/s (443 at 192, 450 at 256); the knee is at 64. SGLang arm
-        running (Docker Hub reachable from castor 2026-10-03). Next: the quality
+        running (Docker Hub reachable from the local-serving node 2026-10-03). Next: the quality
         check on knowledge-mesh's task set (km-8 taxonomy first; Reto
         2026-10-03, co-owned with knowledge-mesh). Spec:
         `backlog/local-mesh-upkeep.md` slice 0; its categorise task IS
         this check, run once for both threads. Open: the bench server is
         loopback-only, so the eval needs a serving window where
-        `llm_eval` can reach castor (a LAN bind plus a `resource_slots`
-        row for the window, or run the harness on castor). Ping
-        knowledge-mesh when castor serves gpt-oss. When the server is
+        `llm_eval` can reach the local-serving node (a LAN bind plus a `resource_slots`
+        row for the window, or run the harness on the local-serving node). Ping
+        knowledge-mesh when the local-serving node serves gpt-oss. When the server is
         picked, a review item answers Reto's "how many channels"
         (ceiling, setpoint, KV headroom).
       - **SGLang done 2026-10-03; server picked: vLLM.** gpt-oss on SGLang
@@ -306,16 +306,16 @@ task set.
         until the model pick. It is untested on a host.
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
-      plus scheduled OS/driver updates for all three Sparks inside the round
+      plus scheduled OS/driver updates for all three GB10 nodes inside the round
       deploy window (Reto's ruling 4).
    d. **backlog/spark-fleet-embedder.md** — Reto ruled the split
-      2026-10-02 (local-compute-5, option 1): castor big model, pollux
-      science, spark embeddings. spark's role is a fleet LAN embedder that
+      2026-10-02 (local-compute-5, option 1): local-serving node big model, second DGX node
+      science, GPU node embeddings. The GPU node's role is a fleet LAN embedder that
       replaces the per-node loopback copies, in a new `embedder` group, NOT
       `inference` (which would bring the worker/watch/dft plays with it).
       All machines, the file server included, are in
-      `llm-capacity-plan.md`. Ad-hoc heavy compute goes to spark at half
-      its cores, never melchior (ruled, local-compute-7).
+      `llm-capacity-plan.md`. Ad-hoc heavy compute goes to the GPU node at half
+      its cores, never the agent host (ruled, local-compute-7).
 5. **backlog/local-rungs-small-medium.md** — unblocked (Reto 2026-10-21):
    small chain goes local gpt-oss now, medium stays Claude pending a per-op
    trial; the remainder waits on the maintenance queue and sensitivity gate.
@@ -327,8 +327,8 @@ task set.
    pressure (SGLang metrics + host swap; class-aware back-off, Reto
    2026-10-23). S0 (metrics scrape + `local-serving-pressure` alert) and
    S1 (lanes over the static 32) ship first and independently; S3 (the
-   controller) after S0. This is the path that puts castor to work (Reto
-   2026-10-03); without S1 the first background flood takes every castor
+   controller) after S0. This is the path that puts the local-serving node to work (Reto
+   2026-10-03); without S1 the first background flood takes every local-serving-node
    slot from a live session.
 6b. **cluster-scheduling.md Pillar 3b + job-scheduling-fairness.md
    matrix/deficit** — footprint rows first (gr595536), then cap
@@ -361,8 +361,8 @@ task set.
 6. **backlog/vllm-per-node-serving.md Slices 3–4** (the metrics scrape is
    shared with llm-lane-scheduler S0; the retraction health check),
    **backlog/llamacpp-fleet-ops.md** — Slices 0–2 shipped (SGLang on
-   castor); per-node model choice against a measured ceiling.
-7. **backlog/torch-extras-conflict.md** — venv hygiene on the Sparks
+   the local-serving node); per-node model choice against a measured ceiling.
+7. **backlog/torch-extras-conflict.md** — venv hygiene on the GB10 nodes
    (spark-provisioning moved up into Do-next 4c).
 8. *(moved up to Do-next 2b on 2026-10-03.)* On Reto's "done" for the tunnel
    key, verify the tunnel and the login-node daemon-reaping risk. Git
@@ -390,7 +390,7 @@ task set.
     busy fraction and queue depth per tier in `host_heartbeat_log`, and the
     `precis stats --utilization` row.
 13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
-    because it needs the standing castor server and has no quality number.
+    because it needs the standing local-serving-node server and has no quality number.
 14. **Context planner for batch jobs** (parked, 2026-11-08): a small agent
     plans the fisheye queries a task needs, freezes the bundle with a
     timestamp and handle set, submits it as a half-price off-peak batch
@@ -412,4 +412,4 @@ task set.
 `serving-programme` keeps the MCP serve ceiling (py-spy, the multi-process
 balancer), the load-test harness and the eval-run-spine; this thread owns
 local model serving and what it does. The eval-run-spine's items 4 and 9
-wait on the spark prerequisites ranked in Do-next 4.
+wait on the GPU node prerequisites ranked in Do-next 4.

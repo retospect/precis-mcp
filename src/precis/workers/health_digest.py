@@ -1764,7 +1764,7 @@ def _check_doctor_report_fresh(conn: Any) -> CheckResult:
     fall back QUIETLY — this module's own push-body selector drops to the
     template (:func:`_select_push_body`) and ``briefing_cast`` drops its
     health line — so a doctor that stops reporting is invisible by
-    construction. That is how the 2026-09-10 melchior OAuth expiry ran two
+    construction. That is how the 2026-09-10 agent-host OAuth expiry ran two
     days with no report and no signal. This is the one check that reads the
     absence as a fault rather than a fallback.
 
@@ -2188,11 +2188,11 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
     Why the floor is 15 min and not the old 300 s: a cadence fires from
     the ``scheduler`` pass of whichever worker's rotation reaches it, and a
     rotation is as long as its slowest pass. Measured 2026-09-25 (12h,
-    prod): melchior's system worker cycles every ~34 min (``fetch_oa`` up
+    prod): the agent host's system worker cycles every ~34 min (``fetch_oa`` up
     to 43 min, ``fetch_google_patents`` 32 min, ``orcid_enrich`` 12 min,
-    all by their own pacing), balthazar's every ~7.5 min with 9 gaps over
+    all by their own pacing), the second worker host's every ~7.5 min with 9 gaps over
     10 min in 6h. A 300 s cadence with a 300 s margin therefore read
-    "stale" every time balthazar's rotation ran long — ``materialize``
+    "stale" every time the second worker host's rotation ran long — ``materialize``
     flapped 5× in one morning while firing every 5–13 min, never stopped.
     The check's job is "stopped firing", a days-scale rot; 15 min of
     lateness is the worker architecture, not a finding.

@@ -1034,7 +1034,7 @@ well-balance the TOC tree (we are allowed to!) then it's super awesome" →
   slice 7's `hub_refine` quest seed. **Delete.**
 - **Q9 unplaced evidence:** no new strands from clusters, as recommended,
   but keep looking for ways the graph can absorb it (re-home re-runs, the
-  gardener, the castor finding reader, slice 7's quest seed).
+  gardener, the local-model finding reader, slice 7's quest seed).
 
 ## Links
 

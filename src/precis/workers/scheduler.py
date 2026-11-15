@@ -10,7 +10,7 @@ conditional advance on ``scheduler_leases`` (:meth:`Store.claim_scheduler_lease`
 Only one worker wins each due cadence; a down worker never drops a fire; a
 fleet-wide outage collapses to one catch-up fire on recovery. Retires the
 standalone launchd thin-timers (``cron-tick``, ``watch-poll``, ``dream``,
-``anki-sync``, caspar's ``reconcile`` plist) it replaced.
+``anki-sync``, the database host's ``reconcile`` plist) it replaced.
 
 Runs by default on both worker profiles (registry's ``scheduler``
 ``ServiceSpec``, ``_SYS + _AGT``) — the agent profile must run it too, or
@@ -167,7 +167,7 @@ def _run_watch_poll(store: Store, batch_size: int) -> None:
 
 
 def _run_dream_agent(store: Store, batch_size: int) -> None:
-    """One dream tick, fired from the melchior-pinned ``dream_agent`` cadence
+    """One dream tick, fired from the agent-host-pinned ``dream_agent`` cadence
     (§A) instead of the retired standalone 15-min hermes LaunchDaemon.
     ``batch_size`` is unused — ``run_dream_pass`` dispatches exactly one
     reflective-memory tick per fire, same as the old ``--batch-size 1`` the
@@ -551,7 +551,7 @@ def _anki_clear_backoff(store: Store) -> None:
 
 
 def _run_anki_sync(store: Store, batch_size: int) -> None:
-    """One AnkiWeb sync tick, fired from the melchior-pinned ``anki_sync``
+    """One AnkiWeb sync tick, fired from the agent-host-pinned ``anki_sync``
     cadence (§A) instead of the retired standalone 30-min launchd timer.
     Reads the fix/project flags from config (env), matching the plist's
     ``PRECIS_ANKI_FIX_ENABLED`` / ``PRECIS_ANKI_PROJECT_ENABLED``; the
@@ -1312,13 +1312,13 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
 #: The folded cadences. ``cron_tick``/``watch_poll`` intervals mirror the
 #: launchd timers they retire (``precis-cron-tick`` 60s, ``precis-watch-poll``
 #: 3600s) — host-agnostic, no affinity/eligibility needed. ``dream_agent`` /
-#: ``anki_sync`` (§A) are host-pinned to melchior (the OAuth/anki-wheel host)
+#: ``anki_sync`` (§A) are host-pinned to the agent host (the OAuth/anki-wheel host)
 #: with an ``eligible`` gate so only the *agent*-profile process there (which
-#: carries the env) ever wins them — melchior's system-profile worker is
+#: carries the env) ever wins them — the agent host's system-profile worker is
 #: ineligible and skips without touching the lease. ``dream_agent``'s
 #: interval is resolved live from the §G knob (DB > env > compiled 15min) via
 #: ``resolve_interval``; ``interval_s`` below is just its documented default.
-#: ``reconcile`` (the caspar nightly duplicate sweep) has **no** cadence here
+#: ``reconcile`` (the database-host nightly duplicate sweep) has **no** cadence here
 #: — its plist is redundant with the existing ``paper_reconcile`` worker pass
 #: (its own 24h ``app_state`` throttle + advisory lock, already fleet-safe),
 #: so folding it is a pure *retirement* of the plist, not a new cadence.
@@ -1565,7 +1565,7 @@ CADENCES: tuple[Cadence, ...] = (
     # own lane at dispatch. spends=False: no model call.
     # Ships DISABLED: the pass no-ops until a `service_config` row lights
     # `gripe_dispatch` (prio > 0) for the host — `precis service prio
-    # melchior gripe_dispatch 1`. The cadence is `service=`-gated with
+    # <agent-host> gripe_dispatch 1`. The cadence is `service=`-gated with
     # `claim_when_dark`: a host with no live row skips WITHOUT claiming
     # while another host is lit (a lit host takes the fire; 6 of 18 fires
     # over 3 h were burnt as dark no-ops on a row-less host), but with no

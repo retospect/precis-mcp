@@ -15,12 +15,12 @@ Both surfaced 2026-08-12 unifying SMALL on glm-4.7-flash. Neither broke live
 serving, but both break `playbooks/04-llamacpp.yml`. Owner:
 `deploy/roles/llamacpp/`.
 
-### 1. GGUF download has no retry vs caspar's CDN-bridge blackhole
+### 1. GGUF download has no retry vs the database host's CDN-bridge blackhole
 
-`tasks/download.yml` already sets `HF_HUB_DISABLE_XET=1` (caspar can't reach
+`tasks/download.yml` already sets `HF_HUB_DISABLE_XET=1` (the database host can't reach
 `cas-server.xethub.hf.co`), so downloads take the classic path — which 302s to
 the CDN bridge `us.aws.cdn.hf.co`. That host is **per-IP blackholed** from
-caspar: some AWS IPs 200-OK, others hang to a ~10s TLS-handshake timeout (DNS
+the database host: some AWS IPs 200-OK, others hang to a ~10s TLS-handshake timeout (DNS
 returns a rotating pool). The task runs `hf download` **once** (async, no
 retry), so a single bad-IP hit fails the whole deploy with
 `httpx.ConnectTimeout`. Manual workaround this session: a ~40-iteration retry
@@ -56,7 +56,7 @@ Effort: (1) mechanical; (2) needs a cross-platform build check before the pin.
 
 _Grouped 2026-09-26; was `llamacpp-model-convergence`._
 
-The role's design is sound — caspar downloads canonically into NFS
+The role's design is sound — the database host downloads canonically into NFS
 (`deploy/roles/llamacpp/tasks/download.yml`, writes `manifest.yaml` with
 per-model SHA256) → each inference node rsyncs its declared
 `host_vars[*].llamacpp_models` subset to local SSD (`tasks/sync.yml`) →
@@ -64,15 +64,15 @@ serves local; the catalog is meant to be source of truth. Findings
 (read-only, 2026-08-05): **no convergence automation** — sync is a manual
 `ansible-playbook deploy/playbooks/04-llamacpp.yml --tags sync`, no
 cron/launchd/timer anywhere; last converged 2026-04-24 (all local GGUFs
-4.5 months stale). Catalog≠reality, and a blind sync is destructive: spark
+4.5 months stale). Catalog≠reality, and a blind sync is destructive: the GPU node
 declares `llamacpp_models: []` but is hand-edited live to serve the 80B (a
-deploy re-render already wiped it once, breaking the quest loop); melchior
-holds an undeclared DeepSeek-R1-70B orphan; balthazar matches. **No
+deploy re-render already wiped it once, breaking the quest loop); the agent host
+holds an undeclared DeepSeek-R1-70B orphan; the sandbox host matches. **No
 runtime verification** — clients never check local files against
 `manifest.yaml`'s SHA256, so silent partial-sync/bitrot is undetectable.
 
-Fix path: (1) reconcile the catalog to intent (declare spark's real served
-set so converging is non-destructive; resolve melchior's orphan); (2)
+Fix path: (1) reconcile the catalog to intent (declare the GPU node's real served
+set so converging is non-destructive; resolve the agent host's orphan); (2)
 converge once (`--tags download` to refresh canonical+manifest, then
 `sync,config,service`; verify against manifest SHA256); (3) automate
 convergence — a scheduled per-node systemd timer / launchd running
@@ -83,27 +83,27 @@ critical on served-model-missing or checksum mismatch.
 
 Promoted from gr194396's sibling gr194304.
 
-## spark pair: spend the ~76G idle headroom on a larger big-tier model
+## GB10 node pair: spend the ~76G idle headroom on a larger big-tier model
 
 _Grouped 2026-09-26; was `spark-pair-larger-model`._
 
 Measured 2026-08-10 with DeepSeek-V4-Flash UD-Q8_K_XL (151G, RPC-sharded)
-serving at `-np 4` (4×~32k slots): castor 82G used / 38G available, pollux
+serving at `-np 4` (4×~32k slots): the local-serving node 82G used / 38G available, the second DGX node
 83G / 38G — ~76G of the pair's 242G sits idle. A slightly larger model (or
 bigger quant / more KV) would fit in a ~210–220G total budget: e.g. the
-Qwen3-235B Q6_K (180G, already on castor's disk) sharded across the pair,
+Qwen3-235B Q6_K (180G, already on the local-serving node's disk) sharded across the pair,
 or a higher-precision DeepSeek quant if one lands in that window. Leave
 headroom for KV growth (scales with slots × ctx) and the OS.
 
 Opposite direction from the parked Q3 single-box experiment (Q3_K_XL ~104G
-on castor alone, freeing pollux) — decide which way to spend the pair
-before doing either. Model switch = relink `~/serve-current.sh` on castor + <!-- home-path: allow — script in the deploy home on castor -->
+on the local-serving node alone, freeing the second DGX node) — decide which way to spend the pair
+before doing either. Model switch = relink `~/serve-current.sh` on the local-serving node + <!-- home-path: allow — script in the deploy home on the local-serving node -->
 `systemctl restart llama-server` (~10 min load, big tier falls to cloud
 rung meanwhile); card `served_by[0].max_parallel`, `resource_slots` and
 `-np` are one number, owned by `llm-lane-scheduler.md`'s capacity slice
-(memory: spark-pair-big-model-serving). Note the 2026-10-02 role ruling
-(`llm-capacity-plan.md`): castor is the exclusive SGLang gpt-oss box and
-pollux is science-only, so the pair layout this section assumes is not
+(repo-dev memory holds the big-model serving notes). Note the 2026-10-02 role ruling
+(`llm-capacity-plan.md`): the local-serving node is the exclusive SGLang gpt-oss box and
+the second DGX node is science-only, so the pair layout this section assumes is not
 the current one.
 
 test: new model serves on the pair, tok/s single + @4-way measured vs

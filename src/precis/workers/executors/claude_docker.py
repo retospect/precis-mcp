@@ -198,7 +198,7 @@ def _reap_bin() -> str:
     decision the way launching one is, so this mirrors
     :func:`agent_container._container_bin`: prefer podman, fall back to
     docker (via the shared :func:`capability_probe.container_runtime`
-    detector) so a docker-only host (no podman on PATH — e.g. spark) can
+    detector) so a docker-only host (no podman on PATH — e.g. the GPU node) can
     still reap orphaned ``sandbox-*`` containers at boot instead of the
     reconcile pass throwing ``FileNotFoundError: 'podman'`` every restart.
     Falls back to ``"podman"`` (today's behavior) only when neither runtime

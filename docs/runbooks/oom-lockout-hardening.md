@@ -1,6 +1,6 @@
-# spark OOM lockout hardening (why we can't be locked out by a RAM-thrash)
+# GPU node OOM lockout hardening (why we can't be locked out by a RAM-thrash)
 
-> spark is a single shared compute box (GB10). It runs the precis worker
+> The GPU node is a single shared compute box (GB10). It runs the precis worker
 > (in-process MACE/NEB autocatpath compute), llama-swap, the bge-m3 embedder, and
 > PDF ingest (marker) all at once. When memory runs out the box thrashes into
 > swap and **sshd stops answering banner-exchange while the host still pings** —
@@ -45,25 +45,25 @@ runs), so a normal precis redeploy will not apply this. Run the hardening
 playbook directly, scoped to the Linux node(s):
 
     cd deploy
-    ansible-playbook -i <inventory> playbooks/10-hardening.yml --limit spark
+    ansible-playbook -i <inventory> playbooks/10-hardening.yml --limit <gpu-node>
     # or --limit linux (the os_family == "linux" group)
 
 Idempotent: re-running is a no-op once converged. The sshd drop-in triggers a
 `daemon-reload` + `ssh.service` restart (live sessions survive on Debian/Ubuntu).
 
-## Verify (once spark answers ssh)
+## Verify (once the GPU node answers ssh)
 
     # sshd is OOM-immune: the running sshd's oom_score_adj is -1000
-    ssh spark 'cat /proc/$(systemctl show -p MainPID --value ssh)/oom_score_adj'   # → -1000
-    ssh spark 'systemctl show ssh -p OOMScoreAdjust'                                # → OOMScoreAdjust=-1000
+    ssh <gpu-node> 'cat /proc/$(systemctl show -p MainPID --value ssh)/oom_score_adj'   # → -1000
+    ssh <gpu-node> 'systemctl show ssh -p OOMScoreAdjust'                                # → OOMScoreAdjust=-1000
 
     # earlyoom is running with our args
-    ssh spark 'systemctl is-active earlyoom && systemctl cat earlyoom | grep EnvironmentFile'
-    ssh spark 'cat /etc/default/earlyoom'
-    ssh spark 'journalctl -u earlyoom -n 20 --no-pager'   # startup line echoes the thresholds + regexes
+    ssh <gpu-node> 'systemctl is-active earlyoom && systemctl cat earlyoom | grep EnvironmentFile'
+    ssh <gpu-node> 'cat /etc/default/earlyoom'
+    ssh <gpu-node> 'journalctl -u earlyoom -n 20 --no-pager'   # startup line echoes the thresholds + regexes
 
     # (if the cap was enabled) the compute worker's MemoryMax
-    ssh spark 'systemctl show precis-worker -p MemoryMax'
+    ssh <gpu-node> 'systemctl show precis-worker -p MemoryMax'
 
 ## Notes
 
@@ -84,7 +84,7 @@ cgroup limits: `precis_worker_memory_*`, `host_memory_guard_units`, `memsnap_ena
 
 ## Per-host memory budget (GB10 lanes)
 
-Since 2026-10-15 (castor wedged twice: vLLM 0.70 + 56G compute + 24G sandbox +
+Since 2026-10-15 (the local-serving node wedged twice: vLLM 0.70 + 56G compute + 24G sandbox +
 24G worker on 121 GiB) each worker lane's cap comes from the inventory group
 that places it (`precis_lane_memory` in `roles/hardening/defaults/main.yml`):
 heartbeat `precis-worker` 4G on `serving`/`compute`, `precis-worker-compute`

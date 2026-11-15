@@ -230,7 +230,7 @@ unlike banning bare English words in prose).
 
 ### Quiesce protocol observation (for the next column-rename stage, if any)
 
-The drain flag stops CLAIMS but not heartbeats: melchior's old binary's
+The drain flag stops CLAIMS but not heartbeats: the agent host's old binary's
 heartbeat hit `column r.deleted_at does not exist` at 19:22:44 UTC — 23s
 after 0149 applied, ~2min before that host's bounce. One failed local-llm
 advertise, self-healed on restart. If a future stage renames a column read

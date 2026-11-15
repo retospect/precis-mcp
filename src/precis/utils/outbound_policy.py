@@ -27,7 +27,7 @@ from):
   hosts). No token lane: admission is the ``parked_until`` gate (D1)
   plus the shared hold (D2); ``on_refuse=defer`` so a worker requeues
   instead of burning its deadline.
-- ``llm-local`` — cluster endpoints (castor SGLang, sparks); no rate,
+- ``llm-local`` — cluster endpoints (local-serving node SGLang, GPU nodes); no rate,
   no hold here — ``local_serving.acquire`` takes the endpoint's
   ``llm:<model>`` slot.
 - ``internal`` — ``is_internal_host`` URLs. Keeps the legacy 1 req/s

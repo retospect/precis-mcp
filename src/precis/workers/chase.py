@@ -532,7 +532,7 @@ def advance_finding(
     # carry its own grounding pin — a ``derived-from`` edge into this
     # ref with ``dst_chunk_id`` set (``put(cited_in='slug~N')``, or a
     # reader grounding a finding on a chunk of its own source paper,
-    # e.g. the kin-evidence/castor mint shape ``derived-from pa…`` +
+    # e.g. the kin-evidence/local-serving-node mint shape ``derived-from pa…`` +
     # ``derived-from pa…~ord``). The pin is the mint's own grounding
     # assertion, so it wins the selection over the lexical heuristic.
     pinned = _pinned_derived_chunks(conn, finding.ref_id, frontier_ref_id)

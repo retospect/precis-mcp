@@ -23,7 +23,7 @@ itself.
 ## Where precis stands (2026-10-15)
 
 - `route` kind (`precis_chem`, dark behind `PRECIS_CHEM_ENABLED`): put plans
-  through the `retrosynth` job; on castor the job runs the
+  through the `retrosynth` job; on the local-serving node the job runs the
   `precis-aizynth` container. The container takes only the target SMILES:
   `aizynthcli --config /models/config.yml --smiles <SMILES>` writes
   `trees.json`, and LinChemIn's `az_to_route.py` writes `route.json` for
@@ -69,7 +69,7 @@ Acceptance:
    No API key is used directly.
 4. [x] Asking again with the same strategy is served from the cache and
    makes no new call.
-5. [ ] Dogfood on prod once AiZynth is live on castor and the release
+5. [ ] Dogfood on prod once AiZynth is live on the local-serving node and the release
    containing this commit is deployed. Plan one real target, rerank it
    against two opposite strategies, and check that the order changes and
    that the rationales name real steps. Record the cost per rerank.
@@ -109,7 +109,7 @@ file lands in writable `/work/out`). `az_to_route.py` emits a `routes` list —
 every kept route normalised with its own descriptors — and
 `parse_syngraph` lands them on `alternatives` (top-level stays route 0, so
 old readers are unaffected). The change lands in the repo and deploys with
-the next castor image build. Per Reto's castor ruling, no build happens
+the next local-serving-node image build. Per Reto's local-serving-node ruling, no build happens
 here.
 
 Acceptance:
@@ -120,7 +120,7 @@ Acceptance:
    (`routes[]`), landing on `alternatives`.
 3. [ ] Dogfood once the new image is built and deployed: request
    `max_routes=20`, check the route keeps >9 candidates and a steer rerank
-   sees them. **Blocked on castor image build + deploy.**
+   sees them. **Blocked on the local-serving node image build + deploy.**
 
 ### Slice 5: deterministic pre-rank (SHIPPED 2026-10-16, gr491450)
 
@@ -156,7 +156,7 @@ Use the LLM score as a search signal inside AiZynth's MCTS, either as a
 custom `aizynthfinder` scorer plugin or as a rerank of expansion nodes.
 This needs compute in the container and many LLM calls per target, so cost
 and latency are the questions. **Needs a decision: Reto.** Is it worth
-running on castor, which carries the LLM plus light lanes only, or does it
+running on the local-serving node, which carries the LLM plus light lanes only, or does it
 need the twins?
 
 ## Open questions

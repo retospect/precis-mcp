@@ -45,19 +45,19 @@ Prod, 72 h to 2026-10-22, queue wait = `meta.started_at - created_at`:
 Recurring + ad-hoc jobs (the closest proxy for human intent): 7 of 53
 (13%) waited over 5 min; every graph_garden run (3 of 3) waited 27–52 min.
 
-Why jo504788 waited (queued 10:06:22Z, claimed 10:34:56Z on balthazar):
+Why jo504788 waited (queued 10:06:22Z, claimed 10:34:56Z on the sandbox host):
 
 1. **Ageing collapses the classes.** Its own prio was 2. The materialize
    band keeps a standing queue of prio-8 `derived_drain` rows pinned to
-   melchior; any row queued more than 65 min reaches the 1.5 floor, the same
+   the agent host; any row queued more than 65 min reaches the 1.5 floor, the same
    rank a prio-2 row reaches after 5 min. Ties break on `queued_since`,
-   so on melchior the older background row always wins. Melchior's
+   so on the agent host the older background row always wins. The agent host's
    `job_inproc` workers claimed six prio-8 drains (queued 09:04–09:12)
    between 10:18 and 10:48Z, each a synchronous 11–36 min run.
-2. **Balthazar's lane rides the shared rotation.** Its `job_inproc` pass
+2. **The sandbox host's lane rides the shared rotation.** Its `job_inproc` pass
    runs every 7.0 min p50 / 13.4 p95 (max 25) with `limit=1`; it ran at
    10:05:51, 10:18:50 (claimed an older prio-2 embed_batch) and 10:34:57
-   (claimed jo504788). Melchior's dedicated `job_inproc` processes poll
+   (claimed jo504788). The agent host's dedicated `job_inproc` processes poll
    every few seconds but were all busy draining.
 
 So nothing reserved a slot for interactive work, and ageing, meant to
@@ -112,7 +112,7 @@ process.
 Each lane keeps `PRECIS_LANE_RESERVED_INTERACTIVE` (default 1) of its
 concurrent processes for `human|agent|recurring` work: a claimer whose
 claim would leave zero idle-or-interactive processes skips background
-candidates. For a shared-rotation lane (balthazar `job_inproc`), the
+candidates. For a shared-rotation lane (the sandbox host `job_inproc`), the
 same effect comes from a wake: `put(kind='job')` with origin
 `human|agent` sends `NOTIFY job_queued_<executor>` and the runner runs
 that executor's pass out of turn (the rescue-ageing path in
@@ -163,7 +163,7 @@ gate.
    fair-share pick. The "N ahead" hint mirrors it in
    `handlers/job.py::_queue_lines` (slice 6).
 3. **Per-job_type cap (D4 cap half)** — `service_config` `max_running`
-   checked in the claim tx; set `derived_drain` to 2/host on melchior.
+   checked in the claim tx; set `derived_drain` to 2/host on the agent host.
    **Shipped.** The claim tx in `workers/executors/_common.py` aggregates
    `running_by_type` on the lane and refuses a job_type already at its
    cap; caps come from the `claim.max_running.<job_type>` operator

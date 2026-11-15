@@ -60,7 +60,7 @@ def test_pasted_c_url_navigates(drive_client: TestClient, store: Any) -> None:
     h = handle_registry.format_handle("quest", rid)
     resp = drive_client.get(
         "/drive",
-        params={"q": f"https://melchior.example.ts.net/c/{h}"},
+        params={"q": f"https://maple.example.ts.net/c/{h}"},
         follow_redirects=False,
     )
     assert resp.status_code == 302
@@ -79,7 +79,7 @@ def test_pasted_site_path_navigates(drive_client: TestClient, store: Any) -> Non
 def test_pasted_url_with_query_and_fragment(drive_client: TestClient) -> None:
     resp = drive_client.get(
         "/drive",
-        params={"q": "https://melchior.example.ts.net/drive?q=nano#top"},
+        params={"q": "https://maple.example.ts.net/drive?q=nano#top"},
         follow_redirects=False,
     )
     assert resp.status_code == 302
@@ -102,7 +102,7 @@ def test_post_only_path_is_plain_search(drive_client: TestClient) -> None:
     not navigate (GET would 405); it stays a search."""
     resp = drive_client.get(
         "/drive",
-        params={"q": "https://melchior.example.ts.net/factory/llm/chain"},
+        params={"q": "https://maple.example.ts.net/factory/llm/chain"},
         follow_redirects=False,
     )
     assert resp.status_code == 200

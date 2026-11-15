@@ -1,6 +1,6 @@
 # Run a patent OPS job by hand (`precis jobs reingest-patents`)
 
-Running a patent OPS job manually on melchior (e.g. the force-reingest
+Running a patent OPS job manually on the agent host (e.g. the force-reingest
 backfill `precis jobs reingest-patents`) has three traps that each cost
 hours to diagnose:
 
@@ -31,7 +31,7 @@ hours to diagnose:
 Env comes from the watch daemon's plist (secrets never printed):
 
 ```python
-# pipe via: ssh melchior 'sudo -u hermes /opt/precis/venv/bin/python3' < script.py
+# pipe via: ssh <agent-host> 'sudo -u hermes /opt/precis/venv/bin/python3' < script.py
 import plistlib, os, subprocess
 d = plistlib.load(open("/Library/LaunchDaemons/com.precis.watch.plist", "rb"))
 env = dict(os.environ); env.update(d["EnvironmentVariables"])   # EPO creds + DSN

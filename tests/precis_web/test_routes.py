@@ -4492,7 +4492,7 @@ def test_console_conversion_error_is_inline_with_working_example(
 
     from precis_web.routes.console import _parse_args
 
-    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spruce {argument}"}
     if method == "post":
         resp = client.post("/console/run", data=request_data)
     else:
@@ -4503,7 +4503,7 @@ def test_console_conversion_error_is_inline_with_working_example(
     assert "[input error]" in rendered
     assert f"Example: {example}" in rendered
     assert not runtime.calls
-    assert _parse_args("search", f"kind=memory q=spark {example}")[key] == expected
+    assert _parse_args("search", f"kind=memory q=spruce {example}")[key] == expected
 
 
 @pytest.mark.parametrize("method", ["post", "get"])
@@ -4517,7 +4517,7 @@ def test_console_conversion_error_is_inline_with_working_example(
 def test_console_dict_argument_dispatches(
     client, runtime, method: str, argument: str
 ) -> None:
-    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spruce {argument}"}
     if method == "post":
         resp = client.post("/console/run", data=request_data)
     else:
@@ -4525,7 +4525,7 @@ def test_console_dict_argument_dispatches(
 
     assert resp.status_code == 200
     assert runtime.calls == [
-        ("search", {"kind": "memory", "q": "spark", "args": {"under": "me1"}})
+        ("search", {"kind": "memory", "q": "spruce", "args": {"under": "me1"}})
     ]
     assert "[search] ok" in resp.text
 
@@ -4535,8 +4535,8 @@ def test_console_dict_argument_dispatches(
     ("args_text", "expected"),
     [
         pytest.param(
-            r"kind=memory q=spark args={\"under\":\"me1\"}",
-            {"kind": "memory", "q": "spark", "args": {"under": "me1"}},
+            r"kind=memory q=spruce args={\"under\":\"me1\"}",
+            {"kind": "memory", "q": "spruce", "args": {"under": "me1"}},
             id="legacy-escaped-json",
         ),
         pytest.param(
@@ -4550,8 +4550,8 @@ def test_console_dict_argument_dispatches(
             id="dict-only",
         ),
         pytest.param(
-            "args={'under': 'me1', 'depth': 1} q=spark",
-            {"args": {"under": "me1", "depth": 1}, "q": "spark"},
+            "args={'under': 'me1', 'depth': 1} q=spruce",
+            {"args": {"under": "me1", "depth": 1}, "q": "spruce"},
             id="dict-with-following-query",
         ),
         pytest.param(
@@ -4598,18 +4598,18 @@ def test_console_failed_dict_rescue_preserves_first_error(args_text: str) -> Non
     ("args_text", "expected"),
     [
         pytest.param(
-            "args={'filter': {'tags': ['one', 'two']}} q=spark",
-            {"args": {"filter": {"tags": ["one", "two"]}}, "q": "spark"},
+            "args={'filter': {'tags': ['one', 'two']}} q=spruce",
+            {"args": {"filter": {"tags": ["one", "two"]}}, "q": "spruce"},
             id="nested-dict-and-list",
         ),
         pytest.param(
-            "args={'note': 'two words } { here'} q=spark",
-            {"args": {"note": "two words } { here"}, "q": "spark"},
+            "args={'note': 'two words } { here'} q=spruce",
+            {"args": {"note": "two words } { here"}, "q": "spruce"},
             id="spaces-and-braces-in-dict-string",
         ),
         pytest.param(
-            r"args={'note': 'author\'s words'} q=spark",
-            {"args": {"note": "author's words"}, "q": "spark"},
+            r"args={'note': 'author\'s words'} q=spruce",
+            {"args": {"note": "author's words"}, "q": "spruce"},
             id="escaped-apostrophe-in-dict-string",
         ),
         pytest.param(
@@ -4628,8 +4628,8 @@ def test_console_failed_dict_rescue_preserves_first_error(args_text: str) -> Non
             id="bare-brace-in-string-argument",
         ),
         pytest.param(
-            '"kind=memory" "q"=spark',
-            {"kind": "memory", "q": "spark"},
+            '"kind=memory" "q"=spruce',
+            {"kind": "memory", "q": "spruce"},
             id="quoted-key-and-whole-token",
         ),
         pytest.param(
@@ -5360,7 +5360,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
         "_heartbeats",
         lambda store: [
             {
-                "host": "caspar",
+                "host": "birch",
                 "ago": "2m ago",
                 "stale": False,
                 "temp_c": 91.5,
@@ -5374,7 +5374,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
         status_mod,
         "_hosts",
         lambda store: [
-            {"host": "caspar", "ago": "1m ago", "stale": False, "problems": 4}
+            {"host": "birch", "ago": "1m ago", "stale": False, "problems": 4}
         ],
     )
     monkeypatch.setattr(
@@ -5393,7 +5393,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
     # The Machines strip deferred onto the lazy panels fragment (gr518161).
     resp = client.get("/status/health-panels")
     assert resp.status_code == 200
-    assert "caspar" in resp.text
+    assert "birch" in resp.text
     assert "91.5 °C" in resp.text  # hot temp rendered
     assert "4 err/warn 24h" in resp.text
 
@@ -5416,7 +5416,7 @@ def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -
             ],
             "failed_passes": [
                 {
-                    "host": "melchior",
+                    "host": "maple",
                     "handler": "deep_review",
                     "failed": 3,
                     "ago": "5m ago",
@@ -5495,10 +5495,12 @@ def test_status_services_tab_lists_registry_services(client) -> None:
     assert 'action="/factory/prio"' in resp.text
 
 
-def test_status_services_tab_host_selector_scopes_page(client) -> None:
-    resp = client.get("/status?tab=services&host=melchior")
+def test_status_services_tab_unknown_host_falls_back_to_all(client) -> None:
+    """A ``host=`` the fleet does not know is not an editing scope: the
+    selector falls back to all hosts."""
+    resp = client.get("/status?tab=services&host=no-such-host")
     assert resp.status_code == 200
-    assert "melchior" in resp.text
+    assert '<option value="*" selected>' in resp.text
 
 
 def test_status_services_tab_renders_llm_chain_editor(client) -> None:
@@ -6615,7 +6617,7 @@ def test_memory_detail_omits_chunks_section(client) -> None:
 def test_template_missing_key_does_not_500(client, monkeypatch) -> None:
     """A context dict missing a key the template references must render.
 
-    The melchior incident: a stale process omitted ``usage`` and the
+    The maple incident: a stale process omitted ``usage`` and the
     page 500'd on ``usage.get(...)``. ``ChainableUndefined`` keeps
     chained access silent.
     """

@@ -1,6 +1,6 @@
-# Castor MEDIUM-tier load eval
+# Local-serving-node MEDIUM-tier load eval
 
-Measurement for the castor-load decision (gr489474, Reto "option 1",
+Measurement for the local-serving-node load decision (gr489474, Reto "option 1",
 2026-10-18) — replay, no routing change. Harness:
 `scripts/llm_eval/medium_castor_eval.py`; raw output is gitignored
 (`scripts/llm_eval/gold_set/local/medium_castor_eval.jsonl`).

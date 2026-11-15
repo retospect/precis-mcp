@@ -48,7 +48,7 @@ from .persist import BODY_KIND, pathway_title, persist_result, quest_minted_slug
 
 #: When set, `put` routes the compute to a `autocatpath_explore` job pinned to this
 #: node instead of running autocatpath in-process (slice 1). The gateway sets it to
-#: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
+#: the GPU node's PRECIS_NODE (e.g. '<gpu-node>'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
 #: mode='verify' seed-count bounds (gr543165): default 3 independent

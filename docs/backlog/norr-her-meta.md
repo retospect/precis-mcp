@@ -32,7 +32,7 @@ Packing is shipped, including the mixed-half correction. The bounded R17
 slice is to verify and reuse the retained corrected 300-row probe before
 buying another run. Native `td470289` records the retained audit, review
 and exact branch disposition. This slice does not start steps 3–5 or local-model qualification,
-the full corpus, list freeze or gold adjudication. The old thread's Castor
+the full corpus, list freeze or gold adjudication. The old thread's local-serving node
 wait describes a separate placement qualification, not unfinished packing.
 
 Acceptance for this reconciliation:

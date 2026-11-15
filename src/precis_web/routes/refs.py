@@ -1980,7 +1980,7 @@ _RUN_JOB_DONE = ("succeeded", "failed", "cancelled")
 
 def _pathway_job_chip(row: Any) -> dict[str, Any]:
     """One provenance-strip job chip: ``label`` distinguishes the jobs at
-    a glance (``seed 1 on spark`` / ``aggregate on pollux`` — the host is
+    a glance (``seed 1 on <node>`` / ``aggregate on <node>`` — the host is
     per-job, ``meta.lease_host``, because pooled seeds can land on
     different machines and one page-level "ran on" lied about that),
     ``title`` is the mouseover: what the job is, that it's a finished

@@ -7,7 +7,7 @@ blocked-by: vllm-per-node-serving
 
 # Local model as batch function-writers behind a mechanical gate
 
-Reto, 2026-10-04: could the big model on a Spark write code, given a proper
+Reto, 2026-10-04: could the big model on the GPU node write code, given a proper
 harness? Answer from that discussion: yes for function-sized, test-gated
 patches, run as single-shot calls from a script. Anything larger costs more
 in review than it saves.
@@ -44,11 +44,11 @@ writing the function costs. Local pays only where acceptance is mechanical:
 
 ## Limits
 
-- **Nothing serves today.** Read 2026-10-04: no LLM server on castor,
-  pollux or spark; castor and pollux memory-full with other work. This
-  rides on the standing castor server, not a bring-up of its own.
+- **Nothing serves today.** Read 2026-10-04: no LLM server on the local-serving node,
+  the second DGX node or the GPU node; the DGX nodes memory-full with other work. This
+  rides on the standing local-serving node server, not a bring-up of its own.
 - **Test compute.** Every candidate needs a test run and the gate containers
-  on the dev Mac are contended. The idle spark box could run them under the
+  on the dev Mac are contended. The idle GPU node box could run them under the
   ad-hoc-compute ruling in [llm-capacity-plan](llm-capacity-plan.md).
 - **No quality number for code.** The km-8 check is a taxonomy task.
 - Local reviewing local shares one model's blind spots. Keep it to

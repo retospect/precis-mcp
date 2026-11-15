@@ -790,8 +790,8 @@ LLM_AFFINITY_GRACE_MIN = 10
 #: requires-bearing job whose non-``llm:`` resources aren't advertised on
 #: the reservation host defers instead of claiming unreserved while that
 #: host's heartbeat is stale-but-recent (gr491098: a post-restart claim
-#: burst on castor dropped every ``gpu:1`` gate — heartbeat dark → the slot
-#: map read empty — and co-claimed five cpuset-pinned NEB seeds onto one
+#: burst on the local-serving node dropped every ``gpu:1`` gate — heartbeat dark →
+#: the slot map read empty — and co-claimed five cpuset-pinned NEB seeds onto one
 #: GPU box, all deadline-killed). Past this the host reads as fossil and
 #: the unadvertised-requires fallback fires as before, so a permanently
 #: dark advertisement can't strand the queue.
@@ -2153,8 +2153,8 @@ def claim_executor_jobs(
             # slot map dropped out of ``advertised`` mid-outage, so claiming
             # now would run the job UNRESERVED into a co-claimed pile-up
             # (gr491098: five gpu:1 autocatpath seeds claimed on a dark
-            # castor in 25s, all pinned to the same cpuset; the 5400s-wall
-            # pair was deadline-killed while their pollux twins finished in
+            # local-serving node in 25s, all pinned to the same cpuset; the
+            # 5400s-wall pair was deadline-killed while their second-DGX-node twins finished in
             # ~72min). Defer: the lock frees at commit and the job re-gates
             # once the heartbeat/probe repopulates. ``_host_recently_dark``'s
             # staleness ceiling keeps a permanently dark host fall-through.
@@ -2338,7 +2338,7 @@ def claim_executor_jobs(
     # running rows forever, so the cap silently never binds and a bulk
     # band can occupy every in-proc slot on the host (gr592211: 49-queued
     # ``derived_drain`` starved release_poll/factory_rescue_tick off
-    # melchior's lanes for 15+ min per turnover).
+    # the agent host's lanes for 15+ min per turnover).
     cap_sql = ""
     cap_params: tuple[Any, ...] = ()
     reserve_block_sql = ""

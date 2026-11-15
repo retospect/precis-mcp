@@ -22,7 +22,7 @@ The job_type module is a pure declaration + helpers:
 * ``validate_submit`` — the **fail-closed** submit gate: rejects an
   unsupported ``mode``, ``precis_access:read`` on ``mode:build`` or
   without ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox
-  / melchior ``target_node``, ``mode:build`` with no ``prompt``,
+  / agent-host ``target_node``, ``mode:build`` with no ``prompt``,
   ``mode:run`` with no ``artifact`` (a prior build's ``folder`` ref
   id), a ``mode:script`` without exactly one of ``code``/``code_ref``,
   with oversize code, a ``code_ref`` or ``inputs`` entry that does not
@@ -55,7 +55,7 @@ the poll lifecycle already is the submit→poll shape those need.
 The container runs Claude with a
 **dedicated** long-lived ``CLAUDE_CODE_OAUTH_TOKEN`` (Max, *not*
 ``--bare`` / ``ANTHROPIC_API_KEY``), no DB creds, cgroup-capped, never a
-GPU. melchior is excluded (it holds OAuth / gateway / creds — an escape
+GPU. The agent host is excluded (it holds OAuth / gateway / creds — an escape
 target); only ``agent_sandbox_host`` nodes may run it. ``mode:run``
 drops the OAuth token entirely — no claude is spawned, so there is
 nothing to authenticate.
@@ -80,7 +80,7 @@ from precis.workers.executors import _sandbox_inputs
 # ── Declared metadata (read by the dispatcher and the executor) ────
 
 #: Nodes that may never be a sandbox host regardless of the allowlist —
-#: melchior holds the OAuth token / gateway / DB creds, so a container
+#: the agent host holds the OAuth token / gateway / DB creds, so a container
 #: escape there is the whole threat model. Hard-excluded even if an
 #: operator mistakenly lists it in ``PRECIS_SANDBOX_HOSTS``.
 _EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
@@ -272,7 +272,7 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     unsupported ``precis_access`` value, ``precis_access:read`` on
     ``mode:build``, ``precis_access:read`` without
     ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
-    invalid ``image``, a missing / melchior / non-allowlisted
+    invalid ``image``, a missing / agent-host / non-allowlisted
     ``target_node``, a non-positive ``resources.wall_seconds``, a
     ``mode:build`` with no ``prompt``, a ``mode:run`` with no
     (positive integer) ``artifact``, and a ``mode:script`` that fails

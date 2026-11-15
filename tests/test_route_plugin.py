@@ -217,14 +217,14 @@ def test_put_dispatches_job_when_route_node_set(
 ) -> None:
     """A configured route node ⇒ mint a retrosynth job parented on the route
     (compute lane, via `can_own_jobs`), not an inline solve."""
-    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spruce")
     # `_try` constructs + registers so self.hub knows `route` (can_own_jobs).
     hub = Hub(store=route_store)
     h = _try(RouteHandler, hub=hub)
     assert h is not None
 
     resp = h.put(id="ibuprofen", target="CC(C)Cc1ccccc1", engine="stub")
-    assert "dispatched to spark" in resp.body
+    assert "dispatched to spruce" in resp.body
 
     route_ref = route_store.get_ref(kind="route", id="ibuprofen")
     assert route_ref is not None
@@ -237,7 +237,7 @@ def test_put_dispatches_job_when_route_node_set(
     assert row is not None, "a retrosynth job should parent on the route"
     assert row[1].get("job_type") == "retrosynth"
     assert row[1].get("executor") == "ssh_node"
-    assert (row[1].get("params") or {}).get("target_node") == "spark"
+    assert (row[1].get("params") or {}).get("target_node") == "spruce"
 
     # The route itself is still pending (the job hasn't run).
     assert "planning" in h.get(id="ibuprofen").body
@@ -248,7 +248,7 @@ def test_requested_by_wires_blocking_todo(
     register_retrosynth: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spruce")
     todo = route_store.insert_ref(kind="todo", slug=None, title="make the target")
 
     hub = Hub(store=route_store)
@@ -443,7 +443,7 @@ def test_container_dispatch_round_trip(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": key,
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -491,7 +491,7 @@ def test_container_dispatch_stages_max_routes_overlay(
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:wide",
         "max_routes": 20,
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -527,7 +527,7 @@ def test_container_oom_exit_stamps_killed_for_memory(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:oom",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -596,7 +596,7 @@ def test_route_json_routes_list_lands_as_alternatives(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:multi",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -637,7 +637,7 @@ def test_put_max_routes_validates_and_reaches_params(
     register_retrosynth: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spruce")
     h = _try(RouteHandler, hub=Hub(store=route_store))
     assert h is not None
     with pytest.raises(BadInput):
@@ -823,7 +823,7 @@ def test_container_prefers_route_json_over_trees(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:both",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     chem_jobs._dispatch(_FakeCtx(store=route_store, params=params), RETROSYNTH_SPEC)
     route = _route_meta(route_store, "both").get("route") or {}
@@ -860,7 +860,7 @@ def test_container_falls_back_to_trees_when_no_route_json(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:trees",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -898,7 +898,7 @@ def test_container_bad_route_json_falls_back_to_trees(
         "engine": "aizynth",
         "engine_version": "aizynth-container",
         "cache_key": "retrosynth:bad",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -982,7 +982,7 @@ def test_service_dispatch_round_trip(
         "engine": "askcos",
         "engine_version": "askcos-v2",
         "cache_key": "retrosynth:svc",
-        "target_node": "spark",  # runs the normalizer container
+        "target_node": "spruce",  # runs the normalizer container
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -1012,7 +1012,7 @@ def test_service_dispatch_no_endpoint_fails(
         "engine": "askcos",
         "engine_version": "askcos-v2",
         "cache_key": "retrosynth:noep",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
@@ -1037,7 +1037,7 @@ def test_service_dispatch_no_paths_is_unsolved(
         "engine": "askcos",
         "engine_version": "askcos-v2",
         "cache_key": "retrosynth:nopath",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)

@@ -1,19 +1,19 @@
 ---
 status: idea
-title: The cluster share moves to the file server — no Mac or Spark serves files
+title: The cluster share moves to the file server — no Mac or GB10 node serves files
 pillar: local-compute
 prio: high
 ---
 
-# The cluster share moves to the file server — no Mac or Spark serves files
+# The cluster share moves to the file server — no Mac or GB10 node serves files
 
 Reto, 2026-10-02 (review item local-compute-7): "Really I don't want any of
 the macs or sparks to be fileservers in addition. I'd want them to directly
-talk to that." "That" is finnmaccool, the file server.
+talk to that." "That" is the file server.
 
 ## Motivation / why
 
-`/mnt/cluster` is exported today by the DB node (caspar, a Mac) over
+`/mnt/cluster` is exported today by the DB node (the database host, a Mac) over
 NFSv3/TCP and autofs-mounted on the Linux nodes. The twins stage
 dft/fold/retrosynth container scratch on it. On 2026-10-02 it hung on all
 three Sparks while the Macs read it fine (review item local-compute-6,
@@ -23,11 +23,11 @@ roles off the Macs.
 
 ## In scope
 
-1. A read-only probe of finnmaccool first: OS, exports and protocols,
+1. A read-only probe of the file server first: OS, exports and protocols,
    capacity and health, and how each node reaches it (on the LAN directly
    or through the tailnet). Reto granted ssh for this. No change before a
    migration plan is approved.
-2. A migration plan: the export on finnmaccool, copying the share's
+2. A migration plan: the export on the file server, copying the share's
    contents, autofs maps on the Linux nodes, mounts on the Macs, a cutover
    order that keeps the science lanes' scratch working, and a rollback.
 3. macOS per-app access to network volumes (TCC): launchd services on the
@@ -35,7 +35,7 @@ roles off the Macs.
    grant it, for example Full Disk Access for the service binary or a
    mount location TCC does not gate, instead of working around it per
    service.
-4. Retire the DB node's NFS export once every client mounts finnmaccool.
+4. Retire the DB node's NFS export once every client mounts the file server.
 
 ## Explicitly NOT in scope
 
@@ -44,11 +44,11 @@ roles off the Macs.
 
 ## Acceptance criteria
 
-- Every node mounts the share from finnmaccool; no Mac or Spark exports NFS.
+- Every node mounts the share from the file server; no Mac or GB10 node exports NFS.
 - A file `deploy` writes on one node shows `deploy` as its owner on every
   node. A write to `dbbackup` from any node but the DB node fails.
 - A launchd service on a Mac reads and writes the share with no TCC prompt.
-- A DFT relax on pollux stages scratch on the new share end to end.
+- A DFT relax on the second DGX node stages scratch on the new share end to end.
 - `tests/test_deploy_tree_no_secrets.py` green: the server address lives
   only in the gitignored overlay; the deploy tree names a group, not the host.
 
@@ -60,11 +60,11 @@ go to the orchestrator as a branch; overlay edits go to Reto.
 
 ## Open questions / decisions log
 
-- 2026-10-02 ~22:30Z read-only probe of finnmaccool (nothing changed):
+- 2026-10-02 ~22:30Z read-only probe of the file server (nothing changed):
   - A TerraMaster NAS (TOS 7 on an Ubuntu 22.04 base). Load is near zero.
   - Storage: 8 NVMe drives in RAID6 under one btrfs volume, 22 TB with
     17 TB free. SMART passes on every drive and the last scrub is clean.
-  - One 2.5 GbE NIC at MTU 1500. Every Spark and every Mac reaches it
+  - One 2.5 GbE NIC at MTU 1500. Every GB10 node and every Mac reaches it
     on-link on the LAN, not through the tailnet.
   - It serves NFS v3/v4.0-4.2 (8 threads) and SMB.
   - One NFS export, `botshome`, with `all_squash` mapping every client
@@ -87,7 +87,7 @@ go to the orchestrator as a branch; overlay edits go to Reto.
     under the existing grants (python.org 3.12/3.14, cron, the shells,
     automountd). The DB node's pgbouncer has no grant and must not log to
     the NAS; the plan already moves its log host-local.
-- 2026-10-02 22:40Z: spark read `botshome` from finnmaccool while the DB
+- 2026-10-02 22:40Z: the GPU node read `botshome` from the file server while the DB
   node's share hung on the same box. It listed instantly, read 200 MB at
   290 MB/s, and negotiated NFS 4.2. So the Linux clients and the LAN are
   fine, and the hang is specific to the DB node's macOS nfsd. That moves
@@ -97,7 +97,7 @@ go to the orchestrator as a branch; overlay edits go to Reto.
   rule admits any client (`*`) and maps every user to root.
 
 - 2026-10-02 22:42Z, Reto (local-compute-8) **held all NFS changes**,
-  including the caspar nfsd restart approved under local-compute-6, until
+  including the database host nfsd restart approved under local-compute-6, until
   a full plan is ready. His inputs:
   - a dedicated `cluster` user on the NAS;
   - hard mounts everywhere;
@@ -118,11 +118,11 @@ go to the orchestrator as a branch; overlay edits go to Reto.
   - `extract_watch` logs;
   - the `/opt/shared/corpus` fallback in `precis_web`.
 - 2026-10-02: the Linux Sparks' hang on the current share is under
-  diagnosis (design note §6). The last read points at caspar sending its
+  diagnosis (design note §6). The last read points at the database host sending its
   replies to the Sparks through the Tailscale tunnel (MTU 1280) while the
-  Sparks send to caspar directly on the LAN. If that is the cause, the same
-  routing will hit finnmaccool unless the plan pins the LAN path. Probe
-  item 1 checks each node's route to finnmaccool for this reason.
+  Sparks send to the database host directly on the LAN. If that is the cause, the same
+  routing will hit the file server unless the plan pins the LAN path. Probe
+  item 1 checks each node's route to the file server for this reason.
 
 ## Full migration plan (review item local-compute-9)
 
@@ -143,14 +143,14 @@ no Full Disk Access grant has to be redone.
 **What reads it, by host:**
 - **DB node:** pgbouncer's log, the backup cron jobs (pg_dump, restore
   test, B2 offsite sync), `config_pull`, and log rotation.
-- **melchior:** the precis web service (the corpus fallback).
-- **balthazar:** the openclaw agents.
+- **Agent host:** the precis web service (the corpus fallback).
+- **Second worker host:** the openclaw agents.
 - **The Sparks:** the dft, fold and retrosynth container scratch, and
   `config_pull`.
 
 ### Phase 0: prepare (no client sees a change)
 
-1. **NAS shares.** Two shared folders on finnmaccool, both passing real
+1. **NAS shares.** Two shared folders on the file server, both passing real
    uids through with root squashed (design: "Shares" below):
    - `cluster`: read-write for every node in `nfs_clients`.
    - `dbbackup`: read-write for the DB node, read-only for the rest.
@@ -175,7 +175,7 @@ no Full Disk Access grant has to be redone.
    - **Owners are numeric.** NFSv4 idmapping is off on the server
      (`nfs4_disable_idmapping=Y`) and the Macs mount v3, so a file
      carries the uid the client sent. `deploy` has the same uid and gid on
-     caspar, melchior, balthazar, spark, castor and pollux (checked
+     the database host, the agent host, the second worker host, the GPU node and the DGX nodes (checked
      2026-10-22). The NAS has no account for that uid. mountd runs
      `manage-gids=y`, so the NAS looks up supplementary groups itself and
      finds none for `deploy`: access by owner or primary group works,
@@ -313,27 +313,27 @@ live on the file server exclusively."
    - Touches: the NAS's disk.
    - Rollback: delete the copy.
 
-### Phase 3: cutover (one deploy window, after catalysis's PBE run on spark ends)
+### Phase 3: cutover (one deploy window, after catalysis's PBE run on the GPU node ends)
 
 6. **Pause the science lanes** through the job system, so no dft, fold or
    retrosynth job is mid-write. Run the rsync delta pass.
 7. **Linux Sparks.** Run `nfs_client` to point fstab at the NAS, then
    reboot inside the scheduled OS-update window (`spark-provisioning.md`).
    The reboot is the only way to clear today's processes stuck in D state
-   on the hung caspar mount.
-   - Touches: fstab and systemd automount on spark, castor and pollux.
+   on the hung database host mount.
+   - Touches: fstab and systemd automount on the GPU node and the DGX nodes.
    - Rollback: point fstab back and reboot.
-8. **Macs.** Stop the precis web service on melchior and the openclaw
-   agents on balthazar. Run `nfs_client` (it replaces the fstab line and
+8. **Macs.** Stop the precis web service on the agent host and the openclaw
+   agents on the second worker host. Run `nfs_client` (it replaces the fstab line and
    runs `automount -c`), then start the services again.
    - Rollback: same steps with the old line.
 9. **Checks.**
    - `.nfs-canary` is readable on every node;
-   - one dft job runs on pollux with scratch on the new share;
+   - one dft job runs on the second DGX node with scratch on the new share;
    - the precis web service serves a held PDF;
    - the openclaw agents write their logs;
-   - a file `deploy` writes on spark shows `deploy` as owner on melchior;
-   - a write to `dbbackup` from spark fails as read-only;
+   - a file `deploy` writes on the GPU node shows `deploy` as owner on the agent host;
+   - a write to `dbbackup` from the GPU node fails as read-only;
    - unpause the lanes.
 
 ### Phase 4: Full Disk Access (TCC) check
@@ -342,7 +342,7 @@ live on the file server exclusively."
     from `roles/tcc_profile` still apply. Those are Full Disk Access on
     the python.org-signed interpreters, clicked by hand because macOS 26
     refuses unsigned profiles. Check with a throwaway launchd job on
-    melchior that reads and writes `/mnt/cluster`. A new service that
+    the agent host that reads and writes `/mnt/cluster`. A new service that
     needs the share gets its binary added to `tcc_profile_binaries`.
 
 ### Phase 5: retire (a day later, then a week later)
@@ -405,7 +405,7 @@ No.
 - **Full Disk Access:** the macOS permission is about the mount, not the
   wire, so the cable doesn't change it.
 - **Bandwidth:** the NAS's only NIC is already 10 GbE (Aquantia AQC). It
-  links at 2.5 Gb/s because the switch port offers no more. spark's read
+  links at 2.5 Gb/s because the switch port offers no more. The GPU node's read
   of 290 MB/s is that 2.5 Gb/s line rate.
 - **Better option:** if bandwidth ever matters, use a multi-gig (5/10 GbE)
   switch port for the NAS. No new hardware on the NAS. Today the only
@@ -431,7 +431,7 @@ is fine ... Separate out the backup user so agents cant accidentally rm the
 backup? But KISS minimal otherwise."
 
 5. **Server:** the NAS itself, every node mounting it directly; no Mac or
-   Spark relays it ("no middle hops").
+   the GPU node relays it ("no middle hops").
 6. **Ownership:** files keep their real, non-root owners. That needs uid
    pass-through with root squashed, not `all_squash` to one identity; the
    plan must confirm TOS 7 offers it (the 2026-10-03 read found only
@@ -446,7 +446,7 @@ backup? But KISS minimal otherwise."
    Still kept from the proposal because it is a local-disk change, not a
    share: no scripts that root runs live on NFS.
 9. **The DB node is the database and nothing else.** Reto: "I concur with
-   caspar db only ... File server can go if we no longer need it." Its NFS
+   database-host db only ... File server can go if we no longer need it." Its NFS
    export retires in phase 5 once no client mounts it. Two DB-node changes
    ride with this plan:
    - Its nightly `daily-update-reboot.sh` installs nothing: on Apple

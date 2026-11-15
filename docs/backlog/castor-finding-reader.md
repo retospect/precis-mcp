@@ -1,12 +1,12 @@
 ---
 status: draft
-title: Castor paper→findings reader — a background job that reads one full-text paper chunk by chunk and writes cited, deduped claim hubs for the quest or todo that asked
+title: Local-model paper→findings reader — a background job that reads one full-text paper chunk by chunk and writes cited, deduped claim hubs for the quest or todo that asked
 pillar: memory-graph
 ---
 
-# Castor paper→findings reader
+# Local-model paper→findings reader
 
-Reto 2026-10-24 (chat, relayed): "Castor paper→findings reader: should I
+Reto 2026-10-24 (chat, relayed): "Local-model paper→findings reader: should I
 have it specced? << yes". qu509651 logbook 2026-10-23 23:36: speccing it
 was approved "so qualitative answers (AMOC placement, fisheries, salt on
 land, governance) get findings, not only survey_extract measures."
@@ -14,7 +14,7 @@ Reto rules on this spec before anyone builds it.
 
 ## Motivation / why
 
-Castor has exactly one paper reader, `survey_extract`
+The local-serving node has exactly one paper reader, `survey_extract`
 (`workers/job_types/survey_extract.py`). It writes numbers: `measures`
 rows anchored to chunks, under a measurand taxon. Nothing in the
 background turns a paper's qualitative content into findings: siting
@@ -34,11 +34,11 @@ than forking any of them:
 
 | need | existing seam |
 |---|---|
-| chunk iteration, slicing, park/resume on castor | `survey_extract.py::_survey_dispatch`, `::_chunks`, `::_skippable` |
+| chunk iteration, slicing, park/resume on the local-serving node | `survey_extract.py::_survey_dispatch`, `::_chunks`, `::_skippable` |
 | claim extraction from a chunk | `taproot/canon.py::extract_claim` (atoms, composite, `not_claims`, `claim_type`, `scope`) |
 | hearsay / proxy gate | `canon.py::is_proxy_deferral`; `taproot/grounding.py::has_grounding_prose` |
 | "same claim?" | `canon.py::block` → `dedup_judge` → `place` (`merge_confirm` below 0.85) |
-| support check of claim vs chunk | `workers/_chase_llm.py::_verify_support_with_caveats` (`chase:verify`, castor-routed by Reto 2026-10-22) |
+| support check of claim vs chunk | `workers/_chase_llm.py::_verify_support_with_caveats` (`chase:verify`, routed to the local-serving node by Reto 2026-10-22) |
 | hub write, edge stamp | `taproot/hub.py::mint_hub` / `attach_evidence` / `apply_placement`; `MintCap` |
 | sampled acceptance with a Wilson bar | `extract/accept.py`, `survey_extract.py::_accept_dispatch` |
 | background claim order | `executors/_common.py::_claim_order_sql` (origin rank human 0 … background 3) |
@@ -238,7 +238,7 @@ contextvars) so the reader forces local without rerouting every other
 caller of those ops.
 
 **Before local dedup is trusted,** the live `eval_canon` fixture must
-score zero over-merges with `dedup_judge` / `merge_confirm` on castor's
+score zero over-merges with `dedup_judge` / `merge_confirm` on the local-serving node's
 gpt-oss-120b. If it does not, the reader routes `needs_review` for every
 `same` and mints nothing new, and that is reported, not worked around.
 
@@ -254,7 +254,7 @@ gpt-oss-120b. If it does not, the reader routes `needs_review` for every
   reaches them.
 - `claim.max_running.finding_read` defaults to 2 per host.
 - Each job keeps one chunk in flight, so the reader adds at most 2
-  concurrent requests to castor (SGLang `--max-running-requests 32`;
+  concurrent requests to the local-serving node (SGLang `--max-running-requests 32`;
   gr485635: don't raise it).
 
 **Saturation.** A local-slot wait timeout (`PRECIS_LOCAL_SLOT_WAIT_S`)
@@ -308,7 +308,7 @@ It never deletes a hub because its chunk vanished.
 | hearsay (the paper citing others) | `is_proxy_deferral`, `has_grounding_prose` (hearsay sections), the prompt rule "this paper's own result or analysis"; class `hearsay` |
 | one-page or partial source | its own floor: ≥ 8 eligible body chunks and ≥ 6,000 eligible chars, or the paper is skipped `partial-source`. The ONE-PAGE SOURCE banner is ignored either way; gr510135 shows it fires on a full 141-chunk manuscript (pa509665). Abstract-only papers are always skipped. |
 | OCR or extraction garbage | a chunk failing `has_grounding_prose` is skipped. More than 30% of a paper's body chunks failing → the paper is skipped `garbled`, and one gripe is filed (`thread:ingest-and-fetch`). |
-| castor down or busy | park, then fail with a reason; never cloud |
+| the local-serving node down or busy | park, then fail with a reason; never cloud |
 | embedder down (`block` raises `Upstream`) | park; never mint without dedupe (`dedup=False` is not available to the reader) |
 | over-mining a dense review chunk | `MintCap` 3 per chunk per run; `landscape`-type claims are minted only when `bears_on` is non-empty |
 
@@ -358,7 +358,7 @@ Build:
 - the `finding_read` job type (`workers/job_types/finding_read.py`,
   registry `ServiceSpec`, `cost_sources=("finding_read",)`);
 - the `finding_read` op in `LLM_OPERATIONS` plus the prod `llm.op.finding_read`
-  castor row (a runtime setting, not code), and the prompt with
+  the local-serving node row (a runtime setting, not code), and the prompt with
   `PROMPT_VERSION`;
 - steps 1–5 and the measure dedupe;
 - the placement contextvar;
@@ -381,7 +381,7 @@ Acceptance (fake router, `scripts/test`):
 - with no local rung the job parks and makes no cloud call
   (`placement_refusal`);
 - children are stamped `origin='background'`;
-- the live `eval_canon` run on castor shows zero over-merges, recorded in
+- the live `eval_canon` run on the local-serving node shows zero over-merges, recorded in
   the commit;
 - the pa508953 dry run is scored against fi509632..fi509645 with the
   `local-mesh-upkeep` claim-match scorer.
@@ -437,7 +437,7 @@ Acceptance:
 - Contradiction adjudication (stage 8 stays absent); `disputes` are filed,
   never ruled on.
 - Editing or merging human-written findings; promoting trust; nanopub.
-- The lane allocator (`llm-lane-scheduler.md`) and the castor agent
+- The lane allocator (`llm-lane-scheduler.md`) and the local-model agent
   harness (`castor-agent-lane.md`). The reader runs on today's claim
   order and slots.
 - Reading papers for no target: every run names a `serves`.
@@ -478,7 +478,7 @@ climate second. Added on review, folded in by the next revision:
   `STATUS:canonical`, searchable or in other mint doors' dedupe pools until
   their batch passes the Opus spot-check; on pass they flip, on fail they
   revert.
-- **B. One castor budget.** `finding_read` concurrency is a global cap, not
+- **B. One local-model budget.** `finding_read` concurrency is a global cap, not
   per worker host. The reader yields while the gardener, classify or
   survey_extract queues have waiting work, and that includes the dedup and
   merge-confirm calls it moves local.
@@ -520,10 +520,10 @@ climate second. Added on review, folded in by the next revision:
    - **Recommendation:** yes, one dry run on pa508953 (a single paper,
      local only), then climate td510498.
    - The brief puts climate first. Calibrating on the one paper with a
-     hand-written answer key costs part of one night of castor time and
+     hand-written answer key costs part of one night of local-model time and
      turns "did it work" from an opinion into a recall number.
 7. **Which local model?**
-   - **Recommendation:** gpt-oss-120b on castor, the survey_extract model,
+   - **Recommendation:** gpt-oss-120b on the local-serving node, the survey_extract model,
      for every reader call.
    - Nemotron 3 Super is the alternative once `local-mesh-upkeep` has
      scored both on finding extraction.

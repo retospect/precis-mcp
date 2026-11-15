@@ -91,7 +91,7 @@ def plist_path(env: Path) -> Path:
 def test_install_writes_plist_and_bootstraps(env):
     token_file = env / "token"
     token_file.write_text("tok-secret\n", encoding="utf-8")
-    out = run("--token-file", str(token_file), "--remote", "reto@melchior")
+    out = run("--token-file", str(token_file), "--remote", "reto@maple")
     assert "every 60 s" in out.stdout
     plist = plist_path(env)
     assert stat.S_IMODE(plist.stat().st_mode) == 0o600
@@ -100,7 +100,7 @@ def test_install_writes_plist_and_bootstraps(env):
     assert d["StartInterval"] == 60 and d["RunAtLoad"] is True
     argv = d["ProgramArguments"]
     assert argv[:2] == [str(ROOT / "scripts" / "fleet-report"), "--push"]
-    assert argv[2:] == ["--remote", "reto@melchior"]
+    assert argv[2:] == ["--remote", "reto@maple"]
     envs = d["EnvironmentVariables"]
     assert envs["PRECIS_MCP_TOKEN_FILE"] == str(token_file)
     assert "tok-secret" not in plist.read_text(encoding="utf-8")

@@ -195,7 +195,7 @@ subagents share one MCP session id server-side.
 | source | how `_ctx` gets there | grain |
 |---|---|---|
 | Claude Code (CLI, desktop, `claude -p` in containers) | PreToolUse hook on `mcp__precis__.*`, `hookSpecificOutput.updatedInput`; in containers the script reads the agentlog env | per agent, subagents included |
-| Router lanes (castor, hosted models via API, Mode B runners) | the router sets it | per job |
+| Router lanes (the local-serving node, hosted models via API, Mode B runners) | the router sets it | per job |
 | Top-level clients in tmux (Devin, Kimi, Codex) | none; connection or bearer token | per client |
 | Hosted models behind a Claude Code base-URL shim (optional) | as Claude Code | per agent |
 

@@ -52,7 +52,7 @@ Remote Login "allow full disk access for remote users" setting; ``terminal``
 attest at all: the NAS reaches it through the VM's mount, and no grant on the
 host binary applies. Known gaps: (i) one-shot
 cron/launchd-timer interpreters are not long-running and do not attest; (ii)
-a host with no ``host_heartbeat`` row (caspar, daemon-free by design) cannot
+a host with no ``host_heartbeat`` row (the database host, daemon-free by design) cannot
 receive attestations — logged once per process; (iii) several stdio
 ``precis serve`` processes on one host without distinct ``PRECIS_PROCESS``
 share one key, latest write wins, so one serve's denial can be overwritten by
@@ -96,7 +96,7 @@ _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 # arm in ``executors/_common.py`` needs). ``_boot_process`` is the
 # ``worker_logs.process``-shaped name (``PRECIS_PROCESS`` env, e.g.
 # ``precis-worker`` / ``precis-worker-agent``) this boot_id is advertised
-# under — a host can run more than one profile (melchior runs both), so
+# under — a host can run more than one profile (the agent host runs both), so
 # the advertised value is keyed ``(host, process)``, not just ``host``.
 _boot_id: str | None = None
 _boot_process: str | None = None
@@ -486,7 +486,7 @@ def _probe_nas() -> dict[str, Any]:
     watch/worker daemons use — so an EPERM here means every launchd/cron
     process on this host is locked out of the NAS. That happens when the
     venv python's Full Disk Access grant breaks after ``brew upgrade
-    python`` changes its cdhash (OPEN-ITEMS: 'melchior daemon NAS lockout').
+    python`` changes its cdhash (OPEN-ITEMS: 'gateway daemon NAS lockout').
 
     Runs :func:`_probe_nas_body` on a daemon worker thread and joins with a
     ``PRECIS_NAS_PROBE_TIMEOUT_SECONDS`` bound (default 5s). Additional
@@ -1122,7 +1122,7 @@ def _collect_and_upsert(
     # Live activity (2026-08-09 fetch_oa monopolization postmortem): this
     # process's own {process: snapshot} entry, keyed by the SAME
     # PRECIS_PROCESS source _own_boot_ids_meta uses above — so a host
-    # running more than one profile (melchior: system + agent) nested-
+    # running more than one profile (the agent host: system + agent) nested-
     # merges per-process, same as boot_ids (see record_heartbeat's UPSERT).
     # Skipped entirely pre-first-pass (empty snapshot) to avoid writing
     # noise, and when there's no process name to key it under.

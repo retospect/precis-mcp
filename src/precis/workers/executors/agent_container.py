@@ -93,7 +93,7 @@ def _container_bin() -> str:
 # ``container_agent_enabled()`` is a bare policy read — it says the operator
 # *opted in*, not that this host can actually run the container. A host that
 # lacks the runtime, the image, or a resolvable auth token would containerize
-# every agentic pass and fail at ``docker run`` — the spark DSN retry-storm's
+# every agentic pass and fail at ``docker run`` — the GPU node DSN retry-storm's
 # shape (2026-07-19). So the live selection seam gates the opt-in behind THIS
 # verified probe: the runtime+daemon reachable ∧ the ``precis-agent`` image
 # resident ∧ an auth token actually resolvable. Any leg missing / any probe
@@ -101,7 +101,7 @@ def _container_bin() -> str:
 # never a container it can't launch. Per-process cached (~60s) so the probe's
 # subprocesses don't ride every pass; the run-failure breaker
 # (:func:`trip_container_unhealthy`) latches a ~10-min ``False`` when a
-# containerized run dies at the infra level (melchior's OOM case, where
+# containerized run dies at the infra level (the agent host's OOM case, where
 # pre-flight passes but the box is SIGKILLed at run).
 
 _CAPABILITY_TTL_S = 60.0
@@ -154,7 +154,7 @@ def _auth_token_present(mode: str | None = None) -> bool:
 #: Why the last uncached probe said ``False`` (``""`` while healthy). Read by
 #: the callers that *refuse* rather than fall back (``diagnose_gripe`` /
 #: ``fix_gripe``'s gr179498 gate), so their skip event names the leg instead of
-#: the same "no containerized agent path" text for every cause — melchior ran
+#: the same "no containerized agent path" text for every cause — the agent host ran
 #: ~90% of diagnose_gripe as silent skips for 8 days before anyone could tell
 #: token / daemon / image / timeout apart (gr346813).
 _LAST_PROBE_FAILURE: str = ""

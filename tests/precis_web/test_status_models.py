@@ -76,7 +76,7 @@ def test_local_card_view_surfaces_served_by_hosts() -> None:
         "qwen3.6-35b-a3b-ud-q3_k_m",
         served_by=[
             {
-                "host": "balthazar",
+                "host": "alder",
                 "endpoint": "http://127.0.0.1:11445/v1",
                 "max_parallel": 1,
                 "model": "qwen3.6-35b-a3b-ud-q3_k_m",
@@ -86,7 +86,7 @@ def test_local_card_view_surfaces_served_by_hosts() -> None:
     )
     v = _llm_card_view(ref)
     assert v["is_cloud"] is False  # bare local model id (no slash, not claude-*)
-    assert [h["host"] for h in v["hosts"]] == ["balthazar", "no-host-key-skipped"]
+    assert [h["host"] for h in v["hosts"]] == ["alder", "no-host-key-skipped"]
     assert v["hosts"][0]["slots"] == 1
 
 
@@ -108,7 +108,7 @@ def test_served_by_hosts_dominate_a_provider_slugged_model_id() -> None:
         tier_floor="big",
         served_by=[
             {
-                "host": "spark",
+                "host": "spruce",
                 "endpoint": "http://127.0.0.1:8080/v1",
                 "max_parallel": 2,
                 "model": "some-org/some-model",
@@ -117,7 +117,7 @@ def test_served_by_hosts_dominate_a_provider_slugged_model_id() -> None:
     )
     v = _llm_card_view(ref)
     assert v["is_cloud"] is False
-    assert [h["host"] for h in v["hosts"]] == ["spark"]
+    assert [h["host"] for h in v["hosts"]] == ["spruce"]
 
 
 def test_card_view_lists_offerings_local_first_with_hosts() -> None:
@@ -130,7 +130,7 @@ def test_card_view_lists_offerings_local_first_with_hosts() -> None:
         tier_floor="medium",
         served_by=[
             {
-                "host": "castor",
+                "host": "cedar",
                 "endpoint": "http://x:8000/v1",
                 "max_parallel": 32,
                 "model": "gpt-oss-120b",
@@ -139,7 +139,7 @@ def test_card_view_lists_offerings_local_first_with_hosts() -> None:
         offerings=[
             {
                 "transport": "local",
-                "served_by": [{"host": "castor", "max_parallel": 32}],
+                "served_by": [{"host": "cedar", "max_parallel": 32}],
             },
             {"transport": "openai_compat", "max_input": 131072, "price_in": 0.037},
         ],
@@ -148,12 +148,12 @@ def test_card_view_lists_offerings_local_first_with_hosts() -> None:
     assert v["is_cloud"] is False  # served → Local grid despite the slug
     assert [o["transport"] for o in v["offerings"]] == ["local", "openai_compat"]
     assert v["offerings"][0]["local"] is True
-    assert v["offerings"][0]["hosts"] == ["castor"]
+    assert v["offerings"][0]["hosts"] == ["cedar"]
     assert v["offerings"][1]["local"] is False
     # headline keeps the cloud rate (the first non-local offering)
     assert v["price_in"] == 0.037 and v["window"] == 131072
     # the card-level + nested served_by dedupe to one host chip
-    assert [h["host"] for h in v["hosts"]] == ["castor"]
+    assert [h["host"] for h in v["hosts"]] == ["cedar"]
 
 
 def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
@@ -191,7 +191,9 @@ def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
             offerings=[{"price_in": 0.02}],
         ),
         _ref("anchor", "qwen-heavy", tier_floor="big"),
-        _ref("served", "qwen3.6-35b", served_by=[{"host": "spark", "max_parallel": 1}]),
+        _ref(
+            "served", "qwen3.6-35b", served_by=[{"host": "spruce", "max_parallel": 1}]
+        ),
     ]
     ctx = _models_ctx(_FakeStore(refs))
     # Cloud sorted strongest tier first; small after medium; unknown-tier
@@ -205,7 +207,7 @@ def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
     ]
     # Local: host-backed models before the abstract tier anchors.
     assert [c["model_id"] for c in ctx["local_cards"]] == ["qwen3.6-35b", "qwen-heavy"]
-    assert ctx["serving_hosts"] == ["spark"]
+    assert ctx["serving_hosts"] == ["spruce"]
     # The active-routing header rides along (independent of the card query).
     assert [r["tier"] for r in ctx["active_routing"]] == [
         "frontier",
@@ -544,11 +546,11 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
         _ref(
             165574,
             "qwen3.6-35b-a3b",
-            served_by=[{"host": "balthazar", "max_parallel": 1}],
+            served_by=[{"host": "alder", "max_parallel": 1}],
             offerings=[
                 {
                     "transport": "local",
-                    "served_by": [{"host": "balthazar", "max_parallel": 1}],
+                    "served_by": [{"host": "alder", "max_parallel": 1}],
                 },
                 {"transport": "openai_compat", "price_in": 0.4},
             ],
@@ -558,8 +560,8 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
     assert "z-ai/glm-5.2" in html  # cloud card name
     assert "0.969" in html  # headline list price
     assert "qwen3.6-35b-a3b" in html  # local card name
-    assert "balthazar" in html  # served-by host chip
-    assert "local:balthazar" in html  # the local offering names its host
+    assert "alder" in html  # served-by host chip
+    assert "local:alder" in html  # the local offering names its host
     assert "openai_compat" in html  # and the cloud fallback renders too
     # The active-routing header renders with a row per capability tier.
     assert "Active routing" in html

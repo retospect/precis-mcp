@@ -321,7 +321,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         # the agent container missing PRECIS_DATABASE_URL on a host) writes a
         # cooldown marker so the NEXT tick backs off (see _recent_failure).
         # Without it the pass re-dispatches every scheduler cycle and one
-        # persistent config gap becomes a flood (spark: 124k "failures"/24h) —
+        # persistent config gap becomes a flood (the GPU node: 124k "failures"/24h) —
         # the same spin the ``paused`` branch above already fixed for budget
         # trips (see LlmResult.paused).
         log.error("review[%s]: claude agent failed: %s", reviewer.name, res.error)
@@ -446,7 +446,7 @@ def _recent_failure(store: Store, reviewer: Reviewer) -> bool:
     normal cadence instead of re-dispatching every scheduler tick. One
     persistent failure (e.g. the agent container missing ``PRECIS_DATABASE_URL``
     on a host) would otherwise re-run ~1×/s and flood the error surface
-    (observed: spark 124k ERROR/24h, all ``review[structural]``).
+    (observed: the GPU node, 124k ERROR/24h, all ``review[structural]``).
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -966,7 +966,7 @@ def _mcp_config_path() -> Path | None:
     """Resolve the MCP config the reviewer's ``claude -p`` should advertise.
 
     ``PRECIS_MCP_CONFIG`` (a host path) when set. On an agent-container host
-    (``PRECIS_AGENT_CONTAINER=1`` — the spark review node, Phase-2 slice 2)
+    (``PRECIS_AGENT_CONTAINER=1`` — the GPU review node, Phase-2 slice 2)
     that var is deliberately UNSET: setting it would un-gate the in-proc
     ``claude_inproc`` passes (plan_tick / fix_gripe) that self-skip there. So
     when this dispatch will *actually* containerize

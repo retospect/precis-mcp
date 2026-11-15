@@ -494,18 +494,18 @@ Measured 2026-09-06, because the answer to "how do we get a path for a complex
 molecule" turned out to depend on deploy state nobody had checked.
 
 **Current state: no retrosynthesis engine is confirmed live.** The gateway
-(melchior) is correctly configured — `PRECIS_CHEM_ENABLED=1`,
-`PRECIS_CHEM_ROUTE_NODE=castor` — and the AiZynth models are already staged on
+(the agent host) is correctly configured — `PRECIS_CHEM_ENABLED=1`,
+`PRECIS_CHEM_ROUTE_NODE=<serving-node>` — and the AiZynth models are already staged on
 the NAS at `/opt/nfs/shared/aizynth-models/` (config.yml + `.onnx`/`.csv.gz`/
-`.hdf5`). But **castor was unreachable over SSH**, so neither the
+`.hdf5`). But **the local-serving node was unreachable over SSH**, so neither the
 `precis-aizynth` image nor the worker env drop-in could be verified, and
 `get(kind='route')` on prod returns **zero routes ever minted**. The only live
 engine is the deterministic `stub`, which is a round-trip test fixture, not a
-planner. (Castor/pollux unreachability may be the known Spark sshd
+planner. (Unreachability of the DGX nodes may be the known GB10 node sshd
 banner-timeout rather than an outage — do not conclude the playbook failed;
 conclude it is unverified.)
 
-Shortest path to a real answer: reach castor, run `playbooks/43-aizynth.yml`,
+Shortest path to a real answer: reach the local-serving node, run `playbooks/43-aizynth.yml`,
 mint one route. That is a playbook run, not a build — everything else is done.
 
 **But a planner is the wrong thing to lean on for a genuinely complex target.**

@@ -18,7 +18,7 @@ Questions, in priority order:
    (completed todo? quest tick? dispatch root?) — name the definition on the
    slide, don't bury it.
 2. **Local vs cloud split.** Share of calls and of tokens served by local
-   models (melchior 9B, spark Qwen3-235B) vs cloud APIs (Anthropic,
+   models (agent-host 9B, GPU-node Qwen3-235B) vs cloud APIs (Anthropic,
    OpenRouter) over the same window. The capability-tier routing tables /
    `llm` kind selections and job meta should identify the serving endpoint.
 3. **Cost per day.** Cloud $/day from whatever spend records exist (budget

@@ -564,7 +564,7 @@ after the prerequisite commits `eb5f64103`/`f4df6bcb8`/`377bc418d`/
   deterministic stratified sampling (`accept.py`).
 - **`survey_extract` coordinator job** — walks a paper's chunks in
   slices, prompts the local reader (Tier.BIG on the served-OSS lane —
-  "the local model on Spark"), writes checked runs through
+  "the local model on the GB10 node"), writes checked runs through
   `insert_measure` stamped `meta.extraction_run` + `meta.anchor_id`,
   fails closed after a run of lane errors. Rows dedup on anchor span +
   literal, so a re-run is idempotent.

@@ -2279,7 +2279,7 @@ credentials it never reached the network and the probe printed
 `RESULT: success`.
 
 A diagnostic whose success path is reachable without doing the thing it
-diagnoses. **Measured: credentials do not resolve on melchior** under a
+diagnoses. **Measured: credentials do not resolve on the agent host** under a
 bare ssh + `/opt/mcps/venv/bin/python` — but that is not proof the vault
 is empty, because a bare `python -c` never calls `secrets.bind_store` and
 has no DSN, so the DB vault was never consulted. A human with the web

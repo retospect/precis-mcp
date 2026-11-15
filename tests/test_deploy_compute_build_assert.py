@@ -1,6 +1,6 @@
 """Deploy-lint: the compute lane's post-bounce build assertion (gr479965).
 
-r27's bounce task reported `changed` on castor/pollux, yet /builds showed the
+r27's bounce task reported `changed` on cedar/poplar, yet /builds showed the
 old build. The evidence showed the deploy itself was fine: /builds is
 claim-time-stamped (each job carries the build it was claimed under), so an
 idle lane keeps showing its last pre-restart claim. `changed` from the bounce

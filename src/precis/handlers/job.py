@@ -2514,7 +2514,7 @@ class JobHandler(NumericRefHandler):
         build serving its own session (``precis-status``), but an agent-lane
         or containerised reader sees its own ephemeral venv, not the
         cluster's. The 2026-09-26 doctor tick spent its whole P0 on
-        "``b58a18a0`` has not reached melchior 8 days later" — it had been
+        "``b58a18a0`` has not reached the agent host 8 days later" — it had been
         live for 11 hours, and the same claim had accumulated 19 comments on
         gr346813 and a fresh "deploy it" ask each tick. The evidence was
         sitting in ``refs.meta`` the whole time, one aggregate away.

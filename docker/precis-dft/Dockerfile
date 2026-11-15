@@ -1,8 +1,8 @@
 # precis-dft compute image — GPAW + ASE + the precis-dft container CLI.
 #
-# Built on spark (aarch64). Base is the locally-present CUDA image
+# Built on the GPU node (aarch64). Base is the locally-present CUDA image
 # (Docker Hub is unreachable from the cluster; nvidia/cuda:*-base is
-# already pulled on spark). CUDA-base = the GPU runtime libs are
+# already pulled on the GPU node). CUDA-base = the GPU runtime libs are
 # present; the nvidia-container-toolkit injects the driver at
 # `docker run --gpus all`. GPAW here is CPU-functional out of the box
 # (the design's fallback); GPU enablement (CuPy) is layered on top
@@ -17,7 +17,7 @@
 # nothing else. Ansible (deploy/roles/dft) rsyncs exactly those two subtrees
 # to the node preserving that layout, so the same command works there.
 #
-# Build (on spark, from the repo root or the rsync'd context):
+# Build (on the GPU node, from the repo root or the rsync'd context):
 #   sudo docker build -t precis-dft:cpu -f docker/precis-dft/Dockerfile .
 # Smoke test:
 #   sudo docker run --rm -v $PWD/in:/work/in:ro -v $PWD/out:/work/out \
@@ -85,7 +85,7 @@ ENV OMP_NUM_THREADS=1
 ENV GPAW_SETUP_PATH=/opt/gpaw-setups
 
 # ── GPU enablement (validated foundation, not yet wired into GPAW) ──
-# Verified on spark (GB10, compute capability 121 / Blackwell sm_121,
+# Verified on the GPU node (GB10, compute capability 121 / Blackwell sm_121,
 # host CUDA 13 driver): inside `docker run --gpus all`,
 #     pip install "cupy-cuda12x[ctk]"
 # imports, sees the GPU, and JIT-compiles + runs kernels — i.e. CUDA

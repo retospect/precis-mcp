@@ -223,7 +223,7 @@ _BGE_M3_MAX_CHARS = 16_000
 # Load deadline (embedder-wedge-hardening.md §2) — a hung model load must
 # EXIT, not hang.
 #
-# The 2026-08-08→10 caspar incident: ``SentenceTransformer(...)`` dials
+# The 2026-08-08→10 database-host incident: ``SentenceTransformer(...)`` dials
 # HuggingFace Hub for revision metadata even with weights already cached;
 # when HF is slow/rate-limited that dial hangs indefinitely (plain socket
 # I/O the Python level can't interrupt), ``/readyz`` stays unready
@@ -589,7 +589,7 @@ class RemoteEmbedder:
     corruption.
 
     ``timeout`` default (300s, embedder-wedge-hardening.md §5): the
-    2026-08-10 post-restart caspar/balthazar incident was NOT a load
+    2026-08-10 post-restart database-host incident was NOT a load
     wedge — the embedder finished computing a batch, but a 30s client
     timeout hung up first (worker: "embedder unavailable", embedder log:
     ``BrokenPipeError`` writing the response the client had already
@@ -932,7 +932,7 @@ class BoundedConcurrencyEmbedder:
 #: import still takes effect. embedder-wedge-hardening.md §5: 300s, not the
 #: old 30s — a CPU-host embed batch legitimately takes longer than 30s, and
 #: a client that hangs up on a still-computing batch just amplifies the
-#: retry storm (the 2026-08-10 caspar/balthazar incident).
+#: retry storm (the 2026-08-10 database-host incident).
 _EMBEDDER_TIMEOUT_ENV = "PRECIS_EMBEDDER_TIMEOUT"
 _EMBEDDER_TIMEOUT_DEFAULT_S = 300.0
 

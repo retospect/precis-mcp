@@ -9,7 +9,7 @@ ssh-ing to each box and grepping `/var/log/precis-*.log`.
 Examples:
 
     precis logs --since 1h                       # last hour, all hosts
-    precis logs --since 1d --host caspar         # one host
+    precis logs --since 1d --host <host>         # one host
     precis logs --pass dispatch --level WARNING  # rejections in dispatch
     precis logs --pass structural --since 7d     # weekly review activity
     precis logs --tail                           # last 50 lines, all hosts
@@ -65,7 +65,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--host",
         default=None,
-        help="Filter to a specific host (e.g. 'melchior', 'caspar').",
+        help="Filter to a specific host (a node's hostname).",
     )
     p.add_argument(
         "--process",

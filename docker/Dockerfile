@@ -415,7 +415,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # re-resolves precis. At runtime precis discovers the bundled plugin via its own
 # entry points and `precis_pathway`'s `import autocatpath` resolves against this
 # install. This is the dev mirror of cluster `roles/autocatpath` (which installs
-# `precis-mcp[catalyst-gpu]` → autocatpath[mace] on spark).
+# `precis-mcp[catalyst-gpu]` → autocatpath[mace] on the GPU node).
 # Tracks the commit uv.lock pins (the cluster wheelhouse builds from the same
 # stanza, so dev and prod run one engine token). Docker keys this RUN's cache on
 # command TEXT, not the remote's HEAD, so a bare `@main` silently baked a stale
@@ -424,7 +424,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # lock's sha on the host and threads it in as AUTOCATPATH_REV, so this layer
 # busts (and re-fetches) exactly when the pin moves — no hash committed here, no
 # manual bump. A bare `docker build` with no arg falls back to `main`. Mirror of
-# cluster `roles/autocatpath` (installs `autocatpath[precis,mace]` on spark).
+# cluster `roles/autocatpath` (installs `autocatpath[precis,mace]` on the GPU node).
 ARG AUTOCATPATH_REV=main
 # The catpath repo is private (2026-08-15): the fetch needs a GitHub token,
 # threaded in as a BuildKit secret (scripts/build-image exports GH_TOKEN
@@ -665,7 +665,7 @@ CMD ["precis", "watch"]
 # (sentence-transformers → torch). No marker.
 #
 # NOTE (CUDA): this builds CPU torch on the slim base — functional
-# everywhere, GPU-accelerated nowhere. The Linux/Spark deployment (ADR
+# everywhere, GPU-accelerated nowhere. The Linux/GB10 deployment (ADR
 # 0020) overrides the base image with an nvidia/cuda runtime and installs
 # CUDA torch wheels; that needs a lockfile/extra-index pass and is tracked
 # as a follow-up. macOS runs the embedder NATIVELY (launchd + MPS), not in

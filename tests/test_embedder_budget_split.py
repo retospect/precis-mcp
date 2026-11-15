@@ -4,7 +4,7 @@ Gripe 244419: ``embedder_timeout`` (300s) × ``embedder_max_retries + 1``
 (6 attempts) is a ~1800s worst case per embed call. That is the *right*
 number for a worker riding out a warming model on a CPU host — it is what
 ``embedder-wedge-hardening.md`` §5 deliberately raised it to after the
-2026-08-10 caspar/balthazar incident. On the MCP request path it is the
+2026-08-10 birch/alder incident. On the MCP request path it is the
 bug: ``server.py`` registers the seven verbs as plain sync callables so
 FastMCP runs each in an anyio worker thread, nothing in ``src/`` sets
 ``current_default_thread_limiter``, and ~40 concurrent 30-minute waits

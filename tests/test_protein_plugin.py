@@ -347,13 +347,13 @@ def test_put_dispatches_job_when_fold_node_set(
 ) -> None:
     """A configured fold node ⇒ mint a fold job parented on the protein
     (compute lane, via `can_own_jobs`), not an inline fold."""
-    monkeypatch.setenv("PRECIS_FOLD_NODE", "spark")
+    monkeypatch.setenv("PRECIS_FOLD_NODE", "spruce")
     hub = Hub(store=protein_store)
     h = _try(ProteinHandler, hub=hub)
     assert h is not None
 
     resp = h.put(id="myprot", sequence=_INSULIN_A, engine="alphafold3")
-    assert "dispatched to spark" in resp.body
+    assert "dispatched to spruce" in resp.body
 
     ref = protein_store.get_ref(kind="protein", id="myprot")
     assert ref is not None
@@ -366,7 +366,7 @@ def test_put_dispatches_job_when_fold_node_set(
     assert row is not None, "a fold job should parent on the protein"
     assert row[0].get("job_type") == "fold"
     assert row[0].get("executor") == "ssh_node"
-    assert (row[0].get("params") or {}).get("target_node") == "spark"
+    assert (row[0].get("params") or {}).get("target_node") == "spruce"
     assert "folding" in h.get(id="myprot").body  # still pending
 
 
@@ -375,7 +375,7 @@ def test_requested_by_wires_blocking_todo(
     register_fold: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("PRECIS_FOLD_NODE", "spark")
+    monkeypatch.setenv("PRECIS_FOLD_NODE", "spruce")
     todo = protein_store.insert_ref(kind="todo", slug=None, title="fold the target")
 
     hub = Hub(store=protein_store)
@@ -453,7 +453,7 @@ def test_worker_dispatch_container_missing_models_fails(
         "engine": "alphafold3",
         "engine_version": "af3-v3.0.1",
         "cache_key": "fold:abc",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=protein_store, params=params)
     bio_jobs._dispatch(ctx, FOLD_SPEC)
@@ -500,7 +500,7 @@ def test_container_dispatch_round_trip(
         "engine": "alphafold3",
         "engine_version": "af3-v3.0.1",
         "cache_key": key,
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=protein_store, params=params)
     bio_jobs._dispatch(ctx, FOLD_SPEC)
@@ -541,7 +541,7 @@ def test_container_dispatch_no_model_fails(
         "engine": "alphafold3",
         "engine_version": "af3-v3.0.1",
         "cache_key": "fold:empty",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=protein_store, params=params)
     bio_jobs._dispatch(ctx, FOLD_SPEC)
@@ -576,7 +576,7 @@ def test_container_oom_exit_stamps_killed_for_memory(
         "engine": "alphafold3",
         "engine_version": "af3-v3.0.1",
         "cache_key": "fold:oom",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     ctx = _FakeCtx(store=protein_store, params=params)
     bio_jobs._dispatch(ctx, FOLD_SPEC)

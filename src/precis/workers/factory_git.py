@@ -4,7 +4,7 @@
 branch delete, the PR close), ``release_cut`` / ``release_deploy``
 (``scripts/release``: the ``release/r<N>``, ``gated`` and ``prod`` pushes)
 and ``pr_action`` (``gh``) run on a slice host as a service account whose
-checkout carries no credential of its own (melchior's ``deploy`` user:
+checkout carries no credential of its own (the agent host's ``deploy`` user:
 ``/Users/deploy/precis-fix-repo``, td543734). The credential is the vault
 secret :data:`SECRET_NAME` — a fine-grained GitHub token (Reto, 2026-10-31:
 one token for slices and lander alike while the loop closes once; the

@@ -154,9 +154,9 @@ class TestContextView:
 class TestFingerprintVars:
     def test_dead_worker_pattern(self) -> None:
         got = _fingerprint_vars(
-            "dead-worker:{host}:{process}", "dead-worker:caspar:precis-worker-agent"
+            "dead-worker:{host}:{process}", "dead-worker:birch:precis-worker-agent"
         )
-        assert got == {"host": "caspar", "process": "precis-worker-agent"}
+        assert got == {"host": "birch", "process": "precis-worker-agent"}
 
     def test_pass_dead_slash_pattern(self) -> None:
         got = _fingerprint_vars(

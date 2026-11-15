@@ -823,7 +823,7 @@ def _load_pdf_attach() -> JobTypeSpec:
 
 def _load_derived_drain() -> JobTypeSpec:
     # Bounded in-proc work order draining a SMALL-tier derived LLM queue
-    # (summarize/classify) — melchior-pinned, router-capped, never cloud.
+    # (summarize/classify) — agent-host-pinned, router-capped, never cloud.
     # Runs via plugin dispatch under the job_inproc executor.
     from precis.workers.job_types import derived_drain
 

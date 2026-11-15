@@ -1013,7 +1013,7 @@ def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
     on a dispatch error instead of degrading to the empty extraction.
 
     Conflating an infra failure with a semantic NO-CLAIM produced the
-    melchior dry-run's all-``no-claim`` garbage report when every call
+    agent-host dry-run's all-``no-claim`` garbage report when every call
     ECONNREFUSED'd. Unparseable-but-successful output still degrades to
     the empty extraction — the model *did* respond, so that is a genuine
     no-claim — except a cut-off reply (:class:`ExtractionTruncated`), which

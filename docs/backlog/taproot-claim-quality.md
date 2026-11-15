@@ -26,7 +26,7 @@ can look elsewhere rather than silently scoring lower. Owner
 `seniority.py`).
 
 Hard dependency: `role3` must actually be populated. The classifier is
-default-OFF and the melchior handler has not written a `role3` value since
+default-OFF and the agent host handler has not written a `role3` value since
 2026-08-08 (gripe gr204385) — so ship the backfill first, or the gate refuses
 everything. Until then a downgrade-not-refuse variant is the safe interim.
 

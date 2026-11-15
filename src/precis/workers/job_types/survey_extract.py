@@ -5,7 +5,7 @@ extraction pass (docs/backlog/measures-substrate.md, "Next slice").
 live ``part-of`` supplements' (gr632957) — in slices. Each live chunk
 is rendered with ``[n]`` anchors (:mod:`precis.extract.anchors`),
 prompted to the local model on the served-OSS lane (``placement=
-"local"``, ``Tier.BIG`` — the local reader on castor; the chain is the
+"local"``, ``Tier.BIG`` — the local reader on the local-serving node; the chain is the
 steerable ``llm.op.survey_extract`` op, and the dispatch refuses up
 front when no chain rung can satisfy the placement), and the reply is
 turned into checked runs by :func:`precis.extract.proposals.build_runs`.
@@ -18,7 +18,7 @@ pass is idempotent.
 The slice boundary is the pacing: after ``chunks_per_slice`` chunks the
 job parks on a ``Yield`` and waits out a full coordinator claim cycle —
 minutes per slice on a busy worker, which priced a 634-chunk paper at
-~10 h on the castor pilot (jo504632). That park only exists to throttle
+~10 h on the local-serving node pilot (jo504632). That park only exists to throttle
 a remote/paid endpoint, so it is rung-aware: once a routed call lands
 ``local`` (no external rate limit, no metered cost) the dispatch skips
 the inter-chunk park and runs the paper to completion — a crash then
@@ -66,7 +66,7 @@ every live output row on them regardless of the run token (a re-run's
 dup-skipped rows keep their older token), recorded under a synthetic
 ``papers:<ids>`` token that grants nothing.
 
-Castor-trial knobs on the extract pass: ``params.measurands`` narrows
+Local-serving-node trial knobs on the extract pass: ``params.measurands`` narrows
 the reader vocabulary to the named taxa plus their descendants (the
 default is the whole ``measurand_root`` subtree); chunks in
 bibliography/admin sections or with non-prose/table kinds are skipped
@@ -167,7 +167,7 @@ _TRUNCATION_STOPS = frozenset({"length", "max_tokens"})
 
 #: The chunk kinds the reader may see — body prose and tables carry a
 #: paper's numbers; cards, headings, captions, equations and bibliography
-#: rows don't (castor trial review finding 4).
+#: rows don't (the local-serving node trial review finding 4).
 _EXTRACT_CHUNK_KINDS = frozenset({"paragraph", "table"})
 
 #: ``section_path`` tails that carry no first-party results — matched
@@ -696,7 +696,7 @@ def _write_proposals(
         stats["proposals"] += 1
         # gr503034: an emitted value_form that isn't a registered form is
         # dropped so the literal's shape infers one — count it so the
-        # trial sees how often castor invents a form.
+        # trial sees how often the local-serving node invents a form.
         raw_form = _result_field(raw_results, proposal.location, "value_form")
         if raw_form is not None and proposal.output.value_form is None:
             stats["value_form_inferred"] += 1

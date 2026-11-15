@@ -34,7 +34,7 @@ Differences from ``claude_inproc``:
 - A per-pass wall budget (``PRECIS_COORDINATOR_PASS_BUDGET_S``,
   default 120 s; gr549215) bounds how long one pass may hold the
   worker rotation: a >70 min ``survey_extract`` read starved every
-  other ref-pass on melchior's catch-all. The pass stamps its
+  other ref-pass on the agent host's catch-all. The pass stamps its
   deadline on each claimed job's :class:`DispatchContext`
   (``pass_deadline``); a cooperative dispatcher that polls
   :meth:`DispatchContext.budget_exhausted` between units
@@ -249,7 +249,7 @@ def _pass_budget_s() -> float:
     budget_exhausted` between units yields with its checkpoint so the
     rotation is released — gr549215: a >70 min ``survey_extract`` held
     ``job_ssh_node``, ``wake_runner``, ``sweeper`` and
-    ``quest_loop_reconcile`` off melchior's catch-all rotation.
+    ``quest_loop_reconcile`` off the agent host's catch-all rotation.
     """
     return env_float("PRECIS_COORDINATOR_PASS_BUDGET_S", 120.0)
 

@@ -199,14 +199,14 @@ def test_epoch_mismatch_reclaims_before_lease_expiry(
         lambda name: _spec(dispatch=lambda c, s: c.set_status("succeeded")),
     )
     store.record_heartbeat(
-        "melchior-jip-epoch", meta={"boot_ids": {"precis-worker": "new-gen"}}
+        "maple-jip-epoch", meta={"boot_ids": {"precis-worker": "new-gen"}}
     )
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
         lease_boot_id="dead-gen",
         lease_process="precis-worker",
-        lease_host="melchior-jip-epoch",
+        lease_host="maple-jip-epoch",
     )
 
     result = job_inproc.run_job_inproc_pass(store, limit=2)
@@ -230,7 +230,7 @@ def test_renew_own_lease_extends_lease_when_still_mine(store: Store) -> None:
         lease_offset_s=60,
         lease_boot_id="gen-1",
         lease_process="precis-worker",
-        lease_host="melchior",
+        lease_host="maple",
     )
     meta = _meta(store, rid)
     before = meta["lease_until"]
@@ -253,7 +253,7 @@ def test_renew_own_lease_false_and_stops_when_lease_stolen(store: Store) -> None
         lease_offset_s=60,
         lease_boot_id="gen-1",
         lease_process="precis-worker",
-        lease_host="melchior",
+        lease_host="maple",
     )
     stale_meta = _meta(store, rid)  # captured BEFORE the steal
     before = stale_meta["lease_until"]
@@ -349,12 +349,12 @@ def test_service_pin_gates_claim_to_enabled_host(store: Store) -> None:
     from precis.workers.executors._common import claim_executor_jobs
     from precis.workers.service_config import set_service_prio
 
-    set_service_prio(store, "melchior", "graph_garden", 1)
+    set_service_prio(store, "maple", "graph_garden", 1)
     rid = _mk_garden_job(store)
 
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
-            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+            conn, executor="job_inproc", limit=1, reserve_host_id="alder"
         )
         conn.commit()
     assert rows == []
@@ -362,7 +362,7 @@ def test_service_pin_gates_claim_to_enabled_host(store: Store) -> None:
 
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
-            conn, executor="job_inproc", limit=1, reserve_host_id="melchior"
+            conn, executor="job_inproc", limit=1, reserve_host_id="maple"
         )
         conn.commit()
     assert [row[0] for row in rows] == [rid]
@@ -379,7 +379,7 @@ def test_service_pin_absent_or_wildcard_only_stays_host_agnostic(
     rid = _mk_garden_job(store)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
-            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+            conn, executor="job_inproc", limit=1, reserve_host_id="alder"
         )
         conn.commit()
     assert [row[0] for row in rows] == [rid]
@@ -389,7 +389,7 @@ def test_service_pin_absent_or_wildcard_only_stays_host_agnostic(
     _mk_garden_job(store)
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
-            conn, executor="job_inproc", limit=1, reserve_host_id="balthazar"
+            conn, executor="job_inproc", limit=1, reserve_host_id="alder"
         )
         conn.commit()
     # The same lease-less row is returned again (the caller stamps the

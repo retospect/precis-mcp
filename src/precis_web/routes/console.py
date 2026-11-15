@@ -506,7 +506,7 @@ def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
 
     def parse_shell(text: str) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        example = "kind=memory q=spark"
+        example = "kind=memory q=backup"
         try:
             tokens = shlex.split(text or "")
         except ValueError as exc:

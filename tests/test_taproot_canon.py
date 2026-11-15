@@ -306,7 +306,7 @@ def test_extract_claim_strict_raises_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The strict variant surfaces infra failure as an exception rather
-    than degrading to a silent NO-CLAIM — the melchior-incident guard."""
+    than degrading to a silent NO-CLAIM — the maple-incident guard."""
     monkeypatch.setattr(canon, "route", lambda req: _result(error="ECONNREFUSED"))
     with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
         extract_claim_strict("some passage")

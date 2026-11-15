@@ -567,7 +567,7 @@ tests/test_measure_kind.py` is green.
   cloud haiku-class on the new op. Estimate: 1,406 pipe tables × about
   4.5k input tokens plus 0.5k output ≈ $10, plus the frontier sample
   in `measure_accept` (about 60 reviews, a few dollars). It finishes
-  in an hour. Option (b): the castor local chain, which is free but
+  in an hour. Option (b): the local-serving node chain, which is free but
   queues behind the gardener trial and has failed on placement before
   (jo496639). **Recommendation: (a)**, since it is under the $25
   threshold. Corpus-wide runs stay local.

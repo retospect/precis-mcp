@@ -13,8 +13,8 @@ half.
                                  [--speed 1.0] [--max-segments N] [--publish]
 
 Runs on a host with the `[tts]` extra + Kokoro model files + ffmpeg — the
-gateway, `melchior`, which is the only host advertising `tts` in
-`resource_slots` since spark went off cluster duty (2026-08-29).
+gateway, the agent host, which is the only host advertising `tts` in
+`resource_slots` since the GPU node went off cluster duty (2026-08-29).
 `--publish` drops the episode on the private
 podcast feed (`precis podcast add` / `/podcast/feed.xml`). `--max-segments`
 previews a long draft. `speakable()` strips handles/citations/math/markdown
@@ -57,8 +57,8 @@ composition, quota-resilient vs the FRONTIER Opus default) and persist a standal
 `draft` marked `meta.cast` (+ `meta.voice`), **filed under a Drive folder** ("Morning
 brief" / "Evening meditation") so the text shows up in `/drive` — the Drive row also
 links the published mp3 + compiled PDF. **TTS is a separate downstream step:**
-the `cast_audio` pass on `spark` (its `service_config` row —
-`precis service prio spark cast_audio <n>` / `/categorizers` — plus
+the `cast_audio` pass on the GPU node (its `service_config` row —
+`precis service prio <gpu-node> cast_audio <n>` / `/categorizers` — plus
 `PRECIS_TTS_IMAGE`) narrates any un-narrated cast draft via
 `render_narration` → `render_episode` →
 the feed (`source="brief"` / `"meditation"`), idempotent on `meta.audio_episode_id`.
@@ -69,7 +69,7 @@ ahead of the personal brief, so the two publish as **one combined**
 The published mp3 and the on-demand PDF share a human stem — `morning_brief_<date>`
 / `evening_meditation_<date>` — not the internal `cast-*` slug. Compose runs
 as the `reading_brief` / `meditation` **`claude_inproc`** job_types on a daily
-recurring (`meta.schedule` set) watch — on `melchior`, where the litellm proxy
+recurring (`meta.schedule` set) watch — on the agent host, where the litellm proxy
 serving `claude-opus` lives (same host as the news briefing); the compose and
 the narration never block each other. A quota-paused compose doesn't die: both
 ops opt into `quota_fallback`, which drops the subscription rung for the chain's
@@ -78,7 +78,7 @@ route-log row), bounded per op per UTC day by
 `PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD` ($5 default — at cap the pause stands).
 
     precis cast run reading            # compose today's morning-brief draft now
-    precis cast run nidra --publish    # compose + narrate + publish (on spark)
+    precis cast run nidra --publish    # compose + narrate + publish (on the GPU node)
     precis cast schedule --now         # install the daily watches + cast both now
 
 ## Consume over the tailnet

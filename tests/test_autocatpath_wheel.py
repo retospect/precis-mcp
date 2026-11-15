@@ -8,7 +8,7 @@ resolve it from ``--find-links /opt/precis/wheels``, seeded by
 wheel handed over as ``-e autocatpath_wheel=<path>``. That variable defaulted
 to ``""`` and nothing ever set it, so when pyproject moved to
 ``autocatpath>=0.18.0`` while ``dist/`` still topped out at 0.17.0, the seed
-task was a documented no-op and the install died on castor + pollux — after
+task was a documented no-op and the install died on cedar + poplar — after
 four other hosts had already moved, i.e. a mixed-version fleet.
 
 The floor lives in this repo and the artifact lives in the catpath repo, so

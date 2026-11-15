@@ -21,21 +21,21 @@ Allow line pending Reto in `.claude/settings.json`, next to
 
 | script | what it does |
 |--------|--------------|
-| `os-update` | Rolling OS + firmware update for ONE GB10 host: precis `service reserve` (no new heavy claims, 6 h) → wait for running compute to drain → stale apt/dpkg lock check (refuses on a holder older than 1 h, prints the kill line for Reto) → `apt full-upgrade` → `fwupd` → reboot → wait for ssh → kernel/`nvidia-smi`/docker-GPU/unit checks → `service release`. Flags: `--host` (required), `--dry-run`, `--drain-timeout MIN` (240), `--force-drain`. On castor it waits for vLLM `/health` after reboot — skipped when the unit is disabled. The reserve CLI runs on `RUN_ON` (default pollux; castor when updating pollux) because the target host reboots mid-run. |
+| `os-update` | Rolling OS + firmware update for ONE GB10 host: precis `service reserve` (no new heavy claims, 6 h) → wait for running compute to drain → stale apt/dpkg lock check (refuses on a holder older than 1 h, prints the kill line for Reto) → `apt full-upgrade` → `fwupd` → reboot → wait for ssh → kernel/`nvidia-smi`/docker-GPU/unit checks → `service release`. Flags: `--host` (required), `--dry-run`, `--drain-timeout MIN` (240), `--force-drain`. On the local-serving node it waits for vLLM `/health` after reboot — skipped when the unit is disabled. The reserve CLI runs on `RUN_ON` (default the second DGX node; the local-serving node when updating the second DGX node) because the target host reboots mid-run. |
 | `vllm-stop` | Stop + disable the `vllm` unit and its container on the vLLM host (default: the overlay's `vllm_serving` member; `--host` overrides), printing memory before/after. `--start` re-enables and waits for `/health` (model load ~14 min). Refuses when `sglang` is active. |
 | `nfs-recover` | The CLOSE_WAIT wedge fix: restart `nfsd` on the `nfs_server` host (postgres untouched; never reboot it — it is the DB host), then `ss -K` any client socket still in FIN-WAIT-2 toward the server's `lan_ip`, on every `linux`-group client. Verifies the `shared_mount` stat and that a fresh `rpcinfo` probe leaves no CLOSE_WAIT. Stops without escalating if the nfsd restart fails. |
 | `nfs-keepalive` | Interim wedge mitigation: a transient `systemd-run` timer statfs'ing `shared_mount` every 60 s on each `linux`-group client so the NFS transport never idles (gone at reboot). `--stop` removes it. Superseded on `nfs_clients` by the managed `nfs-keepalive.timer` the `nfs_client` role installs (gr489397); still the tool for `linux`-group hosts outside that group. |
 | `pin-prod` | `git -C $PROD_CHECKOUT fetch` + `checkout --detach origin/prod` and print the result. `PROD_CHECKOUT` defaults to `<main-checkout>-prod` (the env-pointers.sh derivation; `PRECIS_PROD_CHECKOUT` also overrides). | <!-- home-path: allow — the prod-clone convention on hosts -->
-| `play` | The pinned-checkout ansible wrapper: refuses unless `PROD_CHECKOUT` (same `<main-checkout>-prod` derivation / `PRECIS_PROD_CHECKOUT` override as pin-prod) is exactly `origin/prod` (after a fetch), clean, and contains the host-lanes commit `932364d0a` (`HOST_LANES_SHA` env overrides the gate sha). <!-- sha-gate: allow — a gate value the play wrapper checks, not a freshness stamp --> Then runs `ansible-playbook -i <overlay hosts.yml> --vault-password-file deploy/.vault-pass -e precis_{worker,web,embedder}_git_ref=<prod sha> "$@"` from `$PROD_CHECKOUT/deploy` — the SHA_ARGS pin is what keeps a playbook from installing `main` (the 2026-10-15 castor venv break came from a run out of the main checkout). |
-| `lanes-overlay` | The one-shot overlay patch for host-lanes: edits `hosts.yml` groups (new `vllm_serving`, castor out of `compute`, spark into `compute` + `agent_sandbox_hosts`), `group_vars/all/topology.yml` capability lists, and `host_vars/{spark,castor}.yml`. Dry run prints the diff; `--apply` writes. Every anchor must match exactly once or it aborts without writing — a re-run after the overlay is already patched refuses cleanly. Commit in the overlay repo afterwards. `PRECIS_OVERLAY_DIR` overrides the overlay location. |
+| `play` | The pinned-checkout ansible wrapper: refuses unless `PROD_CHECKOUT` (same `<main-checkout>-prod` derivation / `PRECIS_PROD_CHECKOUT` override as pin-prod) is exactly `origin/prod` (after a fetch), clean, and contains the host-lanes commit `932364d0a` (`HOST_LANES_SHA` env overrides the gate sha). <!-- sha-gate: allow — a gate value the play wrapper checks, not a freshness stamp --> Then runs `ansible-playbook -i <overlay hosts.yml> --vault-password-file deploy/.vault-pass -e precis_{worker,web,embedder}_git_ref=<prod sha> "$@"` from `$PROD_CHECKOUT/deploy` — the SHA_ARGS pin is what keeps a playbook from installing `main` (the 2026-10-15 local-serving-node venv break came from a run out of the main checkout). |
+| `lanes-overlay` | The one-shot overlay patch for host-lanes: edits `hosts.yml` groups (new `vllm_serving`, the local-serving node out of `compute`, the GPU node into `compute` + `agent_sandbox_hosts`), `group_vars/all/topology.yml` capability lists, and `host_vars/{<gpu-node>,<serving-node>}.yml`. Dry run prints the diff; `--apply` writes. Every anchor must match exactly once or it aborts without writing — a re-run after the overlay is already patched refuses cleanly. Commit in the overlay repo afterwards. `PRECIS_OVERLAY_DIR` overrides the overlay location. |
 | `nas-hostkey-check` | ssh-keyscan the NAS (`nas_host`:`nas_ssh_port` from the overlay) and compare the offered ed25519/ecdsa host-key SHA256 fingerprints to the `nas_hostkey_sha256_*` overlay pins. rc 0 = every pinned type prints `OK`; `MISMATCH`/`MISSING`/unreachable exits 1. A scanned type with no pin prints `UNPINNED <type> SHA256:…` — the line to copy into the overlay. |
 
 ## OS-update run order
 
-`spark` → `pollux` → `castor`, strictly one host at a time — the reserve CLI
-runs on pollux (on castor when pollux itself is the target), and the next
+the GPU node → the second DGX node → the local-serving node, strictly one host at a time — the reserve CLI
+runs on the second DGX node (on the local-serving node when the second DGX node itself is the target), and the next
 host starts only after the previous host's post-reboot checks are all
-`active`. spark first because it is the canary (idle, no LLM); castor last
+`active`. The GPU node first because it is the canary (idle, no LLM); the local-serving node last
 because its reboot takes vLLM down ~15–25 min.
 
 ## Host-lanes phase C order
@@ -44,16 +44,16 @@ After a release containing `932364d0a` is prod and `pin-prod` has re-pinned
 the checkout (source: cluster-desk's run order, 2026-10-15 ~17:10Z):
 
 1. `lanes-overlay` — read the diff, `--apply`, commit in the overlay repo.
-2. `play playbooks/10-hardening.yml --tags oom-guard --limit castor,pollux,spark` — installs earlyoom on pollux, rewrites the memory caps (castor worker 24G→4G, pollux heartbeat 4G + compute 48G).
-3. `play` `03-precis-constraints.yml`, `19-pgpass.yml`, `20c-precis-heartbeat-serving.yml` — all `--limit spark` (provisions spark's venv + heartbeat).
-4. `play playbooks/44-autocatpath.yml --limit pollux,spark` with `autocatpath_wheel` + `tblite_wheel` extras; rewrites `ROUTE_NODE=pollux,spark`.
-5. `play` `43-aizynth.yml --limit spark`, `46-alphafold.yml --limit pollux`, `43-precis-worker-compute.yml --limit pollux,spark`, then `34-code-task-image.yml` + `35-precis-worker-sandbox.yml --limit spark`.
-6. Gateway re-render: `38-precis-web.yml` + `37-precis-worker-agent.yml` (golden's deploy renders the same) — only after this do new jobs stop pinning to castor.
-7. `service_config`: spark job_claude_docker 0→5, then castor 5→0 (never a window with zero sandbox hosts).
-8. castor `service reserve`; wait until `pgrep -fc precis_pathway.runner` on castor prints 0.
-9. `play playbooks/retire-worker-lanes.yml -e retire_host=castor -e retire_lanes=compute,sandbox`, then castor `service release`.
-10. `play playbooks/49-vllm.yml --limit castor` — re-renders vllm.service at the 0.60 memory fraction (~15 min LLM outage).
-11. `os-update --host pollux`, then `--host castor` — each only after the previous host's checks are all active. Steps 10 and 11's castor half share one announced LLM window (~40 min).
+2. `play playbooks/10-hardening.yml --tags oom-guard --limit <serving-node>,<gpu-node-2>,<gpu-node>` — installs earlyoom on the second DGX node, rewrites the memory caps (the local-serving node worker 24G→4G, the second DGX node heartbeat 4G + compute 48G).
+3. `play` `03-precis-constraints.yml`, `19-pgpass.yml`, `20c-precis-heartbeat-serving.yml` — all `--limit <gpu-node>` (provisions the GPU node's venv + heartbeat).
+4. `play playbooks/44-autocatpath.yml --limit <gpu-node-2>,<gpu-node>` with `autocatpath_wheel` + `tblite_wheel` extras; rewrites `ROUTE_NODE=<gpu-node-2>,<gpu-node>`.
+5. `play` `43-aizynth.yml --limit <gpu-node>`, `46-alphafold.yml --limit <gpu-node-2>`, `43-precis-worker-compute.yml --limit <gpu-node-2>,<gpu-node>`, then `34-code-task-image.yml` + `35-precis-worker-sandbox.yml --limit <gpu-node>`.
+6. Gateway re-render: `38-precis-web.yml` + `37-precis-worker-agent.yml` (golden's deploy renders the same) — only after this do new jobs stop pinning to the local-serving node.
+7. `service_config`: the GPU node job_claude_docker 0→5, then the local-serving node 5→0 (never a window with zero sandbox hosts).
+8. The local-serving node `service reserve`; wait until `pgrep -fc precis_pathway.runner` on it prints 0.
+9. `play playbooks/retire-worker-lanes.yml -e retire_host=<serving-node> -e retire_lanes=compute,sandbox`, then the local-serving node `service release`.
+10. `play playbooks/49-vllm.yml --limit <serving-node>` — re-renders vllm.service at the 0.60 memory fraction (~15 min LLM outage).
+11. `os-update --host <gpu-node-2>`, then `--host <serving-node>` — each only after the previous host's checks are all active. Steps 10 and 11's local-serving-node half share one announced LLM window (~40 min).
 
 Note: the `service_config` steps (7–9) still run the SQL helper out of
 `/tmp/gripe-fleet/host-lanes-service-config.sh` — it was not part of this
@@ -62,11 +62,11 @@ port.
 ## Verify after the lanes land
 
 - `ssh <h> systemctl show precis-worker precis-worker-compute precis-worker-sandbox -p Id -p MemoryMax -p ActiveState`
-  - castor: precis-worker 4G active; no compute or sandbox unit.
-  - pollux: precis-worker 4G, precis-worker-compute 48G.
-  - spark: those two plus precis-worker-sandbox 2G.
-- `/status` shows a heartbeat from spark; the next autocatpath seed lands on
-  pollux or spark.
+  - The local-serving node: precis-worker 4G active; no compute or sandbox unit.
+  - The second DGX node: precis-worker 4G, precis-worker-compute 48G.
+  - The GPU node: those two plus precis-worker-sandbox 2G.
+- `/status` shows a heartbeat from the GPU node; the next autocatpath seed lands on
+  the second DGX node or the GPU node.
 
 ## After a NAS TOS update
 

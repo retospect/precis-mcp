@@ -296,7 +296,7 @@ def test_relax_dispatch_pins_to_env_dft_node(
     """With no MLIP group rendered, the mint pins ``target_node`` to
     PRECIS_DFT_NODE verbatim — the value deploy renders from topology
     (precis_capabilities.dft), never a node literal baked into code (the
-    2026-08-29 spark retirement made that a 4-day silent wedge)."""
+    2026-08-29 spruce retirement made that a 4-day silent wedge)."""
     monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
     for env in ("PRECIS_MLIP_NODES", "PRECIS_AUTOCATPATH_ROUTE_NODE"):
         monkeypatch.delenv(env, raising=False)
@@ -1444,7 +1444,7 @@ def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_ml
 
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
-    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spark")
+    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spruce")
     todo_id = id_of(todo.body)
 
     resp = structure.edit(

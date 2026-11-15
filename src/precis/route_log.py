@@ -422,7 +422,7 @@ def spend_rollup(
     calls (full rows) **and** the corpus batch passes (``llm_summarize`` /
     ``classify`` / ``paper_glossary``), which write **lite** metadata rows — so
     local-vs-cloud volume + wall-clock is answerable here. What's *not* here:
-    non-LLM compute (spark DFT / relax / fold, container jobs) never touches
+    non-LLM compute (GPU-node DFT / relax / fold, container jobs) never touches
     ``dispatch``, so a placement view over those still needs its own counter."""
     col = _GROUP_COLS.get(group_by)
     if col is None:

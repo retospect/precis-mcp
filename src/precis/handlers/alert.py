@@ -172,9 +172,9 @@ def _fingerprint_vars(subject_pattern: str, fingerprint: str) -> dict[str, str]:
     The rule's ``subject`` pattern (``dead-worker:{host}:{process}``)
     tells us WHICH fingerprint segments carry the worker's host/process
     — the alert stores no host column, so this is how a
-    ``dead-worker:caspar:precis-worker-agent`` id recovers its process
+    ``dead-worker:<host>:precis-worker-agent`` id recovers its process
     scope. Non-last vars match ``[^:/]+``; the last var takes the rest
-    (fingerprints may carry '/' — ``pass-dead:caspar/precis-worker/x``).
+    (fingerprints may carry '/' — ``pass-dead:<host>/precis-worker/x``).
     """
     if not subject_pattern or not fingerprint or "{" not in subject_pattern:
         return {}

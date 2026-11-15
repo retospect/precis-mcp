@@ -521,7 +521,7 @@ class TestSurveyExtractDispatch:
     def test_op_chain_local_rung_lets_the_job_run(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The llm.op.survey_extract chain override (e.g. castor's local
+        """The llm.op.survey_extract chain override (e.g. cedar's local
         gpt-oss-120b) satisfies the placement='local' ask, so the dispatch
         proceeds."""
         store = world["store"]
@@ -2229,8 +2229,8 @@ class TestRunLevelAcceptance:
         assert any(s.startswith(f"{head_line}\n…\n{tail}") for s in spans)
 
 
-class TestCastorTrialPrep:
-    """The fable-castor-trial-review job-side fixes: a ``measurands``
+class TestCedarTrialPrep:
+    """The fable-cedar-trial-review job-side fixes: a ``measurands``
     allow-list for the reader vocabulary, per-reason drop counters, and
     the bibliography/non-prose skip (``include_all_sections`` restores
     the old full walk)."""
@@ -2422,7 +2422,7 @@ class TestCastorTrialPrep:
     ) -> None:
         """gr503034: a value_form that is not a registered form is
         discarded so the literal's shape infers one — the trial counts
-        how often castor invents a form, and keeps the emitted form in
+        how often cedar invents a form, and keeps the emitted form in
         the escalation detail."""
         store = world["store"]
         reply = {
@@ -3273,7 +3273,7 @@ class TestR92Recall:
 
 
 class TestRungAwarePacing:
-    """jo504632 pacing (castor pilot): the per-slice ``Yield`` park is for
+    """jo504632 pacing (cedar pilot): the per-slice ``Yield`` park is for
     a remote/paid endpoint — it spends a whole coordinator claim cycle
     (~minutes) per ``chunks_per_slice`` chunks. A routed call that lands
     ``local`` (no rate limit, no metered cost) must run the paper to

@@ -45,10 +45,10 @@ ADDRESS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("lan ip (192.168.x)", re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b")),
 ]
 
-#: Real node hostnames — an architecture check under ``deploy/`` and a
-#: leak check for the packaged skills and ``.claude/`` prompts in the repo (the
-#: rest of the tree is not yet covered),
-#: and a disclosure check in anything published. Shared pattern source.
+#: Real node hostnames — an architecture check under ``deploy/``, a leak check
+#: for ``src/``, ``docker/``, ``docs/``, ``tests/`` and the ``.claude/`` prompts
+#: in the repo (scripts are not yet covered), and a disclosure check in anything
+#: published. Shared pattern source.
 NODE_HOSTNAME_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "real hostname / tailnet",

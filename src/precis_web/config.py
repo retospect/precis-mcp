@@ -82,7 +82,7 @@ class WebConfig:
     #: ``PRECIS_PODCAST_DIR``. See :mod:`precis_web.podcast`.
     podcast_dir: Path | None = None
     #: Public origin for podcast enclosure URLs, e.g.
-    #: ``https://melchior.<tailnet>.ts.net``. Podcast apps need *absolute*
+    #: ``https://<web-host>.<tailnet>.ts.net``. Podcast apps need *absolute*
     #: URLs reachable from the phone, so behind Tailscale-serve (which
     #: proxies https→loopback) this must be set explicitly; when unset the
     #: feed falls back to the request origin (fine for same-host testing).

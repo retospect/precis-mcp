@@ -36,8 +36,8 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
   `LlmRequest`) and `workers/_chase_llm.py` ×3 (dispatches carry no
   ref_id); pass-level passes (dream, review) legitimately stay
   unstamped. Per-quest spend *views* land with the quest layer.
-- **Non-LLM compute** (the twins' GPU lanes — DFT/relax/fold on pollux,
-  retrosynth on castor — and container jobs) never
+- **Non-LLM compute** (the twins' GPU lanes — DFT/relax/fold on the second DGX node,
+  retrosynth on the local-serving node — and container jobs) never
   touches dispatch — build a `service_calls (pass, host, day)` rollup
   only if the data says local compute capacity is the constraint.
 

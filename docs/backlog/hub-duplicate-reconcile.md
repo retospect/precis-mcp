@@ -12,7 +12,7 @@ Ruled by Reto 2026-10-02 (td461151, review-queue `reto-dup-hub-design-1`):
 because at mint time `canon.block()` ANN-retrieved over embeddings the
 younger hub did not have yet. Starting code: stranded branch
 `gripe_180306`, in `~/work/archive/stranded-gripes-2026-10-01.bundle` on <!-- home-path: allow — bundle on the Mac, named for provenance -->
-Reto's Mac (not on melchior). Reuse its winner selection,
+Reto's Mac (not on the agent host). Reuse its winner selection,
 merge-into-winner, skip+log path and tests.
 
 ## Motivation / why

@@ -4,7 +4,7 @@
 Drives ``derived_drain._dispatch`` against a fake ``DispatchContext`` and a
 SCRIPTED ``run_X_pass`` runner (monkeypatched into ``_RUNNER_FACTORIES``) so
 these tests pin the loop LOGIC — bound, drain-to-empty, decreasing batch, lease
-loss, no-progress breaker — without a DB, a real LLM, or the melchior slot. The
+loss, no-progress breaker — without a DB, a real LLM, or the maple slot. The
 wrapped passes' own behaviour is covered by their existing suites; the executor
 wiring (job_inproc + renew_own_lease) by ``test_job_inproc_executor.py``.
 """
@@ -268,7 +268,7 @@ def test_concurrency_uses_only_the_chain_local_rungs(
     ctx = _FakeCtx({"pass": "llm_summarize"})
     ctx.store = _SlotStore(
         [
-            _slot("llm:glm-4.7-flash", 4, host="melchior"),
+            _slot("llm:glm-4.7-flash", 4, host="maple"),
             _slot("llm:z-ai/glm-4.7-flash", 32, host="elsewhere"),
         ]
     )

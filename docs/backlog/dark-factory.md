@@ -9,7 +9,7 @@ prio: high
 
 Reto, 2026-10-30 (session WORK_MANAGEMENT): sessions run out of steam and
 forget their prompt; the work lives in too many places; builders (Devin,
-Codex, Kimi, Claude, castor) are picked by hand; credits expire unused;
+Codex, Kimi, Claude, the local model) are picked by hand; credits expire unused;
 the build is cut by hand; the quest surface cannot show science and
 platform work side by side. Goal: precis holds the work, dispatches it,
 picks the builder, keeps the build cadence, and shows one hierarchy. The
@@ -234,7 +234,7 @@ shorter briefs, not into a home-built client.
 | Kimi | monthly pool, deadline, heavily used | target rate = remaining ÷ time to deadline; prefer Kimi while it is behind target, stop at the pool |
 | Devin | no pool; a concurrency cap and observed rate limits | fill to the cap; back off on throttle; treat as free |
 | metered (OpenRouter, API keys) | dollars | only when every free/subscription lane with fit is full; dollar breaker |
-| castor local | slots | docs/typo only until a fit record exists |
+| local model | slots | docs/typo only until a fit record exists |
 
 Pick: fit for the task class first; among fit lanes the one most behind
 its pacing target; metered last. Fit learns from the loop (first-round

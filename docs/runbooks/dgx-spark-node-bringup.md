@@ -1,14 +1,14 @@
-# First-boot bringup of a new NVIDIA DGX Spark (GB10) cluster node
+# First-boot bringup of a new NVIDIA GB10 cluster node
 
-**When.** A new DGX Spark (GB10, 128 GB unified memory, Ubuntu 24.04 arm64)
-joins the cluster. Done for `castor` and `pollux` (2026-08-05Z) — the paired
+**When.** A new GB10 node (GB10, 128 GB unified memory, Ubuntu 24.04 arm64)
+joins the cluster. Done for the local-serving node and the second DGX node (2026-08-05Z) — the paired
 twins doing headless LLM + sim serving, linked hip-to-hip over the ConnectX
-QSFP cable. An older standalone `spark` also exists. Serving stack: SGLang, role
+QSFP cable. An older standalone GPU node also exists. Serving stack: SGLang, role
 `deploy/roles/sglang/README.md` (the llama.cpp RPC pair,
 [`spark-distributed-llm-serving`](./spark-distributed-llm-serving.md), is
 retired). Access:
 [`cluster-ssh-remote-access`](./cluster-ssh-remote-access.md). Starved-userland
-tell: pings but ssh banner-times-out (same class as the Spark compute-niceness
+tell: pings but ssh banner-times-out (same class as the GB10 compute-niceness
 issue).
 
 Addresses live in the gitignored overlay; none appear here.
@@ -19,7 +19,7 @@ The image ships a login for the owner — the first-boot factory account
 `reto` on our units (uid 1000, in `sudo`) — whose `authorized_keys`
 already holds the cluster key, so `ssh -i ~/.ssh/cluster reto@<node>`
 works out of the box (the cluster key —
-despite the `.pub` name it is *not* the melchior key). That login's `sudo`
+despite the `.pub` name it is *not* the agent host key). That login's `sudo`
 needs a password until the deploy account exists. "Too many authentication
 failures" = the agent offered too many keys → add `-o IdentitiesOnly=yes -o
 IdentityAgent=none -i ~/.ssh/cluster`.
@@ -30,7 +30,7 @@ Canonical deploy account: uid **806**, gid **806** (gid == uid; the historical
 1001 was retired 2026-08-08Z — `cluster_uid_gid_parity`), groups `deploy` +
 `docker`, home `/home/deploy`, shell `/bin/bash`; `authorized_keys` = <!-- home-path: allow — the deploy account's home on the node -->
 `~/.ssh/cluster.pub`; `/etc/sudoers.d/deploy` =
-`deploy ALL=(ALL) NOPASSWD: ALL` (chmod 440). The melchior-tunnel and
+`deploy ALL=(ALL) NOPASSWD: ALL` (chmod 440). The agent-host-tunnel and
 dev-user keys are appended later by the ansible `ssh_tunnels` role — don't
 hand-add. The uid-806-outside-`UID_MIN` warning is cosmetic (intentional
 system uid).
@@ -61,8 +61,8 @@ before confirming headless. After a reboot the orphaned
 
 ## 4. Host key — regenerate per unit
 
-The factory image ships an **identical SSH host key on every unit** (castor and
-pollux shipped the same ed25519 `root@localhost` key); host-key verification is
+The factory image ships an **identical SSH host key on every unit** (the local-serving node and
+the second DGX node shipped the same ed25519 `root@localhost` key); host-key verification is
 meaningless and keys collide. Per unit:
 
     sudo rm -f /etc/ssh/ssh_host_*key* && sudo ssh-keygen -A && sudo systemctl restart ssh
@@ -78,7 +78,7 @@ controller's ssh config — see the unpin note in
 
 The factory image enables `apt-daily-upgrade.timer` and
 `nvidia-spark-run-apt-upgrade-once.service`. Background apt churn can peg the
-box and (with an OTA) reboot it: pollux once wedged (sshd banner-exchange
+box and (with an OTA) reboot it: the second DGX node once wedged (sshd banner-exchange
 timeout ~17 min while still answering ping — kernel up, userland starved) and
 then rebooted itself with `fwupd` / `spark-ota-check` /
 `nvidia-spark-run-apt-upgrade-once` running at boot. Unacceptable for a serving
@@ -94,7 +94,7 @@ node; harden in the bootstrap:
 ## 6. Firmware — nothing to flash manually
 
 `fwupdmgr get-updates` → all current (EC/UEFI/NVMe). DGX OTA is the vendor path:
-`nvidia-spark-ota-check {is-ota-available,torn-score,summary}` (castor was on
+`nvidia-spark-ota-check {is-ota-available,torn-score,summary}` (the local-serving node was on
 the latest, OTA2607 July 2026, at bringup). A post-upgrade `torn-score` of
 ~2.6–6 is cosmetic on headless: failed checks are the deliberately purged
 `nvidia-system-station{,-apps}` and desktop-theme drift;
@@ -110,7 +110,7 @@ against this line before deciding whether an OTA is pending.
 
 ## 7. Fast-cable pairing (ConnectX QSFP, 200G RDMA)
 
-Each Spark has a ConnectX-7 with two QSFP ports, **both cabled to the
+Each GB10 node has a ConnectX-7 with two QSFP ports, **both cabled to the
 partner** — 4 CX netdevs total. `enp1s0f0np0` / `enP2p1s0f0np0` are the live
 200G DAC links (`ethtool` → `Speed: 200000Mb/s, Link detected: yes`;
 `rdma link` → `rocep1s0f0` / `roceP2p1s0f0` ACTIVE); the `f1` ports are unused
@@ -120,23 +120,23 @@ connection).
 - Config: persistent NetworkManager profile `cx-link0` on `enp1s0f0np0`,
   static point-to-point `/24` (the two ends' addresses in the overlay),
   **MTU 9000 (jumbo)**, **`ipv4.never-default yes`** so it never steals the LAN
-  default route; `/etc/hosts` names `castor-cx` / `pollux-cx`. Survives reboot
+  default route; `/etc/hosts` names `<serving-node>-cx` / `<gpu-node-2>-cx`. Survives reboot
   (autoconnect).
 - Measured **111 Gbit/s** iperf3 (8 streams) — TCP tops out near half
   line-rate on the Grace ARM cores; plenty. llama.cpp's RPC backend
   auto-negotiates **true RDMA/RoCEv2** over these ports (`RDMA activated qpn=…
   mtu=4096` in the rpc-server log), not just TCP.
-- castor's other NICs: `enP7s7` = 1GbE RJ45 (the LAN/ssh path), plus a down
+- The local-serving node's other NICs: `enP7s7` = 1GbE RJ45 (the LAN/ssh path), plus a down
   USB-ethernet and a MediaTek wifi.
 
 ## Networking bring-up trap
 
-After a physical cable swap, pollux looked dead from the controller (no ping,
+After a physical cable swap, the second DGX node looked dead from the controller (no ping,
 port 22 closed) while it could ping itself. The fault was **controller-side /
 upstream router**: the controller had many aliased subnet IPs and *both*
-Sparks, including already-working castor, went unreachable together. The tell
-is **the control unit (castor) also failing**. The fix was router settings + a
-wifi restart on the controller. If it is genuinely the Spark: `ip -br link`
+GB10 nodes, including the already-working local-serving node, went unreachable together. The tell
+is **the control unit (the local-serving node) also failing**. The fix was router settings + a
+wifi restart on the controller. If it is genuinely the GB10 node: `ip -br link`
 (`LOWER_UP` = the live cable — a swap can move the link to an interface that
 isn't the one holding the IP), `ip route` (need a default via the LAN
 gateway), `sudo nmcli device connect <iface>` to re-DHCP. "Can't ping own LAN IP
@@ -147,7 +147,7 @@ but loopback works" = the IP's interface is down / no-carrier.
 Add the node to the overlay `hosts.yml` under `linux` (LAN `ansible_host`,
 `node_role: serving`), deliberately **out of** the service groups
 (inference / nfs_clients / llamacpp_hosts / agent_sandbox_hosts) until its
-roles are wired. `playbooks/00-users.yml --limit castor,pollux` ran 2026-08-08Z:
+roles are wired. `playbooks/00-users.yml --limit <serving-node>,<gpu-node-2>` ran 2026-08-08Z:
 canonical uid set present (ollama 805, nginx 807, bitwarden 808, agent_ro 811;
 `agent_sandbox` / `hermes` correctly skipped, group-gated; prometheus/grafana
 803/804 retired fleet-wide 2026-08-11Z); a hand-made `deploy` was verified

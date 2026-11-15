@@ -328,7 +328,7 @@ class TestStageInputs:
 def _script_params(**over: Any) -> dict[str, Any]:
     p: dict[str, Any] = {
         "mode": "script",
-        "target_node": "balthazar",
+        "target_node": "alder",
         "resources": {"wall_seconds": 600},
     }
     p.update(over)
@@ -337,7 +337,7 @@ def _script_params(**over: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def submit_env(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
+    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("PRECIS_ROOT", str(root))
     return root
@@ -388,8 +388,8 @@ def exec_env(tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     )
     monkeypatch.setenv("PRECIS_SANDBOX_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("PRECIS_SANDBOX_WHEEL_CACHE", str(tmp_path / "wheels"))
-    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
-    monkeypatch.setenv("PRECIS_NODE", "balthazar")
+    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
+    monkeypatch.setenv("PRECIS_NODE", "alder")
     monkeypatch.setenv("PRECIS_ROOT", str(root))
     monkeypatch.setenv("PRECIS_SANDBOX_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

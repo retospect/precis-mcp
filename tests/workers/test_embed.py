@@ -100,7 +100,7 @@ class TestResolveEmbedderTimeout:
     not ``cli/worker.py``'s ``_resolve_embedder``) must thread
     ``PrecisConfig.embedder_timeout`` / ``PRECIS_EMBEDDER_TIMEOUT`` through
     to ``RemoteEmbedder._timeout``. Regression for the 2026-08-10
-    caspar/balthazar incident (embedder-wedge-hardening.md §5): a client
+    birch/alder incident (embedder-wedge-hardening.md §5): a client
     timeout shorter than a real CPU-host batch's compute time hangs up on
     an embedder that's still working, and the retry recomputes (and
     re-times-out on) the same batch forever.

@@ -38,7 +38,7 @@ was invisible for 4 days):
 * ``pass-wedged`` — ``host_heartbeat.meta.activity`` shows a pass
   running for hours (fresh heartbeat, stale ``since`` — the dedicated
   heartbeat thread keeps ``ts`` fresh through a wedge, so both signals
-  are needed; caspar sat 9 h in ``_bib_parse_pass`` this way).
+  are needed; the database host sat 9 h in ``_bib_parse_pass`` this way).
 * ``llm-degraded`` — error-rate per (model, transport, placement) over
   the last hour (``llm_call_log`` has the columns; nothing read them as
   health).
@@ -76,7 +76,7 @@ was invisible for 4 days):
   pass, not a failure.
 * ``deploy-fleet-coverage`` — gr507870: a heartbeating host that the
   overlay puts in no deploy group keeps running its old release with
-  deploys silently skipping it (spark ran r82 through r86). Deploy-group
+  deploys silently skipping it (the GPU node ran r82 through r86). Deploy-group
   membership lives only in the gitignored overlay, which a fleet host
   cannot read, so ``scripts/deploy`` publishes it into
   ``app_settings.deploy.fleet`` on every successful deploy; this probe
@@ -171,7 +171,7 @@ class Condition:
 # ── probes ───────────────────────────────────────────────────────────────
 
 #: Slow-lane pass-dead (gr500868). A rotation pass on a busy host logs a
-#: claim line every cycle, but on an agent-profile host (melchior's
+#: claim line every cycle, but on an agent-profile host (the agent host's
 #: fetch_oa / bib_parse: ~15 lines/day) it logs rarely enough to sit under
 #: the 150-rows/7d floor, and an outage longer than the 7d window empties
 #: its history entirely -- it went 8 days unalerted. So a second tier looks

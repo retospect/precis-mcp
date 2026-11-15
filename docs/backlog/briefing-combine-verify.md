@@ -8,7 +8,7 @@ pillar: personal
 The dispatch brake shipped (a succeeded child job blocks re-dispatch of a
 deterministic parent). Verify one post-deploy morning cycle: one episode,
 `source="brief"`, full news wire + personal brief ≈ 25–26 min, and the "news
-lead-in prepended N segment(s)" log line on spark. Optional
+lead-in prepended N segment(s)" log line on the GPU node. Optional
 defense-in-depth: version the daily news ref instead of destructive
 slug-replace; add the derived-from link from cast draft to news ref.
 Rejected: reordering news/brief crons (masks, doesn't fix). Owner

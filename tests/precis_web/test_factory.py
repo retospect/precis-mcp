@@ -21,9 +21,9 @@ def test_factory_old_url_redirects_to_system_services_tab(client) -> None:
 
 
 def test_factory_old_url_redirect_preserves_host(client) -> None:
-    resp = client.get("/factory?host=melchior", follow_redirects=False)
+    resp = client.get("/factory?host=maple", follow_redirects=False)
     assert resp.status_code == 307
-    assert resp.headers["location"] == "/status?tab=services&host=melchior"
+    assert resp.headers["location"] == "/status?tab=services&host=maple"
 
 
 # ── slice 4: the write endpoints (FakeStore — assert wiring + redirect) ──
@@ -32,11 +32,11 @@ def test_factory_old_url_redirect_preserves_host(client) -> None:
 def test_post_prio_redirects_to_services_tab(client) -> None:
     resp = client.post(
         "/factory/prio",
-        data={"host": "melchior", "service": "classify", "prio": "0"},
+        data={"host": "maple", "service": "classify", "prio": "0"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/status?tab=services&host=melchior"
+    assert resp.headers["location"] == "/status?tab=services&host=maple"
 
 
 def test_post_model_redirects(client) -> None:
@@ -52,11 +52,11 @@ def test_post_model_redirects(client) -> None:
 def test_post_clear_redirects(client) -> None:
     resp = client.post(
         "/factory/clear",
-        data={"host": "melchior", "service": "classify"},
+        data={"host": "maple", "service": "classify"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/status?tab=services&host=melchior"
+    assert resp.headers["location"] == "/status?tab=services&host=maple"
 
 
 # ── §B-2 reserve mode (gr162694 #4) — the ONE door, never a raw UPSERT ──
@@ -74,12 +74,12 @@ def test_post_reserve_calls_the_one_door_helper(client, monkeypatch) -> None:
     monkeypatch.setattr(factory_routes, "set_reserve", _fake_set_reserve)
     resp = client.post(
         "/factory/reserve",
-        data={"host": "melchior", "hours": "2"},
+        data={"host": "maple", "hours": "2"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/status?tab=services&host=melchior"
-    assert calls == [{"host": "melchior", "hours": 2.0, "actor": "web"}]
+    assert resp.headers["location"] == "/status?tab=services&host=maple"
+    assert calls == [{"host": "maple", "hours": 2.0, "actor": "web"}]
 
 
 def test_post_reserve_refuses_bad_hours_without_500(client, monkeypatch) -> None:
@@ -97,7 +97,7 @@ def test_post_reserve_refuses_bad_hours_without_500(client, monkeypatch) -> None
     monkeypatch.setattr(factory_routes, "set_reserve", _fake_set_reserve)
     resp = client.post(
         "/factory/reserve",
-        data={"host": "melchior", "hours": "999"},
+        data={"host": "maple", "hours": "999"},
         follow_redirects=False,
     )
     assert resp.status_code == 303  # never 500s
@@ -113,8 +113,8 @@ def test_post_release_calls_the_one_door_helper(client, monkeypatch) -> None:
 
     monkeypatch.setattr(factory_routes, "clear_reserve", _fake_clear_reserve)
     resp = client.post(
-        "/factory/release", data={"host": "melchior"}, follow_redirects=False
+        "/factory/release", data={"host": "maple"}, follow_redirects=False
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/status?tab=services&host=melchior"
-    assert calls == ["melchior"]
+    assert resp.headers["location"] == "/status?tab=services&host=maple"
+    assert calls == ["maple"]

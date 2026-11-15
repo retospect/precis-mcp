@@ -1820,7 +1820,7 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
         acquired.append(model)
         # Serve only the rung's real id — the alias must never reach here.
         return ls.LocalSlot(
-            host="melchior",
+            host="maple",
             resource=f"llm:{model}",
             reserved=True,
             paused=False,
@@ -1905,7 +1905,7 @@ def test_drain_refusal_names_the_served_rung_not_the_tier_alias(
         ls,
         "acquire",
         lambda model: ls.LocalSlot(
-            host="melchior",
+            host="maple",
             resource=f"llm:{model}",
             reserved=False,
             paused=True,
@@ -4656,7 +4656,7 @@ def test_skip_unserved_local_rung_drops_unserved_local_rung_0(
 def test_skip_unserved_local_rung_kept_when_served_locally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The melchior case: this host DOES serve the model → the rung stays."""
+    """The maple case: this host DOES serve the model → the rung stays."""
     monkeypatch.setattr(
         "precis.utils.llm.local_serving.served_locally", lambda model: True
     )
@@ -7503,7 +7503,7 @@ def test_parse_chain_rungs_rejects_bad_max_tokens() -> None:
 def test_failover_rung_timeout_applies_and_loses_to_a_caller_pin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rung's ``timeout_s`` fills an unset request timeout (the castor
+    """A rung's ``timeout_s`` fills an unset request timeout (the cedar
     gpt-oss rung needs ~60 s, not the SMALL 30 s cap); a caller pin wins;
     a rung with none leaves the request untouched (gr489474)."""
     seen: list[float | None] = []
@@ -8122,7 +8122,7 @@ def test_retried_walk_superseded_row_charges_the_terminal_rungs_clock(
 
 # ── gr500371: host-availability gate — skip rungs this host can't run ─────
 #
-# A host with no claude binary (balthazar) resolved its BIG chain to claude_p
+# A host with no claude binary (alder) resolved its BIG chain to claude_p
 # and every card_describe item failed "claude binary not found" in ~50 ms.
 # route()/dispatch_async now drop a rung whose transport's binary, credential
 # or endpoint is absent on THIS host — derived from the same probes the

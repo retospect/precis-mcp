@@ -10,11 +10,11 @@ model: opus
 
 Reto, 2026-10-21: "If a fisheye finds things already with a RAG call, will
 a specific link actually help? What is the value add of the graph
-gardener, have we done this right?" Then: run the gardener on castor
+gardener, have we done this right?" Then: run the gardener on the local-serving node
 (openai/gpt-oss-120b) for a few days, make the changes below, and find
 what else is worth doing. Builds on the graph gardener
-(v1 shipped 36d5407ac, lit on prod 2026-10-21: `service_config` melchior
-`graph_garden` prio 1, proposer routed to castor by the
+(v1 shipped 36d5407ac, lit on prod 2026-10-21: `service_config` agent-host
+`graph_garden` prio 1, proposer routed to the local-serving node by the
 `llm.op.graph_garden:propose` local chain),
 [knowledge-mesh](knowledge-mesh.md) §4 (the per-quest mesher) and
 [local-mesh-upkeep](local-mesh-upkeep.md) (per-action bars, reviews
@@ -69,7 +69,7 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    sample of the same proposals — both non-terminal — and reports
    per-detector proposer–Opus and Opus–Fable agreement side by side.
    Merge stays the only auto-apply path.
-4. **Per-quest scout on castor** (knowledge-mesh §4 made concrete): one
+4. **Per-quest scout on the local-serving node** (knowledge-mesh §4 made concrete): one
    tick per active quest reads `fisheye+2hop` around the quest, picks the
    thinnest rubric axis, and does one of: widen (paper search), read
    (queue the reader on held papers for that axis), stance (for chunk
@@ -80,18 +80,18 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    from a chunk with `establishes` + measure). All writes pass slice 1;
    findings and stance edges stay proposals until the reviewer bar is
    met.
-5. **Castor filler: extract → mesh** (Reto 2026-10-21: "we want to see
-   what the quality of castor output can be, and then fix things until it
-   is adequate"; castor stays the gardener's default model). The
-   gardener stops being a once-a-day job and becomes castor's idle-time
+5. **Local-serving-node filler: extract → mesh** (Reto 2026-10-21: "we want to see
+   what the quality of the local-serving node output can be, and then fix things until it
+   is adequate"; the local-serving node stays the gardener's default model). The
+   gardener stops being a once-a-day job and becomes the local-serving node's idle-time
    filler: a small job (one paper or one candidate set) is minted only
-   while castor runs fewer than ~8 of its 32 requests, at the lowest
+   while the local-serving node runs fewer than ~8 of its 32 requests, at the lowest
    priority, yielding to interactive calls. Work, in order: (a)
    `survey_extract` on full-text papers serving active quests (measures
    + findings, accepted per batch by `measure_accept`'s sampled Wilson
    bar, never item by item); (b) deterministic numeric mesh over the new
    measures (same measurand, reference, normalization and conditions:
-   compatible values → `corroborates`, incompatible → `disputes`; castor
+   compatible values → `corroborates`, incompatible → `disputes`; the local-serving node
    writes only the `why`); (c) findings grouped into claim hubs; (d)
    `explains` between claim hubs (claim-hub-only per migration 0203 and
    `taproot.hub.link_claims`: accepted 2026-10-21, chunk-level
@@ -101,7 +101,7 @@ duplicates the index and makes the fisheye (which renders links) noisier.
    (other-pass 5), then new full-text papers; a pass whose sampled
    acceptance or eval delta falls under the bar is throttled.
    **Trial first, before any scheduler code:** ~100 `survey_extract`
-   jobs on castor over held full-text papers of active quests, then an
+   jobs on the local-serving node over held full-text papers of active quests, then an
    Opus read of the output (sampled measures against their chunks,
    failure classes: wrong number, wrong measurand, missing condition,
    unit, hallucinated anchor, JSON), fix what it finds, repeat until the
@@ -151,7 +151,7 @@ The 6-hourly chat-desk watch (gardener runs, proposals,
 2026-10-24 and died with its chat session; every gripe it filed is closed
 (gr504843, gr504896, gr506044, gr506045, gr506046, gr508975, gr512124,
 gr512125). The trial itself keeps running unattended: recurring td504852
-every 2 h, proposer castor-only, consumer cloud Opus; since 2026-10-24 the
+every 2 h, proposer local-serving-node-only, consumer cloud Opus; since 2026-10-24 the
 `reviews` ledger shows 102 approved / 344 rejected / 59 held for a human
 (read 2026-11-01). Closed since the watch: the four pre-gate merges
 applied 2026-10-24 06:33Z (reviews 8830, 8833, 8845, 8846) were audited
@@ -166,7 +166,7 @@ blocker gr502793 closed 2026-10-22).
 
 Auto-applying anything but merge; new relation types; the paper
 full-text acquisition problem (someone else's); cloud fallback for the
-castor chain (failures should be visible while castor is on trial).
+local-serving node chain (failures should be visible while the local-serving node is on trial).
 
 ## Target + blast radius
 
@@ -251,7 +251,7 @@ Rulings 2026-10-21 (Reto, via chat; resolve the findings above):
   keep threshold +0.05 recall or −10 % tokens without recall loss).
 - Reviewer: Opus, 20/day. A Fable re-review of a sample of the same
   proposals runs beside it; `precis garden stats` reports, per detector,
-  castor-proposer–Opus agreement and Opus–Fable agreement side by side.
+  local-model-proposer–Opus agreement and Opus–Fable agreement side by side.
   Both stay non-terminal reviews; neither gates anything.
 - Gold labels: model-drafted, then Reto reviews qu500066's three
   questions; the review does not block the runner.
@@ -309,25 +309,25 @@ coordinator), the rest are build decisions taken as defaults.
   for qu500066.
 - **S4-4 Tick budget (blocker: none stated).** Proposed constants in the
   new module: one action per tick; cadence from `meta.mesh.cadence_h`
-  (default 6 h); per tick ≤ 1 `fisheye+2hop` render, ≤ 20 castor calls,
+  (default 6 h); per tick ≤ 1 `fisheye+2hop` render, ≤ 20 local-serving node calls,
   ≤ 5 proposals, ≤ 10 paper stubs; cloud spend 0 (no deep campaign:
   `widen` is a plain `search(kind='paper')` store call, not the
   agent fan-out knowledge-mesh §4 named, so `budget_usd` is a cap that
-  stays at 0 until an action needs it). Castor calls go through a new op
+  stays at 0 until an action needs it). Local-serving-node calls go through a new op
   `llm.op.graph_garden:scout` routed like `graph_garden:propose`
-  (`proposer.py` passes no placement; the op chain picks castor), and
+  (`proposer.py` passes no placement; the op chain picks the local-serving node), and
   the scout respects the slice 5 idle gate once it exists. The fisheye
   render is `utils/eye_render.py::render_eye(store, handle,
   'fisheye+2hop')`, store-only, callable from a worker; it reports no
   token count, so the tick logs `len(text)//4` beside each action.
 - **S4-5 Stance overlaps slice 5 (b) and other-pass 1.** "Chunk pairs
   near in the index that state different numbers" is the numeric
-  conflict rule without the measures that make it decidable; a castor
+  conflict rule without the measures that make it decidable; the local-serving node
   read of two raw chunks cannot tell a different measurand or condition
   from a conflict. Proposed: `stance` runs only over pairs of accepted
   `measures` rows on the axis (same measurand, reference,
   normalization; compatible conditions) and is the slice 5 (b) rule
-  invoked per axis; castor writes only `why`. Raw chunk-pair stance is
+  invoked per axis; the local-serving node writes only `why`. Raw chunk-pair stance is
   dropped from slice 4.
 - **S4-6 Bridge conflicts with the `explains` ruling.** `explains` is
   claim-hub → claim-hub only (0203, `taproot.hub.link_claims`; the gate

@@ -58,7 +58,7 @@ ownership, which is what the steal path depends on.
 ### Why we think it fired on 2026-08-21
 
 A `/go` deploy pinned `4ca74e10` and failed its convergence assert on three
-venvs (balthazar + spark `/opt/precis/embedder-venv`, melchior `/opt/mcps/venv`
+venvs (a worker host + the GPU node `/opt/precis/embedder-venv`, the agent host `/opt/mcps/venv`
 and `/opt/precis/venv`), all reporting `bf8ecfb43c`.
 
 The assert's own `fail_msg` rules out the actual cause:
@@ -138,7 +138,7 @@ Hit 2026-08-22 deploying `507975cd`. Every venv on every host failed the
 convergence assert:
 
 ```
-melchior: /opt/precis/venv is on 5d5cc72e24 but the pinned deploy target is
+the agent host: /opt/precis/venv is on 5d5cc72e24 but the pinned deploy target is
 507975cd80 — DEPLOY DID NOT CONVERGE. The target is frozen for this run, so
 this means the install was genuinely skipped/failed on this venv (re-run),
 not a main that moved under it.

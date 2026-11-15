@@ -71,7 +71,7 @@ def add_parser(subparsers: Any) -> None:
         "--host",
         default=None,
         help="[--slullama] Host holding the SSH tunnel "
-        "(env: PRECIS_SLULLAMA_HOST, default: melchior).",
+        "(env: PRECIS_SLULLAMA_HOST, built-in default).",
     )
     s.add_argument(
         "--endpoint",

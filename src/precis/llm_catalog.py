@@ -1070,7 +1070,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
             "long-context-recall": 3,
         },
     ),
-    # The fleet's BIG-tier local workhorse (castor serves it; ``llm.op.*``
+    # The fleet's BIG-tier local workhorse (the local-serving node serves it; ``llm.op.*``
     # chains pin it for claim.verify and the other local verify passes). Its
     # floor must cover the demand the pins place on it — a ``medium`` floor
     # had the shadow decide reject the lane legacy dispatches on every call
@@ -1338,8 +1338,8 @@ def seed_slullama_card(
     max_parallel: int | None = None,
 ) -> tuple[int, bool]:
     """Mint (or refresh) the ONE static ``llm`` card advertising a Slurm-HPC
-    GPU cluster's Ollama endpoint, tunnelled to loopback on ``host`` (default
-    ``melchior``). Idempotent on ``model_id`` (:func:`upsert_card`).
+    GPU cluster's Ollama endpoint, tunnelled to loopback on ``host`` (has a
+    built-in default). Idempotent on ``model_id`` (:func:`upsert_card`).
 
     Every argument falls back to an env var when omitted, so the same call works
     unconfigured-in-code from a deploy playbook or a one-shot CLI seed:
@@ -1349,7 +1349,7 @@ def seed_slullama_card(
     * ``model_id``       — ``$PRECIS_SLULLAMA_MODEL_ID``, default ``"qwen-hpc"``
                             (the precis-side handle; a placement chain rung
                             points at this model_id to route there).
-    * ``host``           — ``$PRECIS_SLULLAMA_HOST``, default ``"melchior"`` (the
+    * ``host``           — ``$PRECIS_SLULLAMA_HOST``, has a built-in default (the
                             node holding the SSH tunnel — must match the
                             heartbeat host name so ``local_serving.acquire``
                             sees it).

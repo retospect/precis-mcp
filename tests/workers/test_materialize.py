@@ -737,7 +737,7 @@ def test_band_full_but_nothing_running_warns(
     _small_band_env: None,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Band full of QUEUED jobs that nothing is draining (dead melchior /
+    """Band full of QUEUED jobs that nothing is draining (dead maple /
     target_node misconfig) while backlog remains → the stuck-queue WARNING (the
     band analogue of the high-water liveness signal)."""
     backlog = {"n": 999_999}

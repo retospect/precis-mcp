@@ -180,7 +180,7 @@ def container_runtime() -> str | None:
     ``docker`` often isn't on a launchd daemon's PATH, so a full path is the
     escape hatch), else ``podman`` then ``docker`` on PATH. One detector shared
     by the capability probe and :func:`agent_container._container_bin`, so "each
-    host has its own container capability" is uniform across podman (spark/Linux)
+    host has its own container capability" is uniform across podman (GPU node/Linux)
     and docker (OrbStack on the Macs)."""
     explicit = os.environ.get("PRECIS_CONTAINER_BIN") or os.environ.get(
         "PRECIS_PODMAN_BIN"

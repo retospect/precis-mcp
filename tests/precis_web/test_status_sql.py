@@ -38,7 +38,7 @@ def _log_runner_batch(
     ok: int,
     claimed: int,
     failed: int = 0,
-    host: str = "melchior",
+    host: str = "maple",
 ) -> None:
     """Insert one ``pass='runner'`` worker_logs row, as the runner emits."""
     with store.pool.connection() as conn:
@@ -312,7 +312,7 @@ def test_health_panel_live_probe_clears_when_fresh(store: Any) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO worker_logs (host, pass, level, message) "
-            "VALUES ('melchior', 'briefing', 'INFO', 'delivered')"
+            "VALUES ('maple', 'briefing', 'INFO', 'delivered')"
         )
         conn.commit()
 
@@ -375,11 +375,11 @@ def test_services_ctx_reserve_scoped_to_selected_host(store: Any) -> None:
     host is selected — an unreserved host sees no active reserve."""
     from precis.workers.service_config import set_reserve
 
-    set_reserve(store, "melchior", hours=1, actor="ops")
-    scoped = _services_ctx(store, "melchior")
+    set_reserve(store, "maple", hours=1, actor="ops")
+    scoped = _services_ctx(store, "maple")
     assert scoped["reserve"] is not None
     assert scoped["reserve"]["actor"] == "ops"
-    other = _services_ctx(store, "caspar")
+    other = _services_ctx(store, "birch")
     assert other["reserve"] is None
 
 
@@ -389,21 +389,21 @@ def test_health_ctx_surfaces_reserve_latest_error_and_top_cpu(store: Any) -> Non
     collected ``top_cpu`` all ride the same per-host strip row."""
     from precis.workers.service_config import set_reserve
 
-    set_reserve(store, "melchior", hours=1, actor="ops")
+    set_reserve(store, "maple", hours=1, actor="ops")
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO host_heartbeat (host, ts, load1, load5, load15, meta) "
-            "VALUES ('melchior', now(), 1.0, 1.0, 1.0, "
+            "VALUES ('maple', now(), 1.0, 1.0, 1.0, "
             "        jsonb_build_object('top_cpu', jsonb_build_array("
             "          jsonb_build_object('cmd', 'postgres', 'cpu', 42.0))))"
         )
         conn.execute(
             "INSERT INTO worker_logs (host, pass, level, logger, message) "
-            "VALUES ('melchior', 'x', 'CRITICAL', 'l', 'disk full')"
+            "VALUES ('maple', 'x', 'CRITICAL', 'l', 'disk full')"
         )
         conn.commit()
     ctx = _health_ctx(store, SimpleNamespace(corpus_dirs=[]))
-    hb = {h["host"]: h for h in ctx["heartbeats"]}["melchior"]
+    hb = {h["host"]: h for h in ctx["heartbeats"]}["maple"]
     assert hb["reserve"]["actor"] == "ops"
     assert hb["top_cpu"] == [{"cmd": "postgres", "cpu": 42.0}]
     assert hb["errors_6h"]["latest"]["line"] == "disk full"

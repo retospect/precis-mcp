@@ -705,13 +705,13 @@ def test_swept_struct_relax_job_kills_its_compute_container(
         rid,
         backdate_hours=2.0,
         job_type="struct_relax",
-        params={"target_node": "spark"},
+        params={"target_node": "spruce"},
     )
 
     result = run_sweeper_pass(store, limit=10)
 
     assert result.ok == 1
-    assert killed == [(job_id, "spark")]
+    assert killed == [(job_id, "spruce")]
 
 
 def test_kill_job_container_never_raises(
@@ -756,8 +756,8 @@ def test_stale_dft_container_watchdog_local_node_every_pass(
     assert sweeper._reap_stale_dft_containers() == 0
     assert calls == []
 
-    monkeypatch.setattr(struct_relax, "_NODE", "spark")
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setattr(struct_relax, "_NODE", "spruce")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     assert sweeper._reap_stale_dft_containers() == 3
     assert sweeper._reap_stale_dft_containers() == 3
     assert calls == [1, 1]
@@ -780,8 +780,8 @@ def test_stale_dft_container_watchdog_remote_throttled(
         return 2
 
     monkeypatch.setattr(struct_relax, "reap_stale_containers", _fake_reap)
-    monkeypatch.setattr(struct_relax, "_NODE", "pollux")
-    monkeypatch.setenv("PRECIS_NODE", "melchior")
+    monkeypatch.setattr(struct_relax, "_NODE", "poplar")
+    monkeypatch.setenv("PRECIS_NODE", "maple")
     monkeypatch.setattr(sweeper, "_last_remote_dft_reap", float("-inf"))
 
     assert sweeper._reap_stale_dft_containers() == 2

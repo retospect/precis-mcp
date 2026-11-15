@@ -42,12 +42,12 @@ running into its deadline. Who: agent-code, S.
 
 ## Dispatch-stall noise and the unclaimable head job (gr536350)
 
-`nursery:dispatch-stall` flapped critical 4× in ~4h on melchior's
+`nursery:dispatch-stall` flapped critical 4× in ~4h on the agent host's
 agent-profile lane (2026-10-29), each "2 job(s) queued, none running"
 self-resolving — short claim gaps while the claude gate reconnected
 (~7 s). Reto ruling 2026-10-29: debounce the check so gaps shorter than a
 reconnect don't go critical (option (b); a second agent-profile host is a
-separate decision — `cluster-scheduling.md` "De-SPOF the melchior agent
+separate decision — `cluster-scheduling.md` "De-SPOF the agent host agent
 worker"). **Shipped** c0230cc96 — `DISPATCH_STALL_DEBOUNCE_S = 60` (~9×
 the observed gap) — not yet on `origin/prod` as of 2026-10-30.
 

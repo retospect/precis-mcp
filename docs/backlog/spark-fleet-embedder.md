@@ -1,37 +1,37 @@
 ---
 status: draft
-title: spark serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies
+title: The GPU node serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies
 pillar: local-compute
 prio: high
 ---
 
-# spark serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies
+# The GPU node serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies
 
 Reto, 2026-10-02 (review items local-compute-4 and local-compute-5): of the
-three Sparks, spark runs the embeddings.
+three Sparks, the GPU node runs the embeddings.
 
 ## Motivation / why
 
 Today every worker host runs its own bge-m3: `deploy/playbooks/19a-precis-embedder.yml`
 deploys `precis serve-embeddings` on loopback to `gateway`, `scheduler` and
-`inference`, and each worker embeds against `127.0.0.1:8181`. On melchior
+`inference`, and each worker embeds against `127.0.0.1:8181`. On the agent host
 that copy competes with the MCP server, the gates and dev work. Reto's
-ruling is not to wear melchior down. One GPU embedder on spark takes
+ruling is not to wear the agent host down. One GPU embedder on the GPU node takes
 that load off the Macs and gives the fleet one capacity number. That number
 is the one `src/precis/embedder_service.py` (capacity decided 2026-10-02) measures (provisional 12.7–13.6
 texts/s, CPU/MPS floor).
 
 ## In scope
 
-- `precis serve-embeddings` on spark, LAN-bound (not loopback), behind the
+- `precis serve-embeddings` on the GPU node, LAN-bound (not loopback), behind the
   same API. The GB10 GPU should raise the floor well past 13 texts/s;
   measure it.
-- Workers and the MCP server point `--embedder-url` at spark. The local
-  loopback embedder stays as the fallback when spark is unreachable, so an
-  outage on spark degrades rather than stops ingest and search.
-- Inventory: a new `embedder` group holding spark. Do not use `inference`:
+- Workers and the MCP server point `--embedder-url` at the GPU node. The local
+  loopback embedder stays as the fallback when the GPU node is unreachable, so an
+  outage on the GPU node degrades rather than stops ingest and search.
+- Inventory: a new `embedder` group holding the GPU node. Do not use `inference`:
   that group drives the worker, watch and dft plays, so joining it would put
-  science lanes on spark. 19a targets `embedder`.
+  science lanes on the GPU node. 19a targets `embedder`.
 - The embedder watchdog (`41-precis-embedder-watchdog.yml`) covers the LAN
   service.
 - Query latency on the MCP server's path (p50 ~2 s / p95 ~5 s today) is
@@ -46,10 +46,10 @@ texts/s, CPU/MPS floor).
 
 ## Acceptance criteria
 
-- With spark up, `llm_call_log`-adjacent embed timings (or the embedder's own
-  metrics) show the fleet's embeds served from spark, and melchior's local
+- With the GPU node up, `llm_call_log`-adjacent embed timings (or the embedder's own
+  metrics) show the fleet's embeds served from the GPU node, and the agent host's local
   embedder idle.
-- With spark's service stopped, ingest and search keep working through the
+- With the GPU node's service stopped, ingest and search keep working through the
   loopback fallback, with a warning, not an error.
 - `tests/test_deploy_tree_no_secrets.py` green (group names only).
 
@@ -62,7 +62,7 @@ branch.
 
 ## Open questions / decisions log
 
-- Blocked on spark host prep (`spark-provisioning.md` §Host items) and
+- Blocked on the GPU node host prep (`spark-provisioning.md` §Host items) and
   on the `/mnt/cluster` NFS hang (review item local-compute-6) only as far
-  as spark's `nfs_clients` membership goes. The embedder itself does not
+  as the GPU node's `nfs_clients` membership goes. The embedder itself does not
   need the share.

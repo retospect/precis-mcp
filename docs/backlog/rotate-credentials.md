@@ -8,7 +8,7 @@ OPS-ONLY (2026-10-17): Reto runs these rotations by hand; never auto-pick this f
 # Rotate agent_rw, OPENROUTER_API_KEY, Claude OAuth token, anki password
 
 All have leaked (transcripts, shell history, five on-disk copies since July,
-cleartext `PRECIS_ANKI_PASSWORD` in melchior's worker plist). `agent_rw`
+cleartext `PRECIS_ANKI_PASSWORD` in the agent host's worker plist). `agent_rw`
 needs a deliberate cluster pause: pgbouncer's static md5 userlist and the
 Postgres role must move together (1–2 min auth gap; pick a parked-planner
 window) — full ordered procedure:

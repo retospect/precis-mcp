@@ -225,11 +225,11 @@ def test_classify_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> Non
     assert operations.resolve_op("classify") == (Tier.SMALL, "some-other-model")
 
 
-def test_classify_op_chain_can_pin_castor_local_rung(
+def test_classify_op_chain_can_pin_cedar_local_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`llm.op.classify` carrying a `chain` resolves to that chain — the
-    castor gpt-oss-120b rung shape the lane move writes (max_tokens 512,
+    cedar gpt-oss-120b rung shape the lane move writes (max_tokens 512,
     timeout 300, reasoning_effort low)."""
     chain = [
         {
@@ -578,7 +578,7 @@ def test_resolve_op_chain_parses_and_filters_tools(
     assert tooled is not None and [r.model for r in tooled] == ["b"]
 
 
-def test_chase_verify_op_chain_can_pin_castor_local_rung(
+def test_chase_verify_op_chain_can_pin_cedar_local_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chain = [

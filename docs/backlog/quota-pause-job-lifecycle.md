@@ -116,7 +116,7 @@ dump.
   `budget-guardrails.md` (this item consumes the pause, it does not
   re-tune it).
 - A second agent-profile host — a separate decision (see
-  `cluster-scheduling.md` "De-SPOF the melchior agent worker").
+  `cluster-scheduling.md` "De-SPOF the agent host agent worker").
 - The prod cleanup writes themselves (clearing `child-failed:531123` on
   td531122; resume-now on `/budget`) — operator actions, not code.
 - Per-cast feature work (length calibration, lanes) — `cast-followups.md`.

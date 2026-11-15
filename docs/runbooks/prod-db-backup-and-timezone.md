@@ -7,10 +7,10 @@ chasing a `unknown PostgreSQL timezone` warning, or prod writes fail with
 
 ## Topology
 
-PG 17 (Homebrew) runs **locally on caspar** (`/opt/homebrew/opt/postgresql@17/bin`,
+PG 17 (Homebrew) runs **locally on the database host** (`/opt/homebrew/opt/postgresql@17/bin`,
 data `/opt/homebrew/var/postgresql@17`, user `deploy`, peer auth over the local
 socket). pgbouncer (transaction mode, port 6432) forwards to the local
-Postgres. caspar's **default** `pg_dump` is v16 (Intel `/usr/local`) — the
+Postgres. The database host's **default** `pg_dump` is v16 (Intel `/usr/local`) — the
 wrong major; always put pg17 first on PATH
 (`export PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH`) or `pg_dump` refuses
 the v17 server.
@@ -37,7 +37,7 @@ the v17 server.
   while ansible manages `/opt/homebrew/etc/pgbouncer.ini` — ansible pgbouncer
   changes are no-ops against the live process.
 
-## Nightly schedule (caspar, UTC)
+## Nightly schedule (the database host, UTC)
 
 | time | what |
 |------|------|
@@ -59,7 +59,7 @@ Rotation: 7 days local, 90 days NAS; the backup dir sits steady at ~110 GB
   explicit PATH.
 - `playbooks/02-postgres.yml` goes RED on its DB-management tasks (wrong `/tmp`
   socket, gr160582) but the config half applies.
-- **Manual on-demand backup**, on caspar with pg17 on PATH:
+- **Manual on-demand backup**, on the database host with pg17 on PATH:
 
       pg_dump -U deploy -d precis_prod -Fc -Z6 \
         -f /opt/shared/backups/postgres/precis_prod_manual_<ts>.dump
@@ -68,15 +68,15 @@ Rotation: 7 days local, 90 days NAS; the backup dir sits steady at ~110 GB
 ## Disk-full (`DiskFull` stalls all prod writes)
 
 Seen 2026-08-04Z, when backups had no rotation: the dump dir reached 122 GB
-(~10 daily dirs of ~12 GB) and filled caspar's volume to 100% → psycopg
+(~10 daily dirs of ~12 GB) and filled the database host's volume to 100% → psycopg
 `DiskFull` stalled all prod writes for ~1.5 h.
 
 1. **Diagnose first:** prod writes failing / `DiskFull` in a worker log →
-   `ssh caspar 'df -h /System/Volumes/Data'`.
-2. The backups dir is on caspar's **local** volume, **not** the NAS. A 174 GB
+   `ssh <db-host> 'df -h /System/Volumes/Data'`.
+2. The backups dir is on the database host's **local** volume, **not** the NAS. A 174 GB
    dir named `/opt/nfs` is *also* local and misleadingly named; the real NAS
    mounts under `/opt/nas`. Live PGDATA is a legitimate ~89 GB — don't touch.
-3. Mitigation (`deploy` has passwordless sudo on caspar): `rm -rf` the oldest
+3. Mitigation (`deploy` has passwordless sudo on the database host): `rm -rf` the oldest
    `/opt/shared/backups/postgres/precis_prod_<YYYYMMDD>_<HHMMSS>` dirs; keep ~5
    recent plus any manual dump (deleting 4 freed ~50 GB).
 4. Durable follow-ups owed (gr191008, beyond the now-live rotation):
@@ -89,5 +89,5 @@ Judge a serving/deploy change from **steady state**, never the minute after —
 the llama-swap reload window right after a bounce reads as
 Connection-refused/400 and self-heals. Use **absolute UTC cutoffs** on DB `ts`
 (a relative `now()-20min` spanned the pre-deploy window and read as "fix
-failed"). Node log timestamps are in the node's local zone (melchior's are not
+failed"). Node log timestamps are in the node's local zone (the agent host's are not
 UTC) and are repeatedly mis-converted — trust the DB `ts`.

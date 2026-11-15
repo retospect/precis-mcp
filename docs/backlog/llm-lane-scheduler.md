@@ -7,7 +7,7 @@ prio: high
 
 # Class lanes on each local LLM endpoint
 
-Reto, 2026-10-23: "can we say castor always gardens, but at least 2
+Reto, 2026-10-23: "can we say the local-serving node always gardens, but at least 2
 lanes. If classify, at least two lanes, … if user up to 4 lanes
 available? That sort of 'use all the cycle for forever op but bump if
 others exist'". Earlier ruling: "we want to schedule evenly, with human
@@ -41,7 +41,7 @@ queued for hours).
 
 ## Motivation / why
 
-`local_serving.acquire` is one semaphore per model: 32 slots on castor
+`local_serving.acquire` is one semaphore per model: 32 slots on the local-serving node
 SGLang, first come first served, a bounded wait
 (`PRECIS_LOCAL_SLOT_WAIT_S`) then fall to cloud. A background flood
 (classify, llm_summarize at ~32.7k calls/day, ~7.5 concurrent on average)
@@ -70,12 +70,12 @@ short ones leave the box idle above it.
   the serving host. Signals: the server's metrics (SGLang `/metrics`:
   `sglang:num_running_reqs`, `sglang:num_queue_reqs`,
   `sglang:token_usage` (KV utilisation), `sglang:num_retracted_reqs` —
-  a GAUGE, requests currently retracted; confirmed on castor's
+  a GAUGE, requests currently retracted; confirmed on the local-serving node's
   v0.5.21 capture, it is the only retraction series — vLLM
   equivalents `num_requests_running`, `num_requests_waiting`,
   `gpu_cache_usage_perc`, `num_preemptions_total`) **and host memory
   and swap** — on a
-  Spark-class box GPU and CPU share unified memory, so host swap-in is
+  GB10-class box GPU and CPU share unified memory, so host swap-in is
   model pressure too. The loop admits while queue ≈ 0, KV use is under
   threshold and swap-in is 0; it backs off when queue climbs,
   retractions tick or swap-in appears. Control variable: the row's
@@ -98,9 +98,9 @@ short ones leave the box idle above it.
   N minutes on a serving host — rides the existing hourly registry and
   alert router; useful before the controller exists and is its first
   consumer of the scrape.
-- **Ceiling today is 32**, not 64: castor's SGLang role runs
+- **Ceiling today is 32**, not 64: the local-serving node's SGLang role runs
   `--mem-fraction-static 0.80 --max-running-requests 32` because the
-  0.86/64 trial hung castor (gr485635, do not raise). Reto's channels
+  0.86/64 trial hung the local-serving node (gr485635, do not raise). Reto's channels
   ruling (2026-10-03, local-compute-15) — "the server is sized for 64
   streams (`--max-num-seqs 64`). The feedback controller holds about 32
   while interactive tiers use it and fills to 64 with graph maintenance" —
@@ -119,11 +119,11 @@ short ones leave the box idle above it.
 A work-conserving allocator per model pool. One config row per endpoint
 (`llm_endpoints`: `host`, `endpoint`, `model`, `slots`, `capabilities`);
 a second host serving the same model is a second row, so its slots add
-(see Endpoints and castor2).
+(see Endpoints and a second serving node).
 
 Classes, in DB config (`llm_lane_classes`: `endpoint`, `name`,
 `priority`, `min_lanes`, `max_lanes`, `filler bool`). Starting set for
-castor, Reto's numbers where he gave them:
+the local-serving node, Reto's numbers where he gave them:
 
 | class | priority | min | max | filler |
 |---|---|---|---|---|
@@ -137,26 +137,26 @@ castor, Reto's numbers where he gave them:
 A request carries its class, mapped from `req.source` (`llm.op.<source>`,
 `utils/llm/operations.py`) through a `source → class` map in the same
 config; an unmapped source is `background` (priority last, min 0, no
-filler). The castor agent lane's shim requests carry `source
+filler). The local-model lane's shim requests carry `source
 castor_lane:agent` so they land in their class rather than in `user`.
 
 ### Work sources
 
-Reto, 2026-10-23: "Sources for castor can be queues, or code requests
-(run this on castor, come back) or search (find next xxx that is
-uncategorized). Other sources? … Also we may get castor2." A class is
+Reto, 2026-10-23: "Sources for the local-serving node can be queues, or code requests
+(run this on the local-serving node, come back) or search (find next xxx that is
+uncategorized). Other sources? … Also we may get a second serving node." A class is
 source kind × priority. Kinds:
 
 | kind | shape | priority | bumpable |
 |---|---|---|---|
 | interactive | a human or agent session waits (MCP calls, chat, Discord bot) | highest, small max | n/a (short) |
-| code request / RPC | "run this on castor and come back" from a workspace script or job; the caller blocks, a deadline is required | high | no |
+| code request / RPC | "run this on the local-serving node and come back" from a workspace script or job; the caller blocks, a deadline is required | high | no |
 | queue | minted jobs (summarise, classify drain) | per class | between items |
 | pull generator ("search") | an idle lane asks the generator for the next item ("next uncategorized chunk", "next gardener candidate"); nothing is pre-queued | per class; fillers MUST be this kind | between items |
 | event-triggered | on ingest or on change (new paper → summary); a queue with freshness priority | per class | between items |
 | re-evaluation / backfill | re-run old outputs after a model or prompt change, or re-judge a sample | low; filler candidate | between items |
-| evaluation / shadow | castor beside a cloud model on a sample to measure agreement (today's classify probe) | a small fixed share | between items |
-| agent loop | multi-turn tool-using agents on castor; hold a lane for many turns | per class, with a max | at turn boundaries |
+| evaluation / shadow | the local-serving node beside a cloud model on a sample to measure agreement (today's classify probe) | a small fixed share | between items |
+| agent loop | multi-turn tool-using agents on the local-serving node; hold a lane for many turns | per class, with a max | at turn boundaries |
 
 Each source declares `kind`, `class`, a deadline or latency target, and
 whether it can be bumped between items. Fillers are pull generators by
@@ -165,12 +165,12 @@ pile-up. "Queued work" for the dispatch rule means: a queue or event
 source has rows, a generator answers "yes, next", an RPC or interactive
 caller is waiting.
 
-### Endpoints and castor2
+### Endpoints and a second serving node
 
 The pool is config rows per endpoint: `{host, model, slots,
-capabilities}`. castor2 or a spark adds slots to the same model pool, or
+capabilities}`. A second local-serving node or a GPU node adds slots to the same model pool, or
 serves a different model (a small model for classify). Reto 2026-10-22
-(`castor-agent-lane.md` ruling): "a second spark-class host with the same
+(`castor-agent-lane.md` ruling): "a second GB10-class host with the same
 model is the option for more coding capacity" — that host is a second
 row in this pool, nothing else. The router matches a class's required
 capability or model to endpoints; floors and maxes apply per pool, not
@@ -203,7 +203,7 @@ grant statement can see queued demand per class. The grant is one
 `rate_limit._CONSUME_SQL`; waiters poll with jitter as `acquire` does
 today.
 
-Why over (a) a gateway on castor with per-class queues: a call lasts
+Why over (a) a gateway on the local-serving node with per-class queues: a call lasts
 10–20 s, so a DB round trip is noise; every caller already holds the
 store and `local_serving.acquire` already reserves there, so no new
 daemon, deploy role or single point of failure in front of the model;
@@ -253,17 +253,17 @@ never overflow to cloud" rule covers the maintenance units only.
 
 | slice | delivers |
 |---|---|
-| S0 | `--enable-metrics` on castor's role (Reto deploys); the heartbeat scrape of SGLang `/metrics` + host swap into `host_heartbeat_log` (shared with `vllm-per-node-serving.md` Slice 3 — one scrape); condition row `local-serving-pressure` |
-| S1 | allocator + config tables + classes for today's castor callers (user, classify, llm_summarize, castor_agent, castor_batch, graph_garden, background) over the static capacity (32); `local_serving.acquire(class=…)`; source kinds interactive, queue and pull generator (the gardener filler becomes a generator) |
+| S0 | `--enable-metrics` on the local-serving node's role (Reto deploys); the heartbeat scrape of SGLang `/metrics` + host swap into `host_heartbeat_log` (shared with `vllm-per-node-serving.md` Slice 3 — one scrape); condition row `local-serving-pressure` |
+| S1 | allocator + config tables + classes for today's local-serving-node callers (user, classify, llm_summarize, castor_agent, castor_batch, graph_garden, background) over the static capacity (32); `local_serving.acquire(class=…)`; source kinds interactive, queue and pull generator (the gardener filler becomes a generator) |
 | S2 | observability: `/lanes` view, CLI, `llm_call_log` columns, hold-time per class |
-| S2b | mix benchmark on castor off-peak: throughput and latency per size class across mixes; sets the pool size in units and the unit weights, checks `max_running_requests`, chunked prefill and mem fraction; weighted units (`size_class` on the `llm.op` row) switch on only if S2 shows count-based lanes misallocate |
+| S2b | mix benchmark on the local-serving node off-peak: throughput and latency per size class across mixes; sets the pool size in units and the unit weights, checks `max_running_requests`, chunked prefill and mem fraction; weighted units (`size_class` on the `llm.op` row) switch on only if S2 shows count-based lanes misallocate |
 | S3 | capacity controller over S0's signals: capacity moved between a floor and the server limit in the class-aware back-off order, the one-writer test |
-| S4 | multiple endpoints: castor2/spark rows, capability routing, pool-level floors, endpoint-down re-apply |
+| S4 | multiple endpoints: second-serving-node/GPU-node rows, capability routing, pool-level floors, endpoint-down re-apply |
 | later | agent loops (lane max, turn-boundary yield) and shadow evaluation share; RPC deadlines ride the ambient deadline (`utils/deadline.py`, shipped 2026-10-23) |
 
 S1 does not wait on S0 or S3: lanes divide whatever capacity the row
 holds. The old `blocked-by: vllm-per-node-serving` on the controller is
-stale — castor serves gpt-oss-120b on SGLang today; what S3 waits on is
+stale — the local-serving node serves gpt-oss-120b on SGLang today; what S3 waits on is
 S0's scrape, nothing else.
 
 ## Acceptance criteria
@@ -273,12 +273,12 @@ S0's scrape, nothing else.
   lane within one request duration, classify never drops below 2
   in-flight while it has waiters, the gardener holds exactly the
   remainder; with no other waiters the gardener holds all 8. Prod:
-  castor's slots stay ≥90 % busy over an hour while an MCP session's
+  the local-serving node's slots stay ≥90 % busy over an hour while an MCP session's
   local call waits < one request duration at p95.
 - S2: `/lanes` shows per-class in-flight/queued/wait/hold time and lanes
-  vs floor for castor; `llm_call_log.queue_wait_ms` is set on every local
+  vs floor for the local-serving node; `llm_call_log.queue_wait_ms` is set on every local
   call.
-- S0: `host_heartbeat_log` on castor carries running/queued/KV/retraction
+- S0: `host_heartbeat_log` on the local-serving node carries running/queued/KV/retraction
   and swap-in per beat; `local-serving-pressure` fires in a test with a
   synthetic swap-in series and on prod under a deliberate 66k-context
   burst.
@@ -290,7 +290,7 @@ S0's scrape, nothing else.
   and the server limit cannot disagree (one source, a test fails if a
   second writer appears); with no interactive load, the filler keeps the
   box at the setpoint (the "is the box hot" number, gr458727).
-- S4: a second row for castor's model doubles the measured concurrent
+- S4: a second row for the local-serving node's model doubles the measured concurrent
   calls with floors holding per pool; a class whose capability only one
   endpoint has never lands on the other; stopping one endpoint's
   heartbeat removes its slots within one poll and no floor is granted
@@ -321,7 +321,7 @@ to a failed call.
   round-robin among equal priority, so "schedule evenly" holds within a
   tier).
 - **Count requests or weight them?** Reasoning effort is per request on
-  castor: SGLang batches low, medium and high together, and today the
+  the local-serving node: SGLang batches low, medium and high together, and today the
   gardener runs at medium while summarise runs at low, concurrently. A
   high-effort call can hold a lane 10–50× longer (probe: low ~55,
   medium ~150 completion tokens; high can be thousands) and uses more KV
@@ -345,7 +345,7 @@ to a failed call.
     beside `reasoning_effort` and `max_tokens`, and is corrected from
     measured hold time and tokens (`/lanes`, S2).
   - **Order:** S1 counts requests (every unit 1). A benchmark slice (S2b)
-    runs mixes on castor off-peak and measures throughput and latency per
+    runs mixes on the local-serving node off-peak and measures throughput and latency per
     class; that sets the pool size and the unit weights and checks
     SGLang's `max_running_requests`, chunked prefill and mem fraction.
     Weights switch on only if the data shows count-based lanes

@@ -379,7 +379,7 @@ def test_dispatch_stamps_footing_and_pooled_sweep(
             "config": CONFIG,
             "model_index": 1,
             "anchor_key": key,
-            "target_node": "spark",
+            "target_node": "spruce",
             "point_U_RHE": -0.3,
             "pH": 7,
             "resources": {"wall_seconds": 600, "cpuset": "0-3"},
@@ -1327,7 +1327,7 @@ def _geometry_dispatch(
     job = store.insert_ref(kind="job", slug=None, title="cov", meta={}).id
     ctx = _FakeCtx(
         store=store,
-        params={"config": CONFIG, "anchor_key": "c" * 64, "target_node": "spark"},
+        params={"config": CONFIG, "anchor_key": "c" * 64, "target_node": "spruce"},
         ref_id=int(job),
     )
     coverage_job._dispatch(ctx, coverage_job.SPEC)

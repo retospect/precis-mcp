@@ -232,7 +232,7 @@ def test_node_gate_pins_job_to_its_node(
     worker (PRECIS_NODE) — the box that stages to NFS == the box the container
     runs on, so the bind paths line up."""
     _succeeds(ssh_node, monkeypatch)
-    rid = _mk_job(store, params={"target_node": "spark"})
+    rid = _mk_job(store, params={"target_node": "spruce"})
 
     # A node-less worker (PRECIS_NODE unset) must not grab a pinned job.
     monkeypatch.delenv("PRECIS_NODE", raising=False)
@@ -240,12 +240,12 @@ def test_node_gate_pins_job_to_its_node(
     assert _status(store, rid) == "queued"
 
     # The wrong node skips it too.
-    monkeypatch.setenv("PRECIS_NODE", "melchior")
+    monkeypatch.setenv("PRECIS_NODE", "maple")
     assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 0
     assert _status(store, rid) == "queued"
 
-    # spark's worker claims it.
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    # spruce's worker claims it.
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 1
     assert _status(store, rid) == "succeeded"
 
@@ -468,7 +468,7 @@ def test_epoch_mismatch_reclaims_before_lease_expiry(
     lease-floor."""
     _succeeds(ssh_node, monkeypatch)
     store.record_heartbeat(
-        "spark-epoch-1", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-epoch-1", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -476,7 +476,7 @@ def test_epoch_mismatch_reclaims_before_lease_expiry(
         attempts=1,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-epoch-1",
+        lease_host="spruce-epoch-1",
     )
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -494,7 +494,7 @@ def test_live_holder_unexpired_lease_never_stolen_by_epoch_arm(
     expiry arm, now proven against the epoch mechanism too."""
     _succeeds(ssh_node, monkeypatch)
     store.record_heartbeat(
-        "spark-epoch-2", meta={"boot_ids": {"ssh_node": "same-generation"}}
+        "spruce-epoch-2", meta={"boot_ids": {"ssh_node": "same-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -502,7 +502,7 @@ def test_live_holder_unexpired_lease_never_stolen_by_epoch_arm(
         attempts=1,
         lease_boot_id="same-generation",
         lease_process="ssh_node",
-        lease_host="spark-epoch-2",
+        lease_host="spruce-epoch-2",
     )
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -519,7 +519,7 @@ def test_live_holder_expired_lease_still_reclaimed_by_expiry_arm(
     presence doesn't disable the pre-existing expiry arm."""
     _succeeds(ssh_node, monkeypatch)
     store.record_heartbeat(
-        "spark-epoch-3", meta={"boot_ids": {"ssh_node": "same-generation"}}
+        "spruce-epoch-3", meta={"boot_ids": {"ssh_node": "same-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -527,7 +527,7 @@ def test_live_holder_expired_lease_still_reclaimed_by_expiry_arm(
         attempts=1,
         lease_boot_id="same-generation",
         lease_process="ssh_node",
-        lease_host="spark-epoch-3",
+        lease_host="spruce-epoch-3",
     )
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -549,7 +549,7 @@ def test_no_advertisement_at_all_reclaims_via_epoch_arm(
         attempts=1,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-never-reported",
+        lease_host="spruce-never-reported",
     )
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -570,7 +570,7 @@ def test_claim_stamps_this_workers_lease_identity(
     monkeypatch.setattr(_heartbeat_mod, "_boot_id", "this-workers-boot-id")
     monkeypatch.setattr(_heartbeat_mod, "_boot_process", "ssh_node")
     monkeypatch.setenv("PRECIS_PROCESS", "ssh_node")
-    monkeypatch.setenv("PRECIS_HOST_NAME", "spark-claimer")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "spruce-claimer")
     rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
 
     ssh_node.run_ssh_node_pass(store, limit=2)
@@ -578,7 +578,7 @@ def test_claim_stamps_this_workers_lease_identity(
     meta = _meta(store, rid)
     assert meta["lease_boot_id"] == "this-workers-boot-id"
     assert meta["lease_process"] == "ssh_node"
-    assert meta["lease_host"] == "spark-claimer"
+    assert meta["lease_host"] == "spruce-claimer"
     # gr346951: every claim also records which build did the work.
     from precis.handlers.skill import code_stamp
 
@@ -672,7 +672,7 @@ def test_epoch_reclaim_counts_attempt_and_keeps_reason(
     """A replaced worker may have died because of the job, not a redeploy."""
     _succeeds(ssh_node, monkeypatch)
     store.record_heartbeat(
-        "spark-epoch-4", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-epoch-4", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -680,7 +680,7 @@ def test_epoch_reclaim_counts_attempt_and_keeps_reason(
         attempts=1,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-epoch-4",
+        lease_host="spruce-epoch-4",
     )
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -732,21 +732,23 @@ def test_interleaved_epoch_reclaims_advance_attempts(
         ssh_node, "get_job_type", lambda name: _spec(dispatch=_idle_dispatch)
     )
     monkeypatch.setenv("PRECIS_PROCESS", "ssh_node")
-    monkeypatch.setenv("PRECIS_HOST_NAME", "spark-interleave")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "spruce-interleave")
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
         attempts=0,
         lease_boot_id="gen-minus-1",
         lease_process="ssh_node",
-        lease_host="spark-interleave",
+        lease_host="spruce-interleave",
     )
 
     # Generation 1 claims: epoch mismatch (dead "gen-minus-1" vs advertised
     # "gen-1").
     monkeypatch.setattr(_heartbeat_mod, "_boot_id", "gen-1")
     monkeypatch.setattr(_heartbeat_mod, "_boot_process", "ssh_node")
-    store.record_heartbeat("spark-interleave", meta={"boot_ids": {"ssh_node": "gen-1"}})
+    store.record_heartbeat(
+        "spruce-interleave", meta={"boot_ids": {"ssh_node": "gen-1"}}
+    )
     result = ssh_node.run_ssh_node_pass(store, limit=2)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     assert _meta(store, rid)["attempts"] == 1
@@ -767,7 +769,9 @@ def test_interleaved_epoch_reclaims_advance_attempts(
 
     # Generation 2 claims: advertise a new boot_id, provably replacing gen-1.
     monkeypatch.setattr(_heartbeat_mod, "_boot_id", "gen-2")
-    store.record_heartbeat("spark-interleave", meta={"boot_ids": {"ssh_node": "gen-2"}})
+    store.record_heartbeat(
+        "spruce-interleave", meta={"boot_ids": {"ssh_node": "gen-2"}}
+    )
     result = ssh_node.run_ssh_node_pass(store, limit=2)
     assert result == {"claimed": 1, "ok": 1, "failed": 0}
     meta = _meta(store, rid)
@@ -1808,7 +1812,7 @@ def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
         lambda name: _spec(submit=_submit, poll=lambda c, h: False),
     )
     store.record_heartbeat(
-        "spark-epoch-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-epoch-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -1816,7 +1820,7 @@ def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
         attempts=1,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-epoch-readopt",
+        lease_host="spruce-epoch-readopt",
         compute_handle="remote-pid-still-alive",
     )
 
@@ -1880,7 +1884,7 @@ def _mk_terminal_handle_job(
     store: Store,
     *,
     compute_handle: Any,
-    target_node: str | None = "spark",
+    target_node: str | None = "spruce",
     status: str = "failed",
     terminal_age_s: int = 300,
     released: bool = False,
@@ -1953,7 +1957,7 @@ def test_orphan_lookup_plan_uses_partial_index(store: Store) -> None:
                 "EXPLAIN " + ssh_node._ORPHANED_DETACHED_SQL,
                 (
                     ssh_node._EXECUTOR_NAME,
-                    "spark",
+                    "spruce",
                     list(ssh_node._TERMINAL),
                     ssh_node._ORPHAN_REAP_GRACE_S,
                     ssh_node._ORPHAN_REAP_LIMIT,
@@ -2001,7 +2005,7 @@ def test_orphan_reap_kills_identity_matched_terminal_handle_once(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
     rid = _mk_terminal_handle_job(store, compute_handle=handle)
 
@@ -2052,7 +2056,7 @@ def test_orphan_reap_excludes_unsafe_candidates(
         terminal_age_s=terminal_age_s,
     )
 
-    assert ssh_node._reap_detached_orphans(store, "spark") == 0
+    assert ssh_node._reap_detached_orphans(store, "spruce") == 0
     assert killed == []
     assert reaped == []
     meta = _meta(store, rid)
@@ -2087,8 +2091,8 @@ def test_orphan_reap_skips_and_stamps_unverified_identity(
     )
     rid = _mk_terminal_handle_job(store, compute_handle=_identity_handle())
 
-    ssh_node._reap_detached_orphans(store, "spark")
-    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spruce")
+    ssh_node._reap_detached_orphans(store, "spruce")
 
     assert killed == []
     assert reaped == []  # mismatched scratch directories must survive too
@@ -2110,7 +2114,7 @@ def test_orphan_reap_skips_missing_start_time(
     del handle["start_time"]
     rid = _mk_terminal_handle_job(store, compute_handle=handle)
 
-    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spruce")
 
     assert killed == []
     assert reaped == []
@@ -2130,10 +2134,10 @@ def test_orphan_reap_leaves_running_and_claimable_rows_alone(
     spec = replace(_kill_reap_spec(killed, []), poll=poll)
     monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
     running = _mk_running_job(
-        store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+        store, lease_offset_s=3600, compute_handle=handle, target_node="spruce"
     )
     queued = _mk_terminal_handle_job(store, compute_handle=handle, status="queued")
 
@@ -2162,7 +2166,7 @@ def test_orphan_reap_node_gate_only_same_host(
         store, compute_handle=_identity_handle(), target_node=target_node
     )
 
-    assert ssh_node._reap_detached_orphans(store, "spark") == 0
+    assert ssh_node._reap_detached_orphans(store, "spruce") == 0
     assert killed == []
     assert reaped == []
     assert "detached_orphan_reaped" not in _meta(store, rid)
@@ -2179,8 +2183,8 @@ def test_orphan_reap_marks_row_with_no_kill_hook(
     _fake_detached_identity(monkeypatch)
     rid = _mk_terminal_handle_job(store, compute_handle=_identity_handle())
 
-    ssh_node._reap_detached_orphans(store, "spark")
-    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spruce")
+    ssh_node._reap_detached_orphans(store, "spruce")
 
     assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "no-kill-hook"
 
@@ -2209,7 +2213,7 @@ def test_orphan_reap_competing_passes_only_one_claim_kills(
     monkeypatch.setattr(ssh_node, "_orphaned_detached_jobs", select_together)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(ssh_node._reap_detached_orphans, store, "spark")
+            executor.submit(ssh_node._reap_detached_orphans, store, "spruce")
             for _ in range(2)
         ]
         counts = [future.result(timeout=20) for future in futures]
@@ -2230,9 +2234,9 @@ def test_poison_guarded_detached_job_killed_at_transition(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     store.record_heartbeat(
-        "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     handle = _identity_handle()
     rid = _mk_running_job(
@@ -2241,9 +2245,9 @@ def test_poison_guarded_detached_job_killed_at_transition(
         attempts=ssh_node._MAX_ATTEMPTS,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-poison",
+        lease_host="spruce-poison",
         compute_handle=handle,
-        target_node="spark",
+        target_node="spruce",
     )
 
     first = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -2264,13 +2268,13 @@ def test_poison_guard_releases_run_slice_todo_without_process_identity(
     store: Store, monkeypatch: pytest.MonkeyPatch, handle: Any
 ) -> None:
     """gr546830: refusing an unverifiable kill must not strand the todo."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    store.record_heartbeat("spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    store.record_heartbeat("spruce")
     store.sync_host_resource_slots(
-        "spark", {"repo_checkout": 1, "claude_bin": 1, "builder": 1, "git": 1}
+        "spruce", {"repo_checkout": 1, "claude_bin": 1, "builder": 1, "git": 1}
     )
     store.record_heartbeat(
-        "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     todo = store.insert_ref(kind="todo", slug=None, title="slice")
     store.add_tag(todo.id, Tag.closed("STATUS", "doing"), set_by="system")
@@ -2281,9 +2285,9 @@ def test_poison_guard_releases_run_slice_todo_without_process_identity(
         attempts=ssh_node._MAX_ATTEMPTS,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-poison",
+        lease_host="spruce-poison",
         compute_handle=handle,
-        target_node="spark",
+        target_node="spruce",
     )
     with store.pool.connection() as conn:
         conn.execute(
@@ -2293,7 +2297,7 @@ def test_poison_guard_releases_run_slice_todo_without_process_identity(
                     {
                         "job_type": "run_slice",
                         "lane": "claude-sub",
-                        "params": {"todo_id": todo.id, "target_node": "spark"},
+                        "params": {"todo_id": todo.id, "target_node": "spruce"},
                     }
                 ),
                 rid,
@@ -2352,7 +2356,7 @@ def _detached_restart_job(
     store: Store, *, attempts: int, deadline: float | None
 ) -> tuple[int, dict[str, Any]]:
     store.record_heartbeat(
-        "spark-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     handle = _identity_handle()
     rid = _mk_running_job(
@@ -2361,9 +2365,9 @@ def _detached_restart_job(
         attempts=attempts,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-readopt",
+        lease_host="spruce-readopt",
         compute_handle=handle,
-        target_node="spark",
+        target_node="spruce",
     )
     _restart_reclaimed(store, rid, deadline=deadline)
     return rid, handle
@@ -2382,7 +2386,7 @@ def test_live_detached_handle_survives_repeated_restart_reclaims(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     deadline = time.time() + 7200
     rid, _ = _detached_restart_job(store, attempts=0, deadline=deadline)
 
@@ -2415,22 +2419,22 @@ def test_parked_handle_is_readoptable_on_its_deadline_alone() -> None:
     future = time.time() + 7200
     meta: dict[str, Any] = {
         "compute_handle": _parked_handle(),
-        "params": {"target_node": "spark"},
+        "params": {"target_node": "spruce"},
         "deadline": future,
     }
-    assert ssh_node._readoptable(meta, "spark") is True
+    assert ssh_node._readoptable(meta, "spruce") is True
     assert ssh_node._readoptable(meta, "other-node") is False
     assert (
-        ssh_node._readoptable({**meta, "deadline": time.time() - 60}, "spark") is False
+        ssh_node._readoptable({**meta, "deadline": time.time() - 60}, "spruce") is False
     )
-    assert ssh_node._readoptable({**meta, "deadline": None}, "spark") is False
+    assert ssh_node._readoptable({**meta, "deadline": None}, "spruce") is False
     assert (
-        ssh_node._readoptable({**meta, "compute_handle_released": True}, "spark")
+        ssh_node._readoptable({**meta, "compute_handle_released": True}, "spruce")
         is False
     )
     # without the marker the same pid-less handle is not re-adoptable
     bare = {k: v for k, v in _parked_handle().items() if k != "not_before"}
-    assert ssh_node._readoptable({**meta, "compute_handle": bare}, "spark") is False
+    assert ssh_node._readoptable({**meta, "compute_handle": bare}, "spruce") is False
 
 
 def test_parked_handle_survives_repeated_restart_reclaims(
@@ -2444,10 +2448,10 @@ def test_parked_handle_survives_repeated_restart_reclaims(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     deadline = time.time() + 7200
     store.record_heartbeat(
-        "spark-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+        "spruce-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
     )
     rid = _mk_running_job(
         store,
@@ -2455,9 +2459,9 @@ def test_parked_handle_survives_repeated_restart_reclaims(
         attempts=0,
         lease_boot_id="dead-generation",
         lease_process="ssh_node",
-        lease_host="spark-readopt",
+        lease_host="spruce-readopt",
         compute_handle=_parked_handle(),
-        target_node="spark",
+        target_node="spruce",
     )
     _restart_reclaimed(store, rid, deadline=deadline)
 
@@ -2501,7 +2505,7 @@ def test_a_requeued_parked_handle_is_re_adopted_by_a_fresh_claim(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _spec(submit=_submit, poll=_poll)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = {**_parked_handle(), "not_before": "2020-01-01T00:00:00Z"}
     ref = store.insert_ref(
         kind="job",
@@ -2510,7 +2514,7 @@ def test_a_requeued_parked_handle_is_re_adopted_by_a_fresh_claim(
         meta={
             "executor": "ssh_node",
             "job_type": "fake_relax",
-            "params": {"target_node": "spark"},
+            "params": {"target_node": "spruce"},
             "compute_handle": handle,
             "compute_handle_released": False,
             "deadline": time.time() + 7200,
@@ -2547,14 +2551,14 @@ def test_parked_handle_past_its_deadline_fails_without_an_orphan_skip(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
         attempts=0,
         lease_boot_id="dead-generation",
         compute_handle=_parked_handle(),
-        target_node="spark",
+        target_node="spruce",
     )
     _restart_reclaimed(store, rid, deadline=time.time() - 60)
 
@@ -2570,7 +2574,7 @@ def test_orphan_reap_leaves_a_parked_handle_alone() -> None:
     meta = {"compute_handle": _parked_handle()}
     no_conn: Any = None  # a parked handle returns before any DB use
     assert (
-        ssh_node._reap_detached_job(no_conn, no_conn, 1, "t", meta, node="spark")
+        ssh_node._reap_detached_job(no_conn, no_conn, 1, "t", meta, node="spruce")
         is False
     )
 
@@ -2594,7 +2598,7 @@ def test_unprovable_detached_handle_still_trips_the_guard(
     )
     if case == "dead-group":
         monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     deadline = {
         "past-deadline": time.time() - 60,
         "no-deadline": None,
@@ -2650,8 +2654,8 @@ def test_orphan_reap_unavailable_group_cleans_after_terminal_stamp(
     handle = _identity_handle()
     rid = _mk_terminal_handle_job(store, compute_handle=handle)
 
-    ssh_node._reap_detached_orphans(store, "spark")
-    ssh_node._reap_detached_orphans(store, "spark")
+    ssh_node._reap_detached_orphans(store, "spruce")
+    ssh_node._reap_detached_orphans(store, "spruce")
 
     assert killed == []
     assert reaped == [(rid, handle)]
@@ -2714,7 +2718,7 @@ def test_terminal_kill_requires_process_identity(
 def _legacy_deadline_context(store: Store) -> tuple[Any, dict[str, Any]]:
     handle = {"pid": 4242, "pgid": 4242, "dir": "/tmp/autocatpath-legacy-fake"}
     rid = _mk_running_job(
-        store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+        store, lease_offset_s=3600, compute_handle=handle, target_node="spruce"
     )
     with store.pool.connection() as conn:
         conn.execute(
@@ -2747,7 +2751,7 @@ def test_legacy_own_deadline_polls_alive_then_kills(
     spec = replace(base, poll=poll, kill=kill)
     monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, handle = _legacy_deadline_context(store)
 
     assert ssh_node._poll_one(ctx) is True
@@ -2778,7 +2782,7 @@ def test_legacy_deadline_fallback_requires_current_owned_running_row(
     killed: list[tuple[Any, Any]] = []
     reaped: list[tuple[Any, Any]] = []
     spec = _kill_reap_spec(killed, reaped)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
     ctx, handle = _legacy_deadline_context(store)
     if veto == "terminal":
@@ -2833,7 +2837,7 @@ def test_legacy_operator_does_not_use_poll_fallback(
     spec = replace(_kill_reap_spec(killed, reaped), poll=poll)
     monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, _ = _legacy_deadline_context(store)
     with store.pool.connection() as conn:
         conn.execute(
@@ -2884,14 +2888,14 @@ def test_zero_pgid_is_never_killed_in_any_terminal_path(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = {**_identity_handle(), "pgid": 0}
     if path == "orphan":
         rid = _mk_terminal_handle_job(store, compute_handle=handle)
-        ssh_node._reap_detached_orphans(store, "spark")
+        ssh_node._reap_detached_orphans(store, "spruce")
     elif path == "poison":
         store.record_heartbeat(
-            "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+            "spruce-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
         )
         rid = _mk_running_job(
             store,
@@ -2899,14 +2903,14 @@ def test_zero_pgid_is_never_killed_in_any_terminal_path(
             attempts=ssh_node._MAX_ATTEMPTS,
             lease_boot_id="dead-generation",
             lease_process="ssh_node",
-            lease_host="spark-poison",
+            lease_host="spruce-poison",
             compute_handle=handle,
-            target_node="spark",
+            target_node="spruce",
         )
         ssh_node.run_ssh_node_pass(store, limit=2)
     else:
         rid = _mk_running_job(
-            store, lease_offset_s=3600, compute_handle=handle, target_node="spark"
+            store, lease_offset_s=3600, compute_handle=handle, target_node="spruce"
         )
         patch: dict[str, Any] = {"deadline": time.time() - 5}
         if path == "operator":
@@ -2935,7 +2939,7 @@ def test_empty_dict_handle_cannot_bypass_terminal_identity_guard(
     killed: list[tuple[Any, Any]] = []
     reaped: list[tuple[Any, Any]] = []
     spec = _kill_reap_spec(killed, reaped)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, _ = _legacy_deadline_context(store)
 
     ssh_node._kill_and_terminalize(
@@ -3015,7 +3019,7 @@ def test_legacy_deadline_locked_row_defers_unchanged_then_retries(
     spec = replace(_kill_reap_spec(killed, reaped), poll=poll)
     monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, handle = _legacy_deadline_context(store)
     before_meta = _meta(store, ctx.ref_id)
     before_tags = sorted(str(tag) for tag in store.tags_for(ctx.ref_id))
@@ -3094,7 +3098,7 @@ def test_missing_leader_never_kills_and_reaps_only_proven_dead_group(
     handle = _identity_handle()
     if path == "orphan":
         rid = _mk_terminal_handle_job(store, compute_handle=handle)
-        ssh_node._reap_detached_orphans(store, "spark")
+        ssh_node._reap_detached_orphans(store, "spruce")
     else:
         rid = _mk_running_job(store, lease_offset_s=3600, compute_handle=handle)
         with store.pool.connection() as conn:
@@ -3139,7 +3143,7 @@ def test_seed_kill_refusal_does_not_release_or_reap_handle(
     handle = _identity_handle()
     if path == "orphan":
         rid = _mk_terminal_handle_job(store, compute_handle=handle)
-        ssh_node._reap_detached_orphans(store, "spark")
+        ssh_node._reap_detached_orphans(store, "spruce")
         assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "kill-raised"
     else:
         rid = _mk_running_job(store, lease_offset_s=3600, compute_handle=handle)
@@ -3231,9 +3235,9 @@ def test_cancel_requested_terms_kills_then_cancels(
     monkeypatch.setattr(
         ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
 
     # Tick 1: the plugin kill hook fires (its TERM), the row waits.
     result = ssh_node.run_ssh_node_pass(store, limit=2)
@@ -3285,8 +3289,8 @@ def test_cancel_requested_without_kill_hook_terms_pgid_directly(
     monkeypatch.setattr(
         ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3305,8 +3309,8 @@ def test_cancel_requested_parked_handle_cancels_without_signaling(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_parked_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_parked_handle(), target_node="spruce")
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3344,10 +3348,10 @@ def test_cancel_requested_unverifiable_handle_follows_poll(
     monkeypatch.setattr(
         ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
     del handle["boot_id"]  # missing-identity
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3394,10 +3398,10 @@ def test_cancel_requested_unverifiable_past_deadline_still_follows(
         "get_job_type",
         lambda name: replace(_kill_reap_spec([], []), poll=_poll),
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
     del handle["boot_id"]
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
     _backdate_cancel_meta(store, rid, deadline=time.time() - 60)
 
     ssh_node.run_ssh_node_pass(store, limit=2)
@@ -3447,9 +3451,9 @@ def test_cancel_requested_unverifiable_dead_child_cancels(
         "get_job_type",
         lambda name: replace(_kill_reap_spec([], []), poll=_poll),
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3461,7 +3465,9 @@ def test_cancel_requested_unverifiable_dead_child_cancels(
     # When the poll CAN settle it — the ship finished before its slot
     # recycled — the real outcome stands even for the dead-child class.
     terminal["done"] = True
-    rid2 = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    rid2 = _mk_cancel_job(
+        store, compute_handle=_identity_handle(), target_node="spruce"
+    )
     ssh_node.run_ssh_node_pass(store, limit=2)
     assert _status(store, rid2) == "succeeded"
 
@@ -3474,10 +3480,10 @@ def test_cancel_requested_unverifiable_without_poll_cancels_blind(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _spec(dispatch=lambda c, s: None)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = _identity_handle()
     del handle["boot_id"]
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3497,8 +3503,8 @@ def test_cancel_requested_dead_group_cancels_without_term(
     )
     _fake_detached_identity(monkeypatch)
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spruce")
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3518,8 +3524,10 @@ def test_cancel_requested_opaque_handle_uses_plugin_kill_then_cancels(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle="remote-pid-opaque", target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(
+        store, compute_handle="remote-pid-opaque", target_node="spruce"
+    )
 
     ssh_node.run_ssh_node_pass(store, limit=2)
     assert killed == [(rid, "remote-pid-opaque")]
@@ -3544,8 +3552,8 @@ def test_cancel_requested_submit_window_without_handle_cancels(
     monkeypatch.setattr(
         ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, submit_started_at=time.time(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, submit_started_at=time.time(), target_node="spruce")
 
     result = ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3575,7 +3583,7 @@ def test_cancel_requested_land_slice_keeps_worktree_for_forensics(
     )
     monkeypatch.setattr(land_slice, "_cleanup", _cleanup_spy)
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = {
         **_identity_handle(),
         "worktree": "/tmp/slice-td42",
@@ -3587,13 +3595,13 @@ def test_cancel_requested_land_slice_keeps_worktree_for_forensics(
     rid = _mk_cancel_job(
         store,
         compute_handle=handle,
-        target_node="spark",
+        target_node="spruce",
         job_type="land_slice",
         params={
             "todo_id": 42,
             "worktree": "/tmp/slice-td42",
             "branch": "slice/42",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     # No get_job_type patch: the real land_slice SPEC resolves.
@@ -3621,11 +3629,11 @@ def test_cancelling_jobs_respects_node_pin(
 ) -> None:
     """The cancel drive is pinned like the poll set: a job targeting
     another node is not this host's to cancel."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     rid = _mk_cancel_job(
         store, compute_handle=_identity_handle(), target_node="other-node"
     )
-    assert ssh_node._cancelling_jobs(store, "spark") == []
+    assert ssh_node._cancelling_jobs(store, "spruce") == []
     assert [row[0] for row in ssh_node._cancelling_jobs(store, "other-node")] == [rid]
 
 
@@ -3641,8 +3649,8 @@ def test_cancel_requested_kill_hook_error_recorded(
     spec = replace(_kill_reap_spec([], []), kill=_kill)
     monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
     _fake_detached_identity(monkeypatch)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3672,8 +3680,8 @@ def test_cancel_requested_term_oserror_recorded(
     )
     _fake_detached_identity(monkeypatch)
     monkeypatch.setattr(ssh_node.os, "killpg", _killpg)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
@@ -3706,8 +3714,8 @@ def test_cancel_requested_kill_oserror_recorded(
     )
     _fake_detached_identity(monkeypatch)
     monkeypatch.setattr(ssh_node.os, "killpg", _killpg)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spruce")
     _backdate_cancel_meta(
         store, rid, cancel_term_at=time.time() - ssh_node._CANCEL_KILL_GRACE_S - 1
     )
@@ -3785,9 +3793,9 @@ def test_cancel_requested_darwin_verified_terms_group(
         ssh_node, "_darwin_ps_identity", lambda pgid: "the-launch-identity"
     )
     monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     handle = {"pid": 4242, "pgid": 4242, "ps_identity": "the-launch-identity"}
-    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spruce")
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 

@@ -10,7 +10,7 @@ model: opus
 
 Reto, 2026-11-03 (session THINKING_SPEC): "design the gardener to fix it";
 retiring must work when the references were not linked; update memories
-where practical (spark); keep memories DRY, one node per entity that
+where practical (the GPU node); keep memories DRY, one node per entity that
 others point at. Extends the graph gardener
 (`precis-gardener-help`, [graph-gardener-value](graph-gardener-value.md),
 [local-mesh-upkeep](local-mesh-upkeep.md) §2) and the trust contract
@@ -38,7 +38,7 @@ or node overturned the claim and nothing on the write path noticed.
 | duplicate | 2 | 1 |
 
 Confirmed examples (prod handles, for the builder's orientation, not test
-fixtures): me474318 says spark is permanently retired while 932364d0a and
+fixtures): me474318 says the GPU node is permanently retired while 932364d0a and
 me538486 have it on compute; me474450 says no coverage is measured while
 pyproject carries pytest-cov and a diff-cover gate; me474428 cites
 me477682, soft-deleted, whose content moved to me478001; me538308 says
@@ -153,8 +153,8 @@ rewritten body is no longer than before plus one clause.
 
 Before and after, from the sample: me474428 "me477682 traps (put ops
 wipe, …)" becomes "Traps: put ops wipe, stale chain designs, caDNAno
-handedness, harness limits; the list is me478001". me474318 "spark
-PERMANENTLY retired" becomes "spark left cluster duty 2026-08-29
+handedness, harness limits; the list is me478001". me474318 "the GPU node
+PERMANENTLY retired" becomes "the GPU node left cluster duty 2026-08-29
 (thermal) and rejoined as a compute worker 2026-10-15, 932364d0a;
 current role on ma_spark". me477665 "NO door" becomes "a wrong DOI
 clears with doi='' (8f20218c1); the PDF moves with the rekey door
@@ -252,7 +252,7 @@ Rule (goes into `precis-memory-help` and the `remember` skill): the
 current state of an entity lives on the entity's ref; a memory records a
 dated event and the why, and points at the handle. Refs exist for hosts
 (`machine`, stable facts plus live overlay), skills, md sections (chunk
-shas), python symbols, gripes and todos. Spark's role belongs on
+shas), python symbols, gripes and todos. The GPU node's role belongs on
 `ma_spark`; me474318 keeps "left cluster duty 2026-08-29 because …;
 rejoined compute at 932364d0a" as two dated events.
 
@@ -321,7 +321,7 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    type; zero rows for memory detectors without proposals. No writes.
 9. gr560765 — `source_drift` and `entity_claim_stale` detectors (medium;
    after 6).
-11. gr560767 — host facts onto `machine` refs, the spark pass (small;
+11. gr560767 — host facts onto `machine` refs, the GPU node pass (small;
     after 4).
 13. gr561019 — `grab_bag` detector, `split` action, `apply_split` with
     undo (large; after 4 and 6).

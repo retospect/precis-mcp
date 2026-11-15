@@ -1,13 +1,13 @@
 ---
 status: draft
-title: Local-first routing for cheap product LLM ops — castor first, paid model on escalation, shadow-measured before cutover
+title: Local-first routing for cheap product LLM ops — the local-serving node first, paid model on escalation, shadow-measured before cutover
 pillar: local-compute
 prio: high
 ---
 
 # Local-first routing for cheap product LLM ops
 
-Reto, 2026-10-25: "Give castor real work." castor serves
+Reto, 2026-10-25: "Give the local-serving node real work." The local-serving node serves
 `openai/gpt-oss-120b` on SGLang (32 running requests, 131k window, $0 per
 call) and its GPU sits near 0 %. This item routes three cheap, high-volume
 product LLM jobs onto it through the existing `llm.op.<source>` chains.
@@ -15,7 +15,7 @@ Paid models (Sonnet-class, haiku-class) stay as the escalation target for
 the hard cases and as the fallback.
 
 **Scope.** One shared mechanism, the *local-first op*: a local attempt on
-castor, a caller-supplied acceptance check, and an escalation to the
+the local-serving node, a caller-supplied acceptance check, and an escalation to the
 op's paid path with a per-op daily budget. Named sets of jobs have three modes
 (`off` / `shadow` / `on`), all off by default behind one master switch.
 Three first consumers:
@@ -30,13 +30,13 @@ Three first consumers:
    drafter agents (README there, "~87 % of claims confirmed").
 
 Future consumer: the dream-into-gardener spec being written in parallel
-(the dream agent folded into the graph gardener on castor) reuses this
+(the dream agent folded into the graph gardener on the local-serving node) reuses this
 mechanism for any step that wants a paid review on escalation. That spec
 is not part of this one.
 
 ## Motivation / why
 
-- Everything exists except escalation. Op chain rungs reach castor
+- Everything exists except escalation. Op chain rungs reach the local-serving node
   (`operations.py::resolve_op_chain`, `router.py::_served_local_rung`);
   `local_serving.acquire` holds slots with a bounded wait
   (`PRECIS_LOCAL_SLOT_WAIT_S`, 10 s) that returns `paused`; `router.Rung`
@@ -44,7 +44,7 @@ is not part of this one.
   records `placement` (ran) and `placement_routed` (routed).
 - `FailoverProvider` has an `accept` seam, but `route()` never passes
   one. Also, `placement="local"` filters every cloud rung out
-  (`_apply_placement`), so "castor, then Sonnet if castor's answer fails
+  (`_apply_placement`), so "the local-serving node, then Sonnet if the local-serving node's answer fails
   a check" cannot be written as a chain. Callers work around this alone:
   survey_extract falls back to its per-cell local path, chase returns `None`.
 - The MEDIUM replay eval (`docs/reference/castor-medium-load-eval.md`,
@@ -56,7 +56,7 @@ is not part of this one.
   returns empty text or truncated JSON (`_empty_length_is_failure`,
   gr489474). The slice-2 branch (`worktree-tables-s2`, not landed) pins
   `max_tokens=1024` on `survey_extract:table_recipe`. A caller cap beats
-  the rung's cap, so castor will truncate there. The reader call hit the
+  the rung's cap, so the local-serving node will truncate there. The reader call hit the
   same trap, which is why it is unpinned and its prod row carries 4096.
 
 **Value, ranked.** (2) and (3) carry the volume: 1,406 pipe tables for
@@ -85,7 +85,7 @@ not per rung.
 
 **D2. Source naming.** The paid arm keeps today's source (`op`), so mode
 `off` is byte-identical to today. The local arm is a new registered op
-`<op>:local`, whose prod `llm.op.<op>:local` row is the castor rung. With
+`<op>:local`, whose prod `llm.op.<op>:local` row is the local-serving rung. With
 no row, the local arm refuses up front (`placement_refusal`). The helper
 counts that as `escalated: no_local_rung` and logs it once per process.
 
@@ -134,13 +134,13 @@ paths.
 
 **D5. Per-candidate routing.**
 
-| | local arm (castor) | escalate to paid on | on saturation / castor down | paid model | escalation budget |
+| | local arm (the local-serving node) | escalate to paid on | on saturation / the local-serving node down | paid model | escalation budget |
 |---|---|---|---|---|---|
 | triage screen | one call per gripe, same verdict schema as the Sonnet batch, `reasoning_effort` low, rung `max_tokens` 4096, `timeout_s` 90; local phase capped at 150 s of the tick's 240 s by the ambient deadline (`utils/deadline.py`) | any non-screen verdict; parse / truncated / timeout / refusal; `confidence` ≠ `high`; reopened or owner-filed gripe; any `fix:reto`; dispute verdicts | the gripe joins the Sonnet batch: today's path, no worse than the status quo | today's `Tier.BIG` (Sonnet-class, `PRECIS_GRIPE_TRIAGE_MODEL`) | `$3/day`, then remaining gripes stay `open` for the next day |
 | table recipe | one call per parsed, non-ragged table chunk, `reasoning_effort` low, rung `max_tokens` 4096, `timeout_s` 300 | parse / truncated / refusal / `validator` (`expand_recipe` drops every output series, or more than half of them for `unknown_measurand` / `unit_dimension_mismatch`) | park on `wake_when`, the existing survey_extract pacing; never paid | `survey_extract:table_recipe`'s `Tier.MEDIUM` (haiku-class) | `$10/day`; over budget, the per-cell local reader path (the branch's fallback) |
 | dtree claim check | one call per rule: claim text, value, unit, and the top-3 source windows; `reasoning_effort` low, rung `max_tokens` 3000, `timeout_s` 180 | verdict `contradicted` or `not_found` while the source was fetched; parse / truncated / refusal; `confidence` ≠ `high` | retry with backoff; never paid | `Tier.BIG` (Sonnet-class), matching the DESIGN drafters | `$10/day`; over budget, the row reports `needs_paid_check` |
 
-**What castor alone may decide in triage.** Castor alone may write only
+**What the local-serving node alone may decide in triage.** The local-serving node alone may write only
 the two verdicts whose deterministic gates already bind the Sonnet path:
 - `noise`, only where `_noise_flagged` is true;
 - `fixed`, only where `_match_evidence` finds a cited commit proven
@@ -148,7 +148,7 @@ the two verdicts whose deterministic gates already bind the Sonnet path:
 Everything else goes to the Sonnet batch.
 
 `fixed` depends on gr517975: prod has no deployed-commit evidence, so no
-`fixed` close fires on prod today, castor's or Sonnet's. Until gr517975
+`fixed` close fires on prod today, the local-serving node's or Sonnet's. Until gr517975
 ships, the screen acts on `noise` only.
 
 **D6. Concurrency and back-pressure.**
@@ -172,7 +172,7 @@ ships, the screen acts on `noise` only.
 paid arm as today and uses its answer. It also runs the local arm under
 `<op>:local` with `features.local_first = {shadow: true, pair:
 <paid request_hash>, agree, diff}`, where `compare(local, paid)` computes
-`agree` and `diff`. Castor is free, so the shadow rate is 100 %.
+`agree` and `diff`. The local-serving node is free, so the shadow rate is 100 %.
 
 Ops with no live paid path (table recipe as landed is local-only; dtree
 has no code path at all) shadow offline. They run through
@@ -184,9 +184,9 @@ Cutover bars (Wilson 95 % bounds, as `extract/accept.py` uses):
 
 | op | sample | bar to flip `on` |
 |---|---|---|
-| triage stage 1 | ≥ 150 live-shadowed gripes, of which ≥ 40 castor screens pass the gates | screen agrees with Sonnet's verdict on ≥ 95 % of screens (upper bound on disagreement ≤ 10 %); answer rate ≥ 95 %; p95 per gripe ≤ 30 s |
-| table recipe | 100 table chunks from qu500066's papers, stratified by column count; arm A castor at 4096, arm B castor at 1024 (pins the lesson), arm C cloud MEDIUM | arm A parse-and-validate rate ≥ 90 %; on ≥ 80 % of tables every output series has the same measurand, unit and orientation as arm C; an Opus blind judge on ≤ 20 disagreements finds castor wrong in ≤ half; then the first live castor batch passes `measure_accept`'s Wilson rule (5 % bar) |
-| dtree | 150 rules stratified by file × `confidence`, plus 40 mutated controls (value ×2 or ÷2, or a swapped unit, seeded) | verdict agreement with the Sonnet arm ≥ 85 %; castor flags ≥ 36/40 controls `contradicted`/`not_found` and calls ≤ 2/40 `supported`; Opus judge on ≤ 20 disagreements |
+| triage stage 1 | ≥ 150 live-shadowed gripes, of which ≥ 40 local-model screens pass the gates | screen agrees with Sonnet's verdict on ≥ 95 % of screens (upper bound on disagreement ≤ 10 %); answer rate ≥ 95 %; p95 per gripe ≤ 30 s |
+| table recipe | 100 table chunks from qu500066's papers, stratified by column count; arm A the local-serving node at 4096, arm B the local-serving node at 1024 (pins the lesson), arm C cloud MEDIUM | arm A parse-and-validate rate ≥ 90 %; on ≥ 80 % of tables every output series has the same measurand, unit and orientation as arm C; an Opus blind judge on ≤ 20 disagreements finds the local-serving node wrong in ≤ half; then the first live local-serving batch passes `measure_accept`'s Wilson rule (5 % bar) |
+| dtree | 150 rules stratified by file × `confidence`, plus 40 mutated controls (value ×2 or ÷2, or a swapped unit, seeded) | verdict agreement with the Sonnet arm ≥ 85 %; the local-serving node flags ≥ 36/40 controls `contradicted`/`not_found` and calls ≤ 2/40 `supported`; Opus judge on ≤ 20 disagreements |
 
 Offline spend per op: under $5 for the paid arm plus the judge. The
 script stops at `--cap-usd 15`. Below the bar, the op stays in `shadow`
@@ -225,7 +225,7 @@ Acceptance (stubbed router, beside `tests/test_llm_operations*.py`):
 - a saturated local call never lands as `placement='cloud'`;
 - five timeouts trigger the skip, and an advanced clock clears it.
 - table recipe and dtree park without paid calls when their cap is saturated
-  or castor is down, including while the local circuit is open.
+  or the local-serving node is down, including while the local circuit is open.
 
 **S2: shadow mode, the stats block and the offline harness.** The
 `compare` hook and shadow stamping, the `op:<source>` stats block and
@@ -237,7 +237,7 @@ reports rate, reasons, agreement bound and saved/spent; harness
 `--dry-run` prints the sample plan and cost estimate without dispatching.
 
 **S3: triage screen** (`workers/gripe_triage.py`; blocked by S1, S2). A
-per-gripe castor pass before `_route_call` (same prompt shape, one gripe
+per-gripe local-model pass before `_route_call` (same prompt shape, one gripe
 block with its own nonce, `parse_verdicts` over a claimed set of one).
 Screens that pass the D5 gates write through `_write_verdict`; the rest,
 plus every escalation, form today's Sonnet batch. In shadow Sonnet
@@ -247,7 +247,7 @@ Acceptance (`tests/test_gripe_triage*.py`, stubbed router):
 - `noise` on a `_noise_flagged` gripe writes `wontfix` with zero Sonnet
   calls for it; `noise` on an unflagged gripe goes to the batch;
 - `fixed` without deployed evidence goes to the batch;
-- a castor timeout sends the gripe to the batch, lease kept;
+- a local-model timeout sends the gripe to the batch, lease kept;
 - the local phase stops at 150 s and the rest go to the batch;
 - mode `off` is identical to today (existing tests unchanged).
 
@@ -260,7 +260,7 @@ fallback over budget; `summary_meta.tables` gains `escalated` and
 `escalated_by_reason`.
 S1 keeps the per-op lock through paid dispatch; S4 revisits reserve-then-reconcile for dtree escalation throughput.
 Acceptance (`tests/test_survey_extract_job.py` additions):
-- a truncated castor recipe escalates once to MEDIUM;
+- a truncated local-model recipe escalates once to MEDIUM;
 - a validator rejection (all series `unknown_measurand`) escalates;
 - with the budget exhausted the job takes the per-cell path;
 - `tables.recipe + fallback + no_results + ragged + escalated` equals
@@ -277,10 +277,10 @@ cached); pick the top-3 windows per rule by its numbers and terms; run op
 needs_paid_check`, quoted window). Writes nothing to manifests or refs.
 Acceptance (fixture source text, stubbed router): a ×2 mutated value →
 `contradicted`; an unreachable URL → `source_unreachable` with no LLM
-call; a `contradicted` castor verdict escalates; every rule appears
+call; a `contradicted` local-model verdict escalates; every rule appears
 exactly once; `--limit 5` makes ≤ 5 LLM calls.
 
-**S6: castor class registration** (blocked by `llm-lane-scheduler.md`
+**S6: local-model class registration** (blocked by `llm-lane-scheduler.md`
 S1). Add the `local_first` class row and the three `:local` sources to
 the `source → class` map.
 Acceptance: a 12-wide local-first burst during a gardener call keeps the
@@ -300,7 +300,7 @@ S1–S6 above, the shadow runs, and their recorded numbers.
 
 ## Explicitly NOT in scope
 
-- The castor coding-agent lane, `scripts/claude-local`, the shim and
+- The local-model coding-agent lane, `scripts/claude-local`, the shim and
   fleet launch ([castor-agent-lane](castor-agent-lane.md)).
   - Overlap: the same endpoint, slots, `llm_call_log`, lane classes, and
     the `reasoning_effort`/`max_tokens` lessons.
@@ -313,11 +313,11 @@ S1–S6 above, the shadow runs, and their recorded numbers.
 - The paper→findings reader ([castor-finding-reader](castor-finding-reader.md)).
   It is local-only with an Opus spot-check gate. It may adopt the helper
   later and is not changed here.
-- Host memory and OOM alerting on castor
+- Host memory and OOM alerting on the local-serving node
   ([castor-resource-observability](castor-resource-observability.md)).
   This item's load is bounded by D6; that item watches the host.
 - The dream-into-gardener fold (parallel spec): a future consumer only.
-- Routing whole tiers (`llm.chain.<tier>`) to castor
+- Routing whole tiers (`llm.chain.<tier>`) to the local-serving node
   ([local-rungs-small-medium](local-rungs-small-medium.md)), raising
   32/0.80, a second model, or SGLang priority scheduling.
 - Writing dtree verdicts back into the manifests. That is a builder PR
@@ -333,7 +333,7 @@ S1–S6 above, the shadow runs, and their recorded numbers.
 - After a flip, `op:<source>` stats show the escalation rate by reason,
   shadow agreement, and saved/spent USD. Escalation spend per op stays
   under its daily budget (checked in `llm_call_log`).
-- `/placement` shows castor's share rising for the three sources. The
+- `/placement` shows the local-serving node's share rising for the three sources. The
   gardener's p95 latency in `llm_call_log` stays within 2× its idle
   value during a local-first burst.
 - No paid call is ever made by a `:local` source, and no batch op
@@ -397,15 +397,15 @@ slice-2 merge), `cli/conventions.py` plus a new checker module beside
   `scripts/castor/triage-gripes` in favour of S3's in-tick screen, or
   retarget it to per-file review? Two triagers over the same 84 gripes
   is double work.
-- **[open, Reto] Triage stage 2.** After stage 1 numbers, should castor
+- **[open, Reto] Triage stage 2.** After stage 1 numbers, should the local-serving node
   write the full verdict (fix type, cluster, size, severity) on
   `confidence: high` rows, with Sonnet only for the rest? Proposed bar:
   fix-type agreement ≥ 80 %, severity within one band ≥ 85 %, and a high
   share ≥ 50 %. S3's shadow already collects these fields.
 - **[open, Reto] Table-numeric slice 4 lane.** That spec recommends a
-  cloud haiku-class run (~$10). With castor first and a $10/day
-  escalation cap, the castor lane (option b) costs at most the same. Run
-  qu500066 on castor after S4's shadow passes?
+  cloud haiku-class run (~$10). With the local-serving node first and a $10/day
+  escalation cap, the local-model lane (option b) costs at most the same. Run
+  qu500066 on the local-serving node after S4's shadow passes?
 - **[open, Reto] Budgets.** `$3 / $10 / $10` a day for triage, table
   recipe and dtree. All are under the $25 threshold, and the budget
   breaker still applies on top.

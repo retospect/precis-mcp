@@ -152,7 +152,7 @@ class TestOrcidFetchDeadline:
     ) -> None:
         """``fetch_record`` (the orcid_enrich path) must surface an
         ``Upstream`` at the per-call deadline, not hang in the SSL read
-        that stalled balthazar's loop (gr486823)."""
+        that stalled alder's loop (gr486823)."""
         from precis.errors import Upstream
         from precis.ingest import orcid as orcid_api
 

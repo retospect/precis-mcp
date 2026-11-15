@@ -1232,7 +1232,7 @@ class EmptySummaryError(ValueError):
     blank/unparseable completion for a sizable fraction of chunks. Raised as a
     distinct type so the pass can record the miss (for the retry cap) without
     logging a per-chunk ERROR traceback — that floods the log surface (7k/day
-    on melchior) and reads as "on fire" on /status when the pass is in fact
+    on the agent host) and reads as "on fire" on /status when the pass is in fact
     working (successes land alongside the misses).
     """
 
@@ -2517,7 +2517,7 @@ def run_llm_summarize_pass(
     if empty:
         # One aggregated line per batch instead of a per-chunk ERROR traceback
         # (the free local model misses on a sizable fraction; ~7k/day of ERROR
-        # tracebacks on melchior otherwise, which reads as an outage on /status
+        # tracebacks on the agent host otherwise, which reads as an outage on /status
         # even though summaries are landing). Recorded per chunk above for the
         # retry cap; surfaced here only as a rate.
         log.warning(

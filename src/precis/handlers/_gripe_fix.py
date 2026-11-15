@@ -18,7 +18,7 @@ Stored (the smallest set; everything else is derived):
   ``host`` is the fleet host (what ``scripts/fleet-report`` sends);
   ``session`` is ``<vendor>:<window>`` — the builder's tmux window name
   (``claude:claude-tables-s2``, ``devin:devin-tables-s2``,
-  ``codex:codex-castor-s2``, what ``scripts/fleet-wave launch`` records),
+  ``codex:codex-<host>-s2``, what ``scripts/fleet-wave launch`` records),
   or ``claude:<session id>`` for a session with no window — so the fleet
   row ``<vendor>:<host>:<project>:<tree>`` resolves from its prefix. The
   key's presence is the one marker of "in the loop": the card line and

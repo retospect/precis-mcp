@@ -6,11 +6,11 @@ whether the worker is dead, blocked, or merely not selecting them.
 
 ## Topology (what to expect)
 
-- `job_claude_inproc` runs on **melchior only**. ALL `claude_inproc` jobs
+- `job_claude_inproc` runs on **the agent host only**. ALL `claude_inproc` jobs
   cluster-wide drain through that **one single-threaded worker**; if it hangs,
   they all stall.
 - The agent lane is the dedicated **`com.precis.worker-agentlane`** unit on
-  melchior (playbook `20e-precis-worker-agentlane.yml`, gr247125:
+  the agent host (playbook `20e-precis-worker-agentlane.yml`, gr247125:
   `precis worker --only job_claude_inproc --only job_inproc`, running as
   `PRECIS_PROCESS=precis-worker-agentlane`). The old
   `com.precis.worker-agent` plist was retired ~2026-07-22Z; its
@@ -48,7 +48,7 @@ whether the worker is dead, blocked, or merely not selecting them.
    I/O wait. The **sweeper** marks the DB row failed at 1 h
    (`swept:claim-orphaned`) but that does **not** unblock the OS thread.
 3. Recover a blocked worker: `sudo launchctl kickstart -k
-   system/com.precis.worker` on melchior. If the unit is gone entirely:
+   system/com.precis.worker` on the agent host. If the unit is gone entirely:
    [`worker-jetsam-bootout-recovery`](./worker-jetsam-bootout-recovery.md).
 4. Precedent: `news_poll`'s `_default_parse_feed` called
    `feedparser.parse(url)` (un-timed urllib GET); one stalled RSS feed hung the

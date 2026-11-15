@@ -13,7 +13,7 @@ asa-slack-smoke / asa-outbound-durability.
   ops sequence — seed vault → verify → flip run-as → scope vault read →
   retire hermes — not yet applied.
 - **asa-slack live smoke (ADR 0062).** Code shipped + deployed + connected
-  (`com.asa.slack` on melchior); remaining is the manual smoke: threading
+  (`com.asa.slack` on the agent host); remaining is the manual smoke: threading
   (never posts to channel root), a paper-search question actually works, a
   "kick off a job" request is refused with `Unsupported` (not just declined
   in prose), a repeat message from the same person shows the per-person

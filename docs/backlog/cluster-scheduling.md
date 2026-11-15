@@ -38,7 +38,7 @@ fairness detail (origin classes, reserved interactive slot per lane) is
 
 ## North star
 
-**Three cluster-wide singletons** — Postgres (caspar), web (gateway), asa
+**Three cluster-wide singletons** — Postgres (the database host), web (gateway), asa
 (chat bridge) — **plus one thin worker per host.** Nothing else is a
 standing precis daemon: dream / cron-tick / watch-poll / anki-sync /
 reconcile / embedder-watchdog all collapse into the worker's loop or a
@@ -101,7 +101,7 @@ capability-reserved claim, `mint_child_job` prio copy), the hardware half of
 idle-unload), and the §L collapsed-worker cutover (cycles a+b executed;
 split units retired).
 
-Live since 2026-10-11: the **LLM half of `resource_slots`** (castor
+Live since 2026-10-11: the **LLM half of `resource_slots`** (the local-serving node
 `llm:openai/gpt-oss-120b` cap 32, reserved by `local_serving.acquire`
 with a bounded wait and spill); its division by class and its capacity
 controller are `llm-lane-scheduler.md`. Dark / spec: **containerized dispatch**
@@ -115,7 +115,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
 ## Pillar 1 — one worker, one scheduler, one control surface (laws 1–3)
 
 - **§A — remaining cadences onto the live scheduler.** Fold the three
-  fleet-singleton cadences — `dream` (gateway, 15-min), `reconcile` (caspar,
+  fleet-singleton cadences — `dream` (gateway, 15-min), `reconcile` (the database host,
   daily), `anki_sync` (daily since 2026-09-26; 30-min when folded) — via a
   **host-affinity** field on `Cadence`
   (affinity, not a separate daemon); retire their plists and `dream-pass.sh`;
@@ -123,9 +123,9 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   scheduler cadences:** `heartbeat` (+ its capability probe) must fire on
   every host — it moves into the worker loop as a plain per-host pass and
   must not depend on the claim machinery it vouches for.
-- **§A′ — hourly cadences off the melchior loop cycle (gr479615, folded
+- **§A′ — hourly cadences off the agent-host loop cycle (gr479615, folded
   2026-10-13).** Cadence callables fire once per worker-loop cycle, so an
-  "hourly" cadence on melchior slips by up to one cycle; the per-pass wall
+  "hourly" cadence on the agent host slips by up to one cycle; the per-pass wall
   budget for `fetch_oa` (4fbad9c45, `PRECIS_OA_FETCH_PASS_WALL_S`) bounded
   the cycle, but a prod read on 2026-10-13 09:06Z still showed 11 of 99
   scheduler-pass gaps over 25 min (max 120 min) in 12 h. Remaining design:
@@ -133,7 +133,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   the §A pattern) so cadence lateness is bounded by the tick, not by the
   slowest ref pass sharing the loop; cadence callables then run
   concurrently with ref passes on the shared pool, which needs a
-  concurrency cap. Acceptance: consecutive scheduler-pass rows on melchior
+  concurrency cap. Acceptance: consecutive scheduler-pass rows on the agent host
   ≤ 25 min apart over 12 h; `structural`/`dream_agent` fire ≤ 25 min late.
 - **§L residuals** (cutover itself shipped): the gr187627/gr191264
   serial-rotation class — `chase` starving same-band reviewers under
@@ -153,7 +153,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
 - **§H — containers as the default path for heavy/agentic/GPU work.**
   Generalize the dark pieces into *the* execution path; route the
   `plan_tick`/`fix_gripe` spawn seams through the one `call_claude_agent`
-  chokepoint. Dissolves the melchior SPOF and the co-location jetsam (the
+  chokepoint. Dissolves the agent host SPOF and the co-location jetsam (the
   73 G mlock'd weight gets its own container). Requirements the traces pin:
   image keyed to the unit (never kitchen-sink); `precis_access:read` (no
   ambient prod creds in a sandbox — the `gr179498` boundary); git write-back
@@ -168,7 +168,7 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   `compute-lane-lease-epoch.md`); liveness-aware reclaim (check the holder's
   heartbeat); a per-unit attempt cap (killed-by-redeploy ≠ crash-loop); a
   child-deadlock guard.
-- **§B-1 — fix the spark GPU wedge (the one live violation of law 5).**
+- **§B-1 — fix the GPU node's GPU wedge (the one live violation of law 5).**
   `autocatpath_explore` runs ~90 min un-interruptible in-process CUDA;
   overruns its lease, SIGTERM-deaf, takes the worker down (81 starts /
   0 completions, `gr180096`). Fix = law 5: fan out one content-addressed job
@@ -204,10 +204,10 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   path (`workers/executors/_common.py` resource reservation) reserves
   without a hold, so a crashed job holder leaks its slot the same way —
   extend holds there or accept the gap.
-- **§C — GPU topology fuse/split — gated, likely shelved.** One Spark's
+- **§C — GPU topology fuse/split — gated, likely shelved.** One GB10 node's
   ~119 GB already serves ~120 B @ 8-bit / ~200 B @ 4-bit; fusion pays only
   for a frontier model that cannot quantize onto one unit, and RDMA makes a
-  fused pool a batch engine, not interactive. **Run the one-Spark-quantized
+  fused pool a batch engine, not interactive. **Run the one-GB10-quantized
   test first; if the models fit, shelve §C** (`gpu-cluster-modes.md` stays
   the deferred design). Manual `precis cluster fuse`/`split` before any
   autonomy; fusion is pull-based and hysteretic, never for a single
@@ -405,11 +405,11 @@ genuinely expensive to reproduce. No MinIO/S3/hand-rolled CAS — git already
 gives content-addressing + history + replication. §D gains one check: NAS
 git remote reachable + no dangling pointer.
 
-## Hardware — the incoming 3-Spark cluster
+## Hardware — the incoming 3-GB10-node cluster
 
-melchior (macOS gateway; OAuth SPOF; 73 G mlock'd weight), spark (DGX Linux,
-1 → 4; rootless podman + GPU passthrough proven; cores 0–1 fenced), caspar
-(Postgres/NFS/redis), balthazar (SMALL-tier Mac). Native Linux containers
+The agent host (macOS gateway; OAuth SPOF; 73 G mlock'd weight), the GPU node (DGX Linux,
+1 → 4; rootless podman + GPU passthrough proven; cores 0–1 fenced), the database host
+(Postgres/NFS/redis), the second worker host (SMALL-tier Mac). Native Linux containers
 exist only on the Sparks — isolation + de-SPOF are the same routing move.
 +3 Sparks are why Pillar 3 is central: disaggregated by default, fused only
 per §C's gate.
@@ -440,7 +440,7 @@ per §C's gate.
   keeps firing per-host (not on the lease).
 - **§H:** a heavy/agentic unit runs in a dispatched container; teardown
   leaves the worker alive and the unit re-claimable; an agentic unit runs on
-  a non-melchior host; the mlock'd weight is not co-resident with the
+  a host other than the agent host; the mlock'd weight is not co-resident with the
   worker.
 - **§H-lifecycle:** a bounced worker reclaims its dead predecessor's units
   on the first claim pass; a live holder is never stolen; a redeploy mid-run
@@ -504,7 +504,7 @@ Open:
 - **§F** — materializer placement: one generic pass reading
   `(count-query, threshold, batch, resource)` from each `ServiceSpec`, vs
   per-producer minting; reshape vs leave-standing per producer.
-- **§C** — needed at all? Gate on the one-Spark-quantized test.
+- **§C** — needed at all? Gate on the one-GB10-quantized test.
 - **§G** — knob shape (cadence recommended vs daily cap vs on/off); bundle
   the cost view or ship the knob first.
 - **Files** — is the `folder` kind the blob-set container; the
@@ -530,12 +530,12 @@ mechanics, this doc on cross-axis ordering and the laws.
   the one genuinely unbuilt piece of the routing cluster.
 - `small-llm-derived-drain-band.md` → Pillar 5 activation — SMALL derived
   work (summarize/classify) minted as low-prio `derived_drain` jobs,
-  melchior-pinned + router-capped at 6, **never cloud** (supersedes the
+  agent-host-pinned + router-capped at 6, **never cloud** (supersedes the
   retired `local-first-capacity-valve.md` spill design). Mechanism ships
   dark; activation = drop the SMALL cloud rung + flip the band flags.
 - `factory-console-and-scheduling.md` → §K + the console/registry/capability
   detail; its scheduling framing is superseded by this doc.
-- `gpu-cluster-modes.md` → §C — parked behind the one-Spark-quantized test.
+- `gpu-cluster-modes.md` → §C — parked behind the one-GB10-quantized test.
 - `llm-lane-scheduler.md` → the LLM half of §F (slot count per endpoint,
   class lanes, fillers as pull generators); this doc keeps the job-queue
   level only.
@@ -548,20 +548,20 @@ Full wedge trail: `gr180096`.
 
 # Absorbed 2026-09-26
 
-## De-SPOF the melchior agent worker (incl. the silent-outage thread)
+## De-SPOF the agent-host agent worker (incl. the silent-outage thread)
 
 _Grouped 2026-09-26; was `agent-worker-despof`._
 
-plan_tick and the whole claude lane run on one melchior claude_inproc worker;
+plan_tick and the whole claude lane run on one agent-host claude_inproc worker;
 a hang stalls the lane cluster-wide (observed: a 100-deep plan_tick queue
 starving ad-hoc jobs — decide transient-vs-chronic with a draining-vs-growing
 sample; the pass is default-on, `registry.py` `default_profiles=_AGT`). Ops
-levers: provision a second agent host (caspar/balthazar) with the OAuth state
+levers: provision a second agent host (the database host or the second worker host) with the OAuth state
 + an agent daemon (no code); co-location relief — get the ~73 G mlock'd
 llama.cpp weight off the agent host (or drop `--mlock`) so jetsam stops
 targeting the worker. Durable north star: the sandbox_run/claude_docker
 substrate (`sandbox-run-substrate` (git-only)) subsumes both. See also
-spark-agent-worker for the local-lane offload.
+a GPU-node agent worker for the local-lane offload.
 
 Evidence gr187627: `ssh_node`'s blocking dispatch starves the claiming
 worker's whole pass rotation for the compute's runtime (heartbeat dark,
@@ -569,11 +569,11 @@ host-dark criticals flap).
 
 Update 2026-08-09 (dispatch-stall incident, alert 199905): redundancy is
 confirmed **zero** — `service_config` has `job_claude_inproc` prio=0 on
-spark since 2026-07-18, so melchior is the sole claude-lane executor
+the GPU node since 2026-07-18, so the agent host is the sole claude-lane executor
 fleet-wide. Same incident exposed the deeper decoupling: `resource_slots`
 advertising (heartbeat auto-probe, no flag) and executor provisioning
 (profile + `service_config`) have no coherence check — a model served only
-on a non-executor host (qwen3-235b on caspar) plus the plan_tick `llm:`
+on a non-executor host (qwen3-235b on the database host) plus the plan_tick `llm:`
 affinity stamp stalled the lane for 16 h. Mitigated by the 10-min
 claim-side affinity fallback (`LLM_AFFINITY_GRACE_MIN`,
 `executors/_common.py`); the structural gap (nothing connects "who serves
@@ -584,7 +584,7 @@ Update 2026-08-19 — **topology changed; the SPOF did not.** The separate
 `com.precis.worker-agent` daemon was retired ~07-22 and the agent profile
 folded into the single `com.precis.worker` unit (`precis worker --profile
 all --batch-size 32 --idle-seconds 2`); `job_claude_inproc` has run inside
-it since ~08-07 18:34. Melchior is still the sole claude-lane executor, so
+it since ~08-07 18:34. The agent host is still the sole claude-lane executor, so
 every lever above still applies — but the *diagnostic surface* moved:
 `/var/log/precis-worker-agent.log` is a dead 0-byte file and the missing
 daemon is expected, both of which read as "worker is dead" to a fresh
@@ -597,7 +597,7 @@ an outage, so the watchdog note below (dispatch-stall detector on
 expired-lease job refs) should also cover "queue depth grows while
 claimed=0", which no restart fixes.
 
-Silent-outage thread (merged from agent-worker-silent-outage): melchior
+Silent-outage thread (merged from agent-worker-silent-outage): the agent host
 `com.precis.worker-agent` was SIGKILL'd and stayed dead ~4 days
 (2026-07-26→30), silently stalling all agent-profile work. Root-cause the -9
 (jetsam/OOM/crashloop — the mlock'd llama.cpp weight above is the prime
@@ -605,23 +605,23 @@ suspect) so it can't recur silently; the deferred H1/H3/H4 reliability track
 (memory `worker-agent-silent-outage`) is the same thread. Related watchdog:
 verify the nursery dispatch-stall detector fires on expired-lease job refs.
 
-## Run the local-model job lane on a spark worker, not melchior
+## Run the local-model job lane on the GPU node worker, not the agent host
 
-_Grouped 2026-09-26; was `spark-agent-worker`._
+_Grouped 2026-09-26; was the earlier GPU-node agent-worker item._
 
-The claude_inproc pin to melchior is obsolete for operations steered onto the
+The claude_inproc pin to the agent host is obsolete for operations steered onto the
 BIG chain: the in-process openai_tools loop needs only a DB connection and
 HTTP reach to the local endpoint — no claude binary, no OAuth. Reto's call:
-make a serving spark (castor/pollux) a precis worker pulling these jobs. Work
+make a serving GPU node (the DGX nodes) a precis worker pulling these jobs. Work
 out: node choice (the worker competes with llama.cpp RPC cores; the
 nice-all-jobs core reservation is the lever); eligibility = "can reach the
 local endpoint", not a hostname (the scheduler's `eligible` callable), else
 it trades one SPOF for another; the residual claude lane (fix_gripe etc.)
-must keep landing on melchior — a second eligible host for one lane, not a
+must keep landing on the agent host — a second eligible host for one lane, not a
 profile migration. Owner `deploy/` host profiles +
 `src/precis/workers/registry.py`.
 
-test: a plan_tick/briefing job completes on a spark-node worker with no OAuth
+test: a plan_tick/briefing job completes on a GPU-node worker with no OAuth
 credential present.
 
 ## GPU cluster topology modes
@@ -630,14 +630,14 @@ _Grouped 2026-09-26; was `gpu-cluster-modes`, status draft, blocked-by gpu-prior
 
 > **PARKED (2026-08-02)** — this is §C (GPU topology) of
 > `cluster-scheduling.md`, and the master **gates fusion on the
-> one-Spark-quantized test**: one Spark's ~119 GB serves ~120 B @ 8-bit /
+> one-GB10-quantized test**: one GB10 node's ~119 GB serves ~120 B @ 8-bit /
 > ~200 B @ 4-bit, so if your models fit, none of this is built. The
 > disaggregated half is simply the master's default (no doc needed). Do not
 > build from this spec until that test fails; also `blocked-by: gpu-priority`.
 
 ### Motivation / why
 
-Soon there are N DGX Spark units (1 today + 3 incoming). The same hardware
+Soon there are N GB10 node units (1 today + 3 incoming). The same hardware
 serves two mutually-exclusive shapes:
 
 - **Aggregated:** the units fused into one large accelerator (~N × 119 GB
@@ -654,7 +654,7 @@ argue you need less of this than it looks.
 
 ### Hardware reality — the constraint that shapes everything
 
-Spark units cluster over **ConnectX Ethernet/RDMA (~200 GbE), not NVLink**
+The GB10 node units cluster over **ConnectX Ethernet/RDMA (~200 GbE), not NVLink**
 between chassis. So a fused model is **interconnect-bound**:
 
 - **Tensor-parallel** (all-reduce every layer) is chatty and punished by an
@@ -672,12 +672,12 @@ committing — see Open questions.)
 
 ### When fusion is (and isn't) worth it — the honest counter
 
-One Spark's ~119 GB unified memory **already serves large quantized models** on
+One GB10 node's ~119 GB unified memory **already serves large quantized models** on
 its own (order ~120 B @ 8-bit, ~200 B @ 4-bit) via the existing llama-swap
 path. **Fusion only earns its complexity for frontier-size models you cannot
 quantize onto a single unit** (~400 B+ at usable precision). So:
 
-- If the models you actually want fit on one Spark quantized → **don't build
+- If the models you actually want fit on one GB10 node quantized → **don't build
   fusion**; serve them per-node and use the disaggregated cluster for
   everything. This whole proposal stays on the shelf.
 - Fusion is worth it only when you have a standing need for a model too big for
@@ -778,7 +778,7 @@ and switches coarse.
   batch — serve interactive models per-node instead).
 - Combinatorial / fair-share / gang scheduling (the slurm line).
 - Multiple simultaneous big models; arbitrary node-subset pools.
-- Anything, if the "when fusion is worth it" test says one-Spark-quantized
+- Anything, if the "when fusion is worth it" test says one-GB10-quantized
   covers your models.
 
 ### Acceptance criteria
@@ -806,7 +806,7 @@ and switches coarse.
 
 ### Open questions / decisions log
 
-- **Is fusion even needed?** Run the one-Spark-quantized test against the models
+- **Is fusion even needed?** Run the one-GB10-quantized test against the models
   you actually want. If they fit, shelve this. (Gate on everything.)
 - **Interconnect + parallelism** — confirm ConnectX/RDMA topology and that the
   serving stack does pipeline/expert-parallel well enough over it to be useful.
@@ -865,7 +865,7 @@ _Grouped 2026-09-26; was `fair-dispatch-two-currencies`, status draft._
 Review findings (2026-08-08), plus the operator's stated allocation policy.
 Evidence: gr191337 (taproot_backfill monopolizes the claude_inproc lane for
 hours), gr191125 (band-5 starves behind re-minted band-2 cron), gr200375
-(fetch_oa monopolizes the serial melchior loop).
+(fetch_oa monopolizes the serial agent-host loop).
 
 **Fairness defects in the dispatch lane** (`src/precis/workers/dispatch.py`):
 
@@ -875,7 +875,7 @@ hours), gr191125 (band-5 starves behind re-minted band-2 cron), gr200375
    docstring; the doable view → least-served rotation). ~~Latent today
    (~6 effective candidates in prod, 242 raw auto-run todos)~~ — **NO
    LONGER LATENT, confirmed live 2026-08-19.** The predicate returns **86**
-   candidates; melchior runs `--batch-size 32`, so the page is 32, not 50.
+   candidates; the agent host runs `--batch-size 32`, so the page is 32, not 50.
    Two freshly-minted `taproot_backfill` todos (218295 / 218296, root
    todos, fully eligible — no blocking child, no exclusion tag, no
    schedule) sit at queue positions **85 and 86** and are therefore
@@ -999,7 +999,7 @@ problem, with its own policy —
   the whole mix policy.
 - Changing the guardrail caps themselves (values, 0112 placement
   semantics, `daily_budget` single-source contract with the scheduler).
-- The melchior single-`claude_inproc`-worker SPOF (OPEN-ITEMS item;
+- The agent-host single-`claude_inproc`-worker SPOF (OPEN-ITEMS item;
   orthogonal — this proposal fixes what gets *minted/claimed first*,
   not throughput).
 - Dropping `meta.executor` *writes/reads* entirely (item 6 keeps the

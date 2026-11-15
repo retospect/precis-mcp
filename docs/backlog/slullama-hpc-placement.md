@@ -69,19 +69,19 @@ llm.chain.big = [{"placement":"local","transport":"openai_tools","model":"qwen-h
 
 1. **Tier: BIG vs FRONTIER — undecided.** BIG has precedent (the DGX-pair
    rung already lives there); FRONTIER would suit an opus-class OSS model
-   too big for the Spark pair. Reto's call.
+   too big for the GB10 node pair. Reto's call.
 2. **Unserved-host behavior — verified against current code, corrects a
    prior wrong assumption.** `router._skip_unserved_local_rung` only prunes
    a `Transport.LOCAL` rung (the dead `:4000` litellm-proxy case) — it does
    **not** fire for `Transport.OPENAI_TOOLS` rungs. On a host that isn't
-   `melchior`, `local_serving.acquire("qwen-hpc")` finds no slot (the
+   the agent host, `local_serving.acquire("qwen-hpc")` finds no slot (the
    `served_by` endpoint is loopback-only, not LAN-routable, so it's
    host-private — see `local_serving.py`'s cluster-scoped-serving
    section) → `FailoverProvider` still *attempts* rung 0 against whatever
    the hosted-OSS default endpoint is, fails (unrecognized model), logs a
    WARN, and falls to the cloud rung. End state matches "falls to cloud, no
    `sbatch` traffic" (the tunnel itself is never touched), but it's a
-   failed-attempt-then-fallback on every non-`melchior` BIG dispatch, not a
+   failed-attempt-then-fallback on every non-agent-host BIG dispatch, not a
    clean skip — worth knowing before wiring this live on a multi-host
    fleet; may want a loopback-aware extension of
    `_skip_unserved_local_rung` to cover `OPENAI_TOOLS` too.
@@ -397,11 +397,11 @@ before the first live run but blocks nothing else.
 ### From precis-dispatch (folded 2026-10-21)
 
 Phase 1 (the `ssh_node` executor, live) is that item's shipped half. Its
-fired trigger: once this batch runner and the pollux GPAW relax both run in
+fired trigger: once this batch runner and the second DGX node GPAW relax both run in
 prod, extract the shared `WorkloadSpec` / `Runner` / `Stager` seam from the
 two real cases — not before (no stub runners or contract tests). Decided
 2026-06-21: the abstraction lives in precis-mcp; images go through a local
-registry on caspar backed by NFS (plain HTTP on the tailnet; revisit
+registry on the database host backed by NFS (plain HTTP on the tailnet; revisit
 auth/TLS before an image leaves it); jobs run as one shared
 `precis-compute` cluster user. Risks still open: GPAW GPU on Blackwell +
 CUDA 13 + aarch64 (CuPy likely needs a source build; the same image runs on
@@ -418,8 +418,8 @@ built. Build order: I1 is the ML-potential image for B4; the GPAW image
 follows the same items after its prerequisite.
 
 **Prerequisite for the GPAW image: one GPAW relax completes in prod on
-pollux.** None has (thread `chemistry`, Do next: both DFT-rung jobs ever
-dispatched failed). The pollux image has no MPI; the MPI build is on branch
+the second DGX node.** None has (thread `chemistry`, Do next: both DFT-rung jobs ever
+dispatched failed). The second DGX node image has no MPI; the MPI build is on branch
 `chemistry-dft-mpi-env`, and Reto ruled 2026-10-10 to rebuild it only when
 something needs the `gpaw` rung. HPC DFT (use (b)) is that need, but the
 local completion comes first: a SIF of an image that has never finished a
@@ -485,7 +485,7 @@ preflight allocation.
 ### Open for Reto (defaults taken so the build is not blocked)
 
 - First workload on HPC: ML potentials, not GPAW. Default taken: yes, because
-  the GPAW image waits on the pollux completion above.
+  the GPAW image waits on the second-DGX-node completion above.
 - `--no-requeue`, with reruns decided by precis and capped at 2. Default
   taken: yes.
 - One controller host holds the journal and runs every `hpc_batch` job.

@@ -128,7 +128,7 @@ class TestServedBy:
             text="Local big tier served direct by llama-swap.",
             served_by=[
                 {
-                    "host": "melchior",
+                    "host": "maple",
                     "endpoint": "http://127.0.0.1:11445/v1",
                     "model": "qwen3-next-80b-a3b-q4_k_m",
                     "max_parallel": 2,
@@ -136,7 +136,7 @@ class TestServedBy:
             ],
         )
         entry = store.get_ref(kind="llm", id=rid).meta["served_by"][0]
-        assert entry["host"] == "melchior"
+        assert entry["host"] == "maple"
         assert entry["endpoint"] == "http://127.0.0.1:11445/v1"
         assert entry["model"] == "qwen3-next-80b-a3b-q4_k_m"
         assert entry["max_parallel"] == 2
@@ -146,14 +146,14 @@ class TestServedBy:
 
         rid, _ = llm_catalog.upsert_card(
             store,
-            model_id="spark-local",
+            model_id="spruce-local",
             text="x",
             offerings=[
                 {
                     "transport": "local",
                     "served_by": [
                         {
-                            "host": "spark",
+                            "host": "spruce",
                             "endpoint": "http://127.0.0.1:11434/v1",
                             "model": "llama3.3:70b",
                         }
@@ -202,7 +202,7 @@ class TestLocalOffering:
     def test_upsert_derives_local_offering_from_served_by(self, store: Any) -> None:
         from precis import llm_catalog
 
-        served = [{"host": "castor", "endpoint": "http://x/v1", "max_parallel": 4}]
+        served = [{"host": "cedar", "endpoint": "http://x/v1", "max_parallel": 4}]
         rid, _ = llm_catalog.upsert_card(
             store,
             model_id="oss-local",
@@ -219,7 +219,7 @@ class TestLocalOffering:
     def test_offerings_rewrite_preserves_the_local_offering(self, store: Any) -> None:
         from precis import llm_catalog
 
-        served = [{"host": "castor", "max_parallel": 2}]
+        served = [{"host": "cedar", "max_parallel": 2}]
         rid, _ = llm_catalog.upsert_card(
             store,
             model_id="oss-local2",
@@ -255,17 +255,17 @@ class TestLocalOffering:
             store,
             model_id="oss-moved",
             text="x",
-            served_by=[{"host": "castor"}],
+            served_by=[{"host": "cedar"}],
         )
         llm_catalog.upsert_card(
             store,
             model_id="oss-moved",
             text="x",
-            served_by=[{"host": "spark", "max_parallel": 1}],
+            served_by=[{"host": "spruce", "max_parallel": 1}],
         )
         offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
         assert offs == [
-            {"transport": "local", "served_by": [{"host": "spark", "max_parallel": 1}]}
+            {"transport": "local", "served_by": [{"host": "spruce", "max_parallel": 1}]}
         ]
 
     def test_clearing_served_by_drops_the_derived_offering(self, store: Any) -> None:
@@ -276,7 +276,7 @@ class TestLocalOffering:
             model_id="oss-unserved",
             text="x",
             offerings=[{"transport": "openai_compat"}],
-            served_by=[{"host": "castor"}],
+            served_by=[{"host": "cedar"}],
         )
         llm_catalog.upsert_card(store, model_id="oss-unserved", text="x", served_by=[])
         meta = store.get_ref(kind="llm", id=rid).meta
@@ -294,7 +294,7 @@ class TestLocalOffering:
             text="x",
             served_by=[
                 {
-                    "host": "castor",
+                    "host": "cedar",
                     "endpoint": "http://x:8000/v1",
                     "max_parallel": 32,
                     "source": "static",
@@ -304,7 +304,7 @@ class TestLocalOffering:
         llm_catalog.seed_frontier_cards(store)
         meta = store.get_ref(kind="llm", id=rid).meta
         assert meta["offerings"][0]["transport"] == "local"
-        assert meta["offerings"][0]["served_by"][0]["host"] == "castor"
+        assert meta["offerings"][0]["served_by"][0]["host"] == "cedar"
         assert meta["offerings"][1]["transport"] == "openai_compat"
 
     def test_reconcile_resyncs_a_drifted_card(self, store: Any) -> None:
@@ -316,7 +316,7 @@ class TestLocalOffering:
         store.update_ref(
             rid,
             meta_patch={
-                "served_by": [{"host": "castor"}],
+                "served_by": [{"host": "cedar"}],
                 "offerings": [{"transport": "openai_compat"}],
             },
         )
@@ -336,10 +336,10 @@ class TestLocalOffering:
             model_id="two-local",
             text="x",
             offerings=[hand, {"transport": "openai_compat"}],
-            served_by=[{"host": "castor"}],
+            served_by=[{"host": "cedar"}],
         )
         offs = store.get_ref(kind="llm", id=rid).meta["offerings"]
-        assert offs[0]["served_by"][0]["host"] == "castor"  # derived, first
+        assert offs[0]["served_by"][0]["host"] == "cedar"  # derived, first
         assert offs[1] == hand  # the hand-authored one survives verbatim
 
 
@@ -355,14 +355,14 @@ class TestListCommand:
             model_id="listed-local",
             text="x",
             offerings=[{"transport": "openai_compat"}],
-            served_by=[{"host": "castor", "max_parallel": 4}],
+            served_by=[{"host": "cedar", "max_parallel": 4}],
         )
         _cmd_list(store)
         line = next(
             l for l in capsys.readouterr().out.splitlines() if "listed-local" in l
         )
-        assert "local(castor), openai_compat" in line
-        assert line.index("local(castor)") < line.index("openai_compat")
+        assert "local(cedar), openai_compat" in line
+        assert line.index("local(cedar)") < line.index("openai_compat")
 
 
 class TestHandler:
@@ -462,7 +462,7 @@ class TestHandler:
             text="Served locally by llama-swap.",
             served_by=[
                 {
-                    "host": "melchior",
+                    "host": "maple",
                     "endpoint": "http://127.0.0.1:11445/v1",
                     "model": "qwen3-next-80b-a3b-q4_k_m",
                 }

@@ -8,7 +8,7 @@ effort: high
 ## Resume
 
 - **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 landed (2026-10-18). R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
-- **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old Castor/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
+- **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old local-serving-node/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
 - **Acceptance:** The bounded R17 criteria in [norr-her-meta](../norr-her-meta.md#r17-packing-evidence-reconciliation), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.
 - **Worktree:** `codex-knowledge-mesh-r17-packing` (`work/knowledge-mesh/norr-her-packing`)
@@ -70,7 +70,7 @@ graph-health-metrics, five parked gripes, and the seam with
   sample per paper × measurand, the batch is accepted under a 5 %
   Wilson bar, and only escalations reach Reto; per-value human
   sign-off is retired. The extraction-pass plan is in the spec
-  §"Next slice" — Spark reader, pa5044 first, the versioned anchor
+  §"Next slice" — GPU-node reader, pa5044 first, the versioned anchor
   scheme ported first.
 - **Next:** local-mesh-upkeep slice 2 (feed), once the queue and the
   controller exist; a mesh-eval candidate score, once a serving window
@@ -151,8 +151,8 @@ graph-health-metrics, five parked gripes, and the seam with
    and the cold-agent check (10 seeded AFM items) remain pending; the axis
    contract fields wait on v1.5 (Horizon 2). Folded from
    taxon-facet-navigation 2026-10-21.
-2. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
-   big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
+2. **backlog/taxonomy-bootstrap.md §Resume** — waits on the local-serving node's local
+   big model (Reto, knowledge-mesh-9: wait for the local-serving node; no date, Slice 0
    not run; local-compute pings on serving). Then: two
    `--placement local --pack 4 --limit 100` runs, `compare_runs.py`
    local-vs-local against the 0.711 bar (cross-run folded agreement,
@@ -264,8 +264,8 @@ graph-health-metrics, five parked gripes, and the seam with
 4a. **backlog/graph-gardener-value.md** — Reto 2026-10-21: links only
    where RAG cannot recompute them (stance, distant, provenance,
    identity), machine edges on the trust contract, a per-quest retrieval
-   eval, gardener v1 corrections, the castor scout. Gardener v1 lit on
-   prod 2026-10-21 with castor gpt-oss-120b; a 6-hourly watch files
+   eval, gardener v1 corrections, the local-model scout. Gardener v1 lit on
+   prod 2026-10-21 with local-serving gpt-oss-120b; a 6-hourly watch files
    gripes. Also carries the v1 spec's open `agentlog_id` stamping (folded
    2026-10-21); the sibling-disjointness pass reads confusion from the
    taxonomy-bootstrap probe runs, so it can start before Horizon 1.

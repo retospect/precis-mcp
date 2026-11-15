@@ -74,7 +74,7 @@ Run the existing harness in a dedicated minimal image:
 * Closes network, filesystem, *and* the macOS memory gap in one move.
 * Cost: ~300–500 ms container start per render — negligible against
   the 30 s render ceiling.
-* Availability: spark (Linux) natively; Macs only where a podman
+* Availability: the GPU node (Linux) natively; Macs only where a podman
   machine/Docker Desktop is running. The ADR-0048 `sandbox_run` slice
   already stubs podman detection — reuse its "is a runtime usable"
   probe rather than writing a second one.
@@ -108,7 +108,7 @@ Linux host without a container runtime: `unshare --user --net` gives an
 empty network namespace (loopback only, no interfaces) with no root
 needed. Network cut; filesystem stays Phase-1. Cheap insurance rung —
 implement only if a creds-less Linux worker without podman actually
-exists in the fleet (today spark has podman; if that holds, skip this
+exists in the fleet (today the GPU node has podman; if that holds, skip this
 rung and let Linux-no-runtime fall to rung 4 with a warning).
 
 ### Rung 4 — Phase-1 floor
@@ -145,7 +145,7 @@ degradation is a startup decision, not a per-render race.
    is certain; numpy near-certain; pandas/scipy TBD).
 2. **Mac runtime posture:** is running a podman machine on the Mac
    workers acceptable operationally (RAM cost on already
-   jetsam-sensitive melchior), or is seatbelt the designated Mac
+   jetsam-sensitive agent host), or is seatbelt the designated Mac
    endgame? Proposal assumes seatbelt is the Mac default and containers
    are opportunistic.
 3. **Nursery alert:** should "node degraded to rung 4" become a

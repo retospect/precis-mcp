@@ -19,7 +19,7 @@ live, and nothing in it persists between runs:
 
 - **`sandbox_run`** (job_type + `claude_docker` executor): throwaway
   container per job, `/work` volume as the whole IN/OUT bus, container has
-  NO DB creds (read-only token'd MCP callback at most), melchior
+  NO DB creds (read-only token'd MCP callback at most), the agent host
   hard-excluded, cgroup-capped. Ships **dark** — drained only where a
   `service prio` row lights `job_claude_docker`; the lane is lit on at
   least one host (a `sandbox_run` job has succeeded on a cluster host).
@@ -75,16 +75,16 @@ The container never holds push creds (same reasoning as no-DB-creds):
 
 ## Slices (in enable-order; each independently shippable)
 
-1. **Light one host (castor).** 2026-09-07: the whole mechanical chain
-   is DEPLOYED AND VERIFIED on castor — inventory group flipped
-   (balthazar out: macOS/no-podman, never ran; stale service rows
-   balthazar+spark prio→0), `PRECIS_SANDBOX_HOSTS`+`PRECIS_NODE` env,
+1. **Light one host (the local-serving node).** 2026-09-07: the whole mechanical chain
+   is DEPLOYED AND VERIFIED on the local-serving node — inventory group flipped
+   (the sandbox host out: macOS/no-podman, never ran; stale service rows
+   the sandbox host + the GPU node prio→0), `PRECIS_SANDBOX_HOSTS`+`PRECIS_NODE` env,
    `playbooks/34-code-task-image.yml` (Dockerfile-hash staleness key,
-   mirror.gcr.io fallback, bounded build; castor's container egress
+   mirror.gcr.io fallback, bounded build; the local-serving node's container egress
    blackholes deb.nodesource.com — UniFi-DPI family — so the image is
    controller-built and hand-carried per the play's header recipe),
    `playbooks/35-precis-worker-sandbox.yml` (the `--only
-   job_claude_docker` lane; castor's system worker is heartbeat-only),
+   job_claude_docker` lane; the local-serving node's system worker is heartbeat-only),
    the `code-task-run` wrapper + non-root `sandbox` user in the image,
    executor /work chmod for the mapped uid, and `job_claude_docker`
    added to the worker `--only` argparse choices (3rd instance of that
@@ -114,7 +114,7 @@ The container never holds push creds (same reasoning as no-DB-creds):
 
 ## Decisions (Reto, 2026-09-06)
 
-- **S1 host:** castor (pollux keeps the untested fold lane; melchior/GPU
+- **S1 host:** the local-serving node (the second DGX node keeps the untested fold lane; the agent host/GPU
   never).
 - **S2 workspace storage:** host dirs under `/var/lib/precis-sandbox/ws/`,
   owned by `agent_sandbox` (debuggable + NFS-shareable; not podman volumes).

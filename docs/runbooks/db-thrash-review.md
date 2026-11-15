@@ -1,11 +1,11 @@
 # Runbook — db-thrash-review (prod index/thrashing cadence)
 
-A recurring pass that asks: *is the prod DB (`precis_prod` on caspar) thrashing —
+A recurring pass that asks: *is the prod DB (`precis_prod` on the database host) thrashing —
 a runaway query pegging CPU, a missing index forcing repeated full scans, dead
 indexes taxing every write, or bloat?* Cadence is **14 days**, enforced
 advisory-style by `scripts/db-thrash-review` (surfaced in `/whatneedsdoing`, next
 to `token-review`). It exists because the last time nobody watched, an unindexed
-GC `DELETE` ran fleet-wide every 2s and pegged caspar for hours before anyone
+GC `DELETE` ran fleet-wide every 2s and pegged the database host for hours before anyone
 noticed (fixed: migrations 0077/0078 + `route_log.gc` single-flight).
 
 Tiering (per CLAUDE.md "three tiers"): the *cadence check* is a script (tier 1,

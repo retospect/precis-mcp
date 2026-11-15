@@ -2650,18 +2650,18 @@ def test_enabled_resolves_per_host(store: Store) -> None:
     row dims only that host — the dimmed host stays dark while the rest
     of the fleet runs the tick."""
     _light(store, prio=5)
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
-    _light(store, prio=0, host="balthazar")
-    assert not gripe_triage.gripe_triage_enabled(store, host="balthazar")
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
+    _light(store, prio=0, host="alder")
+    assert not gripe_triage.gripe_triage_enabled(store, host="alder")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
 
 
 def test_enabled_host_row_lights_only_that_host(store: Store) -> None:
     """A host-only row lights that host and no other — the old
     any-row-anywhere query lit the whole fleet."""
-    _light(store, host="melchior")
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
-    assert not gripe_triage.gripe_triage_enabled(store, host="caspar")
+    _light(store, host="maple")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
+    assert not gripe_triage.gripe_triage_enabled(store, host="birch")
 
 
 def test_dimmed_host_skips_the_tick(
@@ -2671,8 +2671,8 @@ def test_dimmed_host_skips_the_tick(
     is a dark no-op here and still runs on a lit host."""
     gid = _gripe(store, "dimmed host")
     _light(store, prio=5)
-    _light(store, prio=0, host="balthazar")
-    monkeypatch.setenv("PRECIS_HOST_NAME", "balthazar")
+    _light(store, prio=0, host="alder")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "alder")
     called: list[str] = []
 
     def spy(prompt: str) -> LlmResult:
@@ -2684,7 +2684,7 @@ def test_dimmed_host_skips_the_tick(
     assert called == []
     assert _status(store, gid) == "open"
     # … and the same config still runs the tick on a lit host.
-    monkeypatch.setenv("PRECIS_HOST_NAME", "melchior")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "maple")
     r2 = _run(store, llm=_llm({"verdicts": [_verdict(gid)]}))
     assert (r2.claimed, r2.ok) == (1, 1)
 
@@ -2707,14 +2707,14 @@ def test_cadence_skips_a_dimmed_host_without_claiming(
     monkeypatch.setattr(gripe_triage, "run_gripe_triage_pass", _fake_pass)
     cad = next(c for c in CADENCES if c.name == "gripe_triage")
     _light(store, prio=5)
-    _light(store, prio=0, host="balthazar")
-    r = run_scheduler_pass(store, host="balthazar", cadences=(cad,))
+    _light(store, prio=0, host="alder")
+    r = run_scheduler_pass(store, host="alder", cadences=(cad,))
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
     assert fired == []
     lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
     assert lease.last_fired_at is None and lease.last_host is None
     # The fire was left claimable: a lit host takes it and runs.
-    r2 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    r2 = run_scheduler_pass(store, host="maple", cadences=(cad,))
     assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
     assert fired == [store]
 

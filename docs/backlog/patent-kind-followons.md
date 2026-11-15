@@ -9,7 +9,7 @@ From the shipped patent-kind spec (git-only); truth in the
 `precis.handlers.patent` docstrings.
 
 - **Deploy artefacts**: the ansible launchd timer for
-  `run-patent-watches` (balthazar) and the shared NFS mount playbook
+  `run-patent-watches` (the second worker host) and the shared NFS mount playbook
   (`/opt/nfs/shared/patents/`) — the watch machinery itself shipped.
 - **`view='images'`** — on-demand fetch from EPO `published-data/images`
   to `$PRECIS_PATENT_RAW_ROOT/.../images/`; image bytes never touch

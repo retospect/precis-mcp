@@ -261,8 +261,8 @@ and the toolkit map them to `BadInput` with `next=`.
 
 ## Budgets — memory, resolution, inline vs job
 
-Spark is unified memory (~119 GB shared with any model it serves),
-pollux similar; earlyoom (`deploy/roles/hardening`) SIGTERMs the
+The GPU node is unified memory (~119 GB shared with any model it serves),
+the second DGX node similar; earlyoom (`deploy/roles/hardening`) SIGTERMs the
 largest process at 10 % free, so a job near 100 GB is killed, not
 swapped. The kernel estimates bytes **before** allocating and refuses
 above the lane's cap.
@@ -270,7 +270,7 @@ above the lane's cap.
 | lane | cells (total) | memory estimate | solver | where |
 |---|---|---|---|---|
 | inline (MCP process; a `view='fields'` read; a script call inside its run) | ≤ `INLINE_CELLS` = 3e5 (~64³) | ≤ ~60 MB | cg / amg | the session host or the sandbox run |
-| job (`fields_solve` job type on pollux/spark; a script's `budget='job'` request) | ≤ `JOB_CELLS` = 3e7 (~310³) | ≤ ~12 GB at ~400 B/cell with the AMG hierarchy | amg (cg fallback, slower) | compute lane |
+| job (`fields_solve` job type on the GPU nodes; a script's `budget='job'` request) | ≤ `JOB_CELLS` = 3e7 (~310³) | ≤ ~12 GB at ~400 B/cell with the AMG hierarchy | amg (cg fallback, slower) | compute lane |
 | refused | above `JOB_CELLS`, or estimate above `cgroup memory.max` | — | — | `next=` names `cells=` |
 
 Direct solves only to `DIRECT_CELLS`. A script's `evaluate` above

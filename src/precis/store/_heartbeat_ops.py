@@ -88,7 +88,7 @@ class HeartbeatMixin:
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
         always measured from the most recent report — EXCEPT the
         per-process keys that are nested-merged instead of replaced,
-        because a host can run more than one worker process (melchior
+        because a host can run more than one worker process (the agent host
         runs both ``system`` and ``agent``), each advertising its own
         per-process entry under the SAME ``host_heartbeat`` row (PK is
         ``host``, not ``(host, process)``), so a full ``meta`` replace

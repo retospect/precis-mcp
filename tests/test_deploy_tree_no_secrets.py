@@ -10,15 +10,20 @@ they have deliberately different scopes:
   ``tests/``, everything.
 * **Real node hostnames, scoped.** Covered: ``deploy/`` (a portable,
   cluster-agnostic provisioning tree: a literal node name there means an
-  un-parameterised role), ``src/precis/data/skills/`` (the packaged skills
-  served to every MCP client) and the prompt files under ``.claude/agents/``,
+  un-parameterised role), ``src/`` (the shipped package, the packaged skills
+  served to every MCP client included), ``docker/``, ``docs/``, ``tests/``,
+  the tracked files under ``scratch/`` and the prompt files under ``.claude/agents/``,
   ``.claude/commands/`` and ``.claude/skills/`` (tracked files only;
-  ``.claude/worktrees/`` stays out). Write a role ("the database host") or a
-  placeholder (``<db-host>``) instead; the names live in repo-dev memory. The
-  failure message names ``path:line`` only. **The rest of the tree is not yet
-  covered**: docs, tests and src code defaults still carry node names as
-  domain vocabulary (``llm_catalog``'s default serving host, the DB log
-  handler, incident references in docstrings) and are a later cleanup.
+  ``.claude/worktrees/`` stays out). Write a role ("the database
+  host") or a placeholder (``<db-host>``) instead; the names live in repo-dev
+  memory. The failure message names ``path:line`` only. Two file lists
+  narrow the scan: :data:`_HOSTNAME_EXEMPT` (permanent: a sealed migration's
+  comment, a data file where the word is the domain term) and
+  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: code defaults that still name
+  a node, docs that link to a file still named after one, tests of a script
+  that still does). Tests use made-up host names (``maple``, ``birch``).
+  **Not yet covered**: ``scripts/`` still carries node names and is a later
+  cleanup.
 
 ``deploy/inventory/`` is the LIVE per-cluster overlay (real ``hosts.yml``,
 ``group_vars/all/vault.yml`` …). It is **gitignored + local-only** and is
@@ -146,17 +151,85 @@ _FORBIDDEN_IN_DEPLOY: list[tuple[str, re.Pattern[str]]] = [
 #: Repo-relative directories the hostname check covers (tracked files only).
 _HOSTNAME_SCOPES = (
     "deploy",
-    "src/precis/data/skills",
+    "docker",
+    "docs",
+    "scratch",
+    "src",
+    "tests",
     ".claude/agents",
     ".claude/commands",
     ".claude/skills",
 )
 
+_SEALED_MIGRATION = "sealed migration: its checksum is on the ledger, the comment stays"
+_EDM_TERM = "wire-EDM data: 'spark gap' is the process term, not a host"
+_VENDOR_NAME = "vendor package / external repo names that contain the product word"
+
+#: PERMANENT exemptions: files that match the pattern and cannot or should not
+#: change. path -> why. Hits in a listed file are not reported; a listed file
+#: with no hit fails ``test_hostname_file_lists_have_no_stale_entries``. A new
+#: migration is not sealed yet and must be written clean: never add one here.
+_HOSTNAME_EXEMPT: dict[str, str] = {
+    "src/precis/migrations/0012_epo_ops_provider.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0015_worker_logs.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0017_host_heartbeat.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0022_kind_provider.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0030_alert_open_unique_index.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0072_service_config.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0077_llm_call_log_hash_idx.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/0111_vault_events_client_identity.sql": _SEALED_MIGRATION,
+    "src/precis/migrations/archive/0008_phase4_catchup.sql": _SEALED_MIGRATION,
+    "src/precis/data/design-tree/capabilities.json": _EDM_TERM,
+    "src/precis/data/design-tree/processes.yaml": _EDM_TERM,
+    "src/precis/data/design_rules.json": _EDM_TERM,
+    "src/precis/utils/public_scan.py": "the pattern source itself",
+    "docs/backlog/april-corpus-nas-migration.md": "a real directory name on the NAS",
+    "docs/backlog/claude-code-on-local-serving.md": _VENDOR_NAME,
+    "docs/runbooks/dgx-spark-node-bringup.md": _VENDOR_NAME,
+    "tests/test_deploy_tree_no_secrets.py": "this gate's own samples",
+}
+
+_CODE_DEFAULT = "a code default still names a node; it moves to deploy config"
+_NODE_NAMED_PATH = (
+    "links to a file, flag, branch or old slug named after a node; renames pending"
+)
+_SCRIPT_COUPLED = "tests a script or hook that still has the node names baked in"
+_PACKAGED_CASE = "byte-matches the packaged pathway repro case"
+
 #: TEMPORARY expected-failure list: files whose hostname hits are known and
-#: being cleaned by someone else. path -> why. Hits in a listed file are not
-#: reported; ``test_hostname_pending_cleanup_has_no_stale_entries`` fails once
-#: the file is clean. Remove when the file is clean.
-_HOSTNAME_PENDING_CLEANUP: dict[str, str] = {}
+#: not yet cleaned. path -> why. Hits in a listed file are not reported;
+#: ``test_hostname_file_lists_have_no_stale_entries`` fails once the file is
+#: clean. Remove when the file is clean.
+_HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
+    "src/precis/llm_catalog.py": _CODE_DEFAULT,
+    "src/precis/workers/job_types/sandbox_run.py": _CODE_DEFAULT,
+    "src/precis/workers/materialize.py": _CODE_DEFAULT,
+    "src/precis/workers/scheduler.py": _CODE_DEFAULT,
+    "docs/backlog/autocatpath-seed-health.md": _NODE_NAMED_PATH,
+    "docs/backlog/castor-agent-lane.md": _NODE_NAMED_PATH,
+    "docs/backlog/castor-finding-reader.md": _NODE_NAMED_PATH,
+    "docs/backlog/castor-llm-routing.md": _NODE_NAMED_PATH,
+    "docs/backlog/cluster-fileserver-move.md": _NODE_NAMED_PATH,
+    "docs/backlog/llamacpp-fleet-ops.md": _NODE_NAMED_PATH,
+    "docs/backlog/llm-capacity-plan.md": _NODE_NAMED_PATH,
+    "docs/backlog/llm-lane-scheduler.md": _NODE_NAMED_PATH,
+    "docs/backlog/local-rungs-small-medium.md": _NODE_NAMED_PATH,
+    "docs/backlog/spark-fleet-embedder.md": _NODE_NAMED_PATH,
+    "docs/backlog/spark-provisioning.md": _NODE_NAMED_PATH,
+    "docs/backlog/threads/claims-and-evidence.md": _NODE_NAMED_PATH,
+    "docs/backlog/threads/deploy-fleet-ops.md": _NODE_NAMED_PATH,
+    "docs/backlog/threads/INDEX.md": _NODE_NAMED_PATH,
+    "docs/backlog/threads/local-compute.md": _NODE_NAMED_PATH,
+    "docs/backlog/threads/serving-programme.md": _NODE_NAMED_PATH,
+    "docs/backlog/vllm-per-node-serving.md": _NODE_NAMED_PATH,
+    "docs/runbooks/spark-distributed-llm-serving.md": _NODE_NAMED_PATH,
+    "tests/fixtures/pathway/repro_case.json": _PACKAGED_CASE,
+    "tests/test_bash_reflex_nudge.py": _SCRIPT_COUPLED,
+    "tests/test_claude_local.py": _SCRIPT_COUPLED,
+    "tests/test_host_ops.py": _SCRIPT_COUPLED,
+    "tests/test_sandbox_run.py": _CODE_DEFAULT,
+    "tests/test_scheduler_pass.py": _CODE_DEFAULT,
+}
 
 #: A line the hostname check must flag (also the self-test's planted sample).
 _HOSTNAME_SAMPLE = "when: inventory_hostname == 'melchior'"
@@ -410,27 +483,31 @@ def _hostname_hits() -> list[str]:
 
 
 def test_scoped_trees_carry_no_node_hostnames() -> None:
-    """No literal node hostname in ``deploy/``, the packaged skills or the
-    ``.claude/`` prompt files — name the role or use a placeholder."""
-    hits = [
-        h
-        for h in _hostname_hits()
-        if h.rsplit(":", 1)[0] not in _HOSTNAME_PENDING_CLEANUP
-    ]
+    """No literal node hostname in the covered scopes (``deploy/``, ``docker/``,
+    ``docs/``, ``scratch/``, ``src/``, ``tests/``, the ``.claude/`` prompt
+    files) — name the role or use a placeholder."""
+    listed = _HOSTNAME_EXEMPT.keys() | _HOSTNAME_PENDING_CLEANUP.keys()
+    hits = [h for h in _hostname_hits() if h.rsplit(":", 1)[0] not in listed]
     assert not hits, (
-        "node hostname(s) in deploy/, packaged skills or .claude/ prompts — "
+        "node hostname(s) in deploy/, docker/, docs/, scratch/, src/, tests/ or "
+        ".claude/ prompts — "
         'write the role instead ("the database host", "a worker host") or a '
-        "placeholder (<db-host>); real names are not kept in the repo, they "
+        "placeholder (<db-host>), in tests a made-up name (maple, birch); real "
+        "names are not kept in the repo, they "
         "live in repo-dev memory (search(kind='memory', tags=['SPACE:repo-dev'], "
         "q='cluster roster hosts')). Locations only:\n" + "\n".join(hits)
     )
 
 
-def test_hostname_pending_cleanup_has_no_stale_entries() -> None:
-    """An entry in the temporary expected-failure list must still have hits."""
+def test_hostname_file_lists_have_no_stale_entries() -> None:
+    """A file on either list must still have hits, and sits on one list only."""
     hit_files = {h.rsplit(":", 1)[0] for h in _hostname_hits()}
+    both = sorted(_HOSTNAME_EXEMPT.keys() & _HOSTNAME_PENDING_CLEANUP.keys())
+    assert not both, f"listed as exempt and as pending: {both}"
     stale = sorted(set(_HOSTNAME_PENDING_CLEANUP) - hit_files)
     assert not stale, f"clean now, remove from _HOSTNAME_PENDING_CLEANUP: {stale}"
+    stale = sorted(set(_HOSTNAME_EXEMPT) - hit_files)
+    assert not stale, f"no hit left, remove from _HOSTNAME_EXEMPT: {stale}"
 
 
 @pytest.mark.parametrize("scope", _HOSTNAME_SCOPES)
@@ -448,7 +525,7 @@ def test_hostname_check_bites_in_every_scope(
 
 
 @pytest.mark.parametrize(
-    "outside", [".claude/worktrees/other/skills/x.md", "docs/x.md", ".claude/x.md"]
+    "outside", [".claude/worktrees/other/skills/x.md", "scripts/x.sh", ".claude/x.md"]
 )
 def test_hostname_check_ignores_out_of_scope_paths(
     outside: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

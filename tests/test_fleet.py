@@ -14,7 +14,7 @@ from precis.handlers.fleet import FleetHandler, _age_min, _window_label
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 
-HOST = "melchior"
+HOST = "maple"
 KEY = f"claude:{HOST}:proj:main"
 
 
@@ -326,11 +326,10 @@ def test_fisheye_kimi_usage_quota_is_per_host(h: FleetHandler) -> None:
         }
 
     send(h, rep([row()], quota={"kimi": kimi(12, 2_500_000)}))
-    send(h, rep([row(host="castor")], host="castor", quota={"kimi": kimi(3, 900)}))
+    send(h, rep([row(host="cedar")], host="cedar", quota={"kimi": kimi(3, 900)}))
     lines = h.get().body.splitlines()
-    assert (
-        "QUOTA   kimi@castor 5h 3 req 900 tok · kimi@melchior 5h 12 req 2.5M tok"
-        in (lines)
+    assert "QUOTA   kimi@cedar 5h 3 req 900 tok · kimi@maple 5h 12 req 2.5M tok" in (
+        lines
     )
 
 
@@ -497,7 +496,7 @@ def test_gc_retires_only_old_dead_rows(h: FleetHandler) -> None:
     assert fleet.gc_dead_rows(h.store) == 1
     assert (
         h.store.find_ref_by_meta(
-            kind="fleet", key="key", value="claude:melchior:proj:gone"
+            kind="fleet", key="key", value="claude:maple:proj:gone"
         )
         is None
     )

@@ -244,12 +244,12 @@ def test_every_critical_rule_carries_a_triage_line() -> None:
         ("watchdog:discovery", "embed", "watchdog:discovery/embed"),
         (
             "nursery:nas-denied",
-            "nas-denied:melchior:precis-worker",
+            "nas-denied:maple:precis-worker",
             "nursery:nas-denied/nas-denied:{host}:{process}",
         ),
         (
             "nursery:nas-denied",
-            "nas-denied:melchior",
+            "nas-denied:maple",
             "nursery:nas-denied/nas-denied:{host}",
         ),
         (
@@ -263,7 +263,7 @@ def test_every_critical_rule_carries_a_triage_line() -> None:
             "llm-degraded:z-ai/glm-4.7-flash/openai_compat/cloud",
             "watchdog:condition/llm-degraded:{model}/{transport}/{tier}",
         ),
-        ("disk_check", "caspar:/", "disk_check/{host}:{path}"),
+        ("disk_check", "birch:/", "disk_check/{host}:{path}"),
         (
             "review:empty:structural",
             "structural:empty-pass",
@@ -300,7 +300,7 @@ def test_split_id_splits_on_first_slash_only() -> None:
         "watchdog:condition",
         "pass-dead:h/p/x",
     )
-    assert alert_ids.split_id("disk_check/caspar:/") == ("disk_check", "caspar:/")
+    assert alert_ids.split_id("disk_check/birch:/") == ("disk_check", "birch:/")
 
 
 # ── health_digest: pinned ids ────────────────────────────────────────────

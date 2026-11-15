@@ -620,7 +620,7 @@ The other settings a slice host reads:
 - `PRECIS_MCP_SLICE_TOKEN_DIR`: the shared session MCP's per-slice grant
   registry (`<mcp-http state dir>/slice-tokens`, created by the ensure
   script). Needed when the worker runs as a different user from the one
-  running the server (melchior: launchd `deploy` vs the operator): the
+  running the server (the agent host: launchd `deploy` vs the operator): the
   default is under the *worker's* home, where no server reads, so the
   session would start on the worker's `PRECIS_MCP_TOKEN` — and a service
   account has none, which the session sees as `401 AUTH_HEADER_REJECTED`

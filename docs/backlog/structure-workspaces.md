@@ -147,7 +147,7 @@ me598372 (`precis` proxy, lint/audit layers).
   gap is accepted or the block routes to a Linux host. The trusted side
   validates the candidate — schema, entity-count cap, blob-size cap,
   optionally the library's own `check` — before it commits or is left as
-  a candidate (R3). The sandbox job lane (`sandbox_run` on pollux/spark)
+  a candidate (R3). The sandbox job lane (`sandbox_run` on the second DGX node or the first GPU node)
   stays for long things: `search()`, relax, place/route. The container is
   the upgrade behind the same interface if the process boundary proves
   insufficient. No clock and no random in a block unless passed as
@@ -234,8 +234,8 @@ below.
    `recipe.json`). A design fork is a copy of the snapshot.
 2. **The job lane runs what does not fit a block.** `search()`, relax,
    place/route and any block that hits the wall run as `sandbox_run
-   mode:script` on pollux or spark (W1: castor stays LLM-only) — never a
-   Mac, never melchior (`sandbox_run.py::_sandbox_hosts`): the same code
+   mode:script` on the second DGX node or the first GPU node (W1: the local-serving node stays LLM-only) — never a
+   Mac, never the agent host (`sandbox_run.py::_sandbox_hosts`): the same code
    under the same namespace, staged as `code_ref` folders are today
    (`executors/_sandbox_inputs.py::stage_code`). No DB creds, `--network
    none`, cgroup caps, PyPI wheels only (`_sandbox_script.py::stage_deps`);
@@ -1504,8 +1504,8 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 
 ## Rulings (Reto, 2026-10-22)
 
-- **W1 hosts:** pollux + spark; castor stays LLM-only; never the operator
-  Mac, never melchior.
+- **W1 hosts:** the second DGX node + the first GPU node; the local-serving node stays LLM-only; never the operator
+  Mac, never the agent host.
 - **W2 private packages:** a `--find-links` wheel folder on the sandbox
   hosts, no index server.
 - **W4 macro relax v1:** check-and-report + existing formfind; mate

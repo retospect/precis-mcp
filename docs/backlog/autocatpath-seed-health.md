@@ -14,9 +14,9 @@ Read-only prod pass over 2026-09-03..10-03 (`refs` kind='job', STATUS tags,
 
 - **autocatpath_seed:** 118 succeeded, 24 failed. **Every failure is a
   wall-clock kill** (`runner: killed at wall-clock deadline`), at 5.0–7.5 h,
-  most at about 18,000 s. Hosts: castor 15, pollux 9. All 24 fall in the
+  most at about 18,000 s. Hosts: the local-serving node 15, the second DGX node 9. All 24 fall in the
   weeks of 09-14 (16) and 09-21 (8). The week of 09-28 has 68 succeeded and
-  0 failed. Latest success: jb463215, pollux, 2026-10-03, 9,224 s wall.
+  0 failed. Latest success: jb463215, the second DGX node, 2026-10-03, 9,224 s wall.
 - **The August population is gone.** No "child process exited without
   writing result.json", no `infra:child-killed`, no rc=-15 in 30 days. The
   "unresolved 59" diagnosis has nothing left to read.
@@ -39,7 +39,7 @@ days. "Week of 09-28 clean" means no verify seeds were dispatched, not a
 fix. Every tier gets the same `_autocatpath_wall_seconds()` hint (5400 s →
 a 2.5 h ssh_node lease); the 3 verify successes took 1.9–2.25 h of event
 span, the failures hit 2.5 h (two ran longer across a worker re-adoption).
-Host is not a factor (castor and pollux both fail). The same template
+Host is not a factor (both DGX nodes fail). The same template
 failed 26 of 28 seeds in August on the older wall.
 
 Consequence: **no verify-tier pathway has completed in prod**, so the
@@ -56,7 +56,7 @@ twice at the 28800 s pin's 9 h bound while still band-splitting
 (the clamp ceiling, 25 h deadline) on 2026-10-17 (gr493237, Reto ruling:
 raise, no per-candidate retry policy): the q164903cand-* verify seeds kept
 dying at the bound — 7 solo at 9 h, 3 at 19 h (3-way GPU contention on
-castor before the dark-host defer fix), one solo still running at 14.1 h
+the local-serving node before the dark-host defer fix), one solo still running at 14.1 h
 when OOM-killed. The code floor for an unset/malformed pin is the same
 86400, never the 90-min general default.
 
@@ -72,33 +72,33 @@ while building the hold):
   retry-once-then-infra-gripe path in `harvest_measures`, which has its own
   counter.
 
-## autocatpath: on-spark dev loop (measure + iterate on the GPU box)
+## autocatpath: GPU-node dev loop (measure + iterate on the GPU box)
 
 _Grouped 2026-09-26; was `autocatpath-spark-dev-loop`._
 
 **Why.** Deployed catpath 0.7.0 does **not** use the GPU. Measured
 2026-08-09 while a real seed (`no_to_nh3_pd`, PID 574501, `device=cuda`,
-`dtype=mixed`, medium, 5 images, best_first) ran on spark: `nvidia-smi dmon`
+`dtype=mixed`, medium, 5 images, best_first) ran on the GPU node: `nvidia-smi dmon`
 = **SM 15 %, 19 W** (near-idle) against **622 % CPU**. The path is CPU-bound
 in the serial ASE NEB loop; the GPU is cold. neb-ode (fewer evals, 0.8.0) +
 batched NEB (one MACE forward across all interior images → high SM%, 0.9.0,
-dtype-fix `9d587e5` on catpath main) target exactly this. spark has working
-`nvidia-smi`/`nvidia-smi dmon` (NOT `tegrastats` — not installed on this DGX
-Spark; supersedes the earlier tegrastats note).
+dtype-fix `9d587e5` on catpath main) target exactly this. The GPU node has working
+`nvidia-smi`/`nvidia-smi dmon` (NOT `tegrastats` — not installed on this GB10
+node; supersedes the earlier tegrastats note).
 
-**Goal.** Iterate on catpath GPU code directly on spark (no
+**Goal.** Iterate on catpath GPU code directly on the GPU node (no
 release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 
-### Ground truth (spark, 2026-08-09)
-- host `spark`, aarch64, user `deploy`, HOME `/home/deploy`, `/` 2.4 T free. <!-- home-path: allow — the deploy account's home on the node -->
+### Ground truth (the GPU node, 2026-08-09)
+- The GPU node, aarch64, user `deploy`, HOME `/home/deploy`, `/` 2.4 T free. <!-- home-path: allow — the deploy account's home on the node -->
 - prod engine venv `/opt/precis/venv`: torch `2.13.0+cu130` (cuda True),
   mace `0.3.16`, autocatpath `0.7.0`; hosts both `precis_pathway` and
   `autocatpath`. **Never mutate this venv** (prod workers run from it).
 - tooling: `git` 2.43, `python3` 3.12; **`uv` absent**, node/claude TBD.
-- prod workers on spark run as `deploy` (not launchd): `precis worker
+- prod workers on the GPU node run as `deploy` (not launchd): `precis worker
   --profile all` (claims seeds) + `--only job_ssh_node`.
 
-### Proposed setup ("catpath dev loop on spark")
+### Proposed setup ("catpath dev loop on the GPU node")
 1. **Checkout, zero prod mutation:** clone github.com/retospect/catpath to
    `/home/deploy/dev/catpath` at `main` (carries batching dtype-fix `9d587e5`). <!-- home-path: allow — the deploy account's home on the node -->
 2. **Run mechanism = PYTHONPATH overlay** (no new venv, no wheel-sourcing):
@@ -112,9 +112,9 @@ release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
    `neb_barrier` directly) over grid {optimizer: bfgs|neb-ode} ×
    {neb_batched: off|on} on cuda, with `nvidia-smi dmon` sampling in the
    background; prints wall, mean/peak SM%, barrier drift.
-4. **Claude Code on spark (host-native dev):** install CLI (needs node —
+4. **Claude Code on the GPU node (host-native dev):** install CLI (needs node —
    check/install), copy `~/.claude/{settings.json,agents,commands}` from the
-   Mac; **auth = interactive `claude login` on spark preferred over copying
+   Mac; **auth = interactive `claude login` on the GPU node preferred over copying
    `.credentials.json`** (copying a token to a shared cluster node spreads a
    secret — user's call). Small catpath-focused CLAUDE.md in the checkout.
 5. **Clean-room for benchmarks (prod-mutating → user runs):** kill the live
@@ -128,10 +128,10 @@ release→PyPI→ansible round-trip) and measure wall + SM% per knob combo.
 - Dev loop and prod worker must not run heavy GPU work simultaneously.
 - catpath ships by `git push origin main`; reaches prod only via GH release →
   PyPI + playbook 44 (+ mandatory `_AUTOCATPATH_CACHE_EPOCH` bump). The
-  on-spark loop is for measurement/iteration, not a prod path.
+  GPU-node loop is for measurement/iteration, not a prod path.
 
 ### Open decisions (for user)
-- Auth: interactive `claude login` on spark vs copy credentials?
+- Auth: interactive `claude login` on the GPU node vs copy credentials?
 - User/dir: `deploy` + `/home/deploy/dev` ok, or dedicated dev user? <!-- home-path: allow — the deploy account's home on the node -->
 - Quiesce now: kill seed 574501 + hold jobs for a clean first measurement?
 
@@ -167,7 +167,7 @@ Status 2026-08-09:
   "start again"). `_AUTOCATPATH_CACHE_EPOCH` synced `0.7.0`→`0.11.0` (fallback
   only; derivation wins on any dispatch host). Verify tier stays exhaustive +
   default optimizer (authoritative final pass carries no honest-absence caveat).
-  Spark GPU venv already on 0.11.0 (out-of-band, 2026-08-09); playbook 44
+  The GPU node's GPU venv already on 0.11.0 (out-of-band, 2026-08-09); playbook 44
   formalizes the pin on deploy. **Objective flipped** with this ship (log entry
   2001): quest 164903 `rubric_objectives` → Pareto `span_at_Uopt·U_L_abs·
   energy·P_side` (all min) — the harvest already lifts all four
@@ -224,7 +224,7 @@ Status 2026-08-09:
   the MACE fast path (`calculators._mace_batched_evaluator`) is **untested in
   CI** (`test_neb_batched.py` is EMT-only by the author's choice — the mace
   batch is "validated on target hardware, not here"). Benchmarked locally on
-  **mace 0.3.16 (spark's exact version)**: the batched forward raised
+  **mace 0.3.16 (the GPU node's exact version)**: the batched forward raised
   `RuntimeError: both inputs should have same dtype` and the guard **silently
   fell back to serial every time** → `neb_batched: true` would have bought
   **zero** GPU benefit in prod. Root cause: the collated graph is built at
@@ -237,15 +237,15 @@ Status 2026-08-09:
   - **Reaches prod only via a new PyPI release** — playbook 44 installs
     autocatpath from PyPI per the `>=` pin, NOT git main ([[catpath-dev-deploy]]).
     So the fix needs a **catpath `0.9.1` GH release → PyPI** before it's on
-    spark. (CI gap remains: the mace batched path is still untested — a
+    the GPU node. (CI gap remains: the mace batched path is still untested — a
     `pytest.importorskip("mace")` regression test would catch this class, but
     the author deliberately keeps mace out of CI; flagged, not added.)
   - **Precis integration (pending):** pin `>=0.9.1`, epoch bump, set
     `neb_optimizer: neb-ode` + `neb_batched: true` on the neb tier, keep
-    mixed/best_first/cueq. Then measure ONE seed on spark: wall + GPU util via
+    mixed/best_first/cueq. Then measure ONE seed on the GPU node: wall + GPU util via
     `tegrastats` (pynvml/nvidia-smi say "Not Supported" on GB10).
 
-- **Operational state 2026-08-09:** spark idle, precis-worker **running**
+- **Operational state 2026-08-09:** The GPU node idle, precis-worker **running**
   (restarted ~13:16 UTC, not by this session), GPU 0%, engine still **0.7.0**
   (0.8/0.9 never deployed). **130 `autocatpath_seed` job rows** (`kind='job'`,
   `retired_at IS NULL`): **105 unclaimed/claimable-now**, 24 stale
@@ -255,7 +255,7 @@ Status 2026-08-09:
 
 - **cuequivariance accel — shipped + deployed 2026-08-08.** Wired into
   `roles/autocatpath` (install + import-verify, gated to the ML-backend host)
-  and installed on spark via playbook 44. Fast path confirmed engaged (no
+  and installed on the GPU node via playbook 44. Fast path confirmed engaged (no
   "Cuequivariance acceleration will be disabled" banner). Necessary but
   **not sufficient**: seeds still run float64 and blow the wall by 3–4×.
 
@@ -289,9 +289,9 @@ Status 2026-08-09:
 
 - **Deployed 2026-08-09** (both steps — the engine bump needs two, see
   [[catpath-dev-deploy]]): `scripts/deploy` shipped the `compute.py` dispatch
-  change (epoch/dtype/best_first) to melchior + all venvs, and
+  change (epoch/dtype/best_first) to the agent host + all venvs, and
   `ansible-playbook playbooks/44-autocatpath.yml` pulled **autocatpath 0.7.0**
-  into the spark GPU worker venv (verified `autocatpath.__version__ == 0.7.0`,
+  into the GPU node's GPU worker venv (verified `autocatpath.__version__ == 0.7.0`,
   worker restarted). **Open confirmation:** watch the first fresh seed
   dispatched on 0.7 — does it land `result.json` *under* the ~3 h wall, and
   does its `results.json.neb_schedule` list `skipped` edges (proof the prune is
@@ -307,7 +307,7 @@ Status 2026-08-09:
   thousands-of-evals-per-edge budget in float64 — a PRE-EXISTING autocatpath
   engine cost, NOT a device/config/precis bug (diagnosed 2026-08-09, one wedged
   0.7 seed killed + engine code traced).** Ruled OUT, with proof:
-  - **Device/GPU/MACE are healthy on the GB10.** Isolated on spark's
+  - **Device/GPU/MACE are healthy on the GB10.** Isolated on the GPU node's
     `/opt/precis/venv`: `torch 2.13.0+cu130`, GB10 cc (12,1)=sm_121, `arch_list`
     has `sm_120` (covers it — raw matmul 0.48 s, no `no kernel image` error), and
     **`mace_mp(device='cuda', default_dtype='float64')` places the model on
@@ -315,7 +315,7 @@ Status 2026-08-09:
     no silent CPU fallback, no `CUDA_VISIBLE_DEVICES` masking (it was simply
     unset → GPU 0 visible). The `pynvml: Not Supported` line is benign; the
     "pynvml → CPU fallback" reading was wrong.
-  - **The 153 GB "memory blowup" was a mis-read.** spark is 128 GB RAM + 16 GB
+  - **The 153 GB "memory blowup" was a mis-read.** The GPU node is 128 GB RAM + 16 GB
     swap, swap stayed 0 B, no OOM — so a 153 GB *RSS* is physically impossible;
     that figure is almost certainly **VSZ** (CUDA reserves huge virtual address
     space on unified-memory hw). There was no real leak-to-OOM. DOF math kills
@@ -349,8 +349,8 @@ Status 2026-08-09:
     `bind_tether_ramp`, `neb_max_steps`); (3) incremental checkpointing so a
     wall-kill degrades instead of annihilating the edge. best_first (shipped)
     already prunes edges; these attack the per-edge cost it can't.
-  - **Operational note:** `precis-worker` is **stopped on spark** (halts ALL
-    spark passes, not just autocatpath) as of this investigation — restart it
+  - **Operational note:** `precis-worker` is **stopped on the GPU node** (halts ALL
+    GPU-node passes, not just autocatpath) as of this investigation — restart it
     (or restart with pathway disabled) once a fix path is chosen; don't leave the
     node idle indefinitely.
 - **Still open regardless of per-eval speed:** incremental checkpointing so a
@@ -397,10 +397,10 @@ confirmed cause.
 
 ### Remaining
 
-1. **jb265186 (spark) unexplained** — the 1/48 without the Infinity
-   traceback in its window. Possibly a genuine one-off infra event (spark
+1. **jb265186 (the GPU node) unexplained** — the 1/48 without the Infinity
+   traceback in its window. Possibly a genuine one-off infra event (the GPU node
    daemon restarts 08:26/09:07 that day) or a log gap. Don't fold it into
-   "same cause" silently; if batch 3 shows a spark-only residual, start here.
+   "same cause" silently; if batch 3 shows a GPU-node-only residual, start here.
 2. **The generic swallow in `ssh_node.py::run_ssh_node_pass`** (~line 205):
    any exception from a job_type's `poll()` is still log-and-continue. With
    cleanup-after-persist the seed path now retries safely, but other
@@ -427,20 +427,20 @@ the 44.
 
 5. **st210770 is a pathological structure, not infra** — now **28/28
    lifetime failures, 0 successes** after the straggler batch
-   (jb269500–269508, verified 2026-08-30): wall-timeouts on pollux/castor,
-   `infra:child-killed` on spark — hosts that completed st261823's full
+   (jb269500–269508, verified 2026-08-30): wall-timeouts on the DGX nodes,
+   `infra:child-killed` on the GPU node — hosts that completed st261823's full
    replicate set in the same windows. The seed job on this structure blows
    up the relax (OOM on some hosts, runs-past-wall on others). Do NOT
    re-dispatch; exclude from the spread analysis (its failure IS the data
    point); inspect the structure (`st210770`) and reproduce one seed by
    hand on a node to classify. (Checked: jb265186 was `tick0-210211-r3`,
    NOT a 210770 replicate — and that idem key SUCCEEDED in batch 3
-   (jb266921), so item 1 stays classified as a one-off spark infra event,
+   (jb266921), so item 1 stays classified as a one-off GPU-node infra event,
    now moot.)
-6. **Spark `child-killed` mechanism identified, historical** — spark's
+6. **The GPU node `child-killed` mechanism identified, historical** — the GPU node's
    earlyoom runs with `--prefer '^(python[0-9.]*|precis|llama-server|…)'`,
    so seed children there were preferential OOM-kill targets under memory
-   pressure. Can't recur: spark's retirement is verified enacted (zero
+   pressure. Can't recur: the GPU node's retirement is verified enacted (zero
    precis systemd units, out of every inventory service group, `inference`
    group emptied as the resurrection guard, no job leases since 08-29
    14:00). Record only — no action.
@@ -467,8 +467,8 @@ Files: `src/precis_pathway/runner.py`, `src/precis/workers/executors/ssh_node.py
 
 **Prod re-read 2026-10-11 (gr347577): the wall pin is no longer the story.**
 Seed jobs now carry `resources.wall_seconds=28800`, yet 23 of 91 seeds
-created 10-04..10-11 failed (10-04: 7, 10-08: 8, 10-10: 7, 10-11: 1; castor
-and pollux both). Only 6 are `runner: killed at wall-clock deadline`
+created 10-04..10-11 failed (10-04: 7, 10-08: 8, 10-10: 7, 10-11: 1; the local-serving node
+and the second DGX node both). Only 6 are `runner: killed at wall-clock deadline`
 (`failure_class=timeout` on 6 of the 23); the rest die with `child process
 exited without writing result.json`, whose recorded stderr tail holds only
 torch/ase DeprecationWarnings, so the exit cause (signal, OOM, crash) is not

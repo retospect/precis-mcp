@@ -108,7 +108,7 @@ a soft-deleted gripe)
    (1) and (2) of that analysis arrived cut off. Get them resent and fix
    them at source. The dedupe agent closes existing duplicates; this
    thread does not. Of its two hand-offs, td455178 and
-   td345821 are both closed (caspar runs no daemons by design).
+   td345821 are both closed (the database host runs no daemons by design).
 2. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
@@ -173,11 +173,11 @@ a soft-deleted gripe)
 - **the fix_gripe self-repair lane** — closed
   by Reto's ruling 2026-10-02 (td460703, "Drop the lane, we run locally
   session here"): lane OFF. It never delivered; every job skipped at the dry
-  run because melchior's fix checkout holds no push credential. Switch: prod
-  `service_config` row melchior/`backlog_groom` set prio 5 to 0 at
+  run because the agent host's fix checkout holds no push credential. Switch: prod
+  `service_config` row <agent-host>/`backlog_groom` set prio 5 to 0 at
   2026-10-02 22:04Z, so the groomer mints no `fix_gripe` todos. Re-arm only
-  on Reto's say: `precis service prio melchior backlog_groom 5`. Code and the
-  job type stay. `diagnose_scan` was switched off too (melchior prio 5 to 0, 2026-10-02 22:37Z, Reto via review item monitors-that-go-quiet-2; re-arm `precis service prio melchior diagnose_scan 5`). Threaded sessions now fix their
+  on Reto's say: `precis service prio <agent-host> backlog_groom 5`. Code and the
+  job type stay. `diagnose_scan` was switched off too (<agent-host> prio 5 to 0, 2026-10-02 22:37Z, Reto via review item monitors-that-go-quiet-2; re-arm `precis service prio <agent-host> diagnose_scan 5`). Threaded sessions now fix their
   own gripes. Any gripe from the 09-30 reset still needs "is the fix already
   in main?" asked before it is ranked. Residue closed on prod 2026-10-02
   about 23:10Z: td461210 `won't-do` (its 7 leaves' gripes were all fixed on main;
@@ -187,7 +187,7 @@ a soft-deleted gripe)
 
 - **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
   inertness is no longer a code-reading claim. Four real runs
-  (job:458512, 458575, 458576, 458577) each ended in 0.9s on melchior running
+  (job:458512, 458575, 458576, 458577) each ended in 0.9s on the agent host running
   `8.35.1@824a2734` with the exact refusal the preflight is for
   (`could not read Username for 'https://github.com': terminal prompts
   disabled`), no agent spawned. The budget half holds too, and by construction

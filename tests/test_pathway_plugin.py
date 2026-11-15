@@ -1355,7 +1355,7 @@ def test_put_typo_mode_raises_and_mints_no_job(
     EMT run."""
     from precis.errors import BadInput
 
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce")
     h = _handler(pathway_store)
 
     with pytest.raises(BadInput) as exc_info:
@@ -1930,18 +1930,18 @@ def test_put_dispatches_job_when_route_node_set(
 ) -> None:
     """A configured route node ⇒ mint an `autocatpath_explore` job parented on
     the pathway (compute lane, via `can_own_jobs`), not an inline run."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce")
     hub = Hub(store=pathway_store)
     h = _try(PathwayHandler, hub=hub)
     assert h is not None
 
     r = h.put(id="route_test", text=SMOKE)
-    assert "dispatched autocatpath compute" in r.body and "spark" in r.body, r.body
+    assert "dispatched autocatpath compute" in r.body and "spruce" in r.body, r.body
 
     ref = pathway_store.get_ref(kind="pathway", id="route-test")
     assert ref is not None
     assert ref.meta["status"] == "computing"
-    assert ref.meta["route_node"] == "spark"
+    assert ref.meta["route_node"] == "spruce"
 
     with pathway_store.pool.connection() as c:
         rows = c.execute(
@@ -1953,7 +1953,7 @@ def test_put_dispatches_job_when_route_node_set(
     _job_id, jmeta = rows[0]
     assert jmeta["job_type"] == "autocatpath_explore"
     assert jmeta["executor"] == "ssh_node"
-    assert jmeta["params"]["target_node"] == "spark"
+    assert jmeta["params"]["target_node"] == "spruce"
 
 
 def test_put_route_node_env_list_pins_first_node(
@@ -1964,7 +1964,7 @@ def test_put_route_node_env_list_pins_first_node(
     """The multi-node deploy renders the env as the comma-joined capability
     list; this single-job surface must pin the FIRST node — the raw CSV
     string would match no worker's ``PRECIS_NODE`` and wedge unclaimed."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark, castor, pollux")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce, cedar, poplar")
     hub = Hub(store=pathway_store)
     h = _try(PathwayHandler, hub=hub)
     assert h is not None
@@ -1972,7 +1972,7 @@ def test_put_route_node_env_list_pins_first_node(
     h.put(id="route_list_test", text=SMOKE)
     ref = pathway_store.get_ref(kind="pathway", id="route-list-test")
     assert ref is not None
-    assert ref.meta["route_node"] == "spark"
+    assert ref.meta["route_node"] == "spruce"
 
     with pathway_store.pool.connection() as c:
         rows = c.execute(
@@ -1980,7 +1980,7 @@ def test_put_route_node_env_list_pins_first_node(
             "AND retired_at IS NULL",
             (ref.id,),
         ).fetchall()
-    assert rows and rows[0][0]["params"]["target_node"] == "spark"
+    assert rows and rows[0][0]["params"]["target_node"] == "spruce"
 
 
 def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
@@ -2013,7 +2013,7 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
             "pathway_ref_id": ref.id,
             "config": _yaml_dict(SMOKE),
             "force_backend": "emt",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     pathway_job._dispatch(ctx, pathway_job.SPEC)
@@ -2024,7 +2024,7 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
     assert got is not None
     assert got.meta["results"]["nodes"], "results not written back"
     assert got.meta["produced_by"] == "autocatpath_explore"
-    assert got.meta["ran_on"] == "spark"
+    assert got.meta["ran_on"] == "spruce"
     blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
 
@@ -2063,7 +2063,7 @@ def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
             "seed": 1,
             "model_index": 0,
             "content_key": "deadbeef",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     seed_job._dispatch(ctx, seed_job.SPEC)
@@ -3461,7 +3461,7 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
             "pathway_slug": ref.slug,
             "config": cfg,
             "force_backend": "emt",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     ctx.meta["dispatched_from_todo"] = agg_todo_id
@@ -3474,7 +3474,7 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     assert got is not None
     assert got.meta["results"]["nodes"], "results not written back"
     assert got.meta["produced_by"] == "autocatpath_aggregate"
-    assert got.meta["ran_on"] == "spark"
+    assert got.meta["ran_on"] == "spruce"
     assert got.meta["n_seed_partials"] == 2
     blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")

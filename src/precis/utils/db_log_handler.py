@@ -44,7 +44,7 @@ Each row carries:
 
 * ``host`` — ``PRECIS_HOST_NAME`` env, falls back to
   ``socket.gethostname()``. The fallback is what shows up locally
-  ("melchior.local", "caspar"); the env lets containers override.
+  ("<node>.local", "<node>"); the env lets containers override.
 * ``process`` — ``PRECIS_PROCESS`` env, NULL when unset.
   LaunchDaemon plists set this to "precis-worker" /
   "precis-worker-agent" / "precis-cron-tick" so cross-process

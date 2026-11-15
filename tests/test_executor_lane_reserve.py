@@ -435,21 +435,21 @@ def test_setting_door_accepts_host_suffixed_knobs(jobs: JobHandler) -> None:
     must be non-empty, and the executor head must name a real executor."""
     out = jobs.put(
         mode="setting",
-        key="claim.executor_cap.ssh_node.spark",
+        key="claim.executor_cap.ssh_node.spruce",
         value=4,
         reason="test",
     )
-    assert "set claim.executor_cap.ssh_node.spark" in out.body
+    assert "set claim.executor_cap.ssh_node.spruce" in out.body
     out = jobs.put(
         mode="setting",
-        key="claim.reserve.ssh_node.spark",
+        key="claim.reserve.ssh_node.spruce",
         value={"run_slice": 1},
         reason="test",
     )
-    assert "set claim.reserve.ssh_node.spark" in out.body
+    assert "set claim.reserve.ssh_node.spruce" in out.body
     for key in (
-        "claim.executor_cap.ssh_node.spark",
-        "claim.reserve.ssh_node.spark",
+        "claim.executor_cap.ssh_node.spruce",
+        "claim.reserve.ssh_node.spruce",
     ):
         jobs.put(mode="setting", key=key, unset=True, reason="test")
 
@@ -467,14 +467,14 @@ def test_setting_door_refuses_bad_host_suffixed_knobs(
     with pytest.raises(BadInput):
         jobs.put(
             mode="setting",
-            key="claim.executor_cap.no_such_executor.spark",
+            key="claim.executor_cap.no_such_executor.spruce",
             value=4,
             reason="test",
         )
     with pytest.raises(BadInput):
         jobs.put(
             mode="setting",
-            key="claim.reserve.ssh_node.spark",
+            key="claim.reserve.ssh_node.spruce",
             value={"no_such_type": 1},
             reason="test",
         )

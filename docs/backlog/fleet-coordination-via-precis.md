@@ -18,7 +18,7 @@ engines. Ruled with Reto 2026-10-09.
   ticks. Each wake is a full turn at ~250k context.
 - Coordination state is per machine. `scripts/round` keeps marks in
   `<git-common-dir>/precis-round/`; `scripts/inflight` liveness is a local
-  pid. Codex on melchior and Claude on the Mac cannot see each other.
+  pid. Codex on the agent host and Claude on the Mac cannot see each other.
 - `SendMessage` is Claude-only and `codex queue` is Codex-only. Every pool
   speaks MCP.
 
@@ -76,7 +76,7 @@ both hosts are macOS). Sees, per session:
   call; Codex rollout JSONL last event; approval prompt by matching the
   tail of `capture-pane`. Devin: tmux only at first.
 - **Capacity:** context fill from per-turn usage in each transcript;
-  account quota from Codex rollout `rate_limits` (verify on melchior) and
+  account quota from Codex rollout `rate_limits` (verify on the agent host) and
   for Claude whatever the status-line input exposes (verify).
 
 It writes only changed rows (one cheap last-seen update per host) and
@@ -91,7 +91,7 @@ One `get(kind='fleet')`:
 
 ```
 EXCEPTIONS
-  codex@melchior/w7   waiting on approval 14m   attach: ssh … tmux attach -t 0:7
+  codex@<agent-host>/w7   waiting on approval 14m   attach: ssh … tmux attach -t 0:7
 AGENTS  vendor@host/project/tree · state · quiet · purpose · mark · mail · ctx%
 QUOTA   claude 5h 42% · codex 5h 18% / week 61%
 ```
@@ -131,7 +131,7 @@ session past ~60% context finishes its slice and restarts.
   coordinator closes them with `/exit` (added to the pane-typing list).
 - **Quota source.** Codex `/status` shows the snapshot its rollouts record
   as `rate_limits`; compare the reporter's QUOTA line with `/status` on
-  melchior, and fall back to `capture-pane` of `/status` in an idle pane
+  the agent host, and fall back to `capture-pane` of `/status` in an idle pane
   only if the rollout lacks a window.
   Kimi Code (2026-10-28): its session wires carry per-request
   `usage.record` but no plan figure, so the reporter shows host-local
@@ -164,11 +164,11 @@ and that headless volume is within each plan's terms.
 ## Steps
 
 1. **Reporter, read-only, no DB.** Prints the fisheye locally on the Mac
-   and melchior; run against live sessions for a day to tune state
+   and the agent host; run against live sessions for a day to tune state
    detection and exception rules. Verify the capacity sources.
    `scripts/fleet-report` exists (2026-10-09); runs on another host as
    `ssh HOST 'python3 - --repo ~/precis-mcp' < scripts/fleet-report`. <!-- home-path: allow — the checkout path on the named host -->
-   Verified on the Mac and melchior: Claude transcript state and usage;
+   Verified on the Mac and the agent host: Claude transcript state and usage;
    Codex `rate_limits` (Pro plan: weekly `primary` only, `secondary:
    null`, no 5h window); a live Codex pane's footer (`Context N% left ·
    Ready`) gives state and context before the first rollout exists;
@@ -241,8 +241,8 @@ and that headless volume is within each plan's terms.
   args={'assigned': …})` on coordinator-owned fields only;
   `edit_modes=("replace",)`, with a parity-test entry.
 - **Transport:** the Mac's caddy proxy listens on loopback only, so
-  melchior cannot push. The Mac runs the collector: its own report plus
-  `ssh reto@melchior python3 - --json < scripts/fleet-report` (the step-1
+  the agent host cannot push. The Mac runs the collector: its own report plus
+  `ssh reto@<agent-host> python3 - --json < scripts/fleet-report` (the step-1
   pattern), then one `put` per host to the loopback MCP with the existing
   bearer token (`PRECIS_MCP_TOKEN`). It is a stdlib JSON-RPC client
   (initialize, initialized, tools/call). The Mac being down stops
@@ -261,7 +261,7 @@ and that headless volume is within each plan's terms.
   `scripts/inflight --all-hosts` reads the agent rows.
 
 **First live push (2026-10-09, f76d3b6cf):** 70 rows from the Mac, 1
-from melchior. Tuning before step 3:
+from the agent host. Tuning before step 3:
 - A worktree with no Claude session still gets a `claude` row (`idle`,
   no age, no ctx): every Devin tree shows twice. Emit a row only for a
   session that exists.

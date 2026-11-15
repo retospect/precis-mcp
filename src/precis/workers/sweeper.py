@@ -30,8 +30,8 @@ terminalizes the same way, tagged ``reaped:dead-node-queued``, leaving
 quest loops (``idem_key`` ``quest_tick:*``) to ``quest/loop.py``'s own
 cancel-plus-re-mint arm. ``_reap_off_lane_pinned`` (gr493226) covers the
 live-host case both of those miss: the node still heartbeats but stopped
-running the job's executor pass (castor went heartbeat-only and its pinned
-seeds sat ~28h). Lane membership is read from ``worker_logs`` per-cycle
+running the job's executor pass (the local-serving node went heartbeat-only and
+its pinned seeds sat ~28h). Lane membership is read from ``worker_logs`` per-cycle
 rows for ``job_<executor>`` on the pinned host — ran within 7 days, silent
 past ``PRECIS_OFF_LANE_PIN_SILENCE_S`` (4h), and no live lease on that
 worker process (a blocking dispatch silences its rotation). Queued and
@@ -1606,7 +1606,7 @@ _OFF_LANE_SILENCE_S_FLOOR = 600
 def _off_lane_silence_s() -> int:
     """Seconds a node's executor pass must be silent before its pinned jobs
     are reaped (``PRECIS_OFF_LANE_PIN_SILENCE_S``, default 4h — pass-dead's
-    budget; floor 10 min). The slowest healthy rotation on prod (melchior's
+    budget; floor 10 min). The slowest healthy rotation on prod (the agent host's
     agent-profile ``precis-worker``) gapped 2.6h in a week."""
     raw = os.environ.get("PRECIS_OFF_LANE_PIN_SILENCE_S")
     try:
@@ -2013,7 +2013,7 @@ def _reap_off_lane_pinned(store: Store, *, limit: int) -> int:
 
     The dead-node reaps call a node dead only when the *host* is down. A
     host that still heartbeats but no longer runs the job's executor pass
-    (castor went heartbeat-only and its pinned ``autocatpath_seed`` jobs
+    (the local-serving node went heartbeat-only and its pinned ``autocatpath_seed`` jobs
     sat ~28h) is invisible to them, and every claim path node-gates on the
     pin, so nothing else can take the job. Here a node has left the lane
     when it ran ``job_<executor>`` within the last week, has not for
@@ -2142,7 +2142,7 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
 
 #: Minimum seconds between *remote* stale-DFT-container reaps from this
 #: process (``PRECIS_DFT_REMOTE_REAP_INTERVAL_S``). The DFT node may run a
-#: heartbeat-only worker (pollux does), so no sweeper pass ever executes
+#: heartbeat-only worker (the second DGX node does), so no sweeper pass ever executes
 #: there — sweeper hosts must reap it over ssh (gr310809), but the
 #: per-minute pass must not fan an ssh + ``docker ps`` at the node from
 #: every host every pass, so the remote leg is throttled per process.

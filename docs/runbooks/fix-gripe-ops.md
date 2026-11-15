@@ -2,12 +2,12 @@
 
 **Status: lane OFF since 2026-10-02** (Reto, td460703: "Drop the lane, we run
 locally session here"). It never delivered: every job skipped at the dry-run
-preflight because melchior's fix checkout has no push credential. The
-groomer's prod `service_config` row melchior/`backlog_groom` is prio 0, so
+preflight because the agent host's fix checkout has no push credential. The
+groomer's prod `service_config` row agent-host/`backlog_groom` is prio 0, so
 nothing mints `fix_gripe` todos; a hand-`put` job still runs the code and
 skips at the preflight. Re-arm only on Reto's say:
-`precis service prio melchior backlog_groom 5` (plus the push credential
-below). `diagnose_scan` is off too: melchior `service_config` prio 5 to 0 at 2026-10-02 22:37Z (Reto, review item monitors-that-go-quiet-2); re-arm with `precis service prio melchior diagnose_scan 5`. Gripes are fixed by thread sessions. What
+`precis service prio <agent-host> backlog_groom 5` (plus the push credential
+below). `diagnose_scan` is off too: the agent host `service_config` prio 5 to 0 at 2026-10-02 22:37Z (Reto, review item monitors-that-go-quiet-2); re-arm with `precis service prio <agent-host> diagnose_scan 5`. Gripes are fixed by thread sessions. What
 follows is reference for the trust model and the deployment contract.
 
 **When.** You're standing up or auditing the `job_type='fix_gripe'`

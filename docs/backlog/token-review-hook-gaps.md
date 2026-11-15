@@ -14,7 +14,7 @@ Open gaps from the token-review passes (2026-07 .. 2026-10-02). Shipped:
   search_code/navigator, rate-limited per session.
 - (b) **Rule B** fires per call but never escalates — count per session,
   escalate after ~5, and wrap the retyped DSN-extraction boilerplate as a
-  helper (`scripts/agent-dsn`?); `_SSH_RE` misses spark/castor/pollux.
+  helper (`scripts/agent-dsn`?); `_SSH_RE` misses the DGX/GB10 node hostnames.
 - (c) Post-compact sessions re-Read the same governing doc — extend the
   PreCompact nudge to ask for a state-so-far note naming the doc + line
   ranges. Owner `scripts/hooks/precompact-persist.sh`. Compact thrash:

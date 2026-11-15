@@ -15,20 +15,20 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 
 | host       | OS / init      | role       | runs |
 |------------|----------------|------------|------|
-| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + drain workers + watch + web + embedder + asa-bot + `tts` |
-| balthazar  | macOS / launchd| scheduler  | system worker + embedder |
-| caspar     | macOS / launchd| data (NFS) | Postgres (prod DB) + backups + NFS export — **no precis venv, no worker, no embedder** (daemon-free by design; the deploy only lands a constraints file) |
-| castor     | Linux / systemd| serving + compute | distributed llama.cpp half of `llm.chain.big` (paired with pollux) + heartbeat-only worker (playbook 20c) + GPU-pinned `retrosynth` |
-| pollux     | Linux / systemd| serving + compute | the other llama.cpp half + heartbeat-only worker + GPU-pinned `dft` / `fold` |
-| spark      | Linux / systemd| standalone | **ZERO precis units.** Permanently off cluster duty since 2026-08-29 (Reto's call) — dedicated to paper work. In `linux` + `nfs_clients` only, for base-OS management and the NAS mount. Do not re-add it to a service group; `inference` is left empty as the guard. |
+| agent host       | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + drain workers + watch + web + embedder + asa-bot + `tts` |
+| worker host      | macOS / launchd| scheduler  | system worker + embedder |
+| database host    | macOS / launchd| data (NFS) | Postgres (prod DB) + backups + NFS export — **no precis venv, no worker, no embedder** (daemon-free by design; the deploy only lands a constraints file) |
+| local-serving node | Linux / systemd| serving + compute | distributed llama.cpp half of `llm.chain.big` (paired with the second DGX node) + heartbeat-only worker (playbook 20c) + GPU-pinned `retrosynth` |
+| second DGX node  | Linux / systemd| serving + compute | the other llama.cpp half + heartbeat-only worker + GPU-pinned `dft` / `fold` |
+| GPU node         | Linux / systemd| standalone | **ZERO precis units.** Permanently off cluster duty since 2026-08-29 (Reto's call) — dedicated to paper work. In `linux` + `nfs_clients` only, for base-OS management and the NAS mount. Do not re-add it to a service group; `inference` is left empty as the guard. |
 
 ## Log files (all under `/var/log/` unless noted)
 
 | log | hosts | what |
 |-----|-------|------|
-| `precis-worker.log`        | all         | the collapsed `precis worker --profile all` unit (`com.precis.worker`, playbook `20b-precis-worker-collapsed.yml`; `worker_logs` `process='precis-worker'`): embed, summarize, chunk_keywords, dispatch, nursery, `heartbeat`, `paper_reconcile`, the `scheduler` pass [cron_tick/watch_poll + the §A lease cadences — on melchior that includes the host-pinned `dream_agent`/`anki_sync` fires], and on melchior also the agent-profile passes (`quota_check` — PRECIS_MCP_CONFIG is gateway-only — plus a second `job_claude_inproc`/`job_inproc` claimant). The big one (100s of MB–1 GB). |
-| `precis-worker-agentlane.log` | melchior | agent-lane worker — the dedicated `com.precis.worker-agentlane` unit (playbook `20e-precis-worker-agentlane.yml`, `precis worker --only job_claude_inproc --only job_inproc`): a second claimant for `job_claude_inproc` plan_tick/reviewers and `job_inproc`, nothing else — `quota_check` and the `scheduler` pass's `dream_agent`/`anki_sync` cadences run in the collapsed unit (`precis-worker.log`), not here. The authoritative log is the DB `worker_logs` table (`process='precis-worker-agentlane'`) — read it via the `/logs` view (`id='/logs?process=precis-worker-agentlane&level=INFO'`); the stdout file only ever carries bootstrap/fallback lines. Owner `deploy`. ⚠ The old `/var/log/precis-worker-agent.log` (0 bytes since 2026-08-07) belongs to the retired `com.precis.worker-agent` unit — it means nothing (gr638954). |
-| `precis-web.log`           | melchior    | FastAPI/uvicorn web UI. uvicorn lines have no leading timestamp. |
+| `precis-worker.log`        | all         | the collapsed `precis worker --profile all` unit (`com.precis.worker`, playbook `20b-precis-worker-collapsed.yml`; `worker_logs` `process='precis-worker'`): embed, summarize, chunk_keywords, dispatch, nursery, `heartbeat`, `paper_reconcile`, the `scheduler` pass [cron_tick/watch_poll + the §A lease cadences — on the agent host that includes the host-pinned `dream_agent`/`anki_sync` fires], and on the agent host also the agent-profile passes (`quota_check` — PRECIS_MCP_CONFIG is gateway-only — plus a second `job_claude_inproc`/`job_inproc` claimant). The big one (100s of MB–1 GB). |
+| `precis-worker-agentlane.log` | the agent host | agent-lane worker — the dedicated `com.precis.worker-agentlane` unit (playbook `20e-precis-worker-agentlane.yml`, `precis worker --only job_claude_inproc --only job_inproc`): a second claimant for `job_claude_inproc` plan_tick/reviewers and `job_inproc`, nothing else — `quota_check` and the `scheduler` pass's `dream_agent`/`anki_sync` cadences run in the collapsed unit (`precis-worker.log`), not here. The authoritative log is the DB `worker_logs` table (`process='precis-worker-agentlane'`) — read it via the `/logs` view (`id='/logs?process=precis-worker-agentlane&level=INFO'`); the stdout file only ever carries bootstrap/fallback lines. Owner `deploy`. ⚠ The old `/var/log/precis-worker-agent.log` (0 bytes since 2026-08-07) belongs to the retired `com.precis.worker-agent` unit — it means nothing (gr638954). |
+| `precis-web.log`           | the agent host    | FastAPI/uvicorn web UI. uvicorn lines have no leading timestamp. |
 | `precis-embedder.log`      | all         | `serve-embeddings` (bge-m3), loopback `127.0.0.1:8181`. Health: `curl 127.0.0.1:8181/readyz` → `200` + JSON `{"status": "ready"\|"warming", "state": "loaded"\|"idle"\|"warming"}` (§F cycle b: `idle` is still 200 — a lazy reload happens on the next `/embed`). |
 | `precis-watch.log`         | all         | ingest inbox watcher. |
 | `precis-heartbeat.log`     | all         | per-node liveness heartbeat (still-live launchd/systemd timer; §A also runs it as a worker pass in the collapsed unit — same log, `precis-worker.log`, for that half). |
@@ -37,8 +37,8 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 `retire-thin-timers.yml` — look in `precis-worker.log`
 instead): `precis-cron-tick.log`, `precis-watch-poll.log`, `precis-dream.log`,
 `precis-anki-sync.log`, `precis-reconcile.log`.
-| asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | melchior | Discord bridge. Also relays nursery Discord alerts. | <!-- home-path: allow — the real path on the named host -->
-| Shared crons: `/mnt/cluster/logs/` (`/opt/shared`/`/shared` are transition symlinks to it) | caspar hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |
+| asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | the agent host | Discord bridge. Also relays nursery Discord alerts. | <!-- home-path: allow — the real path on the named host -->
+| Shared crons: `/mnt/cluster/logs/` (`/opt/shared`/`/shared` are transition symlinks to it) | the database host hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |
 
 Line format on the python logs: `YYYY-MM-DD HH:MM:SS,mmm LEVEL logger msg`.
 Filter last 24h with e.g.:

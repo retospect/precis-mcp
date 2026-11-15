@@ -13,7 +13,7 @@ import pytest
 
 from precis.workers import serving_metrics
 
-# Names and TYPEs from the real capture on castor's running image
+# Names and TYPEs from the real capture on cedar's running image
 # (SGLang v0.5.21, ``--enable-metrics``): the only retraction series is
 # the num_retracted_reqs GAUGE — no counter exists. Plus a raft of
 # metrics we don't consume.

@@ -142,7 +142,7 @@ check their state first.
 - **Structural review ran without precis** (gripe closed): the fail-closed
   gate (eebbb9a9f) and the container's blocking MCP wait (3ac3c25d6) are
   live in round 2 (63301c5c, 13:49Z). First structural pass after the
-  deploy, 13:50Z on melchior: digest written, $0.71, 188 s. A clean pass
+  deploy, 13:50Z on the agent host: digest written, $0.71, 188 s. A clean pass
   alone does not prove the gate ran: 35 of the 50 passes in the 12
   days before were clean too. The gate now logs `claude gate: precis connected after Ns`
   (landed with this entry, round 3). Step 3, the `precis-agent` rebuild at the current CLI,
@@ -153,7 +153,7 @@ check their state first.
   refused ("precis not connected") or the 95th percentile of
   "connected after" exceeds 10 s. Read both from worker_logs during the
   gate-timing check.
-- **Round-2 dogfood, melchior's shared server (13:52Z):** the checkout
+- **Round-2 dogfood, the agent host's shared server (13:52Z):** the checkout
   watchdog drained generation 1 (0 in-flight calls) and generation 2
   started at 13:50:16Z on 63301c5c, migration 0181. Session tools work
   and the log shows no errors since. Fairness (c43ddf046, `server.py`)
@@ -173,7 +173,7 @@ check their state first.
      Reconnect restores it.
    - **A session that starts while the port is refused** retries 3 times
      at 1/2/4 s, ~7 s, then gives up for its whole life. The orchestrator
-     started 11:34:21Z while melchior was still rebooting (server up
+     started 11:34:21Z while the agent host was still rebooting (server up
      11:42Z) and never had precis. MCP connects run concurrently with
      SessionStart hooks, so the ensure hook cannot cover it;
      `scripts/fleet up` now waits for an HTTP answer before creating
@@ -189,14 +189,14 @@ check their state first.
    logs were not read. The server-side fix is fewer and shorter refused
    windows, shipped as ONE ensure-script install (an edit is itself a
    recreate). It is installed on
-   melchior (below):
+   the agent host (below):
    - secret rotations SIGHUP the child instead of recreating;
    - the label hashes the container spec, not the script file;
    - recreate is create → `docker stop -t 45` (drains via the
      supervisor's SIGTERM→SIGHUP, 8ebb9d785) → start, under
      `trap '' HUP INT TERM`, so a killed hook cannot leave the port dark;
    - `follow_prod` keeps the served clone on origin/prod (deploys move it
-     only on the deploying machine; melchior served 06e3f3d7 under a
+     only on the deploying machine; the agent host served 06e3f3d7 under a
      0dc5e6a0 prod), at most one fetch a minute, at SessionStart;
    - the prepare step syncs new or bumped dependencies from `uv.lock`
      (a failed dry-run no longer stamps the lock) and reinstalls project
@@ -213,7 +213,7 @@ check their state first.
      time it again on the real install.
    - a client idle ~2 h (last call before 14:59:27Z) went through a
      recreate at 17:01Z, and its next tool call reached the new server.
-   **Installed on melchior 2026-10-02 ~20:56Z** (Reto ran the `cp` and the
+   **Installed on the agent host 2026-10-02 ~20:56Z** (Reto ran the `cp` and the
    `--recreate`; a session's `cp` was denied by the permission
    classifier):
    - port 8765 refused for under a second (forwarder stop and start both
@@ -226,7 +226,7 @@ check their state first.
    from the next recreate. The orchestrator's sweep counts the drops
    against a before-state of 5 DOWN.
    **Still to do:**
-   - The dev Mac and melchior take the proxy version of the script at the
+   - The dev Mac and the agent host take the proxy version of the script at the
      organizer-mcp-2 cutover. Its home is now
      `deploy/mcp-http/precis-mcp-http-ensure.sh` (9c668358a). The live
      copy under `../../infrastructure/precis-mcp/` is still copied by
@@ -238,7 +238,7 @@ check their state first.
    **Incident 2026-10-02 15:04:13–15:04:54Z (this thread):** a test
    harness for the fleet wait ran the live ensure script with test ports;
    it removed the server, then recreated it on 8799. Restored on 8765 by
-   hand. 8765 was refused for 24 s, so every connected session on melchior
+   hand. 8765 was refused for 24 s, so every connected session on the agent host
    gave up at 15:04:29Z and needed `/mcp`. `wait_mcp` now takes
    `PRECIS_MCP_ENSURE`, and its test never reaches the real script.
 2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
@@ -259,7 +259,7 @@ check their state first.
 ## Runbook
 
 - **A deploy that changes `[project.entry-points]` or `uv.lock`** needs
-  no hand step on melchior since the 2026-10-02 install. The watchdog
+  no hand step on the agent host since the 2026-10-02 install. The watchdog
   bounce re-runs the prepare step, which reinstalls project metadata when
   `pyproject.toml` changed and syncs new or bumped dependencies; check
   the `precis-prepare:` lines in `docker logs`. A dependency with no

@@ -1,7 +1,7 @@
 ---
 status: idea
 pillar: 3d-design
-title: autocatpath_aggregate job 449981 held castor for 11h doing work that takes 33s — cause not yet demonstrated, and run_kinetics has no ceiling
+title: autocatpath_aggregate job 449981 held the local-serving node for 11h doing work that takes 33s — cause not yet demonstrated, and run_kinetics has no ceiling
 ---
 
 # A 33-second job ran for eleven hours
@@ -10,7 +10,7 @@ title: autocatpath_aggregate job 449981 held castor for 11h doing work that take
 `autocatpath_aggregate` job 449981 (`no_to_nh3_pd`) was claimed four times
 between 2026-09-25 18:00Z and 2026-09-26 07:25Z — once per deploy bounce, via
 the epoch reclaim arm — and never finished. Its worker grew to ~117 GB RSS
-(~290 MB/min sustained). It was cancelled 2026-09-26; castor has been flat
+(~290 MB/min sustained). It was cancelled 2026-09-26; the local-serving node has been flat
 since (4.0 GB used of 124 GB, worker RSS ~117 MB, no growth over a 120s
 double-sample).
 
@@ -61,7 +61,7 @@ Instrumenting the same run:
   Here 2 of ~31,795 draws fell through to BDF, and both were cheap (0.04s,
   ~1,600 nfev).
 
-A different LAPACK/BLAS (Accelerate on arm64 vs whatever castor links) gives
+A different LAPACK/BLAS (Accelerate on arm64 vs whatever the local-serving node links) gives
 different round-off, so the fall-through rate is plausibly platform-dependent,
 and each fallback is unbounded. That is a **coherent mechanism, not a
 demonstrated one** — the local run never got slow. Do not write it up as the
@@ -75,7 +75,7 @@ alternative — that something else in that worker process was growing and
 cancelling 449981 merely coincided — is live and untested.
 
 ## The decisive experiment
-Run the same reproduction **on castor**, in `/opt/precis/venv`, against the
+Run the same reproduction **on the local-serving node**, in `/opt/precis/venv`, against the
 same two seed partials. Same CPU, same LAPACK, same engine build.
 
 - completes in ~33s → 449981 was never the consumer; the leak hunt reopens
@@ -123,9 +123,9 @@ this is the aggregate. Same engine, different job type and different failure.
 `no_to_nh3_pd` aggregate is **stranded** and needs a re-dispatch. Do that only
 after the bound above is deployed, or it reproduces.
 
-## Recurrence: pollux job_ssh_node pass-dead (gr336604)
+## Recurrence: job_ssh_node pass-dead on the second DGX node (gr336604)
 
-The `job_ssh_node` pass on pollux keeps going dead (heartbeat gone, claims
+The `job_ssh_node` pass on the second DGX node keeps going dead (heartbeat gone, claims
 unserved). The cache-leak fix eee5edf4a shipped and the pass looked healthy,
 then went dark again on 2026-09-27, so the leak was not the whole cause.
 Three actions:
@@ -138,7 +138,7 @@ Three actions:
    thread and any remote process are abandoned, not killed). Still open:
    convert `struct_relax` / `autocatpath_aggregate` to submit/poll so the
    remote process is killable (see "The structural gap behind it").
-3. Ops: confirm castor worker RSS stays flat over a day after both. Then
-   decide whether pollux needs its own watch (RSS and heartbeat age).
+3. Ops: confirm the local-serving node worker RSS stays flat over a day after both. Then
+   decide whether the second DGX node needs its own watch (RSS and heartbeat age).
 
 Who: ops for 1 and 3, agent-code for the submit/poll conversion (M).

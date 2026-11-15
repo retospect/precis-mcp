@@ -921,7 +921,7 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     # the checked run's xdist workers are capped (gr567471: a static-wide
-    # selection at -n6 OOM-killed a worker on melchior twice). PRECIS_GATE_N
+    # selection at -n6 OOM-killed a worker on maple twice). PRECIS_GATE_N
     # is what ship's checked gate expands into `pytest -n`; PRECIS_TEST_NPROC
     # is scripts/test's name for the same count.
     assert kw["env"]["PRECIS_GATE_N"] == str(land_slice.DEFAULT_TEST_NPROC)
@@ -4897,8 +4897,8 @@ def test_gate_slot_waiting_reads_the_indented_holder_dump() -> None:
         "(steals a slot immediately if its holder dies; a live holder on "
         "this host is waited out however long its gate takes)\n"
         "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
-        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spruce, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spruce, alive)\n"
     )
     got = land_slice.gate_slot_waiting(log)
     assert got is not None and got.startswith("gate slot 1: held")
@@ -4921,8 +4921,8 @@ def test_gate_slot_waiting_sees_through_the_scripts_test_ticker() -> None:
     transparent queue chatter, not the wait's end."""
     log = (
         "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
-        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spruce, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 10s\n"
         "scripts/test: gate-slot wait … 20s\n"
     )
@@ -4958,8 +4958,8 @@ def test_poll_ship_queued_behind_the_holder_dump_eats_no_wall(
     _ctx, handle = _submit(store, seams)
     Path(handle["log"]).write_text(
         "gate slot: waiting at position 2 of 4 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 3m by w1 (pid 11 on spark, alive)\n"
-        "  gate slot 1: held 1m by w2 (pid 22 on spark, alive)\n",
+        "  gate slot 0: held 3m by w1 (pid 11 on spruce, alive)\n"
+        "  gate slot 1: held 1m by w2 (pid 22 on spruce, alive)\n",
         encoding="utf-8",
     )
     pctx = _Ctx(store, _params(seams))
@@ -4984,7 +4984,7 @@ def test_poll_verify_queued_on_a_gate_slot_eats_no_wall(
     verify = handle["verify"]
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n",
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n",
         encoding="utf-8",
     )
     clock["t"] = T0 + timedelta(seconds=60)
@@ -5018,7 +5018,7 @@ def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
     verify = handle["verify"]
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 10s\n"
         "scripts/test: gate-slot wait … 20s\n",
         encoding="utf-8",
@@ -5033,7 +5033,7 @@ def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
     # a newer tick under unchanged chatter re-arms without re-heartbeating
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 30s\n",
         encoding="utf-8",
     )
@@ -5081,7 +5081,7 @@ def test_poll_deselect_wait_re_arms_the_wall(
     assert verify["phase"] == "deselect" and "full_selection" not in verify
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 1 of 3 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 9m by w1 (pid 11 on spark, alive)\n",
+        "  gate slot 0: held 9m by w1 (pid 11 on spruce, alive)\n",
         encoding="utf-8",
     )
     clock["t"] = T0 + timedelta(seconds=90)
@@ -5991,7 +5991,7 @@ def _gate_ctx(
     meta: dict[str, Any] = {
         "executor": "ssh_node",
         "job_type": "land_slice",
-        "params": {"todo_id": 42, "target_node": "spark"},
+        "params": {"todo_id": 42, "target_node": "spruce"},
         "compute_handle": handle,
     }
     if main_probe is not None:

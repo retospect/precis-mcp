@@ -47,7 +47,7 @@ mail_poll (compute pass, system profile, per account, backoff)
 
 Two lanes, deliberately (ADR 0044): the **poll is mechanical** (no LLM,
 cadence + backoff, system profile, every node), the **scan model + summarize
-are async LLM passes** on the agent worker (melchior) so a wedged model never
+are async LLM passes** on the agent worker so a wedged model never
 stalls the cheap IMAP poll — the same split as ingest→embed→summarize and
 `llm_summarize`/`classify`.
 
@@ -274,10 +274,10 @@ survive only as `enable_env` names for the deploy-time seed task —
 `src/precis/cli/_worker_passes.py` `_register("mail_poll")`,
 `src/precis/workers/registry.py` `ServiceSpec(name="mail_poll")`).
 - Enable mail_poll (Reto's Phase-2 window): light one host's row, e.g.
-  `precis service prio melchior mail_poll 1`; no overlay variable or plist
+  `precis service prio <agent-host> mail_poll 1`; no overlay variable or plist
   gate block is involved. Enable on a single host so the mailbox is not
   polled from every node.
-- Enable inject_scan the same way (`precis service prio melchior
+- Enable inject_scan the same way (`precis service prio <agent-host>
   inject_scan 1`) only after mail_poll's tier-0 verdicts look right in prod.
 - Slice 5 (design-only): opt-in promotion of a chosen clean message + wire
   the morning brief to read clean, non-quarantined, summarized email rows;

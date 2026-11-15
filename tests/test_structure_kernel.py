@@ -1508,7 +1508,7 @@ def test_ml_calculator_loads_the_model_once_per_family(
     monkeypatch: pytest.MonkeyPatch, _clean_ml_calc_cache
 ) -> None:
     """gr450103: ``struct_relax`` runs inline in a long-lived worker, so a
-    per-dispatch model build leaked until the box swapped (castor reached
+    per-dispatch model build leaked until the box swapped (cedar reached
     ~117 GB RSS over two days and the handler went silent ~48 h). The second
     call must hand back the SAME calculator, not build another."""
     relax_mod = _clean_ml_calc_cache

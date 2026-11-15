@@ -125,7 +125,7 @@ from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_r
 # (postgres at host.docker.internal:5432, role + db both
 # ``precis_test``); override via env when running elsewhere.
 # struct_relax mints refuse loudly when PRECIS_DFT_NODE is unset (no
-# node-literal default since the 2026-08-29 spark retirement); deploy always
+# node-literal default since the 2026-08-29 spruce retirement); deploy always
 # renders it in prod, so tests get a stand-in. Module-level (not a fixture):
 # struct_relax captures the env into ``_NODE`` at import, which happens at
 # collection — before any session fixture runs. Tests of the unset behavior

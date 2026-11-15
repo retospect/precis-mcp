@@ -15,7 +15,7 @@ Small mechanical ops chores, batched to run in one pass.
 
 - daily_briefing role still runs `psql -d cluster` (dead DB) — repoint at
   precis_prod or remove.
-- extract_watch uv-cache perm error on balthazar: a root-owned .git under
+- extract_watch uv-cache perm error on a worker host: a root-owned .git under
   ~deploy/.cache/uv blocks uv pip install — chown/clear.
 - Orphan sweep from the feynman/quest retirement: /opt/mcps/{quest,extract},
   @companion-ai/feynman, quest's `papers` schema, unused group_vars.
@@ -137,20 +137,20 @@ It needs a **web admin-console approval**, so it cannot be fully scripted.
 These are ops gripes, not code. Each needs a node or vault action, and some
 need Reto. Re-check each one before acting, because several are days old.
 
-- **gr475412:** melchior's precis-mcp-http serves a clone that never
+- **gr475412:** the agent host's precis-mcp-http serves a clone that never
   follows deploys. There is no precis-mcp-prod dir, so `follow_prod`
   returns early. Fix: create the prod clone. Owner thread: gr460711.
-- **gr464379:** balthazar `com.openclaw.agents` exits with code 78. Its log
+- **gr464379:** a worker host's `com.openclaw.agents` exits with code 78. Its log
   dir is root-owned and the job runs as `openclaw`. Fix: chown, then
   re-check.
 - **gr461596:** dropping the `llm_call_log` hash indexes is on hold. The
   caller check says DO NOT DROP (the GC anti-join and FK use them).
   Date-gated: re-check `idx_scan` after 2026-10-13, then either drop them
   in a forward migration or close as won't-fix.
-- **gr332484:** melchior hits ENFILE (file-table exhaustion) storms. The
+- **gr332484:** the agent host hits ENFILE (file-table exhaustion) storms. The
   gripe's colima angle is moot because the host runs OrbStack, but the
   sysctl step was never done: raise `kern.maxfiles` and `kern.maxfilesperproc`
-  on melchior and persist them across reboot (a LaunchDaemon that runs
+  on the agent host and persist them across reboot (a LaunchDaemon that runs
   `sysctl -w`). Approved by Reto 2026-10-11; he runs the sudo step
   (`kern.maxfiles=983040`, `kern.maxfilesperproc=524288`), an agent writes
   the persisting LaunchDaemon. Then re-measure open-file counts under load

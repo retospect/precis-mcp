@@ -176,16 +176,16 @@ the agent-facing MCP surface is untouched.
   novel-work fraction (item 8) says whether runs are contaminating each
   other. The cheap mechanism is the gate on whether the expensive one is
   needed.
-* **Placement: `spark`, the retired third box** (revised 2026-09-29, was
-  pollux). Not a serving box: castor's 128 GB is unified memory shared
+* **Placement: the GPU node, the retired third box** (revised 2026-09-29, was
+  the second DGX node). Not a serving box: the local-serving node's 128 GB is unified memory shared
   between model weights and KV cache, so a Postgres competing for it costs
-  decode bandwidth on a box that is bandwidth-bound. pollux was the first
-  answer but is earmarked as the second replica; spark is earmarked for
+  decode bandwidth on a box that is bandwidth-bound. The second DGX node was the first
+  answer but is earmarked as the second replica; the GPU node is earmarked for
   nothing, runs zero precis units since its 2026-08-29 retirement, and is the
   same hardware. It hosts the eval database and slice 0's benchmarking
   together. This is a bench role, not cluster duty — no service group, no
   capability list, inventory guard untouched. Network RTT is not the
-  constraint (a 2026-08 measurement put the melchior-to-caspar RTT at 1.5 ms and
+  constraint (a 2026-08 measurement put the agent-host-to-database-host RTT at 1.5 ms and
   eliminated it).
 
 * **Outcome is two columns, decided 2026-09-29 (Reto).** `outcome` is
@@ -209,13 +209,13 @@ the agent-facing MCP surface is untouched.
 
 **Open:**
 
-* **Spark has 2.8 TB free (measured 2026-09-29), which loosens the reset
+* **The GPU node has 2.8 TB free (measured 2026-09-29), which loosens the reset
   calculus.** The 74 GB restore plus 24 template clones is ~1.8 TB and fits,
   so clone-per-run is affordable there in a way it would not have been on a
   serving box. Reset-per-batch stays the default because it is simpler and
   the novel-work fraction says whether more is needed — but the decision is
   now a preference, not a disk constraint.
-* **Check the Postgres major version before planning the restore.** Spark
+* **Check the Postgres major version before planning the restore.** The GPU node
   already runs Postgres 16. A dump from a newer major will not restore into
   it, and the frozen world is defined as a restore. Confirm what prod is on
   and either match it on the bench or plan a dump/restore path that crosses
@@ -242,9 +242,9 @@ the agent-facing MCP surface is untouched.
 
 **Ready-check 2026-10-21 (ready agent): needs-work**
 
-* blocker: bundles independent deliverables (instrumentation items 1-8 vs. item 9 frozen eval world on spark: infra/restore/versioning); split item 9 out, it needs only the run-version field from item 1.
-* blocker: open question "Postgres major version / pgvector on spark" gates item 9's restore and is unresolved (blocker-severity by the template rule).
-* blocker: item 9 and the open "Spark 2.8 TB / reset vs clone" entry leave the reset mechanism undecided (batch reset vs clone-per-run); acceptance bullet 7 assumes batch reset, so state it as decided.
+* blocker: bundles independent deliverables (instrumentation items 1-8 vs. item 9 frozen eval world on the GPU node: infra/restore/versioning); split item 9 out, it needs only the run-version field from item 1.
+* blocker: open question "Postgres major version / pgvector on the GPU node" gates item 9's restore and is unresolved (blocker-severity by the template rule).
+* blocker: item 9 and the open "GPU node 2.8 TB / reset vs clone" entry leave the reset mechanism undecided (batch reset vs clone-per-run); acceptance bullet 7 assumes batch reset, so state it as decided.
 * blocker: item 6 `outcome` vocabulary includes `halted_wall_clock` but the open question says no per-run wall-clock cap exists; either add the cap to scope or drop the value (nothing can ever write it).
 * blocker: failure-cause tags (item 7) have no stated assigner (open question); builder cannot write the tagging path without guessing.
 * blocker: item 1 names "prompt version", "tool-schema version", "graph version" with no definition or existing source (agentlog.py has none); specify how each is computed and where "graph version" comes from outside the eval world.
@@ -252,7 +252,7 @@ the agent-facing MCP surface is untouched.
 * blocker: item 4 capture mechanism underspecified: "per-run flag" (set where/how?), NFS path/env var, blob row-reference column, and redaction function (session-history-into-precis.md is status draft, so no shipped path to reuse; acceptance has no redaction test).
 * blocker: item 8 "novel-work" is not defined (how a call is classed as retrieval of a prior run's deposit from an args hash alone; hash equality across runs does not show prior-run deposit); acceptance only says "computable".
 * advisory: acceptance lacks checks for items 1, 2, 6, 7 (version fields recorded, tag, outcome values, seq numbering) and the blob-GC 30-day/env-var rule; name the env var.
-* advisory: Target section omits the blob store, outcome/verdict writers (who sets outcome at run end), and the spark/eval-world deploy bits.
+* advisory: Target section omits the blob store, outcome/verdict writers (who sets outcome at run end), and the GPU node/eval-world deploy bits.
 * advisory: overlaps mcp-call-pattern-analytics.md (tool_calls ledger mining) and session-history-into-precis.md (redaction); acknowledge both.
 * advisory: model tier: infrastructure + schema + judgment-heavy design; declare model: opus.
 
@@ -265,9 +265,9 @@ on prod runs); re-prefill token count nullable, filled by
 `vllm-per-node-serving.md`; payload capture blocked-by
 `session-history-into-precis.md` for redaction; a stated novel-work rule.
 
-1. Split item 9 (frozen eval world on spark) into its own file,
+1. Split item 9 (frozen eval world on the GPU node) into its own file,
    blocked-by this one? Recommended: yes; it needs only item 1's run-version
-   field, and it owns the spark Postgres/pgvector check.
+   field, and it owns the GPU node Postgres/pgvector check.
 2. Reset mechanism. Recommended: batch reset is the decided default;
    clone-per-run only if the novel-work fraction shows contamination.
 3. `halted_wall_clock` has no writer (no per-run wall-clock cap).

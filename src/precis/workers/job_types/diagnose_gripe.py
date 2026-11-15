@@ -441,7 +441,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             gripe_id,
         )
         # Name the failing leg (token / daemon / image / timeout / latch): a
-        # uniform skip text hid an 8-day 90% skip rate on melchior (gr346813).
+        # uniform skip text hid an 8-day 90% skip rate on the agent host (gr346813).
         why = _agent_container.container_unavailable_reason()
         ctx.append_chunk(
             "job_event",

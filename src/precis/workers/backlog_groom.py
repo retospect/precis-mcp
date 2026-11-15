@@ -1,6 +1,7 @@
 """Backlog groomer — promote open gripes into the acting queue.
 
-OFF on prod by ruling (Reto, 2026-10-02): service_config melchior/backlog_groom prio 0.
+OFF on prod by ruling (Reto, 2026-10-02): service_config <agent-host>/backlog_groom
+prio 0.
 
 The dark-factory north star is that declared repo dev work builds itself:
 ``/whatneedsdoing`` only *reads* the two work substrates; nothing turns a

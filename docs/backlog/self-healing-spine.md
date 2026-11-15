@@ -34,7 +34,7 @@ predicates (TTL expiry, lease expiry, boot-epoch mismatch, wall-clock tag
 age, PID liveness), **five** claim types with five recovery stories
 (the fifth surfaced 2026-08-12: coordinator `quest_tick` jobs opt out
 of lease-steal reclaim entirely — their only rescuer is the
-`quest_loop_reconcile` pass on melchior),
+`quest_loop_reconcile` pass on the agent host),
 **two** detector passes declaring checks in two shapes, a dozen
 hand-rolled backoff idioms, several disjoint report surfaces, and an
 escalation ladder (alert → page → gripe → session) that
@@ -116,7 +116,7 @@ reconciler's faster orphan path (keep as a registry row with a tighter
 cadence — `quest/loop.py` documents the division of labor — **but it
 must register**, not stay bespoke: 2026-08-12 evidence shows the
 rescuer's cadence is load-dependent and single-host — four orphaned
-quest loops waited ~30 min because melchior was grinding a `bib_parse`
+quest loops waited ~30 min because the agent host was grinding a `bib_parse`
 backlog, so recovery hinged on one busy host's pass-loop latency.
 Registering puts the rescuer's own cadence under the staleness watch).
 
@@ -147,7 +147,7 @@ Condition = { probe (SQL), lane (fast|hourly), severity,
   agent path was permission-denied): a cross-host vetted primitive —
   ssh + per-host sudoers grant scoped to exactly
   `launchctl kickstart -k system/com.precis.worker` (systemd analog on
-  spark) and nothing else.
+  the GPU node) and nothing else.
 - **`gripe`** = the existing condition-fingerprinted auto-closing marker
   gripe router with per-class self-heal budgets. Unchanged; the
   registry's default escalation for anything `heal` can't clear inside
@@ -171,8 +171,8 @@ Condition = { probe (SQL), lane (fast|hourly), severity,
     (the quest_loop_reconcile scar);
   - rescue-critical pass cadence over budget (pass-loop starvation: one
     greedy pass starves every other pass on its host — 2026-08-12,
-    `bib_parse` stretched quest_loop_reconcile to ~30 min on melchior
-    while caspar sat wedged 9 h in `_bib_parse_pass` with a stale
+    `bib_parse` stretched quest_loop_reconcile to ~30 min on the agent host
+    while the database host sat wedged 9 h in `_bib_parse_pass` with a stale
     heartbeat; rescue passes get an explicit cadence SLO, and a wedged
     pass with stale heartbeat is a restart-once finding);
   - surface canaries (PCB/CAD/export builds): last-use-ok + dep-present
@@ -341,10 +341,10 @@ fallback:
   excluded-alert-only; backpressure counts PENDING not just leased):
   load management, not healing — its own decision later. Slot-cost v0
   from the 2026-08-10 watch: NEB=8 (GPU-exclusive), plan_tick=3,
-  embed=2, fetch/classify=1; host budgets melchior 12, spark 1 GPU + 4,
-  castor 4 llm-slots + 2, caspar 1 light, balthazar suspended (wired
+  embed=2, fetch/classify=1; host budgets the agent host 12, the GPU node 1 GPU + 4,
+  the local-serving node 4 llm-slots + 2, the database host 1 light, the sandbox host suspended (wired
   flap). Re-fit from T0. Open: new pass vs materialize rewrite. The LLM
-  half (castor slot count and demand routing) is no longer this
+  half (the local-serving node slot count and demand routing) is no longer this
   governor's: `llm-lane-scheduler.md` sets the slot count and divides it
   by class (2026-10-23); what remains here is host-level job load
   balancing over the hardware rows, at the job-queue level of
@@ -429,7 +429,7 @@ this doc stays the cross-slice record and is trimmed as slices ship.
    bounded_heal rows (proven inline machinery — migrate, don't fork),
    fast-lane (nursery) wiring for future per-minute rows.
    **Acceptance case: gr204385** (classify handler silently dead in a
-   live melchior worker since 2026-08-08, damming embed; unnoticed
+   live agent-host worker since 2026-08-08, damming embed; unnoticed
    ~4 days) — `pass-dead-on-host` detects the class within one hourly
    window after its 4 h budget; the bounce stays manual until
    restart-once is armed.
@@ -465,7 +465,7 @@ this doc stays the cross-slice record and is trimmed as slices ship.
 
 - **Doctor's starting dial: pure `report`.** Heal/draft are earned
   later, per the sequencing slices.
-- **Melchior SPOF: acceptable for now** (`agent-worker-despof.md`) —
+- **Agent-host SPOF: acceptable for now** (`agent-worker-despof.md`) —
   fine at the `report` dial; revisit before dialing up to `heal`.
 - **`alert` write path: machinery-only.** Alerts stay probe-backed
   facts (fingerprinted, auto-open/auto-close when the probe flips);
@@ -551,7 +551,7 @@ inside a healthy-looking 95%.
 Escalation split: the doctor report (Layer 3) narrates the daily number and
 routes a config change — lowering the slot capacity that
 `llm-lane-scheduler.md`'s controller moves — through its
-`## Needs a human` → `waiting-for:reto` conversion. (SGLang serves castor
+`## Needs a human` → `waiting-for:reto` conversion. (SGLang serves the local-serving node
 today; its retraction counter is the same signal.) Nursery/`kind='alert'`
 only for collapse, where the preemption rate is high enough that aggregate
 throughput actually drops.

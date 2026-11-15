@@ -276,7 +276,7 @@ embed = ["sentence-transformers>=3.0"]
 # precis capability, and its only extra deps are discord.py + aiohttp
 # (psycopg + pyyaml are already core). asa keeps talking to `precis serve`
 # over stdio at runtime — the merge shares the code, not the process
-# boundary. Install target: `precis-mcp[asa]` on the asa host (melchior).
+# boundary. Install target: `precis-mcp[asa]` on the asa host.
 asa = ["discord.py>=2.4", "aiohttp>=3.9"]
 # asa-slack — a Slack bridge to Asa, sibling to `asa` (`src/asa_slack` +
 # the `asa-slack` entry point). Unlike the Discord bridge it doesn't hand-

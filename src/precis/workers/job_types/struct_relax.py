@@ -50,7 +50,7 @@ run …``) is the module-level :data:`RUNNER` hook and the in-process one is
 write-back is exercised without a cluster.
 
 **Container runtime.** The original design anticipated podman + CDI, but the deployed
-spark node runs ``docker`` with the NVIDIA Container Toolkit and the
+the GPU node runs ``docker`` with the NVIDIA Container Toolkit and the
 ``precis-dft`` image was validated there with ``--gpus all`` — so the default
 matches reality. ``PRECIS_DFT_CONTAINER_CMD`` (``docker`` | ``podman``) flips
 the GPU flag (``--gpus all`` vs CDI ``--device nvidia.com/gpu=all``) when the
@@ -175,12 +175,12 @@ DEFAULT_MODEL = "mace_mp"
 # ── container contract (mirrors src/precis_dft/_container/gpaw_relax.py) ──
 #: Deploy renders PRECIS_DFT_NODE from topology (precis_capabilities.dft);
 #: deliberately no node-literal default — a hardcoded node outlives the node
-#: it names (2026-08-29 spark retirement). ``None`` ⇒ this host can't resolve
+#: it names (2026-08-29 GPU-node retirement). ``None`` ⇒ this host can't resolve
 #: a DFT target: the container helpers no-op, dispatch records an infra
 #: failure.
 _NODE = os.environ.get("PRECIS_DFT_NODE") or None
 _IMAGE = os.environ.get("PRECIS_DFT_IMAGE", "precis-dft:cpu")
-#: The Linux DFT node mounts caspar's export at /shared (macOS nodes use
+#: The Linux DFT node mounts the database host's export at /shared (macOS nodes use
 #: /opt/shared); the container runs on the node, so the bind paths must be
 #: valid there.
 _NFS_ROOT = os.environ.get("PRECIS_DFT_NFS_ROOT", "/shared")

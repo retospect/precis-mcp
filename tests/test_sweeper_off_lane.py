@@ -3,7 +3,7 @@
 A job pinned (``meta.params.target_node``) to a node that has stopped
 running its executor's drain pass is unclaimable — every claim path
 node-gates on the pin — yet the host still heartbeats, so the dead-node
-reaps abstain. jo489305-307 sat ~28h this way after castor went
+reaps abstain. jo489305-307 sat ~28h this way after cedar went
 heartbeat-only. The sweeper must fail such jobs as infra with a clear
 error and raise ``sweeper/off-lane-pin:<node>/<executor>``.
 
@@ -91,7 +91,7 @@ def _mint_job(
 
 
 def _left_lane_node(store: Store) -> str:
-    """castor's shape: host heartbeats, ran job_ssh_node until 6h ago."""
+    """cedar's shape: host heartbeats, ran job_ssh_node until 6h ago."""
     node = f"offlane-{uuid4().hex[:8]}"
     _heartbeat(store, node)
     _pass_log(store, node, "job_ssh_node", age_minutes=6 * 60)
@@ -231,7 +231,7 @@ def test_node_that_never_ran_the_pass_is_left_alone(
 def test_other_executors_pass_does_not_count(
     handler: TodoHandler, store: Store
 ) -> None:
-    """castor's sandbox worker kept nothing for ssh_node: lane membership is
+    """cedar's sandbox worker kept nothing for ssh_node: lane membership is
     per executor, so a fresh job_claude_docker row doesn't keep an ssh_node
     pin alive."""
     node = _left_lane_node(store)

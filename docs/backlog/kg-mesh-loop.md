@@ -11,7 +11,7 @@ model: opus
 Approved by Reto 2026-10-22 (chat). Turns the hand-driven gardener pilot
 into a recurring pass. Builds on [graph-gardener-value](graph-gardener-value.md)
 (slice 1 machine-edge gate, slice 2 `precis mesh retrieval`, slice 4 scout,
-slice 5 castor filler) and [local-mesh-upkeep](local-mesh-upkeep.md)
+slice 5 local-serving-node filler) and [local-mesh-upkeep](local-mesh-upkeep.md)
 (reviews ledger, per-action bars).
 
 ## Motivation / why
@@ -39,7 +39,7 @@ tokens per useful write. The pilot ran on Fable by hand because:
 
 ```text
 select cluster ──▶ cheap tier: candidates ──▶ strong tier: writes ──▶ acceptance test ──▶ stamp + metrics
- (SQL)             (castor / Haiku,            (Opus / Fable,          (retrieval before/        (reviews row,
+ (SQL)             (the local-serving node / Haiku,            (Opus / Fable,          (retrieval before/        (reviews row,
                     proposals only)             pins + meta)            after; revert on fail)    coverage)
 ```
 
@@ -51,8 +51,8 @@ the set, both directions). Order: quest `prio`, then lowest stance
 density, then most recent paper. Pilot check: qu164903 (2,546 links, a
 handful of stance edges) selects first.
 
-**Cheap tier (castor gpt-oss-120b via `llm.op.kg_mesh:propose`; Haiku
-fallback when castor is dark).** Writes proposals only — reviews-ledger
+**Cheap tier (the local-serving node gpt-oss-120b via `llm.op.kg_mesh:propose`; Haiku
+fallback when the local-serving node is dark).** Writes proposals only — reviews-ledger
 rows `actor='kg-mesh-propose'`, `verdict='proposed'`, payload
 `{signal, hubs, chunks, claim}`. Four signals, deterministic where the
 data allows, the model only for the judgement:
@@ -128,7 +128,7 @@ cluster without measures.
    `--quest <id>` pin on both commands. Reto 2026-10-22: rank order
    stands, so qu164903 is selected by pin (`--quest qu164903`), not by
    rank — qu500066 (prio 3) legitimately outranks it.
-2. **Cheap tier.** The four detectors → ledger proposals on castor, no
+2. **Cheap tier.** The four detectors → ledger proposals on the local-serving node, no
    graph writes. Measure: Opus reads 50 sampled proposals; precision per
    signal is the bar for slice 3 (≥60% or the signal is switched off).
 3. **Strong tier + acceptance test + revert**, manual trigger
@@ -161,11 +161,11 @@ cluster without measures.
 
 ## Costs
 
-Cheap tier on castor: $0 marginal (local); Haiku fallback metered. Strong
+Cheap tier on the local-serving node: $0 marginal (local); Haiku fallback metered. Strong
 tier: ~6k tokens per useful write (pilot), ≤10 writes per tick, so a
 full day of ticks is bounded by `max_writes` (60) before `max_usd` bites.
 Acceptance tests are embedding retrieval, no LLM. Slice 5 extraction
-runs on castor under its own sampled-acceptance budget.
+runs on the local-serving node under its own sampled-acceptance budget.
 
 ## Kill criteria (any one stops the recurring; a gripe names it)
 

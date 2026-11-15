@@ -354,7 +354,7 @@ def test_truncated_json_reply_fails_not_stored(store: Any, hub: Any) -> None:
 
 def test_failing_ref_is_braked_by_attempt_lease(store: Any, hub: Any) -> None:
     """gr508688: a persistently-failing ref (a reply that parses as JSON
-    but never carries ``description`` — melchior's card_describe loop)
+    but never carries ``description`` — maple's card_describe loop)
     brakes on the claim-time attempt lease: claimed at most once per
     cooldown, re-billing a dispatch every pass was the pre-fix shape."""
     ref_id = _put_structure(hub)

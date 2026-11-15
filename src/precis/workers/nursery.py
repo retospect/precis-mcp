@@ -159,7 +159,7 @@ QUEST_LOOP_FAIL_24H = 3
 #: terminal ``STATUS:failed`` for longer than this, with nothing newer minted
 #: since, is dark — not spinning (``quest-loop-failing`` / ``plan-tick-spin``
 #: need repeated re-mints to fire), just silent. That's the blind spot the
-#: 2026-07-26→30 incident exposed: the melchior worker-agent daemon died, so
+#: 2026-07-26→30 incident exposed: the agent-host worker-agent daemon died, so
 #: the reconciler that re-mints coordinator loops never ran at all — one
 #: failed row, zero retry attempts, invisible to every count-based detector.
 #: Sized to the quest lane's RC1 backoff ceiling (``quest/loop.py``'s
@@ -206,7 +206,7 @@ DEAD_WORKER_SILENCE_MIN = 10
 #: into ``precis-worker``, and ``com.precis.worker-agent.plist`` was removed).
 #: It must NOT stay listed: a decommissioned daemon can never log again, so it
 #: matched the dead-worker predicate forever and pinned two false *critical*
-#: alerts (melchior + spark) for the full
+#: alerts (the agent host + the GPU node) for the full
 #: :data:`DEAD_WORKER_LOOKBACK_DAYS` window — noise that buried the real
 #: cast/recurring stalls underneath it.
 WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
@@ -234,7 +234,7 @@ HOST_DARK_SILENCE_MIN = 10
 #: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
 #: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
 #: planner: minting is cluster-wide but *execution* is agent-profile-only
-#: (melchior), so a jetsam-cull / OAuth-401 / never-started agent worker
+#: (the agent host), so a jetsam-cull / OAuth-401 / never-started agent worker
 #: freezes every minted job with no bubble — the 2026-07 "45 min dark"
 #: incident (gripe 55748). A healthy executor claims within a worker loop
 #: (~seconds), so a multi-minute queued age with zero live claims means the
@@ -288,7 +288,7 @@ KIND_ROSTER_LOOKBACK_DAYS = 30
 #: (a handler's deliberate "clean skip" — e.g. the gr179498 container gate)
 #: is a lane that is DOWN while looking clean — cancelled is not failed, so
 #: no err/warn count, no ``child-failed`` bubble, and the doctor read
-#: melchior's 8-day 90% diagnose_gripe skip rate as "no actual failures"
+#: the agent host's 8-day 90% diagnose_gripe skip rate as "no actual failures"
 #: (gr346813). Fire per job_type when, over the window, at least
 #: :data:`LANE_SKIP_MIN_CANCELLED` runs were cancelled and cancelled
 #: outnumber succeeded by :data:`LANE_SKIP_RATIO`×.
@@ -367,7 +367,7 @@ class Symptom:
     ``ref_id`` + ``category`` is the dedup key for the graph detectors
     (each finding is a specific todo/job ref). The worker-health detectors
     are not ref-scoped — they set ``ref_id=None`` and supply an explicit
-    ``fingerprint_key`` (e.g. ``"worker-restart:melchior:precis-worker-agent"``)
+    ``fingerprint_key`` (e.g. ``"worker-restart:<agent-host>:precis-worker-agent"``)
     so dedup / auto-resolve still work per (host, process).
 
     ``total`` is the category's true pre-``LIMIT`` count (a window-function
@@ -1356,7 +1356,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Symptom]:
                 f"{_hours_since(r[3]):.0f}h ago) — a persistent break the RC1 "
                 "backoff is throttling but can't fix: check the "
                 "loop's job_summary / job_event chunks for the failing tick "
-                "(bad tier/endpoint config, a code error, or spark down), then "
+                "(bad tier/endpoint config, a code error, or the GPU node down), then "
                 "fix the cause or pause the quest"
             ),
         )
@@ -1373,7 +1373,7 @@ def _detect_orphaned_coordinator(store: Store) -> list[Symptom]:
     ``_detect_quest_loop_failures`` / ``_detect_plan_tick_spins`` both need
     *repeated* re-mints (a count over a threshold) to fire — they catch a
     spin, not a silence. A reconciler that stopped running entirely (the
-    2026-07-26→30 melchior worker-agent outage) produces exactly one failed
+    2026-07-26→30 agent-host worker-agent outage) produces exactly one failed
     row and then nothing, forever — invisible to either counter. This
     detector instead asks, per **active** coordinator lineage: is the
     *newest* loop terminal ``STATUS:failed``, and has it been that way
@@ -1535,8 +1535,8 @@ def _restart_storm_detail(process: str, host: str, n: int, platform: str | None)
     so it must not assert a cause. A restart storm is one of two things and
     the count alone can't tell them apart: (a) repeated **deploy bounces** (a
     burst of `/go` ship+deploys, each of which restarts every worker
-    unconditionally — the spark 2026-07-06 case), or (b) a **crash / OOM
-    cull** (the melchior jetsam case). The old text hardcoded "not a deploy
+    unconditionally — the 2026-07-06 GPU-node case), or (b) a **crash / OOM
+    cull** (the agent-host jetsam case). The old text hardcoded "not a deploy
     bounce … macOS jetsam" + a `launchctl` command, which was flatly wrong on
     a Linux host. ``platform`` (from the boot row payload; NULL on pre-fix
     boots) selects the right diagnostic command.
@@ -1836,7 +1836,7 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
     top-level ``nas_ok = false`` still alerts — but only when the row carries
     no ``nas_ok_by_process`` entries, so a redeployed host doesn't
     double-alert. Root cause is almost always a Full Disk Access grant broken
-    by a brew python upgrade; see OPEN-ITEMS 'melchior daemon NAS lockout'.
+    by a brew python upgrade; see OPEN-ITEMS 'gateway daemon NAS lockout'.
     """
     with store.pool.connection() as conn:
         att_rows = conn.execute(
@@ -1894,7 +1894,7 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
                     "changed the venv python's cdhash. Re-grant FDA to the resolved "
                     "python in System Settings > Full Disk Access, then "
                     "`launchctl kickstart -k` the precis daemons. "
-                    "See OPEN-ITEMS 'melchior daemon NAS lockout'."
+                    "See OPEN-ITEMS 'gateway daemon NAS lockout'."
                 ),
             )
         )
@@ -2048,7 +2048,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
     """The single agent-profile executor stopped claiming — planner dark.
 
     ``dispatch`` mints ``plan_tick`` (and other ``claude_inproc``) jobs on
-    every node, but only melchior's ``--profile=agent`` worker can *execute*
+    every node, but only the agent host's ``--profile=agent`` worker can *execute*
     them (it needs the hermes ``~/.claude`` OAuth / MCP state). So the
     executor is a cluster-wide single point of failure: if it is culled,
     401s, or never starts, every minted job sits ``STATUS:queued`` forever
@@ -2172,11 +2172,11 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                 f"{oldest_h:.1f}h, > {DISPATCH_STALL_MINUTES}min) with zero live "
                 "claims and no lane activity for "
                 f">{DISPATCH_STALL_DEBOUNCE_S}s "
-                "— the agent-profile executor (melchior) is not claiming: "
+                "— the agent-profile executor (the agent host) is not claiming: "
                 "dead/culled worker, OAuth-401, or the agent profile never "
                 "started on any node. Minting is cluster-wide but execution is "
-                "melchior-only, so the planner is frozen cluster-wide. Recover: "
-                "check melchior's agent worker (`launchctl kickstart -k "
+                "agent-host-only, so the planner is frozen cluster-wide. Recover: "
+                "check the agent host's agent worker (`launchctl kickstart -k "
                 "system/com.precis.worker.agent`) + `claude` OAuth; longer term, "
                 "run the agent profile on a second host or wire local-model "
                 "tool-calling so execution isn't single-homed."
@@ -2189,7 +2189,7 @@ def _detect_embed_lane_stalled(store: Store) -> list[Symptom]:
     """``embed_batch`` jobs queued with nothing completing — the embed
     lane is down (``docs/backlog/embedder-wedge-hardening.md``).
 
-    The 2026-08-08→10 caspar incident: ``serve-embeddings`` startup dials
+    The 2026-08-08→10 database-host incident: ``serve-embeddings`` startup dials
     HuggingFace Hub for revision metadata even with weights cached; when
     HF is slow/rate-limited the load hangs forever, and the process stays
     alive throughout — a restart-based watchdog just kicks it into the
@@ -2262,7 +2262,7 @@ def _detect_lane_skipping(store: Store) -> list[Symptom]:
     ``fix_gripe`` refusing without a containerized agent path; an OSS-backend
     skip), so it never counts as an error anywhere: no worker-log ERROR, no
     ``child-failed`` bubble, and a doctor reading err/warn sees a healthy
-    fleet. melchior ran 188 cancelled / 8 succeeded diagnose_gripe jobs over
+    fleet. The agent host ran 188 cancelled / 8 succeeded diagnose_gripe jobs over
     9 days that way before a manual outcome histogram caught it. Outcome
     tags are the truthful probe, as with ``embed-lane-stalled``; the window
     is read from ``ref_tags.created_at`` (the transition time).

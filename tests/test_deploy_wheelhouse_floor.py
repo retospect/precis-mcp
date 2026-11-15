@@ -95,7 +95,7 @@ def test_refusal_message_names_the_darwin_seed_route() -> None:
         assert "autocatpath_wheel=" in rendered, path.name
         assert "scripts/deploy" in rendered, path.name
         # No actionable play-44 push on darwin — that's the hint that
-        # stranded melchior.
+        # stranded maple.
         assert "44-autocatpath.yml" not in rendered, path.name
         assert "--limit" not in rendered, path.name
 

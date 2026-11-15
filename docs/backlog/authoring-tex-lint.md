@@ -51,6 +51,6 @@ arm (memory `claim-graduation-campaign`):
 - `docs/backlog/export-glyph-allowlist.md` — export-side glyph
   allowlist + per-glyph warnings (complementary, not superseded).
 - reMarkable token-exchange pacing (the pairing item closed 2026-10-01; feature shipped dark);
-  melchior image still predates cdf23337's `--content-only` retry (one
+  the agent host image still predates cdf23337's `--content-only` retry (one
   `ansible-playbook deploy/playbooks/47-remarkable.yml` re-run, needs
   Reto or a permission rule).

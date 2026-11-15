@@ -6,7 +6,7 @@ The cluster-side replacement for the (removed) synchronous
 process* principle means the canonicalizer cascade (extract → block →
 judge → place, ``precis.taproot.backfill``) can only run on a worker.
 ``put(kind='job', job_type='taproot_backfill', params={'scope': '<slug|dc<id>>'})``
-queues it; ``claude_inproc`` on the melchior agent worker runs this
+queues it; ``claude_inproc`` on the agent-host agent worker runs this
 dispatcher directly (a plugin ``dispatch``, no claude subprocess — same
 shape as ``draft_export``).
 

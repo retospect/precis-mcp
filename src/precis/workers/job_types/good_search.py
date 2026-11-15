@@ -110,7 +110,7 @@ def _triage_batch() -> int:
 
 def _default_max_children() -> int:
     """Fan-out ceiling when ``params.max_children`` is unset (thin
-    slice default 4 — melchior's agent worker is the one queue)."""
+    slice default 4 — the agent host's agent worker is the one queue)."""
     return env_int("PRECIS_GOOD_SEARCH_MAX_CHILDREN", 4, lo=1, hi=64)
 
 

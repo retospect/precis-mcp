@@ -17,7 +17,7 @@ Each programme below serves one or more:
   `draft-authoring` (drafts, export, tex layer).
 - **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core` + `se-machine-design` + `pcb-platform`.
 - **local-compute** — `local-compute` (owns local model
-  serving: the summariser and the single-spark model, and what they do).
+  serving: the summariser and the single-GPU-node model, and what they do).
 - **personal-integration** — HELD; no programme yet.
 - **operations** — `deploy-fleet-ops` · `security-hardening` ·
   `monitors-that-go-quiet` · `ship-gate-ci` · `serving` (`serving-programme`
@@ -170,9 +170,9 @@ Seams:
   shared-server's multiprocess item is topology or workaround.
 - served vs used — serving-programme owns the MCP ceiling, the load-test
   harness and the eval-run-spine; local-compute owns local model serving
-  (vLLM Slice 0 and its spark prerequisites, local-serving-eval, the
+  (vLLM Slice 0 and its GPU-node prerequisites, local-serving-eval, the
   summariser) and what the served capacity does (summarise, insert, mesh,
-  link, categorise). The eval-run-spine's items 4 and 9 wait on the spark
+  link, categorise). The eval-run-spine's items 4 and 9 wait on the GPU node
   prerequisites ranked in local-compute's Do-next 3.
   Embedder capacity (local-compute's, decided 2026-10-02) is fed by
   serving-programme's py-spy/topology answers.
@@ -311,7 +311,7 @@ Waits:
 - plugin-split Horizon 2–4 waited on the restart-on-installed-file-change work (each extraction is a module
   move that re-triggers the stale-worker break); it shipped, so they
   are unblocked.
-- td457903 (the castor restart) was withdrawn 2026-09-30 — the ImportError
+- td457903 (the local-serving node restart) was withdrawn 2026-09-30 — the ImportError
   was a stale session MCP, a stale-code shape, not prod. Nothing here waits
   on Reto.
 

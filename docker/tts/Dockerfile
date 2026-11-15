@@ -11,7 +11,7 @@
 #
 # Per the "bake the models" decision the ~330 MB Kokoro model files are baked in
 # (self-contained image, no NAS mount at run) — unlike aizynth, which mounts its
-# models read-only. Build ON the tts_render node (melchior), never shipped as a tarball.
+# models read-only. Build ON the tts_render node, never shipped as a tarball.
 #
 # Build:  docker build -t precis-tts:<sha> --build-arg PRECIS_REF=<sha> docker/tts
 #

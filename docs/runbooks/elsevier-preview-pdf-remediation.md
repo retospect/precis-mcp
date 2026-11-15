@@ -115,7 +115,7 @@ sidecar. `168074`'s companion PDF landed in the shared inbox but was never
 imported because of exactly this race. Filed as its own actionable item,
 fix direction included: `gripe:170349`.
 
-Two secondary findings, neither the primary driver: spark's Marker OCR was
+Two secondary findings, neither the primary driver: the GPU node's Marker OCR was
 separately broken (nvidia docker runtime never configured) — **fixed and
 verified 2026-07-23**. `ref_identifiers` stale rows (`id_kind IN
 ('pdf_sha256','content_hash')`) do survive the reset SQL, but forensics
@@ -145,7 +145,7 @@ dev laptop session) has **zero vault grants by design**. The reset SQL can
 be prepared/reviewed from a dev session (as above, read-only until the
 `BEGIN`/`COMMIT` block runs), but the actual fetch pass needs a real
 worker's vault-capable DSN — run via a `cluster-admin` session against
-melchior/caspar, watching the pass logs for the re-fetch.
+the agent host and the database host, watching the pass logs for the re-fetch.
 
 ## Front-matter-only preview PDFs — `precis markup-backfill` (gripe 372781)
 
@@ -176,9 +176,9 @@ first; wiring it in is the follow-up.
 the footer signature does the discrimination. The real safety net is the
 growth guard at replacement time.
 
-**Fragile config.** `PRECIS_FETCH_MARKUP` is set on melchior only (overlay
-`host_vars`, gitignored). Harmless only while melchior claims essentially all
-OA-fetch work — if melchior drains, every Elsevier paper silently reverts to
+**Fragile config.** `PRECIS_FETCH_MARKUP` is set on the agent host only (overlay
+`host_vars`, gitignored). Harmless only while the agent host claims essentially all
+OA-fetch work — if the agent host drains, every Elsevier paper silently reverts to
 preview-PDF ingest, and nothing in the repo shows it.
 
 **Open.** Gripe 372785: extend past Elsevier (Wiley TDM next). Do not widen

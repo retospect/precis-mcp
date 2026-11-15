@@ -85,7 +85,7 @@ class TestMakeEmbedder:
         assert e.model == "bge-m3"
 
     def test_remote_default_timeout_is_300s(self, monkeypatch) -> None:
-        # embedder-wedge-hardening.md §5: the 2026-08-10 caspar/balthazar
+        # embedder-wedge-hardening.md §5: the 2026-08-10 birch/alder
         # incident was a client timeout (30s) shorter than a real CPU-host
         # batch's compute time — the embedder finished, the client had
         # already hung up, and every retry recomputed (and re-timed-out

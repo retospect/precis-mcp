@@ -181,10 +181,10 @@ def test_a_workerless_checkout_is_a_note_not_a_failure(store: Store) -> None:
     membership — is a note, not the attestor that pins the pass."""
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA, worker_units=_units())
-    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
+    _beat(store, "hazel", SHA2, worker_units={}, activity={})
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert ev.ok and ev.problems == [] and ev.noncohort == ("hephaestus",)
-    assert "hephaestus (no workers)" in ev.text
+    assert ev.ok and ev.problems == [] and ev.noncohort == ("hazel",)
+    assert "hazel (no workers)" in ev.text
 
 
 def test_worker_units_snapshot_with_units_attests(store: Store) -> None:
@@ -223,13 +223,11 @@ def test_a_workerless_host_in_the_deploy_ledger_is_a_member(store: Store) -> Non
     host that stopped running workers must still attest."""
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA, worker_units=_units())
-    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
-    _ledger(store, ["node-a", "hephaestus"])
+    _beat(store, "hazel", SHA2, worker_units={}, activity={})
+    _ledger(store, ["node-a", "hazel"])
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and ev.noncohort == ()
-    assert ev.problems == [
-        f"worker hephaestus reports {SHA2[:12]}, release is {SHA[:12]}"
-    ]
+    assert ev.problems == [f"worker hazel reports {SHA2[:12]}, release is {SHA[:12]}"]
 
 
 def test_a_workerless_host_never_parks_the_probe(store: Store) -> None:
@@ -244,21 +242,21 @@ def test_a_workerless_host_never_parks_the_probe(store: Store) -> None:
         store=store,
     )
     _beat(store, "node-a", SHA, worker_units=_units())
-    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
-    _stale(store, "hephaestus", minutes=10)  # predates the deploy finish
+    _beat(store, "hazel", SHA2, worker_units={}, activity={})
+    _stale(store, "hazel", minutes=10)  # predates the deploy finish
     ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
-    assert ev.ok and ev.waiting == () and ev.noncohort == ("hephaestus",)
+    assert ev.ok and ev.waiting == () and ev.noncohort == ("hazel",)
 
 
 def test_only_workerless_hosts_is_still_no_live_worker(store: Store) -> None:
     """Every live row worker-less → nothing attests: still 'no live
     worker host', and the note still names them."""
     R.record_prod_head(store, SHA, [])
-    _beat(store, "hephaestus", SHA, worker_units={}, activity={})
+    _beat(store, "hazel", SHA, worker_units={}, activity={})
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert not ev.ok and ev.noncohort == ("hephaestus",)
+    assert not ev.ok and ev.noncohort == ("hazel",)
     assert ev.problems == ["no live worker host (no heartbeat in the last 60 min)"]
-    assert "hephaestus (no workers)" in ev.text
+    assert "hazel (no workers)" in ev.text
 
 
 def test_an_uncovered_host_running_workers_never_attests(store: Store) -> None:

@@ -87,7 +87,7 @@ validation was performed for this note.
 
 Reto via orchestrator (2026-10-06 15:20Z) asks whether a wider pillar
 reduces collapse in the ball12 lineage, `se:hexfold-dogfood-r4` /
-`st465728`. Plan fresh Melchior-only variants at current diameter, 1.5x
+`st465728`. Plan fresh web-host-only variants at current diameter, 1.5x
 and 2x, with the same authored ball radius and fold settings, after R16
 deployment and authenticated process/viewer gates. Durable plan and limits:
 publication key
@@ -108,7 +108,7 @@ from saved provenance; a fitted sphere radius is not that provenance.
 Guard investigation (durable, readback verified)
 confirms the n ceiling protects synchronous request cost, not socket or
 print clearance. A proposed explicit 12/18/24 ceiling opt-in must preserve
-the default and all geometry checks, with a proven Melchior request budget;
+the default and all geometry checks, with a proven web-host request budget;
 no implementation in this note. Also, `top_R` selects the nearest
 area-matched candidate: identical requested radius does not guarantee
 identical actual sphere radius. Report both; a strictly fixed actual-radius
@@ -116,7 +116,7 @@ sweep needs a separate reviewed target-authoring premise/change.
 
 Report each variant's built/refused/unknown state, actual/authored diameter,
 reach residual mean/p95/max in Å, whole-scene and pillar-period fractions
-within 0.5 Å, and an actually opened Melchior `/se/<slug>` URL. Name the
+within 0.5 Å, and an actually opened web-host `/se/<slug>` URL. Name the
 observed collapse indicator: evidenced self-intersection, measured waist
 narrowing relative to authored diameter with discrete-ring/precision limits,
 or declining fraction along the pillar with explicit counts. Use saved

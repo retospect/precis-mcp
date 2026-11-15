@@ -1650,7 +1650,7 @@ class TestHarvest:
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """gr309200: the auto-filed gripe must name the job's actual
-        ``lease_host`` (not a hardcoded "spark/executor"), and its detail
+        ``lease_host`` (not a hardcoded "spruce/executor"), and its detail
         must carry the failure ``error`` text that ``record_failure`` now
         mirrors onto ``refs.meta`` alongside ``failure_class``."""
         from precis.store import Tag
@@ -1669,7 +1669,7 @@ class TestHarvest:
                 "job_type": "struct_relax",
                 "failure_class": "infra",
                 "error": "container exited 137",
-                "lease_host": "pollux",
+                "lease_host": "poplar",
             },
             parent_id=sid,
         )
@@ -1693,8 +1693,8 @@ class TestHarvest:
         compute_mod.harvest_measures(store, qid, hub=object())
         assert len(gripe_calls) == 1
         text = gripe_calls[0]["text"]
-        assert "pollux" in text
-        assert "spark/executor" not in text
+        assert "poplar" in text
+        assert "spruce/executor" not in text
         assert "container exited 137" in text
 
     def test_infra_gripe_falls_back_to_generic_executor_when_no_lease_host(
@@ -1791,7 +1791,7 @@ class TestHarvest:
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
 
     _OFF_LANE_ERR = (
-        "unclaimable: pinned to target_node=castor, which has left the "
+        "unclaimable: pinned to target_node=cedar, which has left the "
         "ssh_node lane: no job_ssh_node pass has run there since "
         "2026-10-16T10:58Z (62.2h, budget 4.0h) and every claim path "
         "node-gates on the pin. Failed as infra so the bounded retry "
@@ -10234,11 +10234,11 @@ class TestDispatchAutocatpath:
         assert self._agg_todo_ids(store, first) == []
 
     def test_redispatch_node_refuses_an_unknown_host(self, store: Any) -> None:
-        store.sync_host_resource_slots("spark-x", {"gpu": 1})
+        store.sync_host_resource_slots("spruce-x", {"gpu": 1})
         qid, first, _second = self._two_candidates(store)
         note = compute_mod.redispatch_candidates(store, qid, node="typo-node")
         assert note.startswith("redispatch refused")
-        assert "typo-node" in note and "spark-x" in note
+        assert "typo-node" in note and "spruce-x" in note
         assert self._agg_todo_ids(store, first) == []
 
     def test_redispatch_node_and_spread_are_alternatives(self, store: Any) -> None:
@@ -10419,7 +10419,7 @@ class TestDispatchAutocatpath:
         ``mlip.dtype=mixed`` injected (autocatpath defaults to cpu/float64 → the
         GPU sits idle and every eval runs full float64 otherwise); the caller's
         config dict is not mutated and its other keys are preserved."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
@@ -10445,7 +10445,7 @@ class TestDispatchAutocatpath:
         """gr491506: a GPU-routed MACE run carries a fixed
         ``search.neb_pool_size`` — 'auto' pooled 37 bands into one MACE
         forward on jo489257 and OOM-killed the GB10 host."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX_MACE)
@@ -10459,7 +10459,7 @@ class TestDispatchAutocatpath:
     ) -> None:
         """Non-MACE backends keep the engine default — EMT allocates no
         driver memory, so the GB10 guard must not touch it."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no mlip → emt
@@ -10485,7 +10485,7 @@ class TestDispatchAutocatpath:
     ) -> None:
         """A per-quest ``search.neb_pool_size`` is a hand-tuned choice —
         the guard fills a default, it never overwrites one."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         cfg_in = {**self._RX_MACE, "search": {"neb_pool_size": 8}}
@@ -10685,14 +10685,14 @@ class TestDispatchAutocatpath:
         the out-of-daemon caller (e.g. ``precis quest redispatch`` from a
         plain shell) no longer null-routes onto random EMT."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("spark", {"gpu": 1})
+        store.sync_host_resource_slots("spruce", {"gpu": 1})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
-        assert params["target_node"] == "spark"
+        assert params["target_node"] == "spruce"
         assert params["force_backend"] != "emt"  # routed → the config's own backend
         assert params["config"]["mlip"]["device"] == "cuda"
 
@@ -10704,16 +10704,16 @@ class TestDispatchAutocatpath:
         the whole tree to the first-sorted host, and the (cheap) aggregate
         pins to that first host."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("castor", {"gpu": 1})
-        store.sync_host_resource_slots("pollux", {"gpu": 1})
-        store.sync_host_resource_slots("spark", {"gpu": 1})
+        store.sync_host_resource_slots("cedar", {"gpu": 1})
+        store.sync_host_resource_slots("poplar", {"gpu": 1})
+        store.sync_host_resource_slots("spruce", {"gpu": 1})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         seed_jobs = self._seed_jobs(store, sid)
         targets = [(j.get("params") or {})["target_node"] for _id, j in seed_jobs]
         # default fan-out: 3 seeds × 1 model — one per host, sorted order
-        assert targets == ["castor", "pollux", "spark"]
+        assert targets == ["cedar", "poplar", "spruce"]
         for _id, jmeta in seed_jobs:
             params = jmeta.get("params") or {}
             assert params["force_backend"] != "emt"  # every seed stays routed
@@ -10727,7 +10727,7 @@ class TestDispatchAutocatpath:
                 """,
                 (sid,),
             ).fetchone()
-        assert (row[0]["params"] or {})["target_node"] == "castor"
+        assert (row[0]["params"] or {})["target_node"] == "cedar"
 
     def test_env_pin_accepts_comma_separated_node_list(
         self, store: Any, monkeypatch: Any
@@ -10735,7 +10735,7 @@ class TestDispatchAutocatpath:
         """The env pin accepts a comma-separated list and round-robins the
         fan-out across it in the operator's order, without consulting
         resource_slots."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark, castor")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce, cedar")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
@@ -10743,7 +10743,7 @@ class TestDispatchAutocatpath:
             (j.get("params") or {})["target_node"]
             for _id, j in self._seed_jobs(store, sid)
         ]
-        assert targets == ["spark", "castor", "spark"]
+        assert targets == ["spruce", "cedar", "spruce"]
 
     @staticmethod
     def _ssh_node_pass_log(store: Any, node: str, *, age_hours: float) -> None:
@@ -10834,8 +10834,8 @@ class TestDispatchAutocatpath:
         spans a real multi-node cluster — this is a prod misconfiguration, not
         dev. Refuse loudly instead of silently minting an unrouted EMT job."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("caspar", {"cpu": 4})
-        store.sync_host_resource_slots("melchior", {"cpu": 4})
+        store.sync_host_resource_slots("birch", {"cpu": 4})
+        store.sync_host_resource_slots("maple", {"cpu": 4})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         with pytest.raises(RuntimeError, match="gr172886"):

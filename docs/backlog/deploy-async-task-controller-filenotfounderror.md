@@ -10,10 +10,10 @@ pillar: platform
 `.deploy-logs/20260927-183925-6008588c4851fd6063d62815e580eabb79222269.log`.
 Every rollout play before the last one completed on all five nodes (venvs
 uniform at 6008588c). The last play, `deploy/playbooks/33-precis-agent-image.yml`,
-failed on melchior in "docker build --target agent (BuildKit; label stamps the
+failed on the agent host in "docker build --target agent (BuildKit; label stamps the
 built sha)" (`async`, `poll: 15`, `retries: 3`, `until rc == 0`,
 `failed_when: false`), so the resident `precis-agent` image stayed labelled
-`d9a7f115`. Narrow consequence: the agent container on melchior runs the
+`d9a7f115`. Narrow consequence: the agent container on the agent host runs the
 previous sha; nothing else is stale.
 
 ## Timeline (two independent failures, controller first)
@@ -21,9 +21,9 @@ previous sha; nothing else is stale.
 | UTC | where | event |
 |---|---|---|
 | 18:46:34 | controller | build task starts (async), 67 `ASYNC POLL` lines follow (15 s each ≈ 16.75 min) |
-| ~18:48:52 | melchior | last BuildKit output: step #22 `apt-get` InRelease fetches from deb.debian.org / deb.nodesource.com |
-| 19:03:03 | controller | 68th poll raises `Task failed: [Errno 2] No such file or directory`, `Origin: …/.git/precis-deploy-tree/deploy/playbooks/33-precis-agent-image.yml:524:11 (source not shown: FileNotFoundError)`; play aborts, melchior `ok=185 changed=25 failed=1` |
-| 19:04:21 | melchior | wrapper watchdog: no build output for 908 s (ceiling 900), kills the build; `#22 CANCELED`, `done rc=130 elapsed=1067s` |
+| ~18:48:52 | the agent host | last BuildKit output: step #22 `apt-get` InRelease fetches from deb.debian.org / deb.nodesource.com |
+| 19:03:03 | controller | 68th poll raises `Task failed: [Errno 2] No such file or directory`, `Origin: …/.git/precis-deploy-tree/deploy/playbooks/33-precis-agent-image.yml:524:11 (source not shown: FileNotFoundError)`; play aborts, the agent host `ok=185 changed=25 failed=1` |
+| 19:04:21 | the agent host | wrapper watchdog: no build output for 908 s (ceiling 900), kills the build; `#22 CANCELED`, `done rc=130 elapsed=1067s` |
 
 The controller died **78 s before** the host killed the build, so the retries
 ladder was never reached for a reason unrelated to the stall. Ansible could not
@@ -38,7 +38,7 @@ removable. That is closed: the tree is pid-suffixed and pid-locked
 
 Host-side trail, verbatim tail of
 `~/.cache/precis-agent-build/build-6008588c4851fd6063d62815e580eabb79222269.log`
-on melchior (the slurp task "Read the build's progress trail from the host" never
+on the agent host (the slurp task "Read the build's progress trail from the host" never
 ran, so none of this reached the controller log):
 
 ```
@@ -62,7 +62,7 @@ precis-agent-build: done rc=130 elapsed=1067s
 (`deploy/playbooks/files/precis-agent-build.sh`) then exits 124 when the stall
 flag is set, as the playbook comments say. The controller never saw either
 value. The sha-scoped build dir and the wrapper inside it are still present on
-melchior (wrapper mtime = archive time), so "the retry re-exec'd a wiped
+the agent host (wrapper mtime = archive time), so "the retry re-exec'd a wiped
 wrapper" is ruled out.
 
 ## To do

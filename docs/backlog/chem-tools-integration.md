@@ -45,11 +45,11 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
   Tree-Builder request/response schema against the instance's
   `/docs`** (flagged in `askcos.py`).
 - **AlphaFold (4b):** `roles/alphafold` asserts the
-  `alphafold3:ready` image + models on the fold node — **`pollux`, not
-  `spark`**: spark went permanently off cluster duty 2026-08-29 and the
-  GPU-pinned lanes moved to the twins (`dft`/`fold` → pollux,
-  `retrosynth` → castor; see `deploy/inventory/hosts.yml`, `compute`
-  group). Wire `PRECIS_FOLD_NODE=pollux`, `PRECIS_FOLD_MODELS_DIR`,
+  `alphafold3:ready` image + models on the fold node — **the second DGX node, not
+  the GPU node**: the GPU node went permanently off cluster duty 2026-08-29 and the
+  GPU-pinned lanes moved to the twins (`dft`/`fold` → the second DGX node,
+  `retrosynth` → the local-serving node; see `deploy/inventory/hosts.yml`, `compute`
+  group). Wire `PRECIS_FOLD_NODE=<fold-node>`, `PRECIS_FOLD_MODELS_DIR`,
   `PRECIS_FOLD_IMAGE`, an XLA cache mount; un-dark the kind. Verify
   at first live run (flagged best-effort in `alphafold.py`): output
   subdir naming, `summary_confidences.json` key names, de-novo
@@ -88,7 +88,7 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
 - **5 — sequence design:** a `sequence` kind, engines decided —
   Boltz-2 + LigandMPNN, torch-cuda base proven on GB10 — build as
   adapters + `roles/*` mirrors of `roles/alphafold`, another
-  `job_type`, GPU on spark.
+  `job_type`, GPU on the GPU node.
 - **Dedicated chem/bio `plan_tick` executor** that auto-drives the
   research loop end-to-end — deferred; the `precis-lab-help` skill
   already lets the generic planner do it.

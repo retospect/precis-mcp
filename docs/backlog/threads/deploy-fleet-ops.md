@@ -74,8 +74,8 @@ residue, then batched ops and flip steps.
 6. **backlog/dark-features-activation.md** — flip steps for shipped-dark
    features recorded nowhere else.
 7. **backlog/prod-ops-one-offs.md** — batched small cluster-ops sweeps;
-   now also the 2026-10-10 credential/service gripe batch (melchior OAuth
-   token, mcp-http prod clone, balthazar openclaw).
+   now also the 2026-10-10 credential/service gripe batch (the agent host OAuth
+   token, mcp-http prod clone, a worker host openclaw).
 8. **backlog/coalescing-deployer-for-many-sessions-one-fleet.md** — coalesce
    deploys only if the burst still hurts after 2.
 9. **backlog/fleet-agent-friction.md** — prod-psql prompts on already-approved

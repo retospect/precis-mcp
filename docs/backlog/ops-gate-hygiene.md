@@ -11,7 +11,7 @@ Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keep
 
 _Grouped 2026-09-26; was `service-config-rollback-gate-expiry`._
 
-An emergency rollback set `(melchior, chase_trigger, prio=0,
+An emergency rollback set `(<agent-host>, chase_trigger, prio=0,
 actor='phase2-rollback-embedder-warm')` on 2026-08-02 and nothing ever
 revisited it — the taproot chase lane sat dark for 10+ days while ~4.5k
 papers landed (gr202399), and the only detection was a watchdog gripe

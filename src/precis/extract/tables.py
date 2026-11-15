@@ -361,7 +361,7 @@ def table_sig(text: str) -> TableSig:
 #: The ``ord`` window one ref's chunks occupy when a paper's merged
 #: chunk list spans several refs (``rank * REF_ORD_STRIDE + ord`` — the
 #: main ref first, then its ``part-of`` supplements, gr632957). No real
-#: ref approaches it (the castor pilot's extreme was a 634-chunk paper,
+#: ref approaches it (the local-serving-node pilot's extreme was a 634-chunk paper,
 #: jo504632) and it keeps the ord-adjacency :func:`table_runs` groups
 #: on and the ±``window`` :func:`assign_captions` measures from ever
 #: crossing a ref boundary. The loaders that apply it are

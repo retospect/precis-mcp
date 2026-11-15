@@ -17,15 +17,15 @@ dominated by one index build that has an untried tuning lever.
 | Blocker | State | Fix |
 |---|---|---|
 | Drill host cannot read a dump at speed | repo side ready, dark | the pull key below; needs the two overlay vars and a playbook run by Reto |
-| `/mnt/cluster` NFS hangs on castor and pollux | open | `ls` times out at 60 s; the caspar lockd wedge is the candidate |
-| DGX nodes cannot pull from Docker Hub | worked around | TLS handshake timeout to registry-1.docker.io; `docker save` on an operator Mac → `docker load` on the node. `pgvector/pgvector:pg17` (arm64) is already loaded on castor |
+| `/mnt/cluster` NFS hangs on the DGX nodes | open | `ls` times out at 60 s; the database host lockd wedge is the candidate |
+| DGX nodes cannot pull from Docker Hub | worked around | TLS handshake timeout to registry-1.docker.io; `docker save` on an operator Mac → `docker load` on the node. `pgvector/pgvector:pg17` (arm64) is already loaded on the local-serving node |
 | Restore spends 1h55m on one HNSW index build | open, untried lever | default 64 MB `maintenance_work_mem`; raise it and `max_parallel_maintenance_workers` for the restore session, then measure |
 | B2 offsite copy absent | repo fix landed 2026-10-01 (gr460347) | flags renamed to kebab case and the CLI pinned `b2[full]>=4,<5`; the **cluster step is still pending** — `deploy/playbooks/11-backups.yml`, one manual sync, then confirm `b2 ls b2://openclaw-backups/backups/postgres/` |
 
-The tailnet path caspar→castor is **direct, ~2 ms** — the slow transfer is not
+The tailnet path database host→local-serving node is **direct, ~2 ms** — the slow transfer is not
 a cluster network problem. An operator Mac outside the cluster LAN measured
-~3.4 MB/s to caspar, which is why relaying 21 GB through it takes ~1.7 h. The
-cheap permanent fix is ssh key access from caspar to castor.
+~3.4 MB/s to the database host, which is why relaying 21 GB through it takes ~1.7 h. The
+cheap permanent fix is ssh key access from the database host to the local-serving node.
 
 ## Fixing the transfer path (drill pull access)
 
@@ -79,10 +79,10 @@ not restricting anything.
   reltuples 3,773,829. Newest migrations 0174_taxon_seed (precis) and
   0017_se_optics_channels (precis_se).
 - **Stopped before `pg_restore`** on two blockers: no fast path from the dump
-  to castor, and no pullable `pgvector/pgvector:pg17` image.
+  to the local-serving node, and no pullable `pgvector/pgvector:pg17` image.
 - **Transfer time, restore time, verify result: none.** Nothing was restored.
-- **Teardown confirmed**: scratch directory removed, castor root volume back
-  to 3.1 TB free / 13% used. Reads on caspar and the NAS only; nothing written
+- **Teardown confirmed**: scratch directory removed, the local-serving node root volume back
+  to 3.1 TB free / 13% used. Reads on the database host and the NAS only; nothing written
   to prod.
 - The drill read the B2 log's wrong end and reported `b2: command not found`
   as the live failure. Both strings are in that log: 102 `command not found`
@@ -90,21 +90,21 @@ not restricting anything.
   04:30 UTC) are `unrecognized arguments: --keepDays --replaceNewer`. The
   binary is installed (`/usr/local/bin/b2` → `/opt/b2/bin/b2`). Read the
   **tail** of that log, and check which error is newest before fixing.
-- Incidental: `/opt/shared/backups/postgres/` on caspar also holds 56
+- Incidental: `/opt/shared/backups/postgres/` on the database host also holds 56
   `openclaw_*.sql.gz` files from 2026-04-07 to 2026-05-31. That series stopped
   four months ago and is outside the 7-day prune.
 
 ### 2026-10-01 — groundwork after attempt 1
 
-- `pgvector/pgvector:pg17` (linux/arm64, matching castor's aarch64) mirrored
-  onto castor by `docker save | ssh castor docker load`, 18 s. The image
-  blocker no longer applies to castor.
-- The 2026-10-01 local dump directory (21 GB, 134 files) pre-staged to castor
+- `pgvector/pgvector:pg17` (linux/arm64, matching the local-serving node's aarch64) mirrored
+  onto the local-serving node by `docker save | ssh <serving-node> docker load`, 18 s. The image
+  blocker no longer applies to the local-serving node.
+- The 2026-10-01 local dump directory (21 GB, 134 files) pre-staged to the local-serving node
   `/var/tmp/restore-drill-20261001/dump` over the operator-Mac relay, file by
   file with size verification so it resumes: **65 min**, 133 copied, 0
   failures. Note this is the **local** copy, not the NAS copy — a drill from it
   proves restorability but not the off-host copy. Restore from the NAS tarball
-  on the next attempt. The staged dump is still on castor, read-only
+  on the next attempt. The staged dump is still on the local-serving node, read-only
   throughout; delete it when the next drill supersedes it.
 
 ### 2026-10-01 — attempt 2: PASS
@@ -139,5 +139,5 @@ log**.
 - **Teardown**: container removed, pgdata deleted from inside the image
   (uid 999 mode 700 defeats `rm -rf` as `deploy`), `df -h /` back to 3.1 T
   available / 14% — unchanged from before the drill. Prod was read once,
-  read-only, for the `_migrations` cross-check. Nothing ran on caspar or
-  melchior.
+  read-only, for the `_migrations` cross-check. Nothing ran on the database host or
+  the agent host.

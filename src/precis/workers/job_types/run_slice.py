@@ -3616,7 +3616,7 @@ def _kimi_launch_env(model: str | None, *, store: Any) -> dict[str, str]:
     :class:`_HostRefusal`. Nothing else is set: no User-Agent, identity
     or telemetry override — the CLI ships as shipped (the subscription
     terms forbid tampering). Names verified against the installed 2.3.3
-    binary by the author only; confirm at the melchior preflight."""
+    binary by the author only; confirm at the agent host preflight."""
     from precis import secrets
     from precis.errors import BadInput
     from precis.utils.llm import kimi

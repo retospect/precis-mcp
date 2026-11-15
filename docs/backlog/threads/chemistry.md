@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick.
 - **Blocked by:** Nothing for the tick. Catalysis items 25 (re-runs) and 23 (hydride pilot) stay held; the surface-Pourbaix optimizer that 23 waits on got its q3 ruling 2026-10-12 (oxide corrections on bulk references only, surface anchors uncorrected, oxide boundaries a labelled uncertain layer) and a viewer ask (the layered map; see the item's slices).
 - **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
-- **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on castor/pollux; inspect the content-key change first.
+- **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on the DGX nodes; inspect the content-key change first.
 - **Worktree:** `chemistry`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -41,7 +41,7 @@ candidates carry `quest_seed_infra_retries=1` (stamped 10-08/10-10, 322478
 since 09-07), and autocatpath_seed jobs keep minting (newest 479080 queued
 2026-10-11 14:42Z). The 06:46Z "no dispatch" report was premature: that tick
 ran only the llm/apply slices. Open: confirm the child runs under `taskset`
-on castor/pollux, and that the 23 re-minted seeds complete.
+on the DGX nodes, and that the 23 re-minted seeds complete.
 Unchecked:
 whether the verify content key moved since 09-24 (uv.lock changed
 10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
@@ -102,7 +102,7 @@ image, which has no MPI. Rank the items below by what that paper needs.
    2026-10-03: `PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS` (unset = general
    wall) and the harvest holds a timed-out seed instead of re-running it at
    the same wall. **Measured 2026-10-03:** verify seed job 464221
-   (pathway 449732 seed 0, pollux, unpinned) ran 13:57:55Z–19:03:04Z =
+   (pathway 449732 seed 0, the second DGX node, unpinned) ran 13:57:55Z–19:03:04Z =
    **5 h 05 m**, 50 states; the child grows to ~76 GB GPU memory, so
    budget one whole GPU per seed. Wall value 28800 (2× = 36618 s, cap
    binds; margin 1.57×). Reto ruled 2026-10-03 19:32Z (chemistry-8,
@@ -146,7 +146,7 @@ at five; engine-over-UI still holds.
 3. **backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md** — the
    kinetics ceiling shipped (the subprocess timeout, deploy 2026-09-27;
    `precis_pathway/runner.py`, `tests/test_pathway_kinetics_timeout.py`);
-   the item is NOT closed: the castor reproduction that settles the
+   the item is NOT closed: the local-model reproduction that settles the
    cause, the stranded `no_to_nh3_pd` aggregate re-dispatch (needs Reto),
    and the broader blocking-dispatch ceiling remain (triage 2026-10-02
    confirmed exactly that remainder).

@@ -1228,7 +1228,7 @@ def test_the_handoff_mints_one_land_and_succeeds(
     """If this fails the committed bump mints no land (or a wrong one: idem
     key, params, parent), does not stamp the record handed, or does not
     succeed the job with the summary the dispatcher's readers expect."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, handle = _handoff(pin)
     commit = handle["commit"]
     assert pb.poll(ctx, handle) is True
@@ -1240,7 +1240,7 @@ def test_the_handoff_mints_one_land_and_succeeds(
         "todo_id": PIN,
         "worktree": str(pin.tree()),
         "branch": "slice/77",
-        "target_node": "spark",
+        "target_node": "spruce",
     }
     rec = pin.record()
     assert rec["state"] == "handed" and rec["land_job"] == 5001

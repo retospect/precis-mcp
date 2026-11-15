@@ -56,9 +56,9 @@ def test_runbook_audit_loop_covers_every_listed_opt_python() -> None:
 
 
 def test_runbook_states_the_current_fleet_scope() -> None:
-    """The host list reflects the fleet: caspar has no canonical venvs or
-    heartbeat row left, and the castor/pollux heartbeat rows are marked
+    """The host list reflects the fleet: the database host has no canonical
+    venvs or heartbeat row left, and the DGX nodes' heartbeat rows are marked
     Linux noise — not macOS hosts to audit."""
     runbook = _RUNBOOK.read_text(encoding="utf-8")
-    assert re.search(r"caspar has no canonical venvs", runbook)
-    assert re.search(r"castor and pollux[^\n]*Linux", runbook, re.I)
+    assert re.search(r"The database host has no canonical venvs", runbook)
+    assert re.search(r"the DGX nodes are Linux", runbook)

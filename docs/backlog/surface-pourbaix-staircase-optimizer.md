@@ -321,7 +321,7 @@ So anchors are computed, not read.
   energy); wired to the quest path as `surface_anchors._theta0_check`.
 Hand-minted scans get no such stamp: call it per subject.
 
-**Slice-1 proof, 2026-10-13 (jo482106, castor, 0.24.1, mace:medium, ~55 s):**
+**Slice-1 proof, 2026-10-13 (jo482106, the local-serving node, 0.24.1, mace:medium, ~55 s):**
 at −0.30 V_RHE clean Pd(111) rests as H* at 9/9 ML; the one boundary in
 −1…+0.5 V is H*(9/9)→H*(7/9) at +0.44 V (propagated ±0.05 V; no
 model-form band, one model); O*/OH* never win. θ→0 acceptance against

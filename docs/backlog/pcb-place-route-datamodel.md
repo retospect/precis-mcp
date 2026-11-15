@@ -434,7 +434,7 @@ Repeat 4b–4d until no improvement, then prolong to the next level.
 | Layer beliefs | O(spans × L²) along wires plus the sparse P·Q product |
 
 N is the number of segments. PyTorch with a pairwise kernel that never builds
-the N×N matrix (KeOps or Triton), on the DGX Spark's GPU, and a CPU path for
+the N×N matrix (KeOps or Triton), on the GB10 node's GPU, and a CPU path for
 tests. Naive dense autodiff on nano (~8,000 segments) is memory-bound at
 about 10–20 ms per evaluation; the kernel route is the target. Numbers are
 measured on the prototype, not assumed.
@@ -520,7 +520,7 @@ beyond what appetite gives; component heights and 3D clearance
    barrier and via beads. Report: legal crossing-free result; via count
    against the frozen grid table on the same ratsnest; whether the
    4b → 4a → 4c layer loop settles or oscillates; how often the swept
-   collision check blocks steps; evaluations per second on CPU and Spark.
+   collision check blocks steps; evaluations per second on CPU and the GPU node.
 2. v1 on the bench boards with free parts, blocks, wire refinement, finish
    and exact DRC.
 3. Algorithmic sub-clustering, kept if it beats v1.
@@ -530,7 +530,7 @@ beyond what appetite gives; component heights and 3D clearance
 ## Slice 1 results
 
 Reto 2026-10-21 run, d-pr-s1 worktree, CPU (Apple Silicon dev box, torch
-2.13 CPU; no GPU/Spark was reachable — evals/s is CPU only).
+2.13 CPU; no GPU/GB10 node was reachable — evals/s is CPU only).
 
 Provisional parameters (fixed per the brief): length weight 1/mm; via
 cost 1.0 mm wire-equivalent (= `vroute.Request.via_cost_mm`); one-sided
@@ -570,8 +570,8 @@ context only; no frozen-table row is a 2-layer fixed-pad board.
    the seeded B.Cu crowding sits on the check; no step ever applied a
    crossing).
 5. **Throughput (CPU):** 19.1 evals/s at N=103 spans (small); 2.2
-   evals/s at N=361 (main). wall 9 s / 94 s. Spark not measured — no
-   GPU/Spark host was reachable from the tree.
+   evals/s at N=361 (main). wall 9 s / 94 s. GB10 node not measured — no
+   GPU/GB10 host was reachable from the tree.
 6. Parameters: listed above.
 
 Reading: the approach produces measurable answers but slice-1 legality
@@ -585,7 +585,7 @@ measurement this slice exists to produce.
 ## Slice 2 results
 
 2026-10-23 run (pr-s2 worktree), CPU only (Apple Silicon dev box, torch
-2.13 CPU). No GPU path was reachable from a worktree: the Spark lanes
+2.13 CPU). No GPU path was reachable from a worktree: the GB10 lanes
 need a deployed job type (`ssh_node`) and the sandbox lane is dark, so
 evals/s below are CPU figures; the pairwise kernel (KeOps/Triton) is not
 built. **vroute stays the production router: pr v1 beats it on no bench

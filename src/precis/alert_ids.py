@@ -14,7 +14,7 @@ PCB DRC's stable rule id + located subject):
   The spelling ``<source>/<fingerprint>`` is the addressable id —
   sources never contain ``/`` (enforced in :func:`precis.alerts.raise_alert`),
   fingerprints may (``pass-dead:{host}/{process}/{handler}``,
-  ``caspar:/``), so ``id.split("/", 1)`` round-trips.
+  ``<host>:/``), so ``id.split("/", 1)`` round-trips.
 * :func:`resolve` maps a concrete ``(source, fingerprint)`` to its rule
   by pattern match; ``raise_alert`` stamps the result as ``meta.rule_id``
   on every row it writes, so a raised alert carries its rule.

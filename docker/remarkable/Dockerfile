@@ -36,7 +36,7 @@ RUN apt-get update \
 
 # Fetch the ddvk/rmapi release binary for the build arch. The legacy builder
 # (docker/aizynth builds with DOCKER_BUILDKIT=0) sets no TARGETARCH, so detect
-# via uname: aarch64 = the Apple-silicon colima default on melchior; x86_64 for
+# via uname: aarch64 = the Apple-silicon colima default on the agent host; x86_64 for
 # a Linux node. --retry so a stalled GitHub CDN connection fails fast + retries.
 RUN set -eux; \
     arch="$(uname -m)"; \

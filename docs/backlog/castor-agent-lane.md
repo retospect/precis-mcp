@@ -1,24 +1,24 @@
 ---
 status: draft
-title: Castor agent lane — gpt-oss-120b as a builder/helper beside Devin and Claude
+title: Local-model agent lane — gpt-oss-120b as a builder/helper beside Devin and Claude
 pillar: local-compute
 prio: high
 ---
 
-# Castor agent lane
+# Local-model agent lane
 
 Filed 2026-10-22 from Reto's ask (chat desk): Devin (SWE-2 HIGH) is
-unlimited today, the weekly Claude allotment runs out, and castor sits
+unlimited today, the weekly Claude allotment runs out, and the local-serving node sits
 mostly idle serving `openai/gpt-oss-120b` on SGLang (131,072-token window,
 32 running requests, ~3 s per short call, $0). "What do we need to do to
-make it awesome?" — castor as a third builder/helper lane the coordinator
+make it awesome?" — the local-serving node as a third builder/helper lane the coordinator
 can launch when Devins run out or the task is too mechanical to spend a
 Devin on.
 
 What already exists (do not rebuild): `scripts/claude-local` runs a real
-Claude Code session against castor through `scripts/anthropic-shim.py`
+Claude Code session against the local-serving node through `scripts/anthropic-shim.py`
 (chat mode on SGLang; multi-step tool use verified live and deployed in
-r84, gr500583); the product router reaches castor through a `llm.op.<source>`
+r84, gr500583); the product router reaches the local-serving node through a `llm.op.<source>`
 chain with `placement: local` (`precis.utils.llm.operations.resolve_op_chain`,
 `router._served_local_rung`, slot accounting in `local_serving.acquire`);
 the gardener proposer runs that way today (me502337); the MEDIUM replay
@@ -34,9 +34,9 @@ answered here.
 split, the fleet integration (`fleet-wave launch --castor`) and the
 pilot's pass-rate measurement. Its two lanes are two classes of
 `llm-lane-scheduler.md` (`castor_agent`, max 1 per Reto's ruling below;
-`castor_batch`, a queue class) on castor's `llm:openai/gpt-oss-120b`
+`castor_batch`, a queue class) on the local-serving node's `llm:openai/gpt-oss-120b`
 slots, so it adds no allocator, no slot budget of its own and no
-server-side priority scheme; a second castor-class host is a second
+server-side priority scheme; a second local-serving-class host is a second
 endpoint row there. Rates and timeouts for the shim's requests resolve
 through `utils/outbound_policy.py` (`llm-local` class).
 
@@ -45,7 +45,7 @@ through `utils/outbound_policy.py` (`llm-local` class).
 Three lanes, three cost curves. Claude is the scarce one (weekly quota,
 also the only one that may touch design-review threads). Devin is free
 today but not forever, and it is a frontier-class SWE agent that should
-not be spent on lint. Castor costs electricity. The coordinator needs a
+not be spent on lint. The local-serving node costs electricity. The coordinator needs a
 lane whose marginal cost is zero for the work that is mechanical enough
 to be verified by the gate rather than by a reader, and a fan-out lane
 for the work that is embarrassingly parallel (per-file review, per-gripe
@@ -89,22 +89,22 @@ over-exploring run ends, and measure (slice 0) before trusting.
 **Batch lane: the product router** (recommended for fan-out that edits
 nothing). One `route()` call per item through an `llm.op.castor_lane:<task>`
 chain, `placement: local`, `max_tokens` 4000, `reasoning_effort` low or
-medium, no cloud fallback (deliberately, like the gardener: a castor
+medium, no cloud fallback (deliberately, like the gardener: a local-serving node
 failure must be visible). Slot accounting, `llm_call_log`, failure
 classes and the `/placement` view come for free. Caller is a script under
 `scripts/castor/` (one per task type), never a pane.
 
 ## 2. Task fit
 
-| Castor **owns** (lands via the gate + Claude read) | Castor **assists** (output goes to a Claude/Devin reader) | Stays on Claude/Devin |
+| Local model **owns** (lands via the gate + Claude read) | Local model **assists** (output goes to a Claude/Devin reader) | Stays on Claude/Devin |
 |---|---|---|
 | ruff/mypy residuals the auto-fixer leaves (`tidy` remit) | first-pass review of a diff, per file (findings ranked for the `reviewer` agent) | architecture, anything in a `design-review: yes` thread |
 | tests from a spec where the check is mechanical: mutants from `scripts/mutate-diff`, diff coverage, repro tests for a gripe with a quoted traceback | gripe triage: class, duplicate candidates, owning package, a `bug`-skill bucket proposal | cross-module changes, new seams, handler contracts |
 | doc sync after a landed code change (`documenter` remit): docstrings, skill text, backlog delete-on-ship | log and job-transcript mining (`forensics` remit): ranked candidates, evidence quoted | migrations, `safe_fetch.py`, permission settings, authority files |
-| one edit repeated across call sites (positional-mapper, `store: Any`, encoding kwargs) | memory/graph candidate proposals (the gardener already does this on castor) | security, anything outward-facing, anything over $25 |
+| one edit repeated across call sites (positional-mapper, `store: Any`, encoding kwargs) | memory/graph candidate proposals (the gardener already does this on the local-serving node) | security, anything outward-facing, anything over $25 |
 | renames and moves where mypy + the selected tests are the check | summaries of a long session log for the review queue | conflict resolution, rebase repair (gr497896: never in a desk loop) |
 
-The rule behind the split: castor owns a task when a machine check
+The rule behind the split: the local model owns a task when a machine check
 (ruff, mypy, `scripts/test --selected`, a byte-compare) decides pass or
 fail; it assists when a reader decides; it is excluded when the undo is
 not a `git revert`.
@@ -131,12 +131,12 @@ each fit; thirty-two do not. Patterns, ordered by fit:
   the failing test, the target function and its callees from
   `get(kind='python')`; each applied in a scratch copy, run through ruff,
   mypy and the one test; survivors (usually 0-2) go to one Claude
-  judge; the winner lands as a commit by a tier-R castor builder or the
+  judge; the winner lands as a commit by a tier-R local-model builder or the
   coordinator. This is [local-coder-batch-harness](local-coder-batch-harness.md)
   with a real server.
 - **Best-of-N for a spec'd function** (same machinery, N=8, selection by
   the spec's test plus a Claude judge on the survivors).
-- **Parallel agent sessions** (agent lane): a wave of up to 8 castor
+- **Parallel agent sessions** (agent lane): a wave of up to 8 local-model
   builders, one gripe each, R tier, `--max-turns 60`. Budgeted, see §6.
 
 Fan-out writes nothing to prod; every output is a candidate for a reader
@@ -144,14 +144,14 @@ or a gate.
 
 ## 4. Quality controls
 
-**Gates.** A castor builder never lands with `scripts/ship --quick` on
+**Gates.** A local-model builder never lands with `scripts/ship --quick` on
 code (the W-tier allowance for `--quick` is for Claude/Devin builders,
 authority.md v2); it commits in its tree and the coordinator or release
 owner lands with `scripts/ship --checked` (selected tests via
 `scripts/impacted-tests`) after a Claude read: `reviewer` agent on the
 diff, or Opus for anything touching a handler contract. A red
-`--checked` goes back to the castor builder once with the failure text;
-a second red goes to Devin or Claude, never a third castor try.
+`--checked` goes back to the local-model builder once with the failure text;
+a second red goes to Devin or Claude, never a third local-model try.
 
 **Authority.** Tier R by default: commits only, R MCP endpoint, no ship.
 Tier W only for named task types after their pilot pass rate is in (§4
@@ -166,11 +166,11 @@ builder — the footer text grants nothing; the settings file does.
   single-commit fix on main that touched ≤3 files and is not a migration
   (`search(kind='gripe', status='done', q='resolved:')`, filter by the
   commit's diffstat). Reproduce the pre-fix state in a worktree by
-  reverting the fix commit, brief the castor builder with the gripe body
+  reverting the fix commit, brief the local-model builder with the gripe body
   only, and compare.
 - Pass = the builder's commit makes `scripts/ship --checked`'s selected
   tests green AND a blind Claude reviewer (sees both diffs, not which is
-  which) rates the castor diff acceptable to land. Partial = green but
+  which) rates the local-model diff acceptable to land. Partial = green but
   rejected by the reviewer. Record per gripe: pass/partial/fail, turns,
   wall time, prompt tokens, whether an undefined tool was called.
 - Cost saved: the Claude tokens the same gripe cost when a Claude
@@ -184,7 +184,7 @@ builder — the footer text grants nothing; the settings file does.
   task type stays "assist".
 - Both lanes log to `llm_call_log` (the batch lane natively; the agent
   lane through a shim counter written per request, slice 1) so
-  `get(kind='llm', id='/placement')` shows castor-lane share by day.
+  `get(kind='llm', id='/placement')` shows local-model lane share by day.
 
 ## 5. Context: what to feed 131k
 
@@ -206,7 +206,7 @@ builder — the footer text grants nothing; the settings file does.
   python kind (`get(kind='python', id='main::<qualname>')` for signature
   + callers + callees) and `scripts/coderef`, exactly as a Claude builder
   does. `docs/codebase.md` is 1 read; the owning package docstring is
-  the second. A castor brief adds an explicit "read these first, nothing
+  the second. A local-model brief adds an explicit "read these first, nothing
   else" list because the model over-explores (gr500583 c1).
 - **Skills.** `get(kind='skill')` on demand; the brief names the one or
   two that apply. AGENTS.md is read in full once (builder-workflow.txt
@@ -217,7 +217,7 @@ builder — the footer text grants nothing; the settings file does.
 
 ## 6. Ops
 
-**Sharing castor.** Today's castor consumers: the gardener proposer
+**Sharing the local-serving node.** Today's local-model consumers: the gardener proposer
 (`llm.op.graph_garden:propose`, 2-hourly), chase verify batches, the
 summarise op when it is flipped local, the MEDIUM eval reruns, and the
 survey_extract trial. The agent lane must not starve them.
@@ -270,12 +270,12 @@ model name after a redeploy (health probe checks `/v1/models` names
 `openai/gpt-oss-120b`); earlyoom during a restart (role notes); scheduler
 pin at 100 % CPU (gr485635 — the 32/0.80 cap, do not raise).
 
-**Fallback when castor is down.** `scripts/claude-local` exits 2 on a
+**Fallback when the local-serving node is down.** `scripts/claude-local` exits 2 on a
 failed health probe; `fleet-wave launch --castor` refuses and prints
-"castor down — launch as --devin or claude". A running castor builder
+"local-serving node down — launch as --devin or claude". A running local-model builder
 that loses the endpoint ends its turn with an error; the coordinator
 relaunches the same brief on Devin. The batch lane's op chains have no
-cloud rung on purpose: a down castor means the fan-out waits, never
+cloud rung on purpose: a down local-serving node means the fan-out waits, never
 silently bills Claude. The only automatic cloud fallback is the one the
 caller names in the rung.
 
@@ -290,21 +290,21 @@ caller names in the rung.
   `fleet_panes` parses it as a `claude` pane; `LAUNCH_PERMISSION_MODE`
   gains `castor: auto` (never `dangerous`: this model gets the
   classifier). `watch-done`, `stuck-watch`, `close` work unchanged.
-  `--dry-run` prints the argv. Launch refuses when the castor budget
+  `--dry-run` prints the argv. Launch refuses when the local-model budget
   (8) is full or the health probe fails.
-- **Briefs.** The gripe-fleet brief format, plus three castor lines: the
+- **Briefs.** The gripe-fleet brief format, plus three local-model lines: the
   explicit read-first file list, the one test command, and "tools you
   may call" (Read, Edit, Bash for `scripts/test`, the python-kind MCP).
-  A castor brief never asks for a design decision.
-- **Review queue.** A castor builder never files to Reto's queue; it
+  A local-model brief never asks for a design decision.
+- **Review queue.** A local-model builder never files to Reto's queue; it
   sends blockers to the coordinator, who decides whether the task is
-  castor-shaped at all. Review of its diff is the coordinator's `reviewer`
+  local-model-shaped at all. Review of its diff is the coordinator's `reviewer`
   call before landing (§4).
 - **Coordinator's pick rule, in order:** (1) design-review thread,
   migration, security, cross-module → Claude. (2) Needs judgment, Devin
-  slot free → Devin. (3) In castor's "owns" column with a mechanical
-  check, or a fan-out → castor. (4) Devins exhausted and the task is in
-  "assist" → castor drafts, Claude finishes from the draft (cheaper than
+  slot free → Devin. (3) In the local-model "owns" column with a mechanical
+  check, or a fan-out → the local model. (4) Devins exhausted and the task is in
+  "assist" → the local model drafts, Claude finishes from the draft (cheaper than
   Claude from scratch). The rule lives in the gripe-fleet skill once
   slice 3 ships.
 
@@ -347,15 +347,15 @@ caller names in the rung.
   `--enable-metrics`; the shim logs one line per request and counts
   undefined tool names; the agent lane's requests land in `llm_call_log`
   with `source='castor_lane:agent'`. Acceptance: `/placement` shows the
-  castor-lane share; a Prometheus query returns cache hit rate and
-  retractions from castor.
+  local-model lane share; a Prometheus query returns cache hit rate and
+  retractions from the local-serving node.
 - **Slice 2 — `fleet-wave launch --castor`.** The `castor-` prefix,
   budget check, health refusal, `LAUNCH_PERMISSION_MODE['castor']`,
   `claude-local -w`, an `apply_patch`-shaped MCP tool in the lane's
   config, tests beside `tests/test_fleet_wave*.py`. Acceptance:
   `--dry-run` prints the argv; a real launch produces a `castor-x`
   window that `panes status` reports; a ninth launch is refused with the
-  live count; a launch with castor unhealthy is refused with the
+  live count; a launch with the local-serving node unhealthy is refused with the
   fallback line.
 - **Slice 3 — batch lane, first task.** `scripts/castor/triage-gripes`:
   per-gripe class + duplicate candidates through
@@ -385,11 +385,11 @@ caller names in the rung.
 ## Explicitly NOT in scope
 
 - Replacing Claude or Devin on anything in the "stays" column.
-- Routing the product's own tiers (`llm.chain.<tier>`) to castor;
+- Routing the product's own tiers (`llm.chain.<tier>`) to the local-serving node;
   that is [local-rungs-small-medium](local-rungs-small-medium.md) and the
   local-compute thread's items.
-- A second serving stack, a second model, or raising 0.80/32 on castor.
-- Running castor builders in `dangerous` permission mode.
+- A second serving stack, a second model, or raising 0.80/32 on the local-serving node.
+- Running local-model builders in `dangerous` permission mode.
 - OpenHands/opencode/aider/Goose as fleet members (they run none of the
   guards; table in §1).
 
@@ -397,13 +397,13 @@ caller names in the rung.
 
 - Slice 0's table is in this file with a per-task-type verdict, and the
   coordinator's pick rule is written from it, not from this draft.
-- A castor builder launches with one `fleet-wave` command, runs under tier
+- A local-model builder launches with one `fleet-wave` command, runs under tier
   R with the same hooks as a Claude builder, and its work lands only via
   `--checked` plus a Claude read.
-- The product's castor ops (gardener, verify, summarise) show no
+- The product's local-model ops (gardener, verify, summarise) show no
   timeout or latency regression attributable to the lane (slice 4
   acceptance), measured in `llm_call_log`.
-- `get(kind='llm', id='/placement')` reports the castor-lane share and
+- `get(kind='llm', id='/placement')` reports the local-model lane share and
   the Claude tokens the lane displaced (the slice-0 cost column, kept per
   week).
 
@@ -415,7 +415,7 @@ launch kind, no authority change), `deploy/roles/sglang`
 (`sglang_extra_args` only, Reto deploys), `precis.utils.llm.operations`
 (register `castor_lane:*` sources and their lane classes), new
 `scripts/castor/*`, the gripe-fleet skill,
-`.claude/fleet/builder-workflow.txt` (castor lines). No migration, no
+`.claude/fleet/builder-workflow.txt` (local-model lines). No migration, no
 handler contract change, no prod data writes from the lane itself.
 
 ## Risks
@@ -435,7 +435,7 @@ handler contract change, no prod data writes from the lane itself.
   and slice 1's stall counter are the early warning; aider is the
   edit-engine fallback, without guards, for batch-lane patches only.
 - Public repo: the lane adds scripts and briefs; no hostnames, no IPs,
-  the role name `castor` only (as in `docs/runbooks/` and the thread
+  roles only (as in `docs/runbooks/` and the thread
   file); `tests/test_deploy_tree_no_secrets.py` gates it.
 - Reviewer fatigue: 32-wide fan-out can bury the one Claude reader. The
   batch lane's outputs are ranked and capped (top-N per run) before a
@@ -445,10 +445,10 @@ handler contract change, no prod data writes from the lane itself.
 ## Open questions / decisions log
 
 **Ruled (Reto 2026-10-22):** recommendations approved, with one change:
-start with **one** castor builder at a time, not 8 ("Lets try castor with
+start with **one** local-model builder at a time, not 8 ("Lets try the local-serving node with
 1 channel ... Evaluate for a while ... one at a time, to see"). Raise the
 budget only after the pilot and a period of single-channel use look
-satisfactory; a second spark-class host with the same model is the
+satisfactory; a second GB10-class host with the same model is the
 option for more coding capacity. EAGLE3 stays off. Slice 0 starts now.
 
 1. **Priority field name** — carried to `llm-lane-scheduler.md`'s open
@@ -470,7 +470,7 @@ option for more coding capacity. EAGLE3 stays off. Slice 0 starts now.
    reachable and in a window Reto deploys; default off.
 6. **Tier W scope.** Recommend ruff/mypy residuals and doc sync first;
    test-from-spec stays R until slice 5's selection numbers exist.
-7. **Who lands castor commits in a wave.** Recommend the coordinator (not
+7. **Who lands local-model commits in a wave.** Recommend the coordinator (not
    the release owner) with `--checked` (an opt-in: the authority's default
    lane is `--quick`, with no batch limit), because the Claude read happens
    there anyway.

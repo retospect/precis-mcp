@@ -2367,7 +2367,7 @@ def _mint_typed_job(
 
 
 def test_lane_skipping_flags_a_mostly_cancelled_job_type(store: Store) -> None:
-    """188 cancelled vs 8 succeeded diagnose_gripe on melchior: cancelled is a
+    """188 cancelled vs 8 succeeded diagnose_gripe on maple: cancelled is a
     clean skip, so nothing else alarms — the outcome ratio must."""
     for _ in range(LANE_SKIP_MIN_CANCELLED - 1):
         _mint_typed_job(store, "diagnose_gripe", "cancelled")

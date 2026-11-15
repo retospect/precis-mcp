@@ -2856,7 +2856,7 @@ HOST_FACTS_MATCH_CAP = 20
 #: Host state predicates. A census hostname plus one of these in one
 #: sentence is a current-state claim — the one-fact-one-ref rule's target.
 #: Broad on purpose: the evaluator gate filters domain collisions (a
-#: "spark" analytics-engine sentence carries no host claim); narrowing
+#: "forge" metalworking sentence carries no host claim); narrowing
 #: here would hide real host state words.
 _HOST_STATE_VERB = re.compile(
     r"\b(?:"
@@ -2876,8 +2876,8 @@ _HOST_FACTS_DATED = re.compile(r"\b(?:ma_[\w-]+|mh\d+|20\d{2}-\d{2}(?:-\d{2})?)\
 def _machine_hosts(store: Store) -> list[dict[str, Any]]:
     """Live ``machine`` refs — the census prose is matched against.
 
-    ``meta.host`` is matched as a whole word, so ``ma_spark`` and
-    ``sparkle`` never match ``spark``. Facts stay read-only here; the
+    ``meta.host`` is matched as a whole word, so ``ma_forge`` and
+    ``forged`` never match ``forge``. Facts stay read-only here; the
     census refresh (``put(kind='machine', mode='sync')`` plus hand-added
     hosts) is the operator's step before this pass runs.
     """

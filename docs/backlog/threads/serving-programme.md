@@ -23,7 +23,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 ceiling (multi-process precis serve behind a balancer) with reproducible
 eval runs and a curation gate on top. Today one `precis serve` is GIL-bound
 at ~28 calls/s regardless of concurrency. Decide topology from the py-spy
-answer first, then build the spine. Local model serving (spark, vLLM, the
+answer first, then build the spine. Local model serving (the GPU node, vLLM, the
 summariser) moved to `local-compute.md` on 2026-10-01; the shared session MCP
 server has its own thread (session-mcp-shared-server); this one owns the
 serve tier and the eval spine.
@@ -58,7 +58,7 @@ correct it.
    class of defect that motivated it.
 2. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
    detection, frozen eval world) — waits on Do next 3 and on local-compute's
-   spark prerequisites (the `/mnt/cluster` NFS hang and spark host prep,
+   the GPU node prerequisites (the `/mnt/cluster` NFS hang and the GPU node host prep,
    `spark-provisioning.md` §Host items); reproducible, comparable
    eval runs. `backlog/model-qualification.md` (unthreaded) is its first
    consumer.
@@ -87,7 +87,7 @@ correct it.
 
 This thread keeps the MCP serve ceiling (py-spy, the multi-process
 balancer), the load-test harness and the eval-run-spine. `local-compute`
-owns local model serving and what it does (the summariser, the single-spark
-model, vllm-per-node-serving Slice 0, local-serving-eval, the spark NFS and
+owns local model serving and what it does (the summariser, the single-GPU-node
+model, vllm-per-node-serving Slice 0, local-serving-eval, the GPU node NFS and
 host-prep prerequisites); the eval-run-spine's items 4 and 9 wait on those
 two prerequisites.

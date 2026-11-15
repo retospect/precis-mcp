@@ -32,7 +32,7 @@ advertises, and how much demand would land on it.
 ## In scope
 
 One backlog-doc table (this file grows into it), numbers from prod, nodes
-named by **role/group only** (big Mac, SMALL Mac, DB node, GPU twins, spark,
+named by **role/group only** (big Mac, SMALL Mac, DB node, GPU twins, first GPU node,
 external HPC). The role→host mapping and every address stay in the
 gitignored overlay `deploy/inventory/hosts.yml`; this repo is public.
 
@@ -60,7 +60,7 @@ Planned additions, as rows with a status column:
 
 - External HPC via slullama (`slullama-hpc-placement.md`; key registration
   pending with Reto, review items `reto-meluxina-1` / `local-compute-3`).
-- spark is back on duty in the embeddings role (Reto 2026-10-02, review
+- The first GPU node is back on duty in the embeddings role (Reto 2026-10-02, review
   items local-compute-4/5), not in the `inference` group.
 
 ### Six machines, roles ruled 2026-10-02
@@ -69,28 +69,28 @@ Reto (review items local-compute-4 and local-compute-5, 21:03Z and 22:03Z):
 
 | box | kind | role | must not carry |
 |---|---|---|---|
-| castor | Spark (GB10) | exclusive big model (Slice 0 picks it) | anything else once the model serves; retrosynth moves to pollux |
-| pollux | Spark (GB10) | GPU science lanes: DFT, NEB/MACE, fold, retrosynth | LLM serving |
-| spark | Spark (GB10) | local embeddings | science lanes, until the `/mnt/cluster` hang is fixed |
-| melchior | Mac | dev + MCP server + gate containers | ad-hoc heavy compute (Reto: "don't wear it down") |
-| balthazar | Mac (small) | scheduler; small local model | heavy compute |
-| caspar | Mac | Postgres (+ the `/mnt/cluster` NFS export until it moves) | any compute (standing rule) |
-| finnmaccool | file server | the cluster share, mounted directly by every node | — |
+| local-serving node | GB10 node | exclusive big model (Slice 0 picks it) | anything else once the model serves; retrosynth moves to the second DGX node |
+| second DGX node | GB10 node | GPU science lanes: DFT, NEB/MACE, fold, retrosynth | LLM serving |
+| first GPU node | GB10 node | local embeddings | science lanes, until the `/mnt/cluster` hang is fixed |
+| agent host | Mac | dev + MCP server + gate containers | ad-hoc heavy compute (Reto: "don't wear it down") |
+| second worker host | Mac (small) | scheduler; small local model | heavy compute |
+| database host | Mac | Postgres (+ the `/mnt/cluster` NFS export until it moves) | any compute (standing rule) |
+| file-server host | file server | the cluster share, mounted directly by every node | — |
 
 **Ad-hoc heavy compute** (one-off runs outside the job queue, e.g. the
-catalysis PBE single points) goes to **spark**: at most half its cores,
-local scratch only, no `/mnt/cluster` paths. Never melchior. Anything that
-should repeat gets a job type on pollux. Ruled by Reto 2026-10-02 in review
+catalysis PBE single points) goes to **the first GPU node**: at most half its cores,
+local scratch only, no `/mnt/cluster` paths. Never the agent host. Anything that
+should repeat gets a job type on the second DGX node. Ruled by Reto 2026-10-02 in review
 item local-compute-7, which also confirmed the six-machine list.
 
-**No Mac or Spark serves files** (same ruling). The share moves off caspar
-to finnmaccool; see `cluster-fileserver-move.md`.
+**No Mac or GB10 node serves files** (same ruling). The share moves off the database host
+to the file-server host; see `cluster-fileserver-move.md`.
 
 ### Agreed layout plan, NOT scheduled (Reto 2026-10-03, local-compute-17)
 
 Reto: "A is good but we just write it down for now, as a plan for later."
 Nothing below is built until he reopens it. The 10-02 role table above
-stands meanwhile, with castor as the exclusive big model.
+stands meanwhile, with the local-serving node as the exclusive big model.
 
 The measurement it rests on (read-only, 2026-10-03):
 
@@ -102,21 +102,21 @@ The measurement it rests on (read-only, 2026-10-03):
 
 | box | measured |
 |---|---|
-| one GB10 Spark, gpt-oss-120b on vLLM | 290 out tok/s at 32 streams, 400 at 64. About 15× the medium tier's ~1.7M out-tokens/day |
+| one GB10 node, gpt-oss-120b on vLLM | 290 out tok/s at 32 streams, 400 at 64. About 15× the medium tier's ~1.7M out-tokens/day |
 | big Mac (M2 Ultra, 192 GB) under dev-fleet load | glm-4.7-flash: ~35 tok/s aggregate at 8 streams. 80B-A3B Q4: 24–53 tok/s single stream |
 
 - So the Mac fits the low-concurrency big tier, not the small tier.
-- On castor, two 120B-class vLLM servers do not fit: 66.0 + 69.5 GiB of weights against ~121 GiB usable. One gpt-oss-120b server for both tiers does fit.
+- On the local-serving node, two 120B-class vLLM servers do not fit: 66.0 + 69.5 GiB of weights against ~121 GiB usable. One gpt-oss-120b server for both tiers does fit.
 
 **The plan, in order. Every tier keeps its cloud model as the last chain rung, so a down box costs money and never fails.**
 1. **A as a one-tier-at-a-time pilot.**
-   - Medium on castor. This changes the 10-02 castor ruling.
+   - Medium on the local-serving node. This changes the 10-02 local-serving ruling.
    - Big-Mac hardening: drop the idle 27B from llama-swap, cap the gate VM, alert on Docker disk.
-2. **A big-tier eval set** (dream / doctor_tick / quest_tick from `llm_call_log`), run on the ≤90 GB Mac candidates and on castor's gpt-oss-120b. The result picks the target:
-   - **D**: castor serves big and medium from one gpt-oss-120b, and the Mac carries no prod tier. Chosen if gpt-oss-120b passes.
-   - **G**: big on the Mac, medium on castor, gate containers moved to spark. Chosen if only a Mac model passes.
+2. **A big-tier eval set** (dream / doctor_tick / quest_tick from `llm_call_log`), run on the ≤90 GB Mac candidates and on the local-serving node's gpt-oss-120b. The result picks the target:
+   - **D**: the local-serving node serves big and medium from one gpt-oss-120b, and the Mac carries no prod tier. Chosen if gpt-oss-120b passes.
+   - **G**: big on the Mac, medium on the local-serving node, gate containers moved to the GPU node. Chosen if only a Mac model passes.
    - **B**: buy a dev machine and make the Mac LLM-only. Chosen only if a ~142 GB model (DeepSeek V4-Flash) passes where every ≤90 GB one fails.
-3. **C**, a fourth Spark for medium, only if the science queue outgrows pollux plus the external HPC.
+3. **C**, a fourth GB10 node for medium, only if the science queue outgrows the second DGX node plus the external HPC.
 
 Rough cost: about 5 build cycles to the big-eval result. B adds 3–4 plus hardware; G's gate move adds 2–3.
 
@@ -134,7 +134,7 @@ Rough cost: about 5 build cycles to the big-eval result. B adds 3–4 plus hardw
   id='/placement')` plus `resource_slots`.
 - Departure (2) below is confirmed by `local-rungs-small-medium.md`'s ruling
   (rung 0 of `llm.chain.small` is local gpt-oss-120b). Departure (1), the
-  melchior glm slot as warm standby vs torn down, is this file's one open
+  agent-host glm slot as warm standby vs torn down, is this file's one open
   line.
 
 ## Target + blast radius
@@ -169,36 +169,36 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
   MCP card view, which may not render an empty `served_by`; the check is
   `refs.meta->'served_by'` on lm162511.
 - 2026-10-14 — **Small tier off the big Mac: plan (Reto: "take local llm
-  traffic off melchior and put it on one of the sparks").**
+  traffic off the agent host and put it on one of the sparks").**
 
-  What melchior serves today: `glm-4.7-flash` via llama-swap (`s` slot,
+  What the agent host serves today: `glm-4.7-flash` via llama-swap (`s` slot,
   parallel=4, ctx 49152, ~33 GB, coresident with the `a` 27B dispatcher and
   `n` 80B). It is the ONLY local lane with routed traffic: every
   routed-local call in the 7 days to 2026-10-14 was `llm_summarize`
   (39,947 routed, 8,724 landed, 31,223 fell to cloud; ~5,700/day, bursts
   to ~630/h, ~3.2 s/call local). The cap-4 slot is the whole bottleneck.
 
-  **Plan: gpt-oss-120b on castor absorbs the small tier.** Rung 0 of
+  **Plan: gpt-oss-120b on the local-serving node absorbs the small tier.** Rung 0 of
   `llm.op.llm_summarize` and `llm.chain.small` becomes
   `{"transport":"local","model":"openai/gpt-oss-120b","placement":"local"}`.
   Rationale vs the alternatives:
 
-  - pollux is ruled science-only ("must not carry LLM serving",
+  - The second DGX node is ruled science-only ("must not carry LLM serving",
     local-compute-5) — out.
-  - spark (.154) is permanently off cluster duty (2026-08-29, paper work;
+  - The first GPU node (.154) is permanently off cluster duty (2026-08-29, paper work;
     its ruled return is the `embedder` group only) and its GGUF sync would
     ride the still-hung `/mnt/cluster` mount — out on both counts.
-  - a second server on castor (llama-swap glm) adds a stack and competes
+  - a second server on the local-serving node (llama-swap glm) adds a stack and competes
     with gpt-oss's KV pool for no quality gain.
-  - gpt-oss-120b on castor is already deployed-shaped (slot row
-    `castor | llm:openai/gpt-oss-120b | 32`, card lm162513 `served_by`
+  - gpt-oss-120b on the local-serving node is already deployed-shaped (slot row
+    `<serving-node> | llm:openai/gpt-oss-120b | 32`, card lm162513 `served_by`
     with a LAN endpoint and `max_parallel` 32), measured sound on SGLang
     today (see `claude-code-on-local-serving.md`), and one server for
     several tiers is exactly the capacity plan's own D-variant shape.
 
   Memory/slot budget: SGLang `--mem-fraction-static 0.80` ≈ 97 GiB static
   on the 121 GiB box, ~24 GiB left for the OS. The earlier 0.86 sizing
-  hung castor under load on 2026-10-14 (scheduler 100% CPU, gr485635) and
+  hung the local-serving node under load on 2026-10-14 (scheduler 100% CPU, gr485635) and
   Reto authorized 0.80 + `--max-running-requests 32` the same day; keep
   at or below 0.80 while anything shares the box. Slot accounting: the existing cap-32 row is the
   fleet-wide semaphore; the router's bounded local-wait (slice: keep
@@ -206,9 +206,9 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
   (peak ~10 calls/min × ~3-4 s ≪ 32).
 
   Departures from the ruled layout, for Reto to confirm: (1) the 10-02
-  table still lists melchior's `s` slot as the SMALL local rung — moving
-  it to castor leaves melchior's llama-swap serving only the agent lanes
-  (`a`/`n`), which is what "traffic off melchior" means here; the glm
+  table still lists the agent host's `s` slot as the SMALL local rung — moving
+  it to the local-serving node leaves the agent host's llama-swap serving only the agent lanes
+  (`a`/`n`), which is what "traffic off the agent host" means here; the glm
   slot row and `served_by` stay as a warm standby unless Reto wants it
   torn down. (2) SMALL's local/cloud rungs no longer share one model
   identity (`glm-4.7-flash` → `z-ai/glm-4.7-flash` was same-weights; now

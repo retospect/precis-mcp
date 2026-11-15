@@ -55,7 +55,7 @@ class HealSpec:
     """One bounded heal action's identity + bounds.
 
     ``key`` is the durable state identity (e.g.
-    ``restart-worker:melchior:precis-worker``); ``cap`` the autonomous
+    ``restart-worker:<agent-host>:precis-worker``); ``cap`` the autonomous
     attempt budget before the terminal latch; ``base_cooldown_s`` the
     first inter-attempt cooldown (doubles per attempt). ``title`` /
     ``detail`` seed the cap-escalation gripe.

@@ -181,7 +181,7 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on the agent host, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         },
         "min_member": {
           "physical": null,
@@ -390,7 +390,7 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on the agent host, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         },
         "min_member": {
           "physical": null,
@@ -599,7 +599,7 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on the agent host, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         },
         "min_member": {
           "physical": null,
@@ -808,7 +808,7 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on the agent host, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         },
         "min_member": {
           "physical": null,
@@ -1017,7 +1017,7 @@
           "unit": "mm",
           "confidence": "unknown",
           "retrieved": "2026-09-18",
-          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on melchior, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3; measured 2026-10-03: 1.4 s per iteration at 8,640 elements locally and 4.1 s on the agent host, growing as about N^1.35, so about 20k elements is the practical ceiling at 100 iterations) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         },
         "min_member": {
           "physical": null,

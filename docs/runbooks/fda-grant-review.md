@@ -35,7 +35,7 @@ Two guards exist; this runbook is the **second**:
    parent's TCC attribution. A fresh `ok=false` raises a **critical** alert per
    (host, process) naming the binary to re-grant; the alert auto-resolves
    when the entry flips back. Catches an *actual* lockout within minutes. It
-   does not cover one-shot timer interpreters, or caspar, which has no
+   does not cover one-shot timer interpreters, or the database host, which has no
    heartbeat row (gr248866).
 2. **Proactive drift audit (this pass)** — a slow monthly check that the
    *currently-resolved* daemon interpreters on each Mac are still on
@@ -57,10 +57,10 @@ on some hosts; absent ones are skipped). `/opt/asa/venv` is the odd one out —
 the asa-bot/asa-slack bridge venv still resolves to ad-hoc-signed Homebrew
 python@3.14, so a `brew upgrade` re-mints the cdhash and silently voids the
 grant; flagging that is what this audit is for. Runs on every macOS host
-holding canonical venvs — today melchior and balthazar. caspar has no
+holding canonical venvs — today the agent host and the sandbox host. The database host has no
 canonical venvs or heartbeat row left, so nothing there can drift; Linux
-hosts are immune, never audit them — the heartbeat query's castor and
-pollux rows (Linux, `/usr/bin/python3.12`, stale `ts`) are noise.
+hosts are immune, never audit them — the heartbeat query's local-serving-node and
+second-DGX-node rows (Linux, `/usr/bin/python3.12`, stale `ts`) are noise.
 
 ## Audit procedure (when DUE)
 
@@ -155,8 +155,8 @@ Then `scripts/fda-grant-review --stamp "<hosts audited, drift found/fixed>"`.
 - Resolve the interpreter of each launchd plist on the host, not only the
   canonical venvs — the list is not the whole daemon set (gr530710:
   `/opt/asa/venv`, the shared asa-bot/asa-slack interpreter, went unaudited
-  until it was added). caspar has no canonical venvs or heartbeat row;
-  castor and pollux are Linux, out of scope.
+  until it was added). The database host has no canonical venvs or heartbeat row;
+  the DGX nodes are Linux, out of scope.
 
 - `timeout` is absent on macOS by default — don't wrap `ssh` in it (use
   `gtimeout` from coreutils if you must, or just let it run).

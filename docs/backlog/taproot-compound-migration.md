@@ -72,7 +72,7 @@ atom↔composite structure yet, blocking for phase 3.
 
 **Quiet window** = phase 2 only: pause `hub_refine`/`chase_trigger` for the
 window so nothing refines/re-embeds mid-repoint; avoid 02:00–03:30 UTC
-(nightly backup + caspar's daily reboot). Phases 0/1/3 need no window.
+(nightly backup + the database host's daily reboot). Phases 0/1/3 need no window.
 
 **Rollback posture:** per-hub atomic; minted atoms are ordinary refs
 (tombstone/undelete exists), `conjunct-of` edges deletable, the stamp

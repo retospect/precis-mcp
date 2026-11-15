@@ -240,8 +240,8 @@ def test_collapsed_worker_chase_env_renders_on_every_darwin_host() -> None:
     system pass (``default_profiles=_SYS``, no ``capability_env`` gate), so
     it runs on every one of them regardless. The old per-host
     ``precis_worker_taproot_chase`` opt-in (mirrored here by simply never
-    passing it) left balthazar, also darwin, without the LLM-verifier hook
-    even though its collapsed unit runs the identical pass melchior's does —
+    passing it) left alder, also darwin, without the LLM-verifier hook
+    even though its collapsed unit runs the identical pass maple's does —
     the taproot forward-bridge never fired there. Deliberately omits
     ``precis_worker_taproot_chase`` from the render vars so a regression
     back to host_var-gating (undefined → ``default(false)`` → absent) would
@@ -285,8 +285,8 @@ def _render_sandbox_worker_env() -> dict[str, str]:
         precis_identity_env={},
         _sb_venv="/opt/precis/venv",
         _sb_dsn="postgresql://agent_rw@203.0.113.10:6432/precis_prod",
-        inventory_hostname="castor",
-        groups={"agent_sandbox_hosts": ["castor"]},
+        inventory_hostname="cedar",
+        groups={"agent_sandbox_hosts": ["cedar"]},
         nas_root="/mnt/archive/nas0",
     )
     assert isinstance(rendered, dict), f"service_unit_env rendered to {type(rendered)}"
@@ -294,7 +294,7 @@ def _render_sandbox_worker_env() -> dict[str, str]:
 
 
 def test_sandbox_worker_env_sets_precis_root() -> None:
-    """gr333438 (ops half): castor's sandbox_run lane must export
+    """gr333438 (ops half): cedar's sandbox_run lane must export
     PRECIS_ROOT (utils/workspace.py) so a sandboxed job can resolve its
     workspace files — the value must track the same fleet-wide
     ``nas_root``-derived path every other node uses (roles/asa_bot's
@@ -374,7 +374,7 @@ def test_agentlane_carries_the_embedder_env_its_job_inproc_lane_needs() -> None:
     (``embed_batch``) resolves the embedder through ``load_config()`` —
     whose default is the non-production ``mock`` backend. Without
     PRECIS_EMBEDDER/PRECIS_EMBEDDER_URL in this unit's env every
-    embed_batch it won (41 on melchior, 2026-09-22 → 09-25) died on
+    embed_batch it won (41 on maple, 2026-09-22 → 09-25) died on
     ``chunk_embeddings_embedder_fkey`` (``Key (embedder)=(mock)``), the
     gr346813 shape one env key over. Same pair as 20b's §F-b block; the
     role defaults are out of scope here, so the play-level ``default``

@@ -177,19 +177,19 @@ def test_builds_view_reports_the_build_per_host_and_process(
     commit that had been live for 11 hours. Every claim already stamps
     ``meta.lease_code``; this view aggregates it."""
     _seed_leased_job(
-        store, host="melchior", process="precis-worker", lease_code="8.35.1@4db6836b"
+        store, host="maple", process="precis-worker", lease_code="8.35.1@4db6836b"
     )
     _seed_leased_job(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         lease_code="8.35.1@aaaaaaaa",
     )
 
     resp = jobs.get(id="/builds")
 
-    assert "melchior precis-worker 8.35.1@4db6836b" in resp.body
-    assert "melchior precis-worker-agentlane 8.35.1@aaaaaaaa" in resp.body
+    assert "maple precis-worker 8.35.1@4db6836b" in resp.body
+    assert "maple precis-worker-agentlane 8.35.1@aaaaaaaa" in resp.body
 
 
 def test_builds_view_keeps_two_processes_on_one_host_apart(
@@ -198,11 +198,11 @@ def test_builds_view_keeps_two_processes_on_one_host_apart(
     """The 20b/20e split is the whole point of grouping by process: an env or
     code difference between two units of one host must not average away."""
     _seed_leased_job(
-        store, host="melchior", process="precis-worker", lease_code="8.35.1@newer"
+        store, host="maple", process="precis-worker", lease_code="8.35.1@newer"
     )
     _seed_leased_job(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         lease_code="8.35.1@older",
     )
@@ -219,7 +219,7 @@ def test_builds_view_window_excludes_older_claims(
     now; the default day-long window drops it, a wider one finds it."""
     _seed_leased_job(
         store,
-        host="castor",
+        host="cedar",
         process="precis-worker-compute",
         lease_code="8.30.0@ancient",
         hours_ago=72,
@@ -410,12 +410,12 @@ def test_host_filter(jobs: JobHandler, store: Store) -> None:
 def test_process_filter(jobs: JobHandler, store: Store) -> None:
     _insert_log(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         message="agentlane message",
     )
     _insert_log(
-        store, host="melchior", process="precis-worker-drain-1", message="drain message"
+        store, host="maple", process="precis-worker-drain-1", message="drain message"
     )
 
     resp = jobs.get(id="/logs?process=precis-worker-agentlane")
@@ -428,7 +428,7 @@ def test_process_filter(jobs: JobHandler, store: Store) -> None:
 def test_process_filter_empty_says_so_explicitly(
     jobs: JobHandler, store: Store
 ) -> None:
-    _insert_log(store, host="melchior", process="precis-worker", message="irrelevant")
+    _insert_log(store, host="maple", process="precis-worker", message="irrelevant")
 
     resp = jobs.get(id="/logs?process=precis-worker-drain-2")
 
@@ -560,26 +560,26 @@ def _seed_throughput_job(
 def test_throughput_counts_claims_outcomes_and_queue(
     jobs: JobHandler, store: Store
 ) -> None:
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=1)
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=2)
-    _seed_throughput_job(store, host="castor", status="failed", started_hours_ago=3)
-    _seed_throughput_job(store, host="melchior", status="running", started_hours_ago=1)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=1)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=2)
+    _seed_throughput_job(store, host="cedar", status="failed", started_hours_ago=3)
+    _seed_throughput_job(store, host="maple", status="running", started_hours_ago=1)
     _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
     # Finished before the window: counted nowhere.
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=72)
 
     body = jobs.get(id="/throughput").body
 
-    assert "castor precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
-    assert "melchior precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
+    assert "cedar precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
+    assert "maple precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
     assert "4 claim(s) across 2 host/process row(s)." in body
     assert "queued now by executor: ssh_node=1" in body
 
 
 def test_throughput_window_widens(jobs: JobHandler, store: Store) -> None:
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
-    assert "castor" not in jobs.get(id="/throughput").body
-    assert "castor precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=72)
+    assert "cedar" not in jobs.get(id="/throughput").body
+    assert "cedar precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
 
 
 def test_throughput_queue_depth_ignores_retired_jobs(
@@ -645,12 +645,12 @@ def _seed_run_job(store: Store, *, host: str, minutes_ago: float) -> int:
 
 def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -> None:
     # job ran from 120 to 110 minutes ago (window: 125..105 min ago)
-    job_id = _seed_run_job(store, host="melchior", minutes_ago=120)
+    job_id = _seed_run_job(store, host="maple", minutes_ago=120)
     for msg, host, hours in [
-        ("inside window", "melchior", 115 / 60),
-        ("too early", "melchior", 3.0),
-        ("too late", "melchior", 1.0),
-        ("other host", "caspar", 115 / 60),
+        ("inside window", "maple", 115 / 60),
+        ("too early", "maple", 3.0),
+        ("too late", "maple", 1.0),
+        ("other host", "birch", 115 / 60),
     ]:
         _insert_log(store, message=msg, host=host, hours_ago=hours)
 
@@ -662,7 +662,7 @@ def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -
     assert "other host" not in resp.body
     assert "since= ignored" in resp.body
     # explicit host= overrides the job's host; bare numeric id accepted
-    other = jobs.get(id=f"/logs?job={job_id}&host=caspar")
+    other = jobs.get(id=f"/logs?job={job_id}&host=birch")
     assert "other host" in other.body
     assert "inside window" not in other.body
 
@@ -678,13 +678,13 @@ def test_logs_job_window_follows_last_reclaim(jobs: JobHandler, store: Store) ->
         meta={
             "job_type": "fake",
             "executor": "coordinator",
-            "lease_host": "melchior",
+            "lease_host": "maple",
             "started_at": started.isoformat(),
             "wall_seconds": 600,
             "reclaims": [{"at": reclaimed.isoformat(), "why": "expiry"}],
         },
     )
-    _insert_log(store, message="final attempt", host="melchior", hours_ago=55 / 60)
+    _insert_log(store, message="final attempt", host="maple", hours_ago=55 / 60)
 
     resp = jobs.get(id=f"/logs?job=jo{ref.id}")
 

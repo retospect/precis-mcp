@@ -12,7 +12,7 @@ model: opus
 > (`RESCUE_SERVICES` in `workers/runner.py`, budget
 > `PRECIS_WORKER_RESCUE_BUDGET_S`, default 300 s) to the front of the
 > rotation, so its wait is the budget plus one in-flight pass instead of a
-> whole rotation (melchior 2026-08-14: `quest_loop_reconcile` silent ~7h).
+> whole rotation (the agent host 2026-08-14: `quest_loop_reconcile` silent ~7h).
 > Repro: `tests/workers/test_rescue_ageing.py`.
 
 ## What is left

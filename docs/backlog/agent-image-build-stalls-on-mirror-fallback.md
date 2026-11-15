@@ -169,10 +169,10 @@ image where the container executor lane runs". ~14 `ASYNC POLL` lines at
 
     [ERROR]: Task failed: [Errno 2] No such file or directory
     Origin: .../33-precis-agent-image.yml:524:11
-    fatal: [melchior]: FAILED! => {"changed": false, "msg": "Task failed: [Errno 2] No such file or directory"}
-    melchior : ok=185 changed=25 unreachable=0 failed=1
+    fatal: [<agent-host>]: FAILED! => {"changed": false, "msg": "Task failed: [Errno 2] No such file or directory"}
+    <agent-host> : ok=185 changed=25 unreachable=0 failed=1
 
-Reported from melchior's host-side trail by the session that ran it (not yet
+Reported from the agent host's host-side trail by the session that ran it (not yet
 verified here — the trail has not been captured into this repo): the build
 went quiet **908 s into the `apt-get` step (#22, Debian/nodesource fetch)**,
 the 900 s progress watchdog killed it, **rc 130**.
@@ -212,17 +212,17 @@ the 900 s progress watchdog killed it, **rc 130**.
 ### Blast radius, for the record
 
 The failing play is the last one, after "Bounce all precis daemons" and the
-asa refresh, and melchior's recap is `ok=185 changed=25 failed=1` — so every
+asa refresh, and the agent host's recap is `ok=185 changed=25 failed=1` — so every
 venv install and daemon bounce completed on all six hosts. Venvs were uniform
-at `6008588c`; what stayed stale is melchior's resident `precis-agent` image,
+at `6008588c`; what stayed stale is the agent host's resident `precis-agent` image,
 still labelled `d9a7f115`. "Mixed fleet" overstates it. The consequence that
 does bite: with `PRECIS_AGENT_CONTAINER=1` on the agent lane, container-
-executed agentic jobs on melchior keep running the old image, so a code fix
+executed agentic jobs on the agent host keep running the old image, so a code fix
 shipped to the venvs is not live for them until an image rebuild succeeds.
 
 ## Two clean rebuilds since, 2026-09-28
 
-The next two deploys both rebuilt the image without incident on melchior:
+The next two deploys both rebuilt the image without incident on the agent host:
 
     agent image build rc=0, elapsed 184s, pull source mirror.gcr.io
     precis-agent image rebuilt

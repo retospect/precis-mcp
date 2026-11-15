@@ -505,7 +505,7 @@ def run_loop(
     # Rescue interleave (worker-rotation-starves-rescue-passes): the
     # rotation is strictly serial, so a rescue pass otherwise waits a full
     # rotation — the sum of every other pass's duration, unbounded while
-    # long job and background passes keep finding work (melchior
+    # long job and background passes keep finding work (the agent host
     # 2026-08-14: ``quest_loop_reconcile`` silent ~7h, every quest frozen).
     # A rescue pass that has gone ``rescue_budget_s`` without an attempt is
     # aged to the front: it runs before the next handler or ref-pass instead

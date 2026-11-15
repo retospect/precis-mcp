@@ -57,7 +57,7 @@ Reto, 2026-10-17: Pillar 1 winds down to maintenance once memory P4 and
 conventions-as-findings land; Pillar 2's intent → realize loop is active,
 driven by spec `me628986` (pocket-from-molecule); Pillar 5 (Operations) takes the deploy,
 security, monitoring, gate and serving threads, all active. Gripe waves
-remain the execution model. The November catpath paper and castor
+remain the execution model. The November catpath paper and local-serving
 medium-tier routing are open decisions; their threads keep their rank.
 
 Pillars describe enduring outcomes; programmes coordinate related threads;
@@ -242,7 +242,7 @@ servers down when the backlog drains — the inverse of this pillar, now
 superseded by `backlog/graph-gardener-value.md` slice 5 (idle filler). The embedder is the
 current bottleneck (`src/precis/embedder_service.py` (capacity decided 2026-10-02)). Reto
 2026-10-01: bring local compute back — summariser first
-(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), then the model that fits one spark
+(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), then the model that fits one GPU node
 (`backlog/vllm-per-node-serving.md` Slice 0).
 
 **Compute reserve: Meluxina** (Reto, 2026-10-02: "we should use compute
@@ -250,7 +250,7 @@ there"). An external Slurm HPC allocation. Two uses, coordinated by
 `local-compute.md`: LLM operations through `slullama`, as
 a placement-chain rung (`backlog/slullama-hpc-placement.md`: the card is
 shipped dark, the rung waits on the tunnel key being registered with the
-provider; td345845 as written is about melchior reaching castor/pollux,
+provider; td345845 as written is about the agent host reaching the DGX nodes,
 not the Meluxina login); and catpath
 runs and ML-potential/DFT batches, with chemistry and hexfold as consumers.
 Batch stage/submit/poll/fetch is a separate runner from LLM tunnel serving.
@@ -269,9 +269,9 @@ account id for it goes in this repo; coordinates live in the gitignored
 overlay.
 
 **Threads.** `local-compute.md` (owns local serving: the summariser
-and the single-spark model, and what they do). The MCP serving threads
+and the single-GPU-node model, and what they do). The MCP serving threads
 (`session-mcp-shared-server.md`, `serving-programme.md`) moved to Pillar 5
-on 2026-10-17. Castor medium-tier routing is an open decision.
+on 2026-10-17. Local-model medium-tier routing is an open decision.
 
 **Surfaces.** One console row answers busy or idle per tier
 (`get(kind='llm', id='/placement')` for the share;
@@ -433,7 +433,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   target 2026-10-24, Reto's citation pass after r46 deploys the export
   fix). P2 intent → realize is active, driven by spec `me628986`.
   Gripe waves stay the execution model; a wave close writes its gripe ids
-  into the owning thread file. Open: the November catpath paper and castor
+  into the owning thread file. Open: the November catpath paper and local-serving
   medium-tier routing (ranks unchanged). reading-prep-loop back to idea
   (P4 on hold).
 - 2026-10-17 housekeeping pass (no-pillar items, expired snoozes, drive-ux,
@@ -454,7 +454,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   routes to it, librarian work drains (classify, link, merge, make things
   discoverable and comparable for fisheye), measured against the
   auto-apply bar in `backlog/local-mesh-upkeep.md`. Coding helpers on
-  castor are the other half (`backlog/claude-code-on-local-serving.md`).
+  the local-serving node are the other half (`backlog/claude-code-on-local-serving.md`).
 
 - 2026-10-03 — not a full pass: `ship-gate-ci` activated (Reto: "push
   should not break build"); main's CI runs cancelled each other at ~8
@@ -473,7 +473,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   the month's output; which call fits which paper. Meluxina added to
   Pillar 3 as a compute reserve for LLM and catpath work (Reto, same
   route); open on Reto: registering the tunnel key with the provider
-  (td345845 is the castor/pollux RPC key, a different item).
+  (td345845 is the DGX-node RPC key, a different item).
 - 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
   dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,

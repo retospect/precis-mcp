@@ -1383,7 +1383,7 @@ def _cached_ml_calculator(family: str, dispersion: bool, device: str | None):
     only ``dispatch`` (no submit/poll), so each relax runs inline in the
     long-lived ``job_ssh_node`` worker; an uncached build left a discarded
     model per dispatch that the allocator never returned to the OS. Measured
-    on castor 2026-09-25: RSS ~117 GB after two days on a 122 GB box, its
+    on the local-serving node 2026-09-25: RSS ~117 GB after two days on a 122 GB box, its
     16 GB swap exhausted, ``kswapd0`` at 84% CPU and the handler silent for
     ~48 h — starved, not blocked; a restart came back at 216 MB. This
     mirrors the loaded-once-per-process discipline ``BgeM3Embedder``

@@ -43,7 +43,7 @@ Owner anchors: `src/precis/handlers/finding.py`,
    `artifact_kinds(slug='resolve_citation:s2')` seed.
 5. **Taproot-bridge residual (live watch item).** The
    forward-bridge pilot (`workers/chase.py::_taproot_bridge`) is
-   LIVE on melchior's system worker; fingerprint = `links` rows with
+   LIVE on the agent host's system worker; fingerprint = `links` rows with
    `set_by='chase'` (baseline 0). It only fires when a finding
    establishes — with zero `STATUS:tracing` inflow it produces
    nothing, and canonical claim hubs are excluded from the outbound

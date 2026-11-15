@@ -123,7 +123,7 @@ def _merge_proposal(
             },
         ),
         rationale="High lexical overlap (0.833) and low distance (0.1686)",
-        model="castor",
+        model="cedar",
     )
     assert rid is not None
     return rid

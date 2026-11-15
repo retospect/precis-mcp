@@ -9,7 +9,7 @@ queue, or handling duplicate refs.
 `precis fix-metadata` (`src/precis/ingest/remediate.py` +
 `src/precis/cli/fix_metadata.py`) re-derives metadata for such papers. Run it
 via the in-repo ansible runner `deploy/run-fix-metadata.yml`, which injects the
-prod DSN and the Semantic Scholar key from the vault into caspar's env (secrets
+prod DSN and the Semantic Scholar key from the vault into the database host's env (secrets
 never hit the transcript):
 
     ansible-playbook run-fix-metadata.yml                              # dry-run
@@ -37,7 +37,7 @@ First full run against prod (2026-06-19Z): 336 suspects → **195 fixed**,
 - Phase 1: `fix-metadata` folds a re-derived-DOI duplicate into its canonical
   (`action="deduped"`).
 - Phase 2: `precis reconcile-duplicates` collapses `pdf_sha256`-shared refs;
-  **runs nightly 04:30 on caspar** via the cluster `precis_reconcile` launchd
+  **runs nightly 04:30 on the database host** via the cluster `precis_reconcile` launchd
   role (playbook 40; runner `deploy/run-reconcile.yml`).
 - All merges soft-delete + audit (`ref_events` `duplicate_merged` /
   `soft_deleted_duplicate`, a `supersedes` edge, `meta.superseded_by`).

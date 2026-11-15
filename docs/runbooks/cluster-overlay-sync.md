@@ -1,4 +1,4 @@
-# Updating the cluster deploy overlay on melchior
+# Updating the cluster deploy overlay on the agent host
 
 **When.** You changed the gitignored overlay (`deploy/inventory/`: real
 `hosts.yml` / `topology.yml` / `host_vars` / `group_vars` plus the
@@ -9,14 +9,14 @@ gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
 
 ## Shape
 
-- melchior has a **dev** precis-mcp checkout (user = the controller's login,
+- The agent host has a **dev** precis-mcp checkout (user = the controller's login,
   separate from the `deploy`-user venv).
 - `git_deploy_helper` in that user's home is a **non-bare** git repo with
   `receive.denyCurrentBranch=updateInstead`; the dev checkout's
   `deploy/inventory` is a **symlink** to it.
 - On the controller (Mac), `deploy/inventory/` is its own git repo with remote
-  `deploy-helper` → that melchior path over ssh.
-- The factory's copy (`precis-fix-repo/deploy/inventory` on melchior, used by
+  `deploy-helper` → that agent-host path over ssh.
+- The factory's copy (`precis-fix-repo/deploy/inventory` on the agent host, used by
   the deploy user's `scripts/release --deploy-only`) is a `.git`-less file
   copy, refreshed from the controller's overlay by every controller deploy.
 - `.vault-pass` is hand-carried once, out of band, to
@@ -66,21 +66,21 @@ withheld over Remote Control, so it looks like a silent failure). Use the
 script. **Never clone the overlay into `/tmp` and push from there**: the Mac
 copy then lags by the clone's commits and keeps committing on its stale base —
 exactly how it forked for eight weeks before the 2026-11-14 outage.
-`updateInstead` checks the push out into melchior's worktree, so the symlink
+`updateInstead` checks the push out into the agent host's worktree, so the symlink
 reflects it immediately.
 
 ## ⚠ `remote rejected … (Working directory has unstaged changes)`
 
 The preflight reports this as `the push was rejected`. `updateInstead` refuses
 on **any** dirty tracked file — not only files the push would touch — so one
-stale in-place edit on melchior jams the whole channel silently (it sat 4 days
+stale in-place edit on the agent host jams the whole channel silently (it sat 4 days
 once). Someone edited `git_deploy_helper` directly instead of pushing from the
 Mac. Resolve:
 
-1. List the dirty files on melchior (`git status`, `git diff` over ssh).
+1. List the dirty files on the agent host (`git status`, `git diff` over ssh).
 2. For each: if it holds real config that exists nowhere else (e.g. a
    `host_vars` flag), **adopt it into the Mac overlay first**, then
-   `git checkout -- .` on melchior; if it is a stale/damaged copy, revert it.
+   `git checkout -- .` on the agent host; if it is a stale/damaged copy, revert it.
 3. Push again (`scripts/overlay-sync push`, or re-run the deploy).
 
 **Diagnosing a dirty vault file: compare DECRYPTED content, never ciphertext.**
@@ -92,7 +92,7 @@ turned "someone edited secrets, don't touch it" into "the live file is a
 strict subset (truncated to about half the keys), git HEAD and the user's own
 backup agree byte-for-byte, reverting is restorative". Leaving it alone would
 have left ~14 secrets missing indefinitely: every deploy launched **on
-melchior** in the window rendered without them. If asa / email / Kagi /
+the agent host** in the window rendered without them. If asa / email / Kagi /
 Outlook misbehave after such a window, look here first.
 
 **Root pattern:** config edited in place on a node diverges from the Mac source

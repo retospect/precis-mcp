@@ -8,8 +8,8 @@ design-review: yes
 
 ## Resume
 
-- **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only: on B3 (full-stack ammonia/Ru), test 3 of 7; C and A×3 to come, no ETA; B1 and B2 failed on both backends, cause unknown; zero validation passes so far. (2) SPSO slice 8: Part A landed (6a81453eb); Part B stage 1 scans queued, detail under Settled history.
-- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Two scoped exceptions for SPSO slice 8 (Reto 2026-10-30 and 2026-10-31; scope and ids under Settled history). The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) stays held until SPSO slice 8 has run (Reto 2026-10-29). td470248 is done. Pending: B1/B2 diagnosis, run separately off spark by the catpath coordinator. Open (2026-11-05): the global lift versus a scoped verify-tier exception for st549459 (Horizon 10), Reto's call.
+- **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on the GPU node, UMA backend only: on B3 (full-stack ammonia/Ru), test 3 of 7; C and A×3 to come, no ETA; B1 and B2 failed on both backends, cause unknown; zero validation passes so far. (2) SPSO slice 8: Part A landed (6a81453eb); Part B stage 1 scans queued, detail under Settled history.
+- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on the GPU node is green; holds until then. Two scoped exceptions for SPSO slice 8 (Reto 2026-10-30 and 2026-10-31; scope and ids under Settled history). The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) stays held until SPSO slice 8 has run (Reto 2026-10-29). td470248 is done. Pending: B1/B2 diagnosis, run separately off the GPU node by the catpath coordinator. Open (2026-11-05): the global lift versus a scoped verify-tier exception for st549459 (Horizon 10), Reto's call.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** NO→NH₃ answered over a U/pH window on the complete network ([Status](#thread-context)); validation passes on real-potential cases; validation green lifts item 25; no re-run before. Engine-version checks must match the released engine.
 - **Worktree:** `catalysis-selectivity`
@@ -45,7 +45,7 @@ when that is close, with its dry run redone against it. The last dry run
 (design note §21) would have labelled 196 of 215 selectivity margins
 older-network, changing no ranking: margins are not qu164903 objectives.
 The pause would only have stopped the re-runs, so it is no longer needed.
-The PBE H-flight check (pair plus undoped control, run on spark) agrees
+The PBE H-flight check (pair plus undoped control, run on the GPU node) agrees
 with MACE: next to Ta the subsurface H goes downhill to the surface at the
 midpoint and the end. The Ta effect at the end is −0.29 eV in both methods
 (design note §22f). Reto accepted it (`catalysis-selectivity-27`): the
@@ -59,7 +59,7 @@ the dated detail is in `git log` and the owning items):**
   First, one run: subject A's pathway (st202238, neb tier, seed 0;
   pw541657, minted 2026-10-30). Second, via the coordinator: the stage-1
   `surface_coverage_scan` jobs on baseline st203306 (jo543903), subject A
-  st202238 (jo543904) and subject B st463208 (jo543910), pinned to castor
+  st202238 (jo543904) and subject B st463208 (jo543910), pinned to the local-serving node
   (the first mints, jo543898 and jo543899, failed in 0.1 s on a node without
   autocatpath). Stage-0 pathways: baseline pw538937 (minted
   2026-10-30, origin accepted as-is), A pw541657, B pw517889. The overnight
@@ -124,7 +124,7 @@ the dated detail is in `git log` and the owning items):**
    locked (2026-10-07). Left: the neb-tier re-run of pw455722's candidate
    and the trap/poison re-check in qu164903's logbook. Held by item 25,
    which lifts when catpath's 7-test real-potential validation (UMA, on
-   spark) is green (Reto, 2026-10-26: "lift 25 after validation"). Prepare
+   the GPU node) is green (Reto, 2026-10-26: "lift 25 after validation"). Prepare
    the plan now; launch nothing until the validation is green. Bound
    (Reto, 2026-10-29): owned GPU lanes count as $0 cash for the $25 rule;
    the stated bound is wall time, ≤1.5 GPU-h per seed (5400 s cap).
@@ -137,7 +137,7 @@ the dated detail is in `git log` and the owning items):**
    The ladder is on (`fidelity_levels: true`, `view='raw'`), so cap 0
    holds every automatic re-mint: restale (2 per tick), promote
    screening→neb (2), neb→verify (3) and the repair re-dispatches. Seed
-   jobs on spark were running for this quest on 2026-10-29 and cannot be
+   jobs on the GPU node were running for this quest on 2026-10-29 and cannot be
    attributed to restale. At the lift, restore the cap (default 2) in the
    same step as the first re-run.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
@@ -326,7 +326,7 @@ the dated detail is in `git log` and the owning items):**
    sampler over the box), `env_best`/`env_pareto`/`env_next` stamped on
    the candidate, `env_next` minted through the compute cart under the
    quest's caps. Kinetics gain a U axis only with kinetics v2 slice 8.
-   First map on the Ge slab (jo560022, 2026-11-03, spark, 60 s): st549459
+   First map on the Ge slab (jo560022, 2026-11-03, the GPU node, 60 s): st549459
    rests as NO+H* at 0.78 ML at −0.30 V_RHE, H* at 1.00 ML below −0.533 V,
    one model, so the Ge barely moves the clean-Pd map. pw549461's
    clean-slab staircase now reads "coads mismatch": the mask M(e) is 0 for

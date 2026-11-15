@@ -452,7 +452,7 @@ Extend the `PRECIS_SOURCE` owner-vs-worker classification
   search/ask routes; `/factory` POSTs require admin.
 - A summary/card synthesized from a private ref carries that ref's
   `owner_id` and is invisible to other non-admin users.
-- A todo owned by user A, executed by the melchior worker, produces
+- A todo owned by user A, executed by the agent-host worker, produces
   reads/writes scoped to A (verifiable via the job transcript / audit
   log).
 - No session-level `SET ROLE`/GUC on any pgbouncer DSN (guard or test).

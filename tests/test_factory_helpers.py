@@ -35,7 +35,7 @@ from precis_web.routes.factory import (
 
 
 def _claimed_job(
-    store: Store, origin: str, wait_s: float, *, host: str = "melchior"
+    store: Store, origin: str, wait_s: float, *, host: str = "maple"
 ) -> None:
     """A job that waited ``wait_s`` from mint to claim, in the window."""
     created = datetime.now(UTC) - timedelta(hours=1)
@@ -73,9 +73,9 @@ def test_wait_by_class_buckets_and_orders(store: Store) -> None:
 
 
 def test_wait_by_class_scopes_to_host(store: Store) -> None:
-    _claimed_job(store, "agent", 30, host="melchior")
-    _claimed_job(store, "agent", 60, host="balthazar")
-    assert {r["cls"]: r["n"] for r in _wait_by_class(store, "melchior")} == {"agent": 1}
+    _claimed_job(store, "agent", 30, host="maple")
+    _claimed_job(store, "agent", 60, host="alder")
+    assert {r["cls"]: r["n"] for r in _wait_by_class(store, "maple")} == {"agent": 1}
 
 
 def _log(conn, handler: str, *, ok: int, failed: int) -> None:
@@ -94,23 +94,23 @@ def test_hosts_reports_liveness(store) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO host_heartbeat (host, ts, load1, load5, load15) "
-            "VALUES ('melchior', now(), 1.5, 1.2, 1.0), "
-            "       ('caspar', now() - interval '2 hours', 0.1, 0.1, 0.1)"
+            "VALUES ('maple', now(), 1.5, 1.2, 1.0), "
+            "       ('birch', now() - interval '2 hours', 0.1, 0.1, 0.1)"
         )
         conn.commit()
     hosts = {h["host"]: h for h in _hosts(store)}
-    assert hosts["melchior"]["alive"] is True
-    assert hosts["melchior"]["load1"] == 1.5
-    assert hosts["caspar"]["alive"] is False  # stale (2h old)
+    assert hosts["maple"]["alive"] is True
+    assert hosts["maple"]["load1"] == 1.5
+    assert hosts["birch"]["alive"] is False  # stale (2h old)
 
 
 def test_config_rows_returns_all_rows(store) -> None:
-    set_service_prio(store, "melchior", "classify", 0)
+    set_service_prio(store, "maple", "classify", 0)
     set_service_prio(store, "*", "classify", 3)
-    set_service_model(store, "caspar", "briefing", "claude-opus-5-5")
+    set_service_model(store, "birch", "briefing", "claude-opus-5-5")
     rows = _config_rows(store)
     triples = {(s, h, p) for (s, h, p, _m) in rows}
-    assert ("classify", "melchior", 0) in triples
+    assert ("classify", "maple", 0) in triples
     assert ("classify", "*", 3) in triples
     # model row carries its model_pref
     briefing = [r for r in rows if r[0] == "briefing"][0]
@@ -133,14 +133,14 @@ def test_activity_keys_by_payload_handler(store) -> None:
 
 def test_slots_by_host_groups_advertised_resources(store) -> None:
     """The host strip's capability chips come from ``resource_slots``."""
-    store.sync_host_resource_slots("melchior", {"gpu": 1, "tts": 1})
-    store.sync_host_resource_slots("spark", {"gpu": 2})
+    store.sync_host_resource_slots("maple", {"gpu": 1, "tts": 1})
+    store.sync_host_resource_slots("spruce", {"gpu": 2})
     by_host = _slots_by_host(store)
-    mel = {s["resource"]: s for s in by_host["melchior"]}
+    mel = {s["resource"]: s for s in by_host["maple"]}
     assert mel["gpu"]["capacity"] == 1 and mel["gpu"]["free"] == 1
     assert set(mel) == {"gpu", "tts"}
-    assert by_host["spark"][0]["resource"] == "gpu"
-    assert by_host["spark"][0]["capacity"] == 2
+    assert by_host["spruce"][0]["resource"] == "gpu"
+    assert by_host["spruce"][0]["capacity"] == 2
 
 
 def test_slots_by_host_flags_memory_pressure(store) -> None:
@@ -230,9 +230,9 @@ def test_quests_reports_share_bar(store, monkeypatch) -> None:
 
 def test_slots_carry_mouseover_desc(store) -> None:
     """Each capability chip gets an explanatory mouseover (podman/gpu/mem)."""
-    store.sync_host_resource_slots("melchior", {"podman": 2})
+    store.sync_host_resource_slots("maple", {"podman": 2})
     by_host = _slots_by_host(store)
-    podman = {s["resource"]: s for s in by_host["melchior"]}["podman"]
+    podman = {s["resource"]: s for s in by_host["maple"]}["podman"]
     # the desc names the resource, its free/capacity, and explains it
     assert podman["desc"].startswith("podman: 2/2")
     assert "container" in podman["desc"].lower()
@@ -265,16 +265,16 @@ def test_errors_by_host_groups_recent_errors(store) -> None:
     """Per-machine WARNING+ readout (gr162694 #2): count + newest samples,
     INFO ignored, WARNING included (not just ERROR/CRITICAL)."""
     with store.pool.connection() as conn:
-        _err(conn, "melchior", pass_="plan_tick", message="boom one")
-        _err(conn, "melchior", pass_="review", message="boom two", level="CRITICAL")
-        _err(conn, "melchior", pass_="x", message="ok", level="INFO")  # ignored
-        _err(conn, "spark", pass_="embed", message="spark boom", level="WARNING")
+        _err(conn, "maple", pass_="plan_tick", message="boom one")
+        _err(conn, "maple", pass_="review", message="boom two", level="CRITICAL")
+        _err(conn, "maple", pass_="x", message="ok", level="INFO")  # ignored
+        _err(conn, "spruce", pass_="embed", message="spruce boom", level="WARNING")
         conn.commit()
     by_host = _errors_by_host(store)
-    assert by_host["melchior"]["count"] == 2  # INFO excluded
-    assert by_host["spark"]["count"] == 1  # WARNING now counted
+    assert by_host["maple"]["count"] == 2  # INFO excluded
+    assert by_host["spruce"]["count"] == 1  # WARNING now counted
     # samples carry pass + trimmed message for the mouseover
-    msgs = {s["msg"] for s in by_host["melchior"]["samples"]}
+    msgs = {s["msg"] for s in by_host["maple"]["samples"]}
     assert "boom one" in msgs and "boom two" in msgs
     assert "ok" not in msgs
 
@@ -286,17 +286,17 @@ def test_errors_by_host_latest_is_newest_truncated_with_full_title(store) -> Non
     with store.pool.connection() as conn:
         _err(
             conn,
-            "melchior",
+            "maple",
             pass_="plan_tick",
             message="an older warning",
             level="WARNING",
             ts_ago_s=60,
         )
         long_msg = "x" * 200
-        _err(conn, "melchior", pass_="review", message=long_msg, level="CRITICAL")
+        _err(conn, "maple", pass_="review", message=long_msg, level="CRITICAL")
         conn.commit()
     by_host = _errors_by_host(store)
-    latest = by_host["melchior"]["latest"]
+    latest = by_host["maple"]["latest"]
     assert latest is not None
     assert latest["line"] == long_msg[:80]
     assert long_msg in latest["title"]  # full text preserved in the title
@@ -313,12 +313,12 @@ def test_scheduler_leases_reads_next_fire(store) -> None:
             "INSERT INTO scheduler_leases "
             "(name, interval_s, next_fire_at, last_fired_at, last_host) "
             "VALUES ('watch_poll', 3600, now() + interval '10 minutes', "
-            "        now() - interval '50 minutes', 'melchior')"
+            "        now() - interval '50 minutes', 'maple')"
         )
         conn.commit()
     leases = _scheduler_leases(store)
     assert leases["watch_poll"]["interval_s"] == 3600
-    assert leases["watch_poll"]["last_host"] == "melchior"
+    assert leases["watch_poll"]["last_host"] == "maple"
     assert leases["watch_poll"]["last_fired_at"] is not None
 
 
@@ -377,10 +377,10 @@ def test_next_run_blank_for_non_pass_kind() -> None:
 def test_reserves_reports_unexpired_host_row(store) -> None:
     """§B-2's reserve pseudo-service, surfaced (gr162694 #4) instead of
     left invisible in the config table."""
-    set_reserve(store, "melchior", hours=2, actor="alice")
+    set_reserve(store, "maple", hours=2, actor="alice")
     reserves = _reserves(store)
-    assert reserves["melchior"]["actor"] == "alice"
-    assert reserves["melchior"]["expires_at"] is not None
+    assert reserves["maple"]["actor"] == "alice"
+    assert reserves["maple"]["expires_at"] is not None
 
 
 def test_reserves_wildcard_row_keyed_by_star(store) -> None:
@@ -391,21 +391,21 @@ def test_reserves_wildcard_row_keyed_by_star(store) -> None:
 def test_reserves_excludes_expired_rows(store) -> None:
     """An expired reserve is inert — the console must not show a stale
     banner (mirrors ``reserve_active``'s own ``expires_at > now()`` gate)."""
-    set_reserve(store, "spark", hours=1)
+    set_reserve(store, "spruce", hours=1)
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE service_config SET expires_at = now() - interval '1 hour' "
-            "WHERE host = 'spark' AND service = 'reserve'"
+            "WHERE host = 'spruce' AND service = 'reserve'"
         )
         conn.commit()
-    assert "spark" not in _reserves(store)
+    assert "spruce" not in _reserves(store)
 
 
 def test_reserves_cleared_row_disappears(store) -> None:
-    set_reserve(store, "melchior", hours=1)
-    assert "melchior" in _reserves(store)
-    clear_reserve(store, "melchior")
-    assert "melchior" not in _reserves(store)
+    set_reserve(store, "maple", hours=1)
+    assert "maple" in _reserves(store)
+    clear_reserve(store, "maple")
+    assert "maple" not in _reserves(store)
 
 
 def test_quests_no_budget_shows_spend_only(store, monkeypatch) -> None:

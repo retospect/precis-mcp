@@ -1219,7 +1219,7 @@ _DEFAULT_VERIFY_WALL_SECONDS = 172800
 #: ``search.neb_pool_size`` precis stamps on a GPU-routed MACE run.
 #: autocatpath's ``"auto"`` governor sizes the pooled-NEB batch by
 #: wall-time-per-graph, not by a hard memory ceiling — on jo489257
-#: (pollux, 2026-10-16) it pooled 37 bands into one MACE forward and the
+#: (the second DGX node, 2026-10-16) it pooled 37 bands into one MACE forward and the
 #: driver's unified-memory allocations (invisible to RSS and the unit's
 #: MemoryMax) triggered a global OOM kill. 4 keeps the batch small until
 #: the engine-side fix (a pending catpath PR) ships; pool width measured
@@ -4306,8 +4306,8 @@ def _seed_geometry_held(
     The same candidate fails the same way on every re-dispatch, on every
     node, so the infra ladder would only burn its retry and then file a
     ``quest-infra-failure`` gripe for a fault no executor can fix
-    (gr497198, gr497203: placement H 1.10 A inside the slab, pollux and
-    spark alike). The caller skips the re-dispatch, the gripe and the retry
+    (gr497198, gr497203: placement H 1.10 A inside the slab, the second DGX node and
+    the first GPU node alike). The caller skips the re-dispatch, the gripe and the retry
     counter; the candidate is not ruled out (no physical verdict either).
     The note is appended once per seed job, deduped by stamping the job id
     on the candidate (``quest_seed_geometry_noted``).

@@ -454,18 +454,18 @@ def _queue_typed_job(
 
 def test_derived_requires_reserved_on_target_node(store: Store) -> None:
     """A struct_relax job reserves gpu on its target_node, not the claimer."""
-    _advertise(store, "spark_d", {"gpu": 1})
+    _advertise(store, "spruce_d", {"gpu": 1})
     jid = _queue_typed_job(
-        store, executor="ex_d1", job_type="struct_relax", target_node="spark_d"
+        store, executor="ex_d1", job_type="struct_relax", target_node="spruce_d"
     )
-    # The node gate admits a spark_d-pinned job to a spark_d worker; the
-    # reservation lands on target_node (spark_d), NOT the reserve_host_id
+    # The node gate admits a spruce_d-pinned job to a spruce_d worker; the
+    # reservation lands on target_node (spruce_d), NOT the reserve_host_id
     # identity — proving res_host = target_node takes precedence.
-    rows = _claim(store, "ex_d1", "melchior_d", node="spark_d")
+    rows = _claim(store, "ex_d1", "maple_d", node="spruce_d")
     assert [r[0] for r in rows] == [jid]
-    assert rows[0][2]["reserved"] == {"host": "spark_d", "slots": {"gpu": 1}}
-    assert _free(store, "spark_d", "gpu") == 0
-    assert _free(store, "melchior_d", "gpu") is None  # reserve_host_id untouched
+    assert rows[0][2]["reserved"] == {"host": "spruce_d", "slots": {"gpu": 1}}
+    assert _free(store, "spruce_d", "gpu") == 0
+    assert _free(store, "maple_d", "gpu") is None  # reserve_host_id untouched
 
 
 def test_stale_heartbeat_pin_does_not_count_as_advertised(store: Store) -> None:
@@ -475,38 +475,41 @@ def test_stale_heartbeat_pin_does_not_count_as_advertised(store: Store) -> None:
     pass) must not silently pass the reservation gate. Falls back to the
     node-gate/pin path exactly like an unadvertised capability: claimed,
     just unreserved."""
-    _advertise(store, "spark_fossil", {"gpu": 1}, age_minutes=60 * 24 * 21)  # 3wk
+    _advertise(store, "spruce_fossil", {"gpu": 1}, age_minutes=60 * 24 * 21)  # 3wk
     jid = _queue_typed_job(
         store,
         executor="ex_d_fossil",
         job_type="struct_relax",
-        target_node="spark_fossil",
+        target_node="spruce_fossil",
     )
-    rows = _claim(store, "ex_d_fossil", "melchior_fossil", node="spark_fossil")
+    rows = _claim(store, "ex_d_fossil", "maple_fossil", node="spruce_fossil")
     assert [r[0] for r in rows] == [jid]  # claimed via the pin — no stall
     assert "reserved" not in rows[0][2]  # fossil advertisement not trusted
-    assert _free(store, "spark_fossil", "gpu") == 1  # untouched, not reserved
+    assert _free(store, "spruce_fossil", "gpu") == 1  # untouched, not reserved
 
 
 def test_fresh_heartbeat_pin_still_advertises(store: Store) -> None:
     """Companion positive case: the same pin shape, but a fresh heartbeat —
     the reservation gate still fires normally."""
-    _advertise(store, "spark_fresh", {"gpu": 1}, age_minutes=1.0)
+    _advertise(store, "spruce_fresh", {"gpu": 1}, age_minutes=1.0)
     jid = _queue_typed_job(
-        store, executor="ex_d_fresh", job_type="struct_relax", target_node="spark_fresh"
+        store,
+        executor="ex_d_fresh",
+        job_type="struct_relax",
+        target_node="spruce_fresh",
     )
-    rows = _claim(store, "ex_d_fresh", "melchior_fresh", node="spark_fresh")
+    rows = _claim(store, "ex_d_fresh", "maple_fresh", node="spruce_fresh")
     assert [r[0] for r in rows] == [jid]
-    assert rows[0][2]["reserved"] == {"host": "spark_fresh", "slots": {"gpu": 1}}
-    assert _free(store, "spark_fresh", "gpu") == 0
+    assert rows[0][2]["reserved"] == {"host": "spruce_fresh", "slots": {"gpu": 1}}
+    assert _free(store, "spruce_fresh", "gpu") == 0
 
 
 def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> None:
     """target_node hasn't advertised gpu yet → claim, don't stall, don't reserve."""
     jid = _queue_typed_job(
-        store, executor="ex_d2", job_type="struct_relax", target_node="spark_e"
+        store, executor="ex_d2", job_type="struct_relax", target_node="spruce_e"
     )
-    rows = _claim(store, "ex_d2", "melchior_e", node="spark_e")
+    rows = _claim(store, "ex_d2", "maple_e", node="spruce_e")
     assert [r[0] for r in rows] == [jid]  # claimed via the pin — no stall
     assert "reserved" not in rows[0][2]  # nothing reserved (self-gated off)
 
@@ -515,7 +518,7 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
 #
 # The fall-through above exists for the first-populate window — but it also
 # fired mid-outage, when a host's heartbeat went stale and its whole slot
-# map dropped out of ``advertised``. On castor (2026-10-15) a post-restart
+# map dropped out of ``advertised``. On cedar (2026-10-15) a post-restart
 # claim burst co-claimed five ``gpu:1`` autocatpath seeds in 25 s with zero
 # reservations — the GPU gate silently vanished exactly when the box was
 # being piled onto. A stale-but-recent heartbeat now defers the claim
@@ -712,18 +715,18 @@ def test_llm_requirement_target_node_claimable_when_node_advertises(
 ) -> None:
     """target_node=H + requires llm:X, H advertises llm:X → claimable on H
     (reservation lands on the target_node, not the claiming host identity)."""
-    _advertise(store, "spark_llm", {"llm:qwen-x": 1})
+    _advertise(store, "spruce_llm", {"llm:qwen-x": 1})
     jid = _queue_typed_job(
         store,
         executor="ex_llm_c",
         job_type="demo",
-        target_node="spark_llm",
+        target_node="spruce_llm",
         requires={"llm:qwen-x": 1},
     )
-    rows = _claim(store, "ex_llm_c", "melchior_llm", node="spark_llm")
+    rows = _claim(store, "ex_llm_c", "maple_llm", node="spruce_llm")
     assert [r[0] for r in rows] == [jid]
-    assert rows[0][2]["reserved"] == {"host": "spark_llm", "slots": {"llm:qwen-x": 1}}
-    assert _free(store, "spark_llm", "llm:qwen-x") == 0
+    assert rows[0][2]["reserved"] == {"host": "spruce_llm", "slots": {"llm:qwen-x": 1}}
+    assert _free(store, "spruce_llm", "llm:qwen-x") == 0
 
 
 def test_llm_requirement_target_node_skipped_when_node_does_not_advertise(
@@ -735,10 +738,10 @@ def test_llm_requirement_target_node_skipped_when_node_does_not_advertise(
         store,
         executor="ex_llm_d",
         job_type="demo",
-        target_node="spark_llm_bare",
+        target_node="spruce_llm_bare",
         requires={"llm:qwen-x": 1},
     )
-    rows = _claim(store, "ex_llm_d", "melchior_llm_d", node="spark_llm_bare")
+    rows = _claim(store, "ex_llm_d", "maple_llm_d", node="spruce_llm_bare")
     assert rows == []
     with store.pool.connection() as conn:
         meta_row = conn.execute(
@@ -763,7 +766,7 @@ def test_autocatpath_seed_serializes_on_single_gpu_slot(
     from precis.handlers.job import JobHandler
     from precis.handlers.todo import TodoHandler
 
-    _advertise(store, "spark", {"gpu": 1, "autocatpath": 1})
+    _advertise(store, "spruce", {"gpu": 1, "autocatpath": 1})
     todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate")
     todo_id = todo_out.ref_id
     assert todo_id is not None
@@ -780,7 +783,7 @@ def test_autocatpath_seed_serializes_on_single_gpu_slot(
                 "seed": seed,
                 "model_index": 0,
                 "content_key": f"ck{seed}",
-                "target_node": "spark",
+                "target_node": "spruce",
             },
         )
         assert out.ref_id is not None
@@ -790,23 +793,23 @@ def test_autocatpath_seed_serializes_on_single_gpu_slot(
     seed_b = _mint(2)
 
     # First claim pass: exactly one seed claims the single gpu slot.
-    rows1 = _claim(store, "ssh_node", "spark", node="spark")
+    rows1 = _claim(store, "ssh_node", "spruce", node="spruce")
     assert [r[0] for r in rows1] == [seed_a]
-    assert rows1[0][2]["reserved"] == {"host": "spark", "slots": {"gpu": 1}}
-    assert _free(store, "spark", "gpu") == 0
+    assert rows1[0][2]["reserved"] == {"host": "spruce", "slots": {"gpu": 1}}
+    assert _free(store, "spruce", "gpu") == 0
 
     # Second claim pass: seed_b cannot claim while seed_a holds the slot.
-    rows2 = _claim(store, "ssh_node", "spark", node="spark")
+    rows2 = _claim(store, "ssh_node", "spruce", node="spruce")
     assert rows2 == []
 
     # Free the slot by driving seed_a to a terminal status.
     set_status(store, seed_a, "succeeded")
-    assert _free(store, "spark", "gpu") == 1
+    assert _free(store, "spruce", "gpu") == 1
 
     # Third claim pass: seed_b now claims the freed slot.
-    rows3 = _claim(store, "ssh_node", "spark", node="spark")
+    rows3 = _claim(store, "ssh_node", "spruce", node="spruce")
     assert [r[0] for r in rows3] == [seed_b]
-    assert _free(store, "spark", "gpu") == 0
+    assert _free(store, "spruce", "gpu") == 0
 
 
 def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
@@ -821,9 +824,9 @@ def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
     from precis.handlers.job import JobHandler
     from precis.handlers.todo import TodoHandler
 
-    # NOTE: "spark_nogpu" advertises the engine (gr543909 placement gate) but
+    # NOTE: "spruce_nogpu" advertises the engine (gr543909 placement gate) but
     # never a gpu row.
-    _advertise(store, "spark_nogpu", {"autocatpath": 1})
+    _advertise(store, "spruce_nogpu", {"autocatpath": 1})
     todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate (no gpu host)")
     todo_id = todo_out.ref_id
     assert todo_id is not None
@@ -839,13 +842,13 @@ def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
             "seed": 1,
             "model_index": 0,
             "content_key": "ck_nogpu",
-            "target_node": "spark_nogpu",
+            "target_node": "spruce_nogpu",
         },
     )
     seed_id = out.ref_id
     assert seed_id is not None
 
-    rows = _claim(store, "ssh_node", "spark_nogpu", node="spark_nogpu")
+    rows = _claim(store, "ssh_node", "spruce_nogpu", node="spruce_nogpu")
     assert [r[0] for r in rows] == [seed_id]  # claimed via the pin, no stall
     assert "reserved" not in rows[0][2]
 
@@ -882,7 +885,7 @@ def test_explicit_requires_overrides_job_type_derivation(store: Store) -> None:
 def test_coordinator_capability_gate_skips_claude_less_host(store: Store) -> None:
     """No host anywhere advertises ``claude_bin`` → the row stays queued."""
     jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
-    rows = _claim(store, "coordinator", "balthazar", check_job_type_requires=True)
+    rows = _claim(store, "coordinator", "alder", check_job_type_requires=True)
     assert rows == []
     # Still queued, not touched — a capable host/worker gets a clean shot.
     with store.pool.connection() as conn:
@@ -894,17 +897,17 @@ def test_coordinator_capability_gate_skips_claude_less_host(store: Store) -> Non
 def test_coordinator_capability_gate_claims_when_host_advertises_it(
     store: Store,
 ) -> None:
-    """A claude-equipped claiming host (e.g. melchior) still claims — the
+    """A claude-equipped claiming host (e.g. maple) still claims — the
     gate must not orphan quest_tick fleet-wide."""
-    _advertise(store, "melchior", {"claude_bin": 1})
+    _advertise(store, "maple", {"claude_bin": 1})
     jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
-    rows = _claim(store, "coordinator", "melchior", check_job_type_requires=True)
+    rows = _claim(store, "coordinator", "maple", check_job_type_requires=True)
     assert [r[0] for r in rows] == [jid]
     # Check-only: no resource_slots reservation taken (unlike gpu/podman/
     # tts/embedder) — a Yield-heavy coordinator job can't safely refund one
     # between slices, so this gate never decrements ``free``.
     assert "reserved" not in rows[0][2]
-    assert _free(store, "melchior", "claude_bin") == 1
+    assert _free(store, "maple", "claude_bin") == 1
 
 
 def test_coordinator_capability_gate_off_by_default(store: Store) -> None:
@@ -913,24 +916,24 @@ def test_coordinator_capability_gate_off_by_default(store: Store) -> None:
     gr335087, buggy-but-unchanged-by-this-fix default for anyone who
     doesn't pass ``check_job_type_requires``)."""
     jid = _queue_typed_job(store, executor="coordinator", job_type="quest_tick")
-    rows = _claim(store, "coordinator", "balthazar")  # check_job_type_requires=False
+    rows = _claim(store, "coordinator", "alder")  # check_job_type_requires=False
     assert [r[0] for r in rows] == [jid]
 
 
 def test_coordinator_capability_gate_respects_target_node_pin(store: Store) -> None:
     """A pinned job's gate checks the PINNED node's advertisement, not the
     claiming worker's — mirroring the reservation path's ``res_host``."""
-    _advertise(store, "spark_pin", {"claude_bin": 1})
+    _advertise(store, "spruce_pin", {"claude_bin": 1})
     jid = _queue_typed_job(
-        store, executor="coordinator", job_type="quest_tick", target_node="spark_pin"
+        store, executor="coordinator", job_type="quest_tick", target_node="spruce_pin"
     )
-    # claiming host itself (melchior_claimer) advertises nothing — only the
+    # claiming host itself (maple_claimer) advertises nothing — only the
     # pin target does — and still claims.
     rows = _claim(
         store,
         "coordinator",
-        "melchior_claimer",
-        node="spark_pin",
+        "maple_claimer",
+        node="spruce_pin",
         check_job_type_requires=True,
     )
     assert [r[0] for r in rows] == [jid]
@@ -1018,7 +1021,7 @@ def test_release_poll_skips_checkout_less_host(store: Store) -> None:
     jid = _queue_typed_job(
         store, executor="job_inproc", job_type="release_poll", params={}
     )
-    rows = _claim(store, "job_inproc", "balthazar", check_job_type_requires=True)
+    rows = _claim(store, "job_inproc", "alder", check_job_type_requires=True)
     assert rows == []
     with store.pool.connection() as conn:
         row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (jid,)).fetchone()

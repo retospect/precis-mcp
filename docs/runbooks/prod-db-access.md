@@ -9,17 +9,17 @@
     echo "SELECT …" | scripts/prod-psql                # piped SQL
     scripts/prod-psql                                  # interactive
 
-It hops over ssh to a cluster node (default `caspar`; `PRECIS_PROD_SSH_HOST=
-melchior` overrides, `PRECIS_PROD_PSQL_OPTS="-At"` adds psql flags) and runs
+It hops over ssh to a cluster node (default `<db-host>`; `PRECIS_PROD_SSH_HOST=
+<agent-host>` overrides, `PRECIS_PROD_PSQL_OPTS="-At"` adds psql flags) and runs
 `psql` as `agent_rw` against pgbouncer. The pgbouncer address is resolved from
 the gitignored overlay by `scripts/lib/pgb-host.sh::resolve_pgb_host`; never
 write a literal in docs or scripts.
 
-By hand (what the wrapper does): ssh lands as `deploy` on caspar (already
+By hand (what the wrapper does): ssh lands as `deploy` on the database host (already
 authorized for the controller), `psql` is at `/opt/homebrew/bin/psql`, and
 `~deploy/.pgpass` is populated by the `pgpass` ansible role.
 
-    ssh caspar 'psql -h $PGB_HOST -p 6432 -U agent_rw -d precis_prod -c "SELECT …"'
+    ssh <db-host> 'psql -h $PGB_HOST -p 6432 -U agent_rw -d precis_prod -c "SELECT …"'
 
 - Bare `psql -U agent_ro precis_prod` from the deploy shell hits the unix
   socket and fails — you **must** pass `-h <pgbouncer host> -p 6432`.
@@ -27,7 +27,7 @@ authorized for the controller), `psql` is at `/opt/homebrew/bin/psql`, and
   precis tables** (they are owned by `agent_rw`; the default-privileges grant
   did not cover them retroactively) — file a backlog item if it bites.
 - Heredocs: escape single quotes the usual way,
-  `ssh caspar 'psql … <<SQL ... '\''paper'\'' ... SQL'`.
+  `ssh <db-host> 'psql … <<SQL ... '\''paper'\'' ... SQL'`.
 - `scripts/prod-psql` prints production rows into your context — for large
   result sets prefer a digest query (`count`, `group by`) over raw rows.
 
@@ -81,7 +81,7 @@ see [`prod-one-off-cli`](./prod-one-off-cli.md).
   the wrong DSN with that hint. `scripts/db-own-cutover --verify` is the
   canary (read-only, agent_ro).
 - Schema changes need DDL rights `agent_rw` lacks: use the `deploy` role
-  over the local socket on caspar (after the cutover: the owner DSN)
+  over the local socket on the database host (after the cutover: the owner DSN)
   ([`migration-deploy-window`](./migration-deploy-window.md)).
 - **Dropping a role — check ownership cross-database.** `DROP ROLE` refuses
   while the role owns *any* object in *any* database on the cluster, but
@@ -98,10 +98,10 @@ see [`prod-one-off-cli`](./prod-one-off-cli.md).
   `PG_UNIQFILES`) are **local-pgvector** role passwords, not cluster
   credentials; the infra regen script deliberately skips `^PG_`. None work
   against prod.
-- The controller's autossh tunnels to caspar's pgbouncer/Postgres ports can be
+- The controller's autossh tunnels to the database host's pgbouncer/Postgres ports can be
   up while the controller has **no `psql` installed** and the permission
   classifier blocks reading `~/.pgpass`, so the tunnel is no use directly. ssh
-  to caspar (above) bypasses both problems.
+  to the database host (above) bypasses both problems.
 - A direct prod `Store` from the controller for exports:
   [`local-prod-draft-export`](./local-prod-draft-export.md).
 

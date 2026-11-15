@@ -2418,7 +2418,7 @@ class Rung:
     ``max_tokens`` (a caller-pinned ``req.timeout_s`` wins). ``None`` keeps
     today's behaviour — on the local wire the SMALL tier's
     ``_SMALL_LOCAL_TIMEOUT_S`` cap. It exists because a big local model (the
-    castor gpt-oss-120b rung) legitimately needs ~60 s, which that 30 s cap
+    local-serving node's gpt-oss-120b rung) legitimately needs ~60 s, which that 30 s cap
     cut off every time (gr489474).
 
     ``reasoning_effort`` (``"low"``/``"medium"``/``"high"``) is sent on the

@@ -167,7 +167,7 @@ consumer of the flag.
 
 ## Detector precision — dry run 2026-10-12 says do not stamp at scale yet
 
-`precis backfill-glyph-health --after 0 --limit 900` on melchior (dry run,
+`precis backfill-glyph-health --after 0 --limit 900` on the agent host (dry run,
 nothing applied): **456 of 900 refs flagged (51%)**, 0 missing PDFs, 0 errors.
 `pa494` and `pa47024` are flagged as expected. Two of eight sampled papers
 cited by dr42995 are flagged too. Hand check:

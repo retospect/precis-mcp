@@ -124,8 +124,8 @@ def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setenv("PRECIS_SANDBOX_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("PRECIS_SANDBOX_WHEEL_CACHE", str(tmp_path / "wheels"))
-    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
-    monkeypatch.setenv("PRECIS_NODE", "balthazar")
+    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
+    monkeypatch.setenv("PRECIS_NODE", "alder")
     # mode:script never needs the OAuth token.
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setattr(claude_docker, "_reconciled", True)
@@ -147,7 +147,7 @@ def _script_params(**over: Any) -> dict[str, Any]:
         "mode": "script",
         "code": "import numpy\nprint(numpy.__version__)\n",
         "deps": ["numpy>=2"],
-        "target_node": "balthazar",
+        "target_node": "alder",
         "resources": {"wall_seconds": 600},
     }
     p.update(over)
@@ -160,7 +160,7 @@ def _script_params(**over: Any) -> dict[str, Any]:
 class TestScriptSubmit:
     @pytest.fixture(autouse=True)
     def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
+        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
     def test_valid_passes_without_oauth_token(self) -> None:
@@ -736,7 +736,7 @@ def test_stage_lease_expiry_reclaims_and_retries(
 ) -> None:
     from precis.workers.executors import _sandbox_stage
 
-    state = _sandbox_stage.find_or_mint(store, "balthazar", ["numpy>=2"])
+    state = _sandbox_stage.find_or_mint(store, "alder", ["numpy>=2"])
     # A worker claimed it, then died: running, lease in the past.
     store.add_tag(state.ref_id, Tag.parse_strict("STATUS:running"), set_by="agent")
     _expire_lease(store, state.ref_id)
@@ -765,7 +765,7 @@ def test_running_stage_heartbeats_its_lease(
         return _sandbox_script.StagedDeps(_LOCK_TEXT, _LOCK_SHA, cache_root, False)
 
     monkeypatch.setattr(_sandbox_script, "stage_deps", slow_stage)
-    state = _sandbox_stage.find_or_mint(store, "balthazar", ["numpy>=2"])
+    state = _sandbox_stage.find_or_mint(store, "alder", ["numpy>=2"])
     claude_docker.run_claude_docker_pass(store, limit=4)  # claims, thread blocks
     first = _meta(store, state.ref_id)["lease_until"]
     assert _status(store, state.ref_id) == "running"

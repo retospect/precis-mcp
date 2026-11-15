@@ -20,7 +20,7 @@ Three post-deploy assertions, one owner (`deploy/redeploy-precis.yml`):
   (analogue of the venv-commit assert).
 - Model serving: assert each host's resolved PRECIS_SUMMARIZE_MODEL /
   PRECIS_LOCAL_* equals a model_id in that host's own resource_slots `llm:`
-  rows — the balthazar ~15.6k-WARN/day drift class, caught at deploy time.
+  rows — the sandbox host ~15.6k-WARN/day drift class, caught at deploy time.
   Open decision alongside: what should the fleet summarize with — the served
   local model or rake-lemma? (the `--summarizer-model` CLI arg overrides the
   env host_var, which made a host_var fix inert).
@@ -29,16 +29,16 @@ Three post-deploy assertions, one owner (`deploy/redeploy-precis.yml`):
   `gateway, scheduler, data, inference` — not `serving`. But
   `playbooks/20c-precis-heartbeat-serving.yml` runs
   `precis_worker/provision` there, so `/opt/precis/venv` DOES exist on the
-  Spark pair, carrying a real `precis_mcp` dist. So that venv can sit
+  GB10 node pair, carrying a real `precis_mcp` dist. So that venv can sit
   arbitrarily far behind `precis_target_sha` while the deploy reports green:
   it is pinged for reachability, provisioned, and then excluded from the one
   check that would notice.
   **The symptom that prompted this was WRONG; the gap is real anyway.** A
-  session-carried note said spark ran a month-stale `precis_mcp 8.32.0`
+  session-carried note said the GPU node ran a month-stale `precis_mcp 8.32.0`
   (2026-08-29). Reading both serving hosts directly on 2026-09-29 refuted
   it: both are on `8.35.1`, built from what was `origin/main`'s head at the
   time of the read — current, not stale. So this item is not
-  "spark is behind"; it is "nothing in the deploy would tell us if it
+  "the GPU node is behind"; it is "nothing in the deploy would tell us if it
   were", which is the condition under which a wrong belief about a host's
   version survives a month unchallenged.
   Fix: add `serving` to that play's `hosts:` with a `_precis_venv_refs` map

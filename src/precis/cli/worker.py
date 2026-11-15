@@ -475,7 +475,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "dream_agent/structural/deep_review are NOT in either rotation — "
         "each is cadence-fired via the scheduler lease (workers/"
         "scheduler.py CADENCES: dream_agent + anki_sync host-pinned "
-        "melchior, structural + deep_review dark-switched on any eligible "
+        "the agent host, structural + deep_review dark-switched on any eligible "
         "host, gr192752) instead of the profile's per-cycle slot, so a "
         "wedged host can't starve them. job_claude_inproc/quota_check "
         "gate themselves via the PRECIS_LOAD_CEILING load-avg gate, so an "
@@ -752,7 +752,7 @@ def run(args: argparse.Namespace) -> None:
         # runner shells out to ``claude -p`` with ``--mcp-config`` so
         # the in-process planner can call back via MCP; that requires
         # the hermes-owned ``~/.claude/mcp.json`` + OAuth state, which
-        # only lives on the agent host (melchior). On data-host system
+        # only lives on the agent host. On data-host system
         # workers the runner used to claim plan_tick / fix_gripe jobs,
         # fail because PRECIS_MCP_CONFIG / OAuth was missing, and
         # bubble ``child-failed:<job>`` to the parent — a routing-
@@ -764,10 +764,10 @@ def run(args: argparse.Namespace) -> None:
         # scheduler read too (docs/backlog/factory-console-and-scheduling.md).
         # ``system`` = every node's rotation (embed/summarize/… + the
         # coordinator/ssh_node/clusterize/reconcile passes that ship on
-        # every node); ``agent`` = melchior's OAuth worker (the opus
+        # every node); ``agent`` = the agent host's OAuth worker (the opus
         # reviewers + job_claude_inproc + quota_check). dream_agent stays
         # out of both profiles' rotation on THIS gate — its trigger is the
-        # ``dream_agent`` scheduler cadence (§A, host-pinned melchior, see
+        # ``dream_agent`` scheduler cadence (§A, host-pinned to the agent host, see
         # workers/scheduler.py), not a profile default; ``--only dream_agent``
         # still self-gates via PRECIS_DREAM_AGENT=1 for a manual run. A
         # totality test (``tests/test_worker_registry.py``) fails CI if a

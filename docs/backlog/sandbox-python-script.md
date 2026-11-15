@@ -16,7 +16,7 @@ flexible." Decided the same morning (review answers):
   carrying a script is sugar that `dispatch` turns into that job.
 - **Network: PyPI only.** Declared deps install; nothing else is reachable.
 - **Read MCP: opt-in per job** via `precis_access:read`.
-- **Hosts: castor + pollux.** The small Macs are a later slice (§ Macs).
+- **Hosts: the DGX nodes.** The small Macs are a later slice (§ Macs).
 
 ## What exists
 
@@ -24,7 +24,7 @@ flexible." Decided the same morning (review answers):
 `src/precis/workers/executors/claude_docker.py`) already has the spine:
 mint → claim → `podman run -d` → poll by inspect → kill/rm, `/work` as the
 only IN/OUT bus, no DB creds in the container, cgroup caps
-(`PRECIS_SANDBOX_MEMORY/CPUS/PIDS_LIMIT`), melchior hard-excluded, a
+(`PRECIS_SANDBOX_MEMORY/CPUS/PIDS_LIMIT`), the agent host hard-excluded, a
 per-run token'd read-only MCP on a unix socket (`_sandbox_read_mcp`,
 `mode:script` only). It ships
 default-off: a `service prio` row enables the `job_claude_docker` lane
@@ -155,8 +155,8 @@ a new job.
 3. **Todo dispatch sugar** (§ Todo sugar). Exit: tagging a todo
    `run:python` mints one job; the result lands as a comment; a successful
    run leaves the todo open.
-4. **Light castor + pollux.** Ops: the sandbox play (`35-precis-worker-
-   sandbox.yml`) on pollux, the `service prio` row for `job_claude_docker`
+4. **Light the DGX nodes.** Ops: the sandbox play (`35-precis-worker-
+   sandbox.yml`) on the second DGX node, the `service prio` row for `job_claude_docker`
    on both, a smoke job on each. Cluster-desk's lane, run from
    `origin/prod` after deploy. The lane lights only once `origin/prod`
    contains the `--no-build` lock fix (`_sandbox_script.compile_lock`).
@@ -207,9 +207,9 @@ a new job.
 
 Reto asked whether the small Macs can run these. Only through a Linux VM
 (`podman machine` / colima): the rootless `agent_sandbox` user model, the
-cgroup caps and `--network none` are Linux podman features, and balthazar
+cgroup caps and `--network none` are Linux podman features, and the second worker host
 was dropped from S1 on 2026-09-07 for "macOS/no-podman". A Mac lane is a
-separate slice after castor + pollux run cleanly: one `podman machine` per
+separate slice after the DGX nodes run cleanly: one `podman machine` per
 Mac, the executor talking to it over its socket, caps applied at the VM.
 Not started until a capacity need shows.
 
@@ -231,7 +231,7 @@ Related: `agent-workspace-containers.md` (persistent workspaces; its slice
 - Blocker: slices 1–2 are never listed, yet structure-workspaces cites "slice 4". Add a one-line "shipped" note for them.
 - Blocker: slice 3 names a "non-closing auto_check", but no evaluator in `auto_check_evaluators/` fits. Name one or specify a new one.
 - Blocker: slice 3 names no todo put handler or symbol for the `run:python` tag hook.
-- Blocker: slice 4 is ops only (pollux play, `service prio` rows, smoke jobs) and needs real podman plus an operator flip. It is cluster-desk scope, not builder scope.
+- Blocker: slice 4 is ops only (the second DGX node play, `service prio` rows, smoke jobs) and needs real podman plus an operator flip. It is cluster-desk scope, not builder scope.
 - Open (Reto): a package allow-list for `deps`, or ship without one?
 - Open (Reto): structure-workspaces slice 1 needs slice 4 (lane live), not slice 3 (todo sugar). Light the lane first and defer the sugar?
 - Reto 2026-10-24: publish the working se/pcb dogfood pieces to prod first, then the sandbox lane.
