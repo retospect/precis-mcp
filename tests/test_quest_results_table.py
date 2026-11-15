@@ -1250,3 +1250,34 @@ class TestEnvResultsColumns:
         assert by_name["Ag"]["env_footing"] == "computed"
         assert by_name["Au"]["env_footing"] == "run-point"
         assert by_name["Ag"]["env_limiting"] == "m_kin"
+
+    def test_leaderboard_shows_run_point_values(self, store: Any) -> None:
+        """A mixed cohort shows the run-point objective values the
+        fallback rows rank on (``fr.run_point_objectives``) — not a blank
+        row under the env pair alone."""
+        from precis.quest.frontier import leaderboard
+
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"environment_space": {"axes": {"T": [350, 900]}}})
+        ranked = _mk_candidate(store, qid, "Ag", _dopant_ops("Ag", 1))
+        fallback = _mk_candidate(store, qid, "Au", _dopant_ops("Au", 1))
+        _converge(store, ranked, energy=-3.0)
+        _converge(store, fallback, energy=-9.0)
+        # The quest's rubric objective is barrier-min — the fallback slab
+        # has run-point evidence but no env_best.
+        store.stamp_ref_meta(fallback, {"barrier": 0.5})
+        store.stamp_ref_meta(
+            ranked,
+            {"env_best": _env_best(1.0, "computed"), "env_best_J": 1.0},
+        )
+        rows, schema = leaderboard(quest_frontier(store, qid))
+        # The env pair plus the run-point objective column the fallback
+        # row ranks on.
+        assert "env_best_J" in schema
+        assert "barrier" in schema
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Au"]["band"] == "provisional"
+        assert by_name["Au"]["barrier"] == "0.5"
+        assert by_name["Au"]["env_best_J"] == "—"
+        assert by_name["Au"]["env_footing"] == "run-point"
+        assert by_name["Ag"]["env_best_J"] == "1"

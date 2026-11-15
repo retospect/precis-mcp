@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -2436,6 +2437,95 @@ def _run_point_split(
     return final, still_unevaluated
 
 
+#: The measure keys the env-footing check (:func:`_env_footing_demotion`)
+#: compares stamped bases for — the two env measures
+#: :mod:`precis.quest.environment_stamps` writes under one shared pathway
+#: basis.
+_ENV_BASIS_KEYS: tuple[str, ...] = ("env_best_J", "env_pareto_fraction")
+
+
+def _env_footing_key(b: dict[str, Any]) -> tuple[str, ...]:
+    """The canonical identity of a stamped basis for env-footing
+    comparison — every field :func:`same_network_basis` compares on, as a
+    totally ordered tuple, so picking a reference never depends on
+    candidate order. Two bases equal under this key are interchangeable
+    references."""
+    return tuple(
+        str(b.get(k))
+        for k in (
+            "version",
+            "template",
+            "digest",
+            "environment_basis",
+            "tpd_basis",
+            "correction_policy",
+        )
+    )
+
+
+def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
+    """Equal-footing check for the env cohort (slab-environment-optimizer
+    spec, section me568512): env values compare only on equal network AND
+    environment basis.
+
+    :func:`apply_network_demotion` demotes against the pinned basis — a
+    ``{"version", "template"}`` pair that carries no
+    ``environment_basis``/``digest``/``tpd_basis`` — so two env
+    evaluations stamped under different environment bases both survive it
+    and would rank against each other. Here the reference is the basis
+    held by the plurality of live env measures (no recency order exists
+    between two incompatible environment bases), ties broken by the
+    :func:`current_network_basis` ordering and then the total
+    :func:`_env_footing_key`. A stamped env measure whose basis fails
+    :func:`same_network_basis` against the reference demotes exactly like
+    a network-stale one — the slab then reads ``env_best_J``-less and
+    falls back to the run-point cohort. An env measure with no stamped
+    basis is left alone, the same legacy rule
+    :func:`apply_network_demotion` applies. Mutates ``cands``; returns the
+    reference used (``None`` when no candidate carries a stamped live env
+    measure).
+    """
+    env_bases = [
+        b
+        for c in cands
+        for k, b in _key_bases(c).items()
+        if k in _ENV_BASIS_KEYS and k in c.measures
+    ]
+    if not env_bases:
+        return None
+    counts = Counter(_env_footing_key(b) for b in env_bases)
+    ref = max(
+        env_bases,
+        key=lambda b: (
+            counts[_env_footing_key(b)],
+            b.get("template") == _CURRENT_DISPATCH_TEMPLATE,
+            _version_key(b.get("version")),
+            bool(b.get("digest")),
+            _env_footing_key(b),
+        ),
+    )
+    for c in cands:
+        stale: list[str] = []
+        bases = _key_bases(c)
+        for k in _ENV_BASIS_KEYS:
+            basis = bases.get(k)
+            if basis is None or k not in c.measures:
+                continue
+            if same_network_basis(basis, ref):
+                continue
+            v = c.measures.pop(k, None)
+            if v is not None:
+                c.flags.setdefault(f"{k}{_UNTRUSTED_VALUE_SUFFIX}", v)
+            stale.append(k)
+            c.flags.setdefault("network_stale_basis", basis)
+        if stale:
+            c.flags["network_stale"] = True
+            c.flags["network_stale_keys"] = sorted(
+                {*stale, *(c.flags.get("network_stale_keys") or [])}
+            )
+    return ref
+
+
 def _env_frontier(
     env_cohort: list[Candidate],
     run_cohort: list[Candidate],
@@ -2530,23 +2620,50 @@ def leaderboard(
     but not confirmed, never ranked against confirmed bands. A ``$/rate``
     column (:func:`_rate_readout`: ``atom_cost - log_tof``, log10 $ per
     unit TOF) is computed HERE at read time, never stored, whenever a
-    candidate carries both components (``—`` otherwise). Pure over a
+    candidate carries both components (``—`` otherwise). A mixed-cohort
+    env result (:attr:`FrontierResult.run_point_objectives`) also shows
+    the run-point objective columns the fallback rows rank on, and each
+    row sorts on the primary of its own cohort. Pure over a
     :class:`FrontierResult`, trivially testable; the handler renders it via
     ``toon.dump``. This is the striving's authoritative leaderboard —
     autocatpath's own ``compare`` view is a compute-side diagnostic over
     sibling pathways, not this.
     """
     obj_keys = [k for k, _ in fr.objectives]
+    # A mixed-cohort env result carries the fallback cohort's own
+    # objectives (``fr.run_point_objectives``): a run-point fallback row
+    # must SHOW the values it ranked on, not a blank row under the env
+    # pair. Empty for every other quest, which renders byte for byte as
+    # before.
+    run_keys = [k for k, _ in fr.run_point_objectives if k not in obj_keys]
     primary = sort or (fr.objectives[0] if fr.objectives else None)
     col_keys = [
         *obj_keys,
-        *([sort[0]] if sort is not None and sort[0] not in obj_keys else []),
+        *run_keys,
+        *(
+            [sort[0]]
+            if sort is not None and sort[0] not in (*obj_keys, *run_keys)
+            else []
+        ),
     ]
 
+    def _primary_for(c: Candidate) -> tuple[str, str] | None:
+        """The objective a row actually ranked on — the run-point primary
+        for a fallback row (``flags['rank_basis'] == 'run_point'``), the
+        result's primary otherwise; an explicit ``sort`` wins for both."""
+        if (
+            sort is None
+            and fr.run_point_objectives
+            and c.flags.get("rank_basis") == "run_point"
+        ):
+            return fr.run_point_objectives[0]
+        return primary
+
     def _sort_key(c: Candidate) -> float:
-        if primary is None:
+        p = _primary_for(c)
+        if p is None:
             return 0.0
-        key, sense = primary
+        key, sense = p
         v = c.measures.get(key)
         if v is None:
             return float("inf")  # unmeasured sinks to the bottom of its band
@@ -2602,9 +2719,10 @@ def leaderboard(
         return out
 
     def _prov_sort_key(pc: ProvisionalCandidate) -> float:
-        if primary is None:
+        p = _primary_for(pc.candidate)
+        if p is None:
             return 0.0
-        key, sense = primary
+        key, sense = p
         v = pc.measures.get(key)
         if v is None:
             return float("inf")
@@ -2979,6 +3097,12 @@ def quest_frontier(
     With none, the result is exactly the run-point split below. Every
     candidate gets ``flags['rank_basis']`` — ``"env_best"`` or
     ``"run_point"``. Every other quest is unchanged.
+
+    The env cohort is equal-footing only: the pinned basis is a
+    version+template pair, so :func:`_env_footing_demotion` first demotes
+    any env measure stamped under an incompatible environment/digest/tpd
+    basis — such a slab falls back to the run-point cohort rather than
+    rank its J against an incommensurate one.
     """
     from precis.quest.environment_space import declares_environment_space
     from precis.quest.gaps import _live_servers
@@ -3003,6 +3127,7 @@ def quest_frontier(
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     optional = frozenset() if strict else _optional_objectives_for(store, quest_id)
     if env_space:
+        _env_footing_demotion(candidates)
         for c in candidates:
             c.flags["rank_basis"] = (
                 "env_best" if c.measures.get("env_best_J") is not None else "run_point"
