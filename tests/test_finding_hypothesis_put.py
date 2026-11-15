@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._finding_hypothesis import (
     ARTIFACT_HYPOTHESIS,
     META_ARTIFACT_TYPE,
@@ -519,3 +519,28 @@ def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> N
             (existing,),
         ).fetchall()
     assert [int(r[0]) for r in evidence] == [pa1]
+
+
+def test_put_hypothesis_bad_extras_write_nothing(store: Store) -> None:
+    """gr676914 review: a refused extras (rel='rejects' with no reason, an
+    unresolvable link=) leaves no hypothesis hub behind."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    before = store.count_refs(kind="finding")
+    for link, rel in (
+        (f"pc{ch1}", "rejects"),
+        ("fi999999", None),
+        (None, "related-to"),
+    ):
+        with pytest.raises((BadInput, NotFound)):
+            _handler(store).put(
+                title=_SENTENCE,
+                hypothesis=True,
+                motivation="leap",
+                testable_by="experiment",
+                llm_models=["test-model"],
+                motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+                link=link,
+                rel=rel,
+            )
+    assert store.count_refs(kind="finding") == before

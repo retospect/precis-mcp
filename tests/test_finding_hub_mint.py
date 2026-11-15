@@ -1230,3 +1230,44 @@ def test_put_hub_bad_link_target_writes_nothing(store) -> None:
             link="fi999999",
         )
     assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_extras_refusal_rolls_back_mint_and_attach(store) -> None:
+    """gr676914 review: an extras refusal after the outcome's writes (a
+    self-link on a converge, rel='rejects' without a reason) rolls the
+    mint/attach back — no stranded hub, no stranded evidence."""
+    _seed_paper(store, cite_key="miller23a")
+    sentence = "Pd/C catalyzes Suzuki coupling."
+    existing = mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+    refs_before = store.count_refs(kind="finding")
+    tags_before = _tag_values(store, existing)
+
+    # Converge onto ``existing`` with link= naming that same hub: the
+    # store refuses the self-link after the attach wrote — all rolled back.
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence=sentence,
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=_block_hit(existing, sentence),
+            tags=["topic:rolledback"],
+            link=f"fi{existing}",
+        )
+    assert "topic:rolledback" not in _tag_values(store, existing)
+    assert _tag_values(store, existing) == tags_before
+    assert store.count_refs(kind="finding") == refs_before
+
+    # rel='rejects' is refused before any write on a fresh mint.
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link=f"fi{existing}",
+            rel="rejects",
+        )
+    assert store.count_refs(kind="finding") == refs_before

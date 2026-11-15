@@ -113,10 +113,14 @@ def check_put_extras(
                 next=f"put(kind={kind!r}, ..., link='<handle>', rel={rel!r})",
             )
         return None, "cites"
-    return (
-        parse_link_target(link, store=store),
-        validate_relation(rel or "cites", store=store),
-    )
+    relation = validate_relation(rel or "cites", store=store)
+    if relation == "rejects":
+        raise BadInput(
+            "rel='rejects' needs a meta.reason that a create-time link= cannot carry",
+            next="mint first, then link(kind='finding', id='<fi>', "
+            "target='<handle>', rel='rejects', meta={'reason': '...'})",
+        )
+    return parse_link_target(link, store=store), relation
 
 
 def apply_put_extras(

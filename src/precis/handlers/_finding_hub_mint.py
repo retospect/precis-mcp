@@ -258,41 +258,53 @@ def _put_hub(
             "different hub",
         )
 
-    def _done(outcome: tuple[Response, int]) -> Response:
-        resp, hub_ref_id = outcome
-        return apply_put_extras(
-            store,
-            "finding",
-            hub_ref_id,
-            resp,
-            tags=tags,
-            target=link_target,
-            relation=relation,
-        )
+    def _in_tx(write: Callable[[], tuple[Response, int] | None]) -> Response | None:
+        # One transaction around the outcome's writes AND the extras: an
+        # extras refusal (self-link on a converge/attach, a link the store
+        # refuses) rolls back the mint/attach too, never strands it.
+        with store.atomic():
+            outcome = write()
+            if outcome is None:
+                return None
+            resp, hub_ref_id = outcome
+            return apply_put_extras(
+                store,
+                "finding",
+                hub_ref_id,
+                resp,
+                tags=tags,
+                target=link_target,
+                relation=relation,
+            )
+
+    def _done(write: Callable[[], tuple[Response, int]]) -> Response:
+        resp = _in_tx(write)
+        assert resp is not None
+        return resp
 
     if mode == "attach":
         assert attach_to is not None
         return _done(
-            _attach_by_choice(store, claim, attach_to, supporters, set_by=set_by)
+            lambda: _attach_by_choice(
+                store, claim, attach_to, supporters, set_by=set_by
+            )
         )
 
     if mode == "off":
-        result = authoring.seed_claim_hub(
-            store,
-            sentence=sentence,
-            scope=scope,
-            supporters=supporters,
-            set_by=set_by,
-            extra_meta=extra_meta,
-        )
-        return _done(
-            (
-                Response(
-                    body=_mint_response_body(result, sentence) + "\ndedup skipped"
-                ),
-                result["hub_ref_id"],
+
+        def _seed() -> tuple[Response, int]:
+            result = authoring.seed_claim_hub(
+                store,
+                sentence=sentence,
+                scope=scope,
+                supporters=supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
             )
-        )
+            body = _mint_response_body(result, sentence) + "\ndedup skipped"
+            return Response(body=body), result["hub_ref_id"]
+
+        return _done(_seed)
 
     if embedder is None:
         raise Unsupported(
@@ -309,9 +321,11 @@ def _put_hub(
     # any same-passage / containment logic runs: an idempotent re-put is never
     # refused, even when the hub has no embedding yet (a same-passage sibling
     # would otherwise be judged against itself).
-    converged = _converge_identical(store, claim, supporters, set_by=set_by)
+    converged = _in_tx(
+        lambda: _converge_identical(store, claim, supporters, set_by=set_by)
+    )
     if converged is not None:
-        return _done(converged)
+        return converged
     passage_hubs = _same_passage_neighbours(store, supporters)
     by_id = {c.hub_ref_id: c for c in candidates}
     merged = list(candidates) + [c for c in passage_hubs if c.hub_ref_id not in by_id]
@@ -387,13 +401,13 @@ def _put_hub(
 
     if placement.action == "attach":
         return _done(
-            _attach_to_existing(
+            lambda: _attach_to_existing(
                 store, claim, placement, judged, supporters, set_by=set_by
             )
         )
     if placement.action == "needs_review":
         return _done(
-            _mint_with_review_todo(
+            lambda: _mint_with_review_todo(
                 store,
                 claim,
                 placement,
@@ -403,7 +417,7 @@ def _put_hub(
             )
         )
     return _done(
-        _mint_new(
+        lambda: _mint_new(
             store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
         )
     )
