@@ -99,6 +99,7 @@ from precis.taproot.reword import (
     _canon_numbers,
     _post_validate,
 )
+from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
@@ -490,7 +491,18 @@ def propose_conditions(
     if res.error:
         log.warning("taproot-conditions: proposal failed: %s", res.error)
         return None
-    return res.data
+    if isinstance(res.data, dict):
+        return res.data
+    # A fallback rung can answer in prose or a fenced block that the
+    # provider did not parse (2026-11-15 prod dry run: 4 of 5 replies).
+    data = extract_json_object(res.text or "")
+    if data is None:
+        log.warning(
+            "taproot-conditions: proposal had no JSON object (stop=%s): %.300r",
+            res.stop_reason,
+            res.text,
+        )
+    return data
 
 
 # ── post-validation ──────────────────────────────────────────────────────

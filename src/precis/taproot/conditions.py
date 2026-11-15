@@ -29,9 +29,16 @@ Decisions:
 - **A sentence with no number is exempt** (the prototype's ``HASNUM``): a
   qualitative mechanism claim carries no value that depends on a state
   variable.
-- **DFT adsorption descriptors are exempt** (``ΔG_H*``, ``ΔG*NO3``,
-  "adsorption energy") unless the sentence also speaks of a step, PDS,
-  limiting potential or uphill/downhill: U = 0 V is the convention there.
+- **DFT adsorption descriptors of neutral species are exempt** (``ΔG_H*``,
+  ``ΔG_abs``/``ΔG_ads``, ``ΔG*NO3``, "adsorption free energy") unless the
+  sentence also speaks of a step, PDS, limiting potential or uphill/downhill:
+  ΔG_H* (and H*, O*, OH*) at the CHE reference state is the field convention.
+  Adsorption of a CHARGED species (NO₃⁻, NO₂⁻, "nitrate adsorption", anion,
+  cation) involves electron transfer and is potential-dependent, so a
+  *free energy* of it (ΔG / "free energy") is NOT exempt and must state the
+  potential and reference/model. A bare electronic binding or "adsorption
+  energy" (no ΔG, no "free energy") is a computed energy at a fixed
+  geometry, not a potential-dependent free energy: it is left alone.
 - **DFT barriers fire only when the sentence itself calls the step
   electrochemical / potential-determining** and states no potential; a
   chemical barrier needs none. False positives are kept low here.
@@ -40,8 +47,20 @@ Decisions:
   "V" with no reference electrode is its own missing item, ``reference``.
 - **Computed STH / band-edge claims are not photo-rate**: a computed
   quantity has no lamp.
-- **Thermal catalysis** needs a temperature and never fires in an
+- **Photocatalytic H₂ evolution and nitrate-reduction rates** must name the
+  sacrificial agent (or "overall water splitting" / "pure water" / "without
+  sacrificial agent"): sacrificial H₂ evolution and overall splitting are
+  different reactions. AQY must name the wavelength, an experimental STH the
+  AM 1.5G / solar-simulator irradiance.
+- **Thermal catalysis** needs a temperature and the feed composition (NO
+  ppm, reductant ratio); GHSV is stated only when it varies. It never fires in an
   electrochemical (nitrate / NO3RR / ``*N``) or DFT context.
+
+Revised 2026-11-15 against published reporting standards. The DOIs in each
+profile's ``sources`` were surfaced by Perplexity and are PENDING
+verification. Scope stays claim-level: only the conditions the reported
+NUMBER depends on, not the paper-level checklist (product analysis,
+controls, replicates).
 
 Not done here: the profile-as-finding versioning, mint-time extraction
 changes and hub backfill (backlog doc, Design 1 and 3-5).
@@ -82,8 +101,18 @@ _STEP_CLAIM = re.compile(
 )
 #: ΔG_H*, ΔG*H, ΔG(NO3*), "adsorption (free) energy": U = 0 V by convention.
 _ADSORPTION = re.compile(
-    r"ΔG[\s_{(]*\*\s*[A-Za-z]|ΔG[\s_{(]*[A-Za-z][\w₀-₉]*\s*\*|ΔG[\s_{(]*H\b|"
+    r"ΔG[\s_{(]*(abs|ads)|ΔG[\s_{(]*\*\s*[A-Za-z]|ΔG[\s_{(]*[A-Za-z][\w₀-₉]*\s*\*|ΔG[\s_{(]*H\b|"
     r"adsorption (free )?energ|binding (free )?energ",
+    _I,
+)
+#: Charged adsorbates: the free energy depends on potential (electron transfer).
+_CHARGED_SPECIES = (
+    r"NO[₃3₂2][−⁻-]|nitrate adsorption|nitrite adsorption|\banions?\b|\bcations?\b"
+)
+#: Step-claim words, or a free energy of a charged adsorbate: not exempt.
+_STEP_OR_CHARGED = re.compile(
+    f"{_STEP_CLAIM.pattern}|"
+    rf"(?s:^(?=.*(?:ΔG|\bdelta ?G\b|free[- ]energ))(?=.*(?:{_CHARGED_SPECIES})))",
     _I,
 )
 _BARRIER = re.compile(r"barrier|activation (free )?energ|transition state|\bEa\b", _I)
@@ -112,6 +141,22 @@ _LIGHT = re.compile(
     r"simulated sunlight|solar[- ](simulator|irradiation)|λ\s*[>≥]",
     _I,
 )
+#: Rate claims whose reaction depends on a sacrificial agent (or its absence).
+_PHOTO_RATE_REACTION = re.compile(
+    r"(H₂|H2|hydrogen)[ -]*(evolution|production|generation)|\bHER\b|"
+    r"nitrate (photo)?reduction|photocatalytic nitrate|NO₃⁻? reduction",
+    _I,
+)
+_SACRIFICIAL = re.compile(
+    r"sacrificial|hole scavenger|overall water[- ]splitting|pure water|ultrapure|"
+    r"without (any )?(sacrificial|scavenger|hole)|methanol|ethanol|isopropanol|TEOA|"
+    r"triethanolamine|ascorbic|lactic acid|formic acid|Na₂S|Na2S",
+    _I,
+)
+_AQY = re.compile(r"\bAQY\b|apparent quantum|quantum (yield|efficiency)", _I)
+_WAVELENGTH = re.compile(r"\d+\s*(-\s*\d+\s*)?nm\b|monochromatic|band-?pass|λ", _I)
+_STH = re.compile(r"\bSTH\b|solar[- ]to[- ]hydrogen", _I)
+_AM15 = re.compile(r"AM ?1\.5|solar simulator|\d+\s*(?-i:mW)|\d+\s*sun|irradiance", _I)
 _COMPUTED = re.compile(
     r"comput|calculat|theoretical|predict|\bDFT\b|simulat|first[- ]principles", _I
 )
@@ -157,6 +202,11 @@ _THERM = re.compile(
 )
 _TEMP = re.compile(
     r"\d+\s*°C|\d+\s*K\b|room temperature|\bRT\b|ambient|temperature window", _I
+)
+_FEED = re.compile(
+    r"\d+\s*ppm|\d+(\.\d+)?\s*(vol|mol)\.?\s*%|\b\w+\s*/\s*NO\w*\s*(=|ratio)|"
+    r"\bratio\b|\d+\s*:\s*\d+",
+    _I,
 )
 _ELEC_CTX = re.compile(r"nitrate|nitrite|NO3RR|NORR|NO₃|NO₂⁻|\*N|electro", _I)
 
@@ -229,6 +279,11 @@ class ConditionProfile:
     trigger: re.Pattern[str]
     groups: tuple[ConditionGroup, ...]
     defaults: tuple[str, ...]
+    #: DOIs of the reporting standards behind the profile (Perplexity-surfaced,
+    #: pending verification, 2026-11-15).
+    sources: tuple[str, ...] = ()
+    #: The profile's finding handle (filled in later).
+    finding: str | None = None
     requires: tuple[re.Pattern[str], ...] = ()
     excludes: tuple[re.Pattern[str], ...] = ()
     exempt_all: tuple[re.Pattern[str], ...] = ()
@@ -283,6 +338,8 @@ PROFILES: tuple[ConditionProfile, ...] = (
         requires=(_DFT, _ELECTRO_STEP),
         groups=(_POTENTIAL_DFT,),
         defaults=("a chemical (non-electrochemical) step needs no potential",),
+        sources=("10.1021/jp047349j",),
+        finding="fi689291",
     ),
     ConditionProfile(
         family="dft-step-thermo",
@@ -290,9 +347,13 @@ PROFILES: tuple[ConditionProfile, ...] = (
         requires=(_DFT,),
         excludes=(_BARRIER,),
         groups=(_POTENTIAL_DFT,),
-        defaults=("adsorption descriptors (ΔG_H*) at U = 0 V",),
+        defaults=(
+            "neutral adsorption descriptors (ΔG_H*, H*, O*, OH*) at the CHE reference state",
+        ),
+        sources=("10.1021/jp047349j",),
+        finding="fi689291",
         exempt_all=(_ADSORPTION,),
-        exempt_unless=_STEP_CLAIM,
+        exempt_unless=_STEP_OR_CHARGED,
     ),
     ConditionProfile(
         family="photo-rate",
@@ -305,8 +366,27 @@ PROFILES: tuple[ConditionProfile, ...] = (
                 _LIGHT,
                 "the light source (lamp or filter, wavelength, power)",
             ),
+            ConditionGroup(
+                "sacrificial",
+                _SACRIFICIAL,
+                "the sacrificial agent, or 'overall water splitting' / 'pure water'",
+                when=_PHOTO_RATE_REACTION,
+            ),
+            ConditionGroup(
+                "wavelength",
+                _WAVELENGTH,
+                "the irradiation wavelength (nm or monochromatic) of the AQY",
+                when=_AQY,
+            ),
+            ConditionGroup(
+                "irradiance",
+                _AM15,
+                "the AM 1.5G spectrum (or solar simulator and irradiance) of the STH",
+                when=_STH,
+            ),
         ),
         defaults=("room temperature",),
+        sources=("10.1021/acs.chemmater.6b02907", "10.1021/acs.jpclett.5b00521"),
         exempt_all=(_COMPUTED, _STH_OR_BANDEDGE),
     ),
     ConditionProfile(
@@ -335,14 +415,33 @@ PROFILES: tuple[ConditionProfile, ...] = (
                 unless=_MEA,
             ),
         ),
-        defaults=("room temperature", "ambient pressure"),
+        defaults=(
+            "room temperature",
+            "ambient pressure",
+            "advisory only, never flagged: 'onset potential' / 'overpotential' "
+            "need their definition (current threshold / equilibrium potential)",
+        ),
+        sources=(
+            "10.1038/s41586-019-1260-x",
+            "10.1021/acsenergylett.3c00470",
+            "10.1021/acscatal.8b01340",
+        ),
+        finding="fi689288",
     ),
     ConditionProfile(
         family="thermal",
         trigger=_THERM,
         excludes=(_EC, _PHOTO, _ELEC_CTX, _DFT),
-        groups=(ConditionGroup("temperature", _TEMP, "the reaction temperature"),),
-        defaults=("ambient pressure",),
+        groups=(
+            ConditionGroup("temperature", _TEMP, "the reaction temperature"),
+            ConditionGroup(
+                "feed",
+                _FEED,
+                "the feed composition (e.g. '350 ppm NO, 2000 ppm H₂' or 'H₂/NO = 5')",
+            ),
+        ),
+        defaults=("ambient pressure", "GHSV: state when it varies"),
+        sources=("10.1021/acscatal.6b00183",),
     ),
 )
 
@@ -361,6 +460,8 @@ def _evaluate(sentence: str) -> tuple[str | None, list[ConditionGap]]:
         if not missing:
             return profile.family, []
         hint = "state " + " and ".join(g.hint for g in missing) + "."
+        if profile.finding:
+            hint += f" Rule: [{profile.finding}]."
         gap = ConditionGap(
             family=profile.family,
             missing=tuple(g.name for g in missing),

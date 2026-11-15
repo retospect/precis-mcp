@@ -227,7 +227,7 @@ def test_thermal_without_temperature_flags() -> None:
     s = "Over Pt/Al₂O₃ in a fixed-bed reactor (GHSV 50000 h⁻¹) NO conversion reaches 95%."
     gap = _only(s)
     assert gap.family == "thermal"
-    assert gap.missing == ("temperature",)
+    assert gap.missing == ("temperature", "feed")  # feed group added 2026-11-15
 
 
 def test_thermal_does_not_fire_in_nitrate_electrochemical_context() -> None:
@@ -360,7 +360,9 @@ def test_iron_is_not_faradaic_efficiency() -> None:
 
 
 def test_light_source_needs_a_lamp_wavelength_or_power() -> None:
-    base = "Photocatalytic H2 evolution reaches a rate of 5 mmol h⁻¹ g⁻¹ {}."
+    base = (
+        "Photocatalytic H2 evolution with methanol reaches a rate of 5 mmol h⁻¹ g⁻¹ {}."
+    )
     for ok in ("under a 300 W Xe lamp", "under 420 nm light", "under AM 1.5 G"):
         assert check_conditions(base.format(ok)) == [], ok
     for bad in (
@@ -379,3 +381,92 @@ def test_electrolyte_molarity_is_case_sensitive() -> None:
     assert check_conditions(base.format(" in 5 mM KCl")) == []
     (gap,) = check_conditions(base.format(" on a 5 mm electrode"))
     assert gap.missing == ("electrolyte",)
+
+
+# ── 2026-11-15 revision against reporting standards ──────────────────────
+
+FI349104 = (
+    "DFT calculations show UV irradiation on the Cu2O-TiO2+x interface "
+    "strengthens *H adsorption (ΔGabs shifting from 0.40 eV to −0.41 eV) and "
+    "NO3− adsorption (ΔGabs shifting from −0.34 eV to −0.64 eV)."
+)
+
+
+def test_charged_adsorption_free_energy_is_not_exempt() -> None:
+    gap = _only(FI349104)
+    assert gap.family == "dft-step-thermo"
+    assert gap.missing == ("potential",)
+    for s in (
+        "DFT gives a nitrate adsorption free energy of -0.5 eV on Cu(111).",
+        "DFT gives ΔG_ads of NO₃⁻ of -0.6 eV on Cu(111).",
+        "DFT gives ΔGads of the anion of -0.2 eV on Au.",
+    ):
+        assert _only(s).family == "dft-step-thermo", s
+    clean = FI349104[:-1] + " at U = 0 V vs RHE (CHE model)."
+    assert check_conditions(clean) == []
+
+
+def test_neutral_adsorption_spellings_stay_exempt() -> None:
+    for s in (
+        "DFT gives ΔGabs of 0.12 eV for *H on MoS2.",
+        "DFT gives ΔG_abs of 0.12 eV for H* on MoS2.",
+        "DFT gives ΔG_ads of 0.12 eV for O* on Pt.",
+        "DFT gives ΔGads of 0.3 eV for OH* on Pt.",
+        "DFT gives an adsorption free energy of 0.3 eV for H* on Pt.",
+    ):
+        assert check_conditions(s) == [], s
+
+
+def test_bare_charged_adsorption_energy_is_left_alone() -> None:
+    s = "DFT gives a nitrate adsorption energy of -2.13 eV on Cu(111)."
+    assert check_conditions(s) == []
+
+
+def test_photo_h2_rate_needs_sacrificial_agent() -> None:
+    s = "Photocatalytic H2 evolution reaches 5 mmol h⁻¹ g⁻¹ under a 300 W Xe lamp."
+    assert _only(s).missing == ("sacrificial",)
+    for ok in ("with 10 vol% methanol", "in pure water", "without sacrificial agent"):
+        assert check_conditions(s[:-1] + f" {ok}.") == [], ok
+    n = "Photocatalytic nitrate reduction reaches 80% conversion under a 300 W Xe lamp."
+    assert _only(n).missing == ("sacrificial",)
+    assert check_conditions(n[:-1] + " with formic acid as hole scavenger.") == []
+
+
+def test_aqy_needs_wavelength_and_sth_needs_am15() -> None:
+    aqy = "The AQY reaches 12% for photocatalytic ammonia production under a 300 W Xe lamp."
+    assert _only(aqy).missing == ("wavelength",)
+    assert check_conditions(aqy[:-1] + " at 420 nm.") == []
+    sth = "The photocatalyst reaches an STH of 1.2% under a 300 W Xe lamp."
+    assert _only(sth).missing == ("irradiance",)
+    assert (
+        check_conditions("The photocatalyst reaches an STH of 1.2% under AM 1.5G.")
+        == []
+    )
+
+
+def test_thermal_needs_feed_composition() -> None:
+    s = "Over Pt/Al₂O₃ in a fixed-bed reactor at 350 °C NO conversion reaches 95%."
+    assert _only(s).missing == ("feed",)
+    assert check_conditions(s[:-1] + " with 350 ppm NO and 2000 ppm H₂.") == []
+    assert check_conditions(s[:-1] + " (H₂/NO = 5).") == []
+
+
+def test_profiles_carry_sources_and_finding_slot() -> None:
+    by = {p.family: p for p in PROFILES}
+    assert "10.1021/jp047349j" in by["dft-step-thermo"].sources
+    assert "10.1021/acscatal.6b00183" in by["thermal"].sources
+    assert len(by["ec-measurement"].sources) == 3
+    assert all(p.sources for p in PROFILES)
+    assert by["ec-measurement"].finding == "fi689288"
+    assert by["dft-step-thermo"].finding == by["dft-barrier"].finding == "fi689291"
+    # photo-rate / thermal: their standards have no full text yet (2026-11-15).
+    assert by["photo-rate"].finding is None and by["thermal"].finding is None
+    gap = check_conditions(FI679690)[0]
+    assert gap.hint.endswith("Rule: [fi689291].")
+    assert any("onset potential" in d for d in by["ec-measurement"].defaults)
+    assert (
+        check_conditions(
+            "The onset potential is -0.2 V vs RHE and Faradaic efficiency 90% in 0.1 M KOH."
+        )
+        == []
+    )

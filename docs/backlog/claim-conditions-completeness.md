@@ -164,3 +164,26 @@ rewrites each marked bullet from the corrected hub sentence.
 - dr348633's flagged hubs are refined or superseded, and its hygiene shows
   no `conditions-incomplete` bullets other than the ones marked "not
   reported".
+
+## Status (2026-11-15)
+
+- Shipped (e516233b8): lint, extraction rule, draft hygiene and export
+  advisory, `conditions-report`, `conditions-sweep`.
+- Profiles revised against a Perplexity check of the reporting standards
+  (perplexity-reasoning:689040, :689011). The main correction: a free
+  energy of a charged adsorbate (NO₃⁻, NO₂⁻) depends on the potential and
+  is not exempt; neutral ΔG_H* at the CHE reference state stays exempt.
+  Photocatalytic rates must name the sacrificial agent, AQY the
+  wavelength, measured STH the AM 1.5G spectrum; thermal claims the feed.
+- Standards papers, verified against their DOIs: pa5097 (Andersen 2019),
+  pa81 (Nørskov 2004), pa689132 (ACS guidelines 2023) and pa689130
+  (Clark 2018) have full text. pa689135, pa689139 (Qureshi and Takanabe),
+  pa689146 (Kisch and Bahnemann) and pa689156 (Chen 2010) have no open
+  copy. pa689161 (Bligaard 2016) is still being chunked. Six records have
+  no authors (gr689211).
+- Profile findings, candidates pending Reto's sign-off: fi689288
+  (ec-measurement, from the ACS guidelines) and fi689291 (DFT, from the
+  CHE paper). The lint hint cites them. Photo-rate and thermal get theirs
+  once their standards have full text; that needs a PDF in the papers inbox.
+- The first prod dry run lost 4 of 5 replies to an unparsed fallback answer.
+  `propose_conditions` now extracts the JSON object from the reply text.

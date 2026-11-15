@@ -16,6 +16,7 @@ import pytest
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.conditions import check_conditions
 from precis.taproot.conditions_repair import (
+    ConditionsCandidate,
     run_conditions_sweep,
     select_conditions_cohort,
 )
@@ -464,3 +465,27 @@ def test_title_round_trip_error_is_apply_failed(store: Any, monkeypatch: Any) ->
     summary = run_conditions_sweep(store, apply=True, propose_fn=_add())
     assert summary["counts"] == {"apply-failed": 1}
     assert _title(store, hub) == OLD
+
+
+def test_proposal_parses_json_from_prose_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fallback rung that answers in a fenced block (no ``data``) still
+    yields the proposal; prose with no object yields None (2026-11-15 prod
+    dry run: 4 of 5 replies came back unparsed)."""
+    from types import SimpleNamespace
+
+    from precis.taproot import conditions_repair
+
+    cand = ConditionsCandidate(
+        hub_ref_id=1, sentence=OLD, scope={}, gap=check_conditions(OLD)[0]
+    )
+    reply = SimpleNamespace(
+        error=None,
+        data=None,
+        text='Here you go:\n```json\n{"verdict": "ambiguous", "reason": "x"}\n```',
+        stop_reason="end_turn",
+    )
+    monkeypatch.setattr(conditions_repair, "route", lambda req: reply)
+    got = conditions_repair.propose_conditions(cand, "paper")
+    assert got == {"verdict": "ambiguous", "reason": "x"}
+    reply.text = "I cannot tell."
+    assert conditions_repair.propose_conditions(cand, "paper") is None
