@@ -42,10 +42,13 @@ runs the same follow-up rungs as ``rowkw`` (it is :func:`_open_and_follow`
 with ``scoring=False``). ``rowkw`` minus ``rank-order`` is what the row
 keywords buy.
 
-``oracle`` is the ceiling for a page: when any hit on the page overlaps
-the gold it opens the first such hit ``verbatim`` (one get) and stops;
-when none does it opens nothing. It reads the gold by design and is
-labelled an upper bound wherever it is reported.
+``oracle`` is the ceiling for a page: when the search page itself
+renders the gold it stops there like every other caller (zero gets,
+found at the search's token count); when a hit on the page overlaps
+the gold and the page did not render it, it opens the first such hit
+``verbatim`` (one get) and stops; when none does it opens nothing.
+It reads the gold by design and is labelled an upper bound wherever
+it is reported.
 
 ``ladder`` (kept for comparison) climbs the whole extent ladder :data:`LADDER`
 (``kwd`` -> ``summary`` -> ``verbatim`` -> ``fisheye`` -> ``+recall``) on each of
@@ -101,12 +104,33 @@ Censoring: a task whose gold was not rendered within the budget has
 ``tokens_to_first_gold = budget`` and ``censored = true`` (``stop`` says why:
 ``budget`` or ``exhausted``). Unanswerable tasks have no gold; they run the
 whole sequence and record tokens spent only (``abstention = true``).
+
+Cost model and primary metric
+-----------------------------
+:func:`cost_to_gold` prices a found row at report time — a results file
+can be re-read under another C without a re-run: the row's
+``tokens_to_first_gold`` plus ``C`` per call up to and including the one
+that rendered the gold (counted from ``call_log`` when the row carries
+one, else the row's ``calls``). :data:`COST_PER_CALL` (100) is the
+headline C, a stated assumption standing in for per-call input overhead
+until the LLM tier measures it; :data:`COST_SENSITIVITY` (0, 500)
+brackets it in the report. The primary metric is *found within budget
+under C*: ``found`` and ``cost_to_gold(C) <= budget``. The report
+compares each arm against a baseline arm (``report --baseline``,
+default ``all-on``) paired per answerable task — both, arm only,
+baseline only, neither, the net, and an exact two-sided sign test over
+the discordant pairs — then a recall-versus-cost table at
+:data:`RECALL_COST_STEPS` plus the budget. Rows of different sources or
+scope modes are never pooled into one headline number; the median
+tokens column stays but is descriptive only, over the tasks that
+reached the gold.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -166,6 +190,16 @@ PRODUCT_PAGE = 20
 #: Report bins for the first gold rank (``_gold_rank_table``); a
 #: ``gold_rank_100`` of ``None`` is "beyond 100".
 GOLD_RANK_BINS = ((1, 10), (11, 20), (21, 50), (51, 100))
+
+#: Headline C of the cost model ``cost = output tokens + C x calls``
+#: (td664442): a stated assumption standing in for per-call input
+#: overhead until the LLM tier measures it.
+COST_PER_CALL = 100
+#: The compact sensitivity table's C values bracketing
+#: :data:`COST_PER_CALL`.
+COST_SENSITIVITY = (0, 500)
+#: The recall-versus-cost table's x steps; the run's budget is appended.
+RECALL_COST_STEPS = (500, 1000, 2000, 4000, 8000)
 
 CALLERS = ("triage", "rowkw", "rank-order", "oracle", "ladder")
 DEFAULT_CALLER = "triage"
@@ -741,9 +775,11 @@ def run_scripted(
     recall = _recall_at(task, hits, catalog)
     found_at: float | None = None
     stop = "exhausted"
-    # ``oracle`` has its own policy (one verbatim get on the first gold
-    # hit), so a search page that already renders the gold does not end it.
-    if caller != "oracle" and task.has_gold and rendered_gold(task, body, catalog):
+    # Every caller, ``oracle`` included, takes the early stop: a search
+    # page that already renders the gold needs no get (td664442 — under
+    # the cost model a spent get would price the "upper bound" above a
+    # caller that stopped at the page).
+    if task.has_gold and rendered_gold(task, body, catalog):
         found_at = s.tokens
     if found_at is None:
         if caller == "ladder":
@@ -970,10 +1006,12 @@ def _oracle(
     catalog: Catalog,
     hits: Sequence[str],
 ) -> float | None:
-    """The ``oracle`` caller — the page's ceiling. It reads the gold: when
-    a hit overlaps a gold item it opens the first such hit ``verbatim``
-    (one get) and stops; with no gold hit on the page it opens nothing.
-    An upper bound wherever it is reported, never a policy."""
+    """The ``oracle`` caller — the page's ceiling. It reads the gold:
+    reached here only when the search page did not render it (the early
+    stop in :func:`run_scripted` covers that case for every caller), it
+    opens the first hit overlapping a gold item ``verbatim`` — one get —
+    and stops; with no gold hit on the page it opens nothing. An upper
+    bound wherever it is reported, never a policy."""
     for handle, items in zip(hits, _hit_gold_items(task, hits, catalog), strict=True):
         if not items:
             continue
@@ -1382,7 +1420,8 @@ def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> lis
     lines = [
         f"### {title}",
         "",
-        "| arm | n | recall@5 | median tok→gold (reached) | censored | mean calls "
+        "| arm | n | recall@5 | median tok→gold (descriptive: reached only) | "
+        "censored | mean calls "
         "| mean opens | refusals | Δ recall@5 | Δ median tok | flags |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
@@ -1517,9 +1556,271 @@ def _gold_rank_block(results: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def report_markdown(results: Mapping[str, Any]) -> str:
+# ---------------------------------------------------------------------------
+# cost model and the found-within-budget primary metric (td664442)
+# ---------------------------------------------------------------------------
+
+
+def _calls_to_first_gold(row: Mapping[str, Any]) -> int:
+    """Calls up to and including the one that rendered the gold: from
+    ``call_log`` when the row carries one (the first entry whose
+    cumulative tokens reach ``tokens_to_first_gold``), else the row's
+    ``calls`` — a caller stops at the gold, so on a found row they are
+    the same count."""
+    log = row.get("call_log") or ()
+    first = row.get("tokens_to_first_gold")
+    if not log or first is None:
+        return int(row.get("calls") or 0)
+    acc = 0.0
+    for n, entry in enumerate(log, 1):
+        acc += float(entry.get("tokens") or 0.0)
+        if acc >= float(first):
+            return n
+    return len(log)
+
+
+def cost_to_gold(
+    row: Mapping[str, Any], *, per_call: float = COST_PER_CALL
+) -> float | None:
+    """``cost = tokens + per_call x calls`` on one row, priced at report
+    time: for a found row, ``tokens_to_first_gold`` plus ``per_call``
+    times the calls up to and including the one that rendered the gold.
+    ``None`` when the row did not reach the gold — a censored row has no
+    cost to first gold and fails every budget."""
+    if not row.get("found"):
+        return None
+    return float(row["tokens_to_first_gold"]) + per_call * _calls_to_first_gold(row)
+
+
+def found_within_budget(
+    row: Mapping[str, Any], budget: float, *, per_call: float = COST_PER_CALL
+) -> bool:
+    """The primary metric on one row: found, at a cost under ``per_call``
+    of at most ``budget``."""
+    cost = cost_to_gold(row, per_call=per_call)
+    return cost is not None and cost <= budget
+
+
+def _sign_test_p(arm_only: int, baseline_only: int) -> float | None:
+    """Exact two-sided sign test over the discordant pairs: under a fair
+    coin, the probability of a split at least as lopsided as
+    ``arm_only`` vs ``baseline_only``. ``None`` with no discordant pairs."""
+    n = arm_only + baseline_only
+    if n == 0:
+        return None
+    k = min(arm_only, baseline_only)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2**n
+    return min(1.0, 2 * tail)
+
+
+def _row_group(row: Mapping[str, Any]) -> tuple[Any, Any]:
+    """The headline grouping: ``(source, scope)``. Rows of different
+    sources or scope modes are never pooled into one headline number —
+    the scope factor is a later slice, so a ``scope``/``scope_mode``
+    column is grouped on when a row carries it and is ``None`` on
+    today's rows."""
+    return (row.get("source"), row.get("scope_mode", row.get("scope")))
+
+
+def _group_label(group: tuple[Any, Any]) -> str:
+    source, scope = group
+    label = f"{source} tasks" if source else "unknown-source tasks"
+    return label if scope is None else f"{label} · scope {scope}"
+
+
+def _answerable_by_group_and_arm(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[tuple[Any, Any], dict[str, dict[str, Mapping[str, Any]]]]:
+    """Answerable, applicable rows as ``{group: {arm: {task: row}}}``,
+    first-seen order throughout — the headline tables' row set."""
+    groups: dict[tuple[Any, Any], dict[str, dict[str, Mapping[str, Any]]]] = {}
+    for r in rows:
+        if r["abstention"] or not r.get("applicable", True):
+            continue
+        groups.setdefault(_row_group(r), {}).setdefault(r["arm"], {})[r["task"]] = r
+    return groups
+
+
+def _arms_in_order(
+    arms_rows: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> list[str]:
+    return arm_order(r for a in arms_rows.values() for r in a.values())
+
+
+def paired_within_budget(
+    arm_rows: Mapping[str, Mapping[str, Any]],
+    baseline_rows: Mapping[str, Mapping[str, Any]],
+    *,
+    budget: float,
+    per_call: float = COST_PER_CALL,
+) -> dict[str, Any]:
+    """The paired comparison of one arm against the baseline over the
+    tasks both ran: counts both / arm only / baseline only / neither
+    found within ``budget`` under ``per_call``, the net (arm only minus
+    baseline only), an exact two-sided sign test over the discordant
+    pairs, and the count of tasks one arm ran and the other did not —
+    listed, never dropped silently."""
+    common = set(arm_rows) & set(baseline_rows)
+    out: dict[str, Any] = {
+        "paired": len(common),
+        "both": 0,
+        "arm_only": 0,
+        "baseline_only": 0,
+        "neither": 0,
+        "missing": len(set(arm_rows) ^ set(baseline_rows)),
+    }
+    for t in common:
+        a = found_within_budget(arm_rows[t], budget, per_call=per_call)
+        b = found_within_budget(baseline_rows[t], budget, per_call=per_call)
+        if a and b:
+            out["both"] += 1
+        elif a:
+            out["arm_only"] += 1
+        elif b:
+            out["baseline_only"] += 1
+        else:
+            out["neither"] += 1
+    out["net"] = out["arm_only"] - out["baseline_only"]
+    out["sign_p"] = _sign_test_p(out["arm_only"], out["baseline_only"])
+    return out
+
+
+def _paired_table(
+    arms_rows: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    group: tuple[Any, Any],
+    *,
+    baseline: str,
+    per_call: float,
+    budget: float,
+) -> list[str]:
+    """The primary-metric table for one headline group: each arm against
+    ``baseline`` under ``cost = tokens + per_call x calls``."""
+    base = arms_rows.get(baseline, {})
+    lines = [
+        f"### Found within budget — {_group_label(group)} "
+        f"(primary; cost = tokens + {per_call:g} × calls; vs `{baseline}`)",
+        "",
+        f"| arm | paired | both | arm only | {baseline} only | neither | net | "
+        "sign p | missing |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for arm in _arms_in_order(arms_rows):
+        p = paired_within_budget(arms_rows[arm], base, budget=budget, per_call=per_call)
+        name = f"{arm} (baseline)" if arm == baseline else arm
+        lines.append(
+            f"| {name} | {p['paired']} | {p['both']} | {p['arm_only']} | "
+            f"{p['baseline_only']} | {p['neither']} | {p['net']:+d} | "
+            f"{_fmt(p['sign_p'])} | {p['missing']} |"
+        )
+    if not base:
+        lines += [
+            "",
+            f"baseline `{baseline}` ran no tasks in this group — every "
+            "task counts as missing.",
+        ]
+    return lines
+
+
+def _recall_cost_table(
+    arms_rows: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    group: tuple[Any, Any],
+    *,
+    per_call: float,
+    budget: float,
+) -> list[str]:
+    """The secondary table for one headline group: per arm, the share of
+    answerable tasks found with ``cost_to_gold(per_call) <= x`` at each
+    of :data:`RECALL_COST_STEPS` and the run's budget."""
+    steps = sorted({*RECALL_COST_STEPS, budget})
+    lines = [
+        f"### Recall vs cost — {_group_label(group)} "
+        f"(share of answerable found with cost ≤ x; C = {per_call:g})",
+        "",
+        "| arm | n | " + " | ".join(f"≤{s:g}" for s in steps) + " |",
+        "|---|---:|" + "---:|" * len(steps),
+    ]
+    for arm in _arms_in_order(arms_rows):
+        sel = list(arms_rows[arm].values())
+        shares = [
+            sum(
+                1
+                for r in sel
+                if (cost := cost_to_gold(r, per_call=per_call)) is not None
+                and cost <= s
+            )
+            / len(sel)
+            for s in steps
+        ]
+        lines.append(
+            f"| {arm} | {len(sel)} | " + " | ".join(_fmt(x) for x in shares) + " |"
+        )
+    return lines
+
+
+def _sensitivity_table(
+    arms_rows: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    group: tuple[Any, Any],
+    *,
+    baseline: str,
+    budget: float,
+) -> list[str]:
+    """The compact sensitivity read: per arm, the share found within
+    budget and the paired net vs ``baseline`` at each
+    :data:`COST_SENSITIVITY` C."""
+    base = arms_rows.get(baseline, {})
+    cs = " and ".join(f"C = {c:g}" for c in COST_SENSITIVITY)
+    lines = [
+        f"### Sensitivity — {_group_label(group)} (found within budget; {cs})",
+        "",
+        "| arm | n |"
+        + "".join(f" C={c:g} found | C={c:g} net |" for c in COST_SENSITIVITY),
+        "|---|---:|" + "---:|" * (2 * len(COST_SENSITIVITY)),
+    ]
+    for arm in _arms_in_order(arms_rows):
+        sel = list(arms_rows[arm].values())
+        cells = []
+        for c in COST_SENSITIVITY:
+            share = sum(
+                1 for r in sel if found_within_budget(r, budget, per_call=c)
+            ) / len(sel)
+            net = paired_within_budget(arms_rows[arm], base, budget=budget, per_call=c)[
+                "net"
+            ]
+            cells.append(f" {_fmt(share)} | {net:+d} |")
+        lines.append(f"| {arm} | {len(sel)} |" + "".join(cells))
+    return lines
+
+
+def _cost_block(results: Mapping[str, Any], *, baseline: str) -> list[str]:
+    """The report's cost-model sections: per headline group (source —
+    and scope, when a row carries one — never pooled), the paired
+    found-within-budget table against ``baseline`` at
+    :data:`COST_PER_CALL`, the recall-versus-cost table, and the compact
+    sensitivity table at :data:`COST_SENSITIVITY`."""
+    groups = _answerable_by_group_and_arm(results["rows"])
+    if not groups:
+        return []
+    budget = float(results["header"].get("token_budget") or TOKEN_BUDGET)
+    out: list[str] = []
+    for group, arms_rows in groups.items():
+        out += [""] + _paired_table(
+            arms_rows, group, baseline=baseline, per_call=COST_PER_CALL,
+            budget=budget,
+        )  # fmt: skip
+        out += [""] + _recall_cost_table(
+            arms_rows, group, per_call=COST_PER_CALL, budget=budget
+        )
+        out += [""] + _sensitivity_table(
+            arms_rows, group, baseline=baseline, budget=budget
+        )
+    return out
+
+
+def report_markdown(results: Mapping[str, Any], *, baseline: str = "all-on") -> str:
     """The markdown report: header summary, the per-arm table (all answerable
-    tasks, then per source) and the abstention table."""
+    tasks, then per source), the cost-model tables (paired
+    found-within-budget against ``baseline``, recall vs cost, sensitivity),
+    the abstention table and the first-gold-rank block."""
     h = results["header"]
     cov = h.get("layer_coverage", {})
     emb = h.get("embedder", {})
@@ -1547,6 +1848,11 @@ def report_markdown(results: Mapping[str, Any]) -> str:
         f"`{str(h.get('tasks_sha256', ''))[:16]}…` · planted seed {h.get('planted', {}).get('seed')}",
         f"- embedder {emb.get('name')} ({'meaningful' if emb.get('meaningful') else 'hash, not meaningful'}) "
         f"· token estimator: {h.get('token_estimator')} · budget {h.get('token_budget')}",
+        f"- cost model: cost = tokens + {COST_PER_CALL} × calls to first gold — "
+        f"{COST_PER_CALL} is a stated assumption standing in for per-call "
+        "input overhead until the LLM tier measures it (sensitivity at C = "
+        + ", ".join(str(c) for c in COST_SENSITIVITY)
+        + f"); primary metric: found within budget, vs baseline `{baseline}`",
         f"- coverage: keywords {_fmt(cov.get('chunks_with_keywords_frac'))} · llm summaries "
         f"{_fmt(cov.get('chunks_with_llm_summary_frac'))} · embeddings "
         f"{_fmt(cov.get('chunks_with_embedding_frac'))} · categorizer tags "
@@ -1567,6 +1873,7 @@ def report_markdown(results: Mapping[str, Any]) -> str:
     for src in ("qasper", "planted"):
         if any(r["source"] == src and not r["abstention"] for r in results["rows"]):
             out += [""] + _table(results, source=src, title=f"{src} tasks only")
+    out += _cost_block(results, baseline=baseline)
     if any(r["abstention"] for r in results["rows"]):
         out += [""] + _abstention_table(results)
     gold_block = _gold_rank_block(results)
@@ -1602,7 +1909,7 @@ def compare_markdown(runs: Sequence[Mapping[str, Any]]) -> str:
     ):
         present = arm_order(row for r in runs for row in r["rows"])
         head = "| arm |" + "".join(
-            f" {n}: recall@5 | median tok | cens. | calls | opens | refus. |"
+            f" {n}: recall@5 | median tok (reached) | cens. | calls | opens | refus. |"
             for n in names
         )
         sep = "|---|" + "---:|" * (6 * len(names))

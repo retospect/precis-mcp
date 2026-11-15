@@ -153,13 +153,34 @@ re-chunking unchanged.
 ## Report
 
 `scripts/bench report` prints, per arm over the answerable tasks: `n`, mean
-`recall@5`, the **median tokens to first gold over the tasks that reached it**
-(a censored task carries the budget in the file; averaging it in would make the
-median the budget whenever over half are censored), the `censored` count, mean
-`calls`, `refusals`, and the deltas against `all-on`. A delta between arms with
+`recall@5`, the median tokens to first gold **over the tasks that reached it**
+(a descriptive column: a censored task carries the budget in the file, and
+averaging it in would make the median the budget whenever over half are
+censored), the `censored` count, mean `calls`, `refusals`, and the deltas
+against `all-on`. A delta between arms with
 different `censored` counts compares different task subsets; read the two
-columns together. Tables follow for the QASPER and planted tasks separately,
-then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
+columns together. Tables follow for the QASPER and planted tasks separately.
+
+The **primary metric** is *found within budget under a cost model*:
+`cost = tokens_to_first_gold + C × calls`, where the calls counted are
+those up to and including the one that rendered the gold (counted from the
+row's `call_log`; a row without one uses its `calls`). The cost is computed
+at report time, so a results file can be re-read under another C without a
+re-run. The headline is `C = 100` (`runner.COST_PER_CALL`), a stated
+assumption standing in for per-call input overhead until the LLM tier
+measures it; a compact sensitivity table reports `C = 0` and `C = 500`
+(`runner.COST_SENSITIVITY`). For each arm against a baseline arm
+(`report --baseline`, default `all-on`) the report prints, paired per
+answerable task: both found within budget, arm only, baseline only,
+neither, the net (arm only minus baseline only), an exact two-sided sign
+test over the discordant pairs, and the count of tasks one arm ran and
+the other did not (listed, never dropped silently). A recall-versus-cost
+table follows: per arm, the share of answerable tasks found with
+`cost ≤ x` for x in 500/1000/2000/4000/8000 and the budget. Every
+headline table is per source group — rows of different sources (or scope
+modes, when a row carries one) are never pooled into one number.
+
+Then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
 flagged `VACUOUS` and its delta is not a layer effect. Runs at schema 6+
 add a 'first gold rank' table per arm and per source: counts of answerable
 tasks whose `gold_rank_100` falls in 1-10 / 11-20 / 21-50 / 51-100 /
@@ -260,11 +281,14 @@ with no scoring and no cut, at most 5 opens, then the same `fisheye` /
 `+recall` follow-up rungs. `rowkw` minus `rank-order` is what the row
 keywords buy.
 
-`oracle` is the page's ceiling: when a hit overlaps the gold it opens the
-first such hit `verbatim` (one get) and stops; when none does it opens
-nothing. It reads the gold by design and is labelled an upper bound
-wherever it is reported (`header.caller.upper_bound`) — a ceiling for what
-any picking policy can do on that page, never a policy itself.
+`oracle` is the page's ceiling: like every caller it stops when the search
+page itself renders the gold (zero gets, found at the search's token
+count); when a hit on the page overlaps the gold and the page did not
+render it, it opens the first such hit `verbatim` (one get) and stops;
+when none does it opens nothing. It reads the gold by design and is
+labelled an upper bound wherever it is reported
+(`header.caller.upper_bound`) — a ceiling for what any picking policy can
+do on that page, never a policy itself.
 
 `no-cheap-rungs` is the honest cost of having neither cheap rung: under `triage`
 there is no cheap read and the hits are opened in search rank order.

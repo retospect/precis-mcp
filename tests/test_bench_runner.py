@@ -2130,7 +2130,11 @@ def test_oracle_is_labelled_an_upper_bound_wherever_it_is_reported():
     assert "oracle (upper bound)" in runner.compare_markdown([res])
 
 
-def test_oracle_still_opens_the_gold_hit_when_the_search_page_renders_it():
+def test_oracle_takes_the_early_stop_when_the_search_page_renders_the_gold():
+    """td664442: oracle stops at the search page like every other caller —
+    under the cost model a spent get would price the "upper bound" above a
+    caller that stopped at the page."""
+
     class _Rendering(_PagedStubRuntime):
         def dispatch_with_status(self, verb, args, fold=True):
             if verb == "search":
@@ -2141,8 +2145,24 @@ def test_oracle_still_opens_the_gold_hit_when_the_search_page_renders_it():
     row = runner.run_scripted(
         rt, _RankCatalog({3}), _stub_task(), "all-on", caller="oracle"
     )
-    assert rt.log == [("pc3", "verbatim")] and row["verbatim_opens"] == 1
+    assert rt.log == [] and row["verbatim_opens"] == 0
     assert row["found"] is True and row["gold_rank_page"] == 1
+    assert row["calls"] == 1  # the search alone
+    # the early stop costs oracle what it costs any caller that stopped at
+    # the page: identical tokens and calls to a triage row on this task
+    tri = runner.run_scripted(
+        _Rendering(["pc3"], ["pc3"], {}),
+        _RankCatalog({3}),
+        _stub_task(),
+        "all-on",
+        caller="triage",
+        threshold=0.0,
+    )
+    assert (row["tokens_total"], row["calls"], row["found"]) == (
+        tri["tokens_total"],
+        tri["calls"],
+        tri["found"],
+    )
 
 
 def test_oracle_upper_bound_label_reaches_figure_raw_and_index(tmp_path: Path):
@@ -2161,3 +2181,176 @@ def test_oracle_upper_bound_label_reaches_figure_raw_and_index(tmp_path: Path):
     p.write_text(json.dumps(res), encoding="utf-8")
     lines = raw.index_lines(tmp_path)
     assert any("(upper bound)" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# the cost model and the found-within-budget primary metric (td664442)
+# ---------------------------------------------------------------------------
+
+
+def _clog(*tokens: float) -> list[dict[str, Any]]:
+    """A ``call_log`` of ``len(tokens)`` calls with those token counts."""
+    return [
+        {
+            "n": i,
+            "verb": "get",
+            "what": f"pc{i} verbatim",
+            "tokens": t,
+            "refusal": False,
+        }
+        for i, t in enumerate(tokens, 1)
+    ]
+
+
+def _cost(task: str, arm: str, found: bool, **kw: Any) -> dict[str, Any]:
+    """An answerable row: found at ``tokens`` in ``calls`` calls, or
+    censored at the 12000 budget."""
+    return _row(
+        task,
+        arm,
+        "s",
+        found=found,
+        censored=not found,
+        tokens_to_first_gold=kw.pop("tokens", 500.0) if found else 12000.0,
+        calls=kw.pop("calls", 2),
+        **kw,
+    )
+
+
+def test_cost_to_gold_is_tokens_plus_c_per_call_up_to_the_gold_call():
+    row = _cost(
+        "t1", "all-on", True, tokens=80.0, calls=3, call_log=_clog(50.0, 30.0, 20.0)
+    )
+    # the log prices only up to the call that rendered the gold: 50 + 30 = 80,
+    # so call 3 is not counted even though the row spent it
+    assert runner.cost_to_gold(row, per_call=0) == 80.0
+    assert runner.cost_to_gold(row, per_call=100) == 280.0
+    assert runner.cost_to_gold(row, per_call=500) == 1080.0
+    assert runner.cost_to_gold(row) == 280.0  # the default C is the headline 100
+    assert runner.COST_PER_CALL == 100 and runner.COST_SENSITIVITY == (0, 500)
+    # a row without call_log prices the row's own calls field
+    nolog = _cost("t1", "all-on", True, tokens=80.0, calls=3)
+    assert runner.cost_to_gold(nolog, per_call=100) == 380.0
+    # a row that did not reach the gold has no cost to first gold
+    missed = _cost("t1", "all-on", False, calls=9, call_log=_clog(*[100.0] * 9))
+    assert runner.cost_to_gold(missed) is None
+    assert runner.cost_to_gold(missed, per_call=0) is None
+
+
+def test_found_within_budget_prices_the_calls_into_the_budget():
+    # found at 11,900 tokens in 3 calls: inside a 12,000 budget at C = 0,
+    # outside it at C = 100 (11,900 + 300 = 12,200)
+    row = _cost(
+        "t1",
+        "all-on",
+        True,
+        tokens=11900.0,
+        calls=3,
+        call_log=_clog(4000.0, 4000.0, 3900.0),
+    )
+    assert runner.found_within_budget(row, 12000, per_call=0) is True
+    assert runner.found_within_budget(row, 12000, per_call=100) is False
+    nolog = _cost("t1", "all-on", True, tokens=11900.0, calls=3)
+    assert runner.found_within_budget(nolog, 12000, per_call=0) is True
+    assert runner.found_within_budget(nolog, 12000, per_call=100) is False
+    # a censored row is outside every budget, even at C = 0
+    missed = _cost("t1", "all-on", False)
+    assert runner.found_within_budget(missed, 12000, per_call=0) is False
+
+
+def test_paired_within_budget_and_sign_test_on_a_hand_checked_example():
+    rows = [
+        # both found within budget: t1, t2
+        _cost("t1", "all-on", True),
+        _cost("t1", "no-kwd", True),
+        _cost("t2", "all-on", True),
+        _cost("t2", "no-kwd", True),
+        # arm only: t3-t6 (all-on missed them)
+        *(_cost(f"t{i}", "no-kwd", True) for i in range(3, 7)),
+        *(_cost(f"t{i}", "all-on", False) for i in range(3, 7)),
+        # baseline only: t7
+        _cost("t7", "all-on", True),
+        _cost("t7", "no-kwd", False),
+        # neither: t8
+        _cost("t8", "all-on", False),
+        _cost("t8", "no-kwd", False),
+        # missing: t9 only the arm ran, t10 only the baseline ran
+        _cost("t9", "no-kwd", True),
+        _cost("t10", "all-on", True),
+    ]
+    arms = runner._answerable_by_group_and_arm(rows)[("qasper", None)]
+    p = runner.paired_within_budget(
+        arms["no-kwd"], arms["all-on"], budget=12000, per_call=100
+    )
+    assert (p["paired"], p["missing"]) == (8, 2)
+    assert (p["both"], p["arm_only"], p["baseline_only"], p["neither"]) == (2, 4, 1, 1)
+    assert p["net"] == 3
+    # 5 discordant pairs, k = 1: 2 * (C(5,0) + C(5,1)) / 2^5 = 12/32
+    assert p["sign_p"] == pytest.approx(0.375)
+    assert runner._sign_test_p(0, 0) is None
+    assert runner._sign_test_p(5, 0) == pytest.approx(2 / 32)
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert "### Found within budget — qasper tasks" in md
+    assert "cost = tokens + 100 × calls" in md and "vs `all-on`" in md
+    assert "| no-kwd | 8 | 2 | 4 | 1 | 1 | +3 | 0.375 | 2 |" in md
+    # the baseline against itself: all 9 of its tasks pair, the 4 found
+    # count as both, t9 is not missing (it never ran it)
+    assert "| all-on (baseline) | 9 | 4 | 0 | 0 | 5 | +0 | — | 0 |" in md
+
+
+def test_recall_cost_and_sensitivity_tables_per_arm():
+    rows = [
+        _cost("t1", "all-on", True, tokens=400.0, calls=1),
+        _cost("t2", "all-on", True, tokens=3000.0, calls=2),
+        _cost("t3", "all-on", False),
+        _cost("t1", "no-kwd", True, tokens=900.0, calls=2),
+        _cost("t2", "no-kwd", False),
+        _cost("t3", "no-kwd", True, tokens=9000.0, calls=3),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert "### Recall vs cost — qasper tasks" in md
+    # all-on: t1 costs 500 (≤500..≤2000), t2 costs 3200 (≤4000 up), t3 censored
+    assert "| all-on | 3 | 0.333 | 0.333 | 0.333 | 0.667 | 0.667 | 0.667 |" in md
+    # no-kwd: t1 costs 1100 (≤2000 up), t3 costs 9300 (≤12000), t2 censored
+    assert "| no-kwd | 3 | 0.000 | 0.000 | 0.333 | 0.333 | 0.333 | 0.667 |" in md
+    assert "### Sensitivity — qasper tasks" in md
+    # at C=0 all-on finds 2/3 within budget (all its found rows cost <= 12000);
+    # at C=500 the 3200-cost row still fits; the net vs itself is 0
+    assert "| all-on | 3 | 0.667 | +0 | 0.667 | +0 |" in md
+
+
+def test_headline_tables_never_pool_sources_or_scopes():
+    rows = [
+        _cost("t1", "all-on", True, source="qasper"),
+        _cost("t2", "all-on", True, source="planted"),
+        _cost("t3", "all-on", True, source="qasper", scope="chapter"),
+        _cost("t1", "no-kwd", True, source="qasper"),
+        _cost("t2", "no-kwd", False, source="planted"),
+        _cost("t3", "no-kwd", True, source="qasper", scope="chapter"),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert md.count("### Found within budget") == 3
+    assert "### Found within budget — qasper tasks" in md
+    assert "### Found within budget — planted tasks" in md
+    assert "### Found within budget — qasper tasks · scope chapter" in md
+    # a baseline with no rows in the group still reports: every task is missing
+    rows2 = [_cost("t1", "no-kwd", True)]
+    md2 = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows2},
+        baseline="all-on",
+    )
+    assert "| no-kwd | 0 | 0 | 0 | 0 | 0 | +0 | — | 1 |" in md2
+    assert "ran no tasks in this group" in md2
+    # a named baseline compares against it instead
+    rows3 = rows2 + [_cost("t1", "all-on", True), _cost("t1", "rowkw", False)]
+    md3 = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows3},
+        baseline="rowkw",
+    )
+    assert "vs `rowkw`" in md3 and "rowkw only" in md3
