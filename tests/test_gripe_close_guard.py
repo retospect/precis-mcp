@@ -1,5 +1,7 @@
 """Closing a gripe: STATUS:done/wontfix needs a newest ``resolved:`` comment."""
 
+from importlib import resources
+
 import pytest
 
 from precis.dispatch import Hub
@@ -459,6 +461,66 @@ def test_refusal_next_echoes_reason_text(hub: Hub) -> None:
     nxt = str(ei.value.next)
     assert "dup of gr7" in nxt
     assert f"put(kind='gripe', id={gid}, text='resolved: dup of gr7')" in nxt
+
+
+def test_tag_reason_resolved_drift_refusal_stays_typed(hub: Hub) -> None:
+    """Review td681406 (gr635292): the one-call close wraps the tag tail
+    in a new ``store.atomic()``, so the deferred 0176 trigger fires at
+    that scope's commit edge — ``_translate_status_check`` must sit
+    outermost or the off-vocabulary refusal escapes raw (CheckViolation
+    → Internal). Drift simulated the same way as
+    test_gripe_status_required's: swap the 0267-era
+    ``gripe_status_check()`` in, then close with a ``reason=`` the build
+    accepts but the database's function doesn't."""
+    h, gid = _gripe(hub)
+    store = h.store
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE p.proname = 'gripe_status_check' AND n.nspname = 'public'"
+        ).fetchone()
+        assert row is not None
+        sql = (
+            resources.files("precis.migrations")
+            .joinpath("0267_gripe_status_fixing.sql")
+            .read_text(encoding="utf-8")
+        )
+        conn.execute(
+            sql[sql.index("CREATE OR REPLACE FUNCTION") : sql.index("$$;") + 3]
+        )
+        conn.commit()
+    try:
+        with pytest.raises(BadInput) as ei:
+            h.tag(
+                id=gid,
+                add=["STATUS:auto_verify"],
+                reason="resolved: abc (r1) — ok",
+            )
+        assert "must have exactly one STATUS" in str(ei.value)
+        # options= the *database's* vocabulary (0267), not the build's.
+        assert ei.value.options == [
+            "open",
+            "triaged",
+            "fixing",
+            "ready_for_fix",
+            "in_review",
+            "verify",
+            "done",
+            "wontfix",
+        ]
+        # The whole unit rolled back — no orphaned reason=-comment, no
+        # STATUS write.
+        assert not [
+            c
+            for c in store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == "gripe_comment"
+        ]
+        assert "STATUS:open" in _tags(h, gid)
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(row[0])
+            conn.commit()
 
 
 def test_batch_close_with_parked_dependant(hub: Hub) -> None:

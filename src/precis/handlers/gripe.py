@@ -1769,7 +1769,10 @@ class GripeHandler(NumericRefHandler):
         # failure after the append can't leave the comment landed without
         # the STATUS write (batch ids already run inside
         # ``_tag_batch``'s atomic — this nests as a savepoint).
-        with self.store.atomic():
+        # ``_translate_status_check`` outermost: the 0176 deferred trigger
+        # fires at this atomic's commit edge, past any translator nested
+        # inside it (review td681406).
+        with _translate_status_check(), self.store.atomic():
             self._require_resolved_comment(id, add, reason=reason)
             add, prio_from_tag = split_prio(add)
             clear_prio = False
@@ -1812,7 +1815,7 @@ class GripeHandler(NumericRefHandler):
                 held = {str(t) for t in self.store.tags_for(self._coerce_id(id))}
                 if {"STATUS:needs_spec", "reto:ask"} <= held:
                     remove = [*(remove or []), "reto:ask"]
-            with _PARK_UNTIL.bind(park_until), _translate_status_check():
+            with _PARK_UNTIL.bind(park_until):
                 return interpreted(
                     super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),
                     readings,
