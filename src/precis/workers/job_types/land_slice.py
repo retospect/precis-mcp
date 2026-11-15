@@ -9,7 +9,10 @@ holds the worktree) once a build session exited clean and its branch passed
 the deny-path check. The land re-checks the resolved deny set before
 launching ship — the last gate (gr645524): a denied diff is refused with
 the ``human_only_hit`` stamp, so the tick's ruling ask opens on the frozen
-branch rather than a rebuild that can never land.
+branch rather than a rebuild that can never land. One named exception
+(td659522): the ``autocatpath_min_version`` line of
+``deploy/group_vars/all.yml`` in a pin-bump node's own commit, proved by
+:func:`pin_bump.land_refusal` (:func:`_pin_exempt`).
 
 Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 
@@ -1627,6 +1630,53 @@ def _plan_gripe(store: Any, plan_tag: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def _resolve_gripe(
+    store: Any,
+    gripe_id: int,
+    sha: str,
+    detail: str,
+    *,
+    status: str,
+    settled_comment: bool = False,
+) -> list[str]:
+    """The one ``resolved:`` writer (td659522 step 4): ``resolved: <sha9>
+    (main, release pending) — <detail>`` as the gripe's newest comment,
+    unless the newest already is one naming the sha, then ``STATUS:<status>``.
+    A settled gripe (:data:`_GRIPE_SETTLED`) keeps its status and, unless
+    ``settled_comment`` (land_notify's shape), gets no comment either.
+    Returns what it did: ``resolved comment``, ``STATUS:<status>`` or
+    ``left STATUS:<current>``."""
+    current = _rs._todo_status(store, gripe_id)
+    settled = current in _GRIPE_SETTLED
+    did: list[str] = []
+    if settled_comment or not settled:
+        chunks = store.chunks.list_chunks_for_ref(gripe_id)
+        comments = [c for c in chunks if c.chunk_kind == _GRIPE_COMMENT_KIND]
+        newest = (
+            str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
+        )
+        if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
+            store.chunks.insert_chunks(
+                gripe_id,
+                [
+                    ChunkInsert(
+                        ord=max((int(c.ord) for c in chunks), default=0) + 1,
+                        text=f"resolved: {sha[:9]} (main, release pending) — {detail}",
+                        meta={"chunk_kind": _GRIPE_COMMENT_KIND},
+                    )
+                ],
+            )
+            did.append("resolved comment")
+    if settled:
+        did.append(f"left STATUS:{current}")
+    else:
+        store.add_tag(
+            gripe_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+        )
+        did.append(f"STATUS:{status}")
+    return did
+
+
 def _notify_gripe(
     store: Any, gripe_id: int, sha: str, subject: str, todo_id: int
 ) -> str:
@@ -1635,43 +1685,16 @@ def _notify_gripe(
     closes it once the sha is on prod. Idempotent: a settled gripe is left
     alone, a comment already naming the sha is not repeated. Returns the
     summary line."""
-    status = _rs._todo_status(store, gripe_id)
-    if status in _GRIPE_SETTLED:
-        return f"gripe gr{gripe_id}: left STATUS:{status}"
-    comments = [
-        c
-        for c in store.chunks.list_chunks_for_ref(gripe_id)
-        if c.chunk_kind == _GRIPE_COMMENT_KIND
-    ]
-    newest = str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
-    wrote: list[str] = []
-    if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
-        ord_ = (
-            max(
-                (int(c.ord) for c in store.chunks.list_chunks_for_ref(gripe_id)),
-                default=0,
-            )
-            + 1
-        )
-        store.chunks.insert_chunks(
-            gripe_id,
-            [
-                ChunkInsert(
-                    ord=ord_,
-                    text=(
-                        f"resolved: {sha[:9]} (main, release pending) — {subject} "
-                        f"(landed by the factory, td{todo_id})"
-                    ),
-                    meta={"chunk_kind": _GRIPE_COMMENT_KIND},
-                )
-            ],
-        )
-        wrote.append("resolved comment")
-    store.add_tag(
-        gripe_id, Tag.closed("STATUS", "verify"), set_by="system", replace_prefix=True
+    did = _resolve_gripe(
+        store,
+        gripe_id,
+        sha,
+        f"{subject} (landed by the factory, td{todo_id})",
+        status="verify",
     )
-    wrote.append("STATUS:verify")
-    return f"gripe gr{gripe_id}: {', '.join(wrote)} written"
+    if "STATUS:verify" not in did:
+        return f"gripe gr{gripe_id}: {did[-1]}"
+    return f"gripe gr{gripe_id}: {', '.join(did)} written"
 
 
 #: land_notify's ``_ITEM_RE`` — one ``(refs )?(gr|td)N`` item; group 1
@@ -1729,6 +1752,16 @@ def _subject_handles(subject: str) -> list[tuple[str, int, bool]]:
     return out
 
 
+def _landed_elsewhere(store: Any, todo_id: int) -> str | None:
+    """The second repo ``todo_id`` landed in (``meta.landed_repo``,
+    stamped by ``repo_land``), or ``None`` for a precis todo."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    repo = (getattr(ref, "meta", None) or {}).get(_lanes.LANDED_REPO_KEY)
+    if isinstance(repo, str) and repo and repo != _lanes.DEFAULT_REPO:
+        return repo
+    return None
+
+
 def _deferred_notify(
     store: Any, subject: str, sha: str, todo_id: int, tree: Path
 ) -> list[str]:
@@ -1740,9 +1773,10 @@ def _deferred_notify(
       message names — subject-tail ``(grN…)`` and ``Fixes:`` trailers —
       skipped when the gripe already carries that comment;
     * then ``scripts/lib/land_notify.py`` (``PRECIS_LAND_NOTIFY=0``):
-      other todos get the ``landed:`` comment + done, a ``refs grN``
-      the partial comment alone, a plain gripe the resolved comment +
-      ``STATUS:auto_verify``.
+      other todos get the ``landed:`` comment + done (a todo that
+      landed in a second repo is left alone, :func:`_landed_elsewhere`),
+      a ``refs grN`` the partial comment alone, a plain gripe the
+      resolved comment + ``STATUS:auto_verify``.
 
     gripe-note's comment lands before land_notify's so a ``resolved:``
     stays the newest — ship's own order. This land's own todo is written
@@ -1783,6 +1817,12 @@ def _deferred_notify(
         if kind == "todo":
             if n == todo_id:
                 continue
+            elsewhere = _landed_elsewhere(store, n)
+            if elsewhere is not None:
+                # td659522: its ``landed:`` sha is that repo's (the
+                # reviewer's target read); a precis sha there would lie.
+                notes.append(f"todo td{n}: left alone (it landed in {elsewhere})")
+                continue
             wrote = _record_land(store, n, sha, subject)
             notes.append(
                 f"todo td{n}: "
@@ -1822,54 +1862,17 @@ def _deferred_notify(
         else:
             # land_notify's resolved path — ``resolved:`` comment +
             # ``STATUS:auto_verify`` (it auto-verifies; _notify_gripe's
-            # ``STATUS:verify`` belongs to the plan's own gripe).
-            comments = [
-                c
-                for c in store.chunks.list_chunks_for_ref(n)
-                if c.chunk_kind == _GRIPE_COMMENT_KIND
-            ]
-            newest = (
-                str(max(comments, key=lambda c: int(c.ord)).text or "")
-                if comments
-                else ""
+            # ``STATUS:verify`` belongs to the plan's own gripe); it
+            # comments on a settled gripe too.
+            did = _resolve_gripe(
+                store,
+                n,
+                sha,
+                f"landed: {subject.strip()}",
+                status="auto_verify",
+                settled_comment=True,
             )
-            did: list[str] = []
-            if not (
-                newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest
-            ):
-                ord_ = (
-                    max(
-                        (int(c.ord) for c in store.chunks.list_chunks_for_ref(n)),
-                        default=0,
-                    )
-                    + 1
-                )
-                store.chunks.insert_chunks(
-                    n,
-                    [
-                        ChunkInsert(
-                            ord=ord_,
-                            text=(
-                                f"resolved: {sha[:9]} (main, release pending) "
-                                f"— landed: {subject.strip()}"
-                            ),
-                            meta={"chunk_kind": _GRIPE_COMMENT_KIND},
-                        )
-                    ],
-                )
-                did.append("resolved comment")
-            status = _rs._todo_status(store, n)
-            if status in _GRIPE_SETTLED:
-                did.append(f"left STATUS:{status}")
-            else:
-                store.add_tag(
-                    n,
-                    Tag.closed("STATUS", "auto_verify"),
-                    set_by="system",
-                    replace_prefix=True,
-                )
-                did.append("STATUS:auto_verify")
-            notes.append(f"gripe gr{n}: {', '.join(did) or 'nothing'}")
+            notes.append(f"gripe gr{n}: {', '.join(did)}")
     return notes
 
 
@@ -2252,6 +2255,60 @@ def _fail(
     ctx.record_failure(f"land_slice: {reason}{suffix}")
 
 
+def _pin_exempt(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    base_ref: str,
+    paths: list[str],
+    denied: list[str],
+) -> tuple[list[str], str | None, bool]:
+    """td659522 step 4, the one named exception to the deny gate (Reto,
+    2026-11-15): a pin-bump node's own commit may carry the single
+    ``autocatpath_min_version`` line of ``deploy/group_vars/all.yml``.
+    Returns ``(denied, why, unreadable)``: ``denied`` without that one
+    path when :func:`pin_bump.land_refusal` proves the branch is exactly
+    that bump (the job event names it), else ``denied`` unchanged with
+    the refusal. A todo carrying no pin record is not asked (``why`` is
+    ``None``), and every other denied path stays denied.
+
+    ``unreadable`` marks a check that could not run
+    (:class:`pin_bump.LandUnreadable`, or it raised) when that path is
+    the only one denied: no verdict on the branch, so the caller fails
+    the attempt without the ``human_only_hit`` cap and the bump is built
+    and checked again (the unreadable-diff rule, td645833)."""
+    from precis.workers.job_types import pin_bump
+
+    if pin_bump.GROUP_VARS_PATH not in denied:
+        return denied, None, False
+    only = denied == [pin_bump.GROUP_VARS_PATH]
+    commit = ""
+    try:
+        ref = ctx.store.get_ref(kind="todo", id=todo_id)
+        record = (getattr(ref, "meta", None) or {}).get(pin_bump.RECORD_KEY)
+        if not isinstance(record, dict):
+            return denied, None, False
+        commit = str(record.get("commit"))[:9]
+        why = pin_bump.land_refusal(ctx.store, todo_id, tree, base_ref, paths)
+    except pin_bump.LandUnreadable as exc:
+        return denied, str(exc), only
+    except Exception:
+        log.warning("land_slice: pin exemption for td%d failed", todo_id, exc_info=True)
+        return denied, "the check itself failed", only
+    if why is not None:
+        return denied, why, False
+    rest = [p for p in denied if p != pin_bump.GROUP_VARS_PATH]
+    if not rest:
+        ctx.set_meta(pin_exempt=pin_bump.GROUP_VARS_PATH)
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: `{pin_bump.GROUP_VARS_PATH}` admitted past the deny "
+            f"gate: the branch is td{todo_id}'s pin bump (record commit {commit}) "
+            f"and that file changes only its {pin_bump.GROUP_VARS_KEY} line",
+        )
+    return rest, None, False
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half: launch ship. Returns the handle, or ``None``
     after driving the job terminal."""
@@ -2373,6 +2430,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     # gr657066: governs:factory skills join the set at the land base —
     # the fence is the base's declaration, so a branch cannot un-tag
     # it, and the scan failing closes like the diff read above.
+    # td659522: one content-checked exception, a pin-bump node's own
+    # commit (:func:`_pin_exempt`).
     governed = _governs.governed_skill_paths_at_ref(tree, base_ref, git=_git)
     if governed is None:
         _fail(
@@ -2390,16 +2449,37 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store) + governed)
+    pin_why, pin_unreadable = None, False
     if denied:
-        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        denied, pin_why, pin_unreadable = _pin_exempt(
+            ctx, todo_id, tree, base_ref, paths, denied
+        )
+    if denied and pin_unreadable:
         _fail(
             ctx,
             todo_id,
             lane,
-            "branch touches deny path(s): " + ", ".join(denied[:50]),
+            f"the pin bump's `{denied[0]}` change could not be checked "
+            f"({pin_why}); failing closed",
+            handoff=(
+                f"land FAILED: the lander could not check the pin bump's "
+                f"`{denied[0]}` change ({pin_why}), so the deny gate held "
+                "and nothing landed; the pin bump is built again."
+            ),
+        )
+        return None
+    if denied:
+        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        pin_note = f" (pin-bump exemption refused: {pin_why})" if pin_why else ""
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            "branch touches deny path(s): " + ", ".join(denied[:50]) + pin_note,
             handoff=(
                 "land FAILED: the branch touches deny path(s): "
                 + ", ".join(f"`{p}`" for p in denied[:50])
+                + pin_note
                 + " — no lane may write them; a coordinator ruling "
                 "lands the branch by hand or rewrites the work."
             ),

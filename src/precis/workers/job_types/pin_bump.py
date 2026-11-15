@@ -76,8 +76,11 @@ this job). Phases, in the handle's ``phase``:
 :func:`finish` is the closing tail ``land_slice`` runs right before its
 land record (``_landed_finish``, on any todo whose meta carries a pin
 record): it stamps the record ``landed`` and resolves the batch's
-gripes. :func:`validate_submit` serialises pin bumps (one in flight at a
-time).
+gripes. :func:`land_refusal` is the lander's content check for the one
+human-only line the commit carries (the ``autocatpath_min_version`` floor):
+``land_slice`` admits ``deploy/group_vars/all.yml`` past its deny gate only
+when it answers ``None``. :func:`validate_submit` serialises pin bumps (one
+in flight at a time).
 
 The derive and verify runs execute repo code as the worker's user, so the
 pin tree, run dir, venvs and uv cache are attacker-writable. Only a 64-hex
@@ -113,7 +116,6 @@ from typing import Any
 
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
-from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git_mirror as _mirror
 from precis.workers import repo_land as _rl
@@ -138,11 +140,13 @@ __all__ = [
     "NAME",
     "PARAMS_SCHEMA",
     "SPEC",
+    "LandUnreadable",
     "PinError",
     "compare_versions",
     "current_pin",
     "finish",
     "kill",
+    "land_refusal",
     "pin_is_coherent",
     "poll",
     "set_anchor_literals",
@@ -2206,37 +2210,15 @@ def _batch_slices(store: Any, todo_id: int, repo: str) -> list[int]:
 def _resolve_gripe(
     store: Any, gripe_id: int, sha: str, package: str, version: str, slices: list[int]
 ) -> bool:
-    """``land_slice._deferred_notify``'s resolved path for one gripe, once: a
-    ``resolved:`` comment (unless the newest comment already is one naming the
-    sha) and ``STATUS:auto_verify``. A settled gripe is left alone. ``True``
-    when this wrote."""
-    if _rs._todo_status(store, gripe_id) in _ls._GRIPE_SETTLED:
-        return False
-    chunks = store.chunks.list_chunks_for_ref(gripe_id)
-    comments = [c for c in chunks if c.chunk_kind == _ls._GRIPE_COMMENT_KIND]
-    newest = str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
-    if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
-        by = ", ".join(f"td{n}" for n in slices)
-        store.chunks.insert_chunks(
-            gripe_id,
-            [
-                ChunkInsert(
-                    ord=max((int(c.ord) for c in chunks), default=0) + 1,
-                    text=(
-                        f"resolved: {sha[:9]} (main, release pending) — "
-                        f"{package} v{version}, {by}"
-                    ),
-                    meta={"chunk_kind": _ls._GRIPE_COMMENT_KIND},
-                )
-            ],
-        )
-    store.add_tag(
-        gripe_id,
-        Tag.closed("STATUS", "auto_verify"),
-        set_by="system",
-        replace_prefix=True,
+    """One gripe through the lander's writer (``land_slice._resolve_gripe``),
+    once: a ``resolved:`` comment (unless the newest comment already is one
+    naming the sha) and ``STATUS:auto_verify``. A settled gripe is left
+    alone. ``True`` when this wrote."""
+    by = ", ".join(f"td{n}" for n in slices)
+    did = _ls._resolve_gripe(
+        store, gripe_id, sha, f"{package} v{version}, {by}", status="auto_verify"
     )
-    return True
+    return "STATUS:auto_verify" in did
 
 
 def finish(store: Any, todo_id: int, sha: str) -> None:
@@ -2291,6 +2273,165 @@ def finish(store: Any, todo_id: int, sha: str) -> None:
         log.warning(
             "pin_bump: finish: gripe walk of td%d failed", todo_id, exc_info=True
         )
+
+
+# ── The lander's exemption ─────────────────────────────────────────
+
+#: Record states the land of the node's own commit starts from: the
+#: hand-off mints the land before it stamps ``handed``.
+_LANDABLE_STATES = ("committed", "handed")
+
+
+def _is_pin_op(meta: dict[str, Any]) -> bool:
+    """``meta.op`` names this job, in either of ``plan_dispatch``'s forms."""
+    op = meta.get("op")
+    name = op.get("type") if isinstance(op, dict) else op
+    return isinstance(name, str) and name.strip() == NAME
+
+
+def _change(tree: Path, parent: str, commit: str) -> list[str] | None:
+    """The pin files' change in ``commit`` over ``parent``: the removed and
+    added lines per file, without hunk positions or blob ids, so a commit and
+    ``scripts/ship``'s rebase of it read the same. ``None`` when git fails."""
+    args = ["diff", "-U0", "--no-renames", "--no-color"]
+    args += ["--no-ext-diff", "--no-textconv", parent, commit, "--", *PIN_PATHS]
+    out = _rl._read(tree, args)
+    if out is None:
+        return None
+    return [ln for ln in out.splitlines() if not ln.startswith(("@@", "index "))]
+
+
+class LandUnreadable(Exception):
+    """:func:`land_refusal` could not check the branch: git did not answer,
+    or the head is a rebase and the land base is not a verified tip. Not a
+    verdict on the branch; the lander fails the attempt without the
+    human-only cap, and the rebuilt bump is checked afresh."""
+
+
+def _answered(out: str | None, what: str) -> str:
+    if out is None:
+        raise LandUnreadable(f"git could not read {what}")
+    return out
+
+
+def land_refusal(
+    store: Any, todo_id: int, tree: Path, base: str, paths: list[str]
+) -> str | None:
+    """Why the lander must keep :data:`GROUP_VARS_PATH` denied for this
+    land, or ``None`` when the branch is exactly this node's pin bump.
+
+    The one named exception to :data:`lanes.HUMAN_ONLY_PATHS` (Reto,
+    2026-11-15): ``land_slice`` asks when its deny gate hits that path on a
+    todo carrying a pin record, and admits the path only on ``None``.
+    ``base`` is the land's trusted base, ``paths`` what the land read as
+    changed (working tree included). Every check reads git, not the record's
+    word:
+
+    * the todo is a pin-bump node whose record is ``committed`` or ``handed``;
+    * the tree's head is one commit on top of ``base``'s history, and the pin
+      files in the tree are that commit's;
+    * the head is the record's commit on the record's base, or the same
+      change moved (:func:`_change`): a failed land's ship has rebased the
+      branch, and the re-land must still pass. A rebase is accepted only
+      against a verified ``base`` (a 40-hex sha, ``land_slice._land_base``'s
+      oracle answer): its tracking-ref fallback is writable by branch code,
+      and a made-up tip could hide a commit under the head;
+    * it changes pin files only, within :data:`MAX_FILE_LINES` lines each;
+    * the group_vars file at the head is its parent's text with the one
+      :data:`GROUP_VARS_KEY` line raised to the record's version.
+
+    A string is a verdict on the branch. What could not be checked (a git
+    read that failed, a rebase on an unverified base, any other exception)
+    raises :class:`LandUnreadable`; either way the path stays denied."""
+    try:
+        return _land_refusal(store, todo_id, tree, base, paths)
+    except PinError as exc:
+        return f"the pin record or the group_vars text is malformed: {exc}"
+    except LandUnreadable:
+        raise
+    except Exception as exc:
+        log.warning(
+            "pin_bump: land exemption check of td%d failed", todo_id, exc_info=True
+        )
+        raise LandUnreadable("the check itself failed") from exc
+
+
+def _land_refusal(
+    store: Any, todo_id: int, tree: Path, base: str, paths: list[str]
+) -> str | None:
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+    record = meta.get(RECORD_KEY)
+    if not _is_pin_op(meta) or not isinstance(record, dict):
+        return "the todo is not a pin-bump node carrying a pin record"
+    if record.get("noop") or record.get("state") not in _LANDABLE_STATES:
+        return f"the pin record is {record.get('state')!r}, not committed or handed"
+    commit, was = _rl._hex(record.get("commit")), _rl._hex(record.get("base"))
+    if not commit or not was:
+        return "the pin record names no commit or base"
+    version = str(record.get("version") or "")
+    _version(version)
+    if not paths or not set(paths) <= set(PIN_PATHS):
+        return "the branch changes paths outside the pin files"
+    head = _rl._hex(
+        _answered(
+            _rl._read(tree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]),
+            "the branch head",
+        )
+    )
+    if not head:
+        raise LandUnreadable("git named no branch head")
+    status = ["status", "--porcelain", "-z", "--untracked-files=all"]
+    if _answered(_rl._read(tree, [*status, "--", *PIN_PATHS]), "the tree's state"):
+        return "the pin files in the tree are not the head commit's"
+    parent = _rl._hex(
+        _answered(
+            _rl._read(tree, ["merge-base", base, head]),
+            "where the branch left the land base",
+        )
+    )
+    out = _answered(
+        _rl._read(tree, ["rev-list", "--parents", "-n", "1", head]),
+        "the head's parents",
+    )
+    if not parent or out.split() != [head, parent]:
+        return f"{head[:9]} is not one commit on top of the land base's history"
+    if head == commit:
+        if parent != was:
+            return f"{commit[:9]} does not sit on the record's base {was[:9]}"
+    else:
+        if not _rl._hex(base):
+            raise LandUnreadable(
+                f"the branch head {head[:9]} is not the record's commit and the "
+                "land base is not a verified tip"
+            )
+        want, got = _change(tree, was, commit), _change(tree, parent, head)
+        if want is None or got is None:
+            raise LandUnreadable("git could not read the pin files' change")
+        if not want or want != got:
+            return (
+                f"the branch head {head[:9]} is neither the record's commit "
+                f"{commit[:9]} nor a rebase of it"
+            )
+    changed = _rl._changed_paths(tree, parent, head)
+    if changed is None:
+        raise LandUnreadable("git could not read the head's changed paths")
+    if not set(changed) <= set(PIN_PATHS):
+        return f"{head[:9]} changes paths outside the pin files"
+    violation = _numstat_violation(tree, parent, head)
+    if violation is not None:
+        return violation
+    old = _answered(_rr._show(tree, parent, GROUP_VARS_PATH), GROUP_VARS_PATH)
+    new = _answered(_rr._show(tree, head, GROUP_VARS_PATH), GROUP_VARS_PATH)
+    floor = _group_vars_floor(old)
+    if floor is None or compare_versions(version, floor) <= 0:
+        return f"v{version} does not raise the {GROUP_VARS_KEY} floor {floor}"
+    if new != set_group_vars_floor(old, GROUP_VARS_KEY, version):
+        return (
+            f"{GROUP_VARS_PATH} changes more than its {GROUP_VARS_KEY} line "
+            f"to {version}"
+        )
+    return None
 
 
 def _succeed(run: _Run, summary: str, **meta: Any) -> bool:

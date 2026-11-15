@@ -3021,6 +3021,148 @@ def test_submit_refuses_an_interim_deny_diff_under_relaxed(
     assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["scripts/ship"]
 
 
+# td659522 step 4: the one named exception — a pin-bump node's own commit
+# may carry the autocatpath_min_version line of deploy/group_vars/all.yml.
+# ``pin_bump.land_refusal`` is the content check (its own tests run it on
+# real git); these stand it and pin the lander's side.
+
+_GROUP_VARS = "deploy/group_vars/all.yml"
+_PIN_DIFF = [_GROUP_VARS, "pyproject.toml", "uv.lock"]
+
+
+def _stand_pin_check(
+    monkeypatch: pytest.MonkeyPatch, answer: str | None
+) -> list[tuple[Any, ...]]:
+    from precis.workers.job_types import pin_bump
+
+    asked: list[tuple[Any, ...]] = []
+
+    def land_refusal(*args: Any) -> str | None:
+        asked.append(args)
+        return answer
+
+    monkeypatch.setattr(pin_bump, "land_refusal", land_refusal)
+    return asked
+
+
+def test_submit_admits_a_pin_nodes_group_vars_line(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails every pin bump is refused at the land (the group_vars
+    file is human-only), or it lands without the admission being recorded."""
+    asked = _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and handle is not None, ctx.failure
+    assert len(seams["launch"]) == 1
+    assert run_slice.HUMAN_ONLY_KEY not in ctx.meta_set
+    assert ctx.meta_set["pin_exempt"] == _GROUP_VARS
+    [(_, todo_id, tree, base, paths)] = asked
+    assert (todo_id, tree, paths) == (42, seams["tree"], _PIN_DIFF)
+    assert base == seams["changed_base"][-1]
+    [event] = [t for k, t in ctx.chunks if k == "job_event" and "admitted" in t]
+    assert _GROUP_VARS in event and FULL_SHA[:9] in event
+
+
+def test_submit_refuses_a_pin_node_whose_check_fails(seams: dict[str, Any]) -> None:
+    """If this fails a pin node's group_vars diff lands although the real
+    content check refused it (here: the fake git proves no commit)."""
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store, base="b" * 40)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.status == "failed"
+    assert "pin-bump exemption refused: " in (ctx.failure or "")
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [_GROUP_VARS]
+    assert "pin_exempt" not in ctx.meta_set
+    assert any("exemption refused" in c for c in store.comments(42))
+
+
+def test_the_pin_exemption_admits_only_the_group_vars_path(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a passing pin check lets another denied path through
+    with the group_vars file."""
+    _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = [*_PIN_DIFF, "deploy/inventory/prod.yml"]
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["deploy/inventory/prod.yml"]
+    # nothing was admitted, so nothing says so
+    assert "pin_exempt" not in ctx.meta_set
+    assert not any("admitted" in t for _, t in ctx.chunks)
+
+
+def test_a_plain_slice_touching_group_vars_is_never_asked(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a todo without a pin record reaches the exemption
+    check, or its refusal starts naming one."""
+    asked = _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = [_GROUP_VARS]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == [] and asked == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [_GROUP_VARS]
+    assert "exemption" not in (ctx.failure or "")
+
+
+@pytest.mark.parametrize("unreadable", [True, False])
+def test_a_pin_check_that_cannot_run_fails_the_attempt_without_the_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, unreadable: bool
+) -> None:
+    """If this fails a content check that could not run (git did not
+    answer, or it raised) admits the file, or caps the node for a ruling
+    although a rebuilt bump would pass."""
+    from precis.workers.job_types import pin_bump
+
+    def boom(*args: Any) -> str | None:
+        if unreadable:
+            raise pin_bump.LandUnreadable("git could not read the branch head")
+        raise RuntimeError("git went away")
+
+    monkeypatch.setattr(pin_bump, "land_refusal", boom)
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.status == "failed"
+    assert run_slice.HUMAN_ONLY_KEY not in ctx.meta_set
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    why = "git could not read" if unreadable else "the check itself failed"
+    assert f"could not be checked ({why}" in (ctx.failure or "")
+    assert any("the pin bump is built again" in c for c in store.comments(42))
+
+
+def test_an_unreadable_pin_check_beside_another_denied_path_still_caps(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a second denied path escapes the human-only cap because
+    the pin check beside it could not run."""
+    from precis.workers.job_types import pin_bump
+
+    def boom(*args: Any) -> str | None:
+        raise pin_bump.LandUnreadable("git could not read the branch head")
+
+    monkeypatch.setattr(pin_bump, "land_refusal", boom)
+    seams["changed_paths"] = [*_PIN_DIFF, "deploy/inventory/prod.yml"]
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [
+        _GROUP_VARS,
+        "deploy/inventory/prod.yml",
+    ]
+
+
 def test_full_refusal_on_an_engine_land_relaunches_quick(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3674,6 +3816,58 @@ def test_deferred_notify_writes_the_subjects_handles(seams: dict[str, Any]) -> N
     # idempotent: a second pass writes nothing new
     second = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
     assert all("already" in n or "left" in n for n in second)
+
+
+def test_deferred_notify_leaves_a_second_repo_todo_alone(
+    seams: dict[str, Any],
+) -> None:
+    """If this fails a precis land whose subject names a todo that landed
+    in another repo (td659522) writes a precis ``landed:`` sha on it — the
+    reviewer of that slice would then read a sha its repo does not hold."""
+    store = _Store()
+    store.add_todo(42)
+    store.add_todo(55, status="done", comments=("landed: 123456789 — engine",))
+    store.refs[55].meta[lanes.LANDED_REPO_KEY] = "catpath"
+    store.add_todo(56)
+    store.refs[56].meta[lanes.LANDED_REPO_KEY] = lanes.DEFAULT_REPO
+    sha = "c" * 40
+    subject = "build(deps): bump autocatpath to v0.50.0 (td42, td55, td56)"
+    notes = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    assert store.comments(55) == ["landed: 123456789 — engine"]
+    assert "todo td55: left alone (it landed in catpath)" in notes
+    assert any(c.startswith("landed: ccccccccc") for c in store.comments(56))
+
+
+def test_resolve_gripe_is_the_one_writer_for_every_caller(
+    seams: dict[str, Any],
+) -> None:
+    """If this fails the shared ``resolved:`` writer repeats a comment that
+    already names the sha, moves a settled gripe, or drops land_notify's
+    comment on a settled one."""
+    store = _Store()
+    store.add_todo(7, status="open")
+    store.add_todo(8, status="done")
+    sha = "c" * 40
+
+    def gripe_comments(gid: int) -> list[str]:
+        return [
+            c.text
+            for c in store.chunks.rows.get(gid, [])
+            if c.chunk_kind == "gripe_comment"
+        ]
+
+    first = land_slice._resolve_gripe(store, 7, sha, "why", status="auto_verify")
+    assert first == ["resolved comment", "STATUS:auto_verify"]
+    assert gripe_comments(7) == ["resolved: ccccccccc (main, release pending) — why"]
+    again = land_slice._resolve_gripe(store, 7, sha, "why", status="auto_verify")
+    assert again == ["left STATUS:auto_verify"] and len(gripe_comments(7)) == 1
+    quiet = land_slice._resolve_gripe(store, 8, sha, "why", status="verify")
+    assert quiet == ["left STATUS:done"] and gripe_comments(8) == []
+    noted = land_slice._resolve_gripe(
+        store, 8, sha, "why", status="auto_verify", settled_comment=True
+    )
+    assert noted == ["resolved comment", "left STATUS:done"]
+    assert "STATUS:done" in store.tag_strings(8)
 
 
 def test_deferred_notify_replays_gripe_note(

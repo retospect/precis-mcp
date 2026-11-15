@@ -158,6 +158,9 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
     "deploy/*group_vars*",
     "deploy/*host_vars*",
     "deploy/ansible.cfg",
+    # one content-checked exception at the land: a pin-bump node's own
+    # commit may raise its autocatpath_min_version line (td659522,
+    # ``pin_bump.land_refusal``)
     "deploy/group_vars/all.yml",
     # hardening and the MCP edge
     "deploy/roles/hardening/**",

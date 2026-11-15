@@ -2136,3 +2136,197 @@ def test_a_commit_made_before_a_crash_is_adopted_not_charged(
     assert handle["phase"] == "verify" and handle["commit"] == head
     assert pin.branch_head() == head and ctx.status is None
     assert _g(pin.rig.clone, "rev-list", "--count", f"{pin.tip()}..{head}") == "1"
+
+
+# ── the lander's exemption (step 4 R3) ─────────────────────────────
+
+
+def _landable(pin: Pin) -> tuple[Path, str, str]:
+    """A committed bump as the lander meets it: the node carries the op and
+    the tree is a clean checkout of the commit. ``(tree, base, commit)``."""
+    _committed(pin)
+    pin.store.refs[PIN].meta["op"] = "pin_bump"
+    record = pin.record()
+    return pin.tree(), str(record["base"]), str(record["commit"])
+
+
+def _land_refusal(pin: Pin, tree: Path, base: str) -> str | None:
+    paths = run_slice.changed_paths(tree, base)
+    assert paths is not None
+    return pb.land_refusal(pin.store, PIN, tree, base, paths)
+
+
+def test_the_landers_check_passes_the_nodes_own_commit(pin: Pin) -> None:
+    """If this fails the lander keeps deploy/group_vars/all.yml denied for
+    the pin bump's own commit (every bump ends in a coordinator ask), or
+    stops passing it once main has moved on or the record reads handed."""
+    tree, base, _ = _landable(pin)
+    assert _land_refusal(pin, tree, base) is None
+    pin.store.refs[PIN].meta["pin_bump"]["state"] = "handed"
+    moved = pin.precis_commit({"README.md": "main moved\n"})
+    assert _land_refusal(pin, tree, moved) is None
+
+
+def test_the_landers_check_passes_ships_rebase_of_the_commit(pin: Pin) -> None:
+    """If this fails a re-land after a failed ship is refused: ship rebased
+    the branch onto the moved main, so its head is a new sha carrying the
+    same change."""
+    tree, _, commit = _landable(pin)
+    moved = pin.precis_commit({"README.md": "main moved\n"})
+    _g(tree, "rebase", "-q", moved)
+    assert _g(tree, "rev-parse", "HEAD") != commit
+    assert _land_refusal(pin, tree, moved) is None
+
+
+def _amend_other_line(tree: Path) -> str:
+    """Rewrite the head so group_vars also changes a second line; its sha."""
+    path = tree / "deploy" / "group_vars" / "all.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("tail: 1", "tail: 2"),
+        encoding="utf-8",
+    )
+    _g(tree, "commit", "-q", "-a", "--amend", "--no-edit")
+    return _g(tree, "rev-parse", "HEAD")
+
+
+def _spoil_op(p: Pin, tree: Path) -> None:
+    del p.store.refs[PIN].meta["op"]
+
+
+def _spoil_record(p: Pin, tree: Path) -> None:
+    del p.store.refs[PIN].meta["pin_bump"]
+
+
+def _spoil_landed(p: Pin, tree: Path) -> None:
+    p.record()["state"] = "landed"
+
+
+def _spoil_noop(p: Pin, tree: Path) -> None:
+    p.record()["noop"] = True
+
+
+def _spoil_extra_file(p: Pin, tree: Path) -> None:
+    (tree / "README.md").write_text("extra\n", encoding="utf-8")
+
+
+def _spoil_dirty_pin_file(p: Pin, tree: Path) -> None:
+    with (tree / "uv.lock").open("a", encoding="utf-8") as fh:
+        fh.write("# edited after the commit\n")
+
+
+def _spoil_second_commit(p: Pin, tree: Path) -> None:
+    _g(tree, "commit", "-q", "--allow-empty", "-m", "chore: one more")
+
+
+def _spoil_rewritten_head(p: Pin, tree: Path) -> None:
+    _amend_other_line(tree)
+
+
+def _spoil_record_adopts_rewrite(p: Pin, tree: Path) -> None:
+    p.record()["commit"] = _amend_other_line(tree)
+
+
+def _spoil_lower_version(p: Pin, tree: Path) -> None:
+    p.record()["version"] = "0.40.0"
+
+
+def _spoil_other_version(p: Pin, tree: Path) -> None:
+    p.record()["version"] = "0.51.0"
+
+
+@pytest.mark.parametrize(
+    ("spoil", "needle"),
+    [
+        (_spoil_op, "not a pin-bump node"),
+        (_spoil_record, "not a pin-bump node"),
+        (_spoil_landed, "not committed or handed"),
+        (_spoil_noop, "not committed or handed"),
+        (_spoil_extra_file, "outside the pin files"),
+        (_spoil_dirty_pin_file, "not the head commit's"),
+        (_spoil_second_commit, "not one commit on top"),
+        (_spoil_rewritten_head, "nor a rebase of it"),
+        (_spoil_record_adopts_rewrite, "changes more than its"),
+        (_spoil_lower_version, "does not raise"),
+        (_spoil_other_version, "changes more than its"),
+    ],
+)
+def test_the_landers_check_refuses_anything_but_the_pure_bump(
+    pin: Pin, spoil: Any, needle: str
+) -> None:
+    """If this fails the human-only group_vars file can reach main through a
+    pin node with more than the one floor line raised to the record's
+    version, from a todo that is no pin node, or from a branch that is not
+    the single proven commit."""
+    tree, base, _ = _landable(pin)
+    spoil(pin, tree)
+    assert needle in str(_land_refusal(pin, tree, base))
+
+
+def test_the_landers_check_refuses_a_merge_commit_head(pin: Pin) -> None:
+    """If this fails a merge commit whose tree equals the pin bump's passes
+    as the bump: its second parent can carry anything."""
+    tree, base, commit = _landable(pin)
+    merge = _g(
+        tree, "commit-tree", f"{commit}^{{tree}}", "-p", base, "-p", commit, "-m", "m"
+    )
+    _g(tree, "reset", "-q", "--hard", merge)
+    assert "not one commit on top" in str(_land_refusal(pin, tree, base))
+
+
+def test_the_landers_check_refuses_a_second_floor_line_under_the_head(
+    pin: Pin,
+) -> None:
+    """If this fails a rebased bump passes on a parent that carries two
+    floor lines: the one-line proof has nothing single to compare with."""
+    tree, base, commit = _landable(pin)
+    _g(tree, "reset", "-q", "--hard", base)
+    with (tree / "deploy" / "group_vars" / "all.yml").open("a", encoding="utf-8") as fh:
+        fh.write('autocatpath_min_version: "0.49.0"\n')
+    _g(tree, "commit", "-q", "-a", "-m", "chore: a second floor line")
+    twice = _g(tree, "rev-parse", "HEAD")
+    _g(tree, "cherry-pick", commit)
+    assert "does not raise" in str(_land_refusal(pin, tree, twice))
+
+
+def test_a_rebased_head_needs_a_verified_land_base(pin: Pin) -> None:
+    """If this fails a made-up tracking ref admits group_vars: the branch
+    hides a commit rewriting the file under a pin-shaped head, the ref
+    points at that commit, and ship later lands both on the real main.
+    The record's own commit still passes on a ref name (its parent is the
+    record's base)."""
+    tree, base, commit = _landable(pin)
+    paths = list(pb.PIN_PATHS)
+    assert pb.land_refusal(pin.store, PIN, tree, "main", paths) is None
+    _g(tree, "reset", "-q", "--hard", base)
+    path = tree / "deploy" / "group_vars" / "all.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("# comment:", "# rewritten:"),
+        encoding="utf-8",
+    )
+    _g(tree, "commit", "-q", "-a", "-m", "chore: hidden rewrite")
+    hidden = _g(tree, "rev-parse", "HEAD")
+    _g(tree, "cherry-pick", commit)
+    _g(tree, "update-ref", "refs/remotes/origin/main", hidden)
+    with pytest.raises(pb.LandUnreadable, match="not a verified tip"):
+        _land_refusal(pin, tree, "origin/main")
+    # against the real tip the hidden commit shows: two commits, not one
+    assert "not one commit on top" in str(_land_refusal(pin, tree, base))
+
+
+def test_what_git_cannot_answer_is_unreadable_not_a_verdict(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a git read that failed admits the file, or is reported
+    as a verdict on the branch (the lander would cap the node for a ruling
+    instead of building the bump again)."""
+    tree, _, commit = _landable(pin)
+    with pytest.raises(pb.LandUnreadable, match="git could not read"):
+        pb.land_refusal(pin.store, PIN, tree, "no-such-ref", list(pb.PIN_PATHS))
+    moved = pin.precis_commit({"README.md": "main moved\n"})
+    _g(tree, "rebase", "-q", moved)
+    monkeypatch.setattr(pb, "_change", lambda *a: None)
+    with pytest.raises(pb.LandUnreadable, match="git could not read"):
+        _land_refusal(pin, tree, moved)
+    monkeypatch.setattr(pb, "_is_pin_op", lambda meta: 1 / 0)
+    with pytest.raises(pb.LandUnreadable, match="the check itself failed"):
+        _land_refusal(pin, tree, moved)
