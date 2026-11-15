@@ -135,7 +135,7 @@ all:
           node_role: compute
           # scripts/host-ops/os-update (rolling OS + firmware update): the
           # systemd units it checks after the reboot (comma-separated; a list
-          # containing `vllm` also gets the vLLM health wait) and the peer node
+          # containing `sglang` (or `vllm`) gets the LLM health wait) and the peer node
           # that runs the precis reserve CLI while this host reboots. Both are
           # required to os-update this host; no default. The peer must be a
           # second Linux node running precis-worker (this example has none).
@@ -154,12 +154,12 @@ all:
     #     node-serve-a:
     #     node-serve-b:
 
-    # GB10 lane layout (host-lanes): an LLM host is in vllm_serving (or
-    # sglang_serving) and never in compute; science hosts are in compute
+    # GB10 lane layout (host-lanes): an LLM host is in sglang_serving (or
+    # the retired vllm_serving) and never in compute; science hosts are in compute
     # (20c gives them the heartbeat worker + venv, 43 the job_ssh_node lane).
     # roles/hardening sums each host's lane caps + LLM share + OS reserve and
     # fails the play past host_memory_total (tests/test_deploy_memory_budget.py).
-    # vllm_serving:
+    # sglang_serving:
     #   hosts:
     #     node-serve-a:
     # compute:

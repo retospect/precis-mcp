@@ -46,7 +46,7 @@ all:
           os_update_units: docker
           os_update_peer: birch
         cedar:
-          os_update_units: vllm,precis-worker
+          os_update_units: sglang,precis-worker
           os_update_peer: birch
         birch:
           os_update_units: precis-worker,precis-worker-compute
@@ -286,14 +286,14 @@ def test_os_update_run_on_env_wins(tmp_path: Path, bin_dir: dict[str, str]) -> N
     assert "(CLI on poplar)" in result.stdout
 
 
-def test_os_update_serving_dry_run_skips_vllm_wait(
+def test_os_update_serving_dry_run_skips_llm_wait(
     tmp_path: Path, bin_dir: dict[str, str]
 ) -> None:
     env = _env(tmp_path, bin_dir)
     result = _run(env, "os-update", "--host", "cedar", "--dry-run")
     assert result.returncode == 0, result.stderr
-    assert "for u in vllm precis-worker " in result.stdout
-    assert "waiting for vLLM health" not in result.stdout
+    assert "for u in sglang precis-worker " in result.stdout
+    assert "waiting for sglang health" not in result.stdout
     assert len(_calls(bin_dir["ssh_calls"])) == 1
 
 

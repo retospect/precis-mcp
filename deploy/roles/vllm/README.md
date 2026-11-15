@@ -1,5 +1,7 @@
 # vllm role
 
+> Retired 2026-10-16: the serving node runs SGLang (roles/sglang, 49a-sglang.yml); kept for the day a fixed vLLM image is pullable.
+
 Runs one vLLM OpenAI-compatible server (one model, fully resident) as a
 systemd-managed docker container on a single GB10 host. Playbook:
 `playbooks/49-vllm.yml`, targeting inventory group `vllm_serving` (add the

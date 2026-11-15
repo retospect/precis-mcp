@@ -4,7 +4,8 @@
 # host, in this order, only after the previous host came back clean:
 #     scripts/host-ops/os-update --host <canary-node>    # idle canary GPU node, no LLM
 #     scripts/host-ops/os-update --host <science-node>   # science lanes
-#     scripts/host-ops/os-update --host <serving-node>   # the LLM host (vLLM down ~15-25 min)
+#     scripts/host-ops/os-update --host <serving-node>   # the LLM host
+#   (LLM down for the reboot plus ~2 min model load: SGLang, measured 2026-11-10)
 #
 # What was pending (read-only apt/fwupd check, 2026-10-15 ~16:45Z):
 #   * NVIDIA driver 580.173.02 (serving and science nodes) / 580.159.03 (canary
@@ -20,15 +21,17 @@
 #   * fwupd: the science node lists GB10 USB-C PD controller firmware
 #     (capsule on disk, applied at reboot); the serving and canary nodes report
 #     nothing pending.
-#   vLLM (container, own CUDA userspace), MACE (torch 2.13 cu13) and the tblite
+#   The serving container (SGLang since 2026-10-16; vLLM before; own CUDA
+#   userspace), MACE (torch 2.13 cu13) and the tblite
 #   wheel (CPU) depend on the driver branch, not the kernel: no rebuild
 #   expected. The post-reboot checks below prove the GPU path on each host.
 #
 # Per-host settings come from the gitignored cluster overlay, as host keys read
 # with resolve_node_var (scripts/lib/node-host.sh):
 #   os_update_units  comma-separated systemd units to check after the reboot,
-#                    e.g. `vllm,precis-worker`; a unit list containing `vllm`
-#                    also gets the vLLM health wait. Required.
+#                    e.g. `sglang,precis-worker`; a unit list containing
+#                    `sglang` (or `vllm`; first match) also gets the LLM
+#                    health wait. Required.
 #   os_update_peer   the node that runs the precis reserve CLI while HOST
 #                    reboots (a peer that keeps running). Required unless
 #                    RUN_ON is set.
@@ -80,7 +83,7 @@ UNITS="$(resolve_node_var "$HOST" os_update_units 2>/dev/null || true)"
 if [[ -z "$UNITS" ]]; then
   echo "os-update: no os_update_units for '$HOST' in the cluster overlay" \
        "(deploy/inventory/hosts.yml): add the key to that host's block," \
-       "e.g. os_update_units: vllm,precis-worker" >&2
+       "e.g. os_update_units: sglang,precis-worker" >&2
   exit 2
 fi
 UNITS="${UNITS//,/ }"
@@ -182,15 +185,18 @@ run "${SSH[@]}" "$HOST" "
   done
   systemctl --failed --no-legend
 "
-HAS_VLLM=0
-case " $UNITS " in *" vllm "*) HAS_VLLM=1 ;; esac
-if (( HAS_VLLM )) && [[ $DRY == 0 ]] && \
-   [[ "$("${SSH[@]}" "$HOST" 'systemctl is-enabled vllm 2>/dev/null' || true)" != enabled ]]; then
-  say "vllm disabled, skipping health wait"   # stopped 18:44Z 2026-10-15 (gr489474)
-elif (( HAS_VLLM )) && [[ $DRY == 0 ]]; then
-  say "waiting for vLLM health (model load 10-15 min)"
+# The serving unit in the list (first match: sglang, then vllm) gets the health wait.
+LLM_UNIT=""
+for _u in sglang vllm; do
+  case " $UNITS " in *" $_u "*) LLM_UNIT="$_u"; break ;; esac
+done
+if [[ -n "$LLM_UNIT" && $DRY == 0 ]] && \
+   [[ "$("${SSH[@]}" "$HOST" "systemctl is-enabled $LLM_UNIT 2>/dev/null" || true)" != enabled ]]; then
+  say "$LLM_UNIT disabled, skipping health wait"   # vllm stopped 18:44Z 2026-10-15 (gr489474)
+elif [[ -n "$LLM_UNIT" && $DRY == 0 ]]; then
+  say "waiting for $LLM_UNIT health (model load ~2 min on SGLang; cap 20 min)"
   for _ in $(seq 1 40); do
-    "${SSH[@]}" "$HOST" 'curl -sf localhost:8000/health' >/dev/null 2>&1 && { say "vLLM healthy"; break; }
+    "${SSH[@]}" "$HOST" 'curl -sf localhost:8000/health' >/dev/null 2>&1 && { say "$LLM_UNIT healthy"; break; }
     sleep 30
   done
 fi

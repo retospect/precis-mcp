@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Retired 2026-10-16: the serving node runs SGLang (roles/sglang, 49a-sglang.yml); kept for the day a fixed vLLM image is pullable.
 # Stop (or restore) the vLLM host's vLLM — ported from cluster-desk's
 # serving-node vllm-stop script (2026-10-15, gr489474).
 # vllm/vllm-openai:v0.20.1 serves corrupt gpt-oss-120b output on GB10 (vllm#37030)

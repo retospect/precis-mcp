@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/claude-local — run `claude` against the serving node's vLLM (gpt-oss-120b)
+# scripts/claude-local — run `claude` against the serving node's SGLang (gpt-oss-120b)
 # instead of Anthropic: a helper that costs no credits.
 #
 #   scripts/claude-local -p "<task>" [claude args...]     headless helper
@@ -15,7 +15,7 @@
 #      CLAUDE_LOCAL_PORT (default 8000), NODE_HOST_<NODE> (bypass the overlay address;
 #      <NODE> is the upper-cased serving node name).
 #      The serving node is the first host of the overlay's sglang_serving group.
-# Needs the serving node's vLLM to run with --max-model-len well above 16k; a Claude
+# Needs the serving node's SGLang to run with a context length well above 16k; a Claude
 # Code turn with CLAUDE.md plus tool schemas does not fit in 16k
 # (docs/backlog/claude-code-on-local-serving.md).
 set -euo pipefail
@@ -31,7 +31,7 @@ model="${CLAUDE_LOCAL_MODEL:-openai/gpt-oss-120b}"
 port="${CLAUDE_LOCAL_PORT:-8000}"
 
 if ! curl -fsS -m 5 "http://$addr:$port/health" >/dev/null 2>&1; then
-    echo "claude-local: serving-node vLLM not healthy on :$port" >&2
+    echo "claude-local: serving-node SGLang not healthy on :$port" >&2
     exit 2
 fi
 
@@ -50,10 +50,10 @@ if ! curl -fsS -m 2 "http://127.0.0.1:$shim_port/health" >/dev/null 2>&1; then
     done
 fi
 
-# Context window: what the serving node's vLLM was started with (vllm_max_model_len).
+# Context window: what the serving node's SGLang was started with (sglang_context_length, 131072).
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_LOCAL_CONTEXT_TOKENS:-131072}"
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$shim_port"
-# vLLM runs without an API key; Claude Code still needs a bearer value.
+# SGLang runs without an API key; Claude Code still needs a bearer value.
 export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-local}"
 export ANTHROPIC_MODEL="$model"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"

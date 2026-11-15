@@ -13,7 +13,7 @@ he wants more coding assist, cheaply, and asked about Kimi and Antigravity.
 
 ## Motivation / why
 
-The local-serving node serves gpt-oss 120B on vLLM (32 slots) and nothing routes to it
+The local-serving node serves gpt-oss 120B on vLLM (32 slots) (superseded 2026-10-16: SGLang, 49a-sglang.yml) and nothing routes to it
 ([local-compute](threads/local-compute.md#resume)). Claude Code accepts any
 Anthropic-format endpoint via `ANTHROPIC_BASE_URL`; vLLM speaks the OpenAI
 format, so one translating proxy makes the local-serving node a zero-marginal-cost backend

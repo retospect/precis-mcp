@@ -1,4 +1,5 @@
 ---
+# Retired 2026-10-16: the serving node runs SGLang (roles/sglang, 49a-sglang.yml); kept for the day a fixed vLLM image is pullable.
 # 49-vllm.yml — vLLM as a permanent managed service on the vllm_serving host(s).
 # See roles/vllm/README.md and docs/backlog/vllm-per-node-serving.md. The group
 # normally holds ONE GB10 host, exclusive to this service. Not part of site.yml.

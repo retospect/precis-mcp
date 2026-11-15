@@ -7,7 +7,7 @@ unchanged except paths and host parameterisation (Reto "go host-ops",
 and resolves host coordinates from the gitignored overlay
 (`deploy/inventory/hosts.yml` in the main checkout — `scripts/lib/pgb-host.sh`,
 `scripts/lib/node-host.sh`): `nfs_server`/`shared_mount` vars, per-host
-`lan_ip`, and the `linux`/`vllm_serving` groups. ssh goes by inventory name
+`lan_ip`, and the `linux`/`sglang_serving` groups. ssh goes by inventory name
 (`~/.ssh/config` already maps them). No address is ever a literal.
 
 **Permission.** Invoke as `scripts/host-ops/<name>` — direct invocation is
@@ -21,8 +21,8 @@ Allow line pending Reto in `.claude/settings.json`, next to
 
 | script | what it does |
 |--------|--------------|
-| `os-update` | Rolling OS + firmware update for ONE GB10 host: precis `service reserve` (no new heavy claims, 6 h) → wait for running compute to drain → stale apt/dpkg lock check (refuses on a holder older than 1 h, prints the kill line for Reto) → `apt full-upgrade` → `fwupd` → reboot → wait for ssh → kernel/`nvidia-smi`/docker-GPU/unit checks → `service release`. Flags: `--host` (required; any node whose overlay block has `os_update_units`), `--dry-run`, `--drain-timeout MIN` (240), `--force-drain`. Per-host overlay keys: `os_update_units` (comma-separated unit list checked after the reboot, e.g. `vllm,precis-worker`) and `os_update_peer` (the node that runs the reserve CLI, because the target host reboots mid-run; `RUN_ON` overrides). When the unit list contains `vllm` it waits for vLLM `/health` after reboot — skipped when the unit is disabled. |
-| `vllm-stop` | Stop + disable the `vllm` unit and its container on the vLLM host (default: the overlay's `vllm_serving` member; `--host` overrides), printing memory before/after. `--start` re-enables and waits for `/health` (model load ~14 min). Refuses when `sglang` is active. |
+| `os-update` | Rolling OS + firmware update for ONE GB10 host: precis `service reserve` (no new heavy claims, 6 h) → wait for running compute to drain → stale apt/dpkg lock check (refuses on a holder older than 1 h, prints the kill line for Reto) → `apt full-upgrade` → `fwupd` → reboot → wait for ssh → kernel/`nvidia-smi`/docker-GPU/unit checks → `service release`. Flags: `--host` (required; any node whose overlay block has `os_update_units`), `--dry-run`, `--drain-timeout MIN` (240), `--force-drain`. Per-host overlay keys: `os_update_units` (comma-separated unit list checked after the reboot, e.g. `sglang,precis-worker`) and `os_update_peer` (the node that runs the reserve CLI, because the target host reboots mid-run; `RUN_ON` overrides). When the unit list contains `sglang` (or `vllm`; first match) it waits for the LLM `/health` after reboot (SGLang model load ≈2 min) — skipped when that unit is not enabled. |
+| `vllm-stop` | Retired with the vLLM server (2026-10-16); kept for the vllm role. Stop + disable the `vllm` unit and its container on the vLLM host (default: the overlay's `vllm_serving` member; `--host` overrides), printing memory before/after. `--start` re-enables and waits for `/health` (model load ~14 min). Refuses when `sglang` is active. |
 | `nfs-recover` | The CLOSE_WAIT wedge fix: restart `nfsd` on the `nfs_server` host (postgres untouched; never reboot it — it is the DB host), then `ss -K` any client socket still in FIN-WAIT-2 toward the server's `lan_ip`, on every `linux`-group client. Verifies the `shared_mount` stat and that a fresh `rpcinfo` probe leaves no CLOSE_WAIT. Stops without escalating if the nfsd restart fails. |
 | `nfs-keepalive` | Interim wedge mitigation: a transient `systemd-run` timer statfs'ing `shared_mount` every 60 s on each `linux`-group client so the NFS transport never idles (gone at reboot). `--stop` removes it. Superseded on `nfs_clients` by the managed `nfs-keepalive.timer` the `nfs_client` role installs (gr489397); still the tool for `linux`-group hosts outside that group. |
 | `pin-prod` | `git -C $PROD_CHECKOUT fetch` + `checkout --detach origin/prod` and print the result. `PROD_CHECKOUT` defaults to `<main-checkout>-prod` (the env-pointers.sh derivation; `PRECIS_PROD_CHECKOUT` also overrides). | <!-- home-path: allow — the prod-clone convention on hosts -->
@@ -35,9 +35,11 @@ the GPU node → the second DGX node → the local-serving node, strictly one ho
 runs on the second DGX node (on the local-serving node when the second DGX node itself is the target), and the next
 host starts only after the previous host's post-reboot checks are all
 `active`. The GPU node first because it is the canary (idle, no LLM); the local-serving node last
-because its reboot takes vLLM down ~15–25 min.
+because its reboot takes the LLM (SGLang) down for the reboot plus ≈2 min model load (measured 2026-11-10).
 
 ## Host-lanes phase C order
+
+This list is a dated 2026-10-15 record; it predates the 2026-10-16 SGLang switch (`49a-sglang.yml` replaces step 9's `49-vllm.yml`).
 
 After a release containing `932364d0a` is prod and `pin-prod` has re-pinned
 the checkout (source: cluster-desk's run order, 2026-10-15 ~17:10Z):
