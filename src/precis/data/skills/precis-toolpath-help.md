@@ -118,6 +118,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | What needs my attention | `search(kind='todo', view='attention')` | `precis-todo-tree-help` |
 | Split a task | children via `put(..., parent_id=122)` | `precis-decomposition-help` |
 | Sketch a thread's reasoning outline | `put(kind='plan', id='x-plan', title='…', project=N)`, then add `pe<id>` nodes | `precis-plan-help` |
+| Judge a business idea (go / pivot / no-go) | `search(kind='memory', tags=['bizplan:*'], view='toc')`, then a plan root + assumption nodes | `precis-business-plan-help` |
 | Wait on a condition | leaf with `meta.auto_check` | `precis-auto-todo-help` |
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
