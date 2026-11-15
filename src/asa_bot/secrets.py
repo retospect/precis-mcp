@@ -11,11 +11,14 @@ existing env / file path. Callers pass the DSN from asa's ``config.yaml``
 (``precis.database_url``); ``PRECIS_DATABASE_URL`` in the environment, read at
 call time (before any scrub), is only the fallback when none is passed.
 
-The DSN must connect as ``precis_system``: infra-class secrets (e.g.
-``CLAUDE_CODE_OAUTH_TOKEN``) are refused to ``agent_rw`` with
-``InsufficientPrivilege`` (``vault._class_check``, migration 0285). A stale
-``agent_rw`` ``PRECIS_DATABASE_URL`` in the launchd plist must therefore never
-outrank the config DSN.
+The DSN must come from ``config.yaml`` (``precis.database_url``,
+precis_system): a stale ``agent_rw`` ``PRECIS_DATABASE_URL`` in the launchd
+plist must never outrank the managed DSN. infra-class secrets are refused
+to ``agent_rw`` with ``InsufficientPrivilege`` (``vault._class_check``,
+migration 0285) — ``CLAUDE_CODE_OAUTH_TOKEN`` itself moved to class ``api``
+(migration 0304, so the agent_rw session MCP's mint-door judge can reveal
+it), but the managed ``precis_system`` DSN stays authoritative for the
+infra names too.
 """
 
 from __future__ import annotations

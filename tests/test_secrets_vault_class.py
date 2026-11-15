@@ -7,8 +7,10 @@ Mechanics tested on the real test DB:
 - ``vault.reveal`` checks ``session_user``: infra → member of precis_system,
   api → member of agent_rw, user → member of precis_ingress AND the name is
   ``user/<p_user_id>/…``; denial raises ``insufficient_privilege``
-- ``vault.set_secret``/``delete_secret`` gate on the written name's class:
-  infra → precis_system or precis_ingress, api → agent_rw, user →
+- ``vault.set_secret``/``delete_secret`` gate on the written name's *write*
+  class (``vault._write_class_for``, 0307 — the read class, except
+  ``CLAUDE_CODE_OAUTH_TOKEN`` which writes infra): infra → precis_system or
+  precis_ingress, api → agent_rw, user →
   precis_ingress; the owner of ``vault.secrets`` passes (db-own finding 2)
 - the pattern table of the first S1 draft is gone
 
@@ -282,6 +284,30 @@ def test_agent_rw_cannot_overwrite_or_delete_infra(
         _refused(wtx, role, _SET, (name, "v-evil-1234567890"))
         _refused(wtx, role, _DEL, (name,))
     assert _value(wtx, name) == "v-orig-1234567890"
+
+
+def test_oauth_token_read_api_write_infra(
+    vault_dsn: str, store: Store, wtx: psycopg.Connection
+) -> None:
+    """gr610977, migrations 0304+0307: the mint-door dedup judge runs inside
+    the agent_rw session MCP, so ``CLAUDE_CODE_OAUTH_TOKEN`` is class
+    ``api`` for **reveal** — but its write class stays ``infra``: agent_rw
+    may read it yet never overwrite or delete it (precis_system /
+    precis_ingress / the owner DSN rotate it)."""
+    _set(store, "CLAUDE_CODE_OAUTH_TOKEN", "v-oauth-1234567890")
+    reveal = "SELECT vault.reveal('CLAUDE_CODE_OAUTH_TOKEN')"
+    assert _as(vault_dsn, "agent_rw", reveal) == ("v-oauth-1234567890",)
+    for role in ("agent_rw", "agent_ro", "t_vault_other"):
+        _refused(wtx, role, _SET, ("CLAUDE_CODE_OAUTH_TOKEN", "v-evil-1234567890"))
+        _refused(wtx, role, _DEL, ("CLAUDE_CODE_OAUTH_TOKEN",))
+    assert _value(wtx, "CLAUDE_CODE_OAUTH_TOKEN") == "v-oauth-1234567890"
+    _w(
+        wtx,
+        "precis_system",
+        _SET,
+        ("CLAUDE_CODE_OAUTH_TOKEN", "v-rotated-1234567890"),
+    )
+    assert _value(wtx, "CLAUDE_CODE_OAUTH_TOKEN") == "v-rotated-1234567890"
 
 
 def test_infra_writers_are_system_and_ingress(wtx: psycopg.Connection) -> None:
