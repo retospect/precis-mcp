@@ -2,6 +2,7 @@
 status: draft
 title: Quota-paused jobs — the park/fail lifecycle wedges recurrings and ends agent ticks as opaque failures
 pillar: platform
+quest: qu540835
 ---
 
 # Quota-paused jobs — parked lifecycle wedges recurrings and ends agent ticks as opaque failures

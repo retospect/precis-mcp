@@ -4,6 +4,7 @@ title: Session precis MCP becomes one long-lived local streamable-http server, s
 pillar: platform
 prio: high
 model: opus
+quest: qu540835
 ---
 
 # Session precis MCP becomes one long-lived local streamable-http server

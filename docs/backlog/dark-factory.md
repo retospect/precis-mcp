@@ -3,6 +3,7 @@ status: draft
 title: Dark factory — precis runs the work, harness sessions become the exception
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Dark factory — precis runs the work

@@ -3,6 +3,7 @@ status: ready
 title: cad view='sweep' reports exact collision windows (configuration space)
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # cad view='sweep' reports exact collision windows (configuration space)

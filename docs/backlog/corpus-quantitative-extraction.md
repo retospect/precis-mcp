@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 prio: normal
 owner: knowledge-mesh
+quest: qu635085
 ---
 
 # Corpus quantitative extraction

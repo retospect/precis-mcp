@@ -3,6 +3,7 @@ status: draft
 title: Bind an MCP session to a web user via a per-user token minted at /account
 pillar: personal
 prio: normal
+quest: qu686093
 ---
 
 # Bind an MCP session to a web user via a per-user token minted at /account

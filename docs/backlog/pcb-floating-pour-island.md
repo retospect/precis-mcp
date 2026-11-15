@@ -3,6 +3,7 @@ status: draft
 title: A pour can emit an island with none of its net's copper in it, and nothing ties it to its net
 prio: medium
 pillar: 3d-design
+quest: qu570323
 ---
 
 # A pour can emit an island with none of its net's copper in it

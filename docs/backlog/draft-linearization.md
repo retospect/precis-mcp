@@ -5,6 +5,7 @@ title: draft linearization — the graph is the truth, a draft is a render of a 
 prio: normal
 model: opus
 blocked-by: knowledge-mesh
+quest: qu635085
 ---
 
 # draft linearization — generate the linear text from the graph

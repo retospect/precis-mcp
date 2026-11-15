@@ -4,6 +4,7 @@ title: se off-the-shelf fabrication — bought parts, stock-constrained modes, m
 pillar: 3d-design
 prio: high
 model: opus
+quest: qu686092
 ---
 
 # se: building with things you didn't print

@@ -3,6 +3,7 @@ status: draft
 title: Block navigation — small addressable blocks, budgets instead of more
 pillar: platform
 prio: high
+quest: qu686092
 ---
 
 # Block navigation — small addressable blocks, budgets instead of `more`

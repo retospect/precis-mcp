@@ -4,6 +4,7 @@ title: plan_tick context cut — pre-fetch to shrink turns, exponential re-tick 
 model: opus
 due: 2026-08-24
 pillar: platform
+quest: qu540835
 ---
 
 # plan_tick context cut (P2 of the 2026-08-15 zombie-loop plan)

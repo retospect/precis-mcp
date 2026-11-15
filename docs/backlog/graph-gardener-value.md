@@ -4,6 +4,7 @@ pillar: memory-graph
 title: Gardener value — a link is written only when retrieval cannot recompute it, every machine edge carries a fixed annotation, and a per-quest retrieval eval decides whether a pass stays on
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # Gardener value: write only what RAG cannot recompute, and measure it

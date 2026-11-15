@@ -3,6 +3,7 @@ status: draft
 title: One spin-polarised DFT point on an Fe-doped Pd(111) anchor (SPSO slice 8 spin check)
 pillar: quests
 prio: normal
+quest: qu540835
 ---
 
 # One spin-polarised DFT point on an Fe-doped Pd(111) anchor

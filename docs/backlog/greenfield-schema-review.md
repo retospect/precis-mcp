@@ -4,6 +4,7 @@ title: greenfield schema review — what the DB would look like designed today, 
 pillar: platform
 prio: normal
 model: opus
+quest: qu540835
 ---
 
 # greenfield schema review

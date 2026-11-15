@@ -4,6 +4,7 @@ pillar: 3d-design
 title: cad STEP import — OnShape/any-CAD solids become native editable designs
 prio: normal
 model: opus
+quest: qu686092
 ---
 
 # cad: STEP import as native editable solids

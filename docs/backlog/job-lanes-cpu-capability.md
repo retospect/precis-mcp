@@ -3,6 +3,7 @@ status: draft
 title: "'cpu' capability lane for CPU-only jobs (gr511752)"
 pillar: platform
 prio: normal
+quest: qu540835
 ---
 
 # 'cpu' capability lane for CPU-only jobs (gr511752)

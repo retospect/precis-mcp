@@ -3,6 +3,7 @@ pillar: 3d-design
 status: draft
 title: "pcb: freezing must actually bind — mechanical features as well as parts"
 prio: normal
+quest: qu570323
 ---
 
 # pcb: a frozen hole is not frozen

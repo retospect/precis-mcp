@@ -3,6 +3,7 @@ status: draft
 title: "deploy: activate the db_exporters role (secrets, run, flip monitoring_db_exporters)"
 pillar: platform
 prio: low
+quest: qu540835
 ---
 
 # DB exporters role: activation

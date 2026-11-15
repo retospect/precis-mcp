@@ -5,6 +5,7 @@ pillar: 3d-design
 prio: high
 model: opus
 blocked-by: me630471
+quest: qu347422
 ---
 
 # hexfold scene grammar from primitives

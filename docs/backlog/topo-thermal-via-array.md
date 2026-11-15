@@ -1,5 +1,6 @@
 ---
 status: draft
+quest: qu570323
 ---
 # Thermal via arrays — geometry and process prerequisites
 

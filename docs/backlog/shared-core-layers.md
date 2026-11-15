@@ -3,6 +3,7 @@ status: draft
 title: Shared core layers — one Diag/probe/handle/check core under cad, se nano/hex, pcb and the layer-stack kinds
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # Shared core layers for cad / se / pcb

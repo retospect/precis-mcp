@@ -4,6 +4,7 @@ claimed-by: gf-backup1
 title: Incremental DB backups — pgBackRest primary, uncompressed dump via restic second
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Incremental DB backups — pgBackRest primary, uncompressed dump via restic second

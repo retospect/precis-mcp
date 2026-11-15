@@ -6,6 +6,7 @@ pillar: 3d-design
 prio: high
 model: fable
 blocked-by: structure-workspaces
+quest: qu570323
 ---
 
 # PCB workspaces — the workspace model applied to boards

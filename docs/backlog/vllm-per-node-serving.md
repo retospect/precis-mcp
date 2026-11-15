@@ -3,6 +3,7 @@ status: draft
 title: vLLM per-node serving on the local-serving node — one model per box, replication as the throughput lever
 pillar: local-compute
 prio: normal
+quest: qu635084
 ---
 
 # vLLM per-node serving

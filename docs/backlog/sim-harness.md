@@ -3,6 +3,7 @@ status: draft
 title: sim-harness slices 2-3 — quest-driven automation, writeup draft, container drive path
 pillar: 3d-design
 model: opus
+quest: qu686092
 ---
 
 # sim-harness — slices 2–3 (automation + writeup + container run)

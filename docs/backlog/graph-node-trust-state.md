@@ -3,6 +3,7 @@ status: draft
 title: Graph node and edge trust state — origin, grounding, review and honest confidence
 pillar: memory-graph
 prio: high
+quest: qu635085
 ---
 
 # Graph node and edge trust state

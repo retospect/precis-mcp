@@ -3,6 +3,7 @@ status: draft
 title: finish copying every agent's local skills into precis skills
 pillar: platform
 prio: normal
+quest: qu540835
 ---
 
 # finish copying every agent's local skills into precis skills

@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: "cad/3D-print assembly checklist — curated seed items (companion to checklist-kind.md, slice 4)"
 prio: high
+quest: qu686092
 ---
 
 # cad assembly checklist — seed items

@@ -2,6 +2,7 @@
 status: draft
 title: Turn-as-job routing (delegate-on-confidence) — context curation moved to context-navigation.md
 pillar: local-compute
+quest: qu635084
 ---
 
 # Turn-as-job routing (delegate-on-confidence)

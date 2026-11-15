@@ -2,6 +2,7 @@
 status: in-progress
 title: Generated card_description chunks for non-text kinds
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Generated card_description chunks for non-text kinds

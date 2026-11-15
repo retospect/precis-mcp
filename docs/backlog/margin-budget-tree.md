@@ -4,6 +4,7 @@ title: margin budget tree — system-level engineering margin allocated unevenly
 prio: medium
 model: opus
 pillar: 3d-design
+quest: qu686092
 ---
 
 # Margin budget tree (rides the estimate kind)

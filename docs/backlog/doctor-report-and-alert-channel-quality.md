@@ -4,6 +4,7 @@ pillar: platform
 title: doctor/brief quality residue — attention-count ruling, alert deferral, worker_logs ts index
 prio: low
 model: sonnet
+quest: qu540835
 ---
 
 # Doctor report and alert-channel quality — open remainder

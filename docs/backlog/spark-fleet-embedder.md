@@ -3,6 +3,7 @@ status: draft
 title: The GPU node serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies
 pillar: local-compute
 prio: high
+quest: qu635084
 ---
 
 # The GPU node serves embeddings for the fleet — one LAN embedder replaces the per-node loopback copies

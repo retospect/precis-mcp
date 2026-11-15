@@ -4,6 +4,7 @@ pillar: 3d-design
 title: checklist kind — remainder after the pcb pre-tapeout instance shipped
 prio: normal
 model: sonnet
+quest: qu686092
 ---
 
 # checklist kind — remainder

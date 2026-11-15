@@ -2,6 +2,7 @@
 status: in-progress
 title: Catalyst-library records tie to our Pd slab models through a typed reference quantity, a geometric match key and a bare-host calibration panel
 pillar: quests
+quest: qu500066
 ---
 
 # Catalyst-library tie-in for the Pd slab models

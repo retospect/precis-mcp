@@ -4,6 +4,7 @@ title: Flat-pack furniture generator on a shared sheet job — the cardboard cut
 pillar: 3d-design
 prio: normal
 model: opus
+quest: qu686092
 ---
 
 Status 2026-10-17: builds 1-4 shipped; slice 5 part labels wait on the geom/stroke-font move (9970b8d6e).

@@ -3,6 +3,7 @@ status: draft
 title: Workspace code cites its sources by db handle; export expands handles to self-contained excerpts
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # Workspace code cites its sources by db handle

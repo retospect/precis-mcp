@@ -5,6 +5,7 @@ pillar: memory-graph
 prio: normal
 model: opus
 blocked-by: web-graph-navigation
+quest: qu635085
 ---
 
 # eye link editor — edit the edge you are looking at

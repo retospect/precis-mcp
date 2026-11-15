@@ -4,6 +4,7 @@ title: structural solution space — the axial member, prestress + tensegrity ch
 pillar: 3d-design
 prio: high
 model: opus
+quest: qu686092
 ---
 
 # Structural solution space

@@ -4,6 +4,7 @@ title: Gripe-fix loop state lives on the gripe; one skill runs the loop
 pillar: platform
 prio: high
 claimed-by: agent-a48ee681e0f92df42
+quest: qu540835
 ---
 
 # Gripe-fix loop state lives on the gripe; one skill runs the loop

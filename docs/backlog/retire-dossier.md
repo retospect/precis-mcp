@@ -3,6 +3,7 @@ status: draft
 pillar: quests
 prio: high
 title: Retire the dossier — the quest's typed edges carry the synthesis, one memory card per experiment
+quest: qu540835
 ---
 
 # Retire the dossier

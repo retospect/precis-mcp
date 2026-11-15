@@ -2,6 +2,7 @@
 status: draft
 pillar: memory-graph
 title: "the acquisition marker is a provenance state stored inside a text chunk another door legitimately overwrites"
+quest: qu635085
 ---
 
 # A flag hiding in prose

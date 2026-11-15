@@ -4,6 +4,7 @@ title: Component model — Component / LandPattern / Instance, roles + capabilit
 prio: normal
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 # The component model

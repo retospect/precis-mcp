@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: quests
+quest: qu540835
 ---
 
 # Patent authoring — the freedom-to-operate writing loop

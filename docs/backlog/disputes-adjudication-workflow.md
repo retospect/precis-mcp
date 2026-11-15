@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: "disputes adjudication — a claim about two claims, five verdicts, and the derived `contradicts`"
 model: opus
+quest: qu635085
 ---
 
 # Disputes adjudication workflow (Part 2 of the `disputes` split)

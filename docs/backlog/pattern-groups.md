@@ -3,6 +3,7 @@ status: draft
 title: pattern groups — one prototype, a transform group, orbit-deduped checks
 prio: high
 pillar: 3d-design
+quest: qu686092
 ---
 
 # Pattern groups — symmetric repetition as a first-class tree node

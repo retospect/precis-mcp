@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: estimate kind — millisecond chemistry workup panel (argue without sims, to set up sims)
 prio: normal
+quest: qu164903
 ---
 
 # `estimate` kind — millisecond chemistry workup panel

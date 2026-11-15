@@ -3,6 +3,7 @@ status: draft
 title: "pcb provenance: ask a part who made it, who moved it, who routed it"
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # pcb provenance — who made you, who moved you, who routed you

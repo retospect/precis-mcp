@@ -3,6 +3,7 @@ status: draft
 title: "pcb topo-place research appendix — topological routing rules (R1–R15) and the 4-plane model"
 pillar: 3d-design
 prio: high
+quest: qu570323
 ---
 
 # pcb topo-place research appendix

@@ -3,6 +3,7 @@ status: draft
 title: stamp a precis version on realize and silk output so pre/post-deploy boards are tellable apart
 pillar: 3d-design
 prio: normal
+quest: qu570323
 ---
 
 # stamp a precis version on realize and silk output so pre/post-deploy boards are tellable apart

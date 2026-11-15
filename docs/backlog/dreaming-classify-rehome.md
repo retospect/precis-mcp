@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: Dreaming classify-and-rehome — research-space writes get a kind, a space and a parent at the batch boundary, rules first
 prio: normal
+quest: qu635085
 ---
 
 # Dreaming classify-and-rehome — type the research-space writes at the batch boundary

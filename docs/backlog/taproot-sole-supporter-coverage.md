@@ -3,6 +3,7 @@ status: draft
 title: taproot sole/derivative-supporter coverage signal
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # taproot sole/derivative-supporter coverage signal

@@ -4,6 +4,7 @@ title: Ontology v2 — grouped measurands on named axes, a method start node, ca
 pillar: memory-graph
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # Ontology v2

@@ -2,6 +2,7 @@
 status: draft
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # Embed freshness

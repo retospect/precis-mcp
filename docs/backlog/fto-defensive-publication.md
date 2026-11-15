@@ -3,6 +3,7 @@ status: draft
 pillar: quests
 title: freedom to operate — defensive-publication SOP (Zenodo, TDCommons, IP.com) with xrefs
 prio: medium
+quest: qu540835
 ---
 
 # Freedom to operate — defensive publication as SOP

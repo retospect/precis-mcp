@@ -2,6 +2,7 @@
 status: draft
 title: Local-model paper→findings reader — a background job that reads one full-text paper chunk by chunk and writes cited, deduped claim hubs for the quest or todo that asked
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Local-model paper→findings reader

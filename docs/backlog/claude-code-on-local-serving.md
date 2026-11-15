@@ -3,6 +3,7 @@ status: in-progress
 pillar: local-compute
 prio: high
 owner: local-compute
+quest: qu635084
 ---
 
 # Claude Code sessions on local or cheap serving

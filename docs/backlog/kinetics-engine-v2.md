@@ -7,6 +7,7 @@ model: opus
 summary: Kinetics v2 engine: one ledger, mean-field and lattice KMC, TPD-anchored, re-runnable; the spec lives in graph memory
 spec-root: me568528
 plan-todo: td568706
+quest: qu500066
 ---
 # kinetics-engine-v2
 

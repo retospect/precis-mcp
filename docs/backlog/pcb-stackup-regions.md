@@ -3,6 +3,7 @@ status: in-progress
 title: pcb — stackup spec, derived fill regions, via-to-plane, pin affinity, rooms and side moves
 prio: high
 pillar: 3d-design
+quest: qu570323
 ---
 
 # pcb: stackup, fill regions, pin affinity and via-to-plane

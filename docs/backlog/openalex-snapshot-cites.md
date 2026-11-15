@@ -3,6 +3,7 @@ status: draft
 title: Load citation edges from the OpenAlex snapshot into cites links
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # Load citation edges from the OpenAlex snapshot into `cites` links

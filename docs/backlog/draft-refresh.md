@@ -2,6 +2,7 @@
 status: draft
 pillar: memory-graph
 title: draft_refresh residuals — external lit-search leg + refinements
+quest: qu635085
 ---
 
 # draft_refresh residuals

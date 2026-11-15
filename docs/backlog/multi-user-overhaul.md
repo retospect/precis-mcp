@@ -3,6 +3,7 @@ status: draft
 title: Multi-user overhaul — four roles, tiered Postgres roles, vault name classes, ingress-asserted human actor
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Multi-user overhaul

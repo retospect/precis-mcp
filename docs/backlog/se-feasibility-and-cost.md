@@ -4,6 +4,7 @@ title: se feasibility and cost — one check registry, hard floor plus graded ob
 pillar: 3d-design
 prio: high
 model: opus
+quest: qu686092
 ---
 
 # se: can we make it, can we assemble it, and how much does it hurt?

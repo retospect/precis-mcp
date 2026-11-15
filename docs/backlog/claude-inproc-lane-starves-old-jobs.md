@@ -3,6 +3,7 @@ status: draft
 pillar: platform
 title: claude_inproc lane — plan_tick failures and the hung-call wedge
 prio: normal
+quest: qu540835
 ---
 
 # claude_inproc lane — plan_tick failures and the hung-call wedge

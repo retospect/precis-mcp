@@ -4,6 +4,7 @@ pillar: 3d-design
 title: T-handle bearing — the third hexfold test piece (nanotube race, rotating inner handle)
 prio: high
 blocked-by: me628772
+quest: qu347422
 ---
 
 # T-handle bearing — third hexfold test piece

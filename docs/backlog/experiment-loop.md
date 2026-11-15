@@ -5,6 +5,7 @@ title: experiment loop — hypothesis → plan → measured result → verdict, 
 prio: normal
 model: sonnet
 blocked-by: measures-substrate
+quest: qu635085
 ---
 
 # experiment loop — idea, experiment, result rejects the hypothesis

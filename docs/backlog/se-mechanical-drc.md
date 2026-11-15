@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: 3d-design
+quest: qu686092
 ---
 
 # se: mechanical DRC — what is left after fastener_insertion_path

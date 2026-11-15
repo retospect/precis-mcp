@@ -3,6 +3,7 @@ status: draft
 title: "One molecule renderer with SE and structure adapters"
 pillar: 3d-design
 prio: high
+quest: qu686092
 ---
 
 # Shared molecule renderer — source map and proposed migration

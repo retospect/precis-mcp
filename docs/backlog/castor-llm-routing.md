@@ -3,6 +3,7 @@ status: draft
 title: Local-first routing for cheap product LLM ops — the local-serving node first, paid model on escalation, shadow-measured before cutover
 pillar: local-compute
 prio: high
+quest: qu635084
 ---
 
 # Local-first routing for cheap product LLM ops

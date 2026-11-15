@@ -4,6 +4,7 @@ title: a surface-Pourbaix validity map and linked reaction staircase drive slab 
 pillar: 3d-design
 prio: high
 owner: catalysis session
+quest: qu459585
 ---
 
 Status 2026-10-17: slices 1-7 shipped; slice 8 (Fe-doped Pd end to end) has a DRAFT contract below (not `ready`; vetting and Reto's §Slice 8 open questions pending). Reto decides: the Nov-2026 paper-date collision under qu459585.

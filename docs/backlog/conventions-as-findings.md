@@ -2,6 +2,7 @@
 status: in-progress
 pillar: memory-graph
 title: conventions as findings — every docs/conventions rule becomes a finding with a `tests` edge, and the file retires
+quest: qu635085
 ---
 
 # conventions as findings

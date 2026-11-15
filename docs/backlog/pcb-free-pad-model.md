@@ -3,6 +3,7 @@ pillar: 3d-design
 status: draft
 title: "pcb: a free pad — copper on a net belonging to no component"
 prio: normal
+quest: qu570323
 ---
 
 # pcb: free pads have no model, so they are dropped

@@ -5,6 +5,7 @@ pillar: 3d-design
 summary: Pathway margins compare only under the same correction policy; the spec lives in graph memory
 spec-root: me568810
 plan-todo: td568825
+quest: qu500066
 ---
 # pathway-correction-basis
 

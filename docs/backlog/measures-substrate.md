@@ -4,6 +4,7 @@ title: Measures substrate — generalise material_values into `measures` (any su
 prio: high
 model: opus
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Measures substrate — generalise `material_values` into `measures`

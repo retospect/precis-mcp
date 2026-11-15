@@ -3,6 +3,7 @@ status: in-progress
 title: ref 2615 binds a NanoBud paper's chunks to a mining-journal DOI
 pillar: memory-graph
 prio: high
+quest: qu635085
 ---
 
 # `ref 2615`: chunks and identity belong to two different papers

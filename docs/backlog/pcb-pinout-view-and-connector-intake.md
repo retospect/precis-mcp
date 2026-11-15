@@ -4,6 +4,7 @@ title: Connector intake, signal-to-pad capture and pinout extensions
 prio: normal
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 # Connector intake and pinout extensions

@@ -2,6 +2,7 @@
 status: draft
 title: "se/cad: suggest_checks — verification probes derived from declared intent"
 pillar: 3d-design
+quest: qu686092
 ---
 
 # se/cad: suggest_checks

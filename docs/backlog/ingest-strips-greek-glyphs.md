@@ -2,6 +2,7 @@
 status: draft
 pillar: memory-graph
 title: "ingest silently strips Greek glyphs from some PDFs — μm becomes mm, and the claim looks wrong instead of the source"
+quest: qu635085
 ---
 
 # The source text can be the thing that's broken

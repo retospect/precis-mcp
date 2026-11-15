@@ -3,6 +3,7 @@ status: draft
 title: "opt-in teach mode — specialist agents narrate the reasoning behind design choices as they work"
 pillar: platform
 prio: low
+quest: qu540835
 ---
 
 # Teach mode — narrated design reasoning

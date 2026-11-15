@@ -5,6 +5,7 @@ pillar: 3d-design
 prio: medium
 model: opus
 blocked-by: me628772
+quest: qu686092
 ---
 
 # Pick anything, get every level it belongs to, cite one in the prompt

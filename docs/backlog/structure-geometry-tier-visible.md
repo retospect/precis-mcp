@@ -2,6 +2,7 @@
 status: draft
 title: every structure says which tier made its current coordinates (stick, spring cleanup, force field, ML, DFT), and the 3D viewer shows it
 pillar: 3d-design
+quest: qu686092
 ---
 
 # Every structure says which tier made its current coordinates

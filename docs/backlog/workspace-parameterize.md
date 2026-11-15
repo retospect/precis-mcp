@@ -2,6 +2,7 @@
 status: draft
 title: "workspace scripts: parameterize — lift a literal into a named variable from a trace frame"
 pillar: 3d-design
+quest: qu686092
 ---
 
 # workspace scripts: parameterize

@@ -4,6 +4,7 @@ title: run the chemistry checks — no generator route calls check(), and naming
 prio: high
 model: opus
 pillar: 3d-design
+quest: qu686092
 ---
 
 # The chemistry checks nobody runs

@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: quests
+quest: qu540835
 ---
 
 # quest: warn loudly when rubric_objectives reference measures nothing produces

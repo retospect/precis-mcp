@@ -2,6 +2,7 @@
 status: draft
 pillar: platform
 prio: medium
+quest: qu540835
 ---
 
 # SI fetch: adopt an existing role-main record instead of silently skipping

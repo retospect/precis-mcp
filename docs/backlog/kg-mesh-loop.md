@@ -4,6 +4,7 @@ title: Knowledge-graph mesh loop — a cheap tier proposes stance candidates per
 pillar: memory-graph
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # Knowledge-graph mesh loop

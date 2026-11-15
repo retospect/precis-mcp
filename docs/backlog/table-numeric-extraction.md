@@ -4,6 +4,7 @@ title: Structured numeric extraction from paper tables — parsed table view, ta
 pillar: memory-graph
 prio: high
 model: sonnet
+quest: qu635085
 ---
 
 # Structured numeric extraction from paper tables (gr506762)

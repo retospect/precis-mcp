@@ -3,6 +3,7 @@ status: draft
 title: Pd candidates are evaluated on the hydride phase their operating potential implies, with bare Pd as the reference
 pillar: 3d-design
 prio: high
+quest: qu164903
 ---
 
 # Pd candidates are evaluated on the hydride phase their operating potential implies

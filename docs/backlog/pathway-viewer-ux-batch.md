@@ -3,6 +3,7 @@ status: draft
 title: Pathway viewer UX batch — per-pathway states, ordered TS, leaving species, keyboard nav
 prio: normal
 pillar: 3d-design
+quest: qu500066
 ---
 
 # Pathway viewer UX batch (user request 2026-08-17)

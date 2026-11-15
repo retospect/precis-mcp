@@ -3,6 +3,7 @@ status: draft
 title: POST /papers/{ref_id}/edit with a cite_key change hangs the request
 model: sonnet
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Paper-edit re-slug hangs the request

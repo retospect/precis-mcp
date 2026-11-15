@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: platform
+quest: qu540835
 ---
 
 # Advisory code-smell pass (DRY / class design) — periodic, not the gate

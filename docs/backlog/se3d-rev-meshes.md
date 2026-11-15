@@ -2,6 +2,7 @@
 status: draft
 title: "se 3D viewer: ?rev= past revisions draw the live cad design's meshes"
 pillar: 3d-design
+quest: qu686092
 ---
 
 # se 3D viewer: ?rev= realized meshes are revision-blind

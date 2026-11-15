@@ -4,6 +4,7 @@ title: wrap_chain — derive a helix path from a carbon part's envelope instead 
 pillar: 3d-design
 prio: high
 blocked-by: me628772
+quest: qu686092
 ---
 
 # wrap_chain — a helix path derived from a part, not authored freehand

@@ -4,6 +4,7 @@ title: "pcb: datasheet-grounded part selection, design and review — shared par
 pillar: 3d-design
 prio: high
 model: opus
+quest: qu570323
 ---
 
 # pcb: datasheet-grounded part selection, design and review

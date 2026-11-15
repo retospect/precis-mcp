@@ -3,6 +3,7 @@ status: draft
 title: Resolve an in-text citation ([32], Miller 1921) to the cited paper and passage, and record a chunk-level cites link
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # Resolve an in-text citation to the cited paper and passage (gr513768)

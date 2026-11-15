@@ -64,6 +64,8 @@ scripts/near-dups::run 1
 scripts/pcb-batch-to-board::main 1
 scripts/pcb-snapshot::<module> 1
 scripts/precis-chat::castor_base 1
+scripts/quest-homes::_prod 1
+scripts/quest-homes::run 1
 scripts/reap-idle-gates::_docker 1
 scripts/reap-idle-gates::_sessions 1
 scripts/reap-index-locks::_run 1

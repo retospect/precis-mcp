@@ -1,6 +1,7 @@
 ---
 status: in-progress
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Nanopub changes: signing is the boundary

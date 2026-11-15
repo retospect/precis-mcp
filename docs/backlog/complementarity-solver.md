@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: complementarity solver — open: screw-clamp must_contact wiring
 prio: high
+quest: qu686092
 ---
 
 # Complementarity solver — open remainder: screw-clamp must_contact wiring

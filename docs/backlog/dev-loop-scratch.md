@@ -3,6 +3,7 @@ status: in-progress
 title: Dev loop — scratch runs, a per-worktree MCP server, file-backed trace views
 pillar: 3d-design
 prio: high
+quest: qu686092
 ---
 
 # Dev loop — scratch runs, a per-worktree MCP server, file-backed trace views

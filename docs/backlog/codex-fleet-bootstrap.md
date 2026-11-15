@@ -1,6 +1,7 @@
 ---
 status: in-progress
 pillar: platform
+quest: qu540835
 ---
 # Codex fleet bootstrap and process learning
 

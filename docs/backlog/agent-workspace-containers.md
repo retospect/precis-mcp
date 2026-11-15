@@ -4,6 +4,7 @@ pillar: platform
 prio: high
 title: Agent workspace containers — persistent workspaces, disposable containers, git in/out
 model: opus
+quest: qu540835
 ---
 
 # Agent workspace containers — coder agents in containers for sims & co

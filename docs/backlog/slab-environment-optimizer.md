@@ -3,6 +3,7 @@ status: draft
 title: Per-slab environment optimizer — the quest finds each slab's best setup over U, pH, T, pressures and salt against three goals, and names the next point to compute
 pillar: 3d-design
 prio: high
+quest: qu500066
 ---
 
 # Per-slab environment optimizer

@@ -3,6 +3,7 @@ status: in-progress
 title: surface-review follow-ups — resume pointer for pass #1's findings
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 Status 2026-10-17: every pass-1 item shipped. Pass #2 is OVERDUE (was due 2026-10-13); run it and record its findings here.

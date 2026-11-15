@@ -3,6 +3,7 @@ status: in-progress
 claimed-by: scope-s23
 title: Read-only connections see only read recipes (skills, toc, search, Next:, next=)
 pillar: platform
+quest: qu540835
 ---
 
 # Read-only connections see only read recipes

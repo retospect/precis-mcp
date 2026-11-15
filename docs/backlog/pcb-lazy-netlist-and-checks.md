@@ -4,6 +4,7 @@ title: pcb — lazy netlist (supply/client roles, matching solver), one check su
 prio: high
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 Status 2026-10-17: slices 1, 2, 5, 6, 8 and the slice-7 channel map shipped; slice 7's pcb_netlist_snapshots migration (0221) waits on the release owner's /go.

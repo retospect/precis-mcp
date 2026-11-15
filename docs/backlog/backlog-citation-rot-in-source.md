@@ -2,6 +2,7 @@
 status: draft
 pillar: platform
 title: "source docstrings cite deleted docs/backlog/ files — ~60 dangling, no lint catches it"
+quest: qu540835
 ---
 
 # Delete-on-ship leaves citations behind

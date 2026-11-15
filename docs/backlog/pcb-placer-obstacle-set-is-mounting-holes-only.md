@@ -3,6 +3,7 @@ status: draft
 title: The placer sees mounting holes and authored vias — authored tracks, pours and the seed are still blind
 prio: normal
 pillar: 3d-design
+quest: qu570323
 ---
 
 # What the placer still cannot see

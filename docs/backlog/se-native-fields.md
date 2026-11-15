@@ -4,6 +4,7 @@ pillar: 3d-design
 prio: normal
 model: opus
 title: se native fields — one 3-D conservation-law solver ∇·(K∇u)+S on a cut-cell grid from the cad solid; heat, DC current, electrostatics, species, Darcy as coefficient sets; Joule coupling; thermoelastic via scikit-fem; the `evaluate` toolkit shared with the flow kernel
+quest: qu686092
 ---
 
 # se native fields — solids and bulk as one field solver

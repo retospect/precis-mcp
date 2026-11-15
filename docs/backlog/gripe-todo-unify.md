@@ -3,6 +3,7 @@ status: draft
 title: Gripe = intake and triage record; a linked code todo is the work item
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Gripe = intake and triage record; a linked code todo is the work item

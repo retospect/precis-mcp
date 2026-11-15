@@ -2,6 +2,7 @@
 status: draft
 title: Quest data table + staged formula discovery (linear baseline first)
 pillar: quests
+quest: qu540835
 ---
 
 # Quest data table + staged formula discovery (linear baseline first)

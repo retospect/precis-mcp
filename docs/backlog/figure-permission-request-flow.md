@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: Figure permissions — close the loop from ledger to actual request
 prio: normal
+quest: qu635085
 ---
 
 # Figure permissions — close the loop from ledger to actual request

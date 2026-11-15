@@ -5,6 +5,7 @@ title: Knowledge mesh — a persisted measure record on hubs, a generic graph wa
 prio: high
 model: opus
 blocked-by: measures-substrate
+quest: qu635085
 ---
 
 # Knowledge mesh — a persisted measure record on hubs, a generic graph walk, numeric-conflict disputes, and a per-quest mesher pass

@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: quests
+quest: qu500066
 ---
 
 # The catalyst-discovery quest — remaining slices

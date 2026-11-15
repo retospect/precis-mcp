@@ -3,6 +3,7 @@ status: draft
 title: uncited= skips patent/edgar — the sweep is not corpus-wide
 pillar: memory-graph
 prio: medium
+quest: qu635085
 ---
 
 # `uncited=` skips patent and edgar

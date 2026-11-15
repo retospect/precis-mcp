@@ -4,6 +4,7 @@ pillar: quests
 title: Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
 prio: high
 model: fable
+quest: qu540835
 ---
 
 Slices 1–7 built 2026-09-29, live since 2026-09-30; thread parked at TIER 3 ([threads/roadmap-quest.md](./threads/roadmap-quest.md)); Do next 1 waits on a reopen.

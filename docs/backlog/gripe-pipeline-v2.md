@@ -2,6 +2,7 @@
 status: draft
 title: Gripe pipeline v2 (duplicate parents, triage tick, verify-to-close)
 pillar: platform
+quest: qu540835
 ---
 
 # Gripe pipeline v2

@@ -5,6 +5,7 @@ title: Structure workspaces — exec blocks against head, se stores and inspects
 pillar: 3d-design
 prio: high
 model: fable
+quest: qu347422
 ---
 
 # Structure workspaces — exec blocks against head, inspection in MCP

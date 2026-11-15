@@ -3,6 +3,7 @@ status: draft
 title: pcb — an authored or imported keepout region constrains nothing, silently
 prio: normal
 pillar: 3d-design
+quest: qu570323
 ---
 
 # pcb: `ftype='keepout'` is accepted and does nothing

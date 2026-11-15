@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: quests
+quest: qu540835
 ---
 
 # The paper-writing pipeline

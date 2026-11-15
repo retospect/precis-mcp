@@ -4,6 +4,7 @@ title: Test board — USB-C PD Arduino Nano (5V) with switched high-side power o
 prio: normal
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 Status 2026-10-17: fixture + baseline on main (ef454a295); slice 2 is being built.

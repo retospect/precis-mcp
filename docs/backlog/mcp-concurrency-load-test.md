@@ -3,6 +3,7 @@ status: in-progress
 title: MCP concurrency load test — find the wall before the first overnight run
 prio: high
 pillar: platform
+quest: qu540835
 ---
 
 # MCP concurrency load test

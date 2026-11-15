@@ -3,6 +3,7 @@ status: in-progress
 title: Job slicing — a long compute job yields its claim per slice budget and resumes from the per-step checkpoint
 pillar: platform
 prio: normal
+quest: qu540835
 ---
 
 # Job slicing

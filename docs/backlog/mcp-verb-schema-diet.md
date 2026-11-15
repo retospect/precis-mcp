@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: platform
+quest: qu540835
 ---
 
 # MCP verb schema diet: slice 2 (discovery + skill migration)

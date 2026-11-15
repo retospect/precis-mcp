@@ -4,6 +4,7 @@ title: Memory gardener — text-level detectors, a reviewed rewrite door, a reti
 pillar: memory-graph
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # Memory gardener

@@ -4,6 +4,7 @@ title: Term taxonomy v1.5 — edge axis as a taxon, plus the v1 follow-ups
 pillar: memory-graph
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # Term taxonomy v1.5 — the edge axis becomes a taxon

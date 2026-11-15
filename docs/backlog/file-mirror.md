@@ -4,6 +4,7 @@ pillar: memory-graph
 title: file mirror — skills and the Claude Code memory files enter the graph as read-only refs with links, so search, link and fisheye reach them
 prio: normal
 model: opus
+quest: qu635085
 ---
 
 # file mirror — skills and memory files as graph nodes

@@ -3,6 +3,7 @@ status: draft
 title: Run the two disputes judges on Sonnet instead of Haiku
 pillar: memory-graph
 prio: high
+quest: qu635085
 ---
 
 # Run the two disputes judges on Sonnet instead of Haiku

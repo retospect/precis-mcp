@@ -3,6 +3,7 @@ status: draft
 title: Verb descriptions carry cross-kind mechanics only; kind clauses move to skills
 pillar: platform
 prio: normal
+quest: qu540835
 ---
 
 PROPOSED, Reto approved direction 2026-10-17; build after M1-M3.

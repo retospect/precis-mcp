@@ -2,6 +2,7 @@
 status: in-progress
 pillar: local-compute
 title: Load-based scheduling — every launch is admitted against measured host capacity (gr647996)
+quest: qu635084
 ---
 
 # Load-based scheduling (gr647996)

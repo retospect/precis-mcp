@@ -3,6 +3,7 @@ status: draft
 title: Interface-first protein design with a non-repeating contact pattern
 pillar: 3d-design
 thread: se-machine-design
+quest: qu686092
 ---
 
 # Interface-first protein design

@@ -4,6 +4,7 @@ title: plugin split, top-down — precis-util runtime shell + precis-geom build 
 prio: normal
 model: opus
 pillar: platform
+quest: qu540835
 ---
 
 # Plugin split, top-down: `precis-util` + `precis-geom` + `precis-xxx` models

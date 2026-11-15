@@ -2,6 +2,7 @@
 status: draft
 title: youtube kind — opt-in one-hop recommendation list (gr519600)
 pillar: platform
+quest: qu540835
 ---
 
 # youtube kind — opt-in one-hop recommendation list

@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: "°C spacing unified on SI — sweep existing drafts to the spaced form"
 model: sonnet
+quest: qu635085
 ---
 
 # Decided and implemented; the corpus sweep is what remains

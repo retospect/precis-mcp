@@ -2,6 +2,7 @@
 status: draft
 title: Wire the ci-failed digest into scripts/release's red-gate summary
 pillar: platform
+quest: qu540835
 ---
 
 # Wire the ci-failed digest into scripts/release's red-gate summary

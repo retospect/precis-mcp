@@ -2,6 +2,7 @@
 status: draft
 title: "cad DSL: pattern ops (mirror / rotate / tile) as one motif mechanism"
 pillar: 3d-design
+quest: qu686092
 ---
 
 # cad DSL: pattern ops

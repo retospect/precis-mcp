@@ -3,6 +3,7 @@ status: draft
 title: Notation matching is one-directional — a canon query can't reach a not-yet-normalized row
 pillar: memory-graph
 model: sonnet
+quest: qu635085
 ---
 
 # ASCII→canon is covered; canon→ASCII isn't

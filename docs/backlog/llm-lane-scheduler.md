@@ -3,6 +3,7 @@ status: draft
 title: Class lanes on each local LLM endpoint — slot count from the server's load, floors, caps, fillers, user work first
 pillar: local-compute
 prio: high
+quest: qu635084
 ---
 
 # Class lanes on each local LLM endpoint

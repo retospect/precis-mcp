@@ -3,6 +3,7 @@ status: draft
 title: Source bundles — a design owns an immutable, hash-keyed set of source files
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # Source bundles for design scripts

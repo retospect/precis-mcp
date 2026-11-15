@@ -2,6 +2,7 @@
 status: draft
 title: Editable Sources/Cited panel on the paper page (DOI paste + search-to-attach)
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Editable Sources/Cited panel on the paper page (DOI paste + search-to-attach)

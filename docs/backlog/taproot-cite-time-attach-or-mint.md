@@ -3,6 +3,7 @@ status: draft
 title: Attach-or-mint at cite time — the claim picker has no verdict, only a list
 pillar: memory-graph
 prio: medium
+quest: qu635085
 ---
 
 # Attach-or-mint at cite time

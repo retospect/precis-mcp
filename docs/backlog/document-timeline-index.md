@@ -3,6 +3,7 @@ status: draft
 pillar: personal
 title: temporal index over documents — schedule and narrative events into a queryable fact table, so an agent can ask "what is on at 11:30, and what clashes"
 prio: normal
+quest: qu686093
 ---
 
 # Temporal index over documents — a calendar-like read surface over any ingested text

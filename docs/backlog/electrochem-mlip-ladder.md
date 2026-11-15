@@ -7,6 +7,7 @@ model: opus
 summary: Ringe constant-charge electrochemistry on an MLIP ladder: sigma-linear corrections, charge-aware MACE, explicit double layer; the spec lives in graph memory
 spec-root: me568778
 plan-todo: td568815
+quest: qu500066
 ---
 # electrochem-mlip-ladder
 

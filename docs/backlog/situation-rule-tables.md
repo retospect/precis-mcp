@@ -3,6 +3,7 @@ status: draft
 title: situation rule tables — three-verdict pair checks over swept volumes in se drc
 pillar: 3d-design
 prio: normal
+quest: qu686092
 ---
 
 # Situation rule tables — three-verdict pair checks over swept volumes

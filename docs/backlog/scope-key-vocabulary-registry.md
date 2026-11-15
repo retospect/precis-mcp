@@ -2,6 +2,7 @@
 status: draft
 title: scope keys need a frequency-ordered registry, not a hardcoded 7-key list
 pillar: memory-graph
+quest: qu635085
 ---
 
 # The vocabulary was invented, not measured

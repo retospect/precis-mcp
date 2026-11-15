@@ -7,6 +7,7 @@ blocked-by: pathway-selectivity-u-ph-window
 summary: Barriers only where they decide selectivity, promotion on a wide floor with an audit sample; the spec lives in graph memory
 spec-root: me568655
 plan-todo: td568699
+quest: qu500066
 ---
 # pathway-kinetics-promotion-gate
 

@@ -4,6 +4,7 @@ pillar: 3d-design
 prio: normal
 model: opus
 title: se multiphysics — species, heat, electro-osmosis, Darcy, compliance, slip, power-law and two-phase on the thin-gap flow kernel, a pluggable external 3-D backend, and the se vocabulary (patch BCs, material measures, output measures) that carries them
+quest: qu686092
 ---
 
 # se multiphysics on the thin-gap kernel

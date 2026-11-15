@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: Local models keep the mesh — measured per action against two bars (auto-apply, reviewed by a bigger model), one reviewed-by ledger an edit makes stale, and a revision log off a stable head
 prio: high
+quest: qu635085
 ---
 
 # Local models keep the mesh

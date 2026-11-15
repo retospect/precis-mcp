@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: memory-graph
+quest: qu635085
 ---
 
 # OA acquisition + structured ingest + external search (roadmap)

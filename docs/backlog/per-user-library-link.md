@@ -2,6 +2,7 @@
 status: draft
 title: Per-user library discovery link for citations and export
 pillar: personal
+quest: qu686093
 ---
 
 # Per-user library discovery link for citations and export

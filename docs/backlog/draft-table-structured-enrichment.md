@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: Structured enrichment for rich draft tables (alignment, spans, rules, footnotes) — format-neutral, not stored markup
 model: opus
+quest: qu635085
 ---
 
 # Structured enrichment for rich draft tables

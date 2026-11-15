@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: ephemeral data-derived potentials as a catpath pre-screen — train a throwaway potential from the search's own single-points, refine only the survivors with DFT
 prio: normal
+quest: qu500066
 ---
 
 # Ephemeral data-derived potentials as a catpath pre-screen

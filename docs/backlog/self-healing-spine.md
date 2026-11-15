@@ -3,6 +3,7 @@ status: draft
 title: Self-healing spine — two registries, one report, one doctor agent
 pillar: platform
 model: opus
+quest: qu540835
 ---
 
 # Self-healing spine

@@ -5,6 +5,7 @@ pillar: memory-graph
 prio: normal
 model: sonnet
 blocked-by: measures-substrate
+quest: qu635085
 ---
 
 # datasheet facts in the mesh — remainder

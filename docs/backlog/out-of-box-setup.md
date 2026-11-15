@@ -3,6 +3,7 @@ status: draft
 title: Out-of-box setup — `precis setup`, `precis doctor`, first-run page, onboarding guide, admin users screen, clean-container CI
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Out-of-box setup

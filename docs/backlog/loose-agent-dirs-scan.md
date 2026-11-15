@@ -2,6 +2,7 @@
 status: draft
 title: Periodic scan for loose agent working dirs (/tmp, ~/, old scratch) — reports, never reaps
 pillar: platform
+quest: qu540835
 ---
 
 # Periodic scan for loose agent working dirs

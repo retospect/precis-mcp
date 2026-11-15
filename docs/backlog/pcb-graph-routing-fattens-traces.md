@@ -3,6 +3,7 @@ status: draft
 title: "Graph routing fattens traces by net property in place of flood fill"
 prio: normal
 pillar: 3d-design
+quest: qu570323
 ---
 
 # Graph routing fattens traces by net property in place of flood fill

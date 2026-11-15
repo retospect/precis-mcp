@@ -5,6 +5,7 @@ title: Curation gate — a read-only reviewer over one run's write set, pass/fai
 prio: normal
 model: opus
 blocked-by: eval-run-spine
+quest: qu635084
 ---
 
 # Curation gate — review a run's writes, not the corpus

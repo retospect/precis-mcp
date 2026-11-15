@@ -3,6 +3,7 @@ status: draft
 title: Reaction Explorer controls — an environment panel on the Pourbaix slider bank, a visual-filter panel, per-step kinetics on the diagram, and a compute cart for what is not computed yet
 pillar: 3d-design
 prio: high
+quest: qu500066
 ---
 
 # Reaction Explorer controls: environment, filters, per-step kinetics, compute cart

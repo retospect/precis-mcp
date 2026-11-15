@@ -3,6 +3,7 @@ status: draft
 title: Taxonomy bootstrap — generate the campaign measurand list and earn `systematic` from corpus usage, no hand-maintained list
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # Taxonomy bootstrap — the measurand list is a generated, versioned artifact

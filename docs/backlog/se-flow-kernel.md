@@ -4,6 +4,7 @@ pillar: 3d-design
 prio: medium
 model: opus
 title: se flow kernel — dimension-free thin-chamber flow + particle tracing on continuous se/cad objects, with a regime card that says when the model holds
+quest: qu686092
 ---
 
 # se flow kernel (dimension-free Hele-Shaw + Lagrangian tracer)

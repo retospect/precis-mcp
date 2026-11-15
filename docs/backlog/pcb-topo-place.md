@@ -5,6 +5,7 @@ pillar: 3d-design
 prio: high
 model: opus
 blocked-by: pcb-workspace-code
+quest: qu570323
 ---
 
 # pcb topo-place

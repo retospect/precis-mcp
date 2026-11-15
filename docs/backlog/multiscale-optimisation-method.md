@@ -4,6 +4,7 @@ title: multiscale optimisation method — annealed discrete outer, shape-functio
 prio: high
 model: opus
 pillar: 3d-design
+quest: qu686092
 ---
 
 # Intake routing (added 2026-09-15)

@@ -4,6 +4,7 @@ title: memory native authoring — harness memory is written and loaded as SPACE
 pillar: memory-graph
 prio: high
 model: opus
+quest: qu635085
 ---
 
 # memory native authoring — the write half of "memory is the graph"

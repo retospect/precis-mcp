@@ -3,6 +3,7 @@ status: draft
 pillar: local-compute
 title: Write local rungs under the SMALL/MEDIUM tiers, once Slice 0 picks a model
 prio: normal
+quest: qu635084
 ---
 
 # Local rungs under SMALL/MEDIUM

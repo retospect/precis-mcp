@@ -4,6 +4,7 @@ claimed-by: fitcheck-s2
 title: se: built-in fit / interference / mass check and a probe primitive for scripted designs
 pillar: 3d-design
 prio: high
+quest: qu686092
 ---
 
 # se: built-in fit / interference / mass check and a probe primitive for scripted designs

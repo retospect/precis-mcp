@@ -4,6 +4,7 @@ title: "pcb: meta-components — reusable schematic blocks and pre-routed layout
 prio: normal
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 > **SUPERSEDED by [pcb-workspace-code](pcb-workspace-code.md) (Reto

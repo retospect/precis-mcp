@@ -4,6 +4,7 @@ title: "design tree: function → decision trees for se/cad agents — remaining
 pillar: 3d-design
 prio: normal
 model: sonnet
+quest: qu686092
 ---
 
 # design tree — the design knowledge graph, remaining work

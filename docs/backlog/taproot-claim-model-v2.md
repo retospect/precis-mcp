@@ -1,6 +1,7 @@
 ---
 status: in-progress
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Taproot claim model v2

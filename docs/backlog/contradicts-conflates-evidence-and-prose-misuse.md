@@ -3,6 +3,7 @@ status: draft
 pillar: memory-graph
 title: a contradicts edge means two different things, and one of them permanently blocks the wrong hub
 prio: high
+quest: qu635085
 ---
 
 # `contradicts` conflates "evidence opposes this claim" with "the draft misused this claim"

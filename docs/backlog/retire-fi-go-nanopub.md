@@ -2,6 +2,7 @@
 status: draft
 title: retire fi as the claim surface — nanopublications all the way
 pillar: memory-graph
+quest: qu635085
 ---
 
 # retire fi as the claim surface — nanopublications all the way

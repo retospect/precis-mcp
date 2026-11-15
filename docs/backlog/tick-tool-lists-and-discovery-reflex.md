@@ -2,6 +2,7 @@
 status: draft
 title: per-job-type tool lists in tick executors + NotFound→search retry line
 pillar: platform
+quest: qu540835
 ---
 
 # Per-job tool lists + discovery reflex in tick prompts

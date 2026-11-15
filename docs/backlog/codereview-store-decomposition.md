@@ -1,6 +1,7 @@
 ---
 status: in-progress
 pillar: platform
+quest: qu540835
 ---
 
 # codereview: Store decomposition — mixin facade → composed sub-stores

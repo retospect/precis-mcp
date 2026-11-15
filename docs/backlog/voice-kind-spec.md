@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: personal
+quest: qu686093
 ---
 
 # `voice` — local speech ↔ text kind

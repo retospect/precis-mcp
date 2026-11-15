@@ -3,6 +3,7 @@ status: draft
 title: The factory absorbs GRIPE_FIX and BUILDER — the integration list
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # The factory absorbs GRIPE_FIX and BUILDER — the integration list

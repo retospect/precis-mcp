@@ -3,6 +3,7 @@ status: draft
 title: pcb exports write to any agent-supplied directory; confine dir to the export root
 pillar: 3d-design
 prio: normal
+quest: qu570323
 ---
 
 # pcb exports write to any agent-supplied directory; confine dir to the export root

@@ -3,6 +3,7 @@ status: draft
 title: njit the remaining scalar hot loops (chain relax, pcb coupling pairs)
 pillar: 3d-design
 prio: low
+quest: qu686092
 ---
 
 # njit the remaining scalar hot loops

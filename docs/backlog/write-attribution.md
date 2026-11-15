@@ -1,6 +1,7 @@
 ---
 status: in-progress
 title: Write attribution — revisions.writer records the model, process and human behind every write
+quest: qu540835
 ---
 
 # Write attribution

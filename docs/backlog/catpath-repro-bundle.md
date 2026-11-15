@@ -3,6 +3,7 @@ status: draft
 title: Catpath reproducible bundle — one archive per finished compound (model, seeds, env, outputs, offline viewer, verify script), publishable on Zenodo
 pillar: 3d-design
 prio: normal
+quest: qu500066
 ---
 
 # Catpath reproducible bundle for Zenodo

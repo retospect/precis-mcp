@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: Close the CAD Ask loop — diagnose to apply
 model: sonnet
+quest: qu686092
 ---
 
 # Close the CAD Ask loop — diagnose to apply

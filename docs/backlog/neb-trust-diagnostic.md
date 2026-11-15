@@ -4,6 +4,7 @@ title: NEB trust-gate diagnostic — one read that shows each barrier gate, its 
 pillar: 3d-design
 thread: chemistry
 prio: high
+quest: qu164903
 ---
 
 # NEB trust-gate diagnostic (gr515871)

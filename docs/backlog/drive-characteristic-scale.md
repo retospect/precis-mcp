@@ -3,6 +3,7 @@ status: draft
 pillar: 3d-design
 title: a derived characteristic-scale value for design refs — sort key first, filter only if earned
 prio: normal
+quest: qu686092
 ---
 
 # Characteristic scale for design refs

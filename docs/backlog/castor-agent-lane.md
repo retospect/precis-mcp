@@ -3,6 +3,7 @@ status: draft
 title: Local-model agent lane — gpt-oss-120b as a builder/helper beside Devin and Claude
 pillar: local-compute
 prio: high
+quest: qu635084
 ---
 
 # Local-model agent lane

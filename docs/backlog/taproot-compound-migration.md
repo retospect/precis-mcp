@@ -3,6 +3,7 @@ status: draft
 title: Taproot composite→atomic migration — corpus-wide apply, blocked on regrounding
 pillar: memory-graph
 model: opus
+quest: qu635085
 ---
 
 # Taproot composite→atomic migration

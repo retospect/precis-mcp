@@ -2,6 +2,7 @@
 status: draft
 title: Source-agnostic prompt-injection scan — slices 2-4 (corpus worker, papers/search gating, prompt-seam fencing)
 pillar: platform
+quest: qu540835
 ---
 
 # Source-agnostic prompt-injection scan — slices 2–4

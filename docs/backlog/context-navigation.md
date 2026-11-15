@@ -3,6 +3,7 @@ status: draft
 title: Context navigation — the twin, sets, row grammar, managed context (Mode B)
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Context navigation — token-efficient, effective navigation for every agent

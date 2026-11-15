@@ -3,6 +3,7 @@ status: draft
 title: ingest Claude Code session history into precis as conv refs
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # ingest Claude Code session history into precis

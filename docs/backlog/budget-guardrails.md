@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: platform
+quest: qu540835
 ---
 
 # Budget guardrails — a lightweight cost/token backstop

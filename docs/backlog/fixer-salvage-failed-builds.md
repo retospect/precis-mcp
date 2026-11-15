@@ -3,6 +3,7 @@ status: draft
 pillar: platform
 title: Salvage failed fixer builds instead of discarding them
 model: sonnet
+quest: qu540835
 ---
 
 # Salvage failed fixer builds instead of discarding them

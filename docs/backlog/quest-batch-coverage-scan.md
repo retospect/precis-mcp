@@ -3,6 +3,7 @@ status: draft
 title: "quest: one op that fans a surface_coverage_scan across a named list of candidates and models"
 pillar: quests
 prio: low
+quest: qu540835
 ---
 
 # Quest batch coverage scan

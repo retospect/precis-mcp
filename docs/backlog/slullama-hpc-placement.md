@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: local-compute
+quest: qu635084
 ---
 
 # External HPC — slullama LLM rung, batch runner, Apptainer image

@@ -3,6 +3,7 @@ status: draft
 title: Daily OpenAlex watch for new papers citing papers we hold and use; queue them for fetch
 pillar: memory-graph
 prio: normal
+quest: qu635085
 ---
 
 # Forward-citation watch (gr513769)

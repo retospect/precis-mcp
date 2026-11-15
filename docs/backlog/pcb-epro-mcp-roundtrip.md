@@ -3,6 +3,7 @@ status: draft
 title: pcb .epro2 round trip through the MCP — what is left after the fetch/import rulings
 pillar: 3d-design
 prio: normal
+quest: qu570323
 ---
 
 # pcb .epro2 round trip through the MCP

@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: 3d-design
+quest: qu686092
 ---
 
 # se: process skills as geometry rewrites — a `suggested_fix` that carries the ops

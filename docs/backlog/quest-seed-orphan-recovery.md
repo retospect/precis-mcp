@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: quests
+quest: qu540835
 ---
 
 # Quest seed-orphan recovery — ref_events trigger

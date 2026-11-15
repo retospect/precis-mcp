@@ -3,6 +3,7 @@ status: draft
 title: Alert when the nightly B2 offsite sync goes dark
 pillar: platform
 prio: high
+quest: qu540835
 ---
 
 # Alert when the nightly B2 offsite sync goes dark

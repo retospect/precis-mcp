@@ -4,6 +4,7 @@ title: Paper backup/restore and PDF transfer over MCP (gr517423)
 pillar: memory-graph
 prio: normal
 model: sonnet
+quest: qu635085
 ---
 
 # Paper backup/restore and PDF transfer over MCP (gr517423)

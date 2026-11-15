@@ -3,6 +3,7 @@ status: in-progress
 title: Novel-ideas feed — arXiv RSS + Hacker News digest, dark
 pillar: memory-graph
 prio: low
+quest: qu635085
 ---
 
 # Novel-ideas feed — arXiv RSS + Hacker News digest, dark

@@ -3,6 +3,7 @@ status: draft
 title: "pcb: per-design pad overrides on a placed footprint (op='pad')"
 pillar: 3d-design
 prio: normal
+quest: qu570323
 ---
 
 # pcb: per-design pad overrides on a placed footprint

@@ -1,6 +1,7 @@
 ---
 status: in-progress
 pillar: platform
+quest: qu540835
 ---
 
 # Autoskill — router-side warm start from similar sessions

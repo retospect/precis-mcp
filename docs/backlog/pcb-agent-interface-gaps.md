@@ -4,6 +4,7 @@ title: The pcb MCP surface — what the agent sees, what it ought to see
 prio: normal
 model: opus
 pillar: 3d-design
+quest: qu570323
 ---
 
 # The agent-facing pcb surface

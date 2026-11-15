@@ -2,6 +2,7 @@
 status: draft
 pillar: memory-graph
 title: "scope-forked hubs mint the same AIDA URI — the collision is a symptom of an inadmissible sentence"
+quest: qu635085
 ---
 
 # Two distinct claims, one published identity

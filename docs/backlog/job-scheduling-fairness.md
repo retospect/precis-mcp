@@ -4,6 +4,7 @@ title: Job scheduling fairness — origin classes on the job row, class-preservi
 pillar: platform
 prio: normal
 model: opus
+quest: qu540835
 ---
 
 # Job scheduling fairness

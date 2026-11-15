@@ -3,6 +3,7 @@ status: draft
 title: Verify deployed supplier stock outcomes
 pillar: 3d-design
 thread: se-machine-design
+quest: qu570323
 ---
 
 # Verify deployed supplier stock outcomes

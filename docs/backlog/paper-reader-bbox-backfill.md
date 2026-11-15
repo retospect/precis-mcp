@@ -1,6 +1,7 @@
 ---
 status: draft
 pillar: memory-graph
+quest: qu635085
 ---
 
 # Paper reader — per-chunk bbox backfill (pixel-perfect highlight) + optional re-embed

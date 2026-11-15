@@ -2,6 +2,7 @@
 status: draft
 title: /next writes a handoff memory node and a pointer; a SessionStart(compact) hook injects it — no copy-paste restart
 pillar: operations
+quest: qu540835
 ---
 
 # /next → /compact handoff loop

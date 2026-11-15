@@ -4,6 +4,7 @@ title: NEB structure builder — author matched IS/FS endpoints on the structure
 pillar: 3d-design
 thread: chemistry
 prio: high
+quest: qu509651
 ---
 
 # NEB structure builder (gr512126)

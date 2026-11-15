@@ -4,6 +4,7 @@ title: reaction kind + synthesis cost — a sourced reaction-fact store, and cos
 pillar: 3d-design
 prio: high
 model: opus
+quest: qu686092
 ---
 
 # `reaction` kind + cost-of-synthesis
