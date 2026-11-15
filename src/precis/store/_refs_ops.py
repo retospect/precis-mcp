@@ -3674,6 +3674,15 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         return None if row is None else str(row[0])
 
+    def ref_kinds_present(self) -> set[str]:
+        """Distinct ``refs.kind`` values owning at least one row — live or
+        retired. Retired rows count on purpose: a trash view (Drive's
+        ``state=deleted``) can still return them, so a kind whose only
+        rows are deleted is not a guaranteed-empty selection (gr664402)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute("SELECT DISTINCT kind FROM refs").fetchall()
+        return {str(r[0]) for r in rows}
+
     #: Whitelisted ``ORDER BY`` clauses for :meth:`list_refs`. Keys are
     #: the safe identifiers a caller (e.g. the web Refs tab) may pass as
     #: ``order_by``; values are the literal SQL (column already aliased

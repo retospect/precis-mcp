@@ -239,10 +239,11 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
 
     ``text`` is the whole input value, ``pos`` the caret. Completions
     answer only when the head ends in a ``/token`` still being typed —
-    one row per known kind, the same roster ``_split_kind_tokens``
-    resolves against (bucket kinds + the ``items_kinds`` cookie's saved
-    set, mirroring ``index``'s ``all_kind_defs``), with ``_kind_help``
-    one-liners, so the popdown can't drift from the parser — or in a bare
+    one row per offered kind (the bucket roster, minus the never-row
+    "Other" kinds the facet drops — gr664402: ``_split_kind_tokens``
+    still *resolves* a typed dead kind, the popdown just doesn't offer
+    it — plus the ``items_kinds`` cookie's saved set, mirroring
+    ``index``), with ``_kind_help`` one-liners — or in a bare
     qualifier word (``is:``/``has:``/``tag:``/``since:`` — slice 2, no
     leading slash), served by ``_qualifier_completions`` with ``tag:``
     values off the same roster ``/drive/tags/suggest`` uses. Anything else
@@ -264,7 +265,12 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
     prefix = m.group(1).lower()
     saved = [x for x in (request.cookies.get("items_kinds") or "").split(",") if x]
     hub = getattr(get_runtime(request), "hub", None)
-    kinds = {kk for bucket in _kind_buckets(hub).values() for kk in bucket} | set(saved)
+    buckets = _kind_buckets(hub)
+    # Same "Other"-bucket row-source filter as the facet (gr664402): a
+    # never-row kind stays completable only via the cookie-saved set.
+    row_kinds = await asyncio.to_thread(_ref_backed_kinds, get_store(request))
+    buckets["other"] = [kk for kk in buckets["other"] if kk in row_kinds or kk in saved]
+    kinds = {kk for bucket in buckets.values() for kk in bucket} | set(saved)
     items = [
         {"name": k, "insert": f"/{k}", "desc": _kind_help(k)}
         for k in sorted(kinds)
@@ -513,6 +519,24 @@ def _kind_roster(hub: Any, fallback: list[str]) -> list[str]:
     except Exception:
         loaded = []
     return sorted(set(loaded).union(fallback))
+
+
+#: Kinds with a Drive row source outside ``refs``: ``tag`` lists from its
+#: own table (gr636493, ``_tag_rows``). Every other registered kind must
+#: have a ``refs`` row or its facet chip is a guaranteed-empty selection
+#: (gr664402 — compute kinds like calc/random/time and file-backed kinds
+#: like skill/python/md store no refs and can never return a row).
+_NON_REF_ROW_KINDS = frozenset({"tag"})
+
+
+def _ref_backed_kinds(store: Store) -> set[str]:
+    """Every kind with at least one row in ``refs``, plus ``tag``.
+
+    Retired rows count on purpose (``Store.ref_kinds_present`` reports
+    them too): the ``state=deleted`` trash view lists them, so a
+    kind whose only rows are deleted can still return them.
+    """
+    return set(store.ref_kinds_present()) | _NON_REF_ROW_KINDS
 
 
 def _kind_buckets(hub: Any) -> dict[str, list[str]]:
@@ -935,14 +959,17 @@ async def index(
     if not request.query_params and cookie is None:
         task = "discover"
     all_kind_defs = sorted(kk for kinds in kind_buckets.values() for kk in kinds)
-    discover_kinds = [kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED]
+    # Kinds that can return a Drive row (gr664402): a ``refs`` row or a
+    # table of their own — filters the "Other" facet below and keeps
+    # never-row kinds out of the Discover default scope too.
+    row_kinds = await asyncio.to_thread(_ref_backed_kinds, store)
+    discover_kinds = [
+        kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED and kk in row_kinds
+    ]
     # A stale/custom saved kind remains selectable without becoming part of
     # Discover's default roster merely because one browser named it.
     all_kind_defs = sorted(set(all_kind_defs).union(saved_kinds, url_kinds))
     classified = {kk for kinds in kind_buckets.values() for kk in kinds}
-    kind_buckets["other"] = sorted(
-        set(kind_buckets["other"]).union(set(all_kind_defs) - classified)
-    )
     _scope_kinds = {
         "sources": kind_buckets["sources"],
         "mine": [*artifact_kind_defs, *design_kind_defs, *work_kind_defs],
@@ -1000,6 +1027,20 @@ async def index(
             paper_chunks = qual_pc
         if qual_since is not None:
             since = qual_since
+    # gr664402: the "Other" catch-all must not offer kinds that can never
+    # return a row — compute/stateless kinds (calc/random/time/…) and
+    # file-backed kinds (skill/python/md/…) are registered, so they land
+    # here, but nothing they make reaches ``refs`` (nor, unlike ``tag``, a
+    # table of its own): their checkbox was a guaranteed-empty selection.
+    # Restrict roster "Other" kinds to ref-backed ones. A *selected* dead
+    # kind keeps its chip — and unclassified saved/URL kinds keep theirs —
+    # so a deep-linked scope still serializes through the next submit.
+    # Runs after ``_split_kind_tokens`` reassigns ``selected_kinds``: a
+    # typed ``/calc`` selects the same dead kind and needs the same chip.
+    kind_buckets["other"] = sorted(
+        {kk for kk in kind_buckets["other"] if kk in row_kinds or kk in selected_kinds}
+        | (set(all_kind_defs) - classified)
+    )
     tags = [t.strip() for t in tag if t.strip()] + qual_tags
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though

@@ -51,13 +51,56 @@ def test_every_registered_kind_has_exactly_one_rendered_bucket(
     response = client.get("/drive")
     assert response.status_code == 200
     inventory.feed(response.text)
-    for kind in runtime.hub.kinds:
+    named = {
+        kk for bucket, kinds in buckets.items() if bucket != "other" for kk in kinds
+    }
+    for kind in named:
         assert len(inventory.inputs[kind]) == 1
+    # gr664402 — an "Other" kind renders a chip only when it can return a
+    # row: ref-backed (the fake's ``ref_kinds`` seed) or already selected.
+    # Compute/file-backed kinds (calc/random/time/skill/md/python/…)
+    # register and land in "other" but store no refs, so they offer
+    # nothing; ``tag`` keeps its chip via its own row source (_tag_rows).
+    row_kinds = runtime.store.ref_kinds | {"tag"}
+    for kind in buckets["other"]:
+        assert len(inventory.inputs[kind]) == (1 if kind in row_kinds else 0), kind
     for kind, bucket in EXPECTED.items():
         assert inventory.inputs[kind][0]["data-kind-bucket"] == bucket
     for kind in ("se", "finding", "tex", "anki", "citation", "news"):
         assert "checked" in inventory.inputs[kind][0]
     assert "checked" not in inventory.inputs["message"][0]
+
+
+def test_selected_rowless_kind_keeps_its_chip(runtime_with_store, runtime, client):
+    """gr664402 — a deep-linked ``k=`` scope stays serializable: an
+    explicit ``k=calc`` still renders its chip (checked) even though calc
+    can never return a row; unselected, it is not offered at all."""
+    runtime.hub = runtime_with_store.hub
+    if "calc" not in runtime.hub.kinds:
+        pytest.skip("calc kind not registered in this build")
+    assert "calc" in _kind_buckets(runtime.hub)["other"]
+    response = client.get("/drive?k=calc&submitted=1")
+    assert response.status_code == 200
+    inventory = _Kinds()
+    inventory.feed(response.text)
+    assert len(inventory.inputs["calc"]) == 1
+    assert "checked" in inventory.inputs["calc"][0]
+    assert inventory.inputs["calc"][0]["data-kind-bucket"] == "other"
+    # A typed ``/calc`` token selects the same dead kind — ``_split_kind_tokens``
+    # reassigns ``selected_kinds`` before the facet filter runs, so the chip
+    # must still render (and serialize through the next submit).
+    response = client.get("/drive", params={"q": "/calc"})
+    assert response.status_code == 200
+    inventory = _Kinds()
+    inventory.feed(response.text)
+    assert len(inventory.inputs["calc"]) == 1
+    assert "checked" in inventory.inputs["calc"][0]
+    assert inventory.inputs["calc"][0]["data-kind-bucket"] == "other"
+    response = client.get("/drive?k=paper&submitted=1")
+    assert response.status_code == 200
+    inventory = _Kinds()
+    inventory.feed(response.text)
+    assert "calc" not in inventory.inputs
 
 
 def test_future_kinds_join_author_or_visible_other():
