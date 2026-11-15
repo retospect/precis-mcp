@@ -156,9 +156,19 @@ get(kind="cad", id="crane", view="sweep")
 - A mate/joint anchored on a port `of:` a jointed component **follows**
   that component — a motor mated onto an articulated arm swings with it.
 - `view='sweep'` sweeps each joint across its `limits:` (others held
-  neutral, `args.n` samples, default 9), reporting every colliding pair
-  with the state range where it interferes, plus the swept envelope per
-  moving body. `args={'joint': 'jib'}` sweeps one joint only.
+  neutral) with a configuration-space walk: per colliding pair, the exact
+  collision window(s) in the joint's unit (`collides_at`, e.g.
+  `78°..102°`; edges bisected; a narrow obstacle between where
+  fixed samples would land is still found) and `evals`, the gap evaluations that pair
+  cost. `args.n` (default 9, max 25) sets the budget — 2×`n` gap evaluations per pair; a pair
+  needing more is refused with a next step, never a silent partial
+  answer. A pair touching throughout (a hinge pin and its bore) is listed
+  separately under "in contact throughout", not as a collision. Where the
+  walk had to step wider than its safe bound (touching pairs, grazing
+  passes) the pair is listed under "uncertain": a penetration narrower
+  than the step cannot be excluded. The swept
+  envelope per moving body follows. `args={'joint': 'jib'}` sweeps one
+  joint only.
 
 ### Print-in-place joints — the `printed-` type convention
 

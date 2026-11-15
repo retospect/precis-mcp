@@ -1,0 +1,240 @@
+"""Configuration-space sweep — exact collision windows for one swept joint.
+
+``view='sweep'`` (:meth:`precis.handlers.cad.CadHandler._render_sweep`) used
+to sample a joint's travel at ``args.n`` evenly spaced states and check the
+full contact graph at each — which can skip a collision thinner than the
+sample spacing, costs ``n`` gap evaluations even for a pair nowhere near
+contact, and only ever says "hit at sample i", never where the interference
+starts and stops.
+
+This module is conservative advancement (CCD) over the one scalar degree of
+freedom a sweep actually varies (the swept joint, plus anything a gear/belt
+couples to it is just another point on the same curve — still one DOF): a
+pair with signed gap ``g`` at joint value ``q`` cannot touch within
+``|dq| <= g / v``, where ``v`` is a caller-supplied bound on how fast any
+point of the moving material can move per unit ``q``. Stepping by that bound
+cannot skip a sign change (clear → interfering or back); bisecting each
+bracket (at most :data:`_BISECT_MAX_ITERS` halvings) then gives the window
+edges. Far from an obstacle the step grows large (``g`` is large); near one
+it shrinks, down to the bisection tolerance — a grazing pass spends
+evaluations and, if it exhausts ``eval_cap``, is refused rather than
+skipped. The one exception is a pair whose gap sits inside its own
+resolution band (a joint's hinge-pin-and-its-bore partners touch at every
+state by construction, so ``|g|/v`` would be 0 and stall the walk): that
+state advances by the old uniform-sampling step ``span / (eval_cap - 1)``,
+and a window narrower than that opening from such a state can be stepped
+over — so any step beyond the conservative bound sets ``uncertain`` on the
+result and the caller reports it. See ``persistent_contact`` below.
+
+The speed bound ``v`` and the gap function are both the caller's concern —
+this module is pure cspace-walk arithmetic, agnostic of what "gap" or "the
+design at q" even mean. :meth:`CadHandler._render_sweep` supplies both: the
+existing SDF clearance (:func:`precis.cad.relate._clearance`, unchanged —
+speeding that up is a separate, out-of-scope effort) and a speed bound built
+from the joint's own axis and the moving body's AABB.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable
+from dataclasses import dataclass
+
+#: A gap sample: signed distance (negative = interference) and the query's
+#: own "can't tell clear from touching" band (:data:`precis.cad.relate.
+#: CONTACT_TOL_REL` of its governing length) — never an unqualified sign.
+GapFn = Callable[[float], tuple[float, float]]
+
+#: Bisection's own iteration ceiling, independent of ``tol``: halving even
+#: a half-turn bracket (the largest ``coarse_step`` can be, at the smallest
+#: legal ``eval_cap``) this many times already lands under 2° / 2 mm — far
+#: past what a report needs, and a small, fixed cost per crossing regardless
+#: of how tight the caller's ``tol`` asks to go (reaching the exact
+#: ``CONTACT_TOL_REL`` tolerance a pair's governing length implies can cost
+#: far more evaluations than the walk itself did to find the bracket).
+_BISECT_MAX_ITERS = 2
+
+
+@dataclass(frozen=True)
+class Interval:
+    """One collision window ``[lo, hi]``, in the swept joint's own q units
+    (radians for an angle-valued joint, metres for prismatic)."""
+
+    lo: float
+    hi: float
+
+
+@dataclass(frozen=True)
+class PairSweep:
+    """One pair's cspace walk over one joint's full travel.
+
+    ``persistent_contact`` is the joint's own hinge-pin-and-its-bore case: the
+    pair never reads clearly clear (every sample's ``|gap| <= resolution``)
+    and never reads clearly interfering beyond that resolution band either —
+    it is touching throughout by construction, not a collision to report as
+    one. ``capped`` means the evaluation cap was hit before the walk reached
+    ``hi`` — the caller must refuse rather than report a silent partial
+    answer; ``intervals`` is then meaningless and left empty.
+    ``uncertain`` means some step was taken larger than the conservative
+    ``|g + resolution| / v`` bound (a floor step, or a persistent-contact
+    sample step), so a penetration narrower than that step cannot be
+    excluded — the caller must say so, not claim a clean verdict.
+    """
+
+    intervals: tuple[Interval, ...]
+    persistent_contact: bool
+    evaluations: int
+    capped: bool
+    uncertain: bool = False
+
+
+def sweep_pair(
+    gap_at: GapFn,
+    lo: float,
+    hi: float,
+    speed_bound: float,
+    *,
+    tol: float,
+    eval_cap: int,
+) -> PairSweep:
+    """Walk ``[lo, hi]`` once, bracketing and bisecting every sign change of
+    ``gap_at(q)`` against its own resolution band.
+
+    ``speed_bound`` bounds ``|d(gap)/dq|`` everywhere on the range (0 is
+    legal — a pair that cannot possibly move relative to each other under
+    this sweep — and falls back to one full-range step). ``tol`` is the
+    bisection's stopping width in ``q`` units (the caller converts a length
+    tolerance to ``q`` via ``tol_length / speed_bound``). ``eval_cap`` bounds
+    the **walk's own** ``gap_at`` calls — the ones that cover ``[lo, hi]`` —
+    reached before ``hi`` is covered, the walk gives up (``capped=True``)
+    rather than guess at the uncovered remainder. Bisection calls, which
+    only ever refine a bracket the walk already found, are not counted
+    against it (:data:`_BISECT_MAX_ITERS` bounds those instead) — covering
+    the full range is the thing that must never be a silent partial
+    answer; polishing an edge already found is a strictly bounded, separate
+    cost. Both kinds of call are counted in the returned ``evaluations``.
+    """
+    evaluations = 0
+    walk_evaluations = 0
+
+    def walk_sample(q: float) -> tuple[float, float]:
+        nonlocal evaluations, walk_evaluations
+        evaluations += 1
+        walk_evaluations += 1
+        return gap_at(q)
+
+    def bisect_sample(q: float) -> tuple[float, float]:
+        nonlocal evaluations
+        evaluations += 1
+        return gap_at(q)
+
+    span = hi - lo
+    if span <= 0.0:
+        g, res = walk_sample(lo)
+        interfering = g < -res
+        return PairSweep(
+            (Interval(lo, hi),) if interfering else (),
+            not interfering and not (g > res),
+            evaluations,
+            False,
+        )
+
+    # ``coarse_step`` is used only while the gap sits inside its own
+    # resolution band (touching to within what the query can tell apart: a
+    # permanently-touching pair, whose |g|/v step would collapse to nothing)
+    # — the old uniform sampling's granularity, so the one place a window
+    # narrower than it could be stepped over is a pair already in contact.
+    # Outside the band the step is the conservative |g|/v, floored only at
+    # ``tol`` (the bisection width) so a grazing pass costs evaluations
+    # (and hits ``eval_cap`` -> refused) rather than silently skipping.
+    coarse_step = max(span / max(1, eval_cap - 1), tol)
+    contact_step = min(span, 4.0 * coarse_step)
+
+    # Minimum step 1.5 * span/(eval_cap-1): a grazing pass costs evaluations,
+    # not a skipped window; persistent-contact pairs are walked 4x coarser.
+    floor_step = 1.5 * coarse_step
+    g_prev, resolution = walk_sample(lo)
+    q_prev = lo
+    in_collision = g_prev < -resolution
+    ever_clear = g_prev > resolution
+    start: float | None = lo if in_collision else None
+    intervals: list[Interval] = []
+    q = lo
+    capped = False
+    uncertain = False
+    while q < hi:
+        if walk_evaluations >= eval_cap:
+            capped = True
+            break
+        # The state flips at g == -resolution, so ``|g + resolution| / v`` is
+        # the largest step that provably cannot cross it.
+        safe = abs(g_prev + resolution) / speed_bound if speed_bound > 0.0 else math.inf
+        # Never step less than the floor: a pair near contact (a grazing
+        # pass, a loose speed bound) would otherwise spend the whole budget
+        # on tiny steps. A pair touching since the start (joint partners)
+        # is walked at the coarser contact step.
+        touching = abs(g_prev) <= resolution and not ever_clear
+        step = contact_step if touching else max(floor_step, safe)
+        stepped_past_safe = step > safe
+        q = min(q_prev + step, hi)
+        res_prev = resolution
+        g, resolution = walk_sample(q)
+        ever_clear = ever_clear or g > resolution
+        now_collision = g < -resolution
+        if stepped_past_safe and now_collision == in_collision:
+            # Nothing was seen at the sample, but a window narrower than
+            # the step could hide inside it.
+            uncertain = True
+        if now_collision != in_collision:
+            edge = _bisect(
+                bisect_sample, q_prev, g_prev + res_prev, q, g + resolution, tol
+            )
+            if in_collision:
+                assert start is not None
+                intervals.append(Interval(start, edge))
+                start = None
+            else:
+                start = edge
+            in_collision = now_collision
+        q_prev, g_prev = q, g
+    if capped:
+        return PairSweep((), False, evaluations, True, uncertain)
+    if in_collision:
+        assert start is not None
+        intervals.append(Interval(start, hi))
+    persistent = not intervals and not ever_clear
+    return PairSweep(tuple(intervals), persistent, evaluations, False, uncertain)
+
+
+def _bisect(
+    sample: Callable[[float], tuple[float, float]],
+    q_lo: float,
+    f_lo: float,
+    q_hi: float,
+    f_hi: float,
+    tol: float,
+) -> float:
+    """Narrow ``[q_lo, q_hi]`` — known to straddle the state boundary
+    ``f = gap + resolution == 0`` (``f_lo`` / ``f_hi`` the values at its
+    ends, opposite signs) — to ``tol`` and return the crossing.
+
+    Bracketed false position: the next probe is the linear interpolation of
+    the bracket, clamped to its middle 80% so a lopsided bracket still
+    halves at worst by 10% per probe; near a smooth crossing it lands within
+    a fraction of a degree in one or two probes, which is why
+    :data:`_BISECT_MAX_ITERS` can stay small."""
+    for _ in range(_BISECT_MAX_ITERS):
+        if q_hi - q_lo <= tol:
+            break
+        w = f_lo / (f_lo - f_hi) if f_lo != f_hi else 0.5
+        w = min(0.9, max(0.1, w))
+        mid = q_lo + w * (q_hi - q_lo)
+        g_mid, res_mid = sample(mid)
+        f_mid = g_mid + res_mid
+        if (f_mid < 0) == (f_lo < 0):
+            q_lo, f_lo = mid, f_mid
+        else:
+            q_hi, f_hi = mid, f_mid
+    if f_lo == f_hi:
+        return 0.5 * (q_lo + q_hi)
+    return q_lo + (q_hi - q_lo) * min(1.0, max(0.0, f_lo / (f_lo - f_hi)))
