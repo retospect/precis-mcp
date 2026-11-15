@@ -22,10 +22,14 @@ from typing import Any
 
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
-from precis.quest.dossier import apply_dialectic_op, read_dialectic
+from precis.quest.dossier import (
+    apply_dialectic_op,
+    dossier_ref_id,
+    read_dialectic,
+)
 from precis.quest.rulings import mint_measurement_rulings
 from precis.quest.tick import run_quest_tick
-from tests.workers._helpers import seed_ref
+from tests.workers._helpers import seed_chunk, seed_ref
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -166,6 +170,105 @@ class TestMint:
         ref = store.get_ref(kind="finding", id=rid)
         assert ref is None or str(ref.title).startswith("RETRACTED")
         assert f"[fi{rid}]" not in read_dialectic(store, qid)
+
+    def test_cited_ruling_stays_live_with_reconciled_body(self, store: Any) -> None:
+        """td685887 review: a ruling a live draft still cites can't be
+        retired (gr265228's cite guard) — it stays live, so its body
+        must stop claiming a "trusted … barrier_trusted=true"
+        measurement, not just its title and meta."""
+        qid = _mk_quest(store, "A striving")
+        hyp = seed_ref(store, kind="finding")
+        st = _mk_structure(store, barrier=0.9, trusted=True, tier="neb")
+        _preregister(store, qid, hyp, st)
+        assert mint_measurement_rulings(store, qid) == 1
+        (rid,) = _ruling_ids(store, hyp)
+        draft = seed_ref(store, title="citing draft", kind="draft")
+        seed_chunk(store, ref_id=draft, text=f"the ruling [fi{rid}] supports it")
+        store.stamp_ref_meta(st, {"barrier_low_confidence": True})
+        assert mint_measurement_rulings(store, qid) == 0
+        ref = store.get_ref(kind="finding", id=rid)
+        assert ref is not None, "a still-cited ruling stays live"
+        assert str(ref.title).startswith("RETRACTED")
+        assert (ref.meta or {}).get("sim_ruling_retracted") is True
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0", (rid,)
+            ).fetchone()
+        assert row is not None
+        body = row[0]
+        assert "RETRACTED" in body
+        assert "lead to confirm" in body
+        assert "barrier_trusted=true" not in body
+        assert "trusted measurement" not in body
+        # The retraction still names what it ruled on.
+        assert f"[fi{hyp}]" in body
+        assert f"[st{st}]" in body
+
+    def test_settled_block_still_reconciles_low_confidence(self, store: Any) -> None:
+        """td685887 review: reconciliation must reach rulings on
+        settled/refuted blocks — gating the whole block scan on liveness
+        left their invalid 'trusted' rulings untouched."""
+        qid = _mk_quest(store, "A striving")
+        hyp = seed_ref(store, kind="finding")
+        st = _mk_structure(store, barrier=0.9, trusted=True, tier="neb")
+        _preregister(store, qid, hyp, st)
+        assert mint_measurement_rulings(store, qid) == 1
+        (rid,) = _ruling_ids(store, hyp)
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {"op": "settle", "hypothesis": f"fi{hyp}", "text": "resolved."},
+        )
+        store.stamp_ref_meta(st, {"barrier_low_confidence": True})
+        assert mint_measurement_rulings(store, qid) == 0
+        ref = store.get_ref(kind="finding", id=rid)
+        assert ref is None or str(ref.title).startswith("RETRACTED")
+        # … and the experiment entry's measured bookmark is dropped.
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'rulings' FROM chunks "
+                "WHERE ref_id = %s AND meta->>'pinned' = 'dialectic-entry' "
+                "AND meta->>'role' = 'experiment'",
+                (did,),
+            ).fetchone()
+        assert row is not None
+        assert not (row[0] or {}), "stale ruling bookmark survived on a settled block"
+
+    def test_recovered_confidence_mints_fresh_not_retracted(self, store: Any) -> None:
+        """td685887 review: the ``sim_ruling_key`` converge must exclude
+        a retracted-but-cited ruling — when confidence recovers the pass
+        mints a fresh ruling and points the bookmark at it, never
+        re-adopts the retracted finding."""
+        qid = _mk_quest(store, "A striving")
+        hyp = seed_ref(store, kind="finding")
+        st = _mk_structure(store, barrier=0.9, trusted=True, tier="neb")
+        _preregister(store, qid, hyp, st)
+        assert mint_measurement_rulings(store, qid) == 1
+        (rid,) = _ruling_ids(store, hyp)
+        draft = seed_ref(store, title="citing draft", kind="draft")
+        seed_chunk(store, ref_id=draft, text=f"the ruling [fi{rid}] supports it")
+        store.stamp_ref_meta(st, {"barrier_low_confidence": True})
+        assert mint_measurement_rulings(store, qid) == 0
+        # Confidence recovers — a re-run lands enough samples.
+        store.stamp_ref_meta(st, {"barrier_low_confidence": False})
+        assert mint_measurement_rulings(store, qid) == 1
+        ids = _ruling_ids(store, hyp)
+        assert rid in ids, "the cited retracted ruling stays live"
+        fresh = [i for i in ids if i != rid]
+        assert len(fresh) == 1, "a fresh ruling mints, not the retracted one"
+        did = dossier_ref_id(store, qid)
+        assert did is not None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'rulings' FROM chunks "
+                "WHERE ref_id = %s AND meta->>'pinned' = 'dialectic-entry' "
+                "AND meta->>'role' = 'experiment'",
+                (did,),
+            ).fetchone()
+        assert row is not None
+        assert {int(v) for v in (row[0] or {}).values()} == set(fresh)
 
     def test_second_run_is_a_no_op(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")

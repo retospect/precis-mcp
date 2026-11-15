@@ -32,6 +32,17 @@ tuple-idempotent either way) — accepted, not locked against. A re-measure (new
 an engine reset) is a NEW key and mints a new ruling — trust is re-earned,
 never edited.
 
+Reconciliation (gr684807): a ruling minted before the low-confidence gate
+is retracted on the next pass that sees its structure read
+``barrier_low_confidence`` — stamped, retitled, its templated body
+rewritten to a retraction (the "trusted" claim lives where readers see
+it, not only in meta), and retired when no live draft still cites it (a
+cited one stays live, retracted — gr265228's cite guard refuses the
+delete). Settled/refuted blocks reconcile too: only minting is gated on
+the block being live. The ``sim_ruling_key`` converge excludes retracted
+findings, so a measurement whose confidence recovers mints a fresh
+ruling rather than re-adopting the retracted one.
+
 Fence (deliberate, load-bearing): sim-based rulings settle *internal*
 hypotheses only — they never ground nanopub evidence (that stays
 papers/patents/EDGAR/datasheets). Structurally: the
@@ -97,15 +108,33 @@ def _measuring_pathway(store: Store, structure_id: int, tier: str) -> int | None
 
 def _existing_ruling(store: Store, ruling_key: str) -> int | None:
     """Converge on an already-minted ruling when the entry-chunk bookmark
-    was lost (belt to the ``meta.rulings`` suspenders)."""
+    was lost (belt to the ``meta.rulings`` suspenders). A retracted ruling
+    that stayed live because a draft still cites it is NOT a converge
+    target — a recovered measurement mints fresh (gr684807)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'finding' "
             "AND retired_at IS NULL AND meta->>'sim_ruling_key' = %s "
+            "AND meta->>'sim_ruling_retracted' IS DISTINCT FROM 'true' "
             "ORDER BY ref_id LIMIT 1",
             (ruling_key,),
         ).fetchone()
     return int(row[0]) if row else None
+
+
+def _live_ruling_ids(store: Store, key_prefix: str) -> list[int]:
+    """Live, unretracted sim-ruling findings whose key starts with
+    ``key_prefix`` — the belt to the bookmark's suspenders on the
+    reconcile path: a mint whose bookmark write died mid-pass still gets
+    retracted."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'finding' "
+            "AND retired_at IS NULL AND meta->>'sim_ruling_key' LIKE %s "
+            "AND meta->>'sim_ruling_retracted' IS DISTINCT FROM 'true'",
+            (key_prefix + "%",),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 def _mint_ruling_finding(
@@ -176,8 +205,12 @@ def _untrusted_neb(smeta: dict[str, Any]) -> bool:
 
 def _retract_ruling(store: Store, fid: Any, structure_id: int) -> None:
     """Retract a ruling minted before the low-confidence gate: stamp it,
-    retitle it so no reader mistakes it for a trusted measurement, and
-    retire it when nothing cites it (a cited finding stays, retracted)."""
+    retitle it, and rewrite its templated body to the retraction — the
+    "trusted" claim lives in the body where readers see it, so meta +
+    title alone leave a live finding still asserting
+    ``barrier_trusted=true``. Then retire it when nothing cites it; a
+    draft-cited finding stays live (gr265228's cite guard refuses the
+    delete), which is exactly the case the body rewrite covers."""
     try:
         rid = int(fid)
     except (TypeError, ValueError):
@@ -185,18 +218,49 @@ def _retract_ruling(store: Store, fid: Any, structure_id: int) -> None:
     ref = store.get_ref(kind="finding", id=rid)
     if ref is None or (ref.meta or {}).get("sim_ruling_retracted"):
         return
+    meta = ref.meta or {}
+    # The meta stamp is the "done" marker the early return above keys
+    # on, so it lands LAST: a raise in the title/body reconcile leaves
+    # the stamp unset and the next pass retries instead of skipping a
+    # half-retracted finding forever (the caller's per-structure catch
+    # keeps one failure from costing the pass).
+    title = str(ref.title or "")
+    store.chunks.set_ref_title(
+        rid,
+        f"RETRACTED (low confidence, not trusted): {title}"[:300],
+        source="system",
+    )
+    # The original body survives in ref_events 'body_replaced' —
+    # replace_body_chunk is the append-only DELETE+INSERT door.
+    hyp = meta.get("hypothesis")
+    pw = meta.get("pathway")
+    via = f" via [pw{int(pw)}]" if isinstance(pw, int) else ""
+    retraction = (
+        "RETRACTED measurement ruling — low confidence, not a trusted "
+        "result.\n\n"
+        "This code-minted ruling was issued before the low-confidence "
+        "gate (gr684807): the measuring pathway's own verdict reads LOW "
+        "CONFIDENCE (single sample / spread exceeds tolerance), so the "
+        f"barrier it reported on [st{structure_id}]{via} is a lead to "
+        'confirm, not a trusted result. The original text\'s "trusted" '
+        "claim is withdrawn; it survives in the ref's event log "
+        "(body_replaced)."
+    )
+    if isinstance(hyp, int):
+        retraction += f"\n\nPre-registered experiment it ruled on: [fi{hyp}]."
+    store.chunks.replace_body_chunk(
+        rid,
+        retraction,
+        chunk_kind="finding_body",
+        source="system",
+        reason="retracted: pathway low confidence (gr684807)",
+    )
     store.stamp_ref_meta(
         rid,
         {
             "sim_ruling_retracted": True,
             "sim_ruling_retracted_reason": "pathway low confidence (gr684807)",
         },
-    )
-    title = str(ref.title or "")
-    store.chunks.set_ref_title(
-        rid,
-        f"RETRACTED (low confidence, not trusted): {title}"[:300],
-        source="system",
     )
     try:
         store.retire_ref(rid)
@@ -224,11 +288,14 @@ def mint_measurement_rulings(store: Store, quest_id: int) -> int:
     blocks = _load_dialectic_blocks(store, did)
     minted = 0
     for block in blocks:
-        if block.settled or _hypothesis_is_refuted(store, block.hypothesis_id):
-            continue
         exp = next((e for e in block.entries if e.role == "experiment"), None)
         if exp is None or exp.handle is None:
             continue
+        # Reconciliation below must reach settled/refuted blocks too
+        # (td685887 review): a wrong ruling is wrong whatever the
+        # hypothesis's later fate — only MINTING is gated on the block
+        # being live.
+        settled = block.settled or _hypothesis_is_refuted(store, block.hypothesis_id)
         rulings: dict[str, Any] = dict(exp.rulings)
         dirty = False
         for st_id in _experiment_structures(exp.text):
@@ -239,11 +306,19 @@ def mint_measurement_rulings(store: Store, quest_id: int) -> int:
                 smeta = sref.meta or {}
                 if _untrusted_neb(smeta):
                     # gr684807: reconcile rulings minted before the gate —
-                    # retract them and drop the dossier's measured bookmark.
-                    for rkey in [k for k in rulings if k.startswith(f"st{st_id}:")]:
-                        _retract_ruling(store, rulings.pop(rkey), st_id)
+                    # retract every live one naming this structure
+                    # (bookmarked AND any unbookmarked survivor the
+                    # sim_ruling_key belt still finds) and drop the
+                    # dossier's measured bookmark.
+                    stale = [k for k in rulings if k.startswith(f"st{st_id}:")]
+                    fids = {rulings.pop(k) for k in stale}
+                    if stale:
                         dirty = True
-                if smeta.get("barrier_trusted") is not True:
+                    prefix = f"qu{quest_id}:fi{block.hypothesis_id}:st{st_id}:"
+                    fids.update(_live_ruling_ids(store, prefix))
+                    for f in fids:
+                        _retract_ruling(store, f, st_id)
+                if settled or smeta.get("barrier_trusted") is not True:
                     continue
                 barrier = smeta.get("barrier")
                 if not isinstance(barrier, (int, float)) or isinstance(barrier, bool):
