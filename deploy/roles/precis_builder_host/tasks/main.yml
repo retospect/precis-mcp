@@ -227,8 +227,10 @@
     # XDG_RUNTIME_DIR beside it; Linux deploy = unset, the default
     # /var/run/docker.sock applies and run_slice's writable-roots fallback
     # grants it (gr676054). run_slice passes DOCKER_HOST on to the session
-    # and --add-dir's the socket's parent for codex. No '#' comments inside
-    # the >- expression — it is Jinja, not YAML.
+    # and --add-dir's the socket's parent for codex. PATH ends in
+    # /usr/sbin:/sbin, where macOS keeps lsof for the slice index.lock
+    # judge (gr684320). No '#' comments inside the >- expression — it is
+    # Jinja, not YAML.
     service_unit_env: >-
       {{ precis_shared_env
          | combine(precis_identity_env | default({}))
@@ -237,7 +239,7 @@
              'PATH': precis_builder_venv + '/bin:'
                + precis_builder_home + '/.local/bin:'
                + ('/opt/homebrew/bin:/Library/TeX/texbin:' if os_family == 'darwin' else '')
-               + '/usr/local/bin:/usr/bin:/bin',
+               + '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
              'PGPASSFILE': precis_builder_home + '/.pgpass',
              'PRECIS_DEVIN_BIN': precis_builder_home + '/.local/bin/devin',
              'PRECIS_DATABASE_URL': precis_builder_dsn,

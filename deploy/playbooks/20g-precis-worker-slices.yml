@@ -110,7 +110,9 @@
         # deploy-owned colima socket (the 33-agent-image convention): a
         # slice's `scripts/test` gate run dials it, and run_slice passes it
         # into the session env and the socket's parent into codex's
-        # --add-dir writable roots (gr570533).
+        # --add-dir writable roots (gr570533). PATH ends in /usr/sbin:/sbin:
+        # macOS keeps lsof there, and without it the slice index.lock judge
+        # can never call a lock stale (gr684320).
         # No '#' comments inside the expression — the >- block inside {{ }}
         # is Jinja, not YAML, and a '#' line there breaks the render.
         service_unit_env: >-
@@ -118,7 +120,7 @@
              | combine(precis_identity_env | default({}))
              | combine({
                  'HOME': _slices_home,
-                 'PATH': _slices_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
+                 'PATH': _slices_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
                  'PGPASSFILE': _slices_home + '/.pgpass',
                  'PRECIS_DEVIN_BIN': _slices_home + '/.local/bin/devin',
                  'DOCKER_HOST': 'unix://' + _slices_home + '/.colima/docker.sock',
