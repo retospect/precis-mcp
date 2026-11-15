@@ -113,7 +113,7 @@ set on a non-paper kind.
 ## Open a stub to see where it came up
 
 ```python
-get(kind='paper', id=<ref_id>)
+get(kind='paper', id='pa<N>')  # handle from the mint reply
 ```
 
 A stub has no body yet. `get` shows its metadata and inbound links —
@@ -223,7 +223,7 @@ of concern** is only a flag: the worker stamps the status (so the reader
 banner shows it) but still fetches the PDF — so those stubs stay in the
 backlog until acquired, and the gate re-checks them each pass to catch a
 later escalation to `retracted`. Confirm via `get(kind='paper',
-id=<ref_id>)`, which shows the status on the ref.
+id='pa<N>')`, which shows the status on the ref.
 
 ## See also
 

@@ -42,7 +42,7 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _ref_id(body: str) -> int:
-    return int(body.split("id=", 1)[1].split()[0])
+    return int(body.split("id=pa", 1)[1].split()[0])
 
 
 def _identifiers(store: Store, ref_id: int) -> set[tuple[str, str]]:

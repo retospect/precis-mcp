@@ -1647,8 +1647,9 @@ def id_of(body: str) -> int:
 
     Universal handles: the create-ack now reads ``created <kind> <handle>.``
     (e.g. ``created memory me158.``). Prefer the first record handle in
-    the ack's leading line; fall back to the legacy ``id=N`` form (still
-    used by update/tag acks and code-less kinds).
+    the ack's leading line; fall back to the ``id=N`` / ``id=pa<N>`` form
+    (still used by update/tag acks, code-less kinds and the paper acquire
+    mint ack).
     """
     from precis.utils import handle_registry
 
@@ -1657,7 +1658,13 @@ def id_of(body: str) -> int:
         parsed = handle_registry.parse(tok)
         if parsed is not None and not parsed[1]:  # a record (non-chunk) handle
             return parsed[2]
-    return int(body.split("id=", 1)[1].split()[0].rstrip(",.()"))
+    return int(
+        body.split("id=", 1)[1]
+        .split()[0]
+        .rstrip(",.()")
+        .strip("'\"")
+        .removeprefix("pa")
+    )
 
 
 def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:

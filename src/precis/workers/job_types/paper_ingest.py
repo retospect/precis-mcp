@@ -387,7 +387,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     state = "minted stub" if created else "already tracked"
     ctx.append_chunk(
         "job_summary",
-        f"paper_ingest {doi}: {state} paper id={ref_id}"
+        f"paper_ingest {doi}: {state} paper id=pa{ref_id}"
         + (" (unverified)" if unverified else "")
         + " — pinned to front of fetch queue",
     )

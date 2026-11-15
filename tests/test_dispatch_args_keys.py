@@ -906,6 +906,7 @@ def test_args_key_naming_handler_kwarg_is_promoted_not_rejected(
     designed, covered above). A genuinely unknown key is still rejected."""
     from precis.handlers import paper as paper_mod
     from precis.ingest.semantic_scholar import S2ResolverError
+    from tests.conftest import id_of
 
     def _down(*_a: object) -> None:
         raise S2ResolverError("offline in test")
@@ -920,7 +921,7 @@ def test_args_key_naming_handler_kwarg_is_promoted_not_rejected(
     )
     assert "[error:BadInput]" not in out, out
     assert "minted stub" in out, out
-    rid = int(out.split("id=", 1)[1].split()[0])
+    rid = id_of(out)
     assert "promotion-probe" in {str(t) for t in store.tags_for(rid)}
 
     bad = _call(

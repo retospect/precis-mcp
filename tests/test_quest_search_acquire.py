@@ -160,7 +160,7 @@ class TestMakeAcquiringSearch:
         def _fake_acquire(self: Any, **kw: Any) -> _FakeResponse:
             calls.append(kw)
             n = 901 if kw["identifier"] == "doi:10.1/aaa" else 902
-            return _FakeResponse(body=f"acquire: minted stub paper id={n} (…)")
+            return _FakeResponse(body=f"acquire: minted stub paper id=pa{n} (…)")
 
         monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _fake_acquire)
 
