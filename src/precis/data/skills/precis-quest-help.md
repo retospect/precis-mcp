@@ -169,7 +169,7 @@ A quest keeps an **append-only, dated logbook** (like a lab notebook):
 what happened, when, immutable. Append an entry with a type:
 
 ```python
-put(kind="quest", id=7, text="Try Fe–N₄ single-atom sites", args={"entry": "hypothesis"})
+put(kind="quest", id=7, text="raised hypothesis [fi42] — try Fe–N₄ single-atom sites", args={"entry": "hypothesis"})
 put(kind="quest", id=7, text="Second PCET barrier too high", args={"entry": "dead-end"})
 put(kind="quest", id=7, text="Dual-metal site clears both barriers", args={"entry": "milestone"})
 put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "agent", "cost": 1.5})
@@ -178,6 +178,11 @@ put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "ag
 - `args={'entry': …}` is one of **note · observation · hypothesis ·
   result · decision · dead-end · milestone · reflection · cost**
   (default `note`).
+- A `hypothesis` entry is a **dated pointer to a hypothesis finding,
+  never the hypothesis itself**. The living conjecture is a `finding`
+  minted with `hypothesis=True` (`fi<id>`, `serves` the quest — see the
+  Directions table below); the logbook line only records that it was
+  raised, and names the `fi` handle so the pointer resolves.
 - A **`milestone` is a deed** — the honest, medieval sense of progress.
   The deed ledger is a filtered view of the log, not a separate store.
 - **`dead-end` is first-class** — recording *what failed and why* stops
@@ -378,8 +383,12 @@ with two read-time, mechanical reads (no `% done`):
 - **gaps** — the exploration queue: **thin-support** (almost nothing
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
-  yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
-  `result`/`dead-end`), **needs-experiment** (a graduated candidate
+  yet), **open-hypothesis** (a hypothesis finding `serves`-linked to the
+  quest that is not yet settled — `STATUS:refuted` or the dialectic's
+  `settle` closes it; **transitional**: a `hypothesis` logbook entry with
+  no later `result`/`dead-end` still counts until the tick stops logging
+  hypotheses as entries, except an `fi`-linked pointer, which defers to
+  its finding), **needs-experiment** (a graduated candidate
   waiting on a real-world experiment), **needs-tool** (an open gripe the
   tick filed for a capability that doesn't exist — see the next section).
   Gaps *are* where to look next.
@@ -450,15 +459,18 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| an open question | a `hypothesis` logbook entry | the `open-hypothesis` gap tracks it |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place; refuted per the record-a-rejection workflow — pending gr664308 (lands in `precis-nanopub-help`/`precis-finding-help`); until then: `retracts`/`superseded-by`-link the hypothesis to the negative ruling and stamp `STATUS:refuted` on it, so the do-not-repropose ledger and the gap list close it |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
+
+## Directions — state rides `STATUS`, not tags
 
 An idea's state never rides a tag — not `ATTEMPT:`, not
 `DREAM:speculative`: a try that ran its course marks `done`, a
-never-again `won't-do`, and the *why* is a `hypothesis`/`dead-end`
-entry. **Open questions stay out of the striving statement** — the first
+never-again `won't-do`, and the *why* is a `dead-end` entry. **Open
+questions stay out of the striving statement** — the first
 line keeps the one asymptotic sentence ([[precis-quest-writing-help]]); a
-"what if…" is a `hypothesis` entry where the gap list sees it. Nest a
+"what if…" is a hypothesis finding; the logbook only notes that it was
+raised. Nest a
 check with `part-of`, never `parent_id` — a `parent_id` child joins the
 direction tree itself and leaves `doable` with it. Link evidence
 `serves` the **quest**, and the direction too when you want the answer

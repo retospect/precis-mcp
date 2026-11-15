@@ -188,6 +188,13 @@ put(kind="finding", title="<declarative sentence>",
 One pass over the new and existing ids after all readers return, its
 own cap (one or two per question), rules in [[precis-nanopub-help]].
 
+When the question belongs to a quest, link the minted hypothesis into
+its service so the quest's gap list sees it as an open hypothesis:
+
+```python
+link(kind="finding", id="fi<id>", target="quest:<id>", rel="serves")
+```
+
 ## What the root returns
 ## The deliverable
 

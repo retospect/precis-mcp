@@ -80,9 +80,20 @@ def _has_candidates(store: Store, quest_id: int) -> bool:
 
 
 def _n_open_hypotheses(store: Store, quest_id: int) -> int:
-    from precis.quest.gaps import _open_hypotheses
+    """Open hypotheses under the same combined semantics the gap list
+    surfaces (``gaps._open_hypothesis_state``) — unsettled served
+    hypothesis findings plus un-answered ``hypothesis`` logbook entries,
+    the dated ``fi``-pointer entries counted once by the finding they
+    name. A ``STATUS:refuted`` stamp or a dialectic ``settle`` drops the
+    count like a supported answer; a pointer to a governed finding cannot
+    linger and hold the stall clock open (gr674775 review td674960).
+    """
+    from precis.quest.gaps import _live_servers, _open_hypothesis_state
 
-    return len(_open_hypotheses(store, quest_id))
+    findings, entries = _open_hypothesis_state(
+        store, quest_id, _live_servers(store, quest_id)
+    )
+    return len(findings) + len(entries)
 
 
 def _n_paper_servers(store: Store, quest_id: int) -> int:
@@ -194,8 +205,10 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
     # spin (the tell tonight: 10 restated hypotheses, no frontier, never cooled).
     # Progress is now ANY external-evidence signal since the last tick:
     #   frontier improved · a new milestone deed · a new `result` entry ·
-    #   an open hypothesis resolved by a *supported* answer (count dropped —
-    #   `gaps._answers_hypothesis`: a bare `by=agent` dead-end is
+    #   an open hypothesis resolved — a *supported* answer for a legacy
+    #   logbook entry, a `STATUS:refuted` stamp or a dialectic `settle` for
+    #   a served hypothesis finding (count dropped —
+    #   `gaps._open_hypothesis_state`: a bare `by=agent` dead-end is
     #   restatement, not resolution) · a paper server was acquired (a lit
     #   search paid off) · a new anchored dialectic entry (a supported
     #   objection/support) · a discriminating experiment revised into a

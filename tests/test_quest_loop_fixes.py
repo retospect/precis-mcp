@@ -5,9 +5,11 @@ hypothesis, which the allocator rated "active" (activity, not progress) and so
 kept re-picking until the 12-tick cool. These cover the coupled fix:
 
 * **cascade** — the progress clock resets on *any* external progress (a new
-  ``result`` / a resolved hypothesis / an acquired paper / an anchored
-  dialectic advance), not just a compute frontier gain, so a reasoning-only
-  spin is now legible to it — and (gr626871) a bare ``by=agent``
+  ``result`` / a resolved hypothesis — a supported answer for a legacy
+  logbook entry, or (gr674775) a ``STATUS:refuted`` stamp or dialectic
+  ``settle`` on a served hypothesis finding — / an acquired paper / an
+  anchored dialectic advance), not just a compute frontier gain, so a
+  reasoning-only spin is now legible to it — and (gr626871) a bare ``by=agent``
   ``dead-end`` is restatement, not a resolution: only a *supported* kill
   closes a hypothesis — and (td629287) an ``experiment`` rewrite counts
   only when its discriminating-parameter signature is one the quest has
@@ -135,6 +137,87 @@ class TestBroadenedProgress:
         append_entry(store, qid, text="ruled out", entry_type="dead-end", by="human")
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) == 0
+
+    def test_a_refuted_hypothesis_finding_is_progress(self, store: Any) -> None:
+        # gr674775 review (td674960): the count the stall clock reads must
+        # cover the finding leg too — a served hypothesis finding that is
+        # refuted drops it exactly like a supported answer drops a legacy
+        # entry. Legacy-only counting never saw the resolution.
+        from precis.store import Tag
+        from tests.test_quest_gaps import _mint_hypothesis
+
+        qid = _mk_quest(store, "A quest with a hypothesis finding")
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        assert cascade._n_open_hypotheses(store, qid) == 1
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) >= 1
+        store.add_tag(fid, Tag.closed("STATUS", "refuted"), set_by="system")
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+
+    def test_a_dialectic_settle_resolves_the_finding_count(self, store: Any) -> None:
+        # The tick's own `settle` op is the other settlement signal — the
+        # count drops with the dialectic block, not only on a refutation
+        # stamp. (The settle also stamps a milestone, so the count is
+        # asserted directly rather than through the stall clock.)
+        from precis.quest.dossier import apply_dialectic_op
+        from tests.test_quest_gaps import _mint_hypothesis
+
+        qid = _mk_quest(store, "A quest with a settled hypothesis")
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        assert cascade._n_open_hypotheses(store, qid) == 1
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "settle",
+                "hypothesis": f"fi{fid}",
+                "text": "settled — [st1] showed the barrier is low",
+            },
+        )
+        assert cascade._n_open_hypotheses(store, qid) == 0
+
+    def test_a_fi_pointer_does_not_double_count_or_linger(self, store: Any) -> None:
+        # A `hypothesis` logbook entry naming a served finding is a dated
+        # pointer, not a second hypothesis: the count sees the finding
+        # once, and a refutation drops it even though no *answering*
+        # logbook entry could ever land behind the pointer.
+        from precis.store import Tag
+        from tests.test_quest_gaps import _mint_hypothesis
+
+        qid = _mk_quest(store, "A quest with a pointed-at hypothesis")
+        fid = _mint_hypothesis(store)
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+        append_entry(
+            store,
+            qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry_type="hypothesis",
+            by="agent",
+        )
+        assert cascade._n_open_hypotheses(store, qid) == 1
+        store.add_tag(fid, Tag.closed("STATUS", "refuted"), set_by="system")
+        assert cascade._n_open_hypotheses(store, qid) == 0
+
+    def test_an_unserved_fi_pointer_keeps_the_legacy_count(self, store: Any) -> None:
+        # A pointer whose `fi` does not serve the quest is not governed —
+        # the entry still counts under the legacy leg so the question is
+        # never silently dropped.
+        from tests.test_quest_gaps import _mint_hypothesis
+
+        qid = _mk_quest(store, "A quest with an unlinked pointer")
+        fid = _mint_hypothesis(store)  # minted but never serves-linked
+        append_entry(
+            store,
+            qid,
+            text=f"raised hypothesis [fi{fid}] — subsurface H lowers the barrier",
+            entry_type="hypothesis",
+            by="agent",
+        )
+        assert cascade._n_open_hypotheses(store, qid) == 1
 
     def test_a_supported_objection_is_progress(self, store: Any) -> None:
         # gr626871 acceptance: a new *supported* objection counts — an
