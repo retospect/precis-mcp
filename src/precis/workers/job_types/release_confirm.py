@@ -51,6 +51,17 @@ as do live hosts outside the cohort — worker-less under unconfigured
 membership, or uncovered by a published ``deploy.fleet`` (gr623769,
 td649547).
 
+**A moved head** (gr684358). The release branch can move past the plan's
+recorded sha after its verdict — a review fix-forward's ``land_slice
+--onto`` or a hand push mints no restamp/verdict node — and
+``release_deploy`` then ships the live head (its ``wait_ci`` gated that
+head green before the rollout). The pin check accepts it when the pinned
+sha IS ``release/r<N>``'s live head AND a green gate run is on record for
+it — ``release.ci_verdicts``'s newest verdict on the sha (a waived red's
+``green`` row counts) or check.yml's newest run on the branch. Anything
+unverifiable — an unreadable head, a head that moved again, no green run
+— keeps the mismatch a problem: fail closed, never a guessed sha.
+
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
 the plan root and ``release.round``
@@ -79,6 +90,7 @@ from typing import TYPE_CHECKING, Any
 from precis import daemon_fleet as _df
 from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
+from precis.plans.gates import read_ci_verdicts
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import release_deploy as _rd
@@ -331,6 +343,93 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     return "", f"web reports {reported}, release is {sha[:12]}"
 
 
+def _fetch_head(repo: str, branch: str) -> str | None:
+    """Seam: ``branch``'s live head on GitHub
+    (``ci_verdict_poll.fetch_head``); ``None`` when unreadable."""
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    return _cvp.fetch_head(repo, branch)
+
+
+def _gate_run_verdict(repo: str, sha: str, branch: str) -> str | None:
+    """Seam: ``green``/``red``/``pending`` of the newest check.yml run on
+    ``sha`` on ``branch`` (``ci_verdict_poll.verdict_of``); ``None`` when
+    GitHub is unreadable."""
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    try:
+        runs = _cvp.fetch_runs(repo, sha)
+    except Exception:
+        return None
+    if runs is None:
+        return None
+    verdict, _run_id, _why = _cvp.verdict_of(runs, sha, branch)
+    return verdict
+
+
+def _repo_of(store: Store, rel: dict[str, Any]) -> str | None:
+    """The GitHub ``owner/repo`` the moved-head check reads — the cut's
+    recorded repo, the ``release.repo`` setting, else this checkout's
+    origin remote (``resolve_target``'s order), or ``None``."""
+    from precis import settings
+
+    repo = _release.valid_repo(rel.get("repo")) or _release.valid_repo(
+        settings.get_str("release.repo", store=store)
+    )
+    if repo:
+        return repo
+    try:
+        return _rc.origin_repo(_rs.slice_root())
+    except RuntimeError:
+        return None
+
+
+def _recorded_verdict(store: Store, sha: str) -> str | None:
+    """The newest ``release.ci_verdicts`` verdict on ``sha`` (the
+    tests-green gate's prefix match — a waived red's ``green`` row is the
+    standing decision it is), else ``None``."""
+    best: tuple[str, int] | None = None
+    verdict: str | None = None
+    for i, row in enumerate(read_ci_verdicts(store)):
+        if not _same_sha(sha, str(row.get("sha") or "")):
+            continue
+        key = (str(row.get("at") or ""), i)
+        if best is None or key >= best:
+            best, verdict = key, str(row.get("verdict") or "")
+    return verdict
+
+
+def _moved_head(store: Store, rel: dict[str, Any], sha: str, rn: str) -> str | None:
+    """The acceptance phrase for a pinned ``sha`` that is not the plan's
+    release sha, else ``None`` (gr684358).
+
+    The release branch can move past ``meta.release.sha`` after its
+    verdict — a review fix-forward's ``land_slice --onto`` or a hand push
+    mints no restamp/verdict node — and ``release_deploy`` ships the live
+    head, its ``wait_ci`` having gated that head green before the
+    rollout. So a pinned sha that IS ``release/<rn>``'s live head and
+    carries a green gate run is the release, not a deploy of the wrong
+    commit: accepted, with the phrase ("verdict recorded green" /
+    "check.yml green") the evidence line reports. ``None`` keeps the
+    mismatch a problem — an unverifiable repo or head, a head that moved
+    again, or no green run all fail closed."""
+    repo = _repo_of(store, rel)
+    if repo is None or not rn:
+        return None
+    branch = _release.release_branch(rn)
+    try:
+        head = _fetch_head(repo, branch)
+    except Exception:
+        return None
+    if head is None or not _same_sha(sha, head):
+        return None
+    if _recorded_verdict(store, sha) == "green":
+        return "verdict recorded green"
+    if _gate_run_verdict(repo, sha, branch) == "green":
+        return "check.yml green"
+    return None
+
+
 def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evidence:
     """The runtime attestation for the plan's release ``rel``
     (``meta.release``); ``now`` pins the call's clock seam for tests.
@@ -338,7 +437,9 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     Required evidence is the workers — the pinned sha
     (:func:`precis.plans.release.pinned_deploy_sha`) must equal every
     live host's heartbeat ``code_sha`` exactly, and it must be the plan's
-    own release sha. Only a cohort member attests — with a published
+    own release sha — or the release branch's live head with a green
+    gate run when the branch moved past the plan after its verdict
+    (:func:`_moved_head`, gr684358). Only a cohort member attests — with a published
     ``deploy.fleet`` ``covered`` list, the configured members alone
     (td649547); without one, a host running workers or carrying a
     pre-snapshot beat (gr623769): a live non-attestor is reported in
@@ -365,12 +466,20 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     waiting: list[str] = []
     unbounced: list[str] = []
     states: list[str] = []
+    moved = ""
     if sha is not None:
-        if rel_sha and sha != rel_sha:
-            problems.append(
-                f"pinned deploy sha {sha[:12]} is not the plan's release "
-                f"sha {rel_sha[:12]}"
-            )
+        if rel_sha and not _same_sha(sha, rel_sha):
+            how = _moved_head(store, rel, sha, rn)
+            if how is None:
+                problems.append(
+                    f"pinned deploy sha {sha[:12]} is not the plan's release "
+                    f"sha {rel_sha[:12]}"
+                )
+            else:
+                moved = (
+                    f"; {_release.release_branch(rn)} head moved past the "
+                    f"plan's {rel_sha[:12]} ({how})"
+                )
         for host, ts, code_sha in live:
             reported = code_sha[:12] if code_sha else "no code_sha"
             if any(_same_sha(code_sha, p) for p in prev_shas):
@@ -441,7 +550,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     if noncohort:
         note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
-        f"{rn or 'r?'} pinned {short}; {workers}{note}; web: {web_clause}"
+        f"{rn or 'r?'} pinned {short}{moved}; {workers}{note}; web: {web_clause}"
     )[:_TEXT_CAP]
     return Evidence(
         ok=not problems and not waiting,

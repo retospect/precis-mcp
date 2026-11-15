@@ -158,14 +158,122 @@ def test_no_pinned_sha_is_a_problem(store: Store) -> None:
     assert ev.problems[-1].startswith("no pinned deploy sha")
 
 
+def _head(monkeypatch: pytest.MonkeyPatch, sha: str | None) -> None:
+    """``release/r<N>``'s live head as the moved-head check reads it."""
+    monkeypatch.setattr(rcf, "_fetch_head", lambda repo, branch: sha)
+
+
+def _run_verdict(monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> None:
+    """check.yml's verdict on the pinned sha as the check reads it."""
+    monkeypatch.setattr(rcf, "_gate_run_verdict", lambda repo, sha, branch: verdict)
+
+
 def test_a_pinned_sha_other_than_the_plan_release_is_a_problem(
-    store: Store,
+    store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Prod is on SHA2 but the plan cut SHA: the pin mismatch is the first
-    problem (the worker's sha matches prod, so nothing else fires)."""
+    """Prod is on SHA2 but the plan cut SHA and the branch head never
+    moved: the pin mismatch is the first problem (the worker's sha
+    matches prod, so nothing else fires)."""
     R.record_prod_head(store, SHA2, [])
     _beat(store, "node-a", SHA2)
+    _head(monkeypatch, SHA)
     ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok
+    assert ev.problems == [
+        f"pinned deploy sha {SHA2[:12]} is not the plan's release sha {SHA[:12]}"
+    ]
+
+
+# ── the moved release head (gr684358) ─────────────────────────────
+
+
+def test_a_deployed_head_past_the_plan_sha_is_accepted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684358: the branch moved past ``meta.release.sha`` after its
+    verdict (a fix-forward land or a hand push minted no restamp); the
+    deploy's wait_ci gated the head it shipped, so the pin that IS the
+    release head with a recorded green verdict confirms."""
+    R.record_prod_head(store, SHA2, [])
+    R.record_ci_verdict(store, SHA2, f"{SHA[:12]}..{SHA2[:12]}", "green", "11")
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, SHA2)
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
+    assert ev.ok and ev.problems == []
+    assert (
+        f"release/r7 head moved past the plan's {SHA[:12]} "
+        "(verdict recorded green)" in ev.text
+    )
+
+
+def test_a_deployed_head_with_only_a_green_run_is_accepted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verdict write is best-effort (a deploy host may hold no prod
+    credential): check.yml's own green run on the branch attests."""
+    R.record_prod_head(store, SHA2, [])
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, SHA2)
+    _run_verdict(monkeypatch, "green")
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
+    assert ev.ok and "(check.yml green)" in ev.text
+
+
+def test_a_recorded_red_then_a_green_run_is_accepted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale recorded red (the rerun's green never landed as a row) does
+    not outrank the live run: the newest check.yml verdict wins."""
+    R.record_prod_head(store, SHA2, [])
+    R.record_ci_verdict(store, SHA2, f"{SHA[:12]}..{SHA2[:12]}", "red", "11")
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, SHA2)
+    _run_verdict(monkeypatch, "green")
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
+    assert ev.ok and "(check.yml green)" in ev.text
+
+
+@pytest.mark.parametrize("verdict", ["red", "pending", None])
+def test_a_moved_head_without_a_green_gate_fails(
+    store: Store, monkeypatch: pytest.MonkeyPatch, verdict: str | None
+) -> None:
+    """No recorded verdict and no green run — red, still running or
+    GitHub unreadable — keeps the pin mismatch a problem."""
+    R.record_prod_head(store, SHA2, [])
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, SHA2)
+    _run_verdict(monkeypatch, verdict)
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
+    assert not ev.ok
+    assert ev.problems == [
+        f"pinned deploy sha {SHA2[:12]} is not the plan's release sha {SHA[:12]}"
+    ]
+
+
+def test_a_pinned_sha_the_branch_moved_past_again_fails(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded green on the pin is not enough when the head moved on
+    after the deploy — prod is stale: still a problem."""
+    R.record_prod_head(store, SHA2, [])
+    R.record_ci_verdict(store, SHA2, RNG, "green", "11")
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, "dead" + "3" * 36)
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
+    assert not ev.ok
+    assert ev.problems == [
+        f"pinned deploy sha {SHA2[:12]} is not the plan's release sha {SHA[:12]}"
+    ]
+
+
+def test_an_unreadable_head_keeps_the_mismatch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: a head that cannot be read accepts nothing."""
+    R.record_prod_head(store, SHA2, [])
+    _beat(store, "node-a", SHA2)
+    _head(monkeypatch, None)
+    ev = rcf.gather_evidence(store, {**REL, "repo": "o/r"}, now=NOW)
     assert not ev.ok
     assert ev.problems == [
         f"pinned deploy sha {SHA2[:12]} is not the plan's release sha {SHA[:12]}"
