@@ -325,6 +325,7 @@ from precis.plans.templates import (
     PENDING_SHA,
     PRELAND_DEFER_FAILED_KEY,
     PRELAND_FIX_ROUNDS_KEY,
+    PRELAND_HELD_KEY,
     SLICE_REF_NS,
 )
 from precis.store.types import ChunkInsert, Tag
@@ -1526,17 +1527,20 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
     if ref is not None and (
         (ref.meta or {}).get(PENDING_LAND_KEY)
         or (ref.meta or {}).get(PRELAND_DEFER_FAILED_KEY)
+        or (ref.meta or {}).get(PRELAND_HELD_KEY)
     ):
         # The pre-land hold (gr570506) is discharged: the landed: comment
         # is the record now, and the stamp must not read a post-land
-        # review as pre-land. A stale preland_defer_failed (gr663738)
-        # and the FIX-round count (gr684815) discharge with it.
+        # review as pre-land. A stale preland_defer_failed (gr663738),
+        # the FIX-round count (gr684815) and the preland_held stash
+        # (gr681208) discharge with it.
         store.stamp_ref_meta(
             todo_id,
             {
                 PENDING_LAND_KEY: None,
                 PRELAND_DEFER_FAILED_KEY: None,
                 PRELAND_FIX_ROUNDS_KEY: None,
+                PRELAND_HELD_KEY: None,
             },
         )
         wrote.append("pending_land cleared")
@@ -2201,6 +2205,65 @@ def _fetch_onto(tree: Path, onto: str) -> None:
     )
 
 
+def _pushed_tip_ahead(
+    root: Path | None, tree: Path, branch: str, base_ref: str
+) -> tuple[bool, str | None]:
+    """Whether the pushed ``<branch>`` still carries work ``base_ref``
+    lacks — what a ``no_land`` record would abandon while ``_cleanup``'s
+    ``push --delete`` removes the branch holding it (review td682306 on
+    gr681208: a held land naming a recut or reset worktree reads empty
+    while the reviewed commits sit on the pushed branch — recording
+    done there deletes them unlanded). ``(True, tip)`` — origin's tip
+    is ahead; ``(True, None)`` — verified: nothing is pushed, or the
+    tip is not ahead; ``(False, None)`` — the pushed state could not be
+    verified.
+
+    The tip read is the ``ls_remote`` oracle — what GitHub actually
+    serves, the same read ``_delete_remote_branch`` trusts — never the
+    ``refs/remotes/origin/*`` ref a builder session can rewrite in the
+    shared common dir. The fetch afterwards only materializes the tip's
+    objects for the ancestry read, and its answer is trusted only when
+    the tracking ref lands exactly on the oracle's sha — a config
+    redirect cannot pass that check."""
+    if root is None:
+        return False, None
+    url = _github_url(root)
+    if url is None:
+        return False, None
+    env = _factory_git.git_auth_env(base=land_env())
+    tip: str | None = None
+    src: str | None = None
+    for ns in (SLICE_REF_NS, "refs/heads/"):
+        remote = _factory_git_mirror.ls_remote(url, (branch,), env=env, namespace=ns)
+        if remote is None:
+            return False, None
+        tip = remote.get(branch)
+        if tip is not None:
+            src = f"{ns}{branch}"
+            break
+    if tip is None or src is None:
+        return True, None
+    remote_ref = f"refs/remotes/origin/{branch}"
+    try:
+        fetch = _git(
+            ["fetch", "-q", "origin", f"+{src}:{remote_ref}"],
+            tree,
+        )
+        got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
+        if fetch.returncode != 0 or got != tip:
+            return False, None
+        anc = _git(["merge-base", "--is-ancestor", tip, base_ref], tree).returncode
+        if anc == 0:
+            return True, None
+        if anc != 1:
+            # git could not run the ancestry read — not a verified
+            # "nothing pushed ahead" answer.
+            return False, None
+    except (OSError, subprocess.TimeoutExpired):
+        return False, None
+    return True, tip
+
+
 def _pr_to_close(store: Any, params: dict[str, Any], todo_id: int) -> int | None:
     """The PR a green land closes: ``params.pr``, else the todo's
     ``meta.pr_close`` (the 'land after fixes' slice)."""
@@ -2530,6 +2593,58 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     if subject is None:
         if subjects == [] and not paths:
+            # review td682306 (gr681208): an empty checkout is the done
+            # record below only when the PUSHED branch is empty too — a
+            # held land can name a recut or reset worktree while
+            # ``origin/<branch>`` still carries the commits review
+            # judged; recording done here writes a false "landed:
+            # nothing", releases the dependants, and lets ``_cleanup``'s
+            # ``push --delete`` remove the branch holding the unlanded
+            # work. Refuse like the missing-worktree arm: the reopened
+            # build's restore puts the pushed tip back (or reports that
+            # nothing was pushed).
+            try:
+                pushed_root: Path | None = _rs.slice_root()
+            except Exception:
+                pushed_root = None
+            verified, pushed = _pushed_tip_ahead(
+                pushed_root, tree, branch_hint, base_ref
+            )
+            if pushed is not None:
+                _fail(
+                    ctx,
+                    todo_id,
+                    lane,
+                    f"{branch_hint} reads empty in {tree} but "
+                    f"origin/{branch_hint} is at {pushed[:12]} ahead of "
+                    f"{base_ref}",
+                    handoff=(
+                        f"land FAILED: the worktree's {branch_hint} has no "
+                        f"commit ahead of {base_ref}, but "
+                        f"origin/{branch_hint} is at {pushed[:12]} — the "
+                        "pushed tip the review judged. Restore it into the "
+                        "worktree (`git fetch` + `checkout -B`) and land "
+                        "that, or rebuild the slice."
+                    ),
+                )
+                return None
+            if not verified:
+                _fail(
+                    ctx,
+                    todo_id,
+                    lane,
+                    f"origin/{branch_hint}'s tip could not be verified "
+                    f"(no trusted read) — refusing the no-land record",
+                    handoff=(
+                        "land FAILED: the worktree reads empty and "
+                        f"origin/{branch_hint}'s state could not be "
+                        "verified — the land refuses to record a no-land "
+                        "that could abandon pushed work. Retry when "
+                        "origin is readable; a coordinator ruling lands "
+                        "or drops the branch by hand."
+                    ),
+                )
+                return None
             # gr648125: the land was minted over a branch carrying
             # nothing — no commit ahead of origin/main and no net diff
             # (the fix is already on main by another route). Nothing to

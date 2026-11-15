@@ -2740,6 +2740,24 @@ def _is_its_land_gate(plan: _Plan, n: _Node, b: _Blocker) -> bool:
     )
 
 
+def _open_preland_reviewers(plan: _Plan, n: _Node) -> list[_Node]:
+    """The open pre-land reviewers whose land gate covers ``n`` (gr681208):
+    a build a FIX/REVERT sent back keeps its reviewer open to re-gate the
+    rebuild — a ``validated:``/``no-op:`` on it is "the pushed branch is
+    ready as it stands", never proof nothing is left to land."""
+    return [
+        m
+        for m in plan.todos()
+        if not _closed(m)
+        and _is_reviewer(m)
+        and m.meta.get(_templates.PRELAND_REVIEW_KEY) is True
+        and (
+            _review_from(m) == n.id
+            or any(t.id == n.id for t in _review_targets(plan, m))
+        )
+    ]
+
+
 def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     """The reviewer ``n``'s land targets when EVERY one closed with no
     ``landed:`` comment — the review has nothing left to judge
@@ -3032,9 +3050,12 @@ def _review_back_to_builder(
 ) -> None:
     """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
     the work goes back to the builder"). Nothing landed, so no fix or
-    revert task mints: each held target's ``meta.pending_land`` clears,
-    it reopens with the findings as its ``handoff:`` — the next build's
-    brief — and the reviewer stays open for the rebuild (its
+    revert task mints: each held target's ``meta.pending_land`` clears
+    into ``meta.preland_held`` (gr681208 — the stash a rebuild's
+    ``validated:``/``no-op:`` verdict re-holds from, since that verdict
+    is "the pushed branch is ready as it stands", not "nothing to
+    land"), it reopens with the findings as its ``handoff:`` — the next
+    build's brief — and the reviewer stays open for the rebuild (its
     ``blocked-by`` edge re-arms while the target is open and releases
     when the next build defers again). The rounds are counted
     (gr684815): at :data:`PRELAND_FIX_CAP` in a row, or on the same
@@ -3043,7 +3064,16 @@ def _review_back_to_builder(
     targets = _pending_targets(plan, n)
     ruled: list[int] = []
     for t in targets:
-        w.stamp_meta(t, {_templates.PENDING_LAND_KEY: None})
+        w.stamp_meta(
+            t,
+            {
+                _templates.PRELAND_HELD_KEY: {
+                    "params": t.meta[_templates.PENDING_LAND_KEY],
+                    "reviewer": n.id,
+                },
+                _templates.PENDING_LAND_KEY: None,
+            },
+        )
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
@@ -3518,7 +3548,12 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     the hit must not disarm the guard: it bounds ``_attempt_jobs`` at
     its mint, hiding the denied job from ``_human_hit`` the pass after
     it files, so the stamp is read off the job the verdict would come
-    from — until a newer job exists (td604695)."""
+    from — until a newer job exists (td604695). A ``validated:``/
+    ``no-op:`` on a build a pre-land review still gates is "the pushed
+    branch is ready as it stands", never "nothing to land" (gr681208):
+    the ``meta.preland_held`` stash a FIX/REVERT left re-holds the land
+    and closes done as a fresh defer does; with neither hold nor stash
+    the node stays open."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
             continue
@@ -3563,6 +3598,63 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
             res.notes.append(
                 f"td{n.id}: `{kind_}:` ignored — "
                 "meta.preland_defer_failed is stamped; left open (gr663738)"
+            )
+            continue
+        held = n.meta.get(_templates.PRELAND_HELD_KEY)
+        held_params = held.get("params") if isinstance(held, dict) else None
+        held_land = isinstance(n.meta.get(_templates.PENDING_LAND_KEY), dict)
+        if (
+            kind_ in ("validated", "no-op")
+            and isinstance(held_params, dict)
+            and not held_land
+        ):
+            # gr681208: a pre-land FIX/REVERT reopened this build and
+            # stashed its held land in ``meta.preland_held`` — the
+            # rebuild's verdict is "the pushed branch is ready as it
+            # stands", not "nothing to land". Re-stamp ``pending_land``
+            # and close held exactly as a fresh defer does: the land
+            # gate holds the dependants and releases the reviewer for
+            # the re-gate. The bare close was the incident — it released
+            # dependants onto a main missing the work and let the
+            # dead-chain sweep won't-do the review. A ``pending_land``
+            # that already stands is a fresher hold than the stash —
+            # never overwritten here.
+            reviewer = held.get("reviewer") if isinstance(held, dict) else None
+            w.stamp_meta(
+                n,
+                {
+                    _templates.PENDING_LAND_KEY: dict(held_params),
+                    _templates.PRELAND_HELD_KEY: None,
+                },
+            )
+            w.set_status(n, "done")
+            w.comment(
+                n,
+                f"plan_dispatch: closed on verdict `{kind_}: {why[:300]}` "
+                "— the branch is ready as it stands; land held for "
+                f"review td{reviewer} (gr681208)",
+            )
+            res.notes.append(
+                f"td{n.id}: verdict `{kind_}: {why[:200]}` — closed done, "
+                f"land re-held for review td{reviewer}"
+            )
+            continue
+        if (
+            kind_ in ("validated", "no-op")
+            and not held_land
+            and not isinstance(held_params, dict)
+            and _open_preland_reviewers(plan, n)
+        ):
+            # gr681208's residual hole: the same verdict on a build a
+            # live pre-land review still gates, with no hold and no
+            # stash to restore (a send-back from before the stash — a
+            # truthy-but-unusable ``preland_held`` is no stash either,
+            # not a pass through to the close) — leave it open for the
+            # re-gate like the defer-failed skip.
+            res.notes.append(
+                f"td{n.id}: `{kind_}:` ignored — a live pre-land review "
+                "gates its land and no pending_land/preland_held stands; "
+                "left open (gr681208)"
             )
             continue
         w.set_status(n, "done")

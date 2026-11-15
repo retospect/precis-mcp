@@ -1240,10 +1240,12 @@ def _defer_land_for_review(
     releases the reviewer, which gates the ``land_slice`` mint on its
     LAND verdict. A defer that made it here succeeded, so a stale
     ``meta.preland_defer_failed`` (gr663738) clears with the same
-    write. Returns the push note for the job summary."""
+    write, as does the ``meta.preland_held`` stash a FIX/REVERT left
+    (gr681208). Returns the push note for the job summary."""
     from precis.plans.templates import (
         PENDING_LAND_KEY,
         PRELAND_DEFER_FAILED_KEY,
+        PRELAND_HELD_KEY,
     )
     from precis.workers.job_types import land_slice as _ls
 
@@ -1255,6 +1257,8 @@ def _defer_land_for_review(
         {
             PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked),
             PRELAND_DEFER_FAILED_KEY: None,
+            # A fresh defer supersedes the FIX/REVERT stash (gr681208).
+            PRELAND_HELD_KEY: None,
         },
     )
     _append_comment(
@@ -1266,6 +1270,180 @@ def _defer_land_for_review(
     )
     close_todo(ctx.store, todo_id, str(lane) if lane else None)
     return note
+
+
+def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
+    """Make ``tree``'s checkout the tip the pre-land review judged —
+    ``origin/<branch>``'s — and return that sha; ``None`` when it
+    cannot be (the pushed state cannot be verified, the remote tip
+    carries no commit ahead of ``base``, or git refused the move). The
+    verdict-hold's fallback names THIS run's worktree in
+    ``meta.pending_land``, but a recut or cross-host tree reads empty
+    while ``origin/<branch>`` still carries the reviewed commits
+    (review td682306 on gr681208): holding as-is would land the empty
+    local tip, and the land's cleanup can delete the unlanded remote
+    branch. The tip the restore trusts is the ``ls_remote`` oracle's —
+    the same read ``land_slice._delete_remote_branch`` makes before its
+    ``push --delete`` — and the tracking-ref fetch only materializes
+    the objects; a local ref at any other tip is clobbered to origin's
+    — review ruled on the pushed state, never on what a rebuild's tree
+    happens to hold — and HEAD moves with it, since the lander's ship
+    reads the checkout. ``checkout -f -B`` refuses a branch checked out
+    in another worktree, which is the wanted failure."""
+    from precis.plans.templates import SLICE_REF_NS
+
+    ref = f"refs/heads/{branch}"
+    remote_ref = f"refs/remotes/origin/{branch}"
+    try:
+        env = _factory_git.git_auth_env(base=_git_env())
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        url = _factory_git_mirror.github_url(slice_root(), env=env)
+        if url is None:
+            return None
+        tip: str | None = None
+        src: str | None = None
+        for ns in (SLICE_REF_NS, "refs/heads/"):
+            remote = _factory_git_mirror.ls_remote(
+                url, (branch,), env=env, namespace=ns
+            )
+            if remote is None:
+                return None
+            tip = remote.get(branch)
+            if tip is not None:
+                src = f"{ns}{branch}"
+                break
+        if tip is None or src is None:
+            # GitHub holds no <branch> in either home — never pushed or
+            # already deleted; nothing reviewed exists to restore.
+            return None
+        fetch = _git(["fetch", "-q", "origin", f"+{src}:{remote_ref}"], tree)
+        got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
+        if fetch.returncode != 0 or got != tip:
+            # The tip is the ``ls_remote`` oracle's — what GitHub serves
+            # — never the ``refs/remotes/origin/*`` ref a builder session
+            # can rewrite in the shared common dir. The fetch only
+            # materializes the tip's objects, and its answer is trusted
+            # only when the tracking ref lands exactly on the oracle's
+            # sha — a ``url.insteadOf`` redirect cannot pass that check.
+            return None
+        if _git(["merge-base", "--is-ancestor", tip, base], tree).returncode != 1:
+            # The remote tip is not ahead of base (or git cannot say):
+            # origin holds nothing reviewed for the land to ship.
+            return None
+        local = (_git(["rev-parse", ref], tree).stdout or "").strip()
+        head = (_git(["symbolic-ref", "-q", "HEAD"], tree).stdout or "").strip()
+        if local == tip and head == ref:
+            return tip
+        if _git(["checkout", "-f", "-B", branch, tip], tree).returncode == 0:
+            return tip
+    except (OSError, subprocess.TimeoutExpired, RuntimeError):
+        pass
+    return None
+
+
+def _preland_verdict_hold(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    lane: Any,
+    checked: bool,
+    kind: str,
+    base: str,
+) -> str | None:
+    """gr681208's second closer: a no-commit ``validated:``/``no-op:``
+    verdict on a build whose land a live pre-land review still gates is
+    "the pushed branch is ready as it stands", not "nothing to land" —
+    the worktree can read empty (a recut or reaped tree, a fresh node)
+    while ``origin/slice/<id>`` still carries the reviewed work, and the
+    bare verdict close is what released dependants onto a main missing
+    it. Re-stamp ``meta.pending_land`` and close held for the reviewer,
+    as a fresh defer does. Returns the job summary line when it handled
+    the close, else ``None``.
+
+    The hold names the checkout ``land_slice`` ships, so it may only name
+    a tree verified to carry the pushed tip review judged (review
+    td682306): this run's worktree can sit at base while
+    ``origin/slice/<id>`` still carries the reviewed commits — a recut,
+    a reset branch, a fresh node — and holding unverified would land
+    the empty tip while the land's ``no_land`` cleanup deletes the
+    unlanded remote branch. The ``meta.preland_held`` params a
+    FIX/REVERT stashed name the DEFER's worktree — usually this same
+    ``slice-td<id>`` path, but on a cross-host rebuild the equal string
+    is another machine's tree — so they are never stamped back
+    unverified: :func:`_restore_reviewed_branch` puts the pushed tip on
+    THIS tree's branch first, and this run's
+    :func:`_land_params` (pinning this host) take the hold. An
+    unrestorable tip leaves the todo open, like the defer-failed arm —
+    the next run's tree may still hold it.
+
+    ``meta.preland_defer_failed`` (gr663738) gets the same protection
+    the tick's verdict step gives it, on any verdict kind: the stamp
+    says the push died and nothing reached origin, so there is nothing
+    to hold — the lease goes back attempt-free and the todo stays open
+    for the retry's defer."""
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        PRELAND_DEFER_FAILED_KEY,
+        PRELAND_HELD_KEY,
+    )
+
+    ref = ctx.store.get_ref(kind="todo", id=todo_id)
+    tmeta = dict((ref.meta if ref is not None else None) or {})
+    if tmeta.get(PRELAND_DEFER_FAILED_KEY):
+        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "preland-defer-failed"})
+        return (
+            f"Land: none — `{kind}:` ignored: meta.preland_defer_failed "
+            "stands, so nothing reached origin to hold; "
+            f"td{todo_id} back to open with no attempt (gr663738)."
+        )
+    if kind not in ("validated", "no-op"):
+        return None
+    reviewer = _preland_reviewer(ctx.store, todo_id)
+    if reviewer is None:
+        return None
+    branch = slice_branch(todo_id)
+    if _restore_reviewed_branch(tree, branch, base) is None:
+        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "preland-hold-unrestored"})
+        _append_comment(
+            ctx.store,
+            todo_id,
+            f"run_slice: `{kind}:` under the live pre-land review "
+            f"td{reviewer}, but origin/{branch}'s reviewed tip "
+            f"could not be restored into this worktree — td{todo_id} "
+            "stays open for a run whose tree still holds the "
+            "pushed branch (gr681208).",
+        )
+        return (
+            f"Land: none — `{kind}:` under pre-land review "
+            f"td{reviewer} but origin/{branch}'s tip is "
+            f"unrestorable here; td{todo_id} back to open with no "
+            "attempt (gr681208)."
+        )
+    _stamp_branch_files(ctx.store, todo_id, tree)
+    ctx.store.stamp_ref_meta(
+        todo_id,
+        {
+            PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked),
+            PRELAND_HELD_KEY: None,
+        },
+    )
+    _append_comment(
+        ctx.store,
+        todo_id,
+        f"run_slice: `{kind}:` verdict under the live pre-land review "
+        f"td{reviewer} — the pushed branch is ready as it stands; the "
+        f"land is held for td{reviewer} — the tick mints land_slice on "
+        "its `review: LAND` verdict (gr681208).",
+    )
+    close_todo(ctx.store, todo_id, str(lane) if lane else None)
+    return (
+        f"Land: held for the pre-land review td{reviewer} "
+        f"(`{kind}:` — the pushed branch is ready as it stands); "
+        f"td{todo_id} closed — the tick mints land_slice on a LAND "
+        "verdict (gr681208)."
+    )
 
 
 def _process_identity(pid: int) -> tuple[str, int] | None:
@@ -7165,6 +7343,12 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             )
             else None
         )
+        # gr681208: the verdict arms re-hold a live pre-land gate rather
+        # than close bare; the flag mirrors the land arm's ``checked``
+        # for the fallback land params (no worker commit exists here).
+        checked = not tests_ran(result) or (
+            adapter.name == "devin_tree" and not worker_tests_ran
+        )
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
             # on main and named a sha the worker could verify. That is a
@@ -7272,18 +7456,26 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             kind_, why = verdict
             moot = kind_ == "moot"
             land = False
-            close_todo(
-                ctx.store,
-                todo_id,
-                str(lane) if lane else None,
-                tags=(MOOT_TAG,) if moot else (),
+            hold = (
+                _preland_verdict_hold(ctx, todo_id, tree, lane, checked, kind_, base)
+                if no_commit is None and not other_repo
+                else None
             )
-            summary.append(
-                f"Land: none, by verdict "
-                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
-                f"td{todo_id} "
-                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
-            )
+            if hold is not None:
+                summary.append(hold)
+            else:
+                close_todo(
+                    ctx.store,
+                    todo_id,
+                    str(lane) if lane else None,
+                    tags=(MOOT_TAG,) if moot else (),
+                )
+                summary.append(
+                    f"Land: none, by verdict "
+                    f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                    f"td{todo_id} "
+                    f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+                )
         elif found is not None:
             # gr602896: a verdict anywhere — a ``moot:`` the sha gates
             # could not verify (a cross-plan fix names its own plan's td,
@@ -7294,18 +7486,26 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             kind_, why = found
             moot = kind_ == "moot"
             land = False
-            close_todo(
-                ctx.store,
-                todo_id,
-                str(lane) if lane else None,
-                tags=(MOOT_TAG,) if moot else (),
+            hold = (
+                _preland_verdict_hold(ctx, todo_id, tree, lane, checked, kind_, base)
+                if no_commit is None and not other_repo
+                else None
             )
-            summary.append(
-                f"Land: none, by verdict "
-                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
-                f"td{todo_id} "
-                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
-            )
+            if hold is not None:
+                summary.append(hold)
+            else:
+                close_todo(
+                    ctx.store,
+                    todo_id,
+                    str(lane) if lane else None,
+                    tags=(MOOT_TAG,) if moot else (),
+                )
+                summary.append(
+                    f"Land: none, by verdict "
+                    f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                    f"td{todo_id} "
+                    f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+                )
         elif carried_tip is not None:
             # gr674785: the work this run inherited was already on the
             # base — the session's rebase dropped the carried commits,

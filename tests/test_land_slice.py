@@ -226,6 +226,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc("".join(f"{s}\n" for s in calls["subjects"]))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             return _proc(FULL_SHA + "\n")
+        if args[:1] == ["rev-parse"] and len(args) == 2 and args[1].startswith("refs/"):
+            # A bare ref-tip read — ``_pushed_tip_ahead`` (gr681208)
+            # reads the ``refs/remotes/origin/`` tracking tip after its
+            # refspec fetch.
+            return _proc(calls.get("tips", {}).get(args[1], ""))
         if args == ["rev-parse", "--absolute-git-dir"]:
             return _proc(calls["gitdir"] + "\n" if calls["gitdir"] else "")
         if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
@@ -236,6 +241,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             # A path-scoped proof ("diff --quiet a b -- <paths>") answers
             # path_diff_rc; the whole-tree check answers diff_rc.
             return _proc(rc=calls["path_diff_rc"] if "--" in args else calls["diff_rc"])
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            # rc 0 = the candidate sha is an ancestor of the land base;
+            # rc 1 = ahead (``_pushed_tip_ahead`` wants the latter).
+            return _proc(rc=calls.get("ancestor_rc", 0))
         if args[:1] == ["merge-base"]:
             return _proc(calls["merge_base"] + "\n" if calls["merge_base"] else "")
         if args[:1] == ["log"] and any(a.startswith("--max-count=") for a in args):
@@ -1557,13 +1566,24 @@ def test_submit_without_commits_fails_and_reopens(seams: dict[str, Any]) -> None
     assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
 
 
-def test_submit_nothing_to_land_closes_done(seams: dict[str, Any]) -> None:
+def test_submit_nothing_to_land_closes_done(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr648125: a land minted over a branch that carries NOTHING — no
     commit ahead of origin/main and no net diff (the fix is already on
     main by another route) — finishes done, not red: submit launches no
     ship and the poll writes the same nothing-new record (the dependent
     re-cut unblocks instead of burning a ladder). A dirty/diff branch
-    keeps the failure above."""
+    keeps the failure above. The gr681208 pushed-tip oracle confirms
+    nothing is on origin either — ``ls_remote`` names no branch."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
+    )
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     seams["subjects"] = []
@@ -1583,8 +1603,113 @@ def test_submit_nothing_to_land_closes_done(seams: dict[str, Any]) -> None:
     assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
 
 
+def _oracle(monkeypatch: pytest.MonkeyPatch, remote: dict[str, str] | None) -> None:
+    """Stand the ``ls_remote`` oracle up (the ``_pushed_tip_ahead``
+    read): a resolvable origin url, then ``remote`` as GitHub's answer —
+    ``None`` when it cannot be read."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, **_kw: remote,
+    )
+
+
+def test_submit_no_land_refuses_when_origin_branch_is_ahead(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td682306 (gr681208): a held land can name a recut or reset
+    worktree — the local ``slice/42`` reads empty while
+    ``origin/slice/42`` still carries the commits review judged. The
+    ``no_land`` record would write a false "landed: nothing" and let
+    ``_cleanup``'s ``push --delete`` remove the branch holding the
+    unlanded work — refuse like the missing-worktree arm instead."""
+    tip = "c" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    seams["ancestor_rc"] = 1  # the pushed tip is ahead of the land base
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "reads empty" in ctx.failure
+    assert f"origin/slice/42 is at {tip[:12]}" in ctx.failure
+    assert seams["launch"] == []
+    tags = store.tag_strings(42)
+    assert {"STATUS:open", "attempt:1"} <= tags
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
+    # The branch was fetched for the ancestry read — never deleted.
+    git_cmds = [a for a, _cwd in seams["git"]]
+    assert not any(a[:2] == ["push", "origin"] for a in git_cmds)
+
+
+def test_submit_no_land_refuses_when_origin_tip_is_unverifiable(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle cannot answer (no trusted url, or ``ls_remote`` down):
+    the pushed state is unknown, so the land refuses the record rather
+    than risk abandoning pushed work — recoverable on a re-run."""
+    _oracle(monkeypatch, None)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "could not be verified" in ctx.failure
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+
+
+def test_submit_no_land_refuses_when_ancestry_cannot_be_read(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge-base failure (rc >1 — no common base object, git broke)
+    is not a "nothing pushed ahead" answer: the land refuses rather
+    than record no-land on an unread ancestry."""
+    tip = "e" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    seams["ancestor_rc"] = 128
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "could not be verified" in ctx.failure
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_no_land_passes_when_origin_tip_is_not_ahead(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pushed branch whose tip the base already contains (landed by
+    another route, or pushed empty): verified nothing ahead — the
+    ``no_land`` close proceeds as before."""
+    tip = "d" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    # ancestor_rc default 0: the tip is an ancestor of the land base.
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and ctx.status is None
+    assert handle == {"no_land": True, "worktree": str(seams["tree"])}
+
+
 def test_submit_nothing_to_land_clears_a_crashed_predecessors_mirror(
-    seams: dict[str, Any], tmp_path: Path
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """review td660513 (regression, third pass): a crashed predecessor's
     launch files — the mirror and its tips record beside it, stale
@@ -1592,6 +1717,14 @@ def test_submit_nothing_to_land_clears_a_crashed_predecessors_mirror(
     The poll's sync still reads the record, judges a mirror in play,
     and the nothing-new job defers on a dead CAS basis instead of
     completing."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
+    )
     store = _Store()
     store.add_todo(
         42,

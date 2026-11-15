@@ -224,14 +224,15 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             branches = calls.get("branches")
             if branches is not None:
                 return _proc(rc=0 if args[3] in branches else 1)
-        if (
-            args[:1] == ["rev-parse"]
-            and len(args) == 2
-            and args[1].startswith("refs/heads/")
-        ):
-            # A bare branch-tip read — the pre-land defer failure's
-            # ``preland_defer_failed`` stamp (gr663738) names it.
+        if args[:1] == ["rev-parse"] and len(args) == 2 and args[1].startswith("refs/"):
+            # A bare ref-tip read — the pre-land defer failure's
+            # ``preland_defer_failed`` stamp (gr663738) names a head;
+            # the verdict-hold's restore (gr681208) also reads the
+            # ``refs/remotes/origin/`` tracking tip.
             return _proc(calls.get("tips", {}).get(args[1], ""))
+        if args == ["symbolic-ref", "-q", "HEAD"]:
+            head_ref = calls.get("head_ref", "")
+            return _proc(head_ref, rc=0 if head_ref else 1)
         if args == ["status", "--porcelain"]:
             return _proc(calls.get("porcelain", ""))
         if args[:2] == ["status", "--porcelain"] and "-z" in args:
@@ -280,6 +281,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             raise calls.get("raise_exc") or subprocess.TimeoutExpired("git", 300)
         if args == ["fetch", "origin", "main"]:
             return _proc(rc=calls.get("fetch_rc", 0))
+        if args[:1] == ["fetch"]:
+            # Any other fetch — the verdict-hold restore's single-ref
+            # refspec fetch (gr681208).
+            return _proc(rc=calls.get("refspec_fetch_rc", 0))
         if args[:2] == ["merge-base", "--is-ancestor"]:
             # rc 0 = the candidate sha is an ancestor of origin/main.
             return _proc(rc=calls.get("ancestor_rc", 0))
@@ -327,6 +332,37 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         run_slice, "_preland_reviewer", lambda store, todo_id: calls["preland"]
     )
+    # gr681208: the verdict-hold restore trusts the ``ls_remote`` oracle —
+    # what GitHub serves — never the tracking ref the fetch just wrote.
+    # ``ls_remote`` answers ``remote_tips`` when a test sets it (a
+    # ``{namespace: tips}`` dict answers per namespace, so a test can put
+    # the branch only under ``refs/heads/``), else derives each asked
+    # branch's tip from ``tips``' remote-tracking entry, so a "the fetch
+    # lied" test can diverge the two.
+    monkeypatch.setattr(
+        run_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: calls.get(
+            "origin_url", "https://github.com/example/precis.git"
+        ),
+    )
+
+    def fake_ls_remote(
+        url: str, refs: Any, *, env: Any, namespace: str = "refs/heads/"
+    ) -> dict[str, str] | None:
+        if "remote_tips" in calls:
+            tips = calls["remote_tips"]
+            if tips is not None and all(str(k).endswith("/") for k in tips):
+                return tips.get(namespace, {})
+            return tips
+        tips = calls.get("tips", {})
+        return {
+            ref: tips[f"refs/remotes/origin/{ref}"]
+            for ref in refs
+            if tips.get(f"refs/remotes/origin/{ref}")
+        }
+
+    monkeypatch.setattr(run_slice._factory_git_mirror, "ls_remote", fake_ls_remote)
     calls["push"] = []
     calls["push_note"] = "branch push of {branch}: on origin"
 
@@ -3483,6 +3519,410 @@ def test_poll_success_with_a_preland_reviewer_mints_checked_hold(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     assert store.refs[42].meta["pending_land"]["checked"] is True
+    assert seams["lands"] == []
+
+
+def test_poll_validated_rebuild_reholds_the_preland_land(
+    seams: dict[str, Any],
+) -> None:
+    """gr681208's second closer: the rebuild after a pre-land FIX ends
+    ``validated:`` on a worktree holding no commit (recut or reaped
+    while ``origin/slice/<id>`` still carries the reviewed work) — the
+    bare verdict close is what released dependants onto a main missing
+    it. With the reviewer still open the poll verifies THIS tree
+    carries the pushed tip, stamps ``meta.pending_land`` from this
+    run's land params, and closes held, exactly as a fresh defer does.
+    The ``meta.preland_held`` stash discharges: its defer-time params
+    name a tree this run cannot vouch for (the same ``slice-td<id>``
+    string is another machine's tree on a cross-host rebuild), so they
+    are never stamped back unverified (review td682306)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "t",
+        body="b",
+        meta={
+            "preland_held": {
+                "params": {
+                    "todo_id": 42,
+                    "worktree": "/tmp/slice-td42-first",
+                    "branch": "slice/42",
+                    "lane": "claude-sub",
+                },
+                "reviewer": 77,
+            }
+        },
+    )
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    # The reused defer worktree already stands at origin's tip — the
+    # restore is a no-move verification.
+    tip = "a" * 40
+    seams["tips"] = {
+        "refs/heads/slice/42": tip,
+        "refs/remotes/origin/slice/42": tip,
+    }
+    seams["ancestor_rc"] = 1  # the pushed tip is ahead of origin/main
+    seams["head_ref"] = "refs/heads/slice/42"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+
+    assert seams["lands"] == []
+    assert "STATUS:done" in store.tag_strings(42)
+    pending = store.refs[42].meta["pending_land"]
+    assert pending["branch"] == "slice/42"
+    # THIS run's params take the hold — pinning the tree just verified —
+    # never the stash's defer-time worktree.
+    assert pending["worktree"] == handle["worktree"]
+    assert store.refs[42].meta["preland_held"] is None
+    assert any("land is held for td77" in c for c in store.comments(42))
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "held for the pre-land review td77" in summary
+
+
+def test_poll_stashed_verdict_hold_restores_a_recut_tree(
+    seams: dict[str, Any],
+) -> None:
+    """The stash plus an empty tree (review td682306's shape): the FIX's
+    ``meta.preland_held`` stands and this run's worktree was recut at
+    base while ``origin/slice/42`` still carries the reviewed commits.
+    The hold restores the pushed tip into the checkout before stamping
+    — land_slice ships the tree it is handed."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "t",
+        body="b",
+        meta={
+            "preland_held": {
+                "params": {
+                    "todo_id": 42,
+                    "worktree": "/tmp/slice-td42-first",
+                    "branch": "slice/42",
+                },
+                "reviewer": 77,
+            }
+        },
+    )
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    remote_tip = "b" * 40
+    seams["tips"] = {"refs/remotes/origin/slice/42": remote_tip}
+    seams["ancestor_rc"] = 1
+    seams["head_ref"] = "refs/heads/slice/42"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["checkout", "-f", "-B", "slice/42", remote_tip] in git_cmds
+    pending = store.refs[42].meta["pending_land"]
+    assert pending["branch"] == "slice/42"
+    assert pending["worktree"] == handle["worktree"]
+    assert store.refs[42].meta["preland_held"] is None
+    assert "STATUS:done" in store.tag_strings(42)
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_hold_leaves_open_when_origin_cannot_answer(
+    seams: dict[str, Any],
+) -> None:
+    """The oracle says the branch is pushed, but the tracking-ref fetch
+    fails — ``refs/remotes/origin/*`` lives in the shared common dir a
+    builder session can rewrite, so the fetch is trusted only when it
+    lands exactly on the oracle's sha. A failed fetch means leave-open,
+    never a hold on an unverified checkout (review td682306)."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["tips"] = {"refs/remotes/origin/slice/42": "f" * 40}
+    seams["refspec_fetch_rc"] = 1
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert "pending_land" not in store.refs[42].meta
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_hold_leaves_open_when_the_oracle_is_down(
+    seams: dict[str, Any],
+) -> None:
+    """``ls_remote`` returning ``None`` means GitHub cannot be read — the
+    pushed state is unknown, so the hold refuses rather than trust a
+    tracking ref it cannot verify."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["remote_tips"] = None
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert "pending_land" not in store.refs[42].meta
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_hold_leaves_open_when_the_fetch_lies(
+    seams: dict[str, Any],
+) -> None:
+    """A ``url.insteadOf`` redirect in the shared config feeds the fetch
+    a planted remote: the tracking ref lands on a tip that is not the
+    oracle's, so the restore refuses — the hold may only name the tip
+    GitHub actually serves (review td682306)."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["remote_tips"] = {"slice/42": "0" * 40}
+    # The fetch wrote a different tip than GitHub's.
+    seams["tips"] = {"refs/remotes/origin/slice/42": "9" * 40}
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert "pending_land" not in store.refs[42].meta
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert not any(c[:1] == ["checkout"] for c in git_cmds)
+    assert seams["lands"] == []
+
+
+def test_poll_noop_rebuild_without_a_stash_restores_the_pushed_tip(
+    seams: dict[str, Any],
+) -> None:
+    """No ``meta.preland_held`` (a send-back older than the stash, or a
+    re-armed review): this run's worktree is the only land site left —
+    but its local ``slice/42`` can sit at base while
+    ``origin/slice/42`` still carries the reviewed commits (a recut or
+    cross-host tree, review td682306). The hold first restores the
+    pushed tip into the checkout — land_slice ships the tree it is
+    handed — then stamps this run's land params."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    # origin/slice/42's tip is the reviewed work; the recut tree's local
+    # tip is at base (``tips`` names no local head). HEAD sits on the
+    # branch, so the restore is a checkout -B to the remote tip.
+    remote_tip = "a" * 40
+    seams["tips"] = {"refs/remotes/origin/slice/42": remote_tip}
+    seams["ancestor_rc"] = 1  # the tip is ahead of origin/main
+    seams["head_ref"] = "refs/heads/slice/42"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "no-op: nothing to add — the branch already holds it\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert [
+        "checkout",
+        "-f",
+        "-B",
+        "slice/42",
+        remote_tip,
+    ] in git_cmds
+    pending = store.refs[42].meta["pending_land"]
+    assert pending["branch"] == "slice/42"
+    assert pending["worktree"] == handle["worktree"]
+    assert "STATUS:done" in store.tag_strings(42)
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_hold_with_an_aligned_branch_moves_nothing(
+    seams: dict[str, Any],
+) -> None:
+    """The reused defer worktree: local ``slice/42`` already stands at
+    ``origin/slice/42``'s tip and HEAD is on it — nothing to restore,
+    the hold just stamps this run's params."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    tip = "b" * 40
+    seams["tips"] = {
+        "refs/heads/slice/42": tip,
+        "refs/remotes/origin/slice/42": tip,
+    }
+    seams["ancestor_rc"] = 1
+    seams["head_ref"] = "refs/heads/slice/42"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert not any(c[:1] == ["checkout"] for c in git_cmds)
+    assert store.refs[42].meta["pending_land"]["worktree"] == handle["worktree"]
+    assert "STATUS:done" in store.tag_strings(42)
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_hold_divergent_local_tip_yields_to_origin(
+    seams: dict[str, Any],
+) -> None:
+    """Divergent tips (review td682306): the local branch holds a tip
+    origin does not — the review judged the PUSHED state, so the
+    restore clobbers the local ref to ``origin/slice/42`` rather than
+    land unreviewed work."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    remote_tip = "c" * 40
+    seams["tips"] = {
+        "refs/heads/slice/42": "d" * 40,
+        "refs/remotes/origin/slice/42": remote_tip,
+    }
+    seams["ancestor_rc"] = 1
+    seams["head_ref"] = "refs/heads/slice/42"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: already fixed\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["checkout", "-f", "-B", "slice/42", remote_tip] in git_cmds
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_poll_verdict_hold_leaves_open_without_a_pushed_tip(
+    seams: dict[str, Any],
+) -> None:
+    """Nothing restorable — ``origin/slice/42`` names no tip (never
+    pushed, deleted, or the fetch could not read it): the bare verdict
+    still cannot close the build, and holding would land the empty
+    local tip while the land's cleanup can delete unlanded remote work.
+    The lease goes back attempt-free, the todo stays open — the
+    defer-failed arm's ruling."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert "pending_land" not in store.refs[42].meta
+    assert seams["lands"] == []
+    assert any(
+        "stays open for a run whose tree still holds" in c for c in store.comments(42)
+    )
+
+
+def test_poll_verdict_hold_leaves_open_on_an_empty_pushed_tip(
+    seams: dict[str, Any],
+) -> None:
+    """``origin/slice/42`` resolves but is not ahead of base — a pushed
+    branch carrying nothing the review judged: same leave-open ruling,
+    no restore attempted beyond the reads."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["tips"] = {"refs/remotes/origin/slice/42": "e" * 40}
+    # ancestor_rc default 0: the remote tip is an ancestor of base —
+    # nothing of the branch's is on origin to hold.
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "no-op: nothing to add\ntests: ran",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "pending_land" not in store.refs[42].meta
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert not any(c[:1] == ["checkout"] for c in git_cmds)
+    assert seams["lands"] == []
+
+
+def test_poll_verdict_never_closes_a_failed_preland_defer(
+    seams: dict[str, Any],
+) -> None:
+    """gr663738's twin inside this poll: ``meta.preland_defer_failed``
+    means the branch never reached origin — a ``validated:`` verdict is
+    the failed push's stale read, not proof of a land. The lease goes
+    back attempt-free, the todo stays open for the retry's defer — the
+    same ruling the tick's verdict step gives it."""
+    store = _Store()
+    store.add_todo(42, "t", body="b", meta={"preland_defer_failed": "abc1234"})
+    ctx, handle = _submit(store, seams)
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the work is already committed\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-defer-failed"
+    assert "pending_land" not in store.refs[42].meta
     assert seams["lands"] == []
 
 

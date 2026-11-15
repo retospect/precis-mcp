@@ -313,6 +313,16 @@ PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
 #: ``plan_dispatch`` counts and caps it; ``land_slice._record_land``
 #: clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
+#: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
+#: to the builder (gr681208): the ``PENDING_LAND_KEY`` params
+#: ``plan_dispatch._review_back_to_builder`` cleared, stashed as
+#: ``{"params": <the held land params>, "reviewer": <reviewer todo id>}``
+#: so the rebuild's ``validated:``/``no-op:`` verdict — "the pushed
+#: branch is ready as it stands" — re-holds the same land for the
+#: still-open reviewer instead of closing with nothing landed. A fresh
+#: defer or the re-hold clears it; ``land_slice._record_land``
+#: discharges it.
+PRELAND_HELD_KEY = "preland_held"
 
 #: The verdict lines a reviewer posts; ``plan_dispatch`` parses them.
 REVIEW_GRAMMAR = (

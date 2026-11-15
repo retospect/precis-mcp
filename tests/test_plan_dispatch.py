@@ -7040,6 +7040,139 @@ def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
     assert run_slice._preland_reviewer(store, build) is None
 
 
+def test_preland_review_fix_stashes_the_held_land(store: Store) -> None:
+    """gr681208: a pre-land FIX still clears ``meta.pending_land`` for
+    the rebuild, but stashes the held land in ``meta.preland_held`` — a
+    rebuild that ends ``validated:`` ("the pushed branch is ready as it
+    stands") re-holds the same land for the still-open reviewer instead
+    of closing with nothing landed."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    meta = _meta(store, build)
+    assert meta.get("pending_land") is None
+    held = meta["preland_held"]
+    assert held["params"]["branch"] == f"slice/{build}"
+    assert held["params"]["todo_id"] == build
+    assert held["reviewer"] == review
+
+
+def test_validated_rebuild_after_preland_fix_restamps_pending_land(
+    store: Store,
+) -> None:
+    """gr681208 (plan td663459): the rebuild after a pre-land FIX found
+    the finding already fixed and ended ``validated:`` — the tick read
+    it as nothing-to-land and closed the build done, releasing a
+    dependant onto a main missing the code and letting the dead-chain
+    sweep won't-do the review. The verdict is "the branch is ready as
+    it stands": re-stamp ``meta.pending_land`` from the stash and close
+    held, exactly as a fresh defer does."""
+    mint = _held_land_plan(store, "build")
+    build, review, dep = mint.ids["build"], mint.ids["review"], mint.ids["dep"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "worktree": f"/tmp/slice-td{build}",
+                "branch": f"slice/{build}",
+                "lane": "claude-sub",
+            }
+        },
+    )
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(review, {"preland_review": True})
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, "review: FIX — a.py misses the empty case")
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert _meta(store, build)["preland_held"]["reviewer"] == review
+    # The rebuild ran, found the finding already fixed on the branch
+    # and ended `validated:` — it left no commit and no fresh defer.
+    newest_run = [
+        jid for jid, m in _jobs_under(store, build) if m.get("job_type") == "run_slice"
+    ][-1]
+    _set_job_status(store, newest_run, "succeeded")
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res2 = pd.run_pass(store)
+    assert _status(store, build) == "done"
+    meta = _meta(store, build)
+    assert meta["pending_land"]["branch"] == f"slice/{build}"
+    assert meta["pending_land"]["worktree"] == f"/tmp/slice-td{build}"
+    assert meta.get("preland_held") is None
+    assert any(
+        "land held for review" in c and f"td{review}" in c
+        for c in _todo_comments(store, build)
+    )
+    # The held land releases the reviewer for the re-gate — and nothing
+    # else: the dead-chain sweep stays off and the dependant held.
+    assert len(_jobs_under(store, review)) == 2
+    res3 = pd.run_pass(store)
+    assert _status(store, review) != "won't-do"
+    assert not any("won't-do" in n for n in res2.notes + res3.notes)
+    assert _jobs_under(store, dep) == []
+
+
+def test_bare_verdict_never_closes_a_build_with_a_live_preland_reviewer(
+    store: Store,
+) -> None:
+    """gr681208's residual hole: a ``validated:`` on a build whose
+    pre-land reviewer is still open but which carries neither
+    ``meta.pending_land`` nor a ``meta.preland_held`` stash (a send-back
+    older than the stash) is the same pushed-branch verdict — the tick
+    leaves the build open for the re-gate instead of closing it with
+    nothing landed."""
+    mint = _review_plan(store, preland=True)
+    build = mint.ids["build"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, build) != "done"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("live pre-land review" in n for n in res.notes)
+    # Left open, the build re-dispatches for the rebuild that re-defers.
+    assert res.dispatched == 1
+
+
+def test_unusable_preland_stash_never_closes_a_gated_build(
+    store: Store,
+) -> None:
+    """A truthy ``meta.preland_held`` that is not a usable stash (no
+    ``params`` dict — a corrupt stamp, a hand edit) is no hold to
+    re-stamp and no pass through to the close either: the same
+    ``validated:`` on a build a live pre-land review still gates stays
+    open, like the no-stash arm."""
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(build, {"preland_held": {"reviewer": review}})
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, build) != "done"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("live pre-land review" in n for n in res.notes)
+    assert res.dispatched == 1
+
+
 def _held_land_plan(store: Store, dep_edge: str) -> T.PlanMint:
     """root: build -> review (pre-land) -> nothing, plus ``dep`` blocked-by
     ``dep_edge`` — the dependant gr659981 is about."""
