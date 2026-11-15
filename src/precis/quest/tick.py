@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 
+from precis.quest import commits as commits_mod
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
 from precis.quest import narrative_budget
@@ -364,6 +365,11 @@ class QuestTickOutcome:
     #: Explicit source verdicts recorded to the considered ledger this
     #: tick (gr592951) — the `judgments` payload channel.
     judgments_recorded: int = 0
+    #: Applied `commits` entries (gr573805) — non-structure artifacts the
+    #: tick produced (an `ask-user` todo minted, a disabled `llm_account`
+    #: lead recorded, a ledger rule-out pinned). Counts as forward motion:
+    #: an applied commit resets the stall counter like a dispatch does.
+    commits_applied: int = 0
     hypotheses_deduped: int = 0
     # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add`
     # entries plus applied `ledger_ops` (add/mark) this tick. An engagement
@@ -2219,6 +2225,7 @@ def build_tick_prompt(
     common = dict(
         statement=stmt,
         prio=prio,
+        commit_cap=commits_mod.COMMITS_MAX,
         momentum=momentum.label,
         momentum_detail=(
             f"{momentum.recent_entries} recent log · "
@@ -2545,6 +2552,16 @@ refining an existing one>",
 clone>", "ops": [{{"op": "set_element", "atom": "<label>", "element": \
 "<dopant>"}}]}}}}
   ],
+  "commits": [
+    {{"type": "ask", "question": "<a decision for the owner>",
+      "options": ["<recommended option first>"], "context": "<why it is on \
+the owner's desk>"}},
+    {{"type": "account", "name": "<slug>", "vendor": "<provider>", \
+"plan": "<plan or promo>", "adapter": "<adapter id>", \
+"promo_expiry": "<optional YYYY-MM-DD>", "note": "<the lead's terms>"}},
+    {{"type": "rule-out", "lead": "<the lead or direction>", \
+"reason": "<why it is dead>"}}
+  ],
   "directions": ["<0–3 strategic directions — set these on a frontier review>"],
   "needs": [
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
@@ -2679,7 +2696,18 @@ existing one rather than starting a fresh direction — enables the frontier \
 tree (skip it for a genuinely new direction). A re-proposed spec you've \
 already tried gets you a `duplicate proposal` note in the log, not a fresh \
 simulation — check the frontier table / recent log before re-proposing. \
-Propose nothing if the next step is analysis, not a new material."""
+Propose nothing if the next step is analysis, not a new material. \
+`commits` (0–{commit_cap}) is the NON-STRUCTURE progress channel — the \
+operational counterpart of `proposals` for a step whose real artifact \
+isn't a material: `{{"type": "ask", …}}` queues a decision for the owner \
+as an `ask-user` todo this quest reads `blocked-by` until answered; \
+`{{"type": "account", …}}` records a compute/account lead as a DISABLED \
+`llm_account` row (name/vendor/plan/adapter required; enabling and \
+credentials stay the owner's door — never name a key); \
+`{{"type": "rule-out", …}}` kills a lead or direction with its reason \
+(pinned `ruled-out` in the ledger plus a `dead-end` deed). Commit what \
+actually happened — a queued ask, a recorded lead, a killed lead — never \
+a fabricated `structure`."""
 
 
 #: The frontier-review banner for an ``inquiry`` quest (docs/backlog/
@@ -2739,7 +2767,10 @@ This is an INQUIRY — a striving that reads, reasons, and synthesises. There is
 no proposal menu and no Pareto frontier: nothing here converges on a candidate \
 material, so don't reach for one. Do ONE increment of thinking: interpret the \
 state, pick the most promising next direction to close a gap, and note what \
-you'd try (a search to run, a question to resolve, a synthesis to write). Then \
+you'd try (a search to run, a question to resolve, a synthesis to write). When \
+the step produces a real operational artifact — an ask queued for the owner, \
+an account lead recorded, a lead ruled out with its reason — register it in \
+`commits`, the non-structure progress channel (below). Then \
 rewrite the dossier to reflect current understanding.
 
 **Evaluate supported insights, not restatements.** For each insight the \
@@ -2844,6 +2875,16 @@ strategy tried/settled/still open, not a single fact or citation>",
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
 {dialectic_schema}  "directions": ["<0–3 strategic directions — set these on a review>"],
+  "commits": [
+    {{"type": "ask", "question": "<a decision for the owner>",
+      "options": ["<recommended option first>"], "context": "<why it is on \
+the owner's desk>"}},
+    {{"type": "account", "name": "<slug>", "vendor": "<provider>", \
+"plan": "<plan or promo>", "adapter": "<adapter id>", \
+"promo_expiry": "<optional YYYY-MM-DD>", "note": "<the lead's terms>"}},
+    {{"type": "rule-out", "lead": "<the lead or direction>", \
+"reason": "<why it is dead>"}}
+  ],
   "needs": [
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
 does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
@@ -2925,7 +2966,17 @@ cumulative spend list or a parked-papers list is bookkeeping, not \
 understanding: every tick already writes its spend as a `cost` logbook \
 entry, and deferred papers stay visible in your served-literature list. \
 A rewrite that grows well past its previous length \
-with nothing new to show for it gets bounced back to you to compress."""
+with nothing new to show for it gets bounced back to you to compress. \
+`commits` (0–{commit_cap}) is the NON-STRUCTURE progress channel — an \
+operational artifact this step actually produced: `{{"type": "ask", …}}` \
+queues a decision for the owner as an `ask-user` todo this quest reads \
+`blocked-by` until answered; `{{"type": "account", …}}` records a \
+compute/account lead as a DISABLED `llm_account` row (name/vendor/plan/\
+adapter required; enabling and credentials stay the owner's door — never \
+name a key); `{{"type": "rule-out", …}}` kills a lead or direction with \
+its reason (pinned `ruled-out` in the ledger plus a `dead-end` deed). \
+Commit what actually happened — a queued ask, a recorded lead, a killed \
+lead — it counts as real forward motion."""
 
 
 # ── model call + parsing ──────────────────────────────────────────────
@@ -2965,6 +3016,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "read",
         "fetch",
         "judgments",
+        "commits",
     }
 )
 
@@ -3169,7 +3221,11 @@ def _build_commit_prompt(
         "existing candidate is the same crystal, not a variant). Do not "
         "review, narrate, or "
         "lit-search this turn; propose a buildable `structure` (a `slab` op "
-        "plus composition ops).\n"
+        "plus composition ops). If — and only if — this striving's real "
+        "next step is NOT a structure (an operational quest's ask for the "
+        "owner, a compute/account lead, a ruled-out lead), answer with a "
+        "`commits` entry instead: a real artifact satisfies this rung, a "
+        "fabricated structure never does.\n"
     )
     return base + directive
 
@@ -3204,17 +3260,20 @@ def _commit_rung(
     *,
     disp: Callable[[Any], Any],
     by: str,
-) -> tuple[tuple[Any, list[str]] | None, bool]:
+) -> tuple[tuple[str, Any] | None, bool]:
     """One rung of the commit re-prompt ladder — a single LLM call.
 
     Returns ``(committed, transport_error)``:
 
-    * ``committed`` is ``(ComputeStep, proposal_names)`` when this rung's
-      model proposed something, materialised/dispatched via the SAME
-      :func:`precis.quest.compute.run_compute_step` path as any ordinary
-      proposal (idempotent, content-addressed), or ``None`` when the
-      response carried no usable ``proposals`` entry. Never fabricates a
-      candidate itself.
+    * ``committed`` is ``("proposals", (ComputeStep, proposal_names))``
+      when this rung's model proposed something, materialised/dispatched
+      via the SAME :func:`precis.quest.compute.run_compute_step` path as
+      any ordinary proposal (idempotent, content-addressed);
+      ``("commits", applied_count)`` when it answered with non-structure
+      `commits` instead (gr573805 — the ladder insists the agent ACT, and
+      an applied operational artifact is an act, so the rung is satisfied
+      without a fabricated structure); or ``None`` when the response
+      carried neither. Never fabricates a candidate itself.
     * ``transport_error`` is ``True`` when the rung came back with an LLM
       ``error``/``paused`` result (breaker/quota/transport trouble) rather
       than a genuine empty ``proposals`` — the caller ORs it across rungs so
@@ -3246,22 +3305,32 @@ def _commit_rung(
     payload = _payload_from_result(res)
     # A rung the model declines can still say WHY via `needs` — the stalled
     # quest this channel exists for (gr485483). Own try/except: a needs bug
-    # must not cost the rung's proposal path.
+    # must not cost the rung's proposal path. Same for `commits` — the
+    # non-structure answer (gr573805) whose own bug must not either.
     try:
         needs_mod.apply_needs(store, quest_id, (payload or {}).get("needs"), by=by)
     except Exception:
         log.exception(
             "quest tick: commit-rung needs apply raised for quest %s", quest_id
         )
+    commits_applied = 0
+    try:
+        commits_applied = commits_mod.apply_commits(
+            store, quest_id, (payload or {}).get("commits"), by=by
+        ).applied
+    except Exception:
+        log.exception(
+            "quest tick: commit-rung commits apply raised for quest %s", quest_id
+        )
     proposals = [
         p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
     ]
     if not proposals:
-        return None, False
+        return (("commits", commits_applied) if commits_applied else None), False
     proposals = proposals[: max_proposals_per_tick()]  # WIP cap (one at a time)
     step = run_compute_step(store, quest_id, proposals, by=by)
     names = [str(p.get("name") or "?") for p in proposals]
-    return (step, names), False
+    return ("proposals", (step, names)), False
 
 
 # ── narrative growth-ratchet gate (dossier-hygiene design) ─────────────
@@ -4172,11 +4241,29 @@ class _TickRun:
                 "run_quest_tick: judgments apply raised for quest %s", quest_id
             )
 
+        # commits — the non-structure progress channel (gr573805): an
+        # operational artifact the model actually produced this step (an
+        # ask queued for the owner, a disabled account lead, a lead ruled
+        # out with its reason). Applied for EVERY body — the inquiry
+        # prompt advertises it in place of `proposals`, but a materials
+        # quest's legitimate commit is real forward motion too. Same
+        # degrade-don't-crash convention as needs/judgments above.
+        commits_applied = 0
+        try:
+            cout = commits_mod.apply_commits(
+                store, quest_id, payload.get("commits"), by=by
+            )
+            commits_applied = cout.applied
+            added += cout.logbook_entries
+        except Exception:
+            log.exception("run_quest_tick: commits apply raised for quest %s", quest_id)
+
         self.st.update(
             {
                 "stage": "search",
                 "added": added,
                 "deduped": deduped,
+                "commits_applied": commits_applied,
                 "ledger_added": ledger_added,
                 "dialectic_applied": dialectic_applied,
                 "n_proposals": len(proposals),
@@ -4497,12 +4584,19 @@ class _TickRun:
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A
-        # model tick that dispatched a real sim resets the stall counter; one
-        # that dispatched nothing advances it, and once it reaches
+        # model tick that dispatched a real sim resets the stall counter;
+        # so does one that committed a real non-structure artifact
+        # (gr573805 — the ladder's job is guaranteeing the agent ACTS, and
+        # an applied `commits` entry is an act, so an operational quest
+        # doing real work is never forced toward a fabricated `structure`).
+        # A tick that did neither advances the counter, and once it reaches
         # PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive dry ticks (default 2)
         # the tick fires the ladder — one rung per slice, from `_stage_ladder`.
         # The counter is stamped by `finish`, whichever way the ladder goes.
-        if int(self.st.get("dispatched") or 0) > 0:
+        if (
+            int(self.st.get("dispatched") or 0) > 0
+            or int(self.st.get("commits_applied") or 0) > 0
+        ):
             self.st["stall"] = 0
             self.st["stage"] = "finish"
             return None
@@ -4630,13 +4724,35 @@ class _TickRun:
             self._ladder_gave_up()
             return None
 
-        fstep, names = committed
+        mode, payload = committed
+        stall = int(self.st.get("stall") or 0)
+        if mode == "commits":
+            # The re-prompt asked for an act and got real non-structure
+            # artifacts (gr573805) — the rung is satisfied without a
+            # fabricated `structure`; the stall resets.
+            n_commits = int(payload)
+            self._bump("commits_applied", n_commits)
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"committed after re-prompt: {n_commits} operational "
+                    f"commit(s) — model stalled {stall} tick(s) with no "
+                    "experiment"
+                ),
+                entry_type="decision",
+                by=by,
+            )
+            self._bump("added")
+            self.st["stall"] = 0
+            return None
+
+        fstep, names = payload
         self._bump("created", fstep.candidates_created)
         self._bump("dispatched", fstep.sims_dispatched)
         self._bump("harvested", fstep.results_harvested)
         self._bump("ruled", fstep.ruled_out)
         self._bump("graduated", fstep.graduated)
-        stall = int(self.st.get("stall") or 0)
         if fstep.sims_dispatched > 0:
             self._bump("proposals_committed", len(names))
             append_entry(
@@ -4826,6 +4942,7 @@ class _TickRun:
                 reads_queued=int(st.get("reads_queued") or 0),
                 fetches_made=int(st.get("fetches_made") or 0),
                 judgments_recorded=int(st.get("judgments_recorded") or 0),
+                commits_applied=int(st.get("commits_applied") or 0),
                 hypotheses_deduped=int(st.get("deduped") or 0),
                 ledger_added=ledger_added,
                 dialectic_applied=dialectic_applied,

@@ -186,6 +186,24 @@ def _bench_retention_hint() -> str:
     )
 
 
+def _commit_channel_hint() -> str:
+    """The ``commits`` affordance — the non-structure artifact channel
+    gr573805 filed as missing (an operational quest's ``commit`` is an
+    ask queued for the owner, a disabled ``llm_account`` lead, or a
+    ledger-pinned rule-out, not a slab/structure proposal)."""
+    return (
+        "the `commits` output field is the non-structure progress "
+        'channel — `{"type": "ask", "question": …, "options": […], '
+        '"context": …}` queues an ask-user todo for the owner; '
+        '`{"type": "account", "name": …, "vendor": …, "plan": …, '
+        '"adapter": …, "promo_expiry": …, "note": …}` records a '
+        "compute/account lead as a DISABLED llm_account row (enabling "
+        'stays the owner\'s door); `{"type": "rule-out", "lead": …, '
+        '"reason": …}` pins the lead ruled-out in the ledger plus a '
+        "dead-end deed"
+    )
+
+
 #: Capabilities a tick already HAS under another name than the model
 #: declares — ``(needle, hint-builder)`` pairs. The needle is matched
 #: lowercase as a substring of the declared ``tool`` text AND its
@@ -223,6 +241,14 @@ _HAVE_CAPABILITIES: tuple[tuple[str, Callable[[], str]], ...] = (
     ("bench-results-lifetime", _bench_retention_hint),
     ("bench-log-retention", _bench_retention_hint),
     ("bench-log-lifetime", _bench_retention_hint),
+    # gr573805 — the commit-artifact channel itself: a need declaring a
+    # "non-materials commit artifact type" is answered with the `commits`
+    # field rather than re-filing the (closed) marker gripe. Needles sit
+    # on both word orders the filed key used.
+    ("commit-artifact", _commit_channel_hint),
+    ("non-materials-commit", _commit_channel_hint),
+    ("non-structure-commit", _commit_channel_hint),
+    ("operational-commit", _commit_channel_hint),
 )
 
 
