@@ -57,12 +57,14 @@ def _stub_census_io(
     monkeypatch.setattr(capability_probe, "mem_used_pct", lambda: 50.0)
 
 
-def _mint_running_job(store, host, *, handle=None, container=None):
+def _mint_running_job(store, host, *, handle=None, container=None, params=None):
     meta = {"executor": "ssh_node", "job_type": "fake", "lease_host": host}
     if handle:
         meta["compute_handle"] = handle
     if container:
         meta["container"] = container
+    if params:
+        meta["params"] = params
     ref = store.insert_ref(kind="job", slug=None, title="j", meta=meta)
     store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
     return int(ref.id)
@@ -368,10 +370,10 @@ def test_census_container_attributed_by_job_handle(store, monkeypatch):
 
 
 def test_census_container_attributed_by_job_name(store, monkeypatch):
-    """The deterministic ``--name <prefix>-<ref_id>`` a job launcher
-    stamps resolves to its running job — covers admitted containers that
-    never wrote ``meta.container`` (and every non-Linux host, where no
-    host-side pid exists)."""
+    """``sandbox-<job_ref_id>`` (claude_docker's ``container_name``) names
+    the job row itself — resolves to its running job even when
+    ``meta.container`` was never written (and on every non-Linux host,
+    where no host-side pid exists)."""
     host = "census-h5d"
     ref_id = _mint_running_job(store, host)  # no handle, no container meta
     _stub_census_io(
@@ -379,14 +381,6 @@ def test_census_container_attributed_by_job_name(store, monkeypatch):
         containers=[
             {
                 "name": f"sandbox-{ref_id}",
-                "project": "",
-                "oneoff": False,
-                "rss_mb": 500.0,
-                "cpu": 10.0,
-                "comm": "img",
-            },
-            {
-                "name": f"precis-job-{ref_id}",
                 "project": "",
                 "oneoff": False,
                 "rss_mb": 500.0,
@@ -405,6 +399,47 @@ def test_census_container_attributed_by_job_name(store, monkeypatch):
     )
     meta = hb._admission_census(store, host)
     assert {e["key"] for e in meta["unadmitted"]} == {"container:stack-db-1"}
+
+
+def test_census_container_attributed_by_subject_ref(store, monkeypatch):
+    """The compute launchers name their container after the *subject*
+    ref, never the job (gr657246 review — matching ``precis-job-<id>``
+    against job ref_ids missed every legitimate GPAW container):
+    ``precis-job-<structure_ref_id>`` (struct_relax),
+    ``precis-route``/``precis-normalize-<route_ref_id>`` (retrosynth),
+    ``precis-fold-<protein_ref_id>`` (alphafold). The census resolves the
+    suffix through the running job's ``meta.params`` — and no further:
+    a ``precis-job-<job_ref_id>`` coincidence is NOT an admission."""
+    host = "census-h5s"
+    # Subject ids live at 2**31+: past every ref_id a serial column mints,
+    # so a subject number can never coincide with a job ref by accident.
+    sid, rid, pid_ = 2**31 + 1, 2**31 + 2, 2**31 + 3
+    relax = _mint_running_job(
+        store, host, params={"structure_ref_id": sid, "target_node": host}
+    )
+    _mint_running_job(store, host, params={"route_ref_id": rid, "target_node": host})
+    _mint_running_job(store, host, params={"protein_ref_id": pid_, "target_node": host})
+    box = {
+        "project": "",
+        "oneoff": False,
+        "rss_mb": 500.0,
+        "cpu": 10.0,
+        "comm": "img",
+    }
+    _stub_census_io(
+        monkeypatch,
+        containers=[
+            {"name": f"precis-job-{sid}", **box},
+            {"name": f"precis-route-{rid}", **box},
+            {"name": f"precis-normalize-{rid}", **box},
+            {"name": f"precis-fold-{pid_}", **box},
+            # relax's own ref_id as a structure id — never minted; the
+            # name's number must not adopt it as this job's container.
+            {"name": f"precis-job-{relax}", **box},
+        ],
+    )
+    meta = hb._admission_census(store, host)
+    assert {e["key"] for e in meta["unadmitted"]} == {f"container:precis-job-{relax}"}
 
 
 def test_census_container_member_group_defers(store, monkeypatch):

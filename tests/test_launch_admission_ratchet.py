@@ -84,7 +84,6 @@ PROBES: dict[str, str] = {
     "memory_pressure": "macOS memory-pressure read",
     "nvidia-smi": "GPU state query or reset",
     "systemctl": "unit state query/restart; the unit is a declared daemon",
-    "launchctl": "launchd domain/service roster query (list/print)",
     "security": "macOS keychain item read",
     "exiftool": "PDF metadata read",
     "chktex": "LaTeX lint of one file",
@@ -117,7 +116,37 @@ CONTAINER_PROBE_VERBS: frozenset[str] = frozenset(
         "config",
     }
 )
+#: ``launchctl`` verbs that read launchd state and nothing else.
+#: ``bootstrap``/``bootout``/``load``/``submit``/``kickstart``/``enable``
+#: & friends launch or mutate workload — a blanket ``launchctl`` probe
+#: exemption waved them all through (gr657246 review); only the roster
+#: queries are probes.
+LAUNCHCTL_PROBE_VERBS: frozenset[str] = frozenset(
+    {
+        "blame",
+        "error",
+        "examine",
+        "getenv",
+        "hostinfo",
+        "list",
+        "managername",
+        "managerpid",
+        "manageruid",
+        "print",
+        "print-cache",
+        "print-disabled",
+        "procinfo",
+        "runstats",
+        "version",
+    }
+)
 _CONTAINER_HEADS = frozenset({"docker", "podman"})
+#: argv heads exempt only when their verb is in the mapped set.
+_VERB_PROBE_HEADS: dict[str, frozenset[str]] = {
+    "docker": CONTAINER_PROBE_VERBS,
+    "podman": CONTAINER_PROBE_VERBS,
+    "launchctl": LAUNCHCTL_PROBE_VERBS,
+}
 _ARGV_HEADS = _CONTAINER_HEADS | {"ssh"}
 
 _SUBP_FUNCS = frozenset(
@@ -392,14 +421,16 @@ class _Scan:
         return []
 
     def _exempt(self, node: ast.expr | None) -> tuple[bool, str | None]:
-        """``(exempt, argv head)``: a :data:`PROBES` binary, or a container
-        CLI whose verb is in :data:`CONTAINER_PROBE_VERBS`."""
+        """``(exempt, argv head)``: a :data:`PROBES` binary, or a
+        verb-gated CLI (:data:`_VERB_PROBE_HEADS`) whose verb is read-only
+        — a ``docker run``/``launchctl bootstrap`` launches load and stays
+        counted."""
         tokens = self._tokens(node)
         head = tokens[0].rsplit("/", 1)[-1] if tokens and tokens[0] else None
         if head in PROBES:
             return True, head
-        verb = _verb(tokens) if head in _CONTAINER_HEADS else ""
-        return verb in CONTAINER_PROBE_VERBS, head
+        verbs = _VERB_PROBE_HEADS.get(head or "")
+        return verbs is not None and _verb(tokens) in verbs, head
 
     def _site(
         self, stack: list[_Scope], node: ast.AST, callee: str, head: str | None
@@ -691,6 +722,37 @@ def test_probes_and_admitted_sites_pass() -> None:
     assert (
         scan_source("src/precis/workers/admission.py", "import os\nos.fork()\n") == []
     )
+
+
+def test_verb_gated_heads_reject_launch_verbs() -> None:
+    """gr657246 review: ``docker run`` and the workload launchctl verbs
+    (``bootstrap``/``submit``/``kickstart``/``load``/``enable``) are launch
+    sites — only the read-only verbs are probes."""
+    src = (
+        "import subprocess\n"
+        "def ok1():\n    subprocess.run(['docker', 'ps'], timeout=5)\n"
+        "def ok2():\n    subprocess.run(['launchctl', 'list'], timeout=5)\n"
+        "def ok3():\n"
+        "    subprocess.run(['/bin/launchctl', 'print', d], timeout=5)\n"
+        "def bad1():\n"
+        "    subprocess.run(['docker', 'run', '--rm', img], timeout=5)\n"
+        "def bad2():\n"
+        "    subprocess.run(['launchctl', 'bootstrap', dom, plist])\n"
+        "def bad3():\n"
+        "    subprocess.run(['launchctl', 'submit', '-l', lbl, '--', exe])\n"
+        "def bad4():\n"
+        "    subprocess.run(['launchctl', 'kickstart', '-k', svc])\n"
+        "def bad5():\n    subprocess.run(['launchctl', 'load', plist])\n"
+        "def bad6():\n    subprocess.run(['launchctl', 'enable', svc])\n"
+    )
+    assert sorted(s.key for s in scan_source("x.py", src)) == [
+        "x.py::bad1",
+        "x.py::bad2",
+        "x.py::bad3",
+        "x.py::bad4",
+        "x.py::bad5",
+        "x.py::bad6",
+    ]
 
 
 def test_keys_are_function_level_with_classes() -> None:

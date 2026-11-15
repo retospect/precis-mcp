@@ -826,14 +826,24 @@ def _collect_container_pids() -> dict[int, str]:
     return out
 
 
-#: Deterministic ``--name`` prefixes job launchers stamp on containers —
-#: ``sandbox-<job_id>`` (claude_docker), ``precis-job-<ref_id>``
-#: (struct_relax), ``precis-route-<ref_id>``/``precis-fold-<ref_id>``
-#: (chem/bio compute). A matching ``STATUS:running`` job leased to this
-#: host attributes the container even when ``meta.container`` was never
-#: written.
+#: Deterministic ``--name`` prefixes job launchers stamp on containers,
+#: → the ``meta.params`` key the numeric suffix carries. ``sandbox-`` is
+#: the exception: claude_docker's ``container_name(job_id)`` names the
+#: JOB row itself. Every compute producer names its container after the
+#: *subject* ref it computes on — the name is that subject's per-node
+#: mutex — so the suffix resolves through the running job's params, not
+#: its ref_id (gr657246 review: ``struct_relax._dispatch`` stamps
+#: ``precis-job-<structure_ref_id>`` — matching it against job ref_ids
+#: missed every legitimate GPAW container, and could adopt a stray whose
+#: number happened to equal an unrelated job's ref_id).
+_JOB_CONTAINER_SUBJECT: dict[str, str] = {
+    "precis-job": "structure_ref_id",  # struct_relax._dispatch
+    "precis-route": "route_ref_id",  # precis_chem aizynth engine
+    "precis-normalize": "route_ref_id",  # precis_chem LinChemIn normalizer
+    "precis-fold": "protein_ref_id",  # precis_bio alphafold
+}
 _JOB_CONTAINER_RE = re.compile(
-    r"(?:sandbox|precis-job|precis-route|precis-fold)-(\d+)\Z"
+    r"(sandbox|precis-job|precis-route|precis-normalize|precis-fold)-(\d+)\Z"
 )
 
 
@@ -870,8 +880,9 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
     ``admitted_mem_mb`` — this host's ledger owes them — but never in
     ``holder_mem``, the drift arm's local pid→holder map. Jobs match by
     ``meta.lease_host`` — ``meta.compute_handle`` ``pid``/``pgid``,
-    ``meta.container``, ``ref_id`` (deterministic container ``--name``
-    resolution) and the launcher ``meta.launcher_pid``.
+    ``meta.container``, ``ref_id`` (``sandbox-`` container ``--name``
+    resolution) and ``meta.params`` subject refs (the other deterministic
+    container ``--name`` prefixes — :data:`_JOB_CONTAINER_SUBJECT`).
     """
     hold_pids: set[int] = set()
     holder_mem: dict[str, int] = {}
@@ -880,6 +891,7 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
     job_pids: set[int] = set()
     job_containers: set[str] = set()
     job_ref_ids: set[int] = set()
+    job_subjects: dict[str, set[int]] = {}
     with store.pool.connection() as conn:
         hold_rows = conn.execute(
             "SELECT holder, resource, units, host, holder_host "
@@ -892,7 +904,8 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
         job_rows = conn.execute(
             "SELECT r.ref_id, "
             "       r.meta->'compute_handle' AS handle, "
-            "       r.meta->>'container' AS container "
+            "       r.meta->>'container' AS container, "
+            "       r.meta->'params' AS params "
             "  FROM refs r "
             "  JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "  JOIN tags t ON t.tag_id = rt.tag_id "
@@ -916,7 +929,7 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
                 holder_mem[holder] = holder_mem.get(holder, 0) + units
         if str(resource) == "mem_mb" and str(row_host) == host:
             admitted_mem_mb += units
-    for ref_id, handle, container in job_rows:
+    for ref_id, handle, container, params in job_rows:
         job_ref_ids.add(int(ref_id))
         if isinstance(handle, dict):
             for key in ("pid", "pgid"):
@@ -930,6 +943,14 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
                         job_pgids.add(pid)
         if container:
             job_containers.add(str(container))
+        if isinstance(params, dict):
+            for param_key in _JOB_CONTAINER_SUBJECT.values():
+                try:
+                    sid = int(params.get(param_key) or 0)
+                except (TypeError, ValueError):
+                    sid = 0
+                if sid > 0:
+                    job_subjects.setdefault(param_key, set()).add(sid)
     return {
         "hold_pids": hold_pids,
         "holder_mem": holder_mem,
@@ -938,6 +959,7 @@ def _live_admissions(store: Any, host: str) -> dict[str, Any]:
         "job_pids": job_pids,
         "job_containers": job_containers,
         "job_ref_ids": job_ref_ids,
+        "job_subjects": job_subjects,
     }
 
 
@@ -1040,8 +1062,16 @@ def _admission_census(store: Any, host: str) -> dict[str, Any]:
         ):
             continue  # a live hold or job handle names a pid inside it
         m = _JOB_CONTAINER_RE.search(name)
-        if m and int(m.group(1)) in admitted["job_ref_ids"]:
-            continue  # deterministic job --name; the job row is the admission
+        if m:
+            prefix, num = m.group(1), int(m.group(2))
+            subject = _JOB_CONTAINER_SUBJECT.get(prefix)
+            admitted_ids = (
+                admitted["job_ref_ids"]
+                if subject is None
+                else admitted["job_subjects"].get(subject, ())
+            )
+            if num in admitted_ids:
+                continue  # deterministic job --name resolves to a running job
         if not c["oneoff"] and c["project"]:
             continue  # a declared compose *service* — standing infra
         if _census_exempt(name) or _census_exempt(str(c["comm"])):
