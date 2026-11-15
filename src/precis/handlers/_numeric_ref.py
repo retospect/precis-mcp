@@ -560,20 +560,33 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 
 #: Page budget (chars) for the batch ``view=`` read (gr515524): only
 #: whole per-id blocks go on a page, so a block (a gripe's body or
-#: comment timeline) is never cut mid-text. Sized under the ~24 kB
-#: response cap with headroom for the batch header and ``next:`` ids, so
-#: a single block over budget still renders whole.
+#: comment timeline) is never cut mid-text. Sized under the agent-context
+#: budget (~4 KiB) with headroom for the batch header and ``next:`` ids,
+#: so a single block over budget still renders whole. Default for every
+#: kind; a kind whose blocks are whole records worth packing several per
+#: page opts into :data:`RECORD_BATCH_PAGE_CHARS` through
+#: :attr:`NumericRefHandler.batch_page_chars`.
 BATCH_VIEW_PAGE_CHARS = 3500
 
 #: Page budget for kinds whose batch/cohort blocks are whole records worth
 #: packing many per page (gripe, gr676097): under the ~24 kB response cap
-#: with headroom for the header and ``next:`` ids. A kind opts in through
-#: :attr:`NumericRefHandler.batch_page_chars`.
+#: with headroom for the header and ``next:`` ids.
 RECORD_BATCH_PAGE_CHARS = 20_000
 
-#: Blocks rendered per cohort-read page before packing (the packer keeps
-#: what fits :data:`BATCH_VIEW_PAGE_CHARS`; the rest is the next page).
+#: The most blocks a cohort-read page renders (the ``page_size=`` cap for
+#: the read, and the ids the packer fetches ahead; the packer keeps what
+#: fits :attr:`NumericRefHandler.batch_page_chars`, the rest is the next
+#: page).
 _COHORT_WINDOW = 40
+
+
+def _cohort_cursor_value(value: Any) -> Any:
+    """A ``cont`` value for the cohort ``next:`` cursor: a ``datetime``
+    renders as its ISO instant (repr would print ``datetime.datetime(…)``,
+    which is not a replayable call arg); anything else goes verbatim."""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value
 
 
 @lru_cache(maxsize=1)
@@ -1394,8 +1407,15 @@ class NumericRefHandler(Handler):
             view = None
         # ``view='full'|'body'`` on a queryless listing is the cohort
         # read (gr676097): every row's block, packed to the page budget.
+        # Only when no ``link=`` is in play — a link listing is a
+        # different shape and the view must keep falling through to the
+        # loud unknown-view error, not be silently absorbed.
         cohort_view: str | None = None
-        if view in self.cohort_read_views and not (q and q.strip()):
+        if (
+            view in self.cohort_read_views
+            and not (q and q.strip())
+            and not (link is not None and str(link).strip())
+        ):
             cohort_view, view = view, None
         view = plain_listing_view(view, self._search_view_names())
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
@@ -1435,6 +1455,38 @@ class NumericRefHandler(Handler):
                 f"page={page!r}, page_size={page_size!r}",
                 next=f"search(kind={self.kind!r}, page_size=100)",
             ) from None
+        # ``page=N`` has no fixed start on the cohort read: its pages are
+        # packed to a char budget and each ends at a different row, so
+        # page=2 cannot be computed — fail loudly rather than re-reading
+        # page 1 (gr676097 review). ``page_size=`` keeps its listing
+        # meaning — the most blocks one cohort page renders — bounded by
+        # the window the packer reads ahead. The ranked/count selectors
+        # (``mode``, ``chunk_scope``, ``group_by``) mean nothing on a
+        # whole-record read — refused, never silently dropped.
+        cohort_limit = _COHORT_WINDOW
+        if cohort_view is not None:
+            inapplicable = [
+                k
+                for k, v in (
+                    ("mode", mode),
+                    ("group_by", group_by),
+                    ("chunk_scope", chunk_scope),
+                )
+                if v is not None
+            ]
+            if int(page) != 1:
+                inapplicable.insert(0, "page")
+            if inapplicable:
+                key = inapplicable[0]
+                raise BadInput(
+                    f"{key}= does not apply to the cohort read (view={cohort_view!r})",
+                    next=(
+                        f"search(kind={self.kind!r}, view={cohort_view!r}) "
+                        "— page through it with the printed next: cursor "
+                        "(args={'offset': N})"
+                    ),
+                )
+            cohort_limit = max(1, min(int(page_size), _COHORT_WINDOW))
 
         # Resolve the per-kind STATUS default (e.g. gripe → 'open') into
         # the effective tag filter. An explicit status= always applies;
@@ -1581,6 +1633,7 @@ class NumericRefHandler(Handler):
                         normalized_tags or [],
                         view=cohort_view,
                         start=cohort_start,
+                        limit=cohort_limit,
                         exclude_tags=excluded,
                         sort=sort or self.browse_default_sort,
                         id_min=id_lo,
@@ -1592,8 +1645,24 @@ class NumericRefHandler(Handler):
                         closed_values=self._closed_status_values()
                         if closed_given
                         else None,
-                        status=status,
-                        tags_arg=tags,
+                        # The ``next:`` cursor replays this same call
+                        # with only ``args.offset`` advanced — every arg
+                        # that shaped page 1 rides along or page 2+
+                        # silently widens the cohort (gr676097 review).
+                        cont={
+                            "status": status,
+                            "tags": tags,
+                            "sort": sort,
+                            "page_size": page_size,
+                            "closed_since": closed_since,
+                            "closed_until": closed_until,
+                            "id_min": id_min,
+                            "id_max": id_max,
+                            "project": project,
+                            "include_ref_ids": include_ref_ids,
+                            "exclude_ref_ids": exclude_ref_ids,
+                            **_kw,
+                        },
                         kw={k: v for k, v in _kw.items() if k in ("comments",)},
                     )
                 return self._list_by_tags(
@@ -4924,7 +4993,7 @@ class NumericRefHandler(Handler):
         self, ref_ids: list[int], *, view: str, kw: dict[str, Any]
     ) -> tuple[list[str], list[str]]:
         """Render each id's ``view`` block and pack whole blocks under
-        :data:`BATCH_VIEW_PAGE_CHARS`; returns ``(shown, all_blocks)``.
+        :attr:`batch_page_chars`; returns ``(shown, all_blocks)``.
         A lone block over budget is the only one on its page."""
         blocks: list[str] = []
         for rid in ref_ids:
@@ -4964,6 +5033,7 @@ class NumericRefHandler(Handler):
         *,
         view: str,
         start: int,
+        limit: int,
         exclude_tags: list[str] | None,
         sort: str,
         id_min: int | None,
@@ -4973,13 +5043,18 @@ class NumericRefHandler(Handler):
         closed_after: datetime | None,
         closed_before: datetime | None,
         closed_values: list[str] | None,
-        status: str | None,
-        tags_arg: list[str] | None = None,
+        cont: dict[str, Any],
         kw: dict[str, Any],
     ) -> Response:
         """``search(status=…|tags=[…], view='full'|'body')`` with no q=:
         the listing's cohort, in the listing's order, one whole block per
         row packed to :attr:`batch_page_chars` (gr676097).
+
+        ``limit`` is ``page_size=`` kept: the most blocks one page
+        renders, bounded by :data:`_COHORT_WINDOW`. ``cont`` is the
+        caller's own call — the ``next:`` cursor replays it with only
+        ``offset`` advanced, so a page-2 call narrows exactly like
+        page 1 did.
 
         Header ``gripes 1-7 of 88 · STATUS:needs_spec``; the footer is
         the exact ``next: search(…, args={'offset': 7})`` or ``complete``.
@@ -4999,7 +5074,7 @@ class NumericRefHandler(Handler):
         refs = self.store.list_refs(
             kind=self.kind,
             tags=tags,
-            limit=_COHORT_WINDOW,
+            limit=limit,
             offset=start,
             order_by="closed_desc"
             if "closed_values" in filters
@@ -5022,15 +5097,23 @@ class NumericRefHandler(Handler):
         head = f"# {self._sense()}s {start + 1}-{last} of {total} · {label}"
         body = head + "\n\n" + "\n\n".join(shown)
         if last < total:
-            call_args: list[str] = []
-            if status is not None:
-                call_args.append(f"status={status!r}")
-            if tags_arg:
-                call_args.append(f"tags={list(tags_arg)!r}")
-            call_args.append(f"view={view!r}")
-            extra = {**kw, "offset": last}
-            call_args.append(f"args={extra!r}")
-            body += f"\n\nnext: search(kind={self.kind!r}, {', '.join(call_args)})"
+            # The ``search`` core params render top-level; every other
+            # shaping arg (windows, id range, resolved include/exclude
+            # sets, ``comments``) rides inside one ``args={}`` — the
+            # same convention ``_search_call_text`` uses for ``next=``
+            # hints at dispatch level.
+            parts = [f"kind={self.kind!r}"]
+            args_extra: dict[str, Any] = {}
+            for key, value in cont.items():
+                if value is None:
+                    continue
+                if key in ("status", "tags", "sort", "page_size"):
+                    parts.append(f"{key}={value!r}")
+                else:
+                    args_extra[key] = _cohort_cursor_value(value)
+            parts.append(f"view={view!r}")
+            args_extra["offset"] = last
+            body += f"\n\nnext: search({', '.join(parts)}, args={args_extra!r})"
         else:
             body += "\n\ncomplete"
         return Response(

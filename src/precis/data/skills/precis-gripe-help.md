@@ -297,6 +297,10 @@ get(kind="gripe", id=[42, 43, 44], view="full")  # same packer, same cursor
 `args={'comments': 'rulings'}` keeps only the `Reto <date>:`, `Ruling`,
 `needs-spec:`, `spec:` and `resolved:` comments and says how many it hid.
 
+`page_size=` caps blocks per page (default 10); `page=` is refused — the
+printed `next:` cursor is the only continuation, and it replays all your
+filters (status, tags, sort, id_min/max, closed windows, project, …).
+
 ## Find gripes marked won't-fix
 
 ```python

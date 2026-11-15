@@ -944,3 +944,68 @@ def test_rulings_filter_keeps_ruling_and_spec_comments(hub: Hub) -> None:
     assert "spec: do the thing" in body
     assert "dup-suggest" not in body
     assert "1 comments hidden" in body
+
+
+# ── gr676097 review (td685912): cursor fidelity, page=, link= ─────
+
+
+def test_cohort_cursor_replays_shaping_args(hub: Hub) -> None:
+    """The next: cursor must replay every arg that shaped page 1 —
+    dropping id_min (or any filter) would silently widen the cohort
+    on page 2+ (review td685912)."""
+    handler, ids = _fat_gripes(hub, 8)
+    for gid in ids:
+        handler.tag(id=gid, add=["STATUS:needs_spec"])
+    body = handler.search(
+        status="needs_spec",
+        view="full",
+        page_size=3,
+        id_min=ids[4],
+        sort="recency",
+        comments="rulings",
+    ).body
+    assert "next: search(" in body
+    cursor = body.split("next: search(")[1].rstrip(")")
+    assert "status='needs_spec'" in cursor
+    assert f"id_min': {ids[4]}" in cursor or f"id_min={ids[4]}" in cursor
+    assert "sort='recency'" in cursor
+    assert "page_size=3" in cursor
+    assert "comments': 'rulings'" in cursor
+    # replaying with the printed offset must keep the narrowed cohort:
+    # no gripe below id_min may appear
+    page2 = handler.search(
+        status="needs_spec",
+        view="full",
+        page_size=3,
+        id_min=ids[4],
+        offset=3,
+    ).body
+    for gid in ids[:4]:
+        assert f"# gripe {gid}" not in page2
+
+
+def test_cohort_rejects_page_gt_1(hub: Hub) -> None:
+    """page= has no fixed start on a budget-packed read — refusing
+    beats silently re-reading page 1."""
+    handler, ids = _fat_gripes(hub, 4)
+    for gid in ids:
+        handler.tag(id=gid, add=["STATUS:needs_spec"])
+    with pytest.raises(BadInput):
+        handler.search(status="needs_spec", view="full", page=2)
+
+
+def test_cohort_page_size_caps_blocks_per_page(hub: Hub) -> None:
+    handler, ids = _fat_gripes(hub, 8)
+    for gid in ids:
+        handler.tag(id=gid, add=["STATUS:needs_spec"])
+    body = handler.search(status="needs_spec", view="full", page_size=3).body
+    assert body.startswith("# gripes 1-3 of 8")
+
+
+def test_cohort_link_view_is_loud_error(hub: Hub) -> None:
+    """link= + view='full' must hit the loud unknown-view error, not be
+    silently absorbed into a cohort read (review td685912)."""
+    handler, ids = _gripes(hub, 2)
+    handler.link(id=ids[0], target=f"gripe:{ids[1]}", rel="related-to")
+    with pytest.raises(BadInput):
+        handler.search(link=f"gripe:{ids[1]}", view="full")
