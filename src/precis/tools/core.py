@@ -1935,7 +1935,8 @@ def put(
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments, lane= the optional build-lane pin of the gripe-fix forms,
-    # iterations=/after=/context= the route-loop's.
+    # iterations=/after=/context= the route-loop's, repo=/slices=/glue=/bump=
+    # the repo-batch's.
     # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
     # clients don't strip them; read only under mode='plan'.
     template: str | None = None,
@@ -1946,6 +1947,10 @@ def put(
     iterations: int | None = None,
     after: str | None = None,
     context: str | None = None,
+    repo: str | None = None,
+    slices: str | list[Any] | None = None,
+    glue: str | list[Any] | None = None,
+    bump: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -2275,6 +2280,10 @@ def put(
                 "iterations": iterations,
                 "after": after,
                 "context": context,
+                "repo": repo,
+                "slices": slices,
+                "glue": glue,
+                "bump": bump,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,

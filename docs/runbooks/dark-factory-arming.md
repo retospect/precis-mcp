@@ -819,16 +819,23 @@ sits at its sha is recorded and closed.
 
 Before listing a repo in `factory.open_repos`, prove from the slice host,
 as the worker's user and with the factory git token, that the token can
-read and re-run the repo's Actions runs. The read half:
+read and re-run the repo's Actions runs. The read half, run in the
+worker's environment (the vault lookup needs `PRECIS_DATABASE_URL`; a
+plain login shell has none) and with `GH_TOKEN` unset:
 
     uv run python -c "import httpx
     from precis.workers import factory_git as g
+    t = g.factory_git_token()
+    assert t, 'the factory git token did not resolve'
     u = 'https://api.github.com/repos/<owner>/<repo>/actions/runs?per_page=1'
-    print(httpx.get(u, headers=g.github_api_headers()).status_code)"
+    h = {'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + t}
+    print(httpx.get(u, headers=h).status_code)"
 
 It must print 200; 404 means the token has no Actions read on the repo
-(GitHub hides what it cannot read). The helper reads the token itself:
-nothing prints it, keep it that way. The write half can only be proven by
+(GitHub hides what it cannot read). The assert matters: with no token the
+request goes out unauthenticated and a private repo answers the same 404,
+and a control read against a public repo passes without any token. Nothing
+prints the token, keep it that way. The write half can only be proven by
 re-running a real cancelled or completed run of the repo (the "Re-run"
 button's API call as the same token: `POST .../actions/runs/<id>/rerun`);
 there is no dry run. Without Actions read a release can never tag; without
@@ -843,6 +850,43 @@ Known limits:
   sandboxed.
 - `v*` tags cannot be deleted or moved on the remote, so a wrong tag
   cannot be fixed.
+
+How a second-repo batch is minted (`templates.mint_repo_batch`, the
+`repo-batch` plan template):
+
+    put(kind='todo', mode='plan', args={'template': 'repo-batch',
+        'repo': '<repo>', 'slices': 'td1, td2', 'glue': 'td3, td4'})
+
+- `slices` names existing build todos. Each must be open, a leaf with no
+  live job, carry its own `repo:<repo>` tag, and carry no tag that parks it
+  for the dispatcher (`waiting-for:`, `ask-user`, `halt`,
+  `hold:no-dispatch`, a claim): remove such a tag before the mint.
+- The dispatcher also reads holds through ancestors. A slice whose old
+  parent chain carries such a tag, is paused, or is blocked-by an open
+  todo is refused, because the move would lift that hold unseen: lift it,
+  or detach the slice first (`link rel='parent', mode='remove'`).
+- A slice that already carries a `plan:` tag is refused, so a retried
+  mint cannot build a second batch over the same slices. A slice that
+  waits (`blocked-by`) on a glue todo is refused: glue waits on the pin,
+  so that batch could never start.
+- The batch is its own plan: its parent, if any, sits outside every live
+  plan and is none of the named todos.
+- The mint moves each slice under a new root, which carries no repo tag.
+  The slice keeps its body, its repo tag and its links; `meta.llm_tier` is
+  dropped, and a comment on the slice records where it was moved from.
+- Under the root it adds one reviewer per slice (blocked-by the slice),
+  one release node (blocked-by every reviewer) and one pin-bump node
+  (blocked-by the release, tagged for the default repo).
+- `glue` names the todos that must wait for the new engine: the
+  precis-side halves, a wave pointer. Each gets a `blocked-by` edge to the
+  pin node and stays where it is, outside the root.
+- `bump` (`auto`, `minor`, `patch`) is passed to the release node.
+- The mint is one transaction: a refusal leaves nothing behind.
+- It refuses until the repo's profile names a lander, a releaser and a
+  pinner. Minting dispatches nothing by itself in a closed repo: the
+  slices still wait on `factory.open_repos`.
+- If the door fails, a dev session calls `mint_repo_batch` with the same
+  arguments on prod (Reto 2026-11-15).
 
 Known limits:
 

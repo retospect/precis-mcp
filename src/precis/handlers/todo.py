@@ -1055,6 +1055,10 @@ class TodoHandler(NumericRefHandler):
         iterations: int | None = None,
         after: str | None = None,
         context: str | None = None,
+        repo: str | None = None,
+        slices: str | list[Any] | None = None,
+        glue: str | list[Any] | None = None,
+        bump: str | None = None,
         # Blind-retry dedupe (gr658432): on a create the key stamps
         # ``meta.idem_key`` on the minted ref (a same-key retry returns
         # the first todo); on ``id=N + text`` it dedupes the appended
@@ -1189,6 +1193,10 @@ class TodoHandler(NumericRefHandler):
                         "iterations": iterations,
                         "after": after,
                         "context": context,
+                        "repo": repo,
+                        "slices": slices,
+                        "glue": glue,
+                        "bump": bump,
                     },
                     parent_id=parent_int,
                     refused={

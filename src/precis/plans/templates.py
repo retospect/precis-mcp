@@ -36,10 +36,15 @@ from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.plans.gates import resolve_board
 from precis.plans.logbook import first_line, log_plan_event
-from precis.plans.nodes import finish_mint, validate_plan_meta
+from precis.plans.nodes import finish_mint, node_kind, validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
-from precis.todo.guards import check_ask_meta
+from precis.todo.guards import (
+    check_ask_meta,
+    check_no_cycle,
+    check_owner_only_ref,
+    check_reparent_depth,
+)
 from precis.utils import dispatch_score as _dscore
 from precis.utils import handle_registry
 
@@ -504,6 +509,419 @@ def mint_repo_release(
             )
 
     return _run_body(store, plan_root, plan_root, build).ids["release"]
+
+
+def _op_name(meta: dict[str, Any] | None) -> str | None:
+    """The job type ``meta.op`` names (a string, or ``{type, params}``)."""
+    op = (meta or {}).get("op")
+    if isinstance(op, dict):
+        op = op.get("type")
+    return op.strip() if isinstance(op, str) and op.strip() else None
+
+
+def mint_repo_pin(
+    store: Store,
+    plan_root: int,
+    repo: str,
+    *,
+    release: int,
+    glue: Sequence[int] = (),
+) -> int:
+    """Mint the mechanical pin-bump node of a second repo's batch directly
+    under ``plan_root``, tagged ``plan:<plan_root>``, blocked-by ``release``
+    (the batch's release node). Returns its id.
+
+    ``meta.op`` is the profile's ``pinner`` job type (the dispatcher adds
+    ``todo_id``, ``release_todo`` and ``pin_repo``) and ``meta.retries = 1``.
+    The node carries its own ``repo:<default repo>`` tag: it builds and lands
+    in precis, and without the tag a root tagged for the second repo would
+    hand it that repo. Each ``glue`` todo gets a ``blocked-by`` edge to the
+    node and is otherwise left alone: glue stays outside the root, because a
+    no-diff land closes its chain's descendants won't-do.
+
+    Refuses a repo without a profile naming a ``pinner``, the default repo, a
+    ``release`` that is not this repo's release node directly under
+    ``plan_root``, and a ``glue`` todo that is missing or sits directly under
+    ``plan_root`` (td659522 step 4 R7)."""
+    profile = _lanes.repo_profile(repo)
+    if repo == _lanes.DEFAULT_REPO or profile is None or profile.pinner is None:
+        raise BadInput(
+            f"repo-pin: {repo!r} has no second-repo profile naming a pinner",
+            next="pin a second repo whose profile names a pinner, or move the "
+            "pin by hand",
+        )
+    rel = store.get_ref(kind="todo", id=release)
+    if (
+        rel is None
+        or rel.parent_id != plan_root
+        or _op_name(rel.meta) != profile.releaser
+        or _lanes.repo_tags(store.tags_for(release)) != [repo]
+    ):
+        raise BadInput(
+            f"repo-pin: td{release} is not the {repo} release node under td{plan_root}",
+            next="pass release=<the id mint_repo_release returned for this root>",
+        )
+    for gid in glue:
+        ref = store.get_ref(kind="todo", id=gid)
+        if ref is None or ref.parent_id == plan_root:
+            raise BadInput(
+                f"repo-pin: glue td{gid} is missing or sits under td{plan_root}",
+                next="name live glue todos that stay outside the batch root",
+            )
+
+    def build(m: _Minter) -> None:
+        pid = m.node(
+            "pin",
+            f"Move the precis pin of {repo} (batch of td{plan_root})",
+            {**_task(profile.pinner), "retries": 1},
+            body=(
+                f"Mechanical: no slice brief, no LLM. Once td{release} has "
+                f"tagged {repo}, the {profile.pinner} job moves precis's pin "
+                "to that release, and its land closes this node. The "
+                "precis-side todos of the batch wait on this node."
+            ),
+        )
+        _tag(m, pid, f"repo:{_lanes.DEFAULT_REPO}")
+        m.store.add_link(
+            src_ref_id=pid, dst_ref_id=release, relation="blocked-by", conn=m.conn
+        )
+        for gid in glue:
+            m.store.add_link(
+                src_ref_id=gid, dst_ref_id=pid, relation="blocked-by", conn=m.conn
+            )
+
+    return _run_body(store, plan_root, plan_root, build).ids["pin"]
+
+
+def _parking_tag(tags: Sequence[Any]) -> str | None:
+    """The first tag among ``tags`` that parks a todo and its subtree for
+    the dispatcher (the doable exclusions, a claim), or ``None``."""
+    from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+
+    for tag in tags:
+        value = str(tag.value)
+        if tag.prefix is not None:
+            continue
+        if value.startswith("claimed-by:") or any(
+            value == held or (held.endswith(":") and value.startswith(held))
+            for held in _DOABLE_EXCLUSION_TAGS
+        ):
+            return value
+    return None
+
+
+def _status(tags: Sequence[Any]) -> str | None:
+    return next((str(t.value) for t in tags if t.prefix == "STATUS"), None)
+
+
+def _ancestors(conn: Any, todo_id: int) -> list[int]:
+    """The live ancestors of ``todo_id``, nearest first."""
+    rows = conn.execute(
+        """
+        WITH RECURSIVE up(ref_id, parent_id, lvl) AS (
+            SELECT ref_id, parent_id, 0 FROM refs WHERE ref_id = %s
+            UNION ALL
+            SELECT r.ref_id, r.parent_id, up.lvl + 1
+              FROM refs r JOIN up ON r.ref_id = up.parent_id
+             WHERE r.retired_at IS NULL AND up.lvl < 25
+        )
+        SELECT ref_id FROM up WHERE lvl > 0 ORDER BY lvl
+        """,
+        (todo_id,),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _inherited_hold(store: Store, conn: Any, todo_id: int) -> str | None:
+    """A hold ``todo_id`` gets from an ancestor today and would lose by moving
+    out from under it: a parking tag, ``STATUS:paused``, or an open
+    ``blocked-by`` target (the dispatcher reads all three up the parent
+    chain). ``None`` when no ancestor holds it."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    for aid in _ancestors(conn, todo_id):
+        tags = store.tags_for(aid)
+        parked = _parking_tag(tags)
+        if parked is not None:
+            return f"td{aid} carries {parked}"
+        if _status(tags) == "paused":
+            return f"td{aid} is paused"
+        for (bid,) in conn.execute(
+            "SELECT l.dst_ref_id FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id "
+            "WHERE l.src_ref_id = %s AND l.relation = 'blocked-by' "
+            "AND b.retired_at IS NULL ORDER BY l.dst_ref_id",
+            (aid,),
+        ).fetchall():
+            if _status(store.tags_for(int(bid))) not in TERMINAL_TODO_STATUSES:
+                return f"td{aid} is blocked-by {bid}, which is still open"
+    return None
+
+
+def _adoption_problem(
+    store: Store, conn: Any, todo_id: int, repo: str, leaving: Sequence[int]
+) -> str | None:
+    """Why the hand-written todo ``todo_id`` cannot become a build slice of a
+    ``repo`` batch, or ``None``. It must be an open, childless, plain or
+    ``run_slice`` todo carrying its own ``repo:<repo>`` tag, with no live
+    job, no claim and no tag that parks it; it must not already be a minted
+    plan node (a ``plan:`` tag: a second mint of the same batch stops here);
+    no ancestor may hold it (the move would lift that hold unseen); and the
+    move must not leave its parent a childless node inside a live plan,
+    which the dispatcher would then build (``leaving`` are the todos moving
+    out together)."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+    from precis.workers.job_types.plan_dispatch import _plan_root_of
+
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if ref is None:
+        return "is not a live todo"
+    tags = store.tags_for(todo_id)
+    status = _status(tags)
+    if status != "open":
+        closed = "closed" if status in TERMINAL_TODO_STATUSES else "not open"
+        return f"is {closed} (STATUS:{status})"
+    if _lanes.repo_tags(tags) != [repo]:
+        return f"does not carry its own repo:{repo} tag and no other repo tag"
+    meta = ref.meta or {}
+    if (
+        node_kind(meta) not in (None, "task")
+        or "ask" in meta
+        or _op_name(meta) not in (None, "run_slice")
+    ):
+        return "is not a plain build slice (its meta makes it another plan node)"
+    planned = next(
+        (str(t.value) for t in tags if str(t.value).startswith("plan:")), None
+    )
+    if planned is not None:
+        return f"is already a minted plan node ({planned})"
+    parked = _parking_tag(tags)
+    if parked is not None:
+        return f"carries {parked}, which parks it; remove the tag first"
+    kids = conn.execute(
+        "SELECT ref_id, kind FROM refs WHERE parent_id = %s "
+        "AND retired_at IS NULL AND kind IN ('todo', 'job')",
+        (todo_id,),
+    ).fetchall()
+    for kid, kind in kids:
+        if kind == "todo":
+            return f"has a child todo td{kid}; a build slice is a leaf"
+        if not any(
+            t.prefix == "STATUS" and str(t.value) in JOB_TERMINAL_STATUSES
+            for t in store.tags_for(int(kid))
+        ):
+            return f"has a live job jo{kid}"
+    held = _inherited_hold(store, conn, todo_id)
+    if held is not None:
+        return (
+            f"is held through an ancestor ({held}) and the move would lift "
+            "that; lift the hold, or detach the todo first "
+            "(link rel='parent', mode='remove')"
+        )
+    old = ref.parent_id
+    if old is not None and _plan_root_of(store, old) not in (None, old):
+        stay = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'todo' "
+            "AND retired_at IS NULL AND NOT (ref_id = ANY(%s))",
+            (old, list(leaving)),
+        ).fetchone()
+        if stay is None or int(stay[0]) == 0:
+            return (
+                f"is the last child of td{old}, a node of a live plan; alone, "
+                f"td{old} would be built as a slice. Close or move td{old} first"
+            )
+    return None
+
+
+def _waits_on(conn: Any, start: Sequence[int], targets: Sequence[int]) -> int | None:
+    """The first of ``targets`` reachable from ``start`` over ``blocked-by``
+    edges (``start`` waits on it, directly or through others), or ``None``."""
+    seen: set[int] = set(start)
+    frontier = list(seen)
+    wanted = set(targets)
+    for _ in range(50):
+        if not frontier:
+            break
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND src_ref_id = ANY(%s)",
+            (frontier,),
+        ).fetchall()
+        frontier = sorted({int(r[0]) for r in rows} - seen)
+        hit = sorted(wanted.intersection(frontier))
+        if hit:
+            return hit[0]
+        seen.update(frontier)
+    return None
+
+
+def _adopt_slice(store: Store, conn: Any, todo_id: int, root: int) -> None:
+    """Move the hand-written todo ``todo_id`` under the batch ``root`` and
+    make it that plan's node: it gains ``plan:<root>``, and ``meta.llm_tier``
+    is dropped (the templates mint without it, so the generic dispatch
+    worker does not launch a session on a plan node). The tree guards of a
+    ``rel='parent'`` move run first."""
+    check_owner_only_ref(store, todo_id)
+    check_no_cycle(store, child_id=todo_id, parent_id=root)
+    check_reparent_depth(store, child_id=todo_id, new_parent_id=root)
+    store.add_tag(
+        todo_id,
+        Tag.parse_strict(f"plan:{root}", kind="todo"),
+        set_by="agent",
+        conn=conn,
+    )
+    store.set_parent(todo_id, root, conn=conn)
+    conn.execute(
+        "UPDATE refs SET meta = meta - 'llm_tier' WHERE ref_id = %s", (todo_id,)
+    )
+
+
+def mint_repo_batch(
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    repo: Any,
+    slices: Any,
+    glue: Any = None,
+    bump: Any = None,
+) -> PlanMint:
+    """One batch of a second repo's engine slices, from build to the precis
+    pin: phase root -> the ``slices`` (existing todos, adopted) -> one
+    reviewer per slice -> the release node -> the pin-bump node, with each
+    ``glue`` todo blocked-by the pin node.
+
+    ``slices`` and ``glue`` name existing todos (``'td1, td2'`` or a list).
+    A slice is moved under the new root and keeps its body, its own
+    ``repo:<repo>`` tag and its other links; the root carries no repo tag,
+    so the pin node and anything else under it builds in precis. Each
+    reviewer (:func:`mint_reviewer`) is blocked-by its slice, the release
+    (:func:`mint_repo_release`, ``bump`` passed through) by every reviewer,
+    the pin node (:func:`mint_repo_pin`) by the release. Glue todos (the
+    precis-side halves, a wave pointer) stay where they are, outside the
+    root. The root closes when the pin has moved.
+
+    The batch is its own plan: ``parent_id`` must sit outside every live
+    plan (under an outer root a moot slice would close that plan's glue).
+    All of it is one transaction, checks included. Refuses a repo whose
+    profile does not name a lander, a releaser and a pinner; an empty
+    ``slices``; a todo named twice (slice, glue, parent or an ancestor of
+    the parent); a slice :func:`_adoption_problem` rejects; and a slice that
+    waits, over ``blocked-by`` edges, on a glue todo, which would wait on
+    the pin and deadlock the batch (td659522 step 5 R5)."""
+    from precis.todo.guards import check_parent_exists
+    from precis.workers.job_types.plan_dispatch import _plan_root_of
+
+    name = str(repo or "").strip()
+    profile = _lanes.repo_profile(name)
+    if (
+        name == _lanes.DEFAULT_REPO
+        or profile is None
+        or profile.lander is None
+        or profile.releaser is None
+        or profile.pinner is None
+    ):
+        raise BadInput(
+            f"repo-batch: {name!r} is not a second repo the factory can build, "
+            "release and pin",
+            next="name a repo whose profile has a lander, a releaser and a pinner",
+        )
+    slice_ids = list(
+        dict.fromkeys(_todo_ids(store, slices, arg="slices", template="repo-batch"))
+    )
+    glue_ids = list(
+        dict.fromkeys(_todo_ids(store, glue, arg="glue", template="repo-batch"))
+    )
+    if not slice_ids:
+        raise BadInput(
+            "repo-batch: slices is empty; a batch needs at least one build slice",
+            next="args={'template': 'repo-batch', 'repo': '<repo>', "
+            "'slices': 'td123, td456'}",
+        )
+    handles = ", ".join(f"td{sid}" for sid in slice_ids)
+
+    def build(m: _Minter) -> None:
+        m.node(
+            "root",
+            f"Build, release and pin {name}: {handles}",
+            _phase(),
+            body=(
+                f"One {name} batch. The slices build and land in {name}, each "
+                "is reviewed there, one release tags the lot, and the pin node "
+                f"moves the precis pin to that release. Done here means the "
+                "pin has moved."
+            ),
+        )
+
+    def refuse(what: str, next_: str) -> BadInput:
+        return BadInput(f"repo-batch: {what}", next=next_)
+
+    with store.atomic() as conn:
+        named = [*slice_ids, *glue_ids]
+        conn.execute("SELECT 1 FROM refs WHERE ref_id = ANY(%s) FOR UPDATE", (named,))
+        above = [] if parent_id is None else [parent_id, *_ancestors(conn, parent_id)]
+        twice = sorted((set(slice_ids) & set(glue_ids)) | (set(named) & set(above)))
+        if twice:
+            raise refuse(
+                f"td{twice[0]} is named twice (as slice, glue, the parent or an "
+                "ancestor of the parent)",
+                "a todo is a slice (built in the repo), glue (waits on the pin) "
+                "or above the batch, never two of them",
+            )
+        if parent_id is not None:
+            check_parent_exists(store, parent_id)
+            if _plan_root_of(store, parent_id) is not None:
+                raise refuse(
+                    f"parent td{parent_id} sits in a live plan; the batch must "
+                    "be its own plan",
+                    "pass a parent outside every live plan, or none",
+                )
+        for sid in slice_ids:
+            problem = _adoption_problem(store, conn, sid, name, slice_ids)
+            if problem is not None:
+                raise refuse(
+                    f"td{sid} {problem}", "fix the todo or leave it out of slices"
+                )
+        waited = _waits_on(conn, slice_ids, glue_ids)
+        if waited is not None:
+            raise refuse(
+                f"a slice waits (blocked-by) on glue td{waited}, which would "
+                "wait on the pin: the batch could never start",
+                "drop that blocked-by edge, or leave the todo out of glue",
+            )
+        moved_from = {
+            sid: ref.parent_id
+            for sid in slice_ids
+            if (ref := store.get_ref(kind="todo", id=sid)) is not None
+        }
+        root = _run(store, parent_id, build).root_id
+        ids: dict[str, int] = {"root": root}
+        for sid in slice_ids:
+            _adopt_slice(store, conn, sid, root)
+            ids[f"slice:{sid}"] = sid
+        reviewers = [mint_reviewer(store, root, sid, repo=name) for sid in slice_ids]
+        ids.update({f"review:{s}": r for s, r in zip(slice_ids, reviewers)})
+        ids["release"] = mint_repo_release(
+            store, root, name, blocked_by=reviewers, bump=bump or None
+        )
+        ids["pin"] = mint_repo_pin(
+            store, root, name, release=ids["release"], glue=glue_ids
+        )
+        _post_comments(
+            store,
+            [
+                (
+                    sid,
+                    f"adopted: build slice of the {name} batch td{root}, moved "
+                    + (
+                        f"from under td{was}"
+                        if (was := moved_from.get(sid))
+                        else "from the top level"
+                    ),
+                )
+                for sid in slice_ids
+            ],
+        )
+    return PlanMint(root_id=root, ids=ids)
 
 
 def mint_merge_back_resolver(
@@ -1702,8 +2120,11 @@ _ROUTE_NO_OP = "no-op: all example boards route fully at DRC 0"
 _TODO_ID_RE = re.compile(r"(?:td|todo:)?(\d+)", re.IGNORECASE)
 
 
-def _todo_ids(store: Store, raw: Any, *, arg: str) -> list[int]:
-    """Live todo ids named by ``raw`` (``'td1, td2'``, a list, or one id)."""
+def _todo_ids(
+    store: Store, raw: Any, *, arg: str, template: str = "route-loop"
+) -> list[int]:
+    """Live todo ids named by ``raw`` (``'td1, td2'``, a list, or one id);
+    ``template`` is the one the refusal's hint names."""
     if raw in (None, ""):
         return []
     items = list(raw) if isinstance(raw, (list, tuple)) else str(raw).split(",")
@@ -1714,7 +2135,7 @@ def _todo_ids(store: Store, raw: Any, *, arg: str) -> list[int]:
         if m is None:
             raise BadInput(
                 f"{arg}={raw!r}: {spelled!r} is not a todo id",
-                next=f"args={{'template': 'route-loop', '{arg}': 'td123, td456'}}",
+                next=f"args={{'template': '{template}', '{arg}': 'td123, td456'}}",
             )
         tid = int(m.group(1))
         if store.get_ref(kind="todo", id=tid) is None:
@@ -1858,6 +2279,16 @@ TEMPLATES: dict[str, Template] = {
             "'context' rides into every slicer brief)",
             mint_route_loop,
             optional=("iterations", "after", "context"),
+        ),
+        Template(
+            "repo-batch",
+            ("repo", "slices"),
+            "one batch of a second repo's engine slices: adopt the existing "
+            "'slices' todos under a new root -> a reviewer per slice -> one "
+            "release -> the precis pin bump; 'glue' todos wait on the pin; "
+            "'bump' is the release's version step",
+            mint_repo_batch,
+            optional=("glue", "bump"),
         ),
     )
 }

@@ -88,13 +88,14 @@ def _assert_plan_hygiene(store: Store, mint: PlanMint) -> None:
         }, key
 
 
-def test_registry_has_the_eight_templates() -> None:
+def test_registry_has_the_nine_templates() -> None:
     assert sorted(TEMPLATES) == [
         "gripe-fix",
         "gripe-fix-direct",
         "pcb-pipeline",
         "pr-intake",
         "release-pass",
+        "repo-batch",
         "route-loop",
         "slice-tree",
         "spec-build",
@@ -103,6 +104,8 @@ def test_registry_has_the_eight_templates() -> None:
     assert TEMPLATES["spec-build"].required == ("section",)
     assert TEMPLATES["spec-build"].optional == ("lane",)
     assert TEMPLATES["release-pass"].required == ()
+    assert TEMPLATES["repo-batch"].required == ("repo", "slices")
+    assert TEMPLATES["repo-batch"].optional == ("glue", "bump")
 
 
 def test_gripe_fix_direct_shape(handler: TodoHandler, store: Store) -> None:
@@ -1021,6 +1024,468 @@ def test_mint_repo_release_refuses_a_profile_without_a_releaser(
     )
     with pytest.raises(BadInput, match="no releasable"):
         mint_repo_release(store, root, "catpath", blocked_by=reviewers)
+
+
+# -- second-repo pin-bump node (td659522 step 4 R7) ---------------------------
+
+
+def _pin_batch(
+    store: Store, monkeypatch: pytest.MonkeyPatch, *, pinner: str | None = "pin_bump"
+) -> tuple[int, int, list[int]]:
+    """``(root, release node, reviewers)`` with catpath's profile naming
+    ``pinner``."""
+    from dataclasses import replace
+
+    from precis.plans.templates import mint_repo_release
+
+    monkeypatch.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], pinner=pinner),
+    )
+    root, reviewers = _release_batch(store)
+    return (
+        root,
+        mint_repo_release(store, root, "catpath", blocked_by=reviewers),
+        reviewers,
+    )
+
+
+def test_mint_repo_pin_node_shape(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin node is a mechanical task under the root that builds in
+    precis, waits on the release alone, and holds the glue todos without
+    moving them; if this fails the dispatcher refuses the node, or glue runs
+    against the old engine."""
+    from precis.plans.templates import mint_repo_pin
+
+    store = handler.hub.store
+    root, rel, _ = _pin_batch(store, monkeypatch)
+    glue = id_of(handler.put(text="precis-side half").body)
+
+    pin = mint_repo_pin(store, root, "catpath", release=rel, glue=[glue])
+
+    meta = _meta(store, pin)
+    assert {k: meta[k] for k in ("op", "retries")} == {"op": "pin_bump", "retries": 1}
+    assert set(meta) <= {"op", "retries", "filed_by"}
+    assert validate_plan_meta(meta) == []
+    tags = {t.value for t in store.tags_for(pin)}
+    assert {f"plan:{root}", f"repo:{lanes.DEFAULT_REPO}"} <= tags
+    assert "repo:catpath" not in tags
+    ref = store.get_ref(kind="todo", id=pin)
+    assert ref is not None and ref.parent_id == root
+    assert "Mechanical" in _body(store, pin)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE relation = 'blocked-by' AND (src_ref_id = %s OR dst_ref_id = %s)",
+            (pin, pin),
+        ).fetchall()
+    assert sorted(rows) == sorted([(pin, rel), (glue, pin)])
+    glue_ref = store.get_ref(kind="todo", id=glue)
+    assert glue_ref is not None and glue_ref.parent_id != root
+    assert f"plan:{root}" not in {t.value for t in store.tags_for(glue)}
+
+
+def test_mint_repo_pin_op_is_seen_by_the_dispatcher(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_is_pin_bump`` recognises the node and the three params the
+    dispatcher stamps pass the job's schema."""
+    from datetime import UTC, datetime
+
+    from precis.plans.templates import mint_repo_pin
+    from precis.workers.job_types import pin_bump
+    from precis.workers.job_types import plan_dispatch as pd
+
+    root, rel, _ = _pin_batch(store, monkeypatch)
+    pin = mint_repo_pin(store, root, "catpath", release=rel)
+    node = pd._Node(
+        id=pin,
+        kind="todo",
+        parent_id=root,
+        title="",
+        meta=_meta(store, pin),
+        status="open",
+        created_at=datetime.now(UTC),
+        prio=None,
+        depth=1,
+        root=root,
+    )
+    assert pd._is_pin_bump(node)
+    job_type, params = pd._resolve_op(node)
+    assert job_type == pin_bump.NAME
+    params.update(todo_id=pin, release_todo=rel, pin_repo="catpath")
+    assert pd._params_problem(pin_bump.PARAMS_SCHEMA, params) is None
+
+
+def test_mint_repo_pin_refusals(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    root, rel, reviewers = _pin_batch(store, monkeypatch)
+    inside = T.mint_plan_task(store, root, "Glue under the root", "x")
+    other_root, _ = _release_batch(store)
+
+    for repo in ("nosuchrepo", lanes.DEFAULT_REPO):
+        with pytest.raises(BadInput, match="naming a pinner"):
+            T.mint_repo_pin(store, root, repo, release=rel)
+    for not_release in (reviewers[0], 10**9):
+        with pytest.raises(BadInput, match="is not the catpath release node"):
+            T.mint_repo_pin(store, root, "catpath", release=not_release)
+    with pytest.raises(BadInput, match="is not the catpath release node"):
+        T.mint_repo_pin(store, other_root, "catpath", release=rel)
+    for glue in (inside, 10**9):
+        with pytest.raises(BadInput, match="glue td"):
+            T.mint_repo_pin(store, root, "catpath", release=rel, glue=[glue])
+
+
+def test_mint_repo_pin_refuses_a_profile_without_a_pinner(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans.templates import mint_repo_pin
+
+    root, rel, _ = _pin_batch(store, monkeypatch, pinner=None)
+    with pytest.raises(BadInput, match="naming a pinner"):
+        mint_repo_pin(store, root, "catpath", release=rel)
+
+
+# -- second-repo batch and its put(mode='plan') door (td659522 step 5 R5) -----
+
+
+def _hand_slices(handler: TodoHandler, n: int = 2) -> tuple[int, list[int]]:
+    """A hand-written wave todo with ``n`` catpath build slices under it."""
+    wave = id_of(handler.put(text="Wave pointer.", meta={"rotation_root": True}).body)
+    slices = [
+        id_of(
+            handler.put(
+                text=f"Engine slice {i}", parent_id=wave, tags=["repo:catpath"]
+            ).body
+        )
+        for i in range(n)
+    ]
+    return wave, slices
+
+
+def _pinner(monkeypatch: pytest.MonkeyPatch, pinner: str | None = "pin_bump") -> None:
+    from dataclasses import replace
+
+    monkeypatch.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], pinner=pinner),
+    )
+
+
+def _edges(store: Store, ids: list[int]) -> set[tuple[int, int]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND (src_ref_id = ANY(%s) OR dst_ref_id = ANY(%s))",
+            (ids, ids),
+        ).fetchall()
+    return {(int(s), int(d)) for s, d in rows}
+
+
+def test_put_mode_plan_repo_batch_adopts_the_slices_and_chains_to_the_pin(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the door: the hand-written slices move under a new root and
+    keep their repo tag, each gets a reviewer, one release waits on the
+    reviewers, the pin node on the release, and glue on the pin without
+    moving. If this fails a batch is minted in a shape the dispatcher builds
+    in the wrong repo, releases early, or runs glue on the old engine."""
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    wave, (s1, s2) = _hand_slices(handler)
+    glue = id_of(handler.put(text="precis-side half").body)
+    assert "llm_tier" in _meta(store, s1)
+
+    resp = handler.put(
+        mode="plan",
+        template="repo-batch",
+        repo="catpath",
+        slices=f"td{s1}, td{s2}",
+        glue=[glue, wave],
+    )
+
+    root = id_of(resp.body)
+    assert _meta(store, root).get("auto_close") is True
+    root_tags = {t.value for t in store.tags_for(root)}
+    assert f"plan:{root}" in root_tags
+    assert not lanes.repo_tags(store.tags_for(root))
+    kids: dict[str, list[int]] = {}
+    with store.pool.connection() as conn:
+        for rid, meta in conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND kind = 'todo' "
+            "ORDER BY ref_id",
+            (root,),
+        ).fetchall():
+            op = T._op_name(meta) or ("review" if (meta or {}).get("generate") else "")
+            kids.setdefault(op or "slice", []).append(int(rid))
+    assert kids["slice"] == [s1, s2]
+    assert len(kids["review"]) == 2
+    (release,), (pin,) = kids["repo_release"], kids["pin_bump"]
+    for sid in (s1, s2):
+        tags = {t.value for t in store.tags_for(sid)}
+        assert {f"plan:{root}", "repo:catpath"} <= tags
+        assert "llm_tier" not in _meta(store, sid)
+        ref = store.get_ref(kind="todo", id=sid)
+        assert ref is not None and ref.parent_id == root
+        assert ref.title.startswith("Engine slice")
+    for rid in kids["review"]:
+        assert lanes.repo_tags(store.tags_for(rid)) == ["catpath"]
+    assert lanes.repo_tags(store.tags_for(pin)) == [lanes.DEFAULT_REPO]
+    r1, r2 = kids["review"]
+    assert _edges(store, [root, s1, s2, r1, r2, release, pin]) == {
+        (r1, s1),
+        (r2, s2),
+        (release, r1),
+        (release, r2),
+        (pin, release),
+        (glue, pin),
+        (wave, pin),
+    }
+    for outside, parent in ((glue, None), (wave, None)):
+        ref = store.get_ref(kind="todo", id=outside)
+        assert ref is not None and ref.parent_id == parent
+
+
+def test_the_dispatcher_reads_a_minted_repo_batch(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan tick's own readers on real rows: the root is a plan, a slice
+    is a dispatchable catpath node, and the pin node resolves to precis with
+    the one release and its repo as params. If this fails the batch sits
+    undispatched, or the pin job is handed the wrong release."""
+    from precis.plans import templates as T
+    from precis.workers.job_types import plan_dispatch as pd
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    _, slices = _hand_slices(handler, n=1)
+    mint = T.mint_repo_batch(store, repo="catpath", slices=slices)
+
+    plan = pd._load(store, [mint.root_id])
+    assert mint.root_id in plan.roots
+    slice_node = plan.nodes[slices[0]]
+    assert pd._dispatchable(plan, slice_node) and slice_node.status == "open"
+    assert not plan.blocked(slice_node) and not plan.paused(slice_node)
+    assert not pd._excluded(plan, slice_node) and not pd._claims(slice_node)
+    assert plan.blocked(plan.nodes[mint.ids[f"review:{slices[0]}"]])
+    assert pd._node_repos(plan, slice_node) == ["catpath"]
+    assert pd._resolve_op(slice_node)[0] == pd.DEFAULT_OP
+    pin_node = plan.nodes[mint.ids["pin"]]
+    assert pd._node_repos(plan, pin_node) == [lanes.DEFAULT_REPO]
+    params, why = pd._pin_params(plan, pin_node, {})
+    assert why is None
+    assert params == {
+        "todo_id": mint.ids["pin"],
+        "release_todo": mint.ids["release"],
+        "pin_repo": "catpath",
+    }
+
+
+def test_mint_repo_batch_refuses_a_slice_it_cannot_adopt(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import templates as T
+    from precis.store.types import Tag
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    wave, (good, parked, done, parent) = _hand_slices(handler, n=4)
+    store.add_tag(parked, Tag.open("waiting-for:fleet"), set_by="system")
+    store.add_tag(
+        done, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    handler.put(text="child", parent_id=parent)
+    untagged = id_of(handler.put(text="no repo tag", parent_id=wave).body)
+    phase = id_of(
+        handler.put(
+            text="a phase",
+            parent_id=wave,
+            tags=["repo:catpath"],
+            meta={"auto_close": True},
+        ).body
+    )
+
+    def refused(needle: str, **kw: Any) -> None:
+        parent = kw.pop("parent_id", None)
+        with pytest.raises(BadInput, match=needle):
+            T.mint_repo_batch(
+                store, parent, **{"repo": "catpath", "slices": [good], **kw}
+            )
+
+    refused("carries waiting-for:fleet", slices=[good, parked])
+    refused("is closed", slices=[done])
+    refused("has a child todo", slices=[parent])
+    refused("own repo:catpath tag", slices=[untagged])
+    refused("not a plain build slice", slices=[phase])
+    refused("slices is empty", slices="")
+    refused("is named twice", glue=[good])
+    refused("is named twice", parent_id=good)
+    refused("build, release and pin", repo="nosuchrepo")
+    refused("build, release and pin", repo=lanes.DEFAULT_REPO)
+    _pinner(monkeypatch, None)
+    refused("build, release and pin")
+
+
+def test_mint_repo_batch_is_all_or_nothing(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal after the root is minted (an unknown bump is caught by the
+    release minter) rolls everything back: the slice stays where it was and
+    keeps its meta, and no root is left behind."""
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    wave, (sid,) = _hand_slices(handler, n=1)
+    before = _meta(store, sid)
+
+    def rows() -> tuple[int, int]:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT (SELECT count(*) FROM refs WHERE kind = 'todo'), "
+                "(SELECT count(*) FROM links)"
+            ).fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1])
+
+    counted = rows()
+    with pytest.raises(BadInput, match="bump 'major'"):
+        T.mint_repo_batch(store, repo="catpath", slices=[sid], bump="major")
+    assert rows() == counted
+
+    ref = store.get_ref(kind="todo", id=sid)
+    assert ref is not None and ref.parent_id == wave
+    assert _meta(store, sid) == before
+    assert not [t for t in store.tags_for(sid) if t.value.startswith("plan:")]
+    with store.pool.connection() as conn:
+        left = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'todo' AND title LIKE %s",
+            ("Build, release and pin catpath%",),
+        ).fetchone()
+    assert left is not None and left[0] == 0
+
+
+def test_mint_repo_batch_passes_the_bump_and_takes_a_parent(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    _, (sid,) = _hand_slices(handler, n=1)
+    home = id_of(handler.put(text="Home.", meta={"rotation_root": True}).body)
+
+    mint = T.mint_repo_batch(
+        store, home, repo="catpath", slices=f"td{sid}", bump="patch"
+    )
+
+    root = store.get_ref(kind="todo", id=mint.root_id)
+    assert root is not None and root.parent_id == home
+    assert _meta(store, mint.ids["release"])["op"] == {
+        "type": "repo_release",
+        "params": {"bump": "patch"},
+    }
+
+
+def test_mint_repo_batch_refuses_a_second_mint_of_the_same_slices(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retried mint must not move the slices under a second root and leave
+    the first batch's reviewers, release and pin pointing at them."""
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    _, slices = _hand_slices(handler)
+    first = T.mint_repo_batch(store, repo="catpath", slices=slices)
+
+    with pytest.raises(BadInput, match="already a minted plan node"):
+        T.mint_repo_batch(store, repo="catpath", slices=slices)
+
+    for sid in slices:
+        ref = store.get_ref(kind="todo", id=sid)
+        assert ref is not None and ref.parent_id == first.root_id
+
+
+def test_mint_repo_batch_refuses_to_lift_a_hold_or_build_a_deadlock(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatcher reads holds through ancestors and blocked-by edges, so
+    a move can free a slice its wave was holding, and a slice that waits on a
+    glue todo would wait on its own pin. If this fails a batch dispatches
+    past a hold nobody lifted, or can never start."""
+    from precis.errors import NotFound
+    from precis.plans import templates as T
+    from precis.plans.nodes import finish_mint
+    from precis.store.types import Tag
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+
+    def refused(needle: str, slices: list[int], **kw: Any) -> None:
+        parent = kw.pop("parent_id", None)
+        with pytest.raises(BadInput, match=needle):
+            T.mint_repo_batch(store, parent, repo="catpath", slices=slices, **kw)
+
+    # a hold on the old parent: a parking tag, a pause, an open blocker
+    for hold in ("tag", "paused", "blocker"):
+        wave, (sid,) = _hand_slices(handler, n=1)
+        if hold == "tag":
+            store.add_tag(wave, Tag.open("waiting-for:reto"), set_by="system")
+        elif hold == "paused":
+            store.add_tag(
+                wave,
+                Tag.closed("STATUS", "paused"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        else:
+            other = id_of(handler.put(text="Not done yet.").body)
+            store.add_link(src_ref_id=wave, dst_ref_id=other, relation="blocked-by")
+        refused("held through an ancestor", [sid])
+
+    # a claim on the slice itself
+    _, (claimed,) = _hand_slices(handler, n=1)
+    store.add_tag(claimed, Tag.open("claimed-by:someone"), set_by="system")
+    refused("carries claimed-by:someone", [claimed])
+
+    # a slice that waits on glue, directly or through another todo
+    _, (direct, indirect) = _hand_slices(handler)
+    glue = id_of(handler.put(text="precis-side half").body)
+    between = id_of(handler.put(text="In between.").body)
+    store.add_link(src_ref_id=direct, dst_ref_id=glue, relation="blocked-by")
+    store.add_link(src_ref_id=indirect, dst_ref_id=between, relation="blocked-by")
+    store.add_link(src_ref_id=between, dst_ref_id=glue, relation="blocked-by")
+    refused("could never start", [direct], glue=[glue])
+    refused("could never start", [indirect], glue=[glue])
+
+    # the batch is its own plan, and its parent is not one of its todos
+    _, (free,) = _hand_slices(handler, n=1)
+    plan_root, held_node = _reviewer_root(store)
+    refused("sits in a live plan", [free], parent_id=held_node)
+    refused("is named twice", [free], glue=[glue], parent_id=glue)
+    under_glue = id_of(handler.put(text="Under glue.", parent_id=glue).body)
+    refused("is named twice", [free], glue=[glue], parent_id=under_glue)
+    with pytest.raises(NotFound):
+        T.mint_repo_batch(store, 10**9, repo="catpath", slices=[free])
+
+    # moving the last child out would leave a plan node a buildable leaf
+    last = id_of(
+        handler.put(text="Only child", parent_id=held_node, tags=["repo:catpath"]).body
+    )
+    finish_mint(store, last)
+    refused("is the last child of", [last])
+    assert plan_root != held_node
 
 
 def test_a_pin_bump_resolves_only_the_gripes_its_slices_fix(
