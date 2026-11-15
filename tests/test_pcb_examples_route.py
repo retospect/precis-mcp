@@ -14,9 +14,9 @@ board           routable  routed  failed  drc_errors  seconds  cause
 sanity                20      20       0           0    4.644  complete
 blinky_led             1       1       0           0    0.617  complete; 1 dangling
 usbc_attiny            8       6       2          14   30.400  3V3/GND legalise spacing; no walled-off pins
-esp32c3               11       9       2           3  238.900  walled-off GND; VCC3V3 legalise spacing
-nano                  64      61       3          87 2396.000  GND/V5/VBUS (pre-fix 45/64, DRC 81)
-nano_usb_pd           64      61       3          87 2449.000  GND/V5/VBUS (pre-fix 45/64, DRC 81)
+esp32c3               11       9       2           3  238.900  GND/VCC3V3 legalise spacing (no shove withdrawal)
+nano                  64      61       3          87 2396.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
+nano_usb_pd           64      61       3          87 2449.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
 nano_usb_pd_r2        72      41      31          60 5371.000  signal + power nets (pre-fix 44/72, DRC 64)
 
 For usbc_attiny, routable counts authored nets with at least two pins.

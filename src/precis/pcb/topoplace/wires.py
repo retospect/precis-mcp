@@ -347,6 +347,10 @@ class Unreachable:
     #: for a chord-blocked failure (S1) every crossing partner,
     #: most-crossed first.
     blocked_by: tuple[int, ...] = ()
+    #: Why the shove withdrew the whole net (``_Shove._strip`` only):
+    #: 'guard', 'crossing', 'no-via-site', 'cut' or 'wall'. Empty for a
+    #: genuinely stranded component.
+    cause: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -6458,6 +6462,8 @@ class _Shove:
         self.budget = _SHOVE_GROWS * len(d.net_pins)
         self.round_yield: list[tuple[int, ...]] = []
         self.exhaustive_noop = False
+        #: net -> 'guard' when the last refused try died in the clearance guard
+        self.last_refusal: dict[int, str] = {}
 
     def _grow(
         self,
@@ -6617,6 +6623,7 @@ class _Shove:
             return None
         candidate = self._apply(st, k, P, atts, occ2, branches)
         if not self._preserves_guard(st, candidate, S):
+            self.last_refusal[k] = "guard"
             return None
         return candidate
 
@@ -6695,6 +6702,7 @@ class _Shove:
         already made), then the pinned sets {p1}, {p1, p2}, {p1, p2,
         p3}, {p1, .., p4} — a set with no new partner is skipped.
         Yields only the accepted ones."""
+        self.last_refusal.pop(k, None)
         kept_k = [(kk, b) for kk, bl in st.builts.items() if kk != k for b in bl]
         branches_k = [b.branch for _kk, b in kept_k]
         occ_k = st.occupancy.rebuild(kept_k)
@@ -6722,6 +6730,7 @@ class _Shove:
                 if self._preserves_guard(st, candidate, {k}):
                     yield candidate
                     return
+                self.last_refusal[k] = "guard"
             # refused: fall through — the probe may still name swap
             # partners that clear the bigon.
             occ_k = st.occupancy.rebuild(kept_k)
@@ -6763,6 +6772,17 @@ class _Shove:
         # Keep a certificate even when no copper remains for realise to see.
         old_rows = [u for u in st.unreachable if u.net == k]
         pins = tuple(int(p) for p in self.d.net_pins[k])
+        partners_k = tuple(st.partners.get(k, ()))
+        if self.last_refusal.get(k) == "guard":
+            cause = "guard"
+        elif partners_k or st.keys[k][1]:
+            cause = "crossing"
+        elif any(u.layered for u in old_rows):
+            cause = "no-via-site"
+        elif old_rows:
+            cause = "cut"
+        else:
+            cause = "wall"
         row = Unreachable(
             net=k,
             pin=old_rows[0].pin if old_rows else pins[0],
@@ -6771,6 +6791,7 @@ class _Shove:
             layered=bool(st.keys[k][1]) or any(u.layered for u in old_rows),
             blocked_by=tuple(st.partners.get(k, ()))
             or tuple(dict.fromkeys(p for u in old_rows for p in u.blocked_by)),
+            cause=cause,
         )
         occ2 = st.occupancy.rebuild(kept)
         keys = dict(st.keys)

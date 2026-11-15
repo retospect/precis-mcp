@@ -7726,13 +7726,20 @@ def sketch_rows(
         u = stranded_by_net.get(k)
         if u is not None:
             pins = u.pins or (u.pin,)
-            problems.append(
-                {
-                    "reason": "unrouted",
-                    "message": "pins walled off: "
-                    + ", ".join(pin_key(p) for p in pins),
-                }
-            )
+            if u.cause:
+                by = (
+                    "; blocked by "
+                    + ", ".join(
+                        str(d.net_name[b]) if b < len(d.net_name) else str(b)
+                        for b in u.blocked_by
+                    )
+                    if u.blocked_by
+                    else ""
+                )
+                message = f"withdrawn by shove ({u.cause}{by})"
+            else:
+                message = "pins walled off: " + ", ".join(pin_key(p) for p in pins)
+            problems.append({"reason": "unrouted", "message": message})
         withdrawn = set(getattr(plan, "withdrawn", ()))
         for a, b in plan.crossings:
             if net_by_branch.get(a) != k and net_by_branch.get(b) != k:
