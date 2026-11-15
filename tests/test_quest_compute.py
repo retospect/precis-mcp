@@ -4080,6 +4080,9 @@ class TestSelectivityTrustSplit:
         c = _cand(store, sid)
         assert c.flags["barrier_trusted"] is False
         assert c.flags["barrier_trust_note"] == "absurd-magnitude-preguard"
+        # gr593138: a read-time demotion with no stamped class derives it —
+        # an absurd magnitude is a science failure.
+        assert c.flags["barrier_failure_class"] == "science"
         for k in ("barrier", "span", "U_L", "P_side", "selectivity_margin"):
             assert k not in c.measures, k
         assert c.flags["barrier_untrusted_value"] == 7462.0
@@ -4135,6 +4138,9 @@ class TestBarrierVerdictConsistency:
         assert c.flags["barrier_trusted"] is False
         assert "barrier" not in c.measures
         assert c.flags["barrier_untrusted_value"] == 2.83
+        # gr593138: the read-side demotion derives the class from the
+        # live blocker — engine:stale is mechanical.
+        assert c.flags["barrier_failure_class"] == "mechanical"
 
     def test_sub_floor_neb_anchor_demotes(self, store: Any) -> None:
         """A ``barrier_fidelity``/"tier" neb barrier's credit anchor can
@@ -4313,7 +4319,7 @@ class TestBarrierVerdictConsistency:
         assert "barrier" not in c.measures
         assert c.flags["barrier_untrusted_value"] == 0.648
         assert _provisional_reasons(c, ["barrier"], {"barrier": 0.648}) == [
-            "barrier untrusted: anchor/source mismatch"
+            "barrier untrusted [science]: anchor/source mismatch"
         ]
         fr = quest_frontier(store, qid)
         assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
@@ -4434,8 +4440,8 @@ class TestBarrierVerdictConsistency:
         assert "barrier" not in c.measures
         assert c.flags["barrier_untrusted_value"] == 0.648
         assert _provisional_reasons(c, ["barrier"], {"barrier": 0.648}) == [
-            "barrier untrusted: NEB not converged",
-            "barrier untrusted: anchor/source mismatch",
+            "barrier untrusted [science]: NEB not converged",
+            "barrier untrusted [science]: anchor/source mismatch",
         ]
 
 
@@ -4546,6 +4552,27 @@ class TestProvisionalReasonsSelectivityBlockers:
         assert reasons == [
             "barrier untrusted: seeds:1-independent, detachment on R->M, "
             "endpoint:union-disagree, no_route — see view='neb' args={'run': 42}"
+        ]
+
+    def test_barrier_untrusted_reason_names_the_failure_class(self) -> None:
+        """gr593138: the provisional reason names the failure class beside
+        the blocker — a mechanical stamp re-queues itself, a science one
+        is the agent's call."""
+        c = Candidate(
+            1,
+            "st1",
+            "A",
+            {},
+            True,
+            flags={
+                "barrier_trusted": False,
+                "barrier_failure_class": "science",
+                "barrier_blocked_by": ["endpoint:union-disagree"],
+            },
+        )
+        reasons = _provisional_reasons(c, [], {})
+        assert reasons == [
+            "barrier untrusted [science]: endpoint:union-disagree — see view='trust'"
         ]
 
     def test_barrier_untrusted_without_neb_run_points_at_trust_view(self) -> None:
@@ -4790,7 +4817,7 @@ class TestProvisionalFrontier:
         assert "provisional (measured, unconfirmed) (1)" in body
         assert "0.42" in body and "⚠untrusted" in body
         assert "★ provisional-frontier" in body
-        assert "barrier untrusted: adsorbate detached" in body
+        assert "barrier untrusted [science]: adsorbate detached" in body
         assert "── awaiting a sim" not in body
 
 
@@ -5852,6 +5879,9 @@ class TestAutocatpathHarvest:
         assert meta["barrier_trusted"] is False
         assert meta["barrier_seed_blocker"] == "endpoint:union-disagree"
         assert meta["barrier_independent_seeds"] == 2
+        # gr593138: disagreeing endpoints are a science failure — a rerun
+        # on the same engine cannot reconcile them, the agent is told.
+        assert meta["barrier_failure_class"] == "science"
 
     def test_disjoint_sibling_seeds_no_endpoint_evidence_is_untrusted(
         self, store: Any
@@ -6072,6 +6102,9 @@ class TestAutocatpathHarvest:
         assert meta["barrier_trusted"] is False
         assert meta["barrier_seed_blocker"] == "engine:stale"
         assert meta["barrier_independent_seeds"] is None
+        # gr593138: the stale-engine stamp classifies mechanical — it
+        # re-queues itself under the caps, no agent needed.
+        assert meta["barrier_failure_class"] == "mechanical"
         # a newer-engine barrier clears the blocker and stands
         pw2 = self._trust_pathway(
             store, sid, seeds=[0, 1], engine="0.40.0", tier="screening"
@@ -6084,6 +6117,7 @@ class TestAutocatpathHarvest:
         assert meta["barrier"] == 0.5
         assert meta["barrier_trusted"] is True
         assert meta.get("barrier_seed_blocker") is None
+        assert meta.get("barrier_failure_class") is None
 
     def test_same_seed_union_shortfall_is_untrusted(self, store: Any) -> None:
         """Sibling and run both sampled only seed 0 — the union is one
@@ -6100,6 +6134,9 @@ class TestAutocatpathHarvest:
         assert meta["barrier_trusted"] is False
         assert meta["barrier_seed_blocker"] == "seeds:1-independent"
         assert meta["barrier_independent_seeds"] == 1
+        # gr593138: a seed shortfall is an input failure — fresh evidence
+        # fixes it, so it is neither a blind mechanical rerun nor science.
+        assert meta["barrier_failure_class"] == "input"
 
     def test_different_engine_sibling_never_pools(self, store: Any) -> None:
         """Through the real store query: a sibling stamped to a different
@@ -8163,6 +8200,8 @@ class TestBarrierAbsurdMagnitudeGuard:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["barrier_trusted"] is False
         assert meta["barrier_absurd"] is True
+        # gr593138: an absurd magnitude is a science failure.
+        assert meta["barrier_failure_class"] == "science"
 
     def test_normal_barrier_not_flagged_absurd(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -8316,6 +8355,11 @@ class TestBarrierTwinDisagreementGuard:
         handle_b = handle_registry.try_format("structure", sid_b)
         assert meta_a["barrier_twin_disagreement"] == handle_b
         assert meta_b["barrier_twin_disagreement"] == handle_a
+        # gr593138: irreproducibility between twins is a science failure —
+        # the class is stamped by the twin guard itself, after the
+        # harvest's own (trusted) stamp already landed.
+        assert meta_a["barrier_failure_class"] == "science"
+        assert meta_b["barrier_failure_class"] == "science"
 
         logs = [
             b
@@ -9115,6 +9159,98 @@ class TestTierLadderHarvest:
         assert sel["barrier_trusted"] is True
         assert sel["barrier_pathway_ref_id"] is None
         assert sel["network_basis_by_key"] == {"U_L": {"version": "0.20.0"}}
+
+    def test_neb_stamp_classifies_stale_engine_mechanical(
+        self, monkeypatch: Any
+    ) -> None:
+        """gr593138: an untrusted pick whose only blocker is a trusted edge
+        demoted by an engine bump reads ``mechanical`` — it re-queues on
+        the current token under the mechanical caps."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-2"
+        )
+        sel = compute_mod._neb_candidate_stamp(
+            {
+                "7": {
+                    "fs_ref_id": 7,
+                    "neb_run_id": 3,
+                    "engine": "neb-eng-1",
+                    "barrier": 0.4,
+                    "trusted": True,
+                }
+            },
+            {},
+        )
+        assert sel is not None
+        assert sel["barrier_trusted"] is False
+        assert sel["barrier_blocked_by"] == ["engine:stale"]
+        assert sel["barrier_failure_class"] == "mechanical"
+
+    def test_neb_stamp_classifies_detachment_science(self, monkeypatch: Any) -> None:
+        """A desorbed edge is a science failure — a rerun on the pinned
+        engine cannot clear it."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        sel = compute_mod._neb_candidate_stamp(
+            {
+                "7": {
+                    "fs_ref_id": 7,
+                    "neb_run_id": 3,
+                    "engine": "neb-eng-1",
+                    "barrier": 0.4,
+                    "trusted": False,
+                    "barrier_desorbed": 1,
+                }
+            },
+            {},
+        )
+        assert sel is not None
+        assert sel["barrier_trusted"] is False
+        assert sel["barrier_failure_class"] == "science"
+
+    def test_neb_stamp_trusted_pick_carries_no_class(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        sel = compute_mod._neb_candidate_stamp(
+            {
+                "7": {
+                    "fs_ref_id": 7,
+                    "neb_run_id": 3,
+                    "engine": "neb-eng-1",
+                    "barrier": 0.4,
+                    "trusted": True,
+                }
+            },
+            {},
+        )
+        assert sel is not None
+        assert sel["barrier_trusted"] is True
+        assert sel["barrier_failure_class"] is None
+
+    def test_neb_stamp_sticky_twin_reads_science(self, monkeypatch: Any) -> None:
+        """The twin guard's sticky verdict flips a trusted pick back to
+        untrusted — and the class follows it to science."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        sel = compute_mod._neb_candidate_stamp(
+            {
+                "7": {
+                    "fs_ref_id": 7,
+                    "neb_run_id": 3,
+                    "engine": "neb-eng-1",
+                    "barrier": 0.4,
+                    "trusted": True,
+                }
+            },
+            {"barrier_twin_disagreement": "st9"},
+        )
+        assert sel is not None
+        assert sel["barrier_trusted"] is False
+        assert sel["barrier_twin_disagreement"] == "st9"
+        assert sel["barrier_failure_class"] == "science"
 
     def test_verify_supersedes_neb_moves_parked_value_to_barrier_screen(
         self, store: Any

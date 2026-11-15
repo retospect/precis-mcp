@@ -1305,3 +1305,36 @@ def test_failure_class_mechanical_input_science() -> None:
     assert failure_class(["endpoint:union-disagree"]) == "science"
     assert failure_class(["engine:stale", "anchor:none"]) == "science"
     assert failure_class([], absurd=True) == "science"
+
+
+def test_failure_ids_collects_across_stamp_keys() -> None:
+    """gr593138: ``engine:stale`` rides on ``barrier_seed_blocker`` (never
+    on ``blocked_by``); the regex-path counters, the twin flag, absurd and
+    an anchor:none warning each assert an id, so an untrusted stamp always
+    has a classifiable reason — science wins any mix over mechanical."""
+    from precis.utils.trust_gate import failure_class, failure_ids
+
+    assert failure_ids({}) == []
+    # The dominant stale-engine shape: blocker on the seed key alone.
+    assert failure_ids({"barrier_seed_blocker": "engine:stale"}) == ["engine:stale"]
+    assert failure_class(failure_ids({"barrier_seed_blocker": "engine:stale"})) == (
+        "mechanical"
+    )
+    stamp = {
+        "barrier_blocked_by": ["endpoint:union-disagree"],
+        "barrier_seed_blocker": "seeds:1-independent",
+        "barrier_desorbed": 1,
+        "warnings": ["anchor:none — no trust-passing anchor (gr543165)"],
+    }
+    ids = failure_ids(stamp)
+    assert ids == [
+        "endpoint:union-disagree",
+        "seeds:1-independent",
+        "detachment",
+        "anchor:none",
+    ]
+    assert failure_class(ids) == "science"
+    assert failure_class(failure_ids({"barrier_twin_disagreement": "st9"})) == (
+        "science"
+    )
+    assert failure_class(failure_ids({"barrier_absurd": True})) == "science"

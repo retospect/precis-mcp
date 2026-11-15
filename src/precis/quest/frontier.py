@@ -1805,6 +1805,23 @@ def _candidate_from_structure(
     # above and stamps an explicit False for exactly the qu164903-shaped
     # gap (gr356741): a no-key row whose barrier/span is nonphysical.
     if flags.get("barrier_trusted") is False:
+        if not flags.get("barrier_failure_class"):
+            # gr593138: a read-time demotion (the absurd preguard, a
+            # blocker beside ``barrier_trusted=True`` on a pre-fix row, an
+            # anchor/source mismatch) carries no stamped class — derive
+            # the one the harvest would have written. Meta and flags
+            # share key names, so the same collector applies; an
+            # unclassifiable verdict defaults to science, never a blind
+            # auto-requeue.
+            from precis.utils.trust_gate import (
+                FAILURE_SCIENCE,
+                failure_class,
+                failure_ids,
+            )
+
+            flags["barrier_failure_class"] = (
+                failure_class(failure_ids({**meta, **flags})) or FAILURE_SCIENCE
+            )
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
         if excluded_barrier is not None:
@@ -2162,15 +2179,20 @@ def _provisional_reasons(
     no new trust logic, just prose over the existing verdict."""
     reasons: list[str] = []
     if c.flags.get("barrier_trusted") is False:
+        # gr593138: name the failure class beside the blocker — a
+        # mechanical stamp re-queues itself, a science one is the
+        # agent's/human's call.
+        klass = c.flags.get("barrier_failure_class")
+        klass_s = f" [{klass}]" if isinstance(klass, str) and klass else ""
         n_neb = c.flags.get("barrier_neb_failed") or 0
         n_desorbed = c.flags.get("barrier_desorbed") or 0
         n_wrong_site = c.flags.get("barrier_wrong_site") or 0
         if n_neb:
-            reasons.append("barrier untrusted: NEB not converged")
+            reasons.append(f"barrier untrusted{klass_s}: NEB not converged")
         if n_desorbed:
-            reasons.append("barrier untrusted: adsorbate detached")
+            reasons.append(f"barrier untrusted{klass_s}: adsorbate detached")
         if n_wrong_site:
-            reasons.append("barrier untrusted: wrong binding site")
+            reasons.append(f"barrier untrusted{klass_s}: wrong binding site")
         # gr522897: name the blocker, not just the verdict — the
         # seed-independence synthetic and each ``blocked_by`` record id
         # (``{state|step}#s{seed}#{check}``, capped at 3), then point at
@@ -2195,7 +2217,9 @@ def _provisional_reasons(
                 if isinstance(run_id, int) and not isinstance(run_id, bool)
                 else "see view='trust'"
             )
-            reasons.append("barrier untrusted: " + ", ".join(detail) + f" — {pointer}")
+            reasons.append(
+                f"barrier untrusted{klass_s}: " + ", ".join(detail) + f" — {pointer}"
+            )
         # A ``barrier_trust_note`` names WHY the verdict flipped when the
         # counters/blockers don't — a read-time demotion
         # (``absurd-magnitude-preguard`` gr356741, ``anchor/source
@@ -2204,9 +2228,9 @@ def _provisional_reasons(
         # ``kinetics_note`` below.
         note = c.flags.get("barrier_trust_note")
         if isinstance(note, str) and note:
-            reasons.append(f"barrier untrusted: {note}")
+            reasons.append(f"barrier untrusted{klass_s}: {note}")
         if not reasons:
-            reasons.append("barrier untrusted")
+            reasons.append(f"barrier untrusted{klass_s}")
     if c.flags.get("selectivity_trusted") is False:
         blockers = c.flags.get("selectivity_blocked_by")
         blockers = blockers if isinstance(blockers, list) else []

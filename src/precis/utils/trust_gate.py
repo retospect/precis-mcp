@@ -283,6 +283,39 @@ def failure_class(blocked_by: Iterable[Any], *, absurd: bool = False) -> str | N
     return None
 
 
+def failure_ids(stamp: Mapping[str, Any]) -> list[str]:
+    """Every blocker id an untrusted barrier stamp can carry its reason on —
+    :func:`failure_class`'s input collected across the three shapes a
+    verdict takes:
+
+    * ``barrier_blocked_by`` — the pathway lane's verbatim ids;
+    * ``barrier_seed_blocker`` — the seed gate's synthetic id
+      (``engine:stale`` rides THERE, never on ``blocked_by``);
+    * one synthetic id per science flag the stamp's own keys assert —
+      the regex-fallback lane and the twin guard untrust without ever
+      writing a ``blocked_by`` entry. ``anchor:none`` lands on
+      ``blocked_by`` in the pathway lane but only *warns* on a stored
+      struct_neb edge — the warnings scan covers both.
+
+    Reads a candidate's meta or its frontier flag copy alike — they
+    share key names."""
+    ids = [str(b) for b in (stamp.get("barrier_blocked_by") or [])]
+    if stamp.get("barrier_seed_blocker"):
+        ids.append(str(stamp["barrier_seed_blocker"]))
+    for flag, bid in (
+        ("barrier_neb_failed", "neb:incomplete"),
+        ("barrier_desorbed", "detachment"),
+        ("barrier_wrong_site", "wrong-site"),
+        ("barrier_twin_disagreement", "twin-disagreement"),
+        ("barrier_absurd", "absurd-magnitude"),
+    ):
+        if stamp.get(flag):
+            ids.append(bid)
+    if any(str(w).startswith("anchor:none") for w in (stamp.get("warnings") or [])):
+        ids.append("anchor:none")
+    return ids
+
+
 def seed_row(
     records: list[dict[str, Any]],
     *,

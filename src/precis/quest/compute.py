@@ -2900,14 +2900,25 @@ def _flag_barrier_twin_disagreement(
             continue
         store.stamp_ref_meta(
             s.id,
-            {"barrier_trusted": False, "barrier_twin_disagreement": other_handle},
+            {
+                "barrier_trusted": False,
+                "barrier_twin_disagreement": other_handle,
+                # gr593138: irreproducibility between same-crystal twins is
+                # a science failure — a rerun can't reconcile them.
+                "barrier_failure_class": trust_gate.FAILURE_SCIENCE,
+            },
         )
         store.stamp_ref_meta(
             other_ref.id,
-            {"barrier_trusted": False, "barrier_twin_disagreement": handle},
+            {
+                "barrier_trusted": False,
+                "barrier_twin_disagreement": handle,
+                "barrier_failure_class": trust_gate.FAILURE_SCIENCE,
+            },
         )
         candidate_meta["barrier_trusted"] = False
         candidate_meta["barrier_twin_disagreement"] = other_handle
+        candidate_meta["barrier_failure_class"] = trust_gate.FAILURE_SCIENCE
         append_entry(
             store,
             quest_id,
@@ -3614,6 +3625,17 @@ def _neb_candidate_stamp(
         # self-consistent and the sel_dirty compare quiet.
         stamp["barrier_trusted"] = False
         stamp["barrier_twin_disagreement"] = twin
+    # gr593138: the neb lane's untrusted stamps carry the same failure
+    # class the pathway lane's do (engine:stale/unknown → mechanical,
+    # seeds:* → input, detachment/twin/anchor → science; the default for
+    # an unclassifiable untrusted verdict is science, never a blind
+    # auto-requeue).
+    stamp["barrier_failure_class"] = (
+        None
+        if stamp["barrier_trusted"]
+        else trust_gate.failure_class(trust_gate.failure_ids(stamp))
+        or trust_gate.FAILURE_SCIENCE
+    )
     return stamp
 
 
@@ -4943,12 +4965,16 @@ def harvest_measures(
             if not stashed and "barrier_trusted" in measures:
                 # gr593138: every untrusted stamp carries a failure class —
                 # mechanical re-queues itself, science goes to the agent.
+                # An untrusted verdict whose evidence names no blocker still
+                # reads science: a human looks at it rather than the stamp
+                # auto-requeuing blind.
                 measures["barrier_failure_class"] = (
                     None
                     if measures.get("barrier_trusted") is not False
                     else trust_gate.failure_class(
-                        measures.get("barrier_blocked_by") or [], absurd=bool(absurd)
+                        trust_gate.failure_ids(measures), absurd=bool(absurd)
                     )
+                    or trust_gate.FAILURE_SCIENCE
                 )
             store.stamp_ref_meta(s.id, measures)
             candidate_meta.update(measures)
@@ -6964,6 +6990,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_twin_disagreement",
     "barrier_trust_note",
     "barrier_blocked_by",
+    "barrier_failure_class",
     "barrier_marginal_count",
     "selectivity_trusted",
     "selectivity_blocked_by",
