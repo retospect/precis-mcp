@@ -5,9 +5,10 @@ a four-file change (``pyproject.toml``, ``uv.lock``,
 ``deploy/group_vars/all.yml``, the anchor literals in
 ``tests/test_coverage_job.py``). The module has two halves. ``SPEC`` is
 registered (R6: ``_BUILTIN_JOB_TYPES``, ``get_job_type``, ``SERVICES``,
-``DESCRIBERS``, ``FACTORY_PIPELINE_JOB_TYPES``) but still refused
-end-to-end: no real repo profile names a ``pinner`` yet
-(``test_no_real_profile_names_the_pinner_yet``; R7 is the switch).
+``DESCRIBERS``, ``FACTORY_PIPELINE_JOB_TYPES``). R7 (td659522) switched
+catpath's profile to name this job as its ``pinner``
+(``test_catpath_names_pin_bump_as_its_pinner``); submit and dispatch still
+wait on ``factory.open_repos``, which does not list catpath yet.
 
 The pure half comes first: text in, text out, no I/O, no subprocess, no
 store. Every helper edits the text by line, then re-parses the result
