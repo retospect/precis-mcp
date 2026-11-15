@@ -1,4 +1,5 @@
-"""ingest.doi_registry — Crossref/DataCite DOI fallback (gr486090).
+"""ingest.doi_registry — Crossref/DataCite/JaLC DOI fallback (gr486090,
+gr625031).
 
 All offline: ``safe_get`` is patched with a canned-response stub, which
 also proves the fetch path routes through the SSRF guard rather than a
@@ -73,6 +74,57 @@ _DATACITE_HIT = {
     }
 }
 
+_JALC_HIT = {
+    "status": "OK",
+    "apiType": "doi",
+    "apiVersion": "v2",
+    "message": {"total": 1, "rows": 1, "totalPages": 1, "page": 1},
+    "data": {
+        "siteId": "SI/JST.JSTAGE",
+        "content_type": "JA",
+        "doi": "10.69410/amfuture.1.2_195",
+        "ra": "JaLC",
+        "site_name": "J-STAGE",
+        "title_list": [
+            {"lang": "ja", "title": "超温度場材料創成学"},
+            {
+                "lang": "en",
+                "title": "Creation of Materials by Super-Thermal Field",
+            },
+        ],
+        "creator_list": [
+            {
+                "type": "person",
+                "names": [
+                    {"lang": "ja", "last_name": "小泉", "first_name": "雄一郎"},
+                    {"lang": "en", "last_name": "KOIZUMI", "first_name": "Yuichiro"},
+                ],
+            }
+        ],
+        "publication_date": {
+            "publication_year": "2025",
+            "publication_month": "08",
+            "publication_day": "22",
+        },
+        "journal_title_name_list": [
+            {"lang": "ja", "journal_title_name": "AMフューチャー", "type": "full"},
+            {
+                "lang": "en",
+                "journal_title_name": (
+                    "Bulletin of the Japanese Institute of Additive Manufacturing"
+                ),
+                "type": "full",
+            },
+        ],
+        "publisher_list": [
+            {
+                "lang": "en",
+                "publisher_name": "The Japanese Institute of Additive Manufacturing",
+            }
+        ],
+    },
+}
+
 
 def test_crossref_hit_normalizes_and_stops(
     monkeypatch: pytest.MonkeyPatch,
@@ -116,20 +168,56 @@ def test_crossref_miss_falls_through_to_datacite(
     ]
 
 
+def test_jalc_doi_resolves_after_crossref_datacite_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JaLC-minted DOI (J-STAGE, prefix 10.69410) verifies on the third
+    leg after Crossref and DataCite both answer miss (gr625031)."""
+    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404), _resp(200, _JALC_HIT)])
+    meta = resolve_registry_doi("10.69410/amfuture.1.2_195")
+    assert meta is not None
+    assert meta["source"] == "jalc"
+    assert meta["title"] == "Creation of Materials by Super-Thermal Field"
+    assert meta["year"] == 2025
+    assert meta["journal"] == (
+        "Bulletin of the Japanese Institute of Additive Manufacturing"
+    )
+    assert meta["publisher"] == "The Japanese Institute of Additive Manufacturing"
+    assert meta["entry_type"] == "article"
+    assert meta["authors"] == [{"given": "Yuichiro", "family": "KOIZUMI"}]
+    # JaLC's router decodes once, so the DOI is double-quoted (%252F);
+    # the Crossref/DataCite misses mean only the third leg carried a hit.
+    assert seen == [
+        (
+            "https://api.crossref.org/works/10.69410%2Famfuture.1.2_195",
+            {"params": {}},
+        ),
+        (
+            "https://api.datacite.org/dois/10.69410%2Famfuture.1.2_195",
+            {"params": {}},
+        ),
+        (
+            "https://api.japanlinkcenter.org/v2/dois/10.69410%252Famfuture.1.2_195",
+            {"params": {}},
+        ),
+    ]
+
+
 def test_all_registries_miss_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404)])
+    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404), _resp(404)])
     assert resolve_registry_doi("10.fake/nope") is None
-    assert len(seen) == 2
+    assert len(seen) == 3
 
 
 def test_non_404_status_is_a_fault_not_a_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Crossref 503 + DataCite 404: one leg faulted without a hit, so the
-    # caller must see a fault (mint unverified), not "no such DOI".
-    _patch_safe_get(monkeypatch, [_resp(503), _resp(404)])
+    # Crossref 503 (retried into a 404 miss) + DataCite 404 + a JaLC
+    # transport fault (empty canned list): one leg faulted without a hit,
+    # so the caller must see a fault (mint unverified), not "no such DOI".
+    _patch_safe_get(monkeypatch, [_resp(503), _resp(404), _resp(404)])
     with pytest.raises(RegistryLookupError):
         resolve_registry_doi("10.1/whatever")
 

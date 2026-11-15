@@ -4,7 +4,9 @@ Semantic Scholar's index lags fresh records and skips registries it
 doesn't crawl (DataCite-minted proceedings like LIPIcs), so an S2 miss
 is not evidence a DOI is wrong (gr486090). This resolves the DOI
 against the registration agencies directly — Crossref first (the
-dominant RA for journal DOIs), then DataCite — before
+dominant RA for journal DOIs), then DataCite, then JaLC (Japan Link
+Center, the RA behind J-STAGE DOIs like the ``10.69410`` prefix that
+neither of the first two answers, gr625031) — before
 ``PaperHandler.acquire`` refuses it as hallucinated.
 
 The DOI is agent-supplied and rides the URL path, so every fetch goes
@@ -41,6 +43,7 @@ log = logging.getLogger(__name__)
 _TIMEOUT_S = 15.0
 _CROSSREF_WORK = "https://api.crossref.org/works/"
 _DATACITE_DOI = "https://api.datacite.org/dois/"
+_JALC_DOI = "https://api.japanlinkcenter.org/v2/dois/"
 
 
 class RegistryLookupError(RuntimeError):
@@ -70,7 +73,9 @@ def _get_json(url: str, *, service: str, params: dict[str, Any] | None = None) -
             user_agent=polite_user_agent((params or {}).get("mailto")),
         ) as client:
             resp = with_backoff(
-                lambda: safe_get(client, url, params=params or {}), service=service
+                lambda: safe_get(client, url, params=params or {}),
+                service=service,
+                url=url,
             )
     except RateLimited as exc:
         # A refusal is "lookup failed", never ``None`` (= registry said 404).
@@ -221,13 +226,108 @@ def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
     return out
 
 
+def _jalc_meta(doi: str) -> dict[str, Any] | None:
+    """``GET api.japanlinkcenter.org/v2/dois/<doi>`` → normalized meta, or ``None``.
+
+    JaLC's router decodes the path once, so the DOI rides it
+    double-quoted (``/`` → ``%252F``) — a single-quoted suffix answers a
+    302 to that canonical form. A DOI JaLC doesn't know answers 404, the
+    same miss the other legs honour.
+    """
+    data = _get_json(_JALC_DOI + quote(quote(doi, safe=""), safe=""), service="jalc")
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("data")
+    if not isinstance(inner, dict) or not str(inner.get("doi") or "").strip():
+        return None
+    return _normalize_jalc(inner, doi)
+
+
+def _jalc_text(entries: Any, key: str) -> str:
+    """First ``lang='en'`` ``key`` value in a JaLC ``*_list``, else the
+    first non-empty one — records carry per-language variants."""
+    if not isinstance(entries, list):
+        return ""
+    fallback = ""
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        value = str(e.get(key) or "").strip()
+        if not value:
+            continue
+        if e.get("lang") == "en":
+            return value
+        if not fallback:
+            fallback = value
+    return fallback
+
+
+def _normalize_jalc(data: dict[str, Any], doi: str) -> dict[str, Any]:
+    """JaLC ``data`` object → the crossref/S2-normalized shape.
+
+    ``creator_list`` entries hold per-language ``names`` (``first_name``
+    /``last_name`` pairs); the ``en`` romanization is preferred, matching
+    the Latin-alphabet bylines the rest of the store writes. ``JA`` is
+    JaLC's journal-article ``content_type``.
+    """
+    authors: list[dict[str, str]] = []
+    for c in data.get("creator_list") or []:
+        if not isinstance(c, dict):
+            continue
+        names = [n for n in c.get("names") or [] if isinstance(n, dict)]
+        if not names:
+            continue
+        name = next((n for n in names if n.get("lang") == "en"), names[0])
+        entry: dict[str, str] = {}
+        given = str(name.get("first_name") or "").strip()
+        family = str(name.get("last_name") or "").strip()
+        if given:
+            entry["given"] = given
+        if family:
+            entry["family"] = family
+        if entry:
+            authors.append(entry)
+
+    year: int | None = None
+    pub_date = data.get("publication_date")
+    raw_year = (
+        pub_date.get("publication_year")
+        if isinstance(pub_date, dict)
+        else data.get("recorded_year")
+    )
+    if raw_year is not None:
+        try:
+            year = int(str(raw_year))
+        except (TypeError, ValueError):
+            year = None
+
+    out: dict[str, Any] = {
+        "title": _jalc_text(data.get("title_list"), "title"),
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "journal": _jalc_text(
+            data.get("journal_title_name_list"), "journal_title_name"
+        ),
+        # JaLC only serves abstracts under a license flag; usually absent.
+        "abstract": _jalc_text(data.get("abstract_list"), "abstract"),
+        "source": "jalc",
+    }
+    if data.get("content_type") == "JA":
+        out["entry_type"] = "article"
+    publisher = _jalc_text(data.get("publisher_list"), "publisher_name")
+    if publisher:
+        out["publisher"] = publisher
+    return out
+
+
 def resolve_registry_doi(doi: str, *, mailto: str = "") -> dict[str, Any] | None:
-    """Resolve ``doi`` against the DOI registries: Crossref, then DataCite.
+    """Resolve ``doi`` against the DOI registries: Crossref, DataCite, then JaLC.
 
     Returns the normalized metadata dict (``title`` / ``authors`` /
     ``year`` / ``doi`` / ``journal`` / ``abstract`` / ``entry_type`` /
     ``source``) for the first registry that knows the DOI — a Crossref
-    hit never reaches the DataCite leg. Returns ``None`` only when
+    hit never reaches the later legs. Returns ``None`` only when
     every registry answered not-found. Raises
     :class:`RegistryLookupError` when no leg hit and at least one
     faulted — a fault is not evidence the identifier is wrong.
@@ -241,6 +341,12 @@ def resolve_registry_doi(doi: str, *, mailto: str = "") -> dict[str, Any] | None
         fault = exc
     try:
         meta = _datacite_meta(doi)
+        if meta is not None:
+            return meta
+    except Exception as exc:
+        fault = fault or exc
+    try:
+        meta = _jalc_meta(doi)
         if meta is not None:
             return meta
     except Exception as exc:

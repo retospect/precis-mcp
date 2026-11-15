@@ -82,6 +82,11 @@ matching every part of it (year, volume, first page, journal) is stubbed
 by its DOI. Anything weaker returns candidates with a `conf=` score and
 mints nothing; pick one and `put(kind="paper", doi="<its DOI>")`.
 
+When what you hold is a conference abstract, a byline or a partial
+reference rather than a formatted citation — the whole
+identify-then-queue route, including bulk identification — is
+[[precis-identify-publication-help]].
+
 ## How do I get a paper's handle?
 
 You don't construct it — you read it off `search`/`get` output (every

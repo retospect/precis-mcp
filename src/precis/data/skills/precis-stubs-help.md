@@ -159,7 +159,10 @@ auto-fetch. Optional: `year=` (disambiguates the cite key) and
 ## Don't know the identifier? Find it first
 
 A stub is only auto-fetched when it carries a resolvable id, so find
-the DOI before you request. Walk a held paper's citation graph or
+the DOI before you request. The end-to-end route from a conference
+abstract or partial citation to the verified publication (and which
+candidate to trust) is [[precis-identify-publication-help]]. Otherwise
+walk a held paper's citation graph or
 search by topic on Semantic Scholar — each hit carries a DOI to stub:
 
 ```python
