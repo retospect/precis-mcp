@@ -22,7 +22,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import EmbedderUnavailable
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers import _finding_hub_mint
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert, Tag
@@ -1136,3 +1136,97 @@ class TestEmbedderOutage:
     def test_nearest_hubs_raises_upstream(self, store) -> None:
         with pytest.raises(Upstream, match="embedder at capacity"):
             nearest_hubs("any sentence", {}, store, _DownEmbedder())
+
+
+# ── create-time tags=/link=/rel= extras on the mint door (gr676914) ────────
+
+
+def _tag_values(store, ref_id: int) -> set[str]:
+    return {t.value for t in store.tags_for(ref_id)}
+
+
+def _link_relations(store, src_ref_id: int, dst_ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (src_ref_id, dst_ref_id),
+            ).fetchall()
+        ]
+
+
+def test_put_hub_applies_tags_and_link(store) -> None:
+    """gr676914: ``put(supporters=..., tags=, link=, rel=)`` carries the
+    extras out on the hub the outcome names — the freshly minted hub on a
+    mint, the matched neighbour on an attach — never silently dropped."""
+    from tests.workers._helpers import seed_ref
+
+    _seed_paper(store, cite_key="miller23a")
+    mem = seed_ref(store, title="a note the claim relates to", kind="memory")
+
+    # Fresh mint: extras land on the new hub.
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="A wholly novel claim with no neighbours.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        dedup=False,
+        tags=["topic:capture"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+    assert f"fi{hub_id}" in resp.body
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:capture" in _tag_values(store, hub_id)
+    assert "related-to" in _link_relations(store, hub_id, mem)
+
+    # Attach outcome: no new hub minted — the extras land on the MATCHED
+    # hub, which is the hub the response names.
+    existing_sentence = "Pd/C catalyzes Suzuki coupling."
+    existing_hub = mint_hub(store, CanonicalClaim(sentence=existing_sentence, scope={}))
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="Pd on carbon catalyzes the Suzuki reaction.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        embedder=object(),
+        block_fn=_block_hit(existing_hub, existing_sentence),
+        judge_fn=lambda a, b: _verdict("same", 0.95),
+        tags=["topic:suzuki"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    assert "converged onto" in resp.body and f"fi{existing_hub}" in resp.body
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:suzuki" in _tag_values(store, existing_hub)
+    assert "related-to" in _link_relations(store, existing_hub, mem)
+
+
+def test_put_hub_bad_link_target_writes_nothing(store) -> None:
+    """gr676914 slice 3: a bad ``link=`` refuses BEFORE any write — a
+    malformed target raises BadInput, an unresolvable handle raises
+    NotFound, and neither strands a minted hub (the gr263195 rule)."""
+    _seed_paper(store, cite_key="miller23a")
+    before = store.count_refs(kind="finding")
+
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link="not-a-target",
+        )
+    with pytest.raises(NotFound):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link="fi999999",
+        )
+    assert store.count_refs(kind="finding") == before

@@ -375,14 +375,17 @@ class FindingHandler(NumericRefHandler):
         same passage) is refused with ``options`` attach / refine / force:
         ``dedup='attach:fi<N>'`` attaches the supporters to that hub,
         ``dedup='force'`` mints anyway and stamps ``meta.dedup_override``.
-        See :mod:`precis.handlers._finding_hub_mint`.
+        Create-time ``tags=``/``link=``/``rel=`` land on the hub the
+        outcome names (minted or attached), never silently dropped
+        (gr676914). See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
         ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
         papers) and ``llm_models=`` (the authoring model id(s) — an
         agent-prepared artifact attributes its machine author) to propose a
         nanopub hypothesis: a conjecture with no evidence by type, prepared
-        and parked for a human to approve. See
+        and parked for a human to approve. ``tags=``/``link=``/``rel=``
+        land on the minted hypothesis hub (gr676914). See
         :func:`precis.handlers._finding_hypothesis.put_hypothesis`.
 
         Existing-id ``put`` is rejected (mutate via tag/link/delete
@@ -480,6 +483,9 @@ class FindingHandler(NumericRefHandler):
                 llm_models=llm_models,
                 from_memory=from_memory,
                 meta=meta,
+                tags=tags,
+                link=link,
+                rel=rel,
             )
 
         # --- Taproot hub-mint mode ---
@@ -532,6 +538,9 @@ class FindingHandler(NumericRefHandler):
                 dedup=dedup,
                 embedder=getattr(self.hub, "embedder", None),
                 extra_meta=meta,
+                tags=tags,
+                link=link,
+                rel=rel,
             )
 
         # --- Acquisition mode (claim-first mint) ---

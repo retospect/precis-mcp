@@ -61,6 +61,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.errors import BadInput
+from precis.handlers._finding_common import apply_put_extras, check_put_extras
 from precis.response import Response
 from precis.store import Store
 from precis.store.types import Tag
@@ -151,9 +152,14 @@ def put_hypothesis(
     set_by: str = "agent",
     mint_cap: MintCap | None = None,
     meta: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    link: str | None = None,
+    rel: str | None = None,
 ) -> Response:
     """Mint a hypothesis claim hub and park its prepared mint payload.
-    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874)."""
+    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874).
+    The ``put`` schema's create-time ``tags=``/``link=``/``rel=`` extras
+    land on the hub this mints/converges onto (gr676914)."""
     # Local import: `nanopub.gates` pulls the evidence/mint stack, which
     # imports handlers back. Same reason `_finding_mint_preflight` does it.
     from precis.nanopub.gates import check_claim_sentence
@@ -201,6 +207,12 @@ def put_hypothesis(
             f"scope must be a dict, got {type(scope).__name__}",
             next="scope={'material': 'graphene', ...}",
         )
+
+    # Resolve the create-time extras BEFORE mint_hub writes anything —
+    # same no-stranded-write rule the hub-mint door follows (gr676914).
+    link_target, relation = check_put_extras(
+        store, kind="finding", tags=tags, link=link, rel=rel
+    )
 
     tokens = list(motivated_by or [])
     if len(tokens) < MIN_SOURCE_PAPERS:
@@ -387,7 +399,7 @@ def put_hypothesis(
     store.add_tag(hub_ref_id, Tag.open(PROPOSED_TAG))
 
     handle = handle_registry.format_handle("finding", hub_ref_id)
-    return Response(
+    resp = Response(
         body=(
             f"hypothesis hub {handle} minted (candidate for review)\n"
             f"claim: {sentence[:120]}\n"
@@ -399,6 +411,15 @@ def put_hypothesis(
             "view='mint-preflight')\n"
             "a human approves/signs it — this door never does"
         )
+    )
+    return apply_put_extras(
+        store,
+        "finding",
+        hub_ref_id,
+        resp,
+        tags=tags,
+        target=link_target,
+        relation=relation,
     )
 
 

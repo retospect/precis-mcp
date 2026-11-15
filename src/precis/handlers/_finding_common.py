@@ -8,11 +8,20 @@ them — ``finding.py``'s ``FindingHandler`` pulls all of these in.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
 from precis.handlers._gripe_title import cut_at_word_boundary
-from precis.store.types import Ref
+from precis.response import Response
+from precis.store.types import Ref, Relation, Tag
+from precis.utils import handle_registry
+from precis.utils.link_tag_ops import (
+    apply_tag_ops,
+    format_link_tag_ack,
+    validate_relation,
+)
+from precis.utils.link_target import LinkTarget, parse_link_target
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -71,6 +80,90 @@ def fetch_ref_any_kind(store: Store, ref_id: int) -> Ref:
             ),
         )
     return _row_to_ref(row)
+
+
+def check_put_extras(
+    store: Store,
+    *,
+    kind: str,
+    tags: list[str] | None,
+    link: str | None,
+    rel: str | None,
+) -> tuple[LinkTarget | None, Relation]:
+    """Resolve a ``put``'s create-time ``tags=``/``link=``/``rel=`` extras
+    BEFORE the mint doors write anything (gr676914).
+
+    The hub and hypothesis mint doors took the same ``tags=``/``link=``/
+    ``rel=`` kwargs the ``put`` schema declares and silently dropped them —
+    callers then spent two more calls redoing by hand what the put should
+    have done. A malformed tag or an unresolvable ``link=`` target must
+    raise here: after a write it would strand a hub the refused put never
+    names (the gr263195 no-stranded-write rule).
+
+    Returns ``(target, relation)`` for :func:`apply_put_extras`. The
+    relation defaults to ``'cites'`` — the same spelling the chase and
+    acquisition doors give a bare create-time ``link=``.
+    """
+    for t in tags or []:
+        Tag.parse_strict(t, kind=kind)
+    if link is None:
+        if rel is not None:
+            raise BadInput(
+                "rel= requires link= on create",
+                next=f"put(kind={kind!r}, ..., link='<handle>', rel={rel!r})",
+            )
+        return None, "cites"
+    return (
+        parse_link_target(link, store=store),
+        validate_relation(rel or "cites", store=store),
+    )
+
+
+def apply_put_extras(
+    store: Store,
+    kind: str,
+    ref_id: int,
+    resp: Response,
+    *,
+    tags: list[str] | None,
+    target: LinkTarget | None,
+    relation: Relation,
+) -> Response:
+    """Write a ``put``'s create-time extras onto the ref the outcome named
+    and append the ack line (gr676914).
+
+    The extras land on whichever ref the response points at — the freshly
+    minted hub on a mint outcome, the matched neighbour on an attach/
+    converge outcome — so an agent that asked for ``tags=``/``link=`` sees
+    them carried out, with the ack naming the ref that received them.
+    """
+    if not tags and target is None:
+        return resp
+    n_tags = n_links = 0
+    with store.tx() as conn:
+        if tags:
+            n_tags, _ = apply_tag_ops(
+                store, kind, ref_id, tags=tags, untags=None, conn=conn
+            )
+        if target is not None:
+            store.add_link(
+                src_ref_id=ref_id,
+                dst_ref_id=target.ref_id,
+                dst_pos=target.pos,
+                relation=relation,
+                conn=conn,
+            )
+            n_links = 1
+    handle = handle_registry.format_handle(kind, ref_id)
+    ack = format_link_tag_ack(
+        kind=kind,
+        ref_label=handle,
+        n_links_added=n_links,
+        n_links_removed=0,
+        n_tags_added=n_tags,
+        n_tags_removed=0,
+    )
+    return replace(resp, body=f"{resp.body}\n{ack}")
 
 
 def multi_article_advisory(store: Store, paper_ref_id: int, handle: str) -> str:

@@ -108,6 +108,33 @@ def test_proposal_mints_a_hypothesis_hub_with_motivation_edges(store: Store) -> 
     assert PROPOSED_TAG in tags
 
 
+def test_put_hypothesis_applies_tags_and_link(store: Store) -> None:
+    """gr676914: the hypothesis door honours the ``put`` schema's
+    create-time ``tags=``/``link=``/``rel=`` on the minted hub — earlier
+    they were accepted and silently dropped."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    mem = seed_ref(store, title="the note that provoked it", kind="memory")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        tags=["topic:nanobuds"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+
+    hub_ref_id = _hub_id(resp.body)
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:nanobuds" in {t.value for t in store.tags_for(hub_ref_id)}
+    related = dict(_links(store, hub_ref_id, "related-to"))
+    assert mem in related and related[mem] is None
+
+
 def test_ref_level_motivator_is_accepted_without_a_passage(store: Store) -> None:
     pa1, _ = _paper_with_chunk(store, "First source")
     pa2, _ = _paper_with_chunk(store, "Second source")
