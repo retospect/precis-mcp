@@ -35,7 +35,11 @@ well, so a direct handler call and the MCP door render the same thing.
 ``skill`` is the one kind whose eye is not refs-backed: ``sk:<slug>`` renders
 straight from the skill corpus (no spatial neighborhood — a file has no
 corpus position; its ring is the derived ``[[slug]]`` wikilink graph), which
-the renderer already handles by prefix.
+the renderer already handles by prefix. ``SkillHandler`` overrides ``eye``
+so a ``<wt-alias>/<slug>`` id renders its tree's corpus (gr541511): it
+resolves the worktree registry itself and passes the ``{slug: raw}`` map
+through as ``corpus``; served aliases and the read-scope write fence are
+honoured inside the renderer.
 """
 
 from __future__ import annotations

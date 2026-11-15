@@ -385,7 +385,7 @@ omitted matches both (`search(kind="memory", q="quokka", scope="title")`).
 
 ```python
 search(kind="memory", tags=["SPACE:repo-dev"], q="<the task in a sentence>", view="index")
-get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # on the best hit
+get(kind="memory", id="me4641", extent="fisheye+1hop+recall")  # on the best hit
 ```
 
 `view='index'` prints each hit as an index bullet, one per line:
@@ -749,7 +749,7 @@ the summary's `qualifies` scope and nearest hub; give the detail node no
 
 A summary node that grows past 8 children becomes a sub-hub (`section:index`), still `part-of` its parent hub; title it per "Title a hub or sub-hub".
 
-`get(kind="memory", id="me3", view="fisheye+1hop")` on a hub lists every
+`get(kind="memory", id="me3", extent="fisheye+1hop")` on a hub lists every
 member on one line (handle, title, hook) — no cap. Other relation groups
 show 8 neighbours. The fisheye shows only the first 4000 characters of a
 body: past that, write a summary node and put the detail in `part-of`
@@ -862,7 +862,7 @@ Preview never mints a part ref: if a part has no live handle yet, it names
 the pending mention separately because apply may create that link.
 
 Review the link effects before applying. After the edit, read back both
-the full body and `view='links'` (or `view='fisheye+1hop'` for neighbour
+the full body and `view='links'` (or `extent='fisheye+1hop'` for neighbour
 context), and compare with the dispositions you chose. For a split, do
 this on the parent and every child: a child gets its `part-of` edge and
 the evidence/scope edges its claim needs. Finish any explicit relinking
@@ -1150,7 +1150,7 @@ Nothing changes ranking.
 ## Working a memory-review todo
 
 You are the planner on a todo tagged `memory-review`; it links to the memory
-in doubt. Read the memory (`get(kind='memory', id=N, view='fisheye+1hop')`)
+in doubt. Read the memory (`get(kind='memory', id=N, extent='fisheye+1hop')`)
 and its log, then verify against the repo through the python kind
 (`get(kind='python', id='main::<qualname>')`, `search(kind='python',
 mode='pattern', q=…)`) and the other precis kinds. For a linked memory gripe,

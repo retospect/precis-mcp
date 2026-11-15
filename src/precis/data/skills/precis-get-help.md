@@ -41,7 +41,7 @@ get(kind="math", q="population of Ireland")  # compute
 |---|---|---|
 | `kind` | str | Required. Which kind to read from. |
 | `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Papers also accept a DOI (`id='10.x/y'`). Some kinds accept `id` *or* `q`. |
-| `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
+| `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). A fisheye-ladder label here (`view='fisheye+1hop'`) is the deprecated spelling of `extent=`; `full=` is the deprecated spelling of `extent='verbatim'` — both still route and announce the read on `interpreted:`. |
 | `q` | str | Free-text query for compute-style kinds. |
 | `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` (up to 8 nearest same-kind + finding refs by embedding, inside the focus's `SPACE:` when it has one — no `SPACE:` tag recalls unrestricted; a ring `space=` filter overrides) — the node with its neighborhood (`precis-fisheye-help`). |
 | `args` | dict | Typed extras for views that need them. An unknown key fails the call with `BadInput` listing the kind's accepted keys; reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
@@ -255,7 +255,9 @@ chunks — term-wise (the literal phrase is absent)`; a total miss reads
 `args={'context': N}` widens
 the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
 file `~<block>` / `~L42-58`, paper `~A..B`). A get returns the body whole up to
-24 kB; over that it returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
+24 kB — `kind='skill'` excepted: a default whole-skill read over ~6 kB serves the
+section index (one row per H2 with its `~N` handle) and `extent='verbatim'` keeps the body
+reachable (`full=true` is the deprecated spelling). Over that cap a body returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
 the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
 ids reads its part in full, up to the same 24 kB. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't

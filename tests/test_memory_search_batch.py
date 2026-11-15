@@ -155,8 +155,18 @@ def test_unknown_shared_extra_is_refused(runtime_stateless: PrecisRuntime) -> No
     assert "bogus" in body and "unsupported shared batch args" in body
 
 
+@pytest.mark.parametrize(
+    "batch_kwarg",
+    [
+        {"args": {"batch": [{"key": "dog", "q": "Batchteal"}]}},
+        # gr568808: the advertised top-level spelling forwards the same way.
+        {"batch": [{"key": "dog", "q": "Batchteal"}]},
+    ],
+)
 def test_tool_boundary_forwards_the_batch_to_ordinary_dispatch(
-    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    batch_kwarg: dict[str, Any],
 ) -> None:
     rt = runtime_with_store
     _note(rt, "Batchteal dog", "SPACE:personal")
@@ -164,7 +174,7 @@ def test_tool_boundary_forwards_the_batch_to_ordinary_dispatch(
     result = tools_core.search(
         kind="memory",
         mode="lexical",
-        args={"batch": [{"key": "dog", "q": "Batchteal"}]},
+        **batch_kwarg,
     )
     assert isinstance(result, str), result
     row = json.loads(result)["results"][0]
@@ -172,12 +182,21 @@ def test_tool_boundary_forwards_the_batch_to_ordinary_dispatch(
     assert "Batchteal dog" in row["body"]
 
 
+@pytest.mark.parametrize(
+    "batch_kwarg",
+    [
+        {"args": {"batch": [{"key": "dog", "q": "teal"}]}},
+        # gr568808: the advertised top-level spelling gets the same gate.
+        {"batch": [{"key": "dog", "q": "teal"}]},
+    ],
+)
 @pytest.mark.parametrize(("alias", "value"), [("k", 5), ("limit", 5), ("offset", 0)])
 def test_tool_boundary_refuses_prose_alias_acknowledgments_on_batches(
     runtime_stateless: PrecisRuntime,
     monkeypatch: pytest.MonkeyPatch,
     alias: str,
     value: int,
+    batch_kwarg: dict[str, Any],
 ) -> None:
     monkeypatch.setattr(tools_core, "_runtime", runtime_stateless)
     dispatched = []
@@ -190,7 +209,7 @@ def test_tool_boundary_refuses_prose_alias_acknowledgments_on_batches(
     options: dict[str, Any] = {alias: value}
     result = tools_core.search(
         kind="memory",
-        args={"batch": [{"key": "dog", "q": "teal"}]},
+        **batch_kwarg,
         **options,
     )
     assert isinstance(result, CallToolResult) and result.isError

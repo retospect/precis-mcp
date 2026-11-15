@@ -132,7 +132,9 @@ def test_verb_skill_stub_on_real_corpus(skill: SkillHandler, read_scope: None) -
 def test_verb_skill_write_scope_serves_the_real_body(
     skill: SkillHandler,
 ) -> None:
-    body = skill.get(id="precis-put-help").body
+    # ``full=true``: a default read of a >6 kB skill serves the section
+    # index (gr568475), and the asserted lines live in the body.
+    body = skill.get(id="precis-put-help", full=True).body
     assert "mint new refs" in body
     assert "write recipes omitted" not in body
 
@@ -330,8 +332,11 @@ def test_taproot_mint_keeps_rubric_and_drops_only_recipe_sections(
 ) -> None:
     """Land review 1: precis-taproot-mint-help is NOT whole-skill write
     — the claim rubric/notation policy stays readable; only the two
-    mint recipe sections drop to the pointer."""
-    body = skill.get(id="precis-taproot-mint-help").body
+    mint recipe sections drop to the pointer. ``full=true`` reads the
+    scope-rendered body — a default read of this size serves the
+    section index (gr568475), where the pointer line and the ``##``
+    marker the assertions name are not index rows."""
+    body = skill.get(id="precis-taproot-mint-help", full=True).body
     assert "Claim admissibility" in body
     assert "Notation canon" in body
     assert "## Mint a claim hub" in body  # the slot's heading stays
@@ -341,7 +346,7 @@ def test_taproot_mint_keeps_rubric_and_drops_only_recipe_sections(
 
 
 def test_taproot_mint_write_scope_serves_full_body(skill: SkillHandler) -> None:
-    body = skill.get(id="precis-taproot-mint-help").body
+    body = skill.get(id="precis-taproot-mint-help", full=True).body
     assert "trimodal" in body
     assert "Claim admissibility" in body
     assert "{write}" not in body  # markers strip on serve
@@ -419,8 +424,10 @@ def test_write_only_skill_write_scope_serves_body(
     skill: SkillHandler, slug: str
 ) -> None:
     """Write scope is byte-identical to the pre-marking serve — the
-    frontmatter line rides along, no stub, no pointer."""
+    frontmatter line rides along, no stub, no pointer. ``full=true``
+    reads the body: a default read of a >6 kB skill serves the
+    section index (gr568475)."""
     text = (_SKILLS_DIR / f"{slug}.md").read_text(encoding="utf-8")
-    body = skill.get(id=slug).body
+    body = skill.get(id=slug, full=True).body
     assert "write recipes omitted" not in body
     assert text.split("---", 2)[-1].strip().splitlines()[0] in body

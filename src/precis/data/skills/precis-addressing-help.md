@@ -163,7 +163,7 @@ serves that checkout's corpus instead of the shipped one:
 
 ```python
 get(kind="skill", id="wt-<tree>")                      # list the tree's skill slugs
-get(kind="skill", id="wt-<tree>/precis-foo-help")      # body
+get(kind="skill", id="wt-<tree>/precis-foo-help")      # the section index (body: extent='verbatim')
 get(kind="skill", id="wt-<tree>/precis-foo-help/toc")  # toc
 get(kind="skill", id="wt-<tree>/precis-foo-help~3")    # one block
 ```
@@ -181,5 +181,7 @@ re-read a skill whose text is unchanged, pass it back:
 `get(kind='skill', id='<slug>', args={'have': '<sha8>'})` returns a
 short stub (section list) instead of the body. Pass `have=<rev>` only if
 that skill's full text is still in your context; if unsure, omit it. A
-stale or malformed `have=` just returns the full body, and
-`full=true` always forces the full body.
+stale or malformed `have=` just returns the default serve (a skill
+over ~6 kB serves its section index, under it the body), and
+`extent='verbatim'` always forces the full body (`full=true` is the
+deprecated spelling).

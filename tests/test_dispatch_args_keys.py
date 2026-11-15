@@ -1176,3 +1176,125 @@ def test_undeclared_args_key_is_badinput_envelope() -> None:
     assert isinstance(err, KeyError)
     s = str(err)
     assert "probe" in s and "level" in s and "retry" in s
+
+
+# ── gr568808: cross-kind knobs are verb params, spelled once ───────
+#
+# ``queries=``/``answers=`` (fused broad-retrieval legs) and ``batch=``
+# (memory's labelled multi-search) are top-level ``search`` params on
+# every kind: nested ``args={'queries': …}`` hoists to the same call,
+# both spellings is a BadInput, and a kind that can't apply the knob
+# refuses ``not on <kind> yet`` instead of dropping it or demanding a
+# per-kind respelling.
+
+
+def test_search_queries_top_level_and_nested_agree(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The gripe's exact confusion: three answers to "where does
+    ``queries`` go". Both spellings now reach ``paper.search``'s fused
+    legs — the nested ``args={'queries': …}`` hoists like ``sort=``."""
+    for payload in (
+        {"queries": ["rephrase one"]},
+        {"__extras__": {"queries": ["rephrase one"]}},
+    ):
+        out = runtime_with_store.dispatch(
+            "search", {"kind": "paper", "q": "zz_no_such_token_zz", **payload}
+        )
+        assert "[error" not in out, (payload, out)
+        assert "not accepted by paper.search" not in out, out
+
+
+def test_search_fused_knob_passed_twice_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``queries=`` at both levels is ambiguous — refuse it rather than
+    pick a winner (same contract as ``sort=``/``folder=``)."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "x",
+            "queries": ["a"],
+            "__extras__": {"queries": ["b"]},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "queries= was passed twice" in out, out
+
+
+def test_search_queries_on_an_unsupported_kind_names_the_kind(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``queries=`` on skill used to die as ``keys ['queries'] not
+    accepted by skill.search`` — the per-kind refusal now names the
+    verb-level knob and the contract: ``not on skill yet``."""
+    for payload in (
+        {"queries": ["rephrase"]},
+        {"__extras__": {"queries": ["rephrase"]}},
+    ):
+        out = runtime_with_store.dispatch(
+            "search", {"kind": "skill", "q": "zz_no_such_token_zz", **payload}
+        )
+        assert "[error:BadInput]" in out, (payload, out)
+        assert "queries= is not on skill yet" in out, out
+
+
+def test_search_answers_on_an_unsupported_kind_names_the_kind(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "todo", "q": "zz_no_such_token_zz", "answers": ["a passage"]},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "answers= is not on todo yet" in out, out
+
+
+def test_search_batch_top_level_runs_the_memory_envelope(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``batch=`` is advertised in the schema — the top-level spelling
+    runs the same labelled JSON envelope ``args={'batch': …}`` did."""
+    import json
+
+    for payload in (
+        {"batch": [{"key": "a", "q": "zz_no_such_token_zz"}]},
+        {"__extras__": {"batch": [{"key": "a", "q": "zz_no_such_token_zz"}]}},
+    ):
+        out = runtime_with_store.dispatch("search", {"kind": "memory", **payload})
+        assert "[error" not in out, (payload, out)
+        rows = json.loads(out)["results"]
+        assert [row["key"] for row in rows] == ["a"], out
+        assert rows[0]["is_error"] is False, out
+
+
+def test_search_batch_passed_twice_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "batch": [{"key": "a", "q": "x"}],
+            "__extras__": {"batch": [{"key": "b", "q": "y"}]},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "batch= was passed twice" in out, out
+
+
+def test_search_batch_on_a_non_memory_kind_names_the_kind(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A verb param a kind doesn't implement yet refuses
+    ``not on <kind> yet`` — never silently ignored, never a per-kind
+    respelling. Both spellings get the same refusal."""
+    for payload in (
+        {"batch": [{"key": "a", "q": "x"}]},
+        {"__extras__": {"batch": [{"key": "a", "q": "x"}]}},
+    ):
+        out = runtime_with_store.dispatch("search", {"kind": "paper", **payload})
+        assert "[error:BadInput]" in out, (payload, out)
+        assert "batch= is not on kind='paper' yet" in out, out
+        assert "kind='memory'" in out, out

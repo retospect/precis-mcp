@@ -47,11 +47,14 @@ Semantics (`precis-memory-help`):
     - get(id=N, view='processing') — current-revision processing evidence;
                                      check before testing recall
     - get(id='/recent')            — list recent memories
-    - get(id=N, view='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
+    - get(id=N, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
                                    — the walk: link rings via
                                      ``eye_render.render_eye``; ``+recall``
                                      fills k from the focus's ``SPACE:``
                                      tag inside the semantic search
+                                     (the view= label is the deprecated
+                                     spelling — dispatch folds it to
+                                     extent=, gr568808)
     - get(id=N, view='environment', args={'hops': 2})
                                    — the graph neighbourhood (gr570722):
                                      per-node stats + edges + computed
@@ -1470,7 +1473,7 @@ class MemoryHandler(NumericRefHandler):
             [
                 (f"get(kind='memory', id={ref.id})", "the whole node"),
                 (
-                    f"get(kind='memory', id={ref.id}, view='fisheye+1hop')",
+                    f"get(kind='memory', id={ref.id}, extent='fisheye+1hop')",
                     "read with linked neighbours",
                 ),
             ]
@@ -1541,7 +1544,7 @@ class MemoryHandler(NumericRefHandler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='memory', id={ref_ids[0]}, view='fisheye+1hop')",
+                    f"get(kind='memory', id={ref_ids[0]}, extent='fisheye+1hop')",
                     "read one with its linked neighbours",
                 )
             ]

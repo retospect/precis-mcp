@@ -258,7 +258,7 @@ def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
     assert body.index(f"me{missing}  not found") < body.index("long tail line one")
     assert "\n---\n" in body
     assert body.count("Next:") == 1
-    assert f"get(kind='memory', id={second}, view='fisheye+1hop')" in body
+    assert f"get(kind='memory', id={second}, extent='fisheye+1hop')" in body
 
 
 def test_get_batch_memory_dedupes_title_echo(hub: Hub) -> None:

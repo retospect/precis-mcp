@@ -11,9 +11,13 @@ floats free of its heading. ``fisheye+1hop`` adds the reference ring
 + ``block_views``: ``chunk_summaries`` / ``chunks.keywords``) — no new storage.
 
 Scope: the DraftStore-backed tree kinds (``draft`` / ``plan``), which share
-``reading_order`` and ``block_views``. Non-tree kinds (``calc`` / ``web`` /
-``memory``) have no neighborhood — the caller renders the ref itself. ``paper``
-(a different chunk-op family) is a follow-up.
+``reading_order`` and ``block_views``, and — via the store-free core
+:func:`render_fisheye_span` — the skill kind's H2 sections (gr568475: a
+skill *is* an H2 tree, so ``sk:<slug>~N`` gets the same graduated spatial
+ladder through an adapter of ``chunk_by_h2`` sections; the store-backed
+``render_fisheye`` resolves draft chunks and delegates). Non-tree kinds
+(``calc`` / ``web`` / ``memory``) have no neighborhood — the caller renders
+the ref itself. ``paper`` (a different chunk-op family) is a follow-up.
 
 This module renders; it does **not** place or decay eyes (that is
 ``workers.working_set`` + the fisheye slice's decay machinery).
@@ -26,7 +30,7 @@ no ``extent=`` kwarg and silently ignores one if passed.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from precis.workers.working_set import Extent
@@ -118,21 +122,52 @@ def render_fisheye(
     ``draft``/``plan``. Returns the rendered text; raises ``ValueError`` if the
     handle does not resolve to a live node.
 
-    - ``kwd`` — the ancestor branch + a one-line bookmark of the node.
-    - ``summary`` / ``verbatim`` — the node **alone** (short summary vs full
-      text), no surroundings.
-    - ``fisheye`` — a graduated forward-biased span over reading-order
-      neighbours (±5 full / ±10 summary / ±15 kwd), under the ancestor branch.
-    - ``fisheye+1hop`` — the ``fisheye`` span **plus the reference ring**:
-      everything the section points at one edge out (cited papers, cross-refs,
-      linked notes/memories — ``utils.refeye``)."""
-    ext = Extent.parse(extent)
+    The store-backed front door: resolves the draft chunk and its
+    reading-order neighbours + block views, then delegates to the shared
+    store-free core :func:`render_fisheye_span` (which the skill eye also
+    uses, over its H2-section adapter)."""
     target = store.drafts.get_draft_chunk(handle, kind=kind)
     if target is None:
         raise ValueError(f"fisheye: no live {kind} node {handle!r}")
     chunks = store.drafts.reading_order(target.ref_id, kind=kind)
     views = store.drafts.block_views(target.ref_id)
-    by_id = {c.chunk_id: c for c in chunks}
+
+    def _ring() -> str:
+        from precis.utils.refeye import render_reference_ring
+
+        return render_reference_ring(store, target, chunks)
+
+    return render_fisheye_span(chunks, target, views, extent, ring=_ring)
+
+
+def render_fisheye_span(
+    chunks: Sequence[_Chunk],
+    target: _Chunk,
+    views: dict[str, dict[str, str]],
+    extent: Extent | str | int = Extent.FULL,
+    *,
+    ring: Callable[[], str] | None = None,
+) -> str:
+    """The shared tree-kind eye core — render ``target`` over its
+    reading-order ``chunks`` at ``extent``.
+
+    Store-free on purpose: ``draft``/``plan`` sections arrive from
+    :func:`render_fisheye`, skill H2 sections from the adapter in
+    ``utils.eye_render`` (gr568475) — one graduated-span renderer for every
+    H2-tree kind instead of a per-kind copy. ``views`` maps a chunk's
+    ``handle`` to its optional ``summary``/``keywords`` gloss; absent views
+    degrade to the chunk's first text line. ``ring`` renders the
+    ``fisheye+1hop`` neighbourhood (a draft's reference ring, a skill's
+    wikilink ring) and is appended whenever the rung asks for it and it
+    returns text.
+
+    - ``kwd`` — the ancestor branch + a one-line bookmark of the node.
+    - ``summary`` / ``verbatim`` — the node **alone** (short summary vs full
+      text), no surroundings.
+    - ``fisheye`` — a graduated forward-biased span over reading-order
+      neighbours (±5 full / ±10 summary / ±15 kwd).
+    - ``fisheye+1hop`` and up — the span **plus the ring**."""
+    ext = Extent.parse(extent)
 
     # Content-only rungs: the node *alone* — ``summary`` renders a summary of
     # it, ``verbatim`` its full text. No surroundings; the spatial ring is
@@ -145,6 +180,7 @@ def render_fisheye(
     # Surroundings rungs share the ancestor branch (section_path), so the node
     # never floats free of its heading.
     lines: list[str] = []
+    by_id = {c.chunk_id: c for c in chunks}
     anc = _ancestors(by_id, target)
     if anc:
         crumb = " › ".join(_summary_line(a, views) or a.dc for a in anc)
@@ -155,14 +191,14 @@ def render_fisheye(
         lines.append(f"▸ {target.dc}  {_summary_line(target, views)}")
         return "\n".join(lines)
 
-    # fisheye — verbatim center over a graduated spatial neighborhood; +1hop
-    # appends the reference ring (everything the section points at, one edge out).
+    # fisheye — verbatim center over a graduated spatial neighborhood; the
+    # hop rungs append the ring (draft: reference ring; skill: wikilinks).
     lines.extend(_render_fidelity_span(chunks, target, views))
-    if ext is Extent.HOP1:
-        from precis.utils.refeye import render_reference_ring
-
-        lines.append("")
-        lines.append(render_reference_ring(store, target, chunks))
+    if ext >= Extent.HOP1 and ring is not None:
+        ring_text = ring()
+        if ring_text:
+            lines.append("")
+            lines.append(ring_text)
     return "\n".join(lines)
 
 

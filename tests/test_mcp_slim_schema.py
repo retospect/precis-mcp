@@ -617,3 +617,68 @@ def test_source_search_window_args_reach_dispatch(
     # spelling — the gripe's page= spelling also stays door-gated.
     out = _call("search", {"kind": "finding", "q": "nanobuds", "args": {"offset": 3}})
     assert "[error:BadInput]" in out, out
+
+
+def test_promoted_search_knobs_reach_dispatch_top_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr568808: ``queries``/``answers``/``batch`` are advertised verb
+    params — top-level spellings pass straight through with no
+    deprecation note; the nested ``args={…}`` spelling lands as an
+    extras key the dispatcher hoists to the same call."""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call(
+        "search",
+        {
+            "kind": "paper",
+            "q": "x",
+            "queries": ["rephrase"],
+            "answers": ["a passage"],
+        },
+    )
+    assert out == "ok", out
+    assert seen["queries"] == ["rephrase"]
+    assert seen["answers"] == ["a passage"]
+    out = _call("search", {"kind": "paper", "q": "x", "args": {"queries": ["r"]}})
+    assert out == "ok", out
+    # nested, the knob rides __extras__ — the dispatcher hoist lands it
+    # on the same top-level call.
+    assert seen["__extras__"]["queries"] == ["r"], seen
+
+
+def test_batch_reaches_dispatch_both_spellings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    items = [{"key": "a", "q": "x"}]
+    out = _call("search", {"kind": "memory", "batch": items})
+    assert out == "ok", out
+    assert seen["batch"] == items, seen
+    # nested args={'batch': …} hoists at the dispatcher — same call.
+    out = _call("search", {"kind": "memory", "args": {"batch": items}})
+    assert out == "ok", out
+    assert seen["__extras__"]["batch"] == items, seen
+
+
+def test_promoted_knob_on_an_unsupported_kind_says_not_on_kind_yet(
+    mcp_runtime: None,
+) -> None:
+    """The advertised verb param refuses ``not on <kind> yet`` on a
+    kind that can't apply it — through the real call_tool path."""
+    out = _call("search", {"kind": "skill", "q": "x", "queries": ["y"]})
+    assert "[error:BadInput]" in out, out
+    assert "queries= is not on skill yet" in out, out

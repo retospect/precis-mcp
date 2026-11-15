@@ -37,7 +37,10 @@ def test_full_true_on_todo_reads_the_complete_card(
     body = runtime_with_store.dispatch("get", {"kind": "todo", "id": rid, "full": True})
     assert "[error" not in body, body
     assert "full-flag fixture" in body
-    # The fold is named, not silent (the interpreted convention).
+    # gr568808: the flag is the deprecated spelling of the one size
+    # dial — the dispatch level names the fold, then the handler names
+    # the card alias, both on interpreted: lines.
+    assert body.startswith("interpreted: 'full' read as 'view='full''"), body
     assert "view='full' read as the default view" in body
 
 
@@ -50,6 +53,7 @@ def test_full_true_via_args_spelling_folds_the_same(
     )
     assert "[error" not in body, body
     assert "full-flag fixture" in body
+    assert body.startswith("interpreted: 'full' read as 'view='full''"), body
 
 
 def test_full_false_is_a_noop(runtime_with_store: PrecisRuntime, hub: Hub) -> None:
@@ -92,12 +96,13 @@ def test_full_true_on_skill_still_reaches_the_handler(
     runtime_with_store: PrecisRuntime,
 ) -> None:
     """``kind='skill'`` declares ``full`` itself — the fold must leave
-    the flag alone there."""
+    the flag alone there; gr568808 only adds the deprecation reading."""
     body = runtime_with_store.dispatch(
         "get", {"kind": "skill", "id": "precis-overview", "full": True}
     )
     assert "[error" not in body, body
     assert len(body) > 100
+    assert body.startswith("interpreted: 'full' is the deprecated spelling"), body
 
 
 def test_disagreeing_full_spellings_refuse(

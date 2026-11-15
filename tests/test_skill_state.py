@@ -65,7 +65,7 @@ def test_have_current_rev_returns_stub(
     rev = _rev_of(skill.get(id="a").body)
     out = skill.get(id="a", have=rev)
     assert f"you passed have={rev}: unchanged since you read it" in out.body
-    assert "get(kind='skill', id='a', full=true)" in out.body
+    assert "get(kind='skill', id='a', extent='verbatim')" in out.body
     assert "Subagents share" not in out.body
     assert "body" not in out.body.replace("unchanged", "")
 

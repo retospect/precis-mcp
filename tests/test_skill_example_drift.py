@@ -111,7 +111,8 @@ _CONSUMED: dict[str, frozenset[str]] = {
 #: ``search``'s dispatcher-level params — read and popped by the
 #: pre-handler passes (``_resolve_under``, ``_hoist_source_facet_args``,
 #: ``_hoist_spray_args``, ``_resolve_canon``, the folder/``sort=``/
-#: ``since=``/``until=`` source-search routes and the memory batch),
+#: ``since=``/``until=`` source-search routes, the promoted
+#: ``queries``/``answers``/``batch`` knobs and the memory batch),
 #: legal at the top level or inside ``args=`` on any kind.
 _SEARCH_DISPATCH_KEYS = frozenset(
     {
@@ -131,17 +132,17 @@ _SEARCH_DISPATCH_KEYS = frozenset(
         "since",
         "until",
         "folder",
+        "queries",
+        "answers",
+        "batch",
     }
 )
 
 #: args= keys the dispatcher pops or aliases before the extras gate:
 #: ``parent``/``title`` are near-miss spellings folded onto real kwargs,
 #: ``retired`` spells view='retired' on get, ``ring`` rides the eye
-#: extras, ``context`` the find-in-ref extras, ``trust``/``writer`` are
-#: the write-side provenance payloads, and ``batch`` is the memory
-#: search batch (``dispatch_memory_batch`` — kind='memory' only, kept in
-#: the shared set here: a batch on another kind refuses inside the
-#: batch dispatcher before the extras gate would see it anyway).
+#: extras, ``context`` the find-in-ref extras, and ``trust``/``writer``
+#: are the write-side provenance payloads.
 _ARGS_ALIASES = frozenset(
     {
         "parent",
@@ -151,7 +152,6 @@ _ARGS_ALIASES = frozenset(
         "context",
         "trust",
         "writer",
-        "batch",
     }
 )
 

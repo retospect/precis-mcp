@@ -65,6 +65,13 @@ class TestTheDoor:
             runtime_with_store, kind="todo", id=todo.id, view="fisheye+1hop"
         )
         assert not err1 and not err2
+        # gr568808: the view= ladder label is the deprecated spelling —
+        # it announces its reading on the interpreted: line, then
+        # renders exactly what extent= renders.
+        assert via_view.startswith(
+            "interpreted: 'view='fisheye+1hop'' read as 'extent='fisheye+1hop''"
+        ), via_view
+        via_view = via_view.split("\n", 1)[1]
         # The head's read chip legitimately differs: the first call's own
         # bump shows on the second (gr524009). Strip it before comparing.
         chip = re.compile(r"  \[created [^\]]*\]")
@@ -483,9 +490,13 @@ class TestPerKind:
         assert not err and "Roadmap:" in out
         assert f"  serves: qu{quest.id} — Grow the mesh" in out
 
-    def test_skill_eye_is_the_verbatim_body_plus_its_wikilink_ring(
+    def test_skill_eye_is_the_section_map_plus_its_wikilink_ring(
         self, runtime_with_store: Any
     ) -> None:
+        """gr568475: a whole-skill eye at fisheye+1hop is the SECTION MAP
+        (never the verbatim body — a page is what `verbatim` is for) plus
+        the wikilink ring; the body-only shape this test used to assert
+        was the two-rung special case the gripe deletes."""
         out, err = _get(
             runtime_with_store,
             kind="skill",
@@ -494,6 +505,7 @@ class TestPerKind:
         )
         assert not err
         assert out.startswith("sk:precis-fisheye-help [skill]")
+        assert "sections (drill:" in out  # the section map, one ~N row each
         # gr572706: the ring derives from [[slug]] wikilinks, both
         # directions — precis-fisheye-help's own See-also list out and
         # the skills linking back in.
@@ -504,6 +516,28 @@ class TestPerKind:
             runtime_with_store, kind="skill", id="precis-fisheye-help", extent="kwd"
         )
         assert not err and kwd.startswith("· sk:precis-fisheye-help [skill]")
+
+    def test_skill_section_eye_takes_the_ladder(self, runtime_with_store: Any) -> None:
+        """gr568475/gr568808: ``id='<slug>~N'`` through ``extent=`` is the
+        section eye — the id must not reach the corpus as a literal slug
+        (it did: ``eye: no live skill for 'sk:precis-get-help~1'``)."""
+        out, err = _get(
+            runtime_with_store,
+            kind="skill",
+            id="precis-get-help~1",
+            extent="fisheye",
+        )
+        assert not err, out
+        assert out.startswith("sk:precis-get-help~1 [skill]")
+        assert "▸ precis-get-help~1 [section]" in out
+        # A section range is not a section: an eye focuses one node.
+        out, err = _get(
+            runtime_with_store,
+            kind="skill",
+            id="precis-get-help~0..2",
+            extent="fisheye",
+        )
+        assert err and "[error:BadInput]" in out, out
 
     def test_whole_draft_says_the_eye_is_a_section(
         self, runtime_with_store: Any, store: Any

@@ -1003,7 +1003,8 @@ def get(
     spec: str | None = None,
     # skill: get(kind='skill',
     # id='<slug>', full=true) forces a full re-serve past the have=<rev>
-    # stub (``have`` rides args=, see precis-addressing-help); tag=/kinds= narrow the *catalogue*
+    # stub — the deprecated spelling of extent='verbatim' (gr568808;
+    # ``have`` rides args=, see precis-addressing-help); tag=/kinds= narrow the *catalogue*
     # listing (get(kind='skill', id='toc') or a bare get(kind='skill'))
     # to one tags:/kinds: frontmatter axis value — distinct from a
     # per-ref smart-toc (see precis-toc-help), which these don't touch.
@@ -1032,13 +1033,15 @@ def get(
     kinds — and expands a `fisheye+2hop` group (`extent=` below).
     `args=` holds typed extras for views that need them; an
     unknown key fails the call with `[error:BadInput]` listing the keys.
-    `extent=` is a fisheye rung: 'fisheye' (node + surroundings),
-    'fisheye+1hop' (linked neighbours), 'fisheye+2hop' (second hop as
-    counts; expand with `q='<kind>:<label>'`); any rung + '+recall'
-    (similar unlinked refs).
+    `extent=` is the one size dial — a fisheye rung: 'fisheye' (node +
+    surroundings), 'fisheye+1hop' (linked neighbours), 'fisheye+2hop'
+    (second hop as counts; expand with `q='<kind>:<label>'`); any rung
+    + '+recall' (similar unlinked refs). A ladder label in `view=` is
+    the deprecated spelling — it routes and announces on `interpreted:`.
     `project=`: draft's owning todo. `spec=`: component bom. `full=`,
     `tag=`, `kinds=`: skill (`full` folds to `view='full'` on other
-    kinds). NotFound "unknown kind" with "routes through
+    kinds — the deprecated spelling; `extent=` is canonical). NotFound
+    "unknown kind" with "routes through
     host(s)": see the full reference.
 
     Full reference: get(kind='skill', id='precis-get-help').
@@ -1302,6 +1305,14 @@ def search(
     # strict-schema clients don't strip them.
     platform: str | None = None,
     role: str | None = None,
+    # Labelled independent memory searches (see precis-search-help):
+    # ``batch=[{'key': 'jane', 'q': 'Jane'}, ...]`` runs 1–8 ordinary
+    # searches in one call, each labelled — a JSON envelope preserves
+    # every item's own ranking and error. Declared at the verb level so
+    # the schema advertises it (gr568808 — it used to hide inside
+    # ``args=``); nested ``args={'batch': …}`` hoists to here, and a
+    # kind that doesn't implement it refuses ``not on <kind> yet``.
+    batch: list[dict[str, Any]] | None = None,
     # Typed extras, mirroring ``get``'s ``args=``: rides ``__extras__`` so a
     # handler declaring ``args`` (todo's view='doable' reads ``args['under']``)
     # gets the dict, others get the keys flattened and whitelist-checked.
@@ -1335,6 +1346,8 @@ def search(
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.
     measure: `property=`+`min=`/`max=` in `unit=` (e.g. 'Å'), `q=` conditions.
+    memory: `batch=[{key, q, ...}]` runs 1–8 labelled independent
+    searches in one call — a JSON envelope, never fused.
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
@@ -1352,7 +1365,7 @@ def search(
 
     # Alias acknowledgments are prose prefixed to an ordinary result.
     # The labelled batch envelope must remain complete JSON instead.
-    if args is not None and "batch" in args:
+    if batch is not None or (args is not None and "batch" in args):
         batch_aliases = [
             name
             for name, value in (("k", k), ("limit", limit), ("offset", offset))
@@ -1732,6 +1745,9 @@ def search(
         payload["platform"] = platform
     if role is not None:
         payload["role"] = role
+    # memory batch — forwarded only when set, same discipline.
+    if batch is not None:
+        payload["batch"] = batch
     if args:
         err = _check_reserved_args(args, reserved=("kind", "q", "view"))
         if err is not None:
@@ -3013,6 +3029,9 @@ _SEARCH_HELP: dict[str, str] = {
     "page_size= or refine q= to reach more hits).",
     "uncited": "Drop every source a draft (handle/slug/id) already cites, "
     "directly or via a cited claim hub's supporters.",
+    "batch": "Memory only: 1–8 labelled independent searches — a JSON "
+    "list like "
+    '\'[{"key": "jane", "q": "Jane"}, {"key": "bill", "q": "Bill"}]\'.',
 }
 
 _PUT_HELP: dict[str, str] = {

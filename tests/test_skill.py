@@ -148,9 +148,13 @@ def test_skill_chunk_next_skips_handles_inside_the_served_range(
 
 
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:
+    """The full-body serve (``full=true`` — the default read of a big
+    skill is its index, gr568475, which never needs fitting) names its
+    targeted TOC/section reads, and the hint rides a fitted truncation
+    as the recovery."""
     from precis._result_budget import fit_result_body
 
-    out = skill.get(id="precis-overview")
+    out = skill.get(id="precis-overview", full=True)
     fitted = fit_result_body(
         out.body,
         verb="get",
@@ -174,8 +178,10 @@ def test_get_plan_skill_resolves_and_documents_create(skill: SkillHandler) -> No
     """gr164476 — the `plan` kind now has a dedicated help skill; agents
     were reaching for `precis-plan-help` and getting NotFound. It must
     resolve, name the create-vs-add-node contract, and appear in the
-    bare-list index."""
-    out = skill.get(id="precis-plan-help")
+    bare-list index. The contract lines live in the body, so read it
+    with ``full=true`` — a default read of this size serves the section
+    index (gr568475)."""
+    out = skill.get(id="precis-plan-help", full=True)
     assert "precis-plan-help" in out.body
     # The headline contract: create vs. add-node.
     assert "create" in out.body and "add a node" in out.body

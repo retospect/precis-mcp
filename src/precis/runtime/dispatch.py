@@ -215,6 +215,14 @@ _SEARCH_PAGING_SPELLINGS: frozenset[str] = frozenset(_SEARCH_PAGING_ALIASES) | {
     "offset"
 }
 
+#: Verb-level ``search`` knobs hoisted onto every kind's top level and
+#: out of ``args=`` (gr568808): a kind whose handler can't apply one
+#: refuses ``not on <kind> yet`` at the top-level kwargs gate, not with
+#: the generic kwargs report. ``batch`` never reaches that gate — the
+#: labelled-memory-batch route consumes it first and owns its own
+#: ``not on <kind> yet`` refusal.
+_SEARCH_VERB_LEVEL_PARAMS: frozenset[str] = frozenset({"queries", "answers"})
+
 
 def _search_paging_alias_next(alias: str, value: Any) -> str:
     """``next=`` for a legacy paging spelling nested in ``args=``.
@@ -547,14 +555,16 @@ def _forwards_catchall(func: Any, catchall_name: str) -> bool:
     return False
 
 
-def _eye_extent(args: dict[str, Any]) -> str | None:
-    """The ladder rung a ``get`` asks for, or ``None`` for an ordinary get.
+def _eye_extent(args: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The ladder rung a ``get`` asks for, plus its alias reading.
 
     ``extent=`` is the one argument (popped here, top-level or inside
     ``args=``, so the kwargs gate never sees it); a ladder label in
-    ``view=`` means the same, because the ladder shipped on that door first
-    (``precis-fisheye-help``). Both given and disagreeing is a ``BadInput``
-    — the rung is one argument, not two.
+    ``view=`` means the same — the deprecated spelling the ladder
+    shipped on first (gr568808): it still routes, and the returned
+    reading is announced on the ``interpreted:`` line for a release.
+    Both given and disagreeing is a ``BadInput`` — the rung is one
+    argument, not two.
     """
     from precis.handlers._eye import is_eye_view
 
@@ -563,6 +573,12 @@ def _eye_extent(args: dict[str, Any]) -> str | None:
     if extent is None and isinstance(extras, dict):
         extent = extras.pop("extent", None)
     view = args.get("view")
+    reading = (
+        f"'view={view!r}' read as 'extent={view!r}' — the deprecated "
+        "alias; 'extent=' is canonical"
+        if view is not None and is_eye_view(str(view))
+        else None
+    )
     if extent is not None:
         extent = str(extent).strip()
         if view is not None and str(view) != extent:
@@ -570,8 +586,8 @@ def _eye_extent(args: dict[str, Any]) -> str | None:
                 f"extent={extent!r} and view={view!r} both given; the rung is one argument",
                 next=f"get(kind=…, id=…, extent={extent!r})",
             )
-        return extent
-    return str(view) if is_eye_view(view if view is None else str(view)) else None
+        return extent, reading
+    return (str(view), reading) if reading is not None else (None, None)
 
 
 def _asks_for_eye(args: dict[str, Any]) -> bool:
@@ -803,7 +819,7 @@ def _fold_get_full_flag(
     kind: str,
     args: dict[str, Any],
     extras: dict[str, Any] | None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str | None]:
     """Fold a caller's ``full=`` flag onto ``view='full'`` (gr593337).
 
     ``full`` is get's verb-declared skill knob (``tools/core.py::get`` —
@@ -822,11 +838,23 @@ def _fold_get_full_flag(
     kwargs (random) keeps it untouched; ``full=false`` asserts nothing
     and drops. ``full=true`` against an explicit ``view=`` other than
     'full' refuses — two readings can't collapse silently.
+
+    Either way the flag is the deprecated spelling of the one size dial
+    (gr568808): the returned reading rides the ``interpreted:`` line
+    for a release, then ``full=`` goes.
     """
     if getattr(
         method, TOLERATES_EXTRA_KWARGS_ATTR, False
     ) or "full" in _handler_accepted_kwargs(cls, "get"):
-        return extras
+        flag = args.get("full")
+        if flag is None and isinstance(extras, dict):
+            flag = extras.get("full")
+        return extras, (
+            "'full' is the deprecated spelling — 'extent=' is the one "
+            "size dial (the complete read is extent='verbatim')"
+            if _flag_truthy(flag)
+            else None
+        )
     flag = args.pop("full", None)
     if isinstance(extras, dict) and "full" in extras:
         extras = dict(extras)
@@ -844,7 +872,7 @@ def _fold_get_full_flag(
         if flag is None:
             flag = nested
     if not _flag_truthy(flag):
-        return extras
+        return extras, None
     if args.get("view") not in (None, "full"):
         raise BadInput(
             f"full=True conflicts with view={args['view']!r} — "
@@ -852,7 +880,10 @@ def _fold_get_full_flag(
             next=f"get(kind={kind!r}, id=<ref>, view='full')",
         )
     args["view"] = "full"
-    return extras
+    return extras, (
+        "'full' read as 'view='full'' — the deprecated spelling; "
+        "'extent=' is the one size dial"
+    )
 
 
 def _flag_truthy(value: Any) -> bool:
@@ -913,6 +944,13 @@ CORE_PARAMS: dict[str, tuple[str, ...]] = {
         "scope",
         "status",
         "sort",
+        # gr568808: a knob that means the same on more than one kind is a
+        # verb param advertised on the slim schema, not an args= key —
+        # ``queries``/``answers`` (fused legs on paper and the dated
+        # source search) and ``batch`` (memory's labelled multi-search).
+        "queries",
+        "answers",
+        "batch",
         "args",
     ),
 }
@@ -1875,8 +1913,12 @@ class DispatchMixin(RuntimeShape):
         # from args, and the shape is a property of the caller's spelling.
         shape = read_shape(verb, args)
         extras = args.get(_EXTRAS_KEY)
-        memory_batch = (
-            verb == "search" and isinstance(extras, dict) and "batch" in extras
+        # ``batch`` is a verb-level search param (gr568808): top-level or
+        # nested in ``args=`` (``_dispatch_inner`` hoists it either way —
+        # this flag runs before that hoist, so check both spellings).
+        memory_batch = verb == "search" and (
+            args.get("batch") is not None
+            or (isinstance(extras, dict) and "batch" in extras)
         )
         with self.hub.request_scope(verb=verb):
             try:
@@ -2414,6 +2456,34 @@ class DispatchMixin(RuntimeShape):
             )
         args["folder"] = extras.pop("folder")
 
+    @staticmethod
+    def _hoist_fused_args(args: dict[str, Any]) -> None:
+        """``args={'queries'/'answers'/'batch': …}`` → the top-level knob.
+
+        ``queries=``/``answers=`` (paper's fused broad retrieval and the
+        dated source search's legs) and ``batch=`` (memory's labelled
+        multi-search) are verb-level ``search`` params — never a kind's
+        ``args=`` key. Nested, ``queries`` died at the extras gate as
+        ``keys ['queries'] not accepted by skill.search`` while the same
+        spelling flattened fine on paper — three answers to "where does
+        queries go" depending on which surface you read (gr568808).
+        Hoist like ``sort=``/``folder=`` so the nested call IS the
+        top-level call on every kind: kinds that support the knob apply
+        it, the rest refuse ``not on <kind> yet``. A knob at both
+        levels is ambiguous — refuse it rather than pick a winner."""
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict):
+            return
+        for key in ("queries", "answers", "batch"):
+            if extras.get(key) is None:
+                continue
+            if args.get(key) is not None:
+                raise BadInput(
+                    f"{key}= was passed twice — top-level and inside args=",
+                    next=f"pass {key}= once, at the top level",
+                )
+            args[key] = extras.pop(key)
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -2431,13 +2501,6 @@ class DispatchMixin(RuntimeShape):
         The note is **prepended** so it leads the complete bounded result
         rather than appearing after all hits.
         """
-        extras = args.get(_EXTRAS_KEY)
-        if verb == "search" and isinstance(extras, dict) and "batch" in extras:
-            from precis.runtime.memory_batch import dispatch_memory_batch
-
-            return dispatch_memory_batch(
-                args, lambda child: self._dispatch_status("search", child)
-            )
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None
         canon_state = None
@@ -2447,6 +2510,17 @@ class DispatchMixin(RuntimeShape):
             self._hoist_source_facet_args(args)
             self._hoist_sort_arg(args)
             self._hoist_folder_arg(args)
+            # gr568808: the promoted cross-kind knobs (``queries``/
+            # ``answers``/``batch``) hoist out of ``args=`` so the
+            # nested spelling IS the top-level call — then the batch
+            # route itself reads the canonical ``args['batch']``.
+            self._hoist_fused_args(args)
+            if args.get("batch") is not None:
+                from precis.runtime.memory_batch import dispatch_memory_batch
+
+                return dispatch_memory_batch(
+                    args, lambda child: self._dispatch_status("search", child)
+                )
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
             # source-search gate) reads it as a real query.
@@ -4102,14 +4176,17 @@ class DispatchMixin(RuntimeShape):
         specific kind that was tried.
         """
         method = getattr(handler, verb)
+        readings: list[str] = []
 
         # The eye ladder is one door on every kind (fisheye-everywhere
         # in-scope 2): a ``get`` carrying ``extent=`` — or a ladder label
-        # in ``view=``, the spelling the ladder shipped on — goes to
-        # ``Handler.eye`` instead of ``get``, so no handler has to accept
-        # the kwarg and the kwargs gate below never sees it.
+        # in ``view=``, the deprecated spelling the ladder shipped on —
+        # goes to ``Handler.eye`` instead of ``get``, so no handler has
+        # to accept the kwarg and the kwargs gate below never sees it.
         if verb == "get":
-            extent = _eye_extent(args)
+            extent, reading = _eye_extent(args)
+            if reading is not None:
+                readings.append(reading)
             if extent is not None:
                 # ``ring=`` narrows the rings a link/doc eye renders
                 # (``fisheye-everywhere.md`` in-scope 1); popped like
@@ -4144,7 +4221,9 @@ class DispatchMixin(RuntimeShape):
                     )
                     self._stamp_recalled(kind, args.get("id"))
                     self._bump_ref_read(kind, args.get("id"))
-                    return response
+                    from precis.handlers._interpret import interpreted
+
+                    return interpreted(response, readings)
                 except PrecisError as exc:
                     if kind_was_defaulted:
                         exc.cause = f"(searched kind={kind!r}) {exc.cause}"
@@ -4297,7 +4376,11 @@ class DispatchMixin(RuntimeShape):
                     )
                 args["view"] = "retired"
         if verb == "get":
-            extras = _fold_get_full_flag(type(handler), method, kind, args, extras)
+            extras, reading = _fold_get_full_flag(
+                type(handler), method, kind, args, extras
+            )
+            if reading is not None:
+                readings.append(reading)
         if extras:
             accepted = self._accepted_kwargs(method)
             # Handlers that opt into an explicit ``args: dict``
@@ -4535,6 +4618,20 @@ class DispatchMixin(RuntimeShape):
                     )
                     if scope_takers:
                         hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
+                if not hint and verb == "search":
+                    # gr568808: a verb-level search knob on a kind that
+                    # can't apply it refuses "not on <kind> yet" —
+                    # never a silent drop, never a per-kind respelling.
+                    not_yet = sorted(
+                        k for k in unknown_top if k in _SEARCH_VERB_LEVEL_PARAMS
+                    )
+                    if not_yet:
+                        hint = (
+                            " — "
+                            + " and ".join(f"{k}=" for k in not_yet)
+                            + (" is" if len(not_yet) == 1 else " are")
+                            + f" not on {kind} yet"
+                        )
                 dropped = [k for k in unknown_top if k in _DROPPABLE_TOP_LEVEL_KWARGS]
                 # gr613469: lead with the corrected call — the same call,
                 # each typo'd kwarg swapped for its nearest accepted
@@ -4662,7 +4759,9 @@ class DispatchMixin(RuntimeShape):
             response = self._tag_defaulted_kind(response, kind)
         if verb == "get" and self._is_id_empty(args.get("id")):
             response = self._maybe_append_kind_skill_footer(response, kind)
-        return response
+        from precis.handlers._interpret import interpreted
+
+        return interpreted(response, readings)
 
     def _append_trust_line(
         self, handler: Handler, kind: str, ident: Any, response: Response

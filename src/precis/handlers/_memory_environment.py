@@ -942,7 +942,7 @@ def render_environment(store: Store, ref: Ref, *, hops: int, mermaid: bool) -> R
                     "roll these smells up over a hub scope",
                 ),
                 (
-                    f"get(kind='memory', id={ref.id}, view='fisheye+2hop')",
+                    f"get(kind='memory', id={ref.id}, extent='fisheye+2hop')",
                     "read the prose, not the stats",
                 ),
             ]

@@ -70,10 +70,8 @@ search(
     kind="paper",
     q="X",
     page_size=30,
-    args={
-        "queries": ["rephrase 1", "rephrase 2"],
-        "answers": ["a passage an ideal source would contain"],
-    },
+    queries=["rephrase 1", "rephrase 2"],
+    answers=["a passage an ideal source would contain"],
 )  # broad / high-recall (see below)
 ```
 
@@ -190,11 +188,11 @@ it words the idea differently than you did. Hand `search` **several
 angles at once** and let it fuse them; a chunk that surfaces across
 phrasings rises to the top.
 
-Two `args=` knobs, both paper-side, fused with `q` into one ranked list:
+Two top-level params, both paper-side, fused with `q` into one ranked list:
 
-- `args={'queries': […]}` — **rephrasings of the question** (synonyms, broader /
+- `queries=[…]` — **rephrasings of the question** (synonyms, broader /
   narrower framings, sub-questions hiding inside it). Up to 8.
-- `args={'answers': […]}` — **hypothetical answer passages** (HyDE): 1–3 short
+- `answers=[…]` — **hypothetical answer passages** (HyDE): 1–3 short
   paragraphs written the way you'd expect an *ideal source chunk* to
   read. Often the single biggest lever for technical queries — the
   fake answer lives in "chunk space", not "question space". Up to 8.
@@ -204,19 +202,17 @@ search(
     kind="paper",
     q="does single-atom Cu help nitrate-to-ammonia selectivity?",
     page_size=30,  # widen the net so the fused set surfaces
-    args={
-        "queries": [
-            "single-atom copper catalyst NO3RR selectivity",
-            "Cu coordination environment ammonia faradaic efficiency",
-            "isolated Cu sites suppress hydrogen evolution nitrate",
-        ],
-        "answers": [
-            "Isolating Cu as single atoms on an N-doped carbon support "
-            "raises NH3 faradaic efficiency to ~90% by weakening *NO "
-            "binding and suppressing the competing hydrogen-evolution "
-            "reaction, shifting selectivity toward ammonia.",
-        ],
-    },
+    queries=[
+        "single-atom copper catalyst NO3RR selectivity",
+        "Cu coordination environment ammonia faradaic efficiency",
+        "isolated Cu sites suppress hydrogen evolution nitrate",
+    ],
+    answers=[
+        "Isolating Cu as single atoms on an N-doped carbon support "
+        "raises NH3 faradaic efficiency to ~90% by weakening *NO "
+        "binding and suppressing the competing hydrogen-evolution "
+        "reaction, shifting selectivity toward ammonia.",
+    ],
 )
 ```
 
@@ -234,8 +230,8 @@ Rules of thumb:
 - Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
 - `queries=`/`answers=`/`exclude=`/`page=` also compose with the
-  source-search primitive — `sort=` top-level, `since=`/`until=` inside
-  `args=` (gr608576): a dated
+  source-search primitive — `sort=`/`queries=`/`answers=` top-level,
+  `since=`/`until=`/`exclude=`/`page=` inside `args=` (gr608576): a dated
   search keeps the broad legs and exclusion filter, and
   `args={'page': 2}` walks the fused per-ref list — repeat the same
   knobs on every page.
@@ -258,10 +254,8 @@ their keep/relevance verdicts into one ranked list:
 search(
     kind="paper",
     q="oxygen evolution overpotential on NiFe",
-    args={
-        "queries": ["NiFe oxyhydroxide OER overpotential"],  # optional seeds
-        "good": True,
-    },
+    queries=["NiFe oxyhydroxide OER overpotential"],  # optional seeds
+    args={"good": True},
 )
 # → deep search queued: job=8123 status=queued
 #   poll: get(kind='job', id=8123)
@@ -798,7 +792,7 @@ quests stay live, abandoned ones don't; alerts read history via
 
 ## Search several memory questions in one call
 
-`args={'batch': [...]}` runs 1–8 independent memory searches. Results stay
+`batch=[...]` runs 1–8 independent memory searches. Results stay
 labelled and ordered; rankings are never fused. Each item requires a unique
 nonempty `key` and a nonempty string `q`. Omit the outer `q`.
 
@@ -807,12 +801,10 @@ search(
     kind="memory",
     tags=["SPACE:repo-dev"],
     mode="lexical",
-    args={
-        "batch": [
-            {"key": "jane", "q": "Jane"},
-            {"key": "bill", "q": "Bill", "page_size": 3},
-        ],
-    },
+    batch=[
+        {"key": "jane", "q": "Jane"},
+        {"key": "bill", "q": "Bill", "page_size": 3},
+    ],
 )
 ```
 
