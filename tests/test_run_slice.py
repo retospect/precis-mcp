@@ -2498,8 +2498,10 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
     fetched = [a[-1] for a in calls if a[:1] == ["fetch"]]
     # The slice lives under the hidden refs/factory/ namespace (no GitHub
     # branch, no PR); the worker fetches it by name.
+    # A legacy branch push is fetched first; the hidden ref overwrites it.
     assert fetched == [
         "+refs/heads/main:refs/remotes/origin/main",
+        "+refs/heads/slice/7:refs/remotes/origin/slice/7",
         "+refs/factory/slice/7:refs/remotes/origin/slice/7",
     ]
     assert "git diff origin/main...origin/slice/7" in target

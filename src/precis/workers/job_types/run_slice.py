@@ -1657,7 +1657,10 @@ def _preland_head(branch: str) -> str | None:
 
     _fetch_review_branch("main")
     # The slice lives under the hidden namespace, not refs/heads/ (no
-    # GitHub branch, no PR — Reto 2026-11-15).
+    # GitHub branch, no PR — Reto 2026-11-15). A slice pushed before
+    # that is still a branch: fetch it first, so the hidden ref (when
+    # there is one) overwrites it and an absent one leaves it in place.
+    _fetch_review_branch(branch)
     _fetch_review_branch(branch, namespace=SLICE_REF_NS)
     try:
         proc = _git(["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root())
