@@ -3747,16 +3747,46 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
         assert needle in resp.text, f"{needle!r} missing from rendered transcript"
 
 
-def test_refs_index_serves_maps_to_quest_tag_facet(client) -> None:
+def test_refs_index_serves_maps_to_drive_serves_scope(client) -> None:
     """A bookmarked ``/refs/<kind>?serves=<qid>`` (the old quest retinue
     link shape, gr541347) lands on the same scope its replacement
-    generates: Drive's ``k=`` facet narrowed by the ``quest:<qid>`` tag
-    every serves-link stamps (gr664412)."""
+    generates: Drive's ``k=`` facet narrowed by the ``serves=<qid>``
+    link-graph scope — the inbound ``serves`` edges themselves, not the
+    ``quest:<qid>`` tag only some mint paths stamp (gr664412, td664895)."""
     resp = client.get(
         "/refs/structure", params={"serves": "97"}, follow_redirects=False
     )
     assert resp.status_code in (302, 307, 308)
-    assert resp.headers["location"] == "/drive?k=structure&submitted=1&tag=quest%3A97"
+    assert resp.headers["location"] == "/drive?k=structure&submitted=1&serves=97"
+
+
+def test_drive_serves_scope_filters_by_link_graph(client, runtime) -> None:
+    """``/drive?serves=<qid>`` resolves the scope off the link graph —
+    inbound ``serves`` edges, the same set ``/refs/quest/<id>``'s retinue
+    counts — via a ``ref_ids`` allow-list like ``cited_by``, so serving
+    kinds the ``quest:<id>`` tag never gets stamped on (structures,
+    pathways, drafts, …) still list (td664895)."""
+    from types import SimpleNamespace
+
+    runtime.store.serves_links.append(SimpleNamespace(src_ref_id=10, dst_ref_id=97))
+    r = client.get("/drive?k=paper&serves=97")
+    assert r.status_code == 200
+    assert "Serves quest 97" in r.text
+    # The link's src set became the browse allow-list — not a tag lookup.
+    assert runtime.store.recent_ref_ids == [10]
+    # The scope rides the filter form (hidden field) so a facet change
+    # doesn't silently drop it.
+    assert 'name="serves"' in r.text
+
+
+def test_drive_serves_scope_malformed_or_empty_is_empty_queue(client, runtime) -> None:
+    """A bogus ``serves`` value or a quest nothing serves narrows to the
+    empty set — an empty scoped queue, never the whole corpus (mirrors
+    the ``cited_by`` rule)."""
+    client.get("/drive?k=paper&serves=notanumber")
+    assert runtime.store.recent_ref_ids == []
+    client.get("/drive?k=paper&serves=97")
+    assert runtime.store.recent_ref_ids == []
 
 
 def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:

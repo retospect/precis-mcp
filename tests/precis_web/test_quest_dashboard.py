@@ -166,14 +166,15 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     assert "momentum: quiet" not in resp.text
 
     # Servers-lite counts, grouped + linked. The papers count is
-    # Drive-scoped to this quest's serving papers (tag=quest:<id>), not
-    # the generic /refs/paper browse; the todos count is /todo-scoped to
-    # the serving roots (gr541347), not the unfiltered list. Two serving
-    # todos with no serving ancestor ⇒ the multi-root ?serves= form.
+    # Drive-scoped to this quest's serving papers (the serves=<qid>
+    # link-graph scope — the same edges the count reads), not the generic
+    # /refs/paper browse; the todos count is /todo-scoped to the serving
+    # roots (gr541347), not the unfiltered list. Two serving todos with
+    # no serving ancestor ⇒ the multi-root ?serves= form.
     assert "2 todos" in resp.text
     assert "1 paper" in resp.text
     assert 'href="/todo?serves=97"' in resp.text
-    assert "/drive?submitted=1&amp;k=paper&amp;tag=quest%3A97" in resp.text
+    assert "/drive?submitted=1&amp;k=paper&amp;serves=97" in resp.text
     assert 'href="/refs/paper"' not in resp.text
 
     # Frontier + gaps render the dispatched view text.
@@ -218,8 +219,10 @@ def test_quest_hub_neighbourhood_replaces_dossier_and_todo_link_scoped(
     assert 'href="/todo?focus=1"' in resp.text
     assert 'href="/refs/todo"' not in resp.text
     # The other retinue kinds scope to Drive's k= facet narrowed by the
-    # quest:<qid> tag — the /refs/<kind>?serves= listing retired into it.
-    assert "/drive?submitted=1&amp;k=concept&amp;tag=quest%3A97" in resp.text
+    # serves=<qid> link-graph scope — the /refs/<kind>?serves= listing
+    # retired into it (td664895: the quest:<qid> tag can't cover kinds
+    # like concept/structure minted without it).
+    assert "/drive?submitted=1&amp;k=concept&amp;serves=97" in resp.text
 
 
 def test_todo_dashboard_serves_filter_keeps_served_subtrees(
@@ -843,13 +846,13 @@ def test_frontier_axis_label_arrow_suffix_renders_when_sense_known(
 
 def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> None:
     """The Gaps panel's "exploration queue" affordance points at Drive,
-    scoped to this quest's tag *and* chunkless (papers acquired but
-    not yet ingested) — not the generic gaps=text alone."""
+    scoped to this quest's serving papers *and* chunkless (papers
+    acquired but not yet ingested) — not the generic gaps=text alone."""
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
     assert "exploration queue" in resp.text
     assert (
-        "/drive?submitted=1&amp;k=paper&amp;tag=quest%3A97&amp;paper_chunks=without"
+        "/drive?submitted=1&amp;k=paper&amp;serves=97&amp;paper_chunks=without"
         in resp.text
     )
 

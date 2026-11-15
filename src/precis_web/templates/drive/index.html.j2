@@ -129,6 +129,7 @@
   <input type="hidden" name="submitted" value="1" />
   {% if task %}<input type="hidden" name="task" value="{{ task }}" />{% endif %}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
+  {% if serves %}<input type="hidden" name="serves" value="{{ serves }}" />{% endif %}
   <input type="hidden" name="scope" value="{{ scope }}" x-ref="scope" />
   <div class="flex flex-wrap items-end gap-2">
     <div class="relative flex-1 min-w-[16rem]" data-tour="drive-search"
@@ -760,6 +761,7 @@
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-sm font-semibold text-fg-muted">
           {% if cited_by %}Papers to fetch{% if cited_by_title %} — {{ cited_by_title }}{% endif %}
+          {% elif serves %}Serves quest {{ serves }}{% if serves_title %} — {{ serves_title }}{% endif %}
           {% elif state == 'stub' %}Stubs — papers to get
           {% elif state == 'deleted' %}Deleted — soft-deleted refs
           {% elif current %}{{ current.title }}
@@ -811,6 +813,7 @@
            on the head noun, so a bare +s ("paper to fetchs") won't do. #}
         {% set n = result_total or 0 %}
         {% if cited_by %}{% set label = 'paper to fetch' if n == 1 else 'papers to fetch' %}
+        {% elif serves %}{% set label = 'serving item' if n == 1 else 'serving items' %}
         {% elif state == 'stub' %}{% set label = 'stub' if n == 1 else 'stubs' %}
         {% elif state == 'deleted' %}{% set label = 'deleted ref' if n == 1 else 'deleted refs' %}
         {% else %}{% set label = 'item' if n == 1 else 'items' %}{% endif %}
@@ -820,13 +823,14 @@
         {{ item_list(recent) }}
         {% if state == 'stub' %}
         <p class="mt-2 text-xs text-fg-faint">Use the find: links to track a copy down.</p>
-        {% elif not cited_by and not current %}
+        {% elif not cited_by and not serves and not current %}
         <p class="mt-2 text-xs text-fg-faint">Search above to go deeper.</p>
         {% endif %}
         {{ pager() }}
       {% else %}
         <p class="text-sm text-fg-faint">
           {% if cited_by %}Nothing to fetch — every paper this draft cites is already in the corpus. 🎉
+          {% elif serves %}Nothing serves quest {{ serves }} yet — no inbound serves links.
           {% elif state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
           {% elif state == 'deleted' %}Nothing deleted in the selected kinds.
           {% else %}Nothing here yet — ingest a paper, place something in a folder, or run a search above.{% endif %}

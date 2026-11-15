@@ -506,13 +506,16 @@ def _quest_todos_url(store: Store, qid: int, serving_todos: list[Any]) -> str:
 
 
 def _quest_server_kind_url(
-    kind: str, quest_tag: str, quest_papers_url: str, quest_todos_url: str
+    kind: str, qid: int, quest_papers_url: str, quest_todos_url: str
 ) -> str:
     """The retinue count's target for ``kind`` — the serving items of that
     kind, never the unfiltered list (gr541347). Every kind scopes to Drive's
-    ``k=`` facet narrowed by the ``quest:<id>`` tag each serves-link stamps
-    (``precis.quest.tagging``) — the ``/refs/<kind>?serves=`` listing this
-    used to target retired into the same surface (gr664412)."""
+    ``k=`` facet narrowed by the ``serves=<qid>`` link-graph scope — the
+    same inbound-``serves``-edge set the count reads, so the chip number
+    and the listing can't diverge (the ``quest:<id>`` tag is a separate
+    membership signal only some serves-link mint paths stamp — td664895).
+    The ``/refs/<kind>?serves=`` listing this used to target retired into
+    the same Drive scope (gr664412)."""
     if kind == "paper":
         return quest_papers_url
     if kind == "todo":
@@ -521,7 +524,9 @@ def _quest_server_kind_url(
         # The serves-DAG tree — the one per-kind surface with no Drive
         # equivalent.
         return "/refs/quest"
-    return "/drive?" + urlencode([("submitted", "1"), ("k", kind), ("tag", quest_tag)])
+    return "/drive?" + urlencode(
+        [("submitted", "1"), ("k", kind), ("serves", str(qid))]
+    )
 
 
 def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
@@ -580,10 +585,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     from precis.quest import frontier as frontier_mod
     from precis.quest.gaps import _live_servers, quest_momentum
     from precis.quest.logbook import LOG_KIND
-    from precis.quest.tagging import quest_tag_value
 
     qid = int(ref.id)
-    quest_tag = quest_tag_value(qid, store)
     raw_tags = store.tags_for(qid)
     status = _quest_status_from_tags(raw_tags)
     tags = _tag_chips(raw_tags)
@@ -844,12 +847,12 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     for s in live_servers:
         by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
     # Papers get a Drive-scoped link (this quest's serving papers only, via
-    # the ``quest:<id>`` tag every serves-link stamps — see
-    # ``precis.quest.tagging``). Todos scope to ``/todo`` — the served
+    # Drive's ``serves=<qid>`` link-graph scope — the same inbound-``serves``
+    # edges ``live_servers`` counts). Todos scope to ``/todo`` — the served
     # root's subtree when one holds them all, else the ``?serves=<qid>``
     # filter (gr541347).
     quest_papers_url = "/drive?" + urlencode(
-        [("submitted", "1"), ("k", "paper"), ("tag", quest_tag)]
+        [("submitted", "1"), ("k", "paper"), ("serves", str(qid))]
     )
     quest_todos_url = _quest_todos_url(
         store, qid, [s for s in live_servers if s.kind == "todo"]
@@ -861,7 +864,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         [
             ("submitted", "1"),
             ("k", "paper"),
-            ("tag", quest_tag),
+            ("serves", str(qid)),
             ("paper_chunks", "without"),
         ]
     )
@@ -869,9 +872,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         {
             "kind": k,
             "count": n,
-            "url": _quest_server_kind_url(
-                k, quest_tag, quest_papers_url, quest_todos_url
-            ),
+            "url": _quest_server_kind_url(k, qid, quest_papers_url, quest_todos_url),
         }
         for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
@@ -938,7 +939,6 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "servers_lite": servers_lite,
             "servers_total": len(live_servers),
             "structure_rows": structure_rows,
-            "quest_tag": quest_tag,
             "quest_stubs_url": quest_stubs_url,
             "discussions": _followup_discussions(store, qid),
             # Heart toggle (gr486409) — None when auth is off, so the
@@ -3003,11 +3003,12 @@ async def quest_index(request: Request) -> HTMLResponse:
 async def index(request: Request, kind: str) -> RedirectResponse:
     """Retired into Drive (gr664412) — the flat per-kind list duplicated
     Drive's ``k=`` facet. ``q`` carries to Drive's search box and ``tag``
-    to its tag chips; ``serves=<qid>`` maps to the ``quest:<qid>`` tag
-    every serves-link stamps (``precis.quest.tagging``). The retired
-    date/sort/page controls drop with the list. Detail readers
-    (``/{kind}/{ref_id}`` and the POSTs) are unaffected; ``quest`` keeps
-    its serves-DAG tree just above."""
+    to its tag chips; ``serves=<qid>`` carries to Drive's link-graph scope
+    of the same name — the inbound-``serves`` edges themselves, since the
+    ``quest:<qid>`` tag only some mint paths stamp would undercount
+    (td664895). The retired date/sort/page controls drop with the list.
+    Detail readers (``/{kind}/{ref_id}`` and the POSTs) are unaffected;
+    ``quest`` keeps its serves-DAG tree just above."""
     _require_kind(kind, request)
     params: list[tuple[str, str]] = [("k", kind), ("submitted", "1")]
     if q := (request.query_params.get("q") or "").strip():
@@ -3015,7 +3016,7 @@ async def index(request: Request, kind: str) -> RedirectResponse:
     for t in _parse_tags(request.query_params.get("tag")):
         params.append(("tag", t))
     if (serves := request.query_params.get("serves") or "").isdigit():
-        params.append(("tag", f"quest:{serves}"))
+        params.append(("serves", serves))
     return RedirectResponse(url="/drive?" + urlencode(params))
 
 

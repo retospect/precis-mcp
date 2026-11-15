@@ -799,6 +799,7 @@ async def index(
     task: str = "",
     folder: str = "",
     cited_by: str = "",
+    serves: str = "",
     page: int = 1,
     submitted: str = "",
     requeued: int = 0,
@@ -876,6 +877,12 @@ async def index(
     field, like ``cited_by``) so the active bucket highlight survives a
     resubmit and a bookmarked/shared ``?scope=`` link resolves the same
     kind set with no ``k=`` at all.
+
+    ``serves=<qid>`` scopes the no-query browse to the refs carrying an
+    inbound ``serves`` edge to that quest — the link-graph scope the
+    ``/refs/quest/<id>`` retinue chips and the retired
+    ``/refs/<kind>?serves=`` listing target. A ``q`` ignores it; an
+    explicit ``folder=`` still narrows within the scope.
     """
     store = get_store(request)
     from precis_web.auth import current_user
@@ -1097,6 +1104,51 @@ async def index(
             )
             selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
 
+    # ``serves=<qid>`` scopes the browse to the refs that ``serves`` that
+    # quest — the link-graph signal itself (inbound ``serves`` edges, one
+    # hop), so the retinue chips on ``/refs/quest/<id>`` and the retired
+    # ``/refs/<kind>?serves=`` redirect land on exactly the set their count
+    # reads. The ``quest:<id>`` OPEN tag is a *separate* membership signal
+    # only some serves-link mint paths stamp (``precis.quest.tagging`` is
+    # paper-scoped) — routing through it undercounts (td664895). Same
+    # ``ref_ids`` allow-list mechanism as ``cited_by``; a bogus/malformed
+    # scope narrows to the empty set, never the corpus, and ``q`` ignores
+    # it (a text query already scopes to matched live chunks).
+    serves = (serves or "").strip()
+    serves_ref_ids: list[int] | None = None
+    serves_title: str | None = None
+    if serves and not q:
+        if serves.isdigit():
+            serve_qid = int(serves)
+            serves_ref_ids = sorted(
+                {
+                    ln.src_ref_id
+                    for ln in await asyncio.to_thread(
+                        store.links_for,
+                        serve_qid,
+                        direction="in",
+                        relation="serves",
+                    )
+                }
+            )
+            quest_ref = await asyncio.to_thread(
+                store.get_ref, kind="quest", id=serve_qid
+            )
+            if quest_ref is not None and quest_ref.title:
+                serves_title = quest_ref.title.split("\n", 1)[0]
+        else:
+            serves_ref_ids = []  # malformed scope → an empty queue, not the corpus
+
+    # Both scopes active at once intersect — the honest read of a
+    # pathological "cited by D *and* serves Q" URL.
+    scope_ref_ids: list[int] | None = None
+    if fetch_ref_ids is not None and serves_ref_ids is not None:
+        scope_ref_ids = sorted(set(fetch_ref_ids) & set(serves_ref_ids))
+    elif fetch_ref_ids is not None:
+        scope_ref_ids = fetch_ref_ids
+    else:
+        scope_ref_ids = serves_ref_ids
+
     # A deep link can scope to a kind that has no chip — Status's "Refs by
     # kind" lists every kind in ``refs`` (job, finding, citation, …), not
     # just the browsable facets. Render those as an "Other" chip row so the
@@ -1117,7 +1169,7 @@ async def index(
     recent: list[dict[str, Any]] = []
     has_next = False
     # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
-    want_tags = "tag" in selected_kinds and not fetch_ref_ids
+    want_tags = "tag" in selected_kinds and scope_ref_ids is None
     ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
     # Tag-row links pin the ref kinds as explicit ``k=`` params (the
     # bare-``?tag=`` link would resolve a saved ``k=tag`` cookie and list
@@ -1205,7 +1257,15 @@ async def index(
         # children instead; the trash view (``deleted``) and the "Anywhere"
         # sentinel (``folder=*``) show every ref regardless of where it was
         # filed.
-        unfiled_only = folder_id is None and not show_deleted and not folder_any
+        # An explicit allow-list scope (cited_by/serves) names its rows;
+        # the default top-level "hide filed" filter must not silently drop
+        # scoped members that sit inside a folder.
+        unfiled_only = (
+            folder_id is None
+            and not show_deleted
+            and not folder_any
+            and scope_ref_ids is None
+        )
         recent, has_next = await asyncio.to_thread(
             _recent_rows,
             store,
@@ -1219,7 +1279,7 @@ async def index(
             has_schedule=has_schedule,
             has_external_id=has_external_id,
             no_oa=no_oa,
-            ref_ids=fetch_ref_ids,
+            ref_ids=scope_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
             created=(sort == "created"),
@@ -1250,7 +1310,7 @@ async def index(
             no_oa=no_oa,
             parent_id=folder_id,
             unfiled_only=unfiled_only,
-            ref_ids=fetch_ref_ids,
+            ref_ids=scope_ref_ids,
             deleted=show_deleted,
             viewer=viewer,
         )
@@ -1299,6 +1359,8 @@ async def index(
         _pager_params.append(("folder", folder_raw))
     if cited_by:
         _pager_params.append(("cited_by", cited_by))
+    if serves:
+        _pager_params.append(("serves", serves))
     if scope:
         # Round-trips the active Mine/Sources/Machine highlight across
         # pagination — ``k=`` (appended below) already carries the real
@@ -1353,6 +1415,7 @@ async def index(
         ("since", since, f"Created since {since}"),
         ("until", until, f"Created until {until}"),
         ("cited_by", cited_by, f"Cited by {cited_by}"),
+        ("serves", serves, f"Serves quest {serves}"),
         ("scope", scope, f"Preset: {scope}"),
     ):
         if (
@@ -1360,9 +1423,9 @@ async def index(
             and not (name == "state" and value == "all")
             and not (name == "paper_chunks" and value == "both")
         ):
-            if (q and name in ("folder", "state", "paper_chunks", "cited_by")) or (
-                not q and name in ("since", "until")
-            ):
+            if (
+                q and name in ("folder", "state", "paper_chunks", "cited_by", "serves")
+            ) or (not q and name in ("since", "until")):
                 label += " (browse only)" if q else " (search only)"
             active_facets.append({"label": label, "url": facet_url(name, "")})
 
@@ -1475,6 +1538,8 @@ async def index(
             "folder": folder_raw,
             "cited_by": cited_by,
             "cited_by_title": cited_by_title,
+            "serves": serves,
+            "serves_title": serves_title,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
             "current": current,
