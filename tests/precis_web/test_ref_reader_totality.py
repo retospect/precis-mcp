@@ -66,7 +66,6 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 conn.execute("SELECT slug, is_numeric FROM kinds").fetchall()
             )
         kinds = set(numeric) | hub.kinds | inventory.kinds | AFFECTED
-        assert hub.kinds <= inventory.kinds
         for kind in sorted(kinds):
             # Empty designs are valid reader fixtures; slug readers must be
             # exercised with an actual stored slug, not only generic fallback.
@@ -123,6 +122,11 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
             pivot = client.get(f"/tags/refs?kind={kind}")
             assert pivot.status_code == 200
             assert f'href="{expected}"' in pivot.text, kind
+        # The Other facet only offers kinds that own refs rows (gr664402),
+        # so the roster check runs once every kind has a stored row.
+        offered = KindInputs()
+        offered.feed(client.get("/drive").text)
+        assert hub.kinds <= offered.kinds
 
 
 def test_orcid_person_and_held_papers_are_read_only(client, runtime, monkeypatch):

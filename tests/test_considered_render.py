@@ -115,6 +115,7 @@ def test_four_considered_edges_cap_at_three_with_more_pointer(hub: Hub) -> None:
     assert sum(any(f"me{c}" in r for c in cands) for r in rows) == 3, rows
     assert out[i + 4] == (
         f"    … +1 more · get(kind='memory', id='me{scope}', view='considerations')"
+        " · showing 3 of 4"
     )
 
 
