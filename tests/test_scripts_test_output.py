@@ -350,7 +350,9 @@ def test_compose_run_uses_quiet_progress(tmp_path: Path) -> None:
 def test_git_common_dir_is_mounted(tmp_path: Path) -> None:
     """gr515188: the worktree's .git file points at the host git-common
     dir, which /app doesn't cover — it must be mounted at its own absolute
-    path so repo-git tests run in-container."""
+    path so repo-git tests run in-container. Read-only (gr684320): an
+    in-container git must not be able to leave an index.lock behind in the
+    host's git dir."""
     rc, _, log, stderr = _run(tmp_path)
     assert rc == 0, stderr
     common = subprocess.run(
@@ -361,7 +363,7 @@ def test_git_common_dir_is_mounted(tmp_path: Path) -> None:
         encoding="utf-8",
         check=True,
     ).stdout.strip()
-    assert f"-v {common}:{common}" in _run_line(log)
+    assert f"-v {common}:{common}:ro " in _run_line(log)
 
 
 def test_typecheck_retries_once_on_oom_137(tmp_path: Path) -> None:
