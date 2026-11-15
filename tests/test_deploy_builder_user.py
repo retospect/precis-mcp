@@ -341,3 +341,24 @@ def test_checkout_is_owned_by_the_builder_user_and_home_stays_private() -> None:
     assert clone["become_user"] == "{{ precis_builder_user }}"
     unit = _task(main, "render + load the builder worker unit")
     assert unit["vars"]["service_unit_run_as"] == "{{ precis_builder_user }}"
+
+
+def test_builder_user_gets_a_user_npm_prefix_and_a_first_devin_install() -> None:
+    tasks = _tasks("user.yml")
+    npmrc = _task(tasks, "Builder user's npm prefix")
+    c = npmrc["ansible.builtin.copy"]
+    assert c["dest"] == "{{ precis_builder_home }}/.npmrc"
+    assert c["content"] == "prefix={{ precis_builder_home }}/.local\n"
+    assert c["owner"] == "{{ precis_builder_user }}"
+    assert c["mode"] == "0644"
+    assert "when" not in npmrc, "npm prefix applies to Linux and macOS"
+    bindir = _task(tasks, "Builder user's ~/.local/bin")
+    f = bindir["ansible.builtin.file"]
+    assert f["path"] == "{{ precis_builder_home }}/.local/bin"
+    assert f["state"] == "directory" and f["owner"] == "{{ precis_builder_user }}"
+    devin = _task(tasks, "First devin install")
+    assert devin["become_user"] == "{{ precis_builder_user }}"
+    assert devin["args"]["creates"] == "{{ precis_builder_home }}/.local/bin/devin"
+    assert "https://cli.devin.ai/install.sh" in devin["ansible.builtin.shell"]
+    assert devin["timeout"] > 0
+    assert "failed_when" not in devin and "ignore_errors" not in devin

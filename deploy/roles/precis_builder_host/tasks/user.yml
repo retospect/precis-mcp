@@ -116,3 +116,42 @@
 - name: Record the builder uid
   ansible.builtin.set_fact:
     _builder_uid: "{{ _builder_uid_out.stdout | trim }}"
+
+# ── lane-CLI toolchain (scripts/agent-cli-update runs as this user) ──────
+# The system npm's global prefix (/usr, or Homebrew's) is not writable by
+# a least-privilege user, so `npm install -g` would EACCES. A user-level
+# prefix under ~/.local puts the npm CLIs in ~/.local/bin, already on the
+# unit PATH and agent_cli.py's EXTRA_PATH. Both OS families: agent_cli.py
+# falls back to the same ~/.local prefix on a Mac, so one .npmrc keeps
+# hand-run `npm -g` consistent with it.
+- name: Builder user's npm prefix (~/.npmrc, user-owned)
+  ansible.builtin.copy:
+    dest: "{{ precis_builder_home }}/.npmrc"
+    content: "prefix={{ precis_builder_home }}/.local\n"
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0644"
+  become: true
+
+- name: Builder user's ~/.local/bin exists (user-owned)
+  ansible.builtin.file:
+    path: "{{ precis_builder_home }}/.local/bin"
+    state: directory
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0755"
+  become: true
+
+# `devin update` self-updates an existing install; a fresh user has none,
+# so the vendor installer runs once (it lays ~/.local/share/devin and links
+# ~/.local/bin/devin). No failed_when: a failed install must stop the play.
+- name: First devin install for the builder user (vendor installer, once)
+  ansible.builtin.shell: set -o pipefail; curl -fsSL https://cli.devin.ai/install.sh | bash
+  args:
+    executable: /bin/bash
+    creates: "{{ precis_builder_home }}/.local/bin/devin"
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  environment:
+    HOME: "{{ precis_builder_home }}"
+  timeout: 300
