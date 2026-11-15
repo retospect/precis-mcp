@@ -3093,6 +3093,32 @@ def test_brief_boilerplate_never_routes(
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def test_digest_briefs_range_list_never_routes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr688291: the ci_red_digest brief's ``File set:`` line declares
+    the fix's real write set (the failing tests' files plus the
+    failure-path suspects) — the changed-files-in-range table under it
+    is context, so a builder-deny path the range merely touched (here
+    ``scripts/ship``) does not route the fix to the coordinator."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(
+        store,
+        task,
+        "brief: release r321 is red at abc1234 (range a..b), check.yml run 1\n"
+        "FAILED tests/test_x.py::test_a - boom\n\n"
+        "File set: tests/test_x.py, src/precis/victim.py\n\n"
+        "changed files in a..b (ranked by suspicion — * is on the failure path):\n"
+        " * src/precis/victim.py — 1 commit (+1/-0)\n"
+        "   scripts/ship — 1 commit (+2/-0)\n",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _blocked_by_ids(store, task) == []
+
+
 @pytest.mark.parametrize(
     "brief",
     [
@@ -8668,6 +8694,96 @@ def test_file_overlap_hold_resolves_an_out_of_plan_blockers_repo(
     assert holds[0].startswith(
         f"td{waiting.ids['task']}: file-overlap hold — waits on td{same} (building)"
     )
+
+
+def test_file_overlap_hold_compares_only_the_same_land_target(
+    store: Store,
+) -> None:
+    """gr688291: the hold is meaningless across land targets — a release
+    fix lands on ``release/r<N>`` while a started main-bound build lands
+    on main, so a shared file between them holds nothing; only a
+    same-target started build holds. ``meta.land_target`` and a
+    ``land target:`` brief line resolve alike."""
+    main_started = _file_plan(store, "Rebuild src/precis/workers/run_slice.py")
+    _slice_job(store, main_started.ids["task"], "run_slice", "running")
+    rel_started = _file_plan(
+        store,
+        "Rebuild src/precis/workers/run_slice.py\nland target: release/r321",
+    )
+    _slice_job(store, rel_started.ids["task"], "run_slice", "running")
+    rel_fix = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    store.stamp_ref_meta(rel_fix.ids["task"], {"land_target": "release/r321"})
+    main_fix = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store, dry_run=True)
+    holds = [n for n in res.notes if "file-overlap hold" in n]
+    assert holds == [
+        f"td{rel_fix.ids['task']}: file-overlap hold — waits on "
+        f"td{rel_started.ids['task']} (building): both touch "
+        f"`workers/run_slice.py`; dispatches once "
+        f"td{rel_started.ids['task']} is on release/r321",
+        f"td{main_fix.ids['task']}: file-overlap hold — waits on "
+        f"td{main_started.ids['task']} (building): both touch "
+        f"`workers/run_slice.py`; dispatches once "
+        f"td{main_started.ids['task']} is on main",
+    ]
+
+
+def test_file_overlap_hold_reads_the_briefs_declared_file_set(
+    store: Store,
+) -> None:
+    """gr688291: a ``File set:`` line is the brief's whole write set —
+    the digest's changed-files-in-range table under it is context, not
+    an overlap signal, so a file the range merely touched never holds a
+    build the table's ``*`` rows didn't name."""
+    started = _file_plan(store, "Fix the release red.")
+    _todo_comment(
+        store,
+        started.ids["task"],
+        "brief: release r321 is red\n\n"
+        "File set: tests/test_x.py, src/precis/victim.py\n\n"
+        "changed files in a..b (ranked by suspicion):\n"
+        " * src/precis/victim.py — 1 commit (+1/-0)\n"
+        "   src/precis/bystander.py — 1 commit (+5/-0)\n",
+    )
+    _slice_job(store, started.ids["task"], "run_slice", "running")
+    bystander = _file_plan(store, "Fix src/precis/bystander.py")
+    victim = _file_plan(store, "Fix src/precis/victim.py")
+    res = pd.run_pass(store, dry_run=True)
+    holds = [n for n in res.notes if "file-overlap hold" in n]
+    assert holds == [
+        f"td{victim.ids['task']}: file-overlap hold — waits on "
+        f"td{started.ids['task']} (building): both touch `victim.py`; "
+        f"dispatches once td{started.ids['task']} is on main"
+    ]
+    assert not any(f"td{bystander.ids['task']}" in n for n in holds)
+    assert any(
+        n.startswith(f"td{bystander.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
+def test_file_overlap_hold_comments_on_the_node_the_first_time(
+    store: Store,
+) -> None:
+    """gr688291: a hold used to live only in the tick log — a stall was
+    invisible on the node. The first hold posts one comment; a repeat
+    hold on the same blocker stays silent."""
+    building = _file_plan(store, "Rebuilt src/precis/workers/run_slice.py")
+    _slice_job(store, building.ids["task"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store)
+    assert any("file-overlap hold" in n for n in res.notes)
+    expected = (
+        f"plan_dispatch: file-overlap hold — waits on "
+        f"td{building.ids['task']} (building): both touch "
+        f"`workers/run_slice.py`; dispatches once "
+        f"td{building.ids['task']} is on main"
+    )
+    assert expected in _todo_comments(store, waiting.ids["task"])
+    pd.run_pass(store)
+    hold_comments = [
+        c for c in _todo_comments(store, waiting.ids["task"]) if "file-overlap" in c
+    ]
+    assert hold_comments == [expected]
 
 
 def test_file_overlap_hold_skips_generators(store: Store) -> None:

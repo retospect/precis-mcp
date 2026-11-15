@@ -433,10 +433,13 @@ def test_suspects_block_end_to_end(repo: Path, monkeypatch: pytest.MonkeyPatch) 
     )
     text = S.suspects_block(store, repo, sha=tip, rng=rng, log_text=log_text)
     assert f"changed files in {rng}" in text
+    # gr688291: the declared write set is the failing test's file plus
+    # the ``*`` suspects — the range's other file (other.py) stays out.
+    assert text.startswith("File set: src/precis/widgets.py, tests/test_widgets.py\n\n")
     # the failing test's import ranks first, then by lines changed
     lines = text.splitlines()
-    w = next(l for l in lines if "src/precis/widgets.py" in l)
-    o = next(l for l in lines if "src/precis/other.py" in l)
+    w = next(l for l in lines if "src/precis/widgets.py —" in l)
+    o = next(l for l in lines if "src/precis/other.py —" in l)
     assert w.startswith(" *") and "gr41" in w
     assert o.startswith("  ") and "gr41" not in o
     assert lines.index(w) < lines.index(o)

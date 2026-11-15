@@ -216,10 +216,19 @@ _FILE_RE = re.compile(
 _ANCHOR_RE = re.compile(r"::.*$")
 _LEADING_ROOTS = ("./", "src/precis/", "src/")
 
+#: A brief's declared write set (``File set: a.py, b.py``, through the
+#: next blank line) — the same paragraph ``plans.route._FILE_SET``
+#: judges for deny paths. When present it is the text's whole file set
+#: (gr688291: the ci_red_digest suspects table lists every file the
+#: range touched, so the brief declares its real write set and the
+#: table stays context, not an overlap/routing signal).
+_FILE_SET = re.compile(r"^\s*File set:(.*?)(?:\n\s*\n|\Z)", re.MULTILINE | re.DOTALL)
+
 
 def brief_files(text: str) -> frozenset[str]:
     """The file set a brief or gripe report names, normalised for
-    overlap comparison.
+    overlap comparison. A ``File set:`` paragraph is the declared
+    write set and is read alone; without one the whole text is scanned.
 
     Every token yields up to three keys — the full normalised path, its
     last two segments, and its basename — so ``src/precis/x/y.py``,
@@ -227,8 +236,10 @@ def brief_files(text: str) -> frozenset[str]:
     the safe direction: a false overlap only delays a candidate behind
     an in-flight land; a missed one rebuilds the td603849 land
     conflict."""
+    declared = _FILE_SET.search(text or "")
+    judged = declared.group(1) if declared is not None else (text or "")
     keys: set[str] = set()
-    for raw in _FILE_RE.findall(text or ""):
+    for raw in _FILE_RE.findall(judged):
         path = _ANCHOR_RE.sub("", raw).strip("./")
         for root in _LEADING_ROOTS:
             if path.startswith(root):

@@ -597,19 +597,34 @@ def _fit(lines: list[str], budget: int | None, kept: int) -> str:
     return "\n".join(out)
 
 
-def render_block(rows: list[SuspectRow], rng: str, budget: int | None = None) -> str:
-    """The brief section: a header naming the range and ordering, then
-    one line per changed file in rank order — ``* path — N commits
-    (+a/-d) — grA, tdB`` — every file with its full detail, then the
-    fan-out pointer to the python kind's ``impact`` view and the
-    range's changed symbols (:attr:`SuspectRow.symbols`, detailed for
-    the first :data:`_SYM_CAP`, the overflow's qualnames still listed).
-    ``budget`` (chars) bounds the block but can only trim the symbol
-    tail: the header, every file row and the pointer always render —
-    the brief is the fixer's only copy of the complete table."""
-    lines = [
+def render_block(
+    rows: list[SuspectRow],
+    rng: str,
+    budget: int | None = None,
+    file_set: Iterable[str] | None = None,
+) -> str:
+    """The brief section: a ``File set:`` line declaring the fix's real
+    write set (the failing tests' files plus the ``*`` suspects —
+    gr688291: without it the range table's ~150 paths read as the
+    fix's file set and trip the file-overlap hold and deny-path
+    routing), a blank line, then a header naming the range and
+    ordering, then one line per changed file in rank order — ``* path
+    — N commits (+a/-d) — grA, tdB`` — every file with its full
+    detail, then the fan-out pointer to the python kind's ``impact``
+    view and the range's changed symbols (:attr:`SuspectRow.symbols`,
+    detailed for the first :data:`_SYM_CAP`, the overflow's qualnames
+    still listed). ``budget`` (chars) bounds the block but can only
+    trim the symbol tail: the ``File set:`` line, the header, every
+    file row and the pointer always render — the brief is the fixer's
+    only copy of the complete table."""
+    lines: list[str] = []
+    declared = sorted(set(file_set or ()))
+    if declared:
+        lines.append(f"File set: {', '.join(declared)}")
+        lines.append("")
+    lines.append(
         f"changed files in {rng} (ranked by suspicion — * is on the failure path):"
-    ]
+    )
     lines.extend(_row_line(r) for r in rows)
     base, _, head = rng.partition("..")
     if base and head:
@@ -685,7 +700,15 @@ def suspects_block(
     except Exception:
         log.warning("red_suspects: ledger read failed — no gripe column", exc_info=True)
         handles = {}
-    return render_block(rank_rows(files, on_path, handles, symbols), rng2, budget)
+    # The declared write set (gr688291): the failing tests' files plus
+    # the ``*`` suspects — what the fix may touch, so the range table
+    # below it stays context for ``brief_files``/deny-path routing.
+    file_set = {f.path for f in files if f.path in on_path} | {
+        tf for t in failures if (tf := _waiver.file_of_test(t))
+    }
+    return render_block(
+        rank_rows(files, on_path, handles, symbols), rng2, budget, file_set=file_set
+    )
 
 
 __all__ = [

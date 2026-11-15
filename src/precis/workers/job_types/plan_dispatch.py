@@ -229,8 +229,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    overlaps a started, unlanded build's in any plan — building, held for
    its pre-land review, or landing — is held until that one is on main
    (td603849, widened 2026-11-15 — the ``_started_slices``/
-   ``_brief_file_sets`` check; a started build's files are its stamped
-   ``meta.branch_files`` plus its brief's).
+   ``_brief_blobs`` check; a started build's files are its stamped
+   ``meta.branch_files`` plus its brief's). Only a build landing on
+   the same branch holds (gr688291 — a ``land_target`` mismatch means
+   the blocker's diff is never under the held build's).
    A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
@@ -5899,11 +5901,16 @@ class _Started:
     last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
     empty before then; ``repo`` the repo its ``repo:`` tag resolves to —
     its own, else the nearest tagged ancestor's — resolved in the store
-    because a held build can sit outside the loaded plan's nodes."""
+    because a held build can sit outside the loaded plan's nodes;
+    ``land_target`` its ``meta.land_target`` release branch, ``None``
+    for a main-bound build (gr688291: the hold is meaningless across
+    land targets — a release fix never rebuilds on a main-bound
+    blocker's diff)."""
 
     state: str
     branch_files: tuple[str, ...]
     repo: str
+    land_target: str | None = None
 
 
 def _started_slices(store: Any) -> dict[int, _Started]:
@@ -5938,7 +5945,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                  GROUP BY j.parent_id
             )
             SELECT r.ref_id, COALESCE(live.landing, FALSE),
-                   jsonb_typeof(r.meta->%s) = 'object', r.meta->%s
+                   jsonb_typeof(r.meta->%s) = 'object', r.meta->%s,
+                   r.meta->>%s
               FROM refs r LEFT JOIN live ON live.parent_id = r.ref_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND NOT COALESCE(r.meta ? 'generate', FALSE)
@@ -5954,17 +5962,23 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                 sorted(_JOB_TERMINAL),
                 _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
+                _release.LAND_TARGET_KEY,
                 _templates.PENDING_LAND_KEY,
                 sorted(_RULING_STATUSES),
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
-    for rid, landing, pending, files in rows:
+    for rid, landing, pending, files, land_target in rows:
         state = (
             "landing" if landing else "in pre-land review" if pending else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
-        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
+        out[int(rid)] = _Started(
+            state,
+            paths,
+            _lanes.DEFAULT_REPO,
+            _release.land_target_of({_release.LAND_TARGET_KEY: land_target}),
+        )
     if not out:
         return out
     # The blocker side of the repo check: ``_node_repos``' reach (own
@@ -6003,15 +6017,18 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             s.state,
             s.branch_files,
             sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
+            s.land_target,
         )
         for rid, s in out.items()
     }
 
 
-def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
-    """``{todo id: file keys}`` from each todo's body chunks plus its
-    ``brief:``/``handoff:`` comments — one query for the handful of ids
-    the overlap check needs."""
+def _brief_blobs(store: Any, ids: list[int]) -> dict[int, list[str]]:
+    """``{todo id: [chunk texts]}`` — each todo's body chunks plus its
+    ``brief:``/``handoff:`` comments, kept separate: a comment's own
+    ``File set:`` line narrows its file set alone (gr688291), never a
+    sibling's. One query for the handful of ids the overlap check
+    needs."""
     if not ids:
         return {}
     with store.pool.connection() as conn:
@@ -6029,7 +6046,16 @@ def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
     texts: dict[int, list[str]] = {}
     for ref_id, text in rows:
         texts.setdefault(int(ref_id), []).append(str(text or ""))
-    return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
+    return texts
+
+
+def _files_of(texts: list[str]) -> frozenset[str]:
+    """The union of :func:`dispatch_score.brief_files` over each chunk —
+    per-chunk so a ``File set:`` line narrows only the text declaring
+    it."""
+    if not texts:
+        return frozenset()
+    return frozenset().union(*(_dscore.brief_files(t) for t in texts))
 
 
 def _block_lane_gap(
@@ -6168,6 +6194,25 @@ def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) ->
         log.info("plan_dispatch: %s", note)
 
 
+#: The started build a node last commented its file-overlap hold on
+#: (:func:`_log_overlap_hold`, gr688291).
+OVERLAP_HOLD_LOGGED_KEY = "overlap_hold_logged"
+
+
+def _log_overlap_hold(w: _Writer, n: _Node, hid: int, reason: str) -> None:
+    """Post the file-overlap hold as a node comment the first time this
+    build waits on a given blocker (gr688291): the hold used to live
+    only in a tick-log PassResult note, so r321's release fix sat 25+
+    minutes with nothing on the node naming the stall. The stamped
+    ``meta.overlap_hold_logged`` suppresses repeats on the same
+    blocker; a hold on a different blocker comments again. A dry run
+    writes nothing."""
+    if w.dry_run or n.meta.get(OVERLAP_HOLD_LOGGED_KEY) == hid:
+        return
+    w.stamp_meta(n, {OVERLAP_HOLD_LOGGED_KEY: hid})
+    w.comment(n, f"plan_dispatch: {reason}")
+
+
 def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     """Why the reviewer ``n`` must not dispatch: the repo it resolves to
     (:func:`_node_repos`, none = the default) is not the repo its review
@@ -6214,34 +6259,54 @@ def _step_dispatch(
     # lifts on the next tick. A started build's files are its branch's
     # real diff when it has exited clean once, plus its brief's guess.
     # Lands made from a human worktree are invisible here: those still
-    # meet the rebase brief at land time.
+    # meet the rebase brief at land time. Only a build landing on the
+    # SAME branch holds (gr688291): a release fix lands on
+    # ``release/r<N>`` — a main-bound build's diff is never under it, so
+    # an overlap across land targets holds nothing.
     builds = [
         n
         for n in candidates
         if _resolve_op(n)[0] == DEFAULT_OP and not _is_generator(n)
     ]
-    overlap_files = (
-        _brief_file_sets(w.store, list(started) + [n.id for n in builds])
+    blobs = (
+        _brief_blobs(w.store, list(started) + [n.id for n in builds])
         if started and builds
         else {}
     )
+    overlap_files = {i: _files_of(ts) for i, ts in blobs.items()}
     held: dict[int, tuple[int, frozenset[str]]] = {}
+    build_targets: dict[int, str | None] = {}
     if overlap_files:
         held_sets = {
             i: (overlap_files.get(i) or frozenset())
             | _dscore.brief_files("\n".join(s.branch_files))
             for i, s in started.items()
         }
+        # A blocker's ``meta.land_target`` wins; a ``land target:``
+        # brief line covers a node stamped before the meta key existed.
+        held_targets = {
+            i: s.land_target or _release.land_target_of(None, *blobs.get(i, ()))
+            for i, s in started.items()
+        }
+        build_targets.update(
+            {
+                n.id: _release.land_target_of(n.meta, *blobs.get(n.id, ()))
+                for n in builds
+            }
+        )
         for n in builds:
             mine = overlap_files.get(n.id) or frozenset()
             if not mine:
                 continue
             repo = _node_repo(plan, n)
+            target = build_targets[n.id]
             for hid in sorted(held_sets):
                 # started[hid].repo, not _node_repo on plan.nodes: a held
                 # build can sit outside the loaded subtrees, and skipping
                 # the check then held a same-path build in another repo.
                 if started[hid].repo != repo:
+                    continue
+                if held_targets[hid] != target:
                     continue
                 shared = mine & held_sets[hid]
                 if hid != n.id and shared:
@@ -6278,13 +6343,15 @@ def _step_dispatch(
             # Full paths read best; the basename/two-segment keys are
             # the same files again.
             named = sorted(p for p in shared if "/" in p) or sorted(shared)
-            res.notes.append(
-                f"td{n.id}: file-overlap hold — waits on td{hid} "
+            reason = (
+                f"file-overlap hold — waits on td{hid} "
                 f"({started[hid].state}): both touch "
                 f"{', '.join(f'`{p}`' for p in named[:3])}"
                 f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
-                "is on main"
+                f"is on {build_targets.get(n.id) or 'main'}"
             )
+            res.notes.append(f"td{n.id}: {reason}")
+            _log_overlap_hold(w, n, hid, reason)
             continue
         job_type, params = _resolve_op(n)
         # td659522 step 1: a build in another repo carries it on the job;

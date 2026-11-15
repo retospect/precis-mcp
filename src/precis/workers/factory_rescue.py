@@ -1067,11 +1067,14 @@ def _no_dispatch_hold(plan: Any, n: Any) -> str | None:
 def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     """The td603849 file-overlap hold's reason while a started, unlanded
     build in the same repo touches a file this build's brief names —
-    ``_step_dispatch`` refuses the mint until the blocker is on main.
+    ``_step_dispatch`` refuses the mint until the blocker lands.
     Same inputs as the dispatch step's ``held`` computation, evaluated
     for this one candidate: only ``run_slice`` tasks wait (generators
-    commit nothing), a node never holds itself, and the blocker's
-    governing ``repo:`` must match."""
+    commit nothing), a node never holds itself, the blocker's
+    governing ``repo:`` must match, and only a build landing on the
+    same branch holds (gr688291 — a ``land_target`` mismatch means the
+    blocker's diff is never under this build's)."""
+    from precis.plans import release as _release
     from precis.utils import dispatch_score as _dscore
     from precis.workers.job_types import plan_dispatch as pd
 
@@ -1081,14 +1084,19 @@ def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     started.pop(n.id, None)
     if not started:
         return None
-    files = pd._brief_file_sets(store, [n.id, *started])
+    blobs = pd._brief_blobs(store, [n.id, *started])
+    files = {i: pd._files_of(ts) for i, ts in blobs.items()}
     mine = files.get(n.id) or frozenset()
     if not mine:
         return None
     repo = pd._node_repo(plan, n)
+    target = _release.land_target_of(n.meta, *blobs.get(n.id, ()))
     for hid in sorted(started):
         s = started[hid]
         if s.repo != repo:
+            continue
+        holder = s.land_target or _release.land_target_of(None, *blobs.get(hid, ()))
+        if holder != target:
             continue
         shared = mine & (
             (files.get(hid) or frozenset())
@@ -1101,7 +1109,7 @@ def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
             f"file-overlap hold — waits on td{hid} ({s.state}): both touch "
             f"{', '.join(f'`{p}`' for p in named[:3])}"
             f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
-            "is on main"
+            f"is on {target or 'main'}"
         )
     return None
 
