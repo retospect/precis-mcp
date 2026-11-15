@@ -486,9 +486,11 @@ def test_rule_e_silent_shapes(cmd: str) -> None:
 
 
 def test_main_emits_rule_e(monkeypatch, capsys) -> None:
+    # `$(...)` is a construct the deny tokenizer will not interpret, so the
+    # unquoted flag glob stays today's note instead of a deny.
     payload = {
         "tool_name": "Bash",
-        "tool_input": {"command": "grep -rn --include=*.sql TIER src/"},
+        "tool_input": {"command": "grep -rn --include=*.sql $(echo TIER) src/"},
     }
     rc, out = _run_main(monkeypatch, payload, capsys)
     assert rc == 0
@@ -883,3 +885,169 @@ def test_coderef_nudge_no_lookup_outside_src(monkeypatch, capsys, tmp_path) -> N
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "Top hits" not in ctx
     assert calls == []
+
+
+# ── gr570091: deny the unquoted glob zsh would abort, and bare `timeout` ────
+
+_precheck_deny = _mod._precheck_deny
+
+
+def _deny_main(monkeypatch, capsys, command, cwd=""):
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd}
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    return out["hookSpecificOutput"] if out else None
+
+
+@pytest.mark.parametrize(
+    ("cmd", "quoted"),
+    [
+        ("grep -rn Foo --include=*.py src", "--include='*.py'"),
+        ("rg -g *.py Foo src/", "'*.py'"),
+        ("find . -name *.tex", "'*.tex'"),
+        ("git for-each-ref refs/heads/release/*", "'refs/heads/release/*'"),
+        ("git log --oneline | head -3; ls docs/nope-*.md", "'docs/nope-*.md'"),
+        ("FOO=1 grep -rn x --include=*.sql .", "--include='*.sql'"),
+        ("ls [0-9]*.zzz", "'[0-9]*.zzz'"),
+    ],
+)
+def test_unmatched_unquoted_glob_is_denied(monkeypatch, capsys, tmp_path, cmd, quoted):
+    hso = _deny_main(monkeypatch, capsys, cmd, str(tmp_path))
+    assert hso["permissionDecision"] == "deny"
+    assert f"`{quoted}`" in hso["permissionDecisionReason"]
+    assert "no matches found" in hso["permissionDecisionReason"]
+
+
+def test_flag_glob_denied_without_cwd(monkeypatch, capsys) -> None:
+    hso = _deny_main(monkeypatch, capsys, "grep -rn x --include=*.py src")
+    assert hso["permissionDecision"] == "deny"
+    assert "--include='*.py'" in hso["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "grep -rn Foo --include='*.py' src",
+        'grep -rn Foo --include="*.py" src',
+        r"grep -rn Foo --include=\*.py src",
+        "git for-each-ref 'refs/heads/release/*'",
+        "git for-each-ref refs/heads/release/\\*",
+        "grep -n 'a*b' file.txt",
+        "echo $? $* $1",
+        "git status",
+    ],
+)
+def test_quoted_glob_is_allowed(monkeypatch, capsys, tmp_path, cmd) -> None:
+    hso = _deny_main(monkeypatch, capsys, cmd, str(tmp_path))
+    # allowed: no deny, and no [zsh] note (an unrelated [pykind] nudge may fire)
+    assert hso is None or (
+        "permissionDecision" not in hso and "[zsh]" not in hso["additionalContext"]
+    )
+
+
+def test_glob_that_matches_is_not_denied(monkeypatch, capsys, tmp_path) -> None:
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    assert _deny_main(monkeypatch, capsys, "ls *.md", str(tmp_path)) is None
+    hso = _deny_main(monkeypatch, capsys, "ls *.zzz", str(tmp_path))
+    assert hso["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "[[ $f == *.py ]] && echo yes",  # [[ ]] pattern
+        "case $f in *.py) echo py;; esac",  # case pattern
+        "X=*.py make",  # plain assignment
+        "export X=*.py",  # assignment builtin
+        "for f in *.zzz; do echo $f; done",  # not an argument
+        "ls $(echo *.zzz)",  # substitution we do not parse
+        "ls `echo *.zzz`",
+        "ls *.zzz(N)",  # glob qualifier
+        "setopt nonomatch; ls *.zzz",  # glob semantics changed
+        "noglob ls *.zzz",
+        "ls $DIR/*.zzz",  # parameter expansion
+        "ls *.{py,zzz}",  # brace expansion
+        "ls **/*.zzz",  # recursive glob: not scanned
+        "cd sub && ls *.zzz",  # shell cwd is no longer the payload's
+        "echo hi > out-*.txt",  # redirect target
+        "cat <<EOF\n*.zzz\nEOF",  # heredoc body
+        "ls *.zzz # a comment",
+    ],
+)
+def test_ambiguous_glob_shapes_are_not_denied(monkeypatch, capsys, tmp_path, cmd):
+    assert _precheck_deny(cmd, str(tmp_path)) is None
+    assert _deny_main(monkeypatch, capsys, cmd, str(tmp_path)) is None
+
+
+def test_ambiguous_flag_glob_stays_a_note(monkeypatch, capsys, tmp_path) -> None:
+    hso = _deny_main(
+        monkeypatch,
+        capsys,
+        "grep -rn --include=*.sql $(echo TIER) src/",
+        str(tmp_path),
+    )
+    assert "permissionDecision" not in hso
+    assert "[zsh]" in hso["additionalContext"]
+    assert "--include='*.sql'" in hso["additionalContext"]
+
+
+def test_path_glob_without_cwd_is_not_denied(monkeypatch, capsys) -> None:
+    assert _deny_main(monkeypatch, capsys, "ls docs/nope-*.md") is None
+
+
+def test_lexer_survives_garbage() -> None:
+    for cmd in ("echo 'unterminated *.py", 'echo "x', "echo \\", "ls [abc", ""):
+        assert _precheck_deny(cmd, "") is None
+
+
+# macOS `timeout` ----------------------------------------------------------
+
+
+def _macos(monkeypatch, *, darwin=True, has_timeout=False, gtimeout=None):
+    monkeypatch.setattr(_mod, "_on_macos", lambda: darwin)
+    monkeypatch.setattr(_mod, "_has_timeout", lambda: has_timeout)
+    monkeypatch.setattr(
+        _mod.shutil, "which", lambda name: gtimeout if name == "gtimeout" else None
+    )
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "timeout 30 scripts/test tests/x.py",
+        "cd /tmp && timeout 5 sleep 9",
+        "FOO=1 timeout 5 sleep 9",
+        "sleep 1; env timeout 5 sleep 9",
+        "timeout 5 grep -rn x $(echo y) .",  # lexer bails, head is known
+    ],
+)
+def test_bare_timeout_denied_on_macos(monkeypatch, capsys, cmd) -> None:
+    _macos(monkeypatch)
+    hso = _deny_main(monkeypatch, capsys, cmd)
+    assert hso["permissionDecision"] == "deny"
+    reason = hso["permissionDecisionReason"]
+    assert "gtimeout" in reason
+    assert "run_in_background" in reason
+
+
+def test_timeout_deny_names_installed_gtimeout(monkeypatch, capsys) -> None:
+    _macos(monkeypatch, gtimeout="/opt/homebrew/bin/gtimeout")
+    hso = _deny_main(monkeypatch, capsys, "timeout 30 sleep 5")
+    assert "`gtimeout 30 sleep 5`" in hso["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
+    ("cmd", "kwargs"),
+    [
+        ("timeout 30 sleep 5", {"darwin": False}),  # Linux has it
+        ("timeout 30 sleep 5", {"has_timeout": True}),  # coreutils gnubin
+        ("gtimeout 30 sleep 5", {}),
+        ("which timeout", {}),  # not command position
+        ("grep -rn 'timeout 5' src", {}),
+        ("echo 'x; timeout 5 y'", {}),  # quoted data
+        ("timeout", {}),  # no operand
+    ],
+)
+def test_timeout_allowed(monkeypatch, capsys, cmd, kwargs) -> None:
+    _macos(monkeypatch, **kwargs)
+    assert _deny_main(monkeypatch, capsys, cmd) is None
