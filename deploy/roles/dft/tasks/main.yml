@@ -63,6 +63,17 @@
     # Only two subtrees of the repo are the build context, and the
     # Dockerfile's COPY paths are relative to the repo root — so sync them
     # into the same layout rather than shipping the whole monorepo.
+    # rsync creates only the last path component, so make the parents first
+    # (gr687959: a fresh node has no /tmp/precis-dft-build).
+    - name: Ensure the precis-dft build context dirs exist
+      ansible.builtin.file:
+        path: "/tmp/precis-dft-build/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - docker
+        - src
+
     - name: Sync the precis-dft build context to the node
       ansible.posix.synchronize:
         src: "{{ dft_src_dir }}/{{ item }}/"
