@@ -101,7 +101,7 @@ import logging
 import time
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -116,6 +116,7 @@ from precis.store.types import TODO_BODY_KIND
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import handle_registry
 from precis.workers._mint import JOB_TERMINAL_STATUSES
+from precis.workers.failure_cause import classify_failure
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -964,6 +965,10 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
     its own), so this groups by ``ref_id`` and reports the *oldest* one —
     how long the parent has been parked overall.
 
+    Stored job metadata, tags and the latest event supply a deterministic
+    cause; peer lists cover this pass's bounded result set. No filesystem
+    logs or provider calls run on this SQL watchdog's rotation.
+
     **Excludes ``child-failed-final`` leaves** (parked-leaf-recovery, docs/
     backlog/parked-leaf-recovery.md) — those have exhausted the unpark
     phase's bounded retries and are surfaced instead, in aggregate, by
@@ -974,7 +979,14 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
         rows = conn.execute(
             """
             SELECT sub.ref_id, sub.title, sub.tag, sub.created_at,
-                   COUNT(*) OVER () AS total_count
+                   COUNT(*) OVER () AS total_count,
+                   j.ref_id, j.meta,
+                   ARRAY(SELECT jt.value
+                           FROM ref_tags jrt JOIN tags jt ON jt.tag_id = jrt.tag_id
+                          WHERE jrt.ref_id = j.ref_id),
+                   (SELECT c.text FROM chunks c WHERE c.ref_id = j.ref_id
+                      AND c.retired_at IS NULL AND c.chunk_kind = $$job_event$$
+                    ORDER BY c.created_at DESC, c.chunk_id DESC LIMIT 1)
               FROM (
                 SELECT DISTINCT ON (r.ref_id)
                        r.ref_id, r.title, t.value AS tag, rt.created_at
@@ -1003,13 +1015,25 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
             + """
                  ORDER BY r.ref_id, rt.created_at ASC
               ) sub
+              LEFT JOIN refs j ON j.ref_id = CASE
+                WHEN split_part(sub.tag, chr(58), 2) ~ '^[0-9]{1,18}$'
+                THEN split_part(sub.tag, chr(58), 2)::bigint END
+                AND j.kind = $$job$$ AND j.retired_at IS NULL
              ORDER BY sub.ref_id
              LIMIT 50
             """,
             (f"{CHILD_FAILED_PARKED_HOURS} hours", sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     out: list[Symptom] = []
+    causes: list[str] = []
     for r in rows:
+        cause, evidence = classify_failure(r[6] or {}, r[7], r[8])
+        diagnosis = (
+            f"cause: {cause} — {evidence}"
+            if r[5] is not None
+            else "cause: unknown (job gone)"
+        )
+        causes.append(cause)
         tag = str(r[2])
         hours = _hours_since(r[3])
         out.append(
@@ -1018,6 +1042,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
                 detail=(
+                    f"{diagnosis}\n"
                     f"parked {hours:.0f}h behind {tag} — a hard failure, a "
                     f"streak-exhaustion past its one auto-decompose attempt, "
                     f"or a decompose tick still "
@@ -1028,9 +1053,21 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                     f"ref_events, not job events — the recovery verb is "
                     f"put(kind='job', id=<job>, mode='retry')"
                 ),
-                total=int(r[-1]),
+                total=int(r[4]),
             )
         )
+    for i, (symptom, cause) in enumerate(zip(out, causes, strict=True)):
+        peers = [
+            f"td{other.ref_id}"
+            for other, other_cause in zip(out, causes, strict=True)
+            if other.ref_id != symptom.ref_id and other_cause == cause
+        ]
+        if peers:
+            out[i] = replace(
+                symptom,
+                detail=symptom.detail
+                + f"\nsame cause as {len(peers)} other parked: {', '.join(peers[:5])}",
+            )
     return out
 
 
