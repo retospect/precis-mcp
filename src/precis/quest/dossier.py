@@ -1552,6 +1552,9 @@ def _apply_finding_op(
     """open/support/counter/settle on the hypothesis finding itself."""
     from precis.quest import hypotheses as hyp_mod
 
+    # Global finding mutations require both hypothesis identity and ownership.
+    if not any(h.ref_id == hid for h in hyp_mod.serving_hypotheses(store, owner_id)):
+        return False
     if kind == "open":
         return hyp_mod.reopen_hypothesis(store, hid)
     text = _normalize_node_text(str(op.get("text") or ""))

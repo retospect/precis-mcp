@@ -2194,12 +2194,9 @@ def build_tick_prompt(
         if narrative_override is not None
         else dossier_mod.read_narrative(store, qid)
     )
-    # Dialectic prompt parts only for a dossier that already holds a block
-    # (gr462891 stopgap) — the rest is spliced out, nothing dangles.
     # gr674774: hypotheses are findings serving the quest — the section and
     # the `dialectic_ops`/`hypotheses` schema always render; legacy dossier
     # blocks (if any) follow the live findings.
-    has_blocks = True
     live_text = hypotheses_mod.render_live_hypotheses(store, qid)
     if dossier_mod.has_dialectic_blocks(store, qid):
         live_text += "\n" + dossier_mod.read_dialectic(store, qid)
@@ -2252,8 +2249,8 @@ def build_tick_prompt(
             review_banner=banner,
             read_cap=MAX_READS_PER_TICK,
             fetch_cap=MAX_FETCHES_PER_TICK,
-            dialectic_guidance=_DIALECTIC_GUIDANCE_INQUIRY if has_blocks else "",
-            dialectic_schema=_DIALECTIC_SCHEMA_INQUIRY if has_blocks else "",
+            dialectic_guidance=_DIALECTIC_GUIDANCE_INQUIRY,
+            dialectic_schema=_DIALECTIC_SCHEMA_INQUIRY,
             **common,
         )
 
@@ -2293,18 +2290,15 @@ def build_tick_prompt(
         neb_cap=MAX_NEB_PER_TICK,
         read_cap=MAX_READS_PER_TICK,
         fetch_cap=MAX_FETCHES_PER_TICK,
-        dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
-        dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS if has_blocks else "",
+        dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS,
+        dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS,
         **common,
     )
 
 
 #: The dialectic parts of the tick prompt, spliced into the templates below
-#: ONLY when the quest's dossier already holds a dialectic block (gr462891
-#: stopgap: a dossier with none has nothing to maintain, and the section
-#: invites the model to open hypotheses it then fails to anchor). They are
-#: substituted as format VALUES, so braces here are single, not doubled;
-#: ``_DIALECTIC_SECTION`` takes ``.format(dialectic=...)``.
+#: Always render live findings and the hypothesis write schema.
+#: Legacy experiment blocks remain available during dossier retirement.
 _DIALECTIC_SECTION = """\
 ## Live hypotheses (findings serving this quest — maintain via `dialectic_ops`, raise new ones via `hypotheses`; do NOT restate in `dossier_text`)
 {dialectic}
@@ -2312,39 +2306,38 @@ _DIALECTIC_SECTION = """\
 """
 
 _DIALECTIC_GUIDANCE_MATERIALS = """\
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment \
-with pre-registered branch predictions — emit an `experiment` op for it. \
-Pre-register by citing the structure's `[st…]` handle inline: when a trusted \
-measurement lands on it, a code pass mints a **measurement ruling** that \
-appears as a `measured: [fi…]` line under the experiment (templated text — \
-no LLM authored it, so it is a verifiable anchor). Interpreting a ruling is \
-YOUR job: emit `support`/`counter` citing the ruling's `[fi…]` handle, or \
-`settle` the hypothesis, per the experiment's pre-registered branch.
+**Hypotheses are living findings serving this quest.** Read the Live hypotheses
+section before raising a claim. Use `hypotheses` to mint a new falsifiable
+claim with motivation, testable_by and at least two independent motivated_by
+sources; pathway and structure refs each count as one source.
+Use `dialectic_ops` only on hypothesis findings serving this quest.
+`support` and `counter` persist supports/disputes edges from inline evidence
+handles; their why-clause prose is not stored. Use `settle` with a
+`verdict` of refuted, supported or inconclusive and an optional `ruling`
+finding handle. Refuted sets STATUS:refuted; the other verdicts mark settled.
+The logbook records a dated pointer. `open` clears settled, never a refutation.
+Keep `dossier_text` for synthesis rather than restating these records.
+Legacy experiment blocks still accept an `experiment` op with pre-registered
+branch predictions. Cite a structure handle so trusted measurements can mint
+a measurement-ruling finding. Interpret that ruling through support/counter
+or settle, citing its finding handle.
 
 """
 
 _DIALECTIC_GUIDANCE_INQUIRY = """\
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment — \
-name the ONE piece of evidence (a search, a source) that would settle it, \
-with pre-registered branch predictions, via an `experiment` op.
+**Hypotheses are living findings serving this quest.** Read the Live hypotheses
+section before raising a claim. Use `hypotheses` with a falsifiable sentence,
+motivation, testable_by and at least two independent motivated_by sources.
+Pathway and structure refs each count as one source.
+Use `dialectic_ops` only on hypothesis findings serving this quest.
+`support` and `counter` persist supports/disputes edges from inline evidence
+handles; their why-clause prose is not stored. Use `settle` with a
+`verdict` of refuted, supported or inconclusive and an optional `ruling`
+finding handle. Refuted sets STATUS:refuted; the other verdicts mark settled.
+The logbook records a dated pointer. `open` clears settled, never a refutation.
+Keep `dossier_text` for synthesis rather than restating these records.
+Legacy experiment blocks still accept an `experiment` op: name the one
+piece of evidence to gather and pre-register what each outcome would mean.
 
 """
 

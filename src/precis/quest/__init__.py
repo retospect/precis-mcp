@@ -4,7 +4,7 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living
-synthesis), `tick` (one bounded LLM step), `compute` (candidates →
+synthesis), `hypotheses` (findings and verdicts), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
 measurement protocols, deduped dispatch/harvest drift logbook entries, and
 frontier/status protocol histograms; gr593142), `environment_basis` and
@@ -87,11 +87,11 @@ Package-level invariants (detail lives on the named module):
   needs same-tick progress evidence; ~2500-word ceiling tripwire; one
   compress-retry then keep-previous + logbook entry). Word counts land in
   logbook meta so thresholds are tuned from data. The per-hypothesis
-  **dialectic** (support / counter / discriminating experiment, one pinned
-  block per live hypothesis finding) is likewise op-mutated, never rewritten
-  (``dossier.apply_dialectic_op`` via the tick's ``dialectic_ops`` key), and
-  mints ``supports``/``contradicts`` evidence edges at apply time —
-  quest-dossier-dialectic §Mechanism. Its sims→findings anchor is
+  **dialectic** lives on hypothesis findings serving the quest:
+  ``hypotheses.mint_tick_hypotheses`` converges claims and logs pointers;
+  ``dossier.apply_dialectic_op`` updates ``supports``/``disputes`` edges and
+  settled/refuted state. Hypothesis identity and quest ownership protect
+  unrelated claims. Legacy experiments retain blocks. Its sims→findings anchor is
   ``rulings`` (``mint_measurement_rulings``, a code-only pre-LLM tick pass):
   a trusted measurement matching an experiment entry's pre-registered
   ``[st…]`` structure mints a templated **measurement-ruling finding** (no

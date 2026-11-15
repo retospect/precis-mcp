@@ -2367,7 +2367,10 @@ class TestPromptAndView:
             prompt = build_tick_prompt(store, quest, quest_body=body)
             assert "## Live hypotheses" in prompt
             assert f"[fi{fid}] Cu is the active site" in prompt
-            assert "**The dialectic lives in blocks, not prose.**" in prompt
+            assert "**Hypotheses are living findings serving this quest.**" in prompt
+            assert "Use `hypotheses`" in prompt
+            assert "`verdict` of refuted, supported or inconclusive" in prompt
+            assert "their why-clause prose is not stored" in prompt
             assert '"dialectic_ops": [' in prompt
 
     def test_prompt_shows_ledger_ruled_out_entries_not_open(self, store: Any) -> None:

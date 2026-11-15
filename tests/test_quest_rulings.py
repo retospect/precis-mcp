@@ -48,6 +48,8 @@ def _mk_structure(
 
 
 def _preregister(store: Any, qid: int, hyp: int, st: int) -> None:
+    store.stamp_ref_meta(hyp, {"artifact_type": "hypothesis"})
+    store.add_link(src_ref_id=hyp, dst_ref_id=qid, relation="serves")
     ok = apply_dialectic_op(
         store,
         qid,
