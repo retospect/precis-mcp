@@ -5127,8 +5127,8 @@ def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
     """td659522 step 4: the ``land_slice`` a ``pin_bump`` mints lands the
     pin node's own branch — :func:`pin_bump.finish` is its closing tail,
     run right before this land's record: ``meta.pin_bump`` ``state:
-    "landed"`` plus the batch's ``fixes`` / ``related-to`` gripe
-    resolution (without it the record would sit ``handed`` forever and
+    "landed"`` plus the batch's ``fixes`` gripe resolution (without it
+    the record would sit ``handed`` forever and
     the ``pin_bump/stale-open:{todo}`` alert would fire). A plain slice
     carries no pin record and is skipped; a no-diff reland finishes at
     the record's own commit. Never raises — the land is real, the record
