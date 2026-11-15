@@ -2212,6 +2212,44 @@ class TestNearestMatchSuggestions:
         assert "options:" in envelope
         assert "wang2020state" in envelope
 
+    def test_hit_never_runs_the_suggestion_scan(
+        self,
+        store: Store,
+        handler: PaperHandler,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """gr674691: the fuzzy-suggestion corpus scan fills ``options=``
+        on a ``NotFound`` — an error envelope the happy path never
+        reads. Evaluating it eagerly cost a ``list_refs`` fetch over the
+        whole paper corpus on EVERY get, so
+        ``get(id=[11 cite keys], view='bibtex')`` paid eleven scans in
+        one call and never answered inside the client's 300 s. On a
+        slug HIT — single, batch-with-view, and the tag/link resolver —
+        the suggester must not run at all."""
+        _seed_paper(store, slug="wang2020state", title="A")
+
+        def _boom(*a: Any, **kw: Any) -> list[str]:
+            pytest.fail("_suggest_paper_slugs ran on a slug hit")
+            return []
+
+        monkeypatch.setattr("precis.handlers.paper._suggest_paper_slugs", _boom)
+        resp = handler.get(id="wang2020state", view="bibtex")
+        assert "@article{wang2020state," in resp.body
+        batch = handler.get(id=["wang2020state"], view="bibtex")
+        assert "@article{wang2020state," in batch.body
+        handler.tag(id="wang2020state", add=["topic:lazy-suggest"])
+
+    def test_miss_still_gets_suggestions_once(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The lazy options= must still fire on a real miss — same
+        contract the tests above pin, restated for the callable form."""
+        _seed_paper(store, slug="wang2020state", title="A")
+        with pytest.raises(NotFound) as exc_info:
+            handler.get(id="wang2020stat", view="bibtex")
+        assert exc_info.value.options is not None
+        assert "wang2020state" in exc_info.value.options
+
 
 class TestNumericIdTagLink:
     """The web addresses papers by numeric ``ref_id`` (the triage queue's

@@ -1040,7 +1040,9 @@ class FusedBlockSearch:
                     kind=kind,
                     id=scope_slug,
                     next_hint=f"search(kind='{kind}', q='...') to find one",
-                    options=_suggest_paper_slugs(scope, store=self.store, kind=kind),
+                    options=lambda: _suggest_paper_slugs(
+                        scope, store=self.store, kind=kind
+                    ),
                 )
                 scope_ref_id = scope_ref.id
 

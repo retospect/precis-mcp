@@ -531,6 +531,14 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
     → no ``options:`` line in the rendered envelope, which is exactly
     what we want when there's nothing useful to suggest.
 
+    The candidate fetch projects only ``ref_identifiers.id_value``
+    (one join, ~150 KB of strings at the cap) — the scan reads nothing
+    but the slug, so the ``list_refs`` projection it replaced (33
+    columns including ``meta`` jsonb + a per-row cite_key subquery)
+    was pure IO on an error path (gr674691: a batch ``view='bibtex'``
+    get paid one corpus scan per element and never answered inside the
+    client's 300 s).
+
     Why a free function (not a method): keeping this off the handler
     makes it independently testable without spinning up a Hub fixture
     and means the same logic could be reused by patent/oracle/conv
@@ -538,8 +546,19 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
     """
     if not slug:
         return []
-    refs = store.list_refs(kind=kind, limit=_SUGGEST_CORPUS_CAP)
-    candidates = [r.slug for r in refs if r.slug]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ri.id_value FROM ref_identifiers ri "
+            "JOIN refs r ON r.ref_id = ri.ref_id "
+            "WHERE r.kind = %s AND r.retired_at IS NULL "
+            "AND ri.id_kind = 'cite_key' "
+            "ORDER BY r.updated_at DESC LIMIT %s",
+            (kind, _SUGGEST_CORPUS_CAP),
+        ).fetchall()
+    # Dedupe preserving recency order — a rekeyed ref can carry several
+    # cite_key rows and all of them still resolve, but a repeated
+    # string in ``candidates`` would suggest the same slug twice.
+    candidates = list(dict.fromkeys(str(r[0]) for r in rows if r[0]))
     if not candidates:
         return []
     return difflib.get_close_matches(
@@ -2413,7 +2432,10 @@ class PaperHandler(Handler):
             kind=kind,
             id=slug,
             next_hint=f"search(kind='{kind}', q='your query') to find existing",
-            options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
+            # Lazy (gr674691): the suggestion scan only matters when the
+            # slug misses — on a hit it was a full-corpus fetch thrown
+            # away, once per element under ``id=[...]``.
+            options=lambda: _suggest_paper_slugs(slug, store=self.store, kind=kind),
         )
 
         # Citation-chunk-grounding "active paper" trigger (see
@@ -11824,7 +11846,7 @@ def resolve_paper_slug(
         kind=kind,
         id=slug,
         next_hint=(f"search(kind='{kind}', q='...') to find existing slugs"),
-        options=_suggest_paper_slugs(slug, store=store, kind=kind),
+        options=lambda: _suggest_paper_slugs(slug, store=store, kind=kind),
     )
     return slug, ref.id
 

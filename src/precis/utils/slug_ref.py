@@ -6,7 +6,7 @@ pair without importing ``precis.handlers``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput, NotFound
@@ -34,7 +34,7 @@ def resolve_live_slug_ref(
     kind: str,
     id: str | int,
     next_hint: str | None = None,
-    options: Sequence[str] | None = None,
+    options: Sequence[str] | Callable[[], Sequence[str] | None] | None = None,
 ) -> Ref:
     """Coerce a ``(kind, slug)`` pair to a live :class:`Ref` or raise.
 
@@ -67,9 +67,14 @@ def resolve_live_slug_ref(
               matches belong in ``options=`` instead).
         options: Optional spelling suggestions forwarded into the
               :class:`NotFound` envelope so the agent sees
-              ``options: [...]`` in the error body. Falsy values
-              (empty list / ``None``) are normalised to ``None``
-              so the envelope stays tidy.
+              ``options: [...]`` in the error body — or a zero-arg
+              callable producing them, evaluated ONLY when the ref
+              actually misses (gr674691: an eagerly-computed fuzzy
+              suggestion list cost a full-corpus scan on every get,
+              hit or miss, and the batch get paid it per element).
+              Falsy values (empty list / ``None`` / a callable
+              returning either) are normalised to ``None`` so the
+              envelope stays tidy.
 
     Raises:
         NotFound: the ref does not exist (or was soft-deleted and
@@ -115,10 +120,11 @@ def resolve_live_slug_ref(
             if handle is not None and ref.slug != slug:
                 store.emit_hint(bare_numeric_hint(kind, slug, handle))
     if ref is None:
+        opts = options() if callable(options) else options
         cause = f"{kind} slug {slug!r} not found"
         if parsed is not None and parsed[0] == kind and not parsed[1]:
             cause = f"{kind} handle {slug!r} not found"
-            options = [*nearest_handles(store, kind, parsed[2]), *(options or [])]
+            opts = [*nearest_handles(store, kind, parsed[2]), *(opts or [])]
         if slug.isdigit():
             # The digits were already tried as a ref_id fallback (the A1
             # branch above) and that also missed — say so, or the bare
@@ -133,6 +139,6 @@ def resolve_live_slug_ref(
         raise NotFound(
             cause,
             next=next_hint or f"search(kind={kind!r}, q='...') to find existing",
-            options=list(options) if options else None,
+            options=list(opts) if opts else None,
         )
     return ref
