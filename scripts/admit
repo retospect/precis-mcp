@@ -1,0 +1,146 @@
+#!/usr/bin/env -S uv run python
+"""scripts/admit — the admission ledger's operator surface (gr647996).
+
+  scripts/admit status            ledger holders vs running containers
+  scripts/admit status --host H   as if run on host H
+
+``status`` is the dev-host half of the S7b live check (the heartbeat
+census is the fleet half): it prints this host's live
+``resource_slot_holds`` against ``docker ps`` grouped by compose project
+and flags each *workload* container — a ``compose run`` one-off or a
+``docker run`` one-shot — for which no live hold exists: the "docker
+gate had no slot dir" signature (gr601479). Standing compose *service*
+containers (``precis-gate``, ``precis-test-db``, embedder, LLM servers)
+are declared residents, not workload — until S5's ``admit_acquire``
+mints holds for them they are exempt, not admitted.
+
+Pre-S5 the holds ledger carries ``host:pid`` holders only, so the match
+is all-or-nothing: with zero live holds every workload container flags;
+with any, containers print UNVERIFIED — a hold names no container yet.
+Exits 1 when a workload container flags (usable as a check).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import socket
+import subprocess
+import sys
+
+
+def _docker_ps() -> list[dict[str, str]]:
+    """``docker ps`` rows: name, compose project, oneoff flag, image."""
+    if shutil.which("docker") is None:
+        return []
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--format",
+                '{{.Names}}\t{{.Label "com.docker.compose.project"}}'
+                '\t{{.Label "com.docker.compose.oneoff"}}\t{{.Image}}\t{{.Status}}',
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if res.returncode != 0:
+        print(f"admit: docker ps failed: {res.stderr.strip()[:200]}", file=sys.stderr)
+        return []
+    rows = []
+    for line in res.stdout.splitlines():
+        f = line.split("\t")
+        if len(f) < 2 or not f[0].strip():
+            continue
+        rows.append(
+            {
+                "name": f[0].strip(),
+                "project": f[1].strip() if len(f) > 1 else "",
+                "oneoff": len(f) > 2 and f[2].strip().lower() == "true",
+                "image": f[3].strip() if len(f) > 3 else "",
+                "status": f[4].strip() if len(f) > 4 else "",
+            }
+        )
+    return rows
+
+
+def _live_holds(store, host: str) -> list[tuple[str, str, int, str]]:
+    """Live holds covering ``host`` — row host or ``host:pid`` holder."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT holder, resource, units, "
+            "       expires_at - now() AS ttl "
+            "  FROM resource_slot_holds "
+            " WHERE expires_at > now() "
+            "   AND (host = %(host)s OR holder LIKE %(prefix)s) "
+            " ORDER BY holder, resource",
+            {"host": host, "prefix": f"{host}:%"},
+        ).fetchall()
+    return [(str(h), str(r), int(u), str(t).split(".")[0]) for h, r, u, t in rows]
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    host = args.host or os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
+    from precis.cli._common import resolve_dsn
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    holds = _live_holds(store, host)
+    containers = _docker_ps()
+
+    print(f"host: {host}")
+    print("live holds (resource_slot_holds, unexpired):")
+    if holds:
+        for holder, resource, units, ttl in holds:
+            print(f"  {holder:<28} {resource:<24} {units:>7}  ttl {ttl}")
+    else:
+        print("  (none)")
+    print("containers (docker ps):")
+    flagged = 0
+    for c in containers:
+        standing = bool(c["project"]) and not c["oneoff"]
+        cls = "service" if standing else "workload"
+        if standing:
+            verdict = "standing (declared resident)"
+        elif holds:
+            verdict = "UNVERIFIED (hold↔container mapping lands with S5)"
+        else:
+            verdict = "NO LIVE HOLDER"
+            flagged += 1
+        print(
+            f"  {c['project'] or '-':<16} {c['name']:<40} {cls:<8} "
+            f"{verdict}  [{c['image']}, {c['status']}]"
+        )
+    if not containers:
+        print("  (none)")
+    if flagged:
+        print(
+            f"\n{flagged} workload container(s) running with no live hold — "
+            "the 'docker gate had no slot dir' signature (gr601479)."
+        )
+        return 1
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="scripts/admit")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("status", help="ledger holders vs running containers")
+    s.add_argument("--host", default=None, help="report as this host")
+    s.add_argument("--database-url", default=None)
+    args = p.parse_args()
+    if args.cmd == "status":
+        return cmd_status(args)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
