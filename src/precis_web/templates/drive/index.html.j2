@@ -129,6 +129,12 @@
   <input type="hidden" name="submitted" value="1" />
   {% if task %}<input type="hidden" name="task" value="{{ task }}" />{% endif %}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
+  {# The todo preset (gr664410): queue/focus/serves have no picker
+     control, so they ride as hidden inputs — without them any facet
+     resubmit would silently drop the doable queue and subtree scope. #}
+  {% if queue %}<input type="hidden" name="queue" value="{{ queue }}" />{% endif %}
+  {% if focus %}<input type="hidden" name="focus" value="{{ focus }}" />{% endif %}
+  {% if serves %}<input type="hidden" name="serves" value="{{ serves }}" />{% endif %}
   <input type="hidden" name="scope" value="{{ scope }}" x-ref="scope" />
   <div class="flex flex-wrap items-end gap-2">
     <div class="relative flex-1 min-w-[16rem]" data-tour="drive-search"
@@ -564,6 +570,27 @@
               <input type="text" name="value" placeholder="tag…" autocomplete="off"
                      class="rounded border border-line-strong text-[11px] w-20 px-1 py-0.5">
               <button class="text-accent-strong hover:underline">tag</button>
+            </form>
+            {% elif a.type == 'todo_status' %}
+            {# TodoPresenter (gr664410): the workbench's STATUS dropdown
+               on a Drive row — posts to /todo/{id}/status; the focus
+               field lands the redirect on the todo's own workbench. #}
+            <form method="post" action="/todo/{{ a.id }}/status" class="inline-flex items-center gap-1">
+              {% for fk, fv in (a.fields or {}).items() %}<input type="hidden" name="{{ fk }}" value="{{ fv }}">{% endfor %}
+              <select name="status" class="rounded border border-line-strong text-[11px] max-w-[8rem]">
+                {% for c in a.choices %}
+                <option value="{{ c }}"{% if c == a.current %} selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+              </select>
+              <button class="text-info-strong hover:underline">set</button>
+            </form>
+            {% elif a.type == 'post' %}
+            {# Generic inline POST (gr664410) — the presenter names the
+               route (/todo/{id}/retry|stop|start); hidden fields ride
+               along so the endpoint's redirect lands where it should. #}
+            <form method="post" action="{{ a.url }}" class="inline">
+              {% for fk, fv in (a.fields or {}).items() %}<input type="hidden" name="{{ fk }}" value="{{ fv }}">{% endfor %}
+              <button class="{{ a.cls or 'text-info-strong' }} hover:underline" title="{{ a.title }}">{{ a.label }}</button>
             </form>
             {% endif %}
           {% endfor %}

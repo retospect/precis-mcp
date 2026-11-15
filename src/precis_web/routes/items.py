@@ -390,6 +390,70 @@ def _run_search(
     return rows, has_next
 
 
+def _rows_for_refs(
+    store: Store, refs: list[Any], *, tag_kinds: list[str]
+) -> list[dict[str, Any]]:
+    """The shared row-build tail every no-query list converges on:
+    flags, body-chunk presence, tags, paper identifiers and the design
+    facts batched once per page (never per-row), then one ``item_row``
+    per ref. ``_recent_rows`` and the todo ``queue=doable`` preset share
+    it so a Drive row renders identically whichever list produced it."""
+    ref_ids = [r.id for r in refs]
+    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    ingested = store.refs_with_body_chunks(ref_ids)
+    tags_bulk = store.ref_tags_bulk(ref_ids)
+    idents = store.paper_identifiers(ref_ids)
+    design_facts = _design_facts_bulk(store, refs)
+    return [
+        item_row(
+            r,
+            None,
+            0.0,
+            flag_state.get(r.id, set()),
+            ref_kinds=tag_kinds,
+            has_chunks=r.id in ingested,
+            tags=tags_bulk.get(r.id),
+            identifier=idents.get(r.id),
+            design=design_facts.get(r.id),
+        )
+        for r in refs
+    ]
+
+
+def _doable_queue_rows(
+    store: Store,
+    *,
+    under: list[int] | None,
+    offset: int,
+    tags: list[str] | None = None,
+    tag_kinds: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """The todo ``queue=doable`` preset's page (gr664410): doable leaf
+    refs in the rotation's own order, through
+    ``precis.todo.views._doable_rows`` — the very query
+    ``search(kind='todo', view='doable')`` runs, so the Drive preset and
+    the ``/todo`` workbench's doable panel can never diverge.
+
+    ``under`` scopes the queue to those subtree roots (the Drive
+    ``focus``/``serves`` facets; ``None`` is the global rotation, an
+    empty list stays scoped and matches nothing). ``tags`` is the
+    Drive ``tag=`` facet set — forwarded into the leaf filter
+    (gr568264's ``build_tag_filter`` splice) so it narrows the queue
+    *before* pagination; dropping it here would silently list every
+    doable leaf under an active tag chip. Over-fetches
+    ``offset + _PAGE_SIZE + 1`` so one query answers both the page and
+    the ``has_next`` probe, then renders through the shared
+    :func:`_rows_for_refs` tail."""
+    from precis.todo.views import _doable_rows
+
+    hits = _doable_rows(store, under=under, limit=offset + _PAGE_SIZE + 1, tags=tags)
+    has_next = len(hits) > offset + _PAGE_SIZE
+    page_hits = hits[offset : offset + _PAGE_SIZE]
+    refs_by_id = store.fetch_refs_by_ids([h["id"] for h in page_hits])
+    refs = [refs_by_id[h["id"]] for h in page_hits if h["id"] in refs_by_id]
+    return _rows_for_refs(store, refs, tag_kinds=tag_kinds or ["todo"]), has_next
+
+
 def _recent_rows(
     store: Store,
     kinds: list[str],
@@ -464,27 +528,7 @@ def _recent_rows(
     )
     has_next = len(refs) > _PAGE_SIZE
     refs = refs[:_PAGE_SIZE]
-    ref_ids = [r.id for r in refs]
-    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
-    ingested = store.refs_with_body_chunks(ref_ids)
-    tags_bulk = store.ref_tags_bulk(ref_ids)
-    idents = store.paper_identifiers(ref_ids)
-    design_facts = _design_facts_bulk(store, refs)
-    rows = [
-        item_row(
-            r,
-            None,
-            0.0,
-            flag_state.get(r.id, set()),
-            ref_kinds=kinds if tag_kinds is None else tag_kinds,
-            has_chunks=r.id in ingested,
-            tags=tags_bulk.get(r.id),
-            identifier=idents.get(r.id),
-            design=design_facts.get(r.id),
-        )
-        for r in refs
-    ]
-    return rows, has_next
+    return _rows_for_refs(store, refs, tag_kinds=tag_kinds or kinds), has_next
 
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store

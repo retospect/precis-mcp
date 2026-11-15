@@ -8,12 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2] / "src/precis_web"
 BASE = (ROOT / "templates/base.html.j2").read_text(encoding="utf-8")
 
-# Chord -> where it goes (rulings: drafts and papers live in Drive, so g r / g p).
+# Chord -> where it goes (rulings: drafts and papers live in Drive, so g r / g p;
+# todos joined them — g t is the Browse preset's doable queue, gr664410).
 CHORDS = {
     "g d": "/drive",
     "g r": "k=draft",
     "g p": "k=paper",
-    "g t": "/todo",
+    "g t": "k=todo",
     "g g": "/gripes",
     "g s": "/status",
     "g a": "/alerts",
@@ -65,7 +66,7 @@ def test_list_templates_emit_scope_and_rows():
 
 
 def test_todo_page_renders_list_scope(client):
-    assert 'data-shortcut-scope="list"' in client.get("/todo").text
+    assert 'data-shortcut-scope="list"' in client.get("/todo?show_jobs=active").text
 
 
 def test_detail_templates_bind_e_and_back_binds_u():

@@ -15,7 +15,7 @@ NATIVE_REF_URLS: dict[str, str] = {
     "pres": "/pres/{id}",
     "cfp": "/cfp/{id}",
     "folder": "/drive?folder={id}",
-    "todo": "/todo?focus={id}",
+    "todo": "/todo/{id}",
     "cad": "/cad/{slug}",
     "se": "/se/{slug}",
     "structure": "/structure/{slug}",

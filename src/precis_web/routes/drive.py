@@ -66,6 +66,7 @@ from precis_web.routes.items import (
     _DEFAULT_SOURCE_KINDS,
     _DESIGN_KINDS,
     _PAGE_SIZE,
+    _doable_queue_rows,
     _folder_options,
     _parse_date,
     _recent_rows,
@@ -786,6 +787,39 @@ def _unfiled(store: Store, artifact_kinds: list[str]) -> list[dict[str, Any]]:
     return [_row(r) for r in rows]
 
 
+#: ``serves=`` accepts ``<qid>`` or the ``qu<qid>`` handle form — the
+#: same grammar ``routes/todo.py``'s ``_SERVES_RE`` gives the workbench's
+#: ``?serves=`` filter (an unparseable value degrades to no filter).
+_TODO_SERVES_RE = re.compile(r"(?:qu)?(\d+)")
+
+
+def _subtree_ids(store: Store, root_ids: list[int]) -> list[int]:
+    """Every live descendant of ``root_ids``, roots included — the
+    ``focus=``/``serves=`` scope set for the todo Drive preset
+    (gr664410). One recursive walk over ``refs.parent_id`` of any kind,
+    so a todo's job children count as in-scope rows too — mirroring the
+    workbench's own subtree walk (``routes/todo.py``'s ``_subtree_rows``).
+    Empty input returns ``[]`` (a resolved-but-empty scope still scopes:
+    it shows nothing, not the corpus)."""
+    if not root_ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE sub(ref_id) AS (
+                SELECT ref_id FROM refs
+                 WHERE ref_id = ANY(%s) AND retired_at IS NULL
+                UNION
+                SELECT c.ref_id FROM refs c JOIN sub s ON c.parent_id = s.ref_id
+                 WHERE c.retired_at IS NULL
+            )
+            SELECT ref_id FROM sub
+            """,
+            (root_ids,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _breadcrumb(store: Store, folder_id: int) -> list[dict[str, Any]]:
     """(ref_id, title) pairs root→here, walking up folder parents."""
     crumbs: list[dict[str, Any]] = []
@@ -823,6 +857,9 @@ async def index(
     task: str = "",
     folder: str = "",
     cited_by: str = "",
+    queue: str = "",
+    focus: str = "",
+    serves: str = "",
     page: int = 1,
     submitted: str = "",
     requeued: int = 0,
@@ -861,7 +898,23 @@ async def index(
     each reload naturally surfaces the next un-attempted batch once "Open
     all downloads" marks the current page tried); ``since=``/``until=``
     bound the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap.
-    With no ``q`` the landing shows the recent list. ``requeued=`` is the
+    With no ``q`` the landing shows the recent list.
+
+    The todo preset (gr664410 — what the retired dashboard list's nav
+    slot points at): ``queue=doable`` swaps the recency list for the
+    doable leaf rotation in its own order (prio, then least-picked —
+    the same ``precis.todo.views._doable_rows`` the workbench's doable
+    panel reads); ``focus=<todo id>`` scopes either list to that subtree
+    (root included, job children too) and ``serves=<qid>`` (``qu<qid>``
+    accepted) to the union of todos serving that quest — the dashboard's
+    own two filters, now facet chips. The ``tag=`` chips narrow the
+    doable rotation too — they ride the same leaf filter
+    ``search(kind='todo', view='doable')`` runs, applied before
+    pagination — while ``state``/``sort``/``folder`` stay browse-only
+    since the queue owns its ordering. All three params are browse-only
+    like ``cited_by`` — a text ``q`` already scopes to matched chunks —
+    and ride the filter form as hidden inputs so a facet resubmit
+    keeps the queue and subtree scope. ``requeued=`` is the
     stamped-count round-trip from the "Fetch next N" button
     (``POST /drive/requeue-stubs``) — a redirect-only query param, not a
     facet, so it renders one notice banner and doesn't otherwise change
@@ -1138,6 +1191,44 @@ async def index(
             )
             selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
 
+    # The todo preset's narrowing (gr664410). ``focus=`` scopes to one
+    # todo's subtree; ``serves=`` resolves the quest's serving todos and
+    # scopes to their union — the dashboard's own two filters as Drive
+    # facets. ``scope_roots`` feeds the doable queue's ``under=``;
+    # ``scope_ids`` the plain browse's ``ref_ids=`` allow-list (intersected
+    # with ``fetch_ref_ids`` when both scopes are active — a cited_by
+    # worklist inside a todo subtree still intersects, never unions).
+    queue = (queue or "").strip().lower()
+    queue = "doable" if queue == "doable" else ""
+    focus = (focus or "").strip()
+    serves = (serves or "").strip()
+    scope_roots: list[int] | None = None
+    if not q:
+        focus_id = int(focus) if focus.isdigit() else None
+        serves_m = _TODO_SERVES_RE.fullmatch(serves) if serves else None
+        if focus_id is not None:
+            scope_roots = [focus_id]
+        elif serves_m is not None:
+            scope_roots = [
+                int(ln.src_ref_id)
+                for ln in await asyncio.to_thread(
+                    store.links_for,
+                    int(serves_m.group(1)),
+                    direction="in",
+                    relation="serves",
+                )
+            ]
+    scope_ids: list[int] | None = (
+        await asyncio.to_thread(_subtree_ids, store, scope_roots)
+        if scope_roots is not None
+        else None
+    )
+    ref_id_scope: list[int] | None = scope_ids
+    if fetch_ref_ids is not None and scope_ids is not None:
+        ref_id_scope = sorted(set(fetch_ref_ids) & set(scope_ids))
+    elif fetch_ref_ids is not None:
+        ref_id_scope = fetch_ref_ids
+
     # A deep link can scope to a kind that has no chip — Status's "Refs by
     # kind" lists every kind in ``refs`` (job, finding, citation, …), not
     # just the browsable facets. Render those as an "Other" chip row so the
@@ -1249,57 +1340,85 @@ async def index(
         # children instead; the trash view (``deleted``) and the "Anywhere"
         # sentinel (``folder=*``) show every ref regardless of where it was
         # filed.
-        unfiled_only = folder_id is None and not show_deleted and not folder_any
-        recent, has_next = await asyncio.to_thread(
-            _recent_rows,
-            store,
-            ref_kinds,
-            tags,
-            has_pdf,
-            folder_id,
-            offset,
-            has_chunks=has_chunks,
-            unfiled_only=unfiled_only,
-            has_schedule=has_schedule,
-            has_external_id=has_external_id,
-            no_oa=no_oa,
-            ref_ids=fetch_ref_ids,
-            deleted=show_deleted,
-            oldest=(sort == "oldest"),
-            created=(sort == "created"),
-            untried=(sort == "untried"),
-            downloadable_first=(state == "stub"),
-            viewer=viewer,
-            tag_kinds=tag_row_kinds,
+        # A focus/serves subtree scope *is* the filing — hiding
+        # ``parent_id``-carrying children would empty it, so
+        # ``unfiled_only`` yields to an active scope the way a folder
+        # selection does.
+        unfiled_only = (
+            folder_id is None
+            and not show_deleted
+            and not folder_any
+            and scope_ids is None
         )
-        # Exact total for the browse "showing N of K" header + last-page
-        # jump — the no-query list is a plain filtered ``refs`` query, so
-        # unlike the fused-search path this count is exact, not a ≈lexical
-        # approximation. Deliberately *not* floored to ``offset + len(recent)``
-        # (the search path does that to correct lexical *under*counting): here
-        # the count is already exact, and on a stale/overshoot ``page=`` — a
-        # bookmarked deep page of a set that has since shrunk — that floor
-        # would clobber the true total up to the empty page's offset ("0 of
-        # 30" for a set of 10). The honest count stands; the pager below hides
-        # the "of Y" once you're past the real last page. ``unfiled_only`` is
-        # threaded through so the denominator counts the same filed-hiding set
-        # the page shows.
-        result_total = await asyncio.to_thread(
-            store.count_recent_refs,
-            ref_kinds,
-            tags=tags,
-            has_pdf=has_pdf,
-            has_chunks=has_chunks,
-            has_schedule=has_schedule,
-            has_external_id=has_external_id,
-            no_oa=no_oa,
-            parent_id=folder_id,
-            unfiled_only=unfiled_only,
-            ref_ids=fetch_ref_ids,
-            deleted=show_deleted,
-            viewer=viewer,
-        )
-        total_exact = True
+        if queue == "doable" and "todo" in ref_kinds and not show_deleted:
+            # The todo preset (gr664410): the doable leaf rotation in its
+            # own order, not the recency list — the folder/sort/state
+            # browse facets don't apply to a queue that owns its ordering,
+            # but the ``tag=`` chips do: they ride the same leaf filter
+            # ``search(kind='todo', view='doable')`` runs, narrowing the
+            # queue before pagination. Its total is the same cheap
+            # ``offset + len + next`` estimate the search path uses (no
+            # exact count for a ranking query).
+            recent, has_next = await asyncio.to_thread(
+                _doable_queue_rows,
+                store,
+                under=scope_roots,
+                offset=offset,
+                tags=tags,
+                tag_kinds=tag_row_kinds,
+            )
+            result_total = offset + len(recent) + (1 if has_next else 0)
+        else:
+            recent, has_next = await asyncio.to_thread(
+                _recent_rows,
+                store,
+                ref_kinds,
+                tags,
+                has_pdf,
+                folder_id,
+                offset,
+                has_chunks=has_chunks,
+                unfiled_only=unfiled_only,
+                has_schedule=has_schedule,
+                has_external_id=has_external_id,
+                no_oa=no_oa,
+                ref_ids=ref_id_scope,
+                deleted=show_deleted,
+                oldest=(sort == "oldest"),
+                created=(sort == "created"),
+                untried=(sort == "untried"),
+                downloadable_first=(state == "stub"),
+                viewer=viewer,
+                tag_kinds=tag_row_kinds,
+            )
+            # Exact total for the browse "showing N of K" header + last-page
+            # jump — the no-query list is a plain filtered ``refs`` query, so
+            # unlike the fused-search path this count is exact, not a ≈lexical
+            # approximation. Deliberately *not* floored to ``offset + len(recent)``
+            # (the search path does that to correct lexical *under*counting): here
+            # the count is already exact, and on a stale/overshoot ``page=`` — a
+            # bookmarked deep page of a set that has since shrunk — that floor
+            # would clobber the true total up to the empty page's offset ("0 of
+            # 30" for a set of 10). The honest count stands; the pager below hides
+            # the "of Y" once you're past the real last page. ``unfiled_only`` is
+            # threaded through so the denominator counts the same filed-hiding set
+            # the page shows.
+            result_total = await asyncio.to_thread(
+                store.count_recent_refs,
+                ref_kinds,
+                tags=tags,
+                has_pdf=has_pdf,
+                has_chunks=has_chunks,
+                has_schedule=has_schedule,
+                has_external_id=has_external_id,
+                no_oa=no_oa,
+                parent_id=folder_id,
+                unfiled_only=unfiled_only,
+                ref_ids=ref_id_scope,
+                deleted=show_deleted,
+                viewer=viewer,
+            )
+            total_exact = True
 
     if want_tags and not tag_only and page == 1:
         tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1, ref_kinds)
@@ -1344,6 +1463,12 @@ async def index(
         _pager_params.append(("folder", folder_raw))
     if cited_by:
         _pager_params.append(("cited_by", cited_by))
+    if queue:
+        _pager_params.append(("queue", queue))
+    if focus:
+        _pager_params.append(("focus", focus))
+    if serves:
+        _pager_params.append(("serves", serves))
     if scope:
         # Round-trips the active Mine/Sources/Machine highlight across
         # pagination — ``k=`` (appended below) already carries the real
@@ -1399,15 +1524,28 @@ async def index(
         ("until", until, f"Created until {until}"),
         ("cited_by", cited_by, f"Cited by {cited_by}"),
         ("scope", scope, f"Preset: {scope}"),
+        ("queue", queue, "Queue: doable"),
+        ("focus", focus, f"Todo subtree #{focus}"),
+        ("serves", serves, f"Serves {serves}"),
     ):
         if (
             value
             and not (name == "state" and value == "all")
             and not (name == "paper_chunks" and value == "both")
         ):
-            if (q and name in ("folder", "state", "paper_chunks", "cited_by")) or (
-                not q and name in ("since", "until")
-            ):
+            if (
+                q
+                and name
+                in (
+                    "folder",
+                    "state",
+                    "paper_chunks",
+                    "cited_by",
+                    "queue",
+                    "focus",
+                    "serves",
+                )
+            ) or (not q and name in ("since", "until")):
                 label += " (browse only)" if q else " (search only)"
             active_facets.append({"label": label, "url": facet_url(name, "")})
 
@@ -1520,6 +1658,9 @@ async def index(
             "folder": folder_raw,
             "cited_by": cited_by,
             "cited_by_title": cited_by_title,
+            "queue": queue,
+            "focus": focus,
+            "serves": serves,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
             "current": current,

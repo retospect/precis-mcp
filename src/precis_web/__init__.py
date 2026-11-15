@@ -87,7 +87,9 @@ PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
-(Drive, Tags, ToDo, Design); Browse ▾ (Quests, Schedules, Clusters,
+(Drive, Tags, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
+preset the retired ToDo tab's dashboard list became, gr664410 — the
+``/todo/{id}`` workbench stays per-item — Schedules, Clusters,
 Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,
 badged); Manual (top-level and unbadged because it is the no-idea-where tab);
 Ops ▾ (System, Categorizers, Agent Logs, Console, Env, Secrets); search submits
@@ -175,18 +177,9 @@ filing,
 detail/comment timeline, and ``retire`` (soft-delete, "fix landed", distinct
 from ``wontfix``). Filing appends ``— filed by <login> …``; body is the record.
 
-**SE validation selection** — ``routes/blocktree_view.py`` and the 3D
-client reuse block selection for finding messages. Targets carry the loaded
-snapshot identity and actual transformed port pose; a read-only activation
-recheck refuses stale rows. Nullable anchors stay unavailable because placing
-a marker at the block centre would misrepresent a port. Legacy bound ports
-use the existing atom-origin helper and the overlay's pinned structure
-version; selection refuses an overlay with a different binding identity.
-Ambiguous dotted block/port subjects stay unavailable rather than guessing.
-Molecular drawing uses a shared core and captured host: retiring overlays
-cannot touch replacement scenes. Standalone structure remains fixture-only.
-Decoded keys prevent ordinal-ID invention; invalid graphs retain atoms
-with explicit unavailability. Selection changes view state only.
+**SE validation selection** — ``routes/blocktree_view.py`` owns
+block/port selection for finding messages: view-state only, with an
+activation recheck refusing stale rows.
 
 **Manual (`/manual`)** — ``routes/manual.py`` renders user how-to chapters
 from ``src/precis_web/manual/``. They live in-package because the wheel ships

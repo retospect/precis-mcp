@@ -1843,7 +1843,7 @@ def test_refs_by_tag_custom_page_size_preserved_in_links() -> None:
 
 
 def test_todo_dashboard_renders_tree(client) -> None:
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert "Build the thing" in resp.text
     assert "Draft the spec" in resp.text
@@ -3973,7 +3973,7 @@ def test_env_missing_plist_surfaces_red_banner(client, monkeypatch) -> None:
 
 def test_env_in_base_nav(client) -> None:
     """The Env tab is reachable from base.html.j2 nav."""
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert 'href="/env"' in resp.text
 
@@ -3981,7 +3981,7 @@ def test_env_in_base_nav(client) -> None:
 def test_loupe_in_base_nav(client) -> None:
     """The 🔍 loupe form posts to /drive (WS1b repoint) so cross-kind
     search lands on the unified Drive surface."""
-    resp = client.get("/todo")  # any page; loupe is in base
+    resp = client.get("/todo?show_jobs=active")  # any page; loupe is in base
     assert resp.status_code == 200
     assert 'action="/drive"' in resp.text
 
@@ -6113,7 +6113,7 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
     todo_mod._load_tags = load_tags
     try:
         # Default: closed job hidden.
-        resp = client.get("/todo")
+        resp = client.get("/todo?show_jobs=active")
         assert resp.status_code == 200
         assert "plan_tick attempt" not in resp.text
         # show_jobs=all: closed job visible.
@@ -6165,7 +6165,7 @@ def test_dashboard_child_failed_shows_reason_and_retry(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # The reason is surfaced inline…
     assert "⚠ failed" in resp.text
@@ -6244,7 +6244,7 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert "API Error: Claude Code is unable to respond" in resp.text
     assert "runner: killed at wall-clock deadline" not in resp.text
@@ -6316,7 +6316,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert (
         "autocatpath_seed: run failed: child process exited without "
@@ -6327,7 +6327,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
 
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     """STATUS / level badges render as ``<a>`` links that filter on click."""
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # Fake store seeds two open todos; the open badge should be a link
     # to ?require=STATUS:open. The kind:todo badge isn't rendered (only
@@ -6457,7 +6457,7 @@ def test_dashboard_truncates_title_first_line_with_hover_tooltip(
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title=long_body),
     ]
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # First line shows.
     assert "First line summary that should stand alone in the row." in resp.text
@@ -7146,7 +7146,7 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     The badge processor sums asks (0 under the empty-cursor fake) and
     the needs-triage paper count, so the rose badge shows on /todo.
     """
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # New nav structure is present site-wide.
     assert "Needs you" in resp.text

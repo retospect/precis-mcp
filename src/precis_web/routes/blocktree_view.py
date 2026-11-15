@@ -100,6 +100,20 @@ Apply on a store-aware proposal. Both refuse a ``?rev=`` naming a past
 revision (409) — a turn edits the current tree. The panel is hidden on a
 past revision.
 
+Validation-target selection (``GET /se/{slug}/validation-targets`` and
+the 3D client) reuses block selection for finding messages. Targets
+carry the loaded snapshot identity and actual transformed port pose; a
+read-only activation recheck refuses stale rows. Nullable anchors stay
+unavailable because placing a marker at the block centre would
+misrepresent a port. Legacy bound ports use the existing atom-origin
+helper and the overlay's pinned structure version; selection refuses an
+overlay with a different binding identity. Ambiguous dotted block/port
+subjects stay unavailable rather than guessing. Molecular drawing uses
+a shared core and captured host: retiring overlays cannot touch
+replacement scenes. Standalone structure remains fixture-only. Decoded
+keys prevent ordinal-ID invention; invalid graphs retain atoms with
+explicit unavailability. Selection changes view state only.
+
 Still out of scope (see the gripe): argue-with-points (click → anchor →
 job).
 """

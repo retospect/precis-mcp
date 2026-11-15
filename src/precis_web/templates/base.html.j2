@@ -74,10 +74,13 @@
 
           {# ── Daily: always-visible daily-driver kinds ──
              Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
-             restructure) — their routes redirect, so no tab needed. #}
-          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('todo','ToDo','/todo'), ('design','Design','/design')] %}
+             restructure) — their routes redirect, so no tab needed.
+             ToDo joined them (gr664410): the dashboard list is the
+             Drive ``queue=doable`` preset under Browse, and the
+             ``/todo`` workbench stays per-item. #}
+          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('design','Design','/design')] %}
           {# g-chord shortcuts (static/shortcuts.js): one per nav anchor, unique. #}
-          {% set _sc = {'drive': 'g d', 'todo': 'g t', 'drafts': 'g r', 'papers': 'g p', 'status': 'g s'} %}
+          {% set _sc = {'drive': 'g d', 'todos': 'g t', 'drafts': 'g r', 'papers': 'g p', 'status': 'g s'} %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
@@ -103,9 +106,12 @@
              entries link straight to the ``kind=`` facet preset (the same
              target ``/pcb`` etc. now redirect to) rather than bouncing
              through the retired route. Their workbenches
-             (``/structure/{slug}`` etc.) are unaffected. Clusters is
-             a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('drafts','Drafts','/drive?k=draft&folder=*&sort=recency'), ('papers','Papers','/drive?k=paper&folder=*&sort=recency'), ('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
+             (``/structure/{slug}`` etc.) are unaffected. Todos joined on
+             the same terms (gr664410 — the row carries STATUS/prio and
+             the /todo job controls); its preset is the doable queue.
+             Clusters is a bespoke visualization with no Drive
+             equivalent. #}
+          {% set browse = [('drafts','Drafts','/drive?k=draft&folder=*&sort=recency'), ('papers','Papers','/drive?k=paper&folder=*&sort=recency'), ('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('todos','Todos','/drive?submitted=1&k=todo&queue=doable'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"

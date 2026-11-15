@@ -7,7 +7,14 @@ depth check, and STATUS vocabulary stay single-sourced.
 
 Routes:
 
-* ``GET  /todo``                       — dashboard (tree + doable)
+* ``GET  /todo``                       — the todo workbench (focused
+  subtree + doable panel). Bare ``/todo`` — no narrowing params —
+  redirects to the Drive ``queue=doable`` preset, which the retired
+  dashboard list's nav slot now points at (gr664410). Any filter param
+  (``focus``/``serves``/``require``/``exclude``/``show_jobs``/``page``)
+  keeps the workbench live.
+* ``GET  /todo/{id}``                  — canonical workbench path
+  (303 → ``?focus={id}``), like ``/cad/{slug}``.
 * ``POST /todo/roots``                 — create a strategic root
 * ``POST /todo/{parent_id}/children``  — create a child leaf
 * ``POST /todo/{id}/status``           — set STATUS
@@ -1474,7 +1481,7 @@ async def dashboard(
     tree: int | None = Query(default=None),
     page: int = Query(default=1),
     serves: str | None = Query(default=None),
-) -> HTMLResponse:
+) -> Response:
     """Strategic tree + doable queue.
 
     Five orthogonal narrowing controls:
@@ -1492,7 +1499,13 @@ async def dashboard(
       panel already exposes.
     * They compose: focus narrows the universe, the job hide trims
       attempt detritus, and the tag filter narrows what's left.
+
+    Bare ``/todo`` (no params at all) redirects to the Drive
+    ``queue=doable`` preset — the dashboard *list* retired there
+    (gr664410); this page stays on as the per-todo workbench.
     """
+    if not request.query_params:
+        return RedirectResponse(url="/drive?k=todo&queue=doable", status_code=303)
     store = get_store(request)
     rows = _build_rows(store)
     # Vitals are over the WHOLE tree, before the job-hide / focus /
@@ -1561,7 +1574,7 @@ async def dashboard(
         request,
         "todo/dashboard.html.j2",
         {
-            "active_tab": "todo",
+            "active_tab": "todos",
             "rows": filtered,
             "total_rows": len(rows),
             "filtered_rows": filtered_count,
@@ -1588,6 +1601,15 @@ async def dashboard(
             "as_of": datetime.now(UTC),
         },
     )
+
+
+@router.get("/{ref_id}", response_class=HTMLResponse)
+async def workbench(ref_id: int) -> RedirectResponse:
+    """Canonical workbench path (gr664410): ``/todo/{id}`` — a real
+    per-todo URL like ``/cad/{slug}`` — lands on that todo's focused
+    tree, where all its job/edit actions already live. Non-integers
+    422, an unknown id just focuses an empty subtree."""
+    return RedirectResponse(url=f"/todo?focus={ref_id}", status_code=303)
 
 
 @router.get("/{ref_id}/pdf")
@@ -2235,7 +2257,7 @@ async def transcript(request: Request, ref_id: int) -> HTMLResponse:
         request,
         "todo/transcript.html.j2",
         {
-            "active_tab": "todo",
+            "active_tab": "todos",
             "ref_id": ref_id,
             "job_id": found[0] if found else None,
             "turns": turns,
