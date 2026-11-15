@@ -1238,7 +1238,7 @@ def test_cleanup_origin_delete_is_an_ops_repo_push(
     monkeypatch.setattr(
         land_slice._factory_git_mirror,
         "ls_remote",
-        lambda u, refs, *, env: {"slice/42": FULL_SHA},
+        lambda u, refs, *, env, **_kw: {"slice/42": FULL_SHA},
     )
 
     def fake_run(
@@ -1253,7 +1253,13 @@ def test_cleanup_origin_delete_is_an_ops_repo_push(
     ]
     [(dargs, dcwd, denv)] = [t for t in calls if "--delete" in t[0]]
     assert dargs[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
-    assert dargs[-4:] == ["push", url, "--delete", "refs/heads/slice/42"]
+    assert dargs[-5:] == [
+        "push",
+        url,
+        "--delete",
+        "refs/factory/slice/42",
+        "refs/heads/slice/42",
+    ]
     # a fresh, lander-created gitdir under the mirror root — never the
     # shared common dir whose config and hooks are branch-writable
     assert dcwd.parent == land_slice._factory_git_mirror.mirror_root(tmp_path)
@@ -1279,7 +1285,7 @@ def test_cleanup_origin_delete_skips_without_a_remote_branch(
         lambda root, *, env: "https://github.com/example/precis.git",
     )
     monkeypatch.setattr(
-        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env: {}
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
     )
 
     def spy_run(
@@ -1299,6 +1305,39 @@ def test_cleanup_origin_delete_skips_without_a_remote_branch(
         "origin branch: skipped (no trusted origin url)"
     ]
     assert not any("push" in a for a in pushes)
+
+
+def test_cleanup_origin_delete_only_names_the_refs_origin_holds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The slice lives under the hidden ``refs/factory/`` namespace now
+    (no GitHub branch, no PR); a land deletes only that ref when no
+    older build left a visible ``refs/heads/`` branch too."""
+    url = "https://github.com/example/precis.git"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "github_url", lambda root, *, env: url
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, namespace="refs/heads/": (
+            {"slice/42": FULL_SHA} if namespace == land_slice.SLICE_REF_NS else {}
+        ),
+    )
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_run)
+    assert land_slice._delete_remote_branch(tmp_path, "slice/42") == [
+        "push --delete: ok"
+    ]
+    [dargs] = [a for a in calls if "--delete" in a]
+    assert dargs[-4:] == ["push", url, "--delete", "refs/factory/slice/42"]
 
 
 RELEASE_GREEN_LOG = (
@@ -1633,7 +1672,7 @@ def test_poll_green_after_land_notify(
     monkeypatch.setattr(
         land_slice._factory_git_mirror,
         "ls_remote",
-        lambda u, refs, *, env: {"slice/42": FULL_SHA},
+        lambda u, refs, *, env, **_kw: {"slice/42": FULL_SHA},
     )
 
     def fake_mirror_run(
@@ -1679,7 +1718,13 @@ def test_poll_green_after_land_notify(
     deletes = [(a, c, e) for a, c, e in mirror_calls if "--delete" in a]
     [(dargs, dcwd, denv)] = deletes
     assert dargs[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
-    assert dargs[-4:] == ["push", url, "--delete", "refs/heads/slice/42"]
+    assert dargs[-5:] == [
+        "push",
+        url,
+        "--delete",
+        "refs/factory/slice/42",
+        "refs/heads/slice/42",
+    ]
     # ``root`` here is slice_root() == tmp_path (PRECIS_SLICE_ROOT)
     assert dcwd.parent == land_slice._factory_git_mirror.mirror_root(tmp_path)
     assert dcwd != seams["tree"] and seams["tree"] not in dcwd.parents
@@ -2516,7 +2561,7 @@ def test_poll_green_writes_the_land_when_land_notify_did_not(
         lambda root, *, env: "https://github.com/example/precis.git",
     )
     monkeypatch.setattr(
-        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env: {}
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
     )
     ctx, handle = _submit(store, seams)
     _finish(handle, 0, GREEN_LOG)
@@ -3954,7 +3999,7 @@ def test_push_branch_runs_in_the_ops_repo_not_the_tree(
     note = land_slice._push_branch(tree, "slice/42")
     assert "on origin" in note
     pushes = [a for a, _c in seen if "push" in a]
-    assert pushes and f"{sha}:refs/heads/slice/42" in pushes[0]
+    assert pushes and f"{sha}:refs/factory/slice/42" in pushes[0]
     for args, cwd in seen:
         assert args[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
         assert cwd != tree and tree not in cwd.parents
@@ -3977,18 +4022,18 @@ class _FakeOrigin:
     ) -> subprocess.CompletedProcess[str]:
         if "ls-remote" in args:
             out = "".join(
-                f"{sha}\trefs/heads/{ref}\n"
+                f"{sha}\trefs/factory/{ref}\n"
                 for ref, sha in self.tips.items()
-                if f"refs/heads/{ref}" in args
+                if f"refs/factory/{ref}" in args
             )
             self.tips.update(self.move_before_push)
             return _proc(out)
         if "push" not in args:
             return _proc()  # the ops repo's init / alternates plumbing
         self.pushes.append(list(args))
-        spec = next(a for a in args if ":refs/heads/" in a and "=" not in a)
+        spec = next(a for a in args if ":refs/factory/" in a and "=" not in a)
         new, _, dest = spec.partition(":")
-        ref = dest.removeprefix("refs/heads/")
+        ref = dest.removeprefix("refs/factory/")
         lease = next((a for a in args if a.startswith("--force-with-lease=")), None)
         if lease is None:
             held = self.tips.get(ref)
@@ -4051,7 +4096,7 @@ def test_push_branch_rebased_slice_overwrites_its_own_earlier_push(
     note = land_slice._push_branch(tree, "slice/42")
     assert note == "branch push of slice/42: on origin (replaced)"
     assert origin.tips["slice/42"] == new
-    assert f"--force-with-lease=refs/heads/slice/42:{old}" in origin.pushes[0]
+    assert f"--force-with-lease=refs/factory/slice/42:{old}" in origin.pushes[0]
 
 
 def _git_run(repo: Path, *args: str) -> str:
@@ -4101,11 +4146,11 @@ def test_push_branch_replaces_amended_tip(
     # The unfixed commit reaches origin; the FIX-verdict rebuild amends it.
     (tree / "f.txt").write_text("unfixed\n", encoding="utf-8")
     commit(tree, "-a", "-m", "unfixed (td42)")
-    _git_run(tree, "push", str(bare), "refs/heads/slice/42")
+    _git_run(tree, "push", str(bare), "refs/heads/slice/42:refs/factory/slice/42")
     (tree / "g.txt").write_text("fix\n", encoding="utf-8")
     _git_run(tree, "add", "-A")
     commit(tree, "--amend", "-m", "fixed (td42)")
-    old_tip = _git_run(bare, "rev-parse", "refs/heads/slice/42")
+    old_tip = _git_run(bare, "rev-parse", "refs/factory/slice/42")
     new_tip = _git_run(tree, "rev-parse", "refs/heads/slice/42")
     assert old_tip != new_tip
 
@@ -4120,7 +4165,7 @@ def test_push_branch_replaces_amended_tip(
     assert land_slice._push_branch(tree, "slice/42") == (
         "branch push of slice/42: on origin (replaced)"
     )
-    assert _git_run(bare, "rev-parse", "refs/heads/slice/42") == new_tip
+    assert _git_run(bare, "rev-parse", "refs/factory/slice/42") == new_tip
 
     # A move between the ls-remote read and the push is refused.
     commit(main, "--allow-empty", "-m", "theirs")
@@ -4128,15 +4173,15 @@ def test_push_branch_replaces_amended_tip(
     commit(tree, "--allow-empty", "-m", "v2 (td42)")
     real_ls = land_slice._factory_git_mirror.ls_remote
 
-    def moved_ls(url: str, refs: Any, *, env: Any) -> Any:
-        out = real_ls(url, refs, env=env)
-        _git_run(main, "push", "--force", url, f"{theirs}:refs/heads/slice/42")
+    def moved_ls(url: str, refs: Any, *, env: Any, **kw: Any) -> Any:
+        out = real_ls(url, refs, env=env, **kw)
+        _git_run(main, "push", "--force", url, f"{theirs}:refs/factory/slice/42")
         return out
 
     monkeypatch.setattr(land_slice._factory_git_mirror, "ls_remote", moved_ls)
     note = land_slice._push_branch(tree, "slice/42")
     assert note.startswith("branch push of slice/42: FAILED (lease refused")
-    assert _git_run(bare, "rev-parse", "refs/heads/slice/42") == theirs
+    assert _git_run(bare, "rev-parse", "refs/factory/slice/42") == theirs
 
 
 def test_push_branch_first_push_expects_the_ref_absent(
@@ -4145,7 +4190,7 @@ def test_push_branch_first_push_expects_the_ref_absent(
     origin = _FakeOrigin({})
     tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
     assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
-    assert "--force-with-lease=refs/heads/slice/42:" in origin.pushes[0]
+    assert "--force-with-lease=refs/factory/slice/42:" in origin.pushes[0]
     assert origin.tips["slice/42"] == "c" * 40
 
 
@@ -4171,7 +4216,7 @@ def test_push_branch_unreadable_origin_falls_back_to_the_plain_push(
     origin = _FakeOrigin({})
     tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
     monkeypatch.setattr(
-        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env: None
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: None
     )
     assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
     assert not any(a.startswith("--force-with-lease") for a in origin.pushes[0])

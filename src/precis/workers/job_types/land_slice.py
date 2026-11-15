@@ -322,6 +322,7 @@ from precis.plans.templates import (
     PENDING_SHA,
     PRELAND_DEFER_FAILED_KEY,
     PRELAND_FIX_ROUNDS_KEY,
+    SLICE_REF_NS,
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
@@ -1935,14 +1936,24 @@ def _delete_remote_branch(root: Path, branch: str) -> list[str]:
     :func:`~precis.workers.factory_git_mirror.ls_remote` oracle — a
     non-repo cwd no on-disk config can redirect — and the delete
     pushes from a fresh ops gitdir under the credential wiring,
-    exactly like :func:`_push_branch`. Notes; never raises."""
+    exactly like :func:`_push_branch`. Both homes are checked and
+    deleted in one push: the hidden ``refs/factory/<branch>`` the factory
+    pushes now, and a ``refs/heads/<branch>`` an older build left as a
+    visible branch. Notes; never raises."""
     try:
         url = _github_url(root)
         if url is None:
             return ["origin branch: skipped (no trusted origin url)"]
         env = _factory_git.git_auth_env(base=land_env())
-        remote = _factory_git_mirror.ls_remote(url, (branch,), env=env) or {}
-        if not remote.get(branch):
+        gone = [
+            f"{ns}{branch}"
+            for ns in (SLICE_REF_NS, "refs/heads/")
+            if (
+                _factory_git_mirror.ls_remote(url, (branch,), env=env, namespace=ns)
+                or {}
+            ).get(branch)
+        ]
+        if not gone:
             return ["origin branch: not pushed"]
         ops = _factory_git_mirror._ops_repo(
             _factory_git_mirror.mirror_root(root),
@@ -1960,7 +1971,7 @@ def _delete_remote_branch(root: Path, branch: str) -> list[str]:
                     "push",
                     url,
                     "--delete",
-                    f"refs/heads/{branch}",
+                    *gone,
                 ],
                 cwd=ops,
                 env=_factory_git_mirror.trusted_env(env),
@@ -5306,9 +5317,12 @@ def _landed_finish(
 
 
 def _push_branch(tree: Path, branch: str) -> str:
-    """``git push origin <branch>`` under the factory credential — until
-    then the branch lives only on this host, so a killed land's commit
-    would die with a worktree reap (gr598110, jo595597). Never from
+    """Push ``<branch>`` to origin's hidden ``refs/factory/<branch>``
+    (:data:`~precis.plans.templates.SLICE_REF_NS`) under the factory
+    credential — until then the branch lives only on this host, so a
+    killed land's commit would die with a worktree reap (gr598110,
+    jo595597). Never ``refs/heads/``: GitHub would list the branch and
+    offer a "Compare & pull request" for it (Reto 2026-11-15). Never from
     ``tree``'s own gitdir: the tree's config and hooks are
     branch-written, so a planted ``hooks/pre-push`` or a
     ``url.insteadOf`` redirect would meet the token (review td660513
@@ -5348,10 +5362,14 @@ def _push_branch(tree: Path, branch: str) -> str:
         )
         if ops is None:
             return f"branch push of {branch}: FAILED (no ops repo)"
-        remote = _factory_git_mirror.ls_remote(url, (branch,), env=env)
+        remote = _factory_git_mirror.ls_remote(
+            url, (branch,), env=env, namespace=SLICE_REF_NS
+        )
         lease: list[str] = []
         if remote is not None:
-            lease = [f"--force-with-lease=refs/heads/{branch}:{remote.get(branch, '')}"]
+            lease = [
+                f"--force-with-lease={SLICE_REF_NS}{branch}:{remote.get(branch, '')}"
+            ]
         proc = _factory_git_mirror._run(
             [
                 "git",
@@ -5360,7 +5378,7 @@ def _push_branch(tree: Path, branch: str) -> str:
                 str(ops),
                 "push",
                 url,
-                f"{sha}:refs/heads/{branch}",
+                f"{sha}:{SLICE_REF_NS}{branch}",
                 *lease,
             ],
             cwd=ops,

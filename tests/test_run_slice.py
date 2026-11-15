@@ -2496,13 +2496,20 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
     target = run_slice._review_target(store, meta)
     assert target is not None
     fetched = [a[-1] for a in calls if a[:1] == ["fetch"]]
+    # The slice lives under the hidden refs/factory/ namespace (no GitHub
+    # branch, no PR); the worker fetches it by name.
     assert fetched == [
         "+refs/heads/main:refs/remotes/origin/main",
-        "+refs/heads/slice/7:refs/remotes/origin/slice/7",
+        "+refs/factory/slice/7:refs/remotes/origin/slice/7",
     ]
     assert "git diff origin/main...origin/slice/7" in target
     assert "1075dbbc71144ae1d14630f3185a691ea543fc99" in target
     assert "Run `git fetch" not in target
+    # A reviewer that fetches anyway is told a plain fetch skips the ref.
+    assert (
+        "git fetch -q origin +refs/factory/slice/7:refs/remotes/origin/slice/7"
+        in target
+    )
 
     def no_ref(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         return _proc("", rc=1) if args[:1] == ["rev-parse"] else _proc()

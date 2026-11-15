@@ -282,6 +282,21 @@ PENDING_LAND_KEY = "pending_land"
 #: a later successful defer clears it, ``land_slice._record_land``
 #: discharges it.
 PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
+#: Where the factory keeps a slice branch on origin: a hidden namespace,
+#: not ``refs/heads/``, so GitHub lists no branch and offers no "Compare
+#: & pull request" for it (Reto 2026-11-15) — landing is ship's squash,
+#: never a PR. A plain ``git fetch origin`` skips it, so every reader
+#: fetches it by name (:func:`slice_fetch_cmd`).
+SLICE_REF_NS = "refs/factory/"
+
+
+def slice_fetch_cmd(branch: str) -> str:
+    """The fetch that makes ``origin/<branch>`` resolve in a reviewer's
+    checkout: the hidden :data:`SLICE_REF_NS` ref into the usual
+    remote-tracking name, so the ``git diff`` after it is unchanged."""
+    return f"git fetch -q origin +{SLICE_REF_NS}{branch}:refs/remotes/origin/{branch}"
+
+
 #: The trailer ``plan_dispatch`` ends a pre-land FIX/REVERT hand-back
 #: with (gr684815). ``run_slice._brief_parts`` reads it to tell the
 #: tick's hand-back — the finding the rebuild exists to act on — from a
@@ -326,8 +341,11 @@ def _reviewer_brief(
     if preland:
         intro = "Review BEFORE land, from another lane than the builder's."
         what = (
-            f"td{target_id}'s branch is pushed as `origin/slice/{target_id}`: "
-            f"`git fetch -q origin`, then `git diff origin/main...origin/slice/"
+            f"td{target_id}'s branch is pushed to origin as the hidden ref "
+            f"`{SLICE_REF_NS}slice/{target_id}` (a plain `git fetch` skips "
+            f"it): `git fetch -q origin main`, "
+            f"`{slice_fetch_cmd(f'slice/{target_id}')}`, then "
+            f"`git diff origin/main...origin/slice/"
             f"{target_id}` against td{target_id}'s brief chunk "
             f"(`get(kind='todo', id={target_id})`)."
         )

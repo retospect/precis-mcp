@@ -2825,7 +2825,7 @@ def _close_dead_chain(
                 "the work: fetch the sha the stamp names from the node "
                 "worktree (or re-run the build — the push is "
                 "lease-guarded now), push it to "
-                "`origin/slice/<id>`, clear the target's "
+                "origin's hidden `refs/factory/slice/<id>`, clear the target's "
                 "`meta.preland_defer_failed` and reopen it — the "
                 "reviewer re-gates on the next defer. To drop it: close "
                 f"{'the target' if len(stamped) == 1 else 'each stamped target'} "

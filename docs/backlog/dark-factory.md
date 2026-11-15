@@ -324,10 +324,13 @@ factory keeps the machinery and adds an owner to every branch.
 - **Review before land, gating it, from another lane (gr570506, Reto
   2026-11-12 — supersedes "review after land, non-blocking").** The
   squash commit to `main` is the LAST step: the builder's clean exit
-  pushes `slice/<id>` to origin and holds the `land_slice` mint as
-  `meta.pending_land` on the build todo, which closes; the reviewer
-  (`meta.preland_review`, lane table `exclude=` the builder's vendor)
-  releases, reads `git diff origin/main...origin/slice/<id>` against
+  pushes `slice/<id>` to origin's hidden `refs/factory/slice/<id>` (not
+  `refs/heads/`, so GitHub shows no branch and offers no PR — Reto
+  2026-11-15; the land stays ship's squash) and holds the `land_slice`
+  mint as `meta.pending_land` on the build todo, which closes; the
+  reviewer (`meta.preland_review`, lane table `exclude=` the builder's
+  vendor) releases, fetches that ref by name into `origin/slice/<id>`,
+  reads `git diff origin/main...origin/slice/<id>` against
   the brief and posts `review: LAND|FIX — <list>|REVERT — <why>`.
   `LAND` mints the held land; `FIX`/`REVERT` send the branch back to
   the builder with the findings as its handoff (nothing is on main to

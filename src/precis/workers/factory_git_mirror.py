@@ -386,12 +386,18 @@ def _tip(repo: Path, ref: str, *, env: Mapping[str, str]) -> str | None:
 
 
 def ls_remote(
-    url: str, refs: tuple[str, ...] | list[str], *, env: Mapping[str, str]
+    url: str,
+    refs: tuple[str, ...] | list[str],
+    *,
+    env: Mapping[str, str],
+    namespace: str = "refs/heads/",
 ) -> dict[str, str] | None:
     """The oracle: ``git ls-remote`` from a non-repo cwd under
     :func:`trusted_env`, so no on-disk config can redirect it — the
-    answer is what GitHub actually serves. ``{ref: sha}``, ``None``
-    when GitHub cannot be read (a refused compare is always safe)."""
+    answer is what GitHub actually serves. ``{ref: sha}`` with ``ref``
+    relative to ``namespace`` (branches by default; the factory's hidden
+    slice refs pass ``refs/factory/``), ``None`` when GitHub cannot be
+    read (a refused compare is always safe)."""
     try:
         cp = _run(
             [
@@ -399,7 +405,7 @@ def ls_remote(
                 *TRUSTED_ARGS,
                 "ls-remote",
                 url,
-                *[f"refs/heads/{r}" for r in refs],
+                *[f"{namespace}{r}" for r in refs],
             ],
             cwd=Path(tempfile.gettempdir()),
             env=trusted_env(env),
@@ -414,10 +420,10 @@ def ls_remote(
         parts = line.split()
         if (
             len(parts) == 2
-            and parts[1].startswith("refs/heads/")
+            and parts[1].startswith(namespace)
             and _SHA_RE.fullmatch(parts[0])
         ):
-            out[parts[1][len("refs/heads/") :]] = parts[0]
+            out[parts[1][len(namespace) :]] = parts[0]
     return out
 
 

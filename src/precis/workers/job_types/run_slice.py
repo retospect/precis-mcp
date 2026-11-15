@@ -1189,7 +1189,8 @@ def _defer_land_for_review(
     ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
 ) -> str:
     """Hold the land behind the pre-land review td<reviewer> (gr570506):
-    push the slice branch to origin (the reviewer's worktree reads the
+    push the slice branch to origin's hidden ``refs/factory/`` namespace
+    (the reviewer's worktree reads the
     diff off it; a reaped worktree loses nothing), stamp the land's
     params as ``meta.pending_land`` and close the todo — the tick
     releases the reviewer, which gates the ``land_slice`` mint on its
@@ -1539,7 +1540,8 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "You are read-only: run no tests, no typecheck, no lint and no "
         "`uv` or `scripts/test` command — read the diff the Review target "
         "section names (a `git show <sha>` squash after land, a "
-        "`git diff <base>...origin/slice/<id>` branch before it, `<base>` "
+        "`git diff <base>...origin/slice/<id>` branch before it (fetched by "
+        "the command the Review target section gives), `<base>` "
         "being `origin/main` or, for a release fix whose todo names a "
         "`land target: release/r<N>`, `origin/release/r<N>`) and the files. "
         "End your verdict line with "
@@ -1623,17 +1625,18 @@ def _followups_on_main(root: Path, landed: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.strip()][:10]
 
 
-def _fetch_review_branch(branch: str) -> None:
-    """Best-effort fetch of ``origin/<branch>`` into the slice checkout,
-    so a reviewer's ``git show`` of a release-branch squash resolves
-    (release-train T3 review F3)."""
+def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> None:
+    """Best-effort fetch of origin's ``<namespace><branch>`` into the slice
+    checkout's ``origin/<branch>``, so a reviewer's ``git show`` of a
+    release-branch squash resolves (release-train T3 review F3); a held
+    slice passes the hidden ``refs/factory/`` namespace."""
     try:
         _git(
             [
                 "fetch",
                 "-q",
                 "origin",
-                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                f"+{namespace}{branch}:refs/remotes/origin/{branch}",
             ],
             slice_root(),
         )
@@ -1650,8 +1653,12 @@ def _preland_head(branch: str) -> str | None:
     branch pushed from another clone was reviewed stale. A stale
     ``origin/main`` would also widen the three-dot diff with main's own
     commits once the branch is rebased past it."""
+    from precis.plans.templates import SLICE_REF_NS
+
     _fetch_review_branch("main")
-    _fetch_review_branch(branch)
+    # The slice lives under the hidden namespace, not refs/heads/ (no
+    # GitHub branch, no PR — Reto 2026-11-15).
+    _fetch_review_branch(branch, namespace=SLICE_REF_NS)
     try:
         proc = _git(["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root())
     except (RuntimeError, OSError, subprocess.TimeoutExpired):
@@ -1668,7 +1675,11 @@ def _review_target(store: Any, meta: Any) -> str | None:
     that touch the same files are named (gr568824) — a finding a
     follow-up already fixed is not a finding. ``None`` for any other
     node."""
-    from precis.plans.templates import PENDING_LAND_KEY
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        SLICE_REF_NS,
+        slice_fetch_cmd,
+    )
 
     if _generate_role(meta) != "reviewer":
         return None
@@ -1729,11 +1740,13 @@ def _review_target(store: Any, meta: Any) -> str | None:
             head = _preland_head(branch)
             lines.append(
                 "Pre-land review (gr570506): nothing is on main yet — the "
-                f"diff is td{target_id}'s branch, pushed to origin. This "
+                f"diff is td{target_id}'s branch, pushed to origin as the "
+                f"hidden ref `{SLICE_REF_NS}{branch}`. This "
                 "checkout fetched it before your session started: read "
                 f"`git diff origin/main...origin/{branch}`. A `git fetch` "
                 "of your own may be refused by the sandbox; you do not "
-                "need one."
+                "need one (if you do fetch, a plain `git fetch` skips the "
+                f"hidden ref: `{slice_fetch_cmd(branch)}`)."
             )
             if head:
                 lines.append(

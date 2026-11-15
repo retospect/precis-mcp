@@ -89,11 +89,14 @@ a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
 
 1. **build** — `run_slice` launches the lane's vendor in a worktree on
    `slice/<todo id>` with the body as its brief. A clean committed
-   exit pushes the branch to origin and, when a `preland_review`
-   reviewer gates it, stamps `meta.pending_land` and closes the todo —
-   the land is held, not minted.
+   exit pushes the branch to origin as the hidden ref
+   `refs/factory/slice/<id>` (no GitHub branch, no PR) and, when a
+   `preland_review` reviewer gates it, stamps `meta.pending_land` and
+   closes the todo — the land is held, not minted.
 2. **review** — the released reviewer (another vendor than the
-   builder) reads `git diff origin/main...origin/slice/<id>` and posts
+   builder) fetches that ref by name (`git fetch origin
+   +refs/factory/slice/<id>:refs/remotes/origin/slice/<id>` — a plain
+   fetch skips it), reads `git diff origin/main...origin/slice/<id>` and posts
    one verdict comment: `review: LAND` · `review: FIX — <findings>` ·
    `review: REVERT — <why>`. LAND mints the held `land_slice`;
    FIX/REVERT send the branch back to the builder with the findings as
