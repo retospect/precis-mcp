@@ -27,6 +27,10 @@ behind the existing seven verbs — **no new verbs**:
 
 Chunks are addressed by the computed ``dc<chunk_id>`` handle (the legacy ``¶<base58>`` still resolves during the transition); the draft
 itself by its slug (the universal ``id=``). See ``precis-draft-help``.
+
+TOON replacement receipts count kept, added and retired live row/column IDs,
+including in dry runs. Filtered grids can otherwise hide accidental retirement;
+omitted calculated columns that survive replacement count as kept.
 """
 
 from __future__ import annotations
@@ -5287,6 +5291,26 @@ class DraftHandler(Handler):
             except BadInput as exc:
                 raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"replaced table {chunk.dc}"
+            # Compare live identities, not retired-id history: omitted derived
+            # columns survive table_from_toon and must count as kept.
+            for label, key in (("rows", "rowmeta"), ("columns", "columns")):
+                before_ids = [item["id"] for item in (cur_table or {}).get(key, [])]
+                new_ids = {item["id"] for item in norm[key]}
+                retired = [item for item in before_ids if item not in new_ids]
+                kept = len(set(before_ids) & new_ids)
+                op_reply += (
+                    f"; {label}: {kept} kept, {len(new_ids) - kept} added, "
+                    f"{len(retired)} retired"
+                )
+                if retired:
+                    listed = ", ".join(retired[:20])
+                    if len(retired) > 20:
+                        listed += f", … (+{len(retired) - 20} more)"
+                    op_reply += f" ({listed})"
+            if " retired (" in op_reply:
+                op_reply += (
+                    "; use patch= for subset edits to preserve omitted rows and columns"
+                )
         elif add_column is not None:
             if not cur_table:
                 raise no_data_err

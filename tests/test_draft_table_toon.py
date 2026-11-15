@@ -296,6 +296,51 @@ def test_edit_toon_replace(draft: DraftHandler, hub: Hub) -> None:
     t = _meta(hub, tc)
     assert [r["id"] for r in t["rowmeta"]] == old[0]
     assert [c["id"] for c in t["columns"]] == old[1]
+    assert "rows: 2 kept, 0 added, 0 retired" in r.body
+    assert "columns: 3 kept, 0 added, 0 retired" in r.body
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_edit_toon_replace_reports_retired_ids(
+    draft: DraftHandler, hub: Hub, dry_run: bool
+) -> None:
+    tc = _seed(draft, hub)
+    before = copy.deepcopy(_meta(hub, tc))
+    rows, cols = _ids(hub, tc)
+    doc = f"{{#\t{cols[0]}:el\tnew}}\n{rows[0]}\tSi\t1\n\tGe\t2\n"
+    r = draft.edit(id=tc.dc, toon=doc, dry_run=dry_run)
+    assert f"rows: 1 kept, 1 added, 1 retired ({rows[1]})" in r.body
+    assert f"columns: 1 kept, 1 added, 2 retired ({cols[1]}, {cols[2]})" in r.body
+    assert "use patch= for subset edits" in r.body
+    after = _meta(hub, tc)
+    if dry_run:
+        assert "dry-run — nothing written" in r.body
+        assert after == before
+    else:
+        assert rows[1] not in [row["id"] for row in after["rowmeta"]]
+        assert cols[1] not in [col["id"] for col in after["columns"]]
+
+
+def test_edit_toon_replace_caps_retired_ids(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    draft.edit(id=tc.dc, rows=[[str(i), i, i] for i in range(25)])
+    rows, _cols = _ids(hub, tc)
+    r = draft.edit(id=tc.dc, toon="{#\tel}\n\tSi\n", dry_run=True)
+    assert "rows: 0 kept, 1 added, 27 retired" in r.body
+    assert ", ".join(rows[:20]) + ", … (+7 more)" in r.body
+    assert rows[20] not in r.body
+
+
+def test_edit_toon_replace_counts_preserved_formula_column(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _seed(draft, hub)
+    draft.edit(id=tc.dc, add_column={"name": "total", "formula": "qty*2"})
+    rows, cols = _ids(hub, tc)
+    doc = table_toon(_meta(hub, tc), cols=cols[:3], rows=[rows[0]])
+    r = draft.edit(id=tc.dc, toon=doc, dry_run=True)
+    assert "columns: 4 kept, 0 added, 0 retired" in r.body
+    assert f"rows: 1 kept, 0 added, 1 retired ({rows[1]})" in r.body
 
 
 def test_edit_base_guard(draft: DraftHandler, hub: Hub) -> None:
