@@ -1134,6 +1134,9 @@ class FakeStore(_FakeStoreBase):
         self.search_kinds = list(kinds)
         self.search_offset = offset
         self.search_sort = _kw.get("sort")
+        #: ``include_ref_ids`` allow-list — the ``serves=<qid>`` link-graph
+        #: scope under search (``None`` = no restriction, ``[]`` = nothing).
+        self.search_include_ref_ids = _kw.get("include_ref_ids")
         hits = getattr(self, "cross_kind_hits", None)
         if hits is None:
             pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
@@ -1144,7 +1147,11 @@ class FakeStore(_FakeStoreBase):
             blk_w = SimpleNamespace(id=1002, ord=0, text="web snippet about the query")
             hits = [(blk_p, pref, 0.9), (blk_w, wref, 0.8)]
         want = set(kinds)
-        return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
+        out = [(b, r, s) for (b, r, s) in hits if r.kind in want]
+        if self.search_include_ref_ids is not None:
+            allow = set(self.search_include_ref_ids)
+            out = [t for t in out if t[1].id in allow]
+        return out[offset:]
 
     def count_chunks_lexical(
         self,
@@ -1155,6 +1162,7 @@ class FakeStore(_FakeStoreBase):
         scope_ref_id=None,
         tags=None,
         exclude_ref_ids=None,
+        include_ref_ids=None,
         card_kinds=None,
         distinct_refs=False,
         since=None,
@@ -1174,6 +1182,7 @@ class FakeStore(_FakeStoreBase):
             "distinct_refs": distinct_refs,
             "since": since,
             "until": until,
+            "include_ref_ids": include_ref_ids,
         }
         return self.result_total
 

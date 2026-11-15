@@ -248,6 +248,7 @@ def _pin_title_matches(
     *,
     q: str,
     kinds: list[str],
+    ref_ids: list[int] | None = None,
 ) -> tuple[list[tuple[Any, Any, float]], set[int]]:
     """Pin refs whose *title* nearly is ``q`` ahead of the fused chunk hits.
 
@@ -268,8 +269,10 @@ def _pin_title_matches(
     the answer. Returns ``(hits, pinned_ref_ids)``; ``pinned_ref_ids``
     names the refs moved/injected to the front so the row builder can
     keep their ``has_chunks`` badges honest (a chunk hit is ingested by
-    definition; a pinned stub is not). Best-effort: any lookup hiccup
-    returns ``hits`` unchanged.
+    definition; a pinned stub is not). ``ref_ids`` is the ``serves=<qid>``
+    link-graph scope's allow-list — a title match outside it stays out
+    (``None`` is no restriction, ``[]`` pins nothing). Best-effort: any
+    lookup hiccup returns ``hits`` unchanged.
     """
     paper_kinds = [k for k in kinds if k in _TITLE_PIN_KINDS]
     # The trigram lookup scans ``refs`` per row (no index), so only pay
@@ -278,9 +281,12 @@ def _pin_title_matches(
         return hits, set()
     try:
         matches = store.find_refs_by_title_similarity(kinds=paper_kinds, q=q, limit=3)
-        if not matches:
-            return hits, set()
         match_ids = [rid for rid, _sim in matches]
+        if ref_ids is not None:
+            allow = set(ref_ids)
+            match_ids = [rid for rid in match_ids if rid in allow]
+        if not match_ids:
+            return hits, set()
         existing = {h[1].id: h for h in hits}
         refs_map = store.fetch_refs_by_ids(
             [rid for rid in match_ids if rid not in existing]
@@ -315,12 +321,16 @@ def _run_search(
     until: datetime | None,
     tags: list[str],
     offset: int,
+    ref_ids: list[int] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Blocking search + row-build; runs in a worker thread.
 
     Embeds the query once (degrading to lexical if the embedder is
     absent or warming), runs the cross-kind primitive filtered by the
-    selected ``tags``, then batches the flag/tag state for the whole page.
+    selected ``tags`` and the ``ref_ids`` allow-list (the
+    ``serves=<qid>`` link-graph scope — ``None`` is no restriction,
+    ``[]`` restricts to nothing, matching ``recent_refs``), then batches
+    the flag/tag state for the whole page.
     Over-fetches one extra hit past ``_PAGE_SIZE`` to probe "has next
     page" without a separate count query; returns ``(rows, has_next)``.
     """
@@ -341,20 +351,24 @@ def _run_search(
         limit=_PAGE_SIZE + 1,
         offset=offset,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
+        include_ref_ids=ref_ids,
     )
     # Title introducer, same gate as the single-kind paper search (first
     # page, unfiltered): an exact-title query pins the paper's record
     # first (gr537785) — a tag/date facet is a deliberate filter, so it
-    # bounds the pin the way ``scope=``/``after=`` bound the MCP one.
+    # bounds the pin the way ``scope=``/``after=`` bound the MCP one; the
+    # ``ref_ids`` scope bounds it inside ``_pin_title_matches`` itself.
     pinned_ids: set[int] = set()
     if offset == 0 and not tags and since is None and until is None:
-        hits, pinned_ids = _pin_title_matches(store, hits, q=q, kinds=kinds)
+        hits, pinned_ids = _pin_title_matches(
+            store, hits, q=q, kinds=kinds, ref_ids=ref_ids
+        )
     has_next = len(hits) > _PAGE_SIZE
     hits = hits[:_PAGE_SIZE]
-    ref_ids = [ref.id for _, ref, _ in hits]
-    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
-    tags_bulk = store.ref_tags_bulk(ref_ids)
-    idents = store.paper_identifiers(ref_ids)
+    hit_ref_ids = [ref.id for _, ref, _ in hits]
+    flag_state = store.ref_tag_values(hit_ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    tags_bulk = store.ref_tags_bulk(hit_ref_ids)
+    idents = store.paper_identifiers(hit_ref_ids)
     summaries = store.chunks.chunk_summaries_bulk(
         [(ref.id, block.ord) for block, ref, _ in hits if block is not None]
     )

@@ -3789,6 +3789,41 @@ def test_drive_serves_scope_malformed_or_empty_is_empty_queue(client, runtime) -
     assert runtime.store.recent_ref_ids == []
 
 
+def test_drive_serves_scope_bounds_search(client, runtime) -> None:
+    """``/drive?serves=<qid>&q=…`` keeps the link-graph scope under
+    search — the retired ``/refs/<kind>?serves=`` handler filtered its
+    ranked hits by the same inbound-``serves`` set, so a query inside the
+    retinue must not leak a matching non-serving ref. The hits, the
+    ≈lexical count and the title pin all bound (gr664412 review FIX,
+    td664895)."""
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    runtime.store.serves_links.append(SimpleNamespace(src_ref_id=10, dst_ref_id=97))
+    serving = make_ref(
+        id=10, kind="paper", slug="smith2024", title="Serving catalyst paper"
+    )
+    outsider = make_ref(
+        id=11, kind="paper", slug="jones2025", title="Unrelated catalyst paper"
+    )
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the catalyst query")
+    runtime.store.cross_kind_hits = [(blk, serving, 0.9), (blk, outsider, 0.8)]
+    # A title-pin candidate outside the scope must not jump back in
+    # (ref 11 resolves against the fixture pool's "Another paper").
+    runtime.store.title_similarity_hits = [(11, 0.95)]
+
+    r = client.get("/drive?k=paper&serves=97&q=catalyst+reaction+mechanism")
+    assert r.status_code == 200
+    assert runtime.store.search_include_ref_ids == [10]
+    assert runtime.store.result_total_call["include_ref_ids"] == [10]
+    assert "Serving catalyst paper" in r.text
+    assert "Unrelated catalyst paper" not in r.text
+    assert "Another paper" not in r.text
+    # The scope is a real filter under search now — no "(browse only)" tag.
+    assert "browse only" not in r.text
+
+
 def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:
     """``/refs/oracle`` (decision D2) folds into a Drive kind-facet
     preset — the detail reader (``/refs/oracle/{id}``) is unaffected."""

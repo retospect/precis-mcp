@@ -878,11 +878,14 @@ async def index(
     resubmit and a bookmarked/shared ``?scope=`` link resolves the same
     kind set with no ``k=`` at all.
 
-    ``serves=<qid>`` scopes the no-query browse to the refs carrying an
+    ``serves=<qid>`` scopes the listing to the refs carrying an
     inbound ``serves`` edge to that quest — the link-graph scope the
     ``/refs/quest/<id>`` retinue chips and the retired
-    ``/refs/<kind>?serves=`` listing target. A ``q`` ignores it; an
-    explicit ``folder=`` still narrows within the scope.
+    ``/refs/<kind>?serves=`` listing target. It bounds the no-query
+    browse *and* a ``q`` search (hits, the ≈count and the title pin all
+    stay inside the served set — the retired handler's ``serve_ids``
+    filter, gr664412 review); an explicit ``folder=`` still narrows
+    within the browse scope only.
     """
     store = get_store(request)
     from precis_web.auth import current_user
@@ -1104,20 +1107,22 @@ async def index(
             )
             selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
 
-    # ``serves=<qid>`` scopes the browse to the refs that ``serves`` that
+    # ``serves=<qid>`` scopes the listing to the refs that ``serves`` that
     # quest — the link-graph signal itself (inbound ``serves`` edges, one
     # hop), so the retinue chips on ``/refs/quest/<id>`` and the retired
     # ``/refs/<kind>?serves=`` redirect land on exactly the set their count
     # reads. The ``quest:<id>`` OPEN tag is a *separate* membership signal
     # only some serves-link mint paths stamp (``precis.quest.tagging`` is
     # paper-scoped) — routing through it undercounts (td664895). Same
-    # ``ref_ids`` allow-list mechanism as ``cited_by``; a bogus/malformed
-    # scope narrows to the empty set, never the corpus, and ``q`` ignores
-    # it (a text query already scopes to matched live chunks).
+    # ``ref_ids`` allow-list mechanism as ``cited_by``, applied to the
+    # browse *and* threaded into the search path (hits, ≈count, title
+    # pin) — the retired ``/refs/<kind>?serves=`` handler filtered its
+    # search hits by the same set (gr664412 review). A bogus/malformed
+    # scope narrows to the empty set, never the corpus.
     serves = (serves or "").strip()
     serves_ref_ids: list[int] | None = None
     serves_title: str | None = None
-    if serves and not q:
+    if serves:
         if serves.isdigit():
             serve_qid = int(serves)
             serves_ref_ids = sorted(
@@ -1208,9 +1213,11 @@ async def index(
             until=until_dt,
             tags=tags,
             offset=offset,
+            ref_ids=scope_ref_ids,
         )
         if ambiguous_ids and offset == 0:
-            # An ambiguous DOI prefix: list the matching papers first.
+            # An ambiguous DOI prefix: list the matching papers first —
+            # still inside the serves scope when one is active.
             first, _ = await asyncio.to_thread(
                 _recent_rows,
                 store,
@@ -1219,7 +1226,11 @@ async def index(
                 None,
                 None,
                 0,
-                ref_ids=ambiguous_ids,
+                ref_ids=(
+                    sorted(set(ambiguous_ids) & set(scope_ref_ids))
+                    if scope_ref_ids is not None
+                    else ambiguous_ids
+                ),
             )
             seen = {r["id"] for r in first}
             rows = [*first, *(r for r in rows if r.get("id") not in seen)]
@@ -1238,6 +1249,7 @@ async def index(
                 distinct_refs=True,
                 since=since_dt,
                 until=until_dt,
+                include_ref_ids=scope_ref_ids,
             )
         else:
             result_total = 0
@@ -1423,9 +1435,9 @@ async def index(
             and not (name == "state" and value == "all")
             and not (name == "paper_chunks" and value == "both")
         ):
-            if (
-                q and name in ("folder", "state", "paper_chunks", "cited_by", "serves")
-            ) or (not q and name in ("since", "until")):
+            if (q and name in ("folder", "state", "paper_chunks", "cited_by")) or (
+                not q and name in ("since", "until")
+            ):
                 label += " (browse only)" if q else " (search only)"
             active_facets.append({"label": label, "url": facet_url(name, "")})
 
