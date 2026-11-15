@@ -522,6 +522,13 @@ def add_parser(subparsers: Any) -> None:
     )
     cs.add_argument("--limit", type=int, default=None, help="At most N hubs.")
     cs.add_argument(
+        "--quoted-only",
+        action="store_true",
+        help="With --apply, write only sentences whose added conditions are "
+        "all quoted from the paper; a sentence with a '(... not reported)' "
+        "marker is reported as marker-held, not written.",
+    )
+    cs.add_argument(
         "--work-class",
         choices=["background", "deliverable", "interactive"],
         default="background",
@@ -1894,6 +1901,7 @@ def _run_conditions_sweep(args: argparse.Namespace) -> None:
                 draft_ref_id=draft_ref_id,
                 family=args.family,
                 out=args.out if args.out else sys.stdout,
+                quoted_only=bool(getattr(args, "quoted_only", False)),
             )
     except BadInput as exc:
         print(f"taproot conditions-sweep: error: {exc.cause}", file=sys.stderr)

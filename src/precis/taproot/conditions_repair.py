@@ -173,7 +173,8 @@ class HubConditions:
     validation; ``applied`` says whether it was written), ``ambiguous``,
     ``rejected`` (validation failed), ``no-evidence``, ``llm-failed``,
     ``frozen`` (hub already signed), ``possible-duplicate`` (the new
-    pub_id belongs to another hub), ``apply-failed``.
+    pub_id belongs to another hub), ``apply-failed``, ``marker-held``
+    (``quoted_only`` apply: a "(... not reported)" marker, not written).
     """
 
     hub_ref_id: int
@@ -766,7 +767,12 @@ def _clean_added(raw: Any) -> tuple[dict[str, str], ...]:
 
 
 def _conditions_one(
-    store: Store, cand: ConditionsCandidate, fn: ProposeFn, *, apply: bool
+    store: Store,
+    cand: ConditionsCandidate,
+    fn: ProposeFn,
+    *,
+    apply: bool,
+    quoted_only: bool = False,
 ) -> tuple[HubConditions, int]:
     """One hub: ``(outcome, llm_calls)``. Never raises on a model failure
     or a refused write."""
@@ -881,6 +887,10 @@ def _conditions_one(
     }
     if not apply:
         return row(status, **common), 1
+    if quoted_only and unstated:
+        # First apply batches write only quoted conditions; a sentence
+        # carrying a "(... not reported)" marker waits for review.
+        return row("marker-held", **common), 1
     try:
         res = refine_claim_sentence(
             store, cand.hub_ref_id, new, set_by="conditions-sweep"
@@ -919,6 +929,7 @@ def run_conditions_sweep(
     family: str | None = None,
     out: str | Path | IO[str] | None = None,
     propose_fn: ProposeFn | None = None,
+    quoted_only: bool = False,
 ) -> dict[str, Any]:
     """Select the cohort, propose + validate per hub, and (``apply=True``
     only) write through the retitle door. Dry-run (default) writes nothing.
@@ -944,7 +955,9 @@ def run_conditions_sweep(
         else:
             sink = out
         for cand in cands:
-            res, n = _conditions_one(store, cand, fn, apply=apply)
+            res, n = _conditions_one(
+                store, cand, fn, apply=apply, quoted_only=quoted_only
+            )
             results.append(res)
             calls += n
             if sink is not None:

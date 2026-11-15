@@ -364,6 +364,44 @@ def test_partial_add_carries_added_condition_plus_marker(store: Any) -> None:
     assert check_conditions(title) == []
 
 
+def test_quoted_only_holds_marker_sentences(store: Any, tmp_path: Any) -> None:
+    hub = _hub(store, methods="Electrolysis was run at −0.5 V vs RHE for 2 h.")
+    out = tmp_path / "o.jsonl"
+
+    def fn(c: Any, t: str) -> dict[str, Any]:
+        return {
+            "verdict": "add",
+            "sentence": OLD[:-1] + " at -0.5 V vs RHE.",
+            "added": [
+                {
+                    "condition": "potential",
+                    "text": "-0.5 V vs RHE",
+                    "quote": "−0.5 V vs RHE",
+                }
+            ],
+            "not_reported": ["electrolyte"],
+            "reason": "partial",
+        }
+
+    summary = run_conditions_sweep(
+        store, apply=True, out=out, propose_fn=fn, quoted_only=True
+    )
+    assert summary["counts"] == {"marker-held": 1}
+    assert summary["applied"] == 0
+    assert _title(store, hub) == OLD
+    (row,) = _rows(out)
+    assert row["new"].endswith("(electrolyte not reported).")
+
+
+def test_quoted_only_still_writes_fully_quoted_adds(store: Any) -> None:
+    hub = _hub(store)
+    summary = run_conditions_sweep(
+        store, apply=True, propose_fn=_add(), quoted_only=True
+    )
+    assert summary["counts"] == {"added": 1} and summary["applied"] == 1
+    assert _title(store, hub) == NEW
+
+
 # ── validator holes (reviewer round) ─────────────────────────────────────
 
 PAPER = "Runs were done at −0.5 V vs RHE in 0.5 M K₂SO₄ electrolyte under argon."
