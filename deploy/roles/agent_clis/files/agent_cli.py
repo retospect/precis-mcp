@@ -29,6 +29,21 @@ Only the last non-empty stdout line supplies the pin; npm warnings on stderr
 are diagnostics. Reject prereleases because smoke parses numeric versions,
 and refuse ``latest`` for installers that cannot pin a version.
 
+Where a CLI is looked for, and who installs it. The role runs this script
+as ``agent_cli_user`` (ansible ``become_user``), the account the slice lanes
+run as, so HOME, ``~/.local/bin`` and ``~/.kimi-code/bin`` are that user's.
+The lanes resolve ``devin`` as ``~/.local/bin/devin`` (PRECIS_DEVIN_BIN) or on
+PATH and ``kimi`` on PATH or at ``~/.kimi-code/bin/kimi`` (``_slice_adapters``);
+detection mirrors that with each CLI's ``fallback_bins``, so a CLI the lanes
+can run is never reported missing because PATH lacks it. Installs, version
+and smoke runs all happen as that user. When the global npm prefix is not
+writable by it (a least-privilege user), npm installs go to ``~/.local``.
+Installer choice (``pick_install``): devin absent -> ``fresh_install`` (the
+vendor script; ``devin update`` cannot install from nothing), present ->
+``install`` (``devin update``). kimi: ``install`` (npm) while node >= 22.19 is
+present and the kimi found is not under ``script_dir`` (``~/.kimi-code``),
+otherwise ``script_install`` (the vendor install.sh, version-pinnable).
+
 Output: one human line per CLI, ``ALERT`` lines for a host behind its pin
 (or below the vendor minimum) and a final ``AGENT_CLI_JSON {...}`` line the
 role parses. ``report`` exits 0 unless ``--strict`` and an alert is raised.
@@ -39,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -56,6 +72,7 @@ EXTRA_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.kimi-co
 INSTALL_TIMEOUT_S = 600.0
 SMOKE_TIMEOUT_S = 120.0
 RESOLVE_TIMEOUT_S = 30.0
+NODE_MIN_FOR_NPM = (22, 19)  # @moonshot-ai/kimi-code needs node >= 22.19
 LAUNCHER_FILES = (
     "scripts/agent-start",
     "scripts/claude-tree",
@@ -125,31 +142,129 @@ def run_command(
     return proc.returncode, out.strip()
 
 
+def user_home() -> str:
+    """The home of the account this process runs as: $HOME when this user
+    owns it, else the passwd entry (ansible's become may leave the invoking
+    user's HOME in place)."""
+    env = os.environ.get("HOME")
+    try:
+        if env and os.stat(env).st_uid == os.geteuid():
+            return env
+    except OSError:
+        pass
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_dir
+    except KeyError:
+        return os.path.expanduser("~")
+
+
+def _under_home(path: str, home: str) -> str:
+    return home + path[1:] if path == "~" or path.startswith("~/") else path
+
+
+def home_config(config: dict[str, Any], home: str) -> dict[str, Any]:
+    """Resolve each CLI's ``~`` paths against ``home``."""
+    clis = {}
+    for name, cfg in config["clis"].items():
+        cfg = dict(cfg)
+        cfg["fallback_bins"] = [
+            _under_home(p, home) for p in cfg.get("fallback_bins") or []
+        ]
+        if cfg.get("script_dir"):
+            cfg["script_dir"] = _under_home(cfg["script_dir"], home)
+        cfg["home"] = home
+        clis[name] = cfg
+    return {**config, "clis": clis}
+
+
+def make_finder(config: dict[str, Any], which: Finder = shutil.which) -> Finder:
+    """PATH first, then each CLI's ``fallback_bins`` — the order the lanes use
+    (``kimi`` on PATH, else ~/.kimi-code/bin/kimi; devin from ~/.local/bin)."""
+    fallbacks = {
+        (cfg.get("bin") or name): cfg.get("fallback_bins") or []
+        for name, cfg in config["clis"].items()
+    }
+
+    def find(name: str) -> str | None:
+        found = which(name)
+        if found:
+            return found
+        for candidate in fallbacks.get(name, []):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    return find
+
+
 def extend_path() -> None:
     have = os.environ.get("PATH", "").split(os.pathsep)
     extra = [os.path.expanduser(p) for p in EXTRA_PATH]
     os.environ["PATH"] = os.pathsep.join([*[p for p in extra if p not in have], *have])
 
 
-def _resolve_latest(cfg: dict[str, Any], run: Runner) -> tuple[int, str]:
-    """Resolve the npm package named by the installer to a concrete pin."""
-    argv = shlex.split(cfg["install"])
-    packages = [
-        arg.removesuffix("@{version}") for arg in argv if arg.endswith("@{version}")
-    ]
-    if argv[:2] != ["npm", "install"] or len(packages) != 1:
-        return 2, "latest requires an npm installer with one package@{version}"
-    rc, out = run(
-        ["npm", "view", packages[0], "version"], RESOLVE_TIMEOUT_S, stdout_only=True
+def _node_ok(run: Runner) -> bool:
+    """node >= 22.19 is on PATH (what the npm kimi-code package needs)."""
+    rc, out = run(["node", "--version"], 15.0, stdout_only=True)
+    version = parse_version(out) if rc == 0 else None
+    return version is not None and _key(version)[:2] >= NODE_MIN_FOR_NPM
+
+
+def _under(path: str, directory: str) -> bool:
+    """``path`` (or what it links to) lives under ``directory``."""
+    root = os.path.abspath(directory)
+    return any(
+        os.path.commonpath([p, root]) == root
+        for p in (os.path.abspath(path), os.path.realpath(path))
     )
+
+
+def pick_install(cfg: dict[str, Any], path: str | None, run: Runner) -> tuple[str, str]:
+    """The installer command for this host and its kind: ``npm``, ``update``
+    (the CLI updating itself) or ``script`` (a vendor install script)."""
+    fresh = cfg.get("fresh_install")
+    if fresh and not path:
+        return fresh, "script"
+    script = cfg.get("script_install")
+    if script:
+        vendor = cfg.get("script_dir") or ""
+        if (path and vendor and _under(path, vendor)) or not _node_ok(run):
+            return script, "script"
+    install = cfg["install"]
+    return install, "npm" if install.startswith("npm ") else "update"
+
+
+def _resolve_latest(
+    cfg: dict[str, Any], run: Runner, path: str | None = None
+) -> tuple[int, str]:
+    """Resolve the version the chosen installer would install to a concrete pin."""
+    command, kind = pick_install(cfg, path, run)
+    if kind == "script":
+        if not cfg.get("script_latest"):
+            return 2, "latest needs an installer with a version lookup"
+        rc, out = run(_shell(cfg["script_latest"]), RESOLVE_TIMEOUT_S, stdout_only=True)
+        what = "latest lookup"
+    else:
+        argv = shlex.split(command)
+        packages = [
+            arg.removesuffix("@{version}") for arg in argv if arg.endswith("@{version}")
+        ]
+        if argv[:2] != ["npm", "install"] or len(packages) != 1:
+            return 2, "latest requires an npm installer with one package@{version}"
+        rc, out = run(
+            ["npm", "view", packages[0], "version"],
+            RESOLVE_TIMEOUT_S,
+            stdout_only=True,
+        )
+        what = "npm view"
     if rc != 0:
-        return rc, f"npm view failed (rc={rc}): {out[:160]}"
+        return rc, f"{what} failed (rc={rc}): {out[:160]}"
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
-        return 2, "npm view returned an empty version"
+        return 2, f"{what} returned an empty version"
     out = lines[-1]
     if not _SAFE_VERSION.fullmatch(out) or parse_version(out) != out:
-        return 2, f"npm view returned an invalid version: {out[:160]!r}"
+        return 2, f"{what} returned an invalid version: {out[:160]!r}"
     return 0, out
 
 
@@ -172,7 +287,7 @@ def probe(cli: str, cfg: dict[str, Any], run: Runner, find: Finder) -> dict[str,
     if pin == "latest":
         row["pin_source"] = "latest"
         rc, out = (
-            _resolve_latest(cfg, run)
+            _resolve_latest(cfg, run, path)
             if cfg.get("pinnable", True)
             else (2, "latest needs a pinnable CLI")
         )
@@ -195,10 +310,38 @@ def report(
     return [probe(c, config["clis"][c], run, find) for c in CLIS if c in only]
 
 
-def _install(cfg: dict[str, Any], version: str, run: Runner) -> tuple[int, str]:
+def _npm_prefix_writable(run: Runner) -> bool:
+    """The global npm prefix is writable (or unknown: keep npm's own choice)."""
+    rc, out = run(["npm", "prefix", "-g"], 15.0, stdout_only=True)
+    lines = out.splitlines()
+    return rc != 0 or not lines or os.access(lines[-1].strip(), os.W_OK)
+
+
+def _shell(command: str) -> list[str]:
+    return ["bash", "-o", "pipefail", "-c", command]
+
+
+def _install(
+    cfg: dict[str, Any], version: str, run: Runner, path: str | None = None
+) -> tuple[int, str]:
+    """Run the installer ``pick_install`` chooses; ``path`` is the CLI as found
+    now (None = not installed). The version string is validated first, so it
+    cannot carry shell syntax into a script installer."""
     if not _SAFE_VERSION.match(version):
         return 2, f"unsafe version string {version!r}"
-    return run(shlex.split(cfg["install"].format(version=version)), INSTALL_TIMEOUT_S)
+    command, kind = pick_install(cfg, path, run)
+    command = command.replace("{version}", version)
+    argv = _shell(command) if "|" in command else shlex.split(command)
+    if kind == "update" and path and argv[0] == cfg.get("bin"):
+        argv[0] = path  # the user's copy may be off PATH
+    if kind == "npm" and cfg.get("home") and not _npm_prefix_writable(run):
+        # A least-privilege user cannot write the global prefix: keep the
+        # install in its own ~/.local (bin dir is on the detection path).
+        argv[argv.index("-g") + 1 : argv.index("-g") + 1] = [
+            "--prefix",
+            f"{cfg['home']}/.local",
+        ]
+    return run(argv, INSTALL_TIMEOUT_S)
 
 
 def _smoke(
@@ -232,7 +375,7 @@ def _roll_back(
             " — no rollback (previous version unknown or installer not version-pinnable)"
         )
         return row
-    rc, out = _install(cfg, prev, run)
+    rc, out = _install(cfg, prev, run, row.get("path"))
     now = probe(cli, cfg, run, find)["version"]
     row["version"] = now
     if rc == 0 and now == prev:
@@ -274,7 +417,7 @@ def update_one(
         return row
     if before["version"] == pin:
         return row
-    rc, out = _install(cfg, pin, run)
+    rc, out = _install(cfg, pin, run, before["path"])
     if rc != 0:
         return _roll_back(
             cli, cfg, row, run, find, f"install of {pin} failed: {out[:160]!r}"
@@ -488,6 +631,11 @@ def main(
     ap.add_argument("--strict", action="store_true")
     args = ap.parse_args(argv)
     config = json.loads(args.config_json)
+    home = user_home()
+    os.environ["HOME"] = home
+    config = home_config(config, home)
+    if find is shutil.which:
+        find = make_finder(config)
     extend_path()
     launcher = (
         manage_launcher(config["launcher"], args.mode) if "launcher" in config else None

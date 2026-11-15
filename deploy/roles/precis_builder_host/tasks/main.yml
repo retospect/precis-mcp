@@ -6,17 +6,37 @@
 # role — the playbook assembles that order; the lane CLIs come after via
 # scripts/agent-cli-update, not here.
 
+# ── the builder account ──────────────────────────────────────────────
+# A non-deploy builder user (`coder`) is created here, gets its own
+# ~/.pgpass (only the DB login the worker uses), and runs everything below.
+# deploy needs none of it (00-users + 19-pgpass).
+
+- name: Builder user account
+  when: precis_builder_manage_user | bool
+  ansible.builtin.import_tasks: user.yml
+
+- name: Builder user's own .pgpass (the worker's DB login only)
+  when: precis_builder_manage_user | bool
+  ansible.builtin.import_role:
+    name: pgpass
+    tasks_from: user
+  vars:
+    pgpass_user: "{{ precis_builder_user }}"
+    pgpass_user_home: "{{ precis_builder_home }}"
+    pgpass_user_roles: "{{ precis_builder_pg_roles }}"
+
 # ── fix-repo checkout (PRECIS_SLICE_ROOT) ────────────────────────────
 # Slices build in worktrees of this clone; the worker's heartbeat probes
 # `repo_checkout` as <this path>/.git — without it the host never
 # advertises and run_slice/land_slice stay unschedulable (gr570787).
 
-- name: Ensure the slice checkout parent is deploy-owned
+- name: Ensure the slice checkout parent is owned by the builder user
   ansible.builtin.file:
     path: "{{ precis_fix_repo_dir | dirname }}"
     state: directory
     owner: "{{ precis_builder_user }}"
-    mode: "0755"
+    # The managed user's home stays private; a deploy checkout keeps 0755.
+    mode: "{{ '0700' if ((precis_fix_repo_dir | dirname) == precis_builder_home and (precis_builder_manage_user | bool)) else '0755' }}"
   become: true
 
 - name: Clone/refresh the slice checkout (public repo, deploy-owned)
@@ -32,15 +52,29 @@
     HOME: "{{ precis_builder_home }}"
 
 # ── docker for `scripts/test` inside slices ──────────────────────────
-# Linux gets the distro daemon + compose v2 plugin and a docker-group
-# membership (the socket's group mode is the whole grant — run_slice
-# passes its parent into codex's writable roots). An existing daemon
-# (docker-ce, snap) is left alone: this only fills a gap. macOS builder
-# hosts are expected to already run colima — that provisioning lives in
-# precis_worker_agent, deliberately not duplicated here.
+# deploy on Linux gets the distro daemon + compose v2 plugin and a
+# docker-group membership (the socket's group mode is the whole grant —
+# run_slice passes its parent into codex's writable roots). An existing
+# daemon (docker-ce, snap) is left alone: this only fills a gap. A managed
+# non-deploy user is NEVER put in the docker group (root-equivalent): it
+# gets rootless docker (docker_rootless.yml) and DOCKER_HOST points at its
+# own socket. macOS: deploy's colima is precis_worker_agent's provisioning;
+# a managed user gets its own colima VM (colima.yml).
 
-- name: Check for an existing docker daemon (Linux)
-  when: os_family == "linux"
+- name: Rootless docker for the builder user (Linux)
+  when: precis_builder_rootless_docker | bool
+  ansible.builtin.import_tasks: docker_rootless.yml
+
+- name: The builder user's own colima VM (macOS)
+  when:
+    - os_family == "darwin"
+    - precis_builder_manage_user | bool
+  ansible.builtin.import_tasks: colima.yml
+
+- name: Check for an existing docker daemon (Linux, system docker)
+  when:
+    - os_family == "linux"
+    - not (precis_builder_rootless_docker | bool)
   ansible.builtin.command: docker --version
   register: _builder_docker_probe
   changed_when: false
@@ -49,6 +83,7 @@
 - name: Install docker + compose v2 (Linux, only when absent)
   when:
     - os_family == "linux"
+    - not (precis_builder_rootless_docker | bool)
     - _builder_docker_probe.rc != 0
   ansible.builtin.apt:
     name:
@@ -62,8 +97,10 @@
   retries: 3
   delay: 10
 
-- name: Put the deploy user in the docker group (Linux)
-  when: os_family == "linux"
+- name: Put the deploy user in the docker group (Linux, deploy only)
+  when:
+    - os_family == "linux"
+    - not (precis_builder_manage_user | bool)
   ansible.builtin.user:
     name: "{{ precis_builder_user }}"
     groups: docker
@@ -88,7 +125,7 @@
           set it to the same name: the tunnel then skips.
       when: (precis_builder_mcp_host | default('')) | length == 0
 
-    - name: Ensure deploy's .ssh directory
+    - name: Ensure the builder user's .ssh directory
       ansible.builtin.file:
         path: "{{ precis_builder_home }}/.ssh"
         state: directory
@@ -112,16 +149,21 @@
       register: _builder_tunnel_pubkey
       become: true
 
-    - name: Authorize the key on the MCP host's deploy account
+    # The key is the builder user's own and is confined to the one
+    # forward: no shell (command), no pty/agent/X11 (restrict), only the
+    # MCP loopback port (permitopen) — it is a login on the MCP host's
+    # deploy account, so it must not be a general one.
+    - name: Authorize the key on the MCP host's deploy account (tunnel only)
       ansible.posix.authorized_key:
         user: deploy
         key: "{{ _builder_tunnel_pubkey.content | b64decode }}"
+        key_options: 'restrict,port-forwarding,permitopen="127.0.0.1:{{ precis_builder_mcp_port }}",command="/bin/false"'
         comment: "precis-builder-tunnel from {{ inventory_hostname }}"
         state: present
       delegate_to: "{{ precis_builder_mcp_host }}"
       become: true
 
-    - name: Accept the MCP host's host key (deploy's known_hosts)
+    - name: Accept the MCP host's host key (the builder user's known_hosts)
       ansible.builtin.shell: |
         ssh-keyscan -t ed25519 {{ hostvars[precis_builder_mcp_host]['lan_ip'] | default(hostvars[precis_builder_mcp_host]['ansible_host'], true) }} >> {{ precis_builder_home }}/.ssh/known_hosts 2>/dev/null
         sort -u {{ precis_builder_home }}/.ssh/known_hosts -o {{ precis_builder_home }}/.ssh/known_hosts
@@ -180,10 +222,13 @@
       --idle-seconds {{ precis_builder_idle_seconds }}
     # Env parity with 20g's slices lane for every job_type this worker
     # can win — it shares the ssh_node queue with the compute lane.
-    # DOCKER_HOST only on darwin (colima socket); on Linux the default
-    # /var/run/docker.sock path applies and run_slice's writable-roots
-    # fallback grants it (gr676054). No '#' comments inside the >-
-    # expression — it is Jinja, not YAML.
+    # DOCKER_HOST: darwin = the user's colima socket; Linux rootless
+    # (managed non-deploy user) = /run/user/<uid>/docker.sock, with
+    # XDG_RUNTIME_DIR beside it; Linux deploy = unset, the default
+    # /var/run/docker.sock applies and run_slice's writable-roots fallback
+    # grants it (gr676054). run_slice passes DOCKER_HOST on to the session
+    # and --add-dir's the socket's parent for codex. No '#' comments inside
+    # the >- expression — it is Jinja, not YAML.
     service_unit_env: >-
       {{ precis_shared_env
          | combine(precis_identity_env | default({}))
@@ -213,6 +258,9 @@
            })
          | combine({'DOCKER_HOST': 'unix://' + precis_builder_home + '/.colima/docker.sock'}
              if os_family == 'darwin' else {})
+         | combine({'DOCKER_HOST': _builder_docker_host,
+                    'XDG_RUNTIME_DIR': '/run/user/' ~ _builder_uid}
+             if (precis_builder_rootless_docker | bool) else {})
          | combine(
              {'PRECIS_DFT_NODE': ((precis_capabilities | default({})).dft | first)}
              if (((precis_capabilities | default({})).dft | default([])) | length > 0) else {}
@@ -226,13 +274,14 @@
              if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
            ) }}
 
-# Code-refresh bounce for the site.yml path ONLY (mirrors 43): on
-# redeploy the orphan sweep restarts loaded non-owned precis-worker-*
-# units — `precis-worker-builder` is listed in `_orphan_lanes_known`
-# (not owned, since this playbook is not in the redeploy flow) so it
-# gets exactly one restart there and is never drift-flagged. The darwin
-# leg mirrors 20g's blanket-glob reasoning.
-- name: Bounce the builder lane on a code refresh (site.yml path, Linux)
+# Code-refresh bounce (mirrors 43). `precis_deploy_changed` is set only
+# on the hosts redeploy's pre-flight targets, never on builder_hosts, so
+# this fires on every redeploy (20i is imported there) as well as on the
+# site.yml path — it is the unit's one restart per deploy, which is why
+# the orphan sweep lists `precis-worker-builder` as OWNED and leaves it
+# alone. A builder host that is also an inference host has the fact
+# defined and gets the step-2 glob bounce instead.
+- name: Bounce the builder lane on a code refresh (Linux)
   when:
     - os_family == "linux"
     - precis_deploy_changed is not defined
@@ -244,7 +293,7 @@
   changed_when: true
   failed_when: false
 
-- name: Bounce the builder lane on a code refresh (site.yml path, macOS)
+- name: Bounce the builder lane on a code refresh (macOS)
   when:
     - os_family == "darwin"
     - precis_deploy_changed is not defined

@@ -10,14 +10,36 @@
 # Those are playbook/coordinator steps — see
 # docs/backlog/builder-hosts.md.
 
+# The account the worker unit, the lane CLIs, the checkout and the tunnel run
+# as. `deploy` (the default) is the gateway's account and is provisioned by
+# 00-users. Any other name (the dedicated least-privilege builder user,
+# `coder`) is created by this role: no password, no sudo, no groups beyond
+# its own, home 0700, its own ~/.pgpass, rootless docker (Linux) or its own
+# colima (macOS) instead of the root-equivalent docker group.
 precis_builder_user: deploy
-# Deploy user's home, per OS family — clone parent, ssh-key dir, pgpass.
-precis_builder_home: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+# The user's home, per OS family — clone parent, ssh-key dir, pgpass.
+precis_builder_home: "{{ ('/Users/' if os_family == 'darwin' else '/home/') ~ precis_builder_user }}"
+
+# Create the account and wire its docker/pgpass (everything above). Off for
+# deploy: 00-users and 19-pgpass own that account.
+precis_builder_manage_user: "{{ precis_builder_user != 'deploy' }}"
+
+# Postgres roles whose ~/.pgpass lines the builder user gets: only the one the
+# worker's DSN logs in as (agent_rw until the db-own cutover, then
+# precis_system) — never the admin / read-only / owner lines deploy holds.
+precis_builder_pg_roles:
+  - "{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}"
+
+# Linux: docker for this user is rootless docker (its own daemon, socket under
+# /run/user/<uid>), not the docker group. Only for a managed non-deploy user.
+precis_builder_rootless_docker: "{{ precis_builder_manage_user | bool and os_family == 'linux' }}"
+# Subordinate id range size handed to the user for rootless docker.
+precis_builder_subid_count: 65536
 
 # The checkout slices build in (PRECIS_SLICE_ROOT): a primary clone of the
 # public repo this worker keeps at origin/main — run_slice worktrees hang
 # off it. Parameterised like the gateway's (precis_fix_repo_dir), never a
-# /Users/deploy literal.
+# literal home.
 precis_fix_repo_dir: "{{ precis_builder_home }}/precis-fix-repo"
 
 # The venv the worker unit execs — provisioned by precis_worker/provision

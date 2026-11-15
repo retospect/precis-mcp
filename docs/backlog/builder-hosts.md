@@ -147,9 +147,11 @@ marked UNVERIFIED. Vendor CLI linux-arm64 claims are web-verified
   `precis_worker/provision` first (same venv + service seed, idempotent).
   Lane CLIs stay out of the role — `agent_clis` is the one door
   (`scripts/agent-cli-update --host <h> --apply` after this play).
-- `redeploy-precis.yml` orphan sweep knows
-  `precis-worker-builder.service` for `builder_hosts` members — restarted
-  on redeploy (the role is not in the flow), never drift-flagged.
+- `redeploy-precis.yml` imports `20i-precis-builder-hosts.yml` after the
+  compute lane (untagged, gateway-anchored; an empty `builder_hosts` is a
+  no-op): every release refreshes the builder venv to the pinned sha and
+  the role bounces `precis-worker-builder`. The orphan sweep lists the
+  unit as owned, so it is not restarted twice nor drift-flagged.
 - Portability changes landed (fedc700f5 + bd017a354):
   `/var/run/docker.sock` fallback in `_codex_writable_roots`; per-host
   suffix on `claim.executor_cap`/`claim.reserve` keys validated by the
@@ -159,6 +161,61 @@ marked UNVERIFIED. Vendor CLI linux-arm64 claims are web-verified
   `placement_requires` substitutes the pinned/picked lane's token, an
   unpinned pick filters lanes to bins the host has, a pinned lane whose
   bin is absent parks host-locally with no `host_refusal` stamp).
+
+## Builder user
+
+Builder hosts run the worker, the lane CLIs, the checkout and the MCP tunnel
+as a dedicated least-privilege account, `coder` (`precis_builder_user` in
+`group_vars/builder_hosts.yml`), not `deploy`. `deploy` stays the default, so
+the gateway is unchanged. `agent_cli_user` follows `precis_builder_user` on
+`builder_hosts` members, so the CLI report/install runs as the same account.
+
+What `roles/precis_builder_host` makes of it:
+
+- Linux: a system user, home `~coder` mode 0700, shell `/bin/bash`, locked
+  password, no sudo, no supplementary groups (never `docker`: that group is
+  root-equivalent). macOS: a standard (non-admin) account with its own primary
+  group, created with `dseditgroup` / `sysadminctl` / `createhomedir`; the role
+  fails if the account is in `admin`. The macOS path is written against the
+  stock tools but not yet run on a Mac: the first Mac canary is its test.
+- Docker without the docker group. Linux: rootless Docker for `coder`
+  (`uidmap`, `docker-ce-rootless-extras`, subuid/subgid ranges,
+  `dockerd-rootless-setuptool.sh install --force`, `loginctl enable-linger`);
+  the unit env sets `DOCKER_HOST=unix:///run/user/<uid>/docker.sock` and
+  `XDG_RUNTIME_DIR`. run_slice forwards `DOCKER_HOST` to the session and
+  `--add-dir`s the socket's parent for codex (`_codex_writable_roots`;
+  `/run/user/<uid>` is neither `$HOME` nor an ancestor, so it is granted).
+  Needs Docker's apt repository on the host (DGX OS has it). macOS: a colima VM
+  per user, kept up by a `builder-colima` LaunchDaemon run as `coder`; the unit
+  env points `DOCKER_HOST` at its socket under `~coder/.colima`.
+- `~coder/.pgpass` with one DB login: the role the worker's DSN uses
+  (`agent_rw`, `precis_system` after the db-own cutover), rendered from the same
+  vault variable as deploy's by `roles/pgpass/tasks/user.yml`. No admin,
+  read-only or owner line. Nothing secret is in the repo.
+- The checkout (`PRECIS_SLICE_ROOT`), slice worktrees, tunnel key and
+  known_hosts are under `~coder` and owned by it. The tunnel key's line in the
+  MCP host's deploy `authorized_keys` is `restrict,port-forwarding,
+  permitopen="127.0.0.1:<port>",command="/bin/false"`: it opens the one
+  forward and nothing else.
+- The worker unit runs as `coder` (`service_unit_run_as`).
+
+What `coder` can touch: its own home, the checkout and worktrees, its rootless
+Docker (or colima) daemon and anything it runs there, the worker venv
+(read-only, `/opt/precis/venv`), the DB as the one role in its `.pgpass`,
+anything that DB role can read or write (including the vault values that role
+may reveal, which is how the worker gets OAuth / KIMI / git tokens), and the
+tunnel to the MCP port.
+
+What it cannot touch: `deploy`'s home (0750 deploy), deploy's vault file and
+ssh keys, `sudo`, the root-equivalent `docker` group and the system docker
+socket, other users' processes, and a shell on the MCP host.
+
+Residual risk, stated plainly: `coder` holds the DB password the worker needs
+(`agent_rw`, or `precis_system` after the cutover), and an agent session
+running as `coder` can read `~coder/.pgpass`. The account bounds the
+host-level blast radius (no root, no deploy credentials, no docker group), not
+the database-level one. Splitting the worker (runs as `deploy`, holds the
+password) from the CLI sessions (run as `coder`, hold none) is a follow-up.
 
 ## Per-host sizing
 
@@ -185,15 +242,17 @@ last, conservative cap.
   # On the MCP host itself set it to that host's OWN inventory name —
   # the default '' fails loud there; set, the tunnel leg no-ops.
   precis_builder_mcp_host: <mcp-host-inventory-name>
-  # Optional: per-OS checkout path overrides (defaults cover both).
-  # precis_fix_repo_dir: /home/deploy/precis-fix-repo   # linux   # home-path: allow — fixed per-OS default
-  # precis_fix_repo_dir: /Users/deploy/precis-fix-repo  # darwin   # home-path: allow — fixed per-OS default
+  # The dedicated builder account (see "Builder user"); default deploy.
+  precis_builder_user: coder
+  # The checkout defaults to precis-fix-repo under the user's home on both
+  # OS families; override precis_fix_repo_dir only to move it.
   ```
 - host_vars per host (canary): `agent_cli_pin_*` pins if they diverge
   from group pins. The per-host cap is NOT an ansible var — it is a
   `claim.executor_cap.ssh_node.<host>` app_state key set through the
   claim-setting door below (the door audits; a hostvar would sit inert).
-- Prereqs on a fresh host, in order: 00-users, 19-pgpass, then this
+- Prereqs on a fresh host, in order: 00-users and 19-pgpass for `deploy`
+  (the `coder` account and its `.pgpass` come from this play), then this
   playbook (`scripts/host-ops/play deploy/playbooks/20i-precis-builder-hosts.yml`
   — it pins `precis_worker_git_ref` itself); node ≥22 if the npm-door
   lane CLIs are wanted; then
@@ -208,14 +267,15 @@ last, conservative cap.
   factory git token come from the DB vault — no per-host copy needed
   once DSN+pgpass land).
 - codex/devin/claude logins per host are vendor flows — one-time per
-  host, on the deploy account.
+  host, on the builder account (`coder`; `deploy` where it is the builder).
 - Decide: NFS-share `slice-tokens` dir or accept shared-token
   attribution (spec survey; shared token is the default).
-- `builder_hosts` is NOT in the redeploy flow — a release restarts the
-  unit via the orphan sweep but never refreshes the venv, so the worker
-  code there drifts from prod (the gr489462 skew risk). Enabling the
-  group is gated on folding 20i into `redeploy-precis.yml`, or on
-  rerunning 20i per release with a pinned `precis_worker_git_ref`.
+- `builder_hosts` IS in the redeploy flow (20i is imported after 43):
+  each release refreshes the builder venv to the pinned sha and bounces
+  the unit, so worker code cannot drift from prod (the gr489462 skew).
+  Populating the group is the only step; an empty group changes nothing.
+  `scripts/deploy` pings `builder_hosts` with the other lane groups, so
+  an unreachable builder is skipped like any non-critical host.
 - The tunnel's authorized_key leg lands `precis-builder-tunnel@<host>`
   in the MCP host's deploy authorized_keys via delegate_to — needs
   ansible reachability to the MCP host (already true).

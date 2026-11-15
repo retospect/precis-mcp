@@ -60,6 +60,7 @@ _DAEMON_PLAYBOOKS = {
     "playbooks/20c-precis-heartbeat-serving.yml",
     "playbooks/28-precis-watch.yml",
     "playbooks/43-precis-worker-compute.yml",
+    "playbooks/20i-precis-builder-hosts.yml",
     "playbooks/41-precis-embedder-watchdog.yml",
     "playbooks/38-precis-web.yml",
     "playbooks/32-asa-code-refresh.yml",
@@ -70,6 +71,7 @@ _DAEMON_PLAYBOOKS = {
 _ANCHORED = {
     "playbooks/20c-precis-heartbeat-serving.yml",
     "playbooks/43-precis-worker-compute.yml",
+    "playbooks/20i-precis-builder-hosts.yml",
     "playbooks/34-code-task-image.yml",
     "playbooks/35-precis-worker-sandbox.yml",
 }

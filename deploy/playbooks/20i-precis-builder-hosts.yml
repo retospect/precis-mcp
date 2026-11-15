@@ -21,7 +21,10 @@
 # PROVISIONING ORDER. This play rides the same provisioning as the
 # collapsed worker, in this order — run the named plays first on a
 # fresh host (scripts/host-ops/play pins the refs):
-#   * 00-users (the deploy account), 19-pgpass (the agent_rw password),
+#   * 00-users (the deploy account), 19-pgpass (deploy's DB logins); a
+#     non-deploy builder user (`precis_builder_user: coder`) is created by
+#     the role with its own ~/.pgpass, rootless docker and no docker group,
+#     so it needs neither (docs/backlog/builder-hosts.md, "Builder user");
 #   * this play imports precis_worker/provision itself — same venv
 #     (/opt/precis/venv), same service seed, idempotent on a host that
 #     already runs a worker;
@@ -34,10 +37,16 @@
 # (docs/backlog/builder-hosts.md) carries the formula and the exact
 # coordinator lines. No cap key → the code default 8 applies.
 #
-# NOT IN THE REDEPLOY FLOW (yet). The orphan-lane sweep in
-# redeploy-precis.yml knows `precis-worker-builder.service` — it is
-# restarted there like every other unowned lane but never drift-flagged.
-# The site.yml-path bounce lives in the role.
+# IN THE REDEPLOY FLOW. redeploy-precis.yml imports this play right after
+# 43, untagged (role scoping cannot skip it), so a release refreshes
+# /opt/precis/venv on every builder_hosts member to the pinned sha and the
+# role bounces the unit onto it — builder code never drifts from prod
+# (gr489462). An empty or undeclared group is a no-op: the gateway anchor
+# below is the only host left and it leaves in the first pre_task. The
+# orphan sweep lists `precis-worker-builder.service` as owned (this play
+# bounces it) so it is not restarted twice. site.yml does not import this
+# play: standalone first provisioning goes through
+# scripts/host-ops/play, which pins the ref.
 
 - name: Deploy the builder-host slice lane (job_ssh_node only)
   # `builder_hosts` is declared by the overlay; the gateway joins as the

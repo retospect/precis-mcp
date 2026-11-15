@@ -33,15 +33,38 @@ agent_cli_smoke_prompt: true
 # report: exit non-zero (fail the run) when any ALERT is raised.
 agent_cli_strict: false
 
+# The account the slice lanes (and so the CLIs) run as. The whole report /
+# update runs as this user (become_user): detection looks in its home
+# (~/.local/bin/devin, ~/.kimi-code/bin/kimi: where the worker resolves
+# them), and installs, --version and smoke are its own. Without it the play's
+# global become would run the script as root and miss every user-local CLI.
+# builder_hosts members follow precis_builder_user (group_vars), so a builder
+# host that runs its lanes as a dedicated user needs no second setting.
+agent_cli_user: "{{ (precis_builder_user | default('deploy')) if inventory_hostname in (groups['builder_hosts'] | default([])) else 'deploy' }}"
+
+# The agent-start launcher (~/.local/bin/agent-start) is for hosts where
+# people start agent sessions. A builder host runs slices through its
+# worker, not agent-start, so builder_hosts members skip it by default:
+# no launcher row, no "set agent_cli_launcher_checkout" ALERT. Override
+# per host/group to manage it there anyway.
+agent_cli_launcher_managed: "{{ inventory_hostname not in (groups['builder_hosts'] | default([])) }}"
+
 # Stable shipped primary checkout on the TARGET host, never a task worktree.
 # Empty discovers it from existing ~/.local/bin/{kimi-wt,devin-wt,agent-start}
 # symlinks. Conflicting or absent hints require this explicit inventory value.
 # Update installs/repairs ~/.local/bin/agent-start; report is read-only.
+# Ignored where agent_cli_launcher_managed is false.
 agent_cli_launcher_checkout: ""
 
 # Vendor installers. {version} is the pin. devin's own updater cannot pick a
 # version, so it is not pinnable: it installs the latest, the smoke check
 # fails when that is not the pin, and there is no automatic rollback.
+# Optional keys (files/agent_cli.py pick_install): fresh_install runs when the
+# CLI is absent (`devin update` cannot install from nothing); script_install
+# is the vendor install.sh, used for kimi when node >= 22.19 is missing or the
+# kimi found lives under script_dir; script_latest prints its latest version;
+# fallback_bins are where the user's worker finds the CLI off PATH
+# (~ = agent_cli_user's home).
 agent_cli_installers:
   claude:
     bin: claude
@@ -56,10 +79,16 @@ agent_cli_installers:
   devin:
     bin: devin
     install: "devin update"
+    fresh_install: "curl -fsSL https://cli.devin.ai/install.sh | bash"
+    fallback_bins: ["~/.local/bin/devin"]
     pinnable: false
     smoke: ["-p", "Reply with the single word OK."]
   kimi:
     bin: kimi
     install: "npm install -g @moonshot-ai/kimi-code@{version}"
+    script_install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | KIMI_NO_MODIFY_PATH=1 bash -s -- --version {version}"
+    script_latest: "curl -fsSL https://code.kimi.com/kimi-code/latest"
+    script_dir: "~/.kimi-code"
+    fallback_bins: ["~/.kimi-code/bin/kimi"]
     pinnable: true
     smoke: ["-p", "Reply with the single word OK."]

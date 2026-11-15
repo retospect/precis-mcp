@@ -193,6 +193,8 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
     "deploy/roles/pgbouncer/templates/pgbouncer.ini.j2",
     "deploy/roles/pgbouncer/templates/userlist.txt.j2",
     "deploy/roles/pgpass/templates/pgpass.j2",
+    "deploy/roles/pgpass/templates/pgpass-user.j2",
+    "deploy/roles/pgpass/tasks/user.yml",
     "deploy/roles/postgres/tasks/main.yml",
     "deploy/roles/postgres/templates/channel_prompts.sql.j2",
     "deploy/roles/postgres/templates/pg_hba.conf.j2",

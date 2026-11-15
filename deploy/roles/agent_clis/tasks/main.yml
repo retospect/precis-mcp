@@ -1,6 +1,7 @@
 ---
 # Report or update the agent CLIs on this host via files/agent_cli.py.
-# Runs as the ansible user (the same account that installs claude today).
+# The script runs as agent_cli_user (become_user): the account the slice
+# lanes run as, whose HOME and user-local bin dirs hold the CLIs.
 
 - name: Refuse an update run without --limit (never the whole fleet by accident)
   when: agent_cli_mode == 'update' and ansible_limit is not defined
@@ -13,8 +14,6 @@
   ansible.builtin.set_fact:
     agent_cli_effective_mode: "{{ 'report' if ansible_check_mode else agent_cli_mode }}"
     agent_cli_config:
-      launcher:
-        checkout: "{{ agent_cli_launcher_checkout }}"
       only: "{{ agent_cli_only.split(',') | map('trim') | select | list }}"
       smoke_prompt: "{{ agent_cli_smoke_prompt | bool }}"
       clis:
@@ -22,6 +21,15 @@
         codex: "{{ agent_cli_installers.codex | combine({'pin': agent_cli_pin_codex, 'min': agent_cli_min_codex}) }}"
         devin: "{{ agent_cli_installers.devin | combine({'pin': agent_cli_pin_devin, 'min': agent_cli_min_devin}) }}"
         kimi: "{{ agent_cli_installers.kimi | combine({'pin': agent_cli_pin_kimi, 'min': agent_cli_min_kimi}) }}"
+
+# The launcher row (and its "set agent_cli_launcher_checkout" ALERT) exists
+# only where agent_cli_launcher_managed; builder hosts run slices through the
+# worker, not agent-start.
+- name: Add the agent-start launcher to the config (hosts that need it)
+  when: agent_cli_launcher_managed | bool
+  ansible.builtin.set_fact:
+    agent_cli_config: >-
+      {{ agent_cli_config | combine({'launcher': {'checkout': agent_cli_launcher_checkout}}) }}
 
 # check_mode false: a report is read-only and must still run under --check.
 - name: "Agent CLIs: {{ agent_cli_effective_mode }}"
@@ -31,6 +39,8 @@
       {{ '--strict' if (agent_cli_strict | bool) else '' }}
       --config-json {{ agent_cli_config | to_json | quote }}
     executable: python3
+  become: true
+  become_user: "{{ agent_cli_user }}"
   register: agent_cli_out
   check_mode: false
   changed_when: >-

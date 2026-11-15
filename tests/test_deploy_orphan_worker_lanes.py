@@ -38,6 +38,9 @@ _SANDBOX_PLAYBOOK = _DEPLOY / "playbooks" / "35-precis-worker-sandbox.yml"
 
 _SWEEP_PLAY = "Bounce + flag orphaned precis worker lanes (no play owns them here)"
 _SANDBOX_IMPORT = "playbooks/35-precis-worker-sandbox.yml"
+_COMPUTE_IMPORT = "playbooks/43-precis-worker-compute.yml"
+_BUILDER_IMPORT = "playbooks/20i-precis-builder-hosts.yml"
+_BUILDER_PLAYBOOK = _DEPLOY / "playbooks" / "20i-precis-builder-hosts.yml"
 
 
 def _plays(path: Path) -> list[dict[str, Any]]:
@@ -292,3 +295,103 @@ def test_step2_unit_listing_strips_the_dead_unit_marker() -> None:
         check=True,
     ).stdout.strip()
     assert out == "precis-worker.service"
+
+
+# --------------------------------------------------------------------------
+# builder_hosts (gr676054): 20i rides the release, so the venv is refreshed
+# --------------------------------------------------------------------------
+
+
+def _redeploy_import(path: str) -> dict[str, Any]:
+    found = [
+        p for p in _plays(_REDEPLOY) if p.get("ansible.builtin.import_playbook") == path
+    ]
+    assert len(found) == 1, f"expected exactly one import of {path}"
+    return found[0]
+
+
+def test_redeploy_imports_the_builder_host_play_in_order() -> None:
+    """The release must refresh builder_hosts members' venv (the gr489462
+    skew: slice code on new sha, worker on old). 20i follows 20b/43 (venv
+    + pgpass assumptions) and precedes the orphan sweep."""
+    text = _REDEPLOY.read_text(encoding="utf-8")
+    assert text.index(_BUILDER_IMPORT) > text.index(
+        "playbooks/20b-precis-worker-collapsed.yml"
+    )
+    assert text.index(_BUILDER_IMPORT) > text.index(_COMPUTE_IMPORT)
+    assert text.index(_BUILDER_IMPORT) < text.index(_SWEEP_PLAY)
+
+
+def test_builder_host_import_is_untagged() -> None:
+    """Role scoping (--skip-tags) must never leave a builder on old code."""
+    assert "tags" not in _redeploy_import(_BUILDER_IMPORT)
+
+
+def test_builder_host_play_refreshes_the_venv_then_the_role() -> None:
+    play = _plays(_BUILDER_PLAYBOOK)[0]
+    roles = [
+        (
+            t["ansible.builtin.import_role"]["name"],
+            t["ansible.builtin.import_role"].get("tasks_from"),
+        )
+        for t in play["tasks"]
+        if "ansible.builtin.import_role" in t
+    ]
+    assert roles == [
+        ("precis_worker", "provision"),
+        ("precis_builder_host", None),
+    ]
+
+
+def test_empty_builder_group_is_a_no_op() -> None:
+    """With `builder_hosts` empty or undeclared the play's only host is the
+    gateway anchor, and its first pre_task ends it before any task runs.
+    Evaluate the shipped `when` the way ansible does (jinja2, `default`)."""
+    import jinja2
+
+    play = _plays(_BUILDER_PLAYBOOK)[0]
+    assert set(str(play["hosts"]).split(":")) == {"builder_hosts", "gateway"}
+    anchor = play["pre_tasks"][0]
+    assert anchor["ansible.builtin.meta"] == "end_host"
+    env = jinja2.Environment()
+
+    def leaves(groups: dict[str, list[str]], host: str) -> bool:
+        out = env.from_string("{{ " + str(anchor["when"]) + " }}").render(
+            groups=groups, inventory_hostname=host
+        )
+        return out == "True"
+
+    empty: tuple[dict[str, list[str]], ...] = ({}, {"builder_hosts": []})
+    for groups in empty:
+        assert leaves(groups, "gw"), groups
+    # A declared member stays; the gateway still leaves when it is not one.
+    assert not leaves({"builder_hosts": ["b1"]}, "b1")
+    assert leaves({"builder_hosts": ["b1"]}, "gw")
+
+
+def test_sweep_treats_the_builder_unit_as_owned_and_known() -> None:
+    """20i bounces precis-worker-builder itself on every redeploy (the
+    pre-flight never sets precis_deploy_changed on these hosts); the sweep
+    must not restart it a second time, nor flag it as drift."""
+    owned = _task(_sweep_play(), "Worker lane units a lane play owns on this host")
+    facts = owned["ansible.builtin.set_fact"]
+    for key in ("_orphan_lanes_owned", "_orphan_lanes_known"):
+        expr = str(facts[key])
+        assert "precis-worker-builder.service" in expr, key
+        assert "groups['builder_hosts']" in expr, key
+
+
+def test_builder_role_bounces_without_the_preflight_fact() -> None:
+    """The role bounce keys on `precis_deploy_changed is not defined` — true
+    on builder hosts in a redeploy — so it is the unit's restart there."""
+    tasks = yaml.safe_load(
+        (_DEPLOY / "roles" / "precis_builder_host" / "tasks" / "main.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    bounces = [
+        t for t in tasks if str(t.get("name", "")).startswith("Bounce the builder lane")
+    ]
+    assert len(bounces) == 2
+    for t in bounces:
+        assert "precis_deploy_changed is not defined" in t["when"]

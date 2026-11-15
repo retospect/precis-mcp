@@ -1,0 +1,118 @@
+---
+# The dedicated builder account (precis_builder_user != deploy). Included
+# first by main.yml, when precis_builder_manage_user.
+#
+# Least privilege by construction: no password (locked), no sudo, no
+# supplementary groups (so NOT the docker group — it is root-equivalent),
+# home 0700. It never gets deploy's vault file or ssh keys, and
+# deploy's home stays deploy-only. What it DOES hold is listed in
+# docs/backlog/builder-hosts.md ("Builder user").
+
+- name: Refuse to manage the deploy account here
+  ansible.builtin.assert:
+    that: precis_builder_user != 'deploy'
+    fail_msg: >-
+      user.yml creates the dedicated builder account; deploy is provisioned
+      by 00-users (precis_builder_manage_user must be false for it).
+    quiet: true
+
+# ── Linux ─────────────────────────────────────────────────────────────
+- name: Builder user account (Linux — locked password, no extra groups)
+  when: os_family == "linux"
+  ansible.builtin.user:
+    name: "{{ precis_builder_user }}"
+    system: true
+    create_home: true
+    home: "{{ precis_builder_home }}"
+    shell: /bin/bash
+    password_lock: true
+    # An empty list REMOVES every supplementary group: the account stays on
+    # its own primary group (created with it) and never in sudo or docker.
+    groups: ""
+    append: false
+    state: present
+  become: true
+
+# ── macOS ─────────────────────────────────────────────────────────────
+# A standard (non-admin) account with its own primary group, the same shape
+# as the Linux one. Written against the stock tools (dseditgroup, sysadminctl,
+# createhomedir) but not exercised on a Mac in CI: first run on a real host
+# is the check (docs/backlog/builder-hosts.md).
+- name: Builder user account (macOS)
+  when: os_family == "darwin"
+  become: true
+  block:
+    - name: Probe the builder group
+      ansible.builtin.command: dscl . -read /Groups/{{ precis_builder_user }} PrimaryGroupID
+      register: _builder_group_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Create the builder group
+      when: _builder_group_probe.rc != 0
+      ansible.builtin.command: dseditgroup -o create {{ precis_builder_user }}
+
+    - name: Read the builder group id
+      ansible.builtin.command: dscl . -read /Groups/{{ precis_builder_user }} PrimaryGroupID
+      register: _builder_gid
+      changed_when: false
+      check_mode: false
+
+    - name: Probe the builder account
+      ansible.builtin.command: dscl . -read /Users/{{ precis_builder_user }} UniqueID
+      register: _builder_user_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    # No -admin: a standard account. No -password: nothing to log in with.
+    - name: Create the builder account (standard user, own primary group)
+      when: _builder_user_probe.rc != 0
+      ansible.builtin.command: >-
+        sysadminctl -addUser {{ precis_builder_user }}
+        -fullName "precis builder"
+        -GID {{ _builder_gid.stdout.split()[-1] }}
+        -shell /bin/zsh
+        -home {{ precis_builder_home }}
+
+    - name: Create the builder home from the system template
+      ansible.builtin.command: createhomedir -c -u {{ precis_builder_user }}
+      args:
+        creates: "{{ precis_builder_home }}/Library"
+
+    - name: Probe admin membership
+      ansible.builtin.command: dseditgroup -o checkmember -m {{ precis_builder_user }} admin
+      register: _builder_admin_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: The builder account must not be an administrator
+      ansible.builtin.assert:
+        that: _builder_admin_probe.rc != 0
+        fail_msg: >-
+          {{ precis_builder_user }} is in the admin group — the builder
+          account is a least-privilege user; remove it
+          (dseditgroup -o edit -d {{ precis_builder_user }} -t user admin).
+        quiet: true
+
+- name: Builder home is private (0700, owned by the builder user)
+  ansible.builtin.file:
+    path: "{{ precis_builder_home }}"
+    state: directory
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0700"
+  become: true
+
+# Facts the rest of the role reads (rootless docker socket, unit env).
+- name: Resolve the builder user's uid
+  ansible.builtin.command: id -u {{ precis_builder_user }}
+  register: _builder_uid_out
+  changed_when: false
+  check_mode: false
+
+- name: Record the builder uid
+  ansible.builtin.set_fact:
+    _builder_uid: "{{ _builder_uid_out.stdout | trim }}"

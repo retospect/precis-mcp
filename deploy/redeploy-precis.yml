@@ -639,6 +639,21 @@
 - name: "Compute worker lane            (inference, job_ssh_node only)"
   ansible.builtin.import_playbook: playbooks/43-precis-worker-compute.yml
 
+# Builder-host slice lane (gr676054): `builder_hosts` members run
+# run_slice/land_slice from the SAME /opt/precis/venv the other worker hosts
+# refresh, so they must land on this release's pinned sha every time — a
+# venv left behind is the gr489462 skew (new slice code, old worker). 20i
+# imports precis_worker/provision (the venv refresh, pinned by the
+# precis_worker_git_ref the pin play / scripts/deploy hands every play) and
+# the precis_builder_host role, whose own bounce fires here because
+# `precis_deploy_changed` is never set on these hosts (the pre-flight play
+# does not target them). Group empty or undeclared -> the gateway anchor
+# leaves in the first pre_task and the play is a no-op. Untagged: role
+# scoping must not leave a builder on stale code. Must follow 20b (same
+# venv path / pgpass assumptions) and precede the step-2f orphan sweep.
+- name: "Builder-host slice lane        (builder_hosts, job_ssh_node only)"
+  ansible.builtin.import_playbook: playbooks/20i-precis-builder-hosts.yml
+
 # precis-tts render image (topology: precis_capabilities.tts_render, i.e. the
 # GPU node) — the render engine is BAKED into the image, not a venv, so a venv
 # refresh alone leaves audio rendering on stale code (bit us 2026-08-10: the
@@ -1206,6 +1221,10 @@
     # it the group is never populated — counting a declared member as owned
     # would leave the overlay-named host's unit unbounced on every scoped
     # deploy (gr485861). The sweep, not the lane play, is then its bounce.
+    # 20i on builder_hosts is untagged and always imported (gr676054), and
+    # its role bounces the unit itself (`precis_deploy_changed` is unset on
+    # those hosts), so the builder unit is owned: a sweep restart on top
+    # would be a second bounce of the same unit per deploy.
     - name: Worker lane units a lane play owns on this host
       when: os_family == "linux"
       ansible.builtin.set_fact:
@@ -1217,6 +1236,10 @@
            + (['precis-worker-sandbox.service']
               if inventory_hostname in
                  (groups['agent_sandbox_lane'] | default([]))
+              else [])
+           + (['precis-worker-builder.service']
+              if inventory_hostname in
+                 (groups['builder_hosts'] | default([]))
               else []) }}
         # "Known" = the host sits in SOME owning group (declared or
         # adopted). A declared member whose lane play was skipped this run
