@@ -212,10 +212,23 @@ def test_play_38_installs_then_skips_a_second_migrate() -> None:
     assert imports == ["install.yml", "migrate.yml", "public-mcp.yml"]
     install = _load(WEB_TASKS / "install.yml")
     assert any("precis-mcp[web,estimate]" in t["name"] for t in install)
-    (migrate,) = _load(WEB_TASKS / "migrate.yml")
+    migrate, read_gw, set_gw = _load(WEB_TASKS / "migrate.yml")
     assert migrate["name"] == "Apply pending precis DB migrations"
     assert any("precis_db_migrated" in w for w in migrate["when"])
     assert "migrate" in migrate["ansible.builtin.command"]["argv"]
+    # The gateway host's name reaches the DB right after the migrate, from
+    # the inventory var, as the deploy user, and not on the second pass.
+    assert read_gw["name"].startswith("Read the current cluster.gateway_host")
+    assert set_gw["ansible.builtin.command"]["argv"][-4:] == [
+        "settings",
+        "set",
+        "cluster.gateway_host",
+        "{{ gateway_host }}",
+    ]
+    for task in (read_gw, set_gw):
+        assert task["become_user"] == "deploy"
+        assert any("precis_db_migrated" in w for w in task["when"])
+        assert "PRECIS_DATABASE_URL" in task["environment"]
 
 
 # ── (b) per-host isolation ─────────────────────────────────────────────

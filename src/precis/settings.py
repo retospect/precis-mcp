@@ -609,6 +609,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "release-fix loop runs as before. An unrecognised value "
             "reads as 'off'.",
         ),
+        SettingSpec(
+            key="cluster.gateway_host",
+            type="str",
+            env_var="PRECIS_GATEWAY_HOST",
+            default=None,
+            doc="Name of the gateway host: the node running the agent-profile "
+            "worker, the web/MCP gateway and the loopback SMALL model server; "
+            "the deploy sets it from the inventory variable gateway_host. "
+            "Unset: sandbox_run refuses every target, the SMALL drain bands "
+            "do not mint and the gateway-pinned cadences run nowhere.",
+        ),
     )
 }
 
@@ -782,6 +793,13 @@ def get_str(
     """Resolve ``key`` as a string. See the module docstring for the order."""
     raw, _layer = _resolve_raw(key, store=store, default=default)
     return None if raw is None else str(raw)
+
+
+def gateway_host(*, store: Store | None = None) -> str | None:
+    """The configured gateway host name (``cluster.gateway_host``), stripped;
+    ``None`` when unset or blank."""
+    value = (get_str("cluster.gateway_host", store=store) or "").strip()
+    return value or None
 
 
 def get_float(
@@ -985,6 +1003,7 @@ __all__ = [
     "advertised_env_presence",
     "bind_store",
     "clear_setting",
+    "gateway_host",
     "get",
     "get_bool",
     "get_float",

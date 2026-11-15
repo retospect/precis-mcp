@@ -111,6 +111,21 @@
     # come back empty and trip the "did not resolve" assert.
     precis_worker_git_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
   tasks:
+    - name: Refuse to deploy from an overlay older than this tree
+      # These overlay vars feed roles and the post-migrate settings task; a
+      # copy that predates them (the factory's file copy is refreshed only by
+      # a controller deploy) would otherwise fail halfway, after restarts.
+      ansible.builtin.assert:
+        that:
+          - gateway_host is defined
+          - tailscale_dns_suffix is defined
+        fail_msg: >-
+          the overlay lacks gateway_host or tailscale_dns_suffix (all.vars) —
+          it is older than this tree; refresh it before deploying
+          (docs/runbooks/cluster-overlay-sync.md).
+        quiet: true
+      run_once: true
+
     - name: Resolve the deploy ref to one commit (once, shared to all hosts)
       # run_once → a single ls-remote; its result is broadcast to every host in
       # the play, so all hosts pin the SAME sha even if main moves a beat later.

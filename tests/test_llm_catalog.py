@@ -1220,6 +1220,49 @@ class TestDevinFetch:
         assert "no 'models' list" in warnings[0].getMessage()
 
 
+class TestSlullamaHost:
+    """``seed_slullama_card`` has no built-in host: arg, env, then the
+    ``cluster.gateway_host`` setting, else ``ValueError``."""
+
+    @staticmethod
+    def _host_of(store: Any, ref_id: int) -> str:
+        ref = store.get_ref(kind="llm", id=ref_id)
+        return str(ref.meta["served_by"][0]["host"])
+
+    def test_no_host_anywhere_raises(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import llm_catalog
+
+        monkeypatch.delenv("PRECIS_SLULLAMA_HOST", raising=False)
+        monkeypatch.delenv("PRECIS_GATEWAY_HOST", raising=False)
+        with pytest.raises(ValueError) as exc:
+            llm_catalog.seed_slullama_card(store, model="m", model_id="no-host-test")
+        msg = str(exc.value)
+        assert "host=" in msg
+        assert "PRECIS_SLULLAMA_HOST" in msg
+        assert "cluster.gateway_host" in msg
+
+    def test_resolution_order(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import llm_catalog
+
+        monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
+        monkeypatch.delenv("PRECIS_SLULLAMA_HOST", raising=False)
+        rid, _ = llm_catalog.seed_slullama_card(store, model="m", model_id="host-a")
+        assert self._host_of(store, rid) == "maple"
+
+        monkeypatch.setenv("PRECIS_SLULLAMA_HOST", "birch")
+        rid, _ = llm_catalog.seed_slullama_card(store, model="m", model_id="host-b")
+        assert self._host_of(store, rid) == "birch"
+
+        rid, _ = llm_catalog.seed_slullama_card(
+            store, model="m", model_id="host-c", host="cedar"
+        )
+        assert self._host_of(store, rid) == "cedar"
+
+
 class TestSeed:
     def test_seed_mints_a_card_per_tier(self, store: Any) -> None:
         from precis import llm_catalog

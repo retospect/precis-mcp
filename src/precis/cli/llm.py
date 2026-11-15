@@ -71,7 +71,8 @@ def add_parser(subparsers: Any) -> None:
         "--host",
         default=None,
         help="[--slullama] Host holding the SSH tunnel "
-        "(env: PRECIS_SLULLAMA_HOST, built-in default).",
+        "(env: PRECIS_SLULLAMA_HOST, else the cluster.gateway_host "
+        "setting / PRECIS_GATEWAY_HOST; required if none is set).",
     )
     s.add_argument(
         "--endpoint",
@@ -351,14 +352,17 @@ def _cmd_seed(
 
         if not model:
             raise SystemExit("llm seed --slullama: --model is required")
-        ref_id, created = seed_slullama_card(
-            store,
-            model=model,
-            model_id=model_id,
-            host=host,
-            endpoint=endpoint,
-            max_parallel=max_parallel,
-        )
+        try:
+            ref_id, created = seed_slullama_card(
+                store,
+                model=model,
+                model_id=model_id,
+                host=host,
+                endpoint=endpoint,
+                max_parallel=max_parallel,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"llm seed --slullama: {exc}") from exc
         verb = "created" if created else "refreshed"
         print(f"{verb} llm lm{ref_id} — {model_id} (static, host={host})")
         return

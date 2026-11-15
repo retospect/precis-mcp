@@ -23,8 +23,9 @@ its own local-first ``llm.op.llm_summarize`` chain since 2026-10-11):
   ``llm.op.llm_summarize`` chain put a local rung back ahead of cloud:
   the agent host's ``served_by`` endpoint is loopback-only, so a drain claimed on
   any other host finds no ``llm:`` slot and falls through to the cloud rung
-  for every call. The materializer defaults ``target_node`` to the agent host
-  (``_DEFAULT_SMALL_TARGET_NODE`` in ``materialize.py``).
+  for every call. The materializer pins ``target_node`` to the gateway host
+  (``cluster.gateway_host``; ``_band_target_node`` in ``materialize.py``) and
+  mints no SMALL-band jobs at all while that is unset.
 * ``params.concurrency`` wins when set. Absent it, the default width is
   derived from the local capacity the pass's resolved chain actually
   advertises — summed ``resource_slots`` ``capacity`` over the

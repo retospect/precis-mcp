@@ -74,16 +74,23 @@ import os
 import re
 from typing import Any
 
+from precis import settings
 from precis.utils.llm.router import Tier, resolve_model
 from precis.workers.executors import _sandbox_inputs
 
 # ── Declared metadata (read by the dispatcher and the executor) ────
 
-#: Nodes that may never be a sandbox host regardless of the allowlist —
-#: the agent host holds the OAuth token / gateway / DB creds, so a container
-#: escape there is the whole threat model. Hard-excluded even if an
-#: operator mistakenly lists it in ``PRECIS_SANDBOX_HOSTS``.
-_EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
+
+def _excluded_nodes() -> frozenset[str]:
+    """Nodes that may never be a sandbox host regardless of the allowlist —
+    the gateway host (``cluster.gateway_host``) holds the OAuth token /
+    gateway / DB creds, so a container escape there is the whole threat
+    model. Hard-excluded even if an operator mistakenly lists it in
+    ``PRECIS_SANDBOX_HOSTS``. Empty when the setting is unset; the caller
+    then fails closed."""
+    gw = settings.gateway_host()
+    return frozenset({gw, gw + ".local"}) if gw else frozenset()
+
 
 #: ``build`` (a fresh claude coding task), ``run`` (re-run a prior
 #: build's harvested tarball, no claude) and ``script`` (run a submitted
@@ -324,7 +331,14 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     target_node = params.get("target_node")
     if not target_node or not isinstance(target_node, str):
         return "sandbox_run: params.target_node is required (an agent_sandbox_host)"
-    if target_node in _EXCLUDED_NODES:
+    excluded = _excluded_nodes()
+    if not excluded:
+        return (
+            "sandbox_run: the gateway host is not configured (setting "
+            "cluster.gateway_host / env PRECIS_GATEWAY_HOST), so no node can "
+            "be confirmed safe as a sandbox host (fail-closed)"
+        )
+    if target_node in excluded:
         return (
             f"sandbox_run: target_node {target_node!r} is excluded — it holds "
             "the OAuth token / gateway / DB creds (an escape target), so it is "

@@ -43,6 +43,8 @@ ADDRESS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b"),
     ),
     ("lan ip (192.168.x)", re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b")),
+    # A tailnet's MagicDNS suffix names the tailnet: overlay only.
+    ("tailnet dns suffix", re.compile(r"\btail[0-9a-f]{4,}\.ts\.net\b")),
 ]
 
 #: Real node hostnames — an architecture check under ``deploy/``, a leak check

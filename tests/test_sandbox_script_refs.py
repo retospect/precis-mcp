@@ -28,6 +28,14 @@ from precis.workers.executors import _sandbox_harvest, _sandbox_inputs, claude_d
 from precis.workers.executors._sandbox_inputs import ScriptRefError
 from precis.workers.job_types import sandbox_run
 
+
+@pytest.fixture(autouse=True)
+def _gateway_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sandbox submit check fails closed without a configured gateway
+    host (``cluster.gateway_host``); pin a made-up one."""
+    monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
+
+
 # ── fixtures / helpers ─────────────────────────────────────────────
 
 _PODMAN_STUB = """#!/usr/bin/env python3

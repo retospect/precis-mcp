@@ -477,6 +477,9 @@ Overlay variables the portable roles expect (define these in your local
 `nas_host` / `nas_mount_base` / `nas_nfs_export` / `nas_mount_name` and the
 `precis_capabilities` map. The `deploy/inventory.example/` templates show
 every one.
+`gateway_host` also feeds code: the precis_web migrate step writes it to the
+`cluster.gateway_host` setting (`PRECIS_GATEWAY_HOST`), which the sandbox
+exclusion, the SMALL-band pin and the gateway-pinned cadences read.
 
 The cluster share's move to the NAS (`docs/backlog/cluster-fileserver-move.md`)
 adds optional ones, all dark while unset: `nas_lan_ip` / `nas_lan_name` (the

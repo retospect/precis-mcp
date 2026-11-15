@@ -7,9 +7,10 @@ precis_web_port: 8000
 # NAS (the fileserver:/Volume1/botshome) so a producer on any node — e.g. Kokoro
 # TTS on the GPU node — publishes an episode and this gateway serves it, no
 # cross-host copy. base_url is the gateway's Tailscale-serve name so a
-# podcast app on the phone can reach the enclosures.
+# podcast app on the phone can reach the enclosures; the overlay supplies the
+# tailnet's MagicDNS suffix (tailscale_dns_suffix), never this tree.
 precis_web_podcast_dir: "{{ nas_root }}/podcast"
-precis_web_podcast_base_url: "https://{{ inventory_hostname }}.tailded4cf.ts.net"
+precis_web_podcast_base_url: "https://{{ inventory_hostname }}.{{ tailscale_dns_suffix }}"
 # When true, the "Apply pending precis DB migrations" task only reports
 # the pending set (precis migrate --dry-run) instead of applying it.
 # Override per-run: -e precis_migrate_dry_run=true.

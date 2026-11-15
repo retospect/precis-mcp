@@ -39,6 +39,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+from precis import settings
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import ChunkInsert, ChunkRow
@@ -1322,7 +1323,6 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
 #: cluster host (``deploy/roles/ssh_tunnels``). Tier-neutral: which capability
 #: rung (if any) resolves to this model is a placement-chain concern
 #: (``precis.utils.llm.router``), not this seeder's.
-_SLULLAMA_DEFAULT_HOST = "melchior"
 _SLULLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11435/v1"
 _SLULLAMA_DEFAULT_MAX_PARALLEL = 3
 _SLULLAMA_DEFAULT_MODEL_ID = "qwen-hpc"
@@ -1338,8 +1338,8 @@ def seed_slullama_card(
     max_parallel: int | None = None,
 ) -> tuple[int, bool]:
     """Mint (or refresh) the ONE static ``llm`` card advertising a Slurm-HPC
-    GPU cluster's Ollama endpoint, tunnelled to loopback on ``host`` (has a
-    built-in default). Idempotent on ``model_id`` (:func:`upsert_card`).
+    GPU cluster's Ollama endpoint, tunnelled to loopback on ``host`` (no
+    built-in default; ``ValueError`` when none is supplied). Idempotent on ``model_id`` (:func:`upsert_card`).
 
     Every argument falls back to an env var when omitted, so the same call works
     unconfigured-in-code from a deploy playbook or a one-shot CLI seed:
@@ -1349,10 +1349,11 @@ def seed_slullama_card(
     * ``model_id``       — ``$PRECIS_SLULLAMA_MODEL_ID``, default ``"qwen-hpc"``
                             (the precis-side handle; a placement chain rung
                             points at this model_id to route there).
-    * ``host``           — ``$PRECIS_SLULLAMA_HOST``, has a built-in default (the
-                            node holding the SSH tunnel — must match the
-                            heartbeat host name so ``local_serving.acquire``
-                            sees it).
+    * ``host``           — ``$PRECIS_SLULLAMA_HOST``, else the
+                            ``cluster.gateway_host`` setting (the node holding
+                            the SSH tunnel — must match the heartbeat host name
+                            so ``local_serving.acquire`` sees it); none of the
+                            three set raises ``ValueError``.
     * ``endpoint``       — ``$PRECIS_SLULLAMA_ENDPOINT``, default
                             ``"http://127.0.0.1:11435/v1"`` (the tunnel's local
                             port).
@@ -1373,7 +1374,17 @@ def seed_slullama_card(
         or _SLULLAMA_DEFAULT_MODEL_ID
     )
     model = model or os.environ.get("PRECIS_SLULLAMA_MODEL") or model_id
-    host = host or os.environ.get("PRECIS_SLULLAMA_HOST") or _SLULLAMA_DEFAULT_HOST
+    host = (
+        host
+        or os.environ.get("PRECIS_SLULLAMA_HOST")
+        or settings.gateway_host(store=store)
+    )
+    if not host:
+        raise ValueError(
+            "seed_slullama_card: no tunnel host — pass host= (CLI --host), set "
+            "PRECIS_SLULLAMA_HOST, or set the cluster.gateway_host setting "
+            "(env PRECIS_GATEWAY_HOST)"
+        )
     endpoint = (
         endpoint
         or os.environ.get("PRECIS_SLULLAMA_ENDPOINT")

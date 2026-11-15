@@ -3,7 +3,8 @@
 The precis-mcp monorepo is **public**. Two different concerns live here, and
 they have deliberately different scopes:
 
-* **Cluster addresses, tree-wide.** Tailscale IPs, LAN IPs and vault blobs are
+* **Cluster addresses, tree-wide.** Tailscale IPs, LAN IPs, the tailnet's DNS
+  suffix and vault blobs are
   topology: publishing them discloses the shape of the real cluster, and a
   public git push is forever (a later delete does not unpublish it). These are
   scanned across the **whole repo** — ``docs/``, ``scripts/``, ``src/``,
@@ -19,8 +20,7 @@ they have deliberately different scopes:
   memory. The failure message names ``path:line`` only. Two file lists
   narrow the scan: :data:`_HOSTNAME_EXEMPT` (permanent: a sealed migration's
   comment, a data file where the word is the domain term) and
-  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: code defaults that still name
-  a node, docs that link to a file still named after one, tests of a script
+  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: docs that link to a file still named after one, tests of a script
   that still does). Tests use made-up host names (``maple``, ``birch``).
   **Not yet covered**: ``scripts/`` still carries node names and is a later
   cleanup.
@@ -189,7 +189,6 @@ _HOSTNAME_EXEMPT: dict[str, str] = {
     "tests/test_deploy_tree_no_secrets.py": "this gate's own samples",
 }
 
-_CODE_DEFAULT = "a code default still names a node; it moves to deploy config"
 _NODE_NAMED_PATH = (
     "links to a file, flag, branch or old slug named after a node; renames pending"
 )
@@ -201,10 +200,6 @@ _PACKAGED_CASE = "byte-matches the packaged pathway repro case"
 #: ``test_hostname_file_lists_have_no_stale_entries`` fails once the file is
 #: clean. Remove when the file is clean.
 _HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
-    "src/precis/llm_catalog.py": _CODE_DEFAULT,
-    "src/precis/workers/job_types/sandbox_run.py": _CODE_DEFAULT,
-    "src/precis/workers/materialize.py": _CODE_DEFAULT,
-    "src/precis/workers/scheduler.py": _CODE_DEFAULT,
     "docs/backlog/autocatpath-seed-health.md": _NODE_NAMED_PATH,
     "docs/backlog/castor-agent-lane.md": _NODE_NAMED_PATH,
     "docs/backlog/castor-finding-reader.md": _NODE_NAMED_PATH,
@@ -227,8 +222,6 @@ _HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
     "tests/test_bash_reflex_nudge.py": _SCRIPT_COUPLED,
     "tests/test_claude_local.py": _SCRIPT_COUPLED,
     "tests/test_host_ops.py": _SCRIPT_COUPLED,
-    "tests/test_sandbox_run.py": _CODE_DEFAULT,
-    "tests/test_scheduler_pass.py": _CODE_DEFAULT,
 }
 
 #: A line the hostname check must flag (also the self-test's planted sample).
@@ -546,6 +539,8 @@ def test_gate_patterns_actually_match() -> None:
         "ansible-vault blob": "$ANSIBLE_VAULT;1.1;AES256",  # secret-gate: allow
         "tailscale ip (CGNAT)": "ansible_host: 100.126.0.1",  # secret-gate: allow
         "lan ip (192.168.x)": "lan_ip: 192.168.0.1",  # secret-gate: allow
+        # built from two halves so this file carries no suffix-shaped literal
+        "tailnet dns suffix": "https://node.tail" + "0abc12.ts.net/feed",
         "real hostname / tailnet": _HOSTNAME_SAMPLE,
         "real hostname (dgx node)": "hosts: castor",
     }
@@ -555,7 +550,12 @@ def test_gate_patterns_actually_match() -> None:
         assert by_label[label].search(sample), f"{label} regex failed to match sample"
     # And a documentation IP (RFC 5737) or placeholder must NOT trip the gate.
     all_pats = _FORBIDDEN_ANYWHERE + _FORBIDDEN_IN_DEPLOY
-    for benign in ("ansible_host: 203.0.113.10", "host: node-gateway", "100.5.4.3"):
+    for benign in (
+        "ansible_host: 203.0.113.10",
+        "host: node-gateway",
+        "100.5.4.3",
+        "https://host.your-tailnet.ts.net",
+    ):
         assert not any(pat.search(benign) for _, pat in all_pats), (
             f"gate false-positived on benign sample: {benign}"
         )

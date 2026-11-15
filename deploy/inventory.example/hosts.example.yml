@@ -19,6 +19,8 @@ all:
     # Tailscale — SSH, services, inter-node comms.
     tailscale_subnet: "100.64.0.0/10"  # secret-gate: allow — universal Tailscale CGNAT range, not host-specific
     tailscale_tailnet: "your-tailnet"
+    # MagicDNS suffix of the tailnet: roles build https names from it.
+    tailscale_dns_suffix: "your-tailnet.ts.net"
     nfs_server: node-data
     nfs_export_path: "/opt/nfs"
     # Uniform role-named mount namespace under /mnt (ADR: cluster-mount-

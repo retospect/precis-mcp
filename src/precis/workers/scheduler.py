@@ -20,7 +20,9 @@ claimant.
 **Host affinity + local eligibility.** A cadence pinned via
 ``host_affinity`` is only *attempted* on that host — elsewhere the claim
 call is skipped, so the lease is never advanced by a host that can't do
-the work. A cadence's ``eligible`` callable is a cheaper local gate
+the work. The sentinel :data:`GATEWAY_AFFINITY` stands for the gateway host
+(``cluster.gateway_host``) and is resolved at compare time; with that setting
+unset the cadence is attempted on no host. A cadence's ``eligible`` callable is a cheaper local gate
 (env/file presence) checked before the claim attempt, so an ineligible
 worker never wins the lease over the truly-capable one. A cadence naming
 ``service`` gates the same way on that service's per-host resolved
@@ -63,6 +65,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from precis import settings
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.env import env_float
 from precis.workers.runner import BatchResult, _emit_handler
@@ -73,6 +76,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+#: ``Cadence.host_affinity`` sentinel: "the gateway host", resolved from the
+#: ``cluster.gateway_host`` setting when the scheduler loop compares it.
+GATEWAY_AFFINITY = "@gateway"
+
 
 @dataclass(frozen=True, slots=True)
 class Cadence:
@@ -82,7 +89,9 @@ class Cadence:
 
     ``host_affinity`` (§A) pins the cadence to one host name — every other
     host skips the claim attempt entirely (see the module docstring's
-    affinity contract). ``eligible`` (§A) is a cheap local-process gate
+    affinity contract). The value :data:`GATEWAY_AFFINITY` means "the
+    gateway host" (``cluster.gateway_host``), resolved when compared; unset,
+    no host attempts the cadence. ``eligible`` (§A) is a cheap local-process gate
     (env/file presence) checked before the claim; an ineligible worker skips
     without touching the lease, so a later eligible claimant still gets the
     fire (drop-no-fire, not a stolen one). ``resolve_interval`` (§A), when
@@ -1390,7 +1399,7 @@ CADENCES: tuple[Cadence, ...] = (
         name="dream_agent",
         interval_s=15 * 60,
         run=_run_dream_agent,
-        host_affinity="melchior",
+        host_affinity=GATEWAY_AFFINITY,
         eligible=_dream_agent_eligible,
         resolve_interval=_dream_resolve_interval,
         spends=True,
@@ -1405,7 +1414,7 @@ CADENCES: tuple[Cadence, ...] = (
         name="anki_sync",
         interval_s=24 * 3600 + 29 * 60,
         run=_run_anki_sync,
-        host_affinity="melchior",
+        host_affinity=GATEWAY_AFFINITY,
         eligible=_anki_sync_eligible,
     ),
     # docs/backlog/draft-refresh.md Part 2: the living-draft staleness
@@ -1913,8 +1922,16 @@ def _scheduler_pass(
             store.seed_scheduler_lease(cad.name, cad.interval_s)
         except Exception:  # pragma: no cover — a seed blip must not wedge the loop
             log.warning("scheduler: lease seed failed for %s", cad.name, exc_info=True)
-        if cad.host_affinity is not None and host != cad.host_affinity:
-            continue
+        if cad.host_affinity is not None:
+            # GATEWAY_AFFINITY resolves to cluster.gateway_host; unset (None)
+            # never equals a host name, so the cadence runs nowhere.
+            pinned = (
+                settings.gateway_host()
+                if cad.host_affinity == GATEWAY_AFFINITY
+                else cad.host_affinity
+            )
+            if pinned is None or host != pinned:
+                continue
         if cad.eligible is not None:
             try:
                 is_eligible = cad.eligible()
