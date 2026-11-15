@@ -61,6 +61,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.errors import BadInput
+from precis.handlers._finding_common import apply_put_extras, check_put_extras
 from precis.response import Response
 from precis.store import Store
 from precis.store.types import Tag
@@ -151,9 +152,14 @@ def put_hypothesis(
     set_by: str = "agent",
     mint_cap: MintCap | None = None,
     meta: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    link: str | None = None,
+    rel: str | None = None,
 ) -> Response:
     """Mint a hypothesis claim hub and park its prepared mint payload.
-    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874)."""
+    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874).
+    The ``put`` schema's create-time ``tags=``/``link=``/``rel=`` extras
+    land on the hub this mints/converges onto (gr676914)."""
     # Local import: `nanopub.gates` pulls the evidence/mint stack, which
     # imports handlers back. Same reason `_finding_mint_preflight` does it.
     from precis.nanopub.gates import check_claim_sentence
@@ -201,6 +207,12 @@ def put_hypothesis(
             f"scope must be a dict, got {type(scope).__name__}",
             next="scope={'material': 'graphene', ...}",
         )
+
+    # Resolve the create-time extras BEFORE mint_hub writes anything —
+    # same no-stranded-write rule the hub-mint door follows (gr676914).
+    link_target, relation = check_put_extras(
+        store, kind="finding", tags=tags, link=link, rel=rel
+    )
 
     tokens = list(motivated_by or [])
     if len(tokens) < MIN_SOURCE_PAPERS:
@@ -311,95 +323,108 @@ def put_hypothesis(
     # payload may already be open in front of a reviewer, and a re-run must
     # not rewrite what they are reading. Reword the sentence to propose
     # something genuinely different.
-    authoring.admit_new_hub(
-        store, mint_cap, claim, [h for _rid, h in resolved if h is not None]
-    )
-    hub_ref_id = hublib.mint_hub(
-        store,
-        claim,
-        set_by=set_by,  # type: ignore[arg-type]
-        extra_meta={
-            # Caller ``meta=`` rides under the hypothesis's own keys —
-            # artifact_type / proposed_payload are not caller-overridable.
-            **(meta or {}),
-            META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
-            META_PROPOSED_PAYLOAD: payload,
-        },
-    )
-
-    # Converged onto a hub that is already in the publish pipeline: refuse
-    # before writing anything else. `nanopub_reopen` keeps `artifact_type`,
-    # so re-typing an existing claim row as a hypothesis assembles the wrong
-    # artifact (see the module docstring's second guard).
-    existing_row = store.nanopub_publish_row(hub_ref_id)
-    if existing_row is not None:
-        raise BadInput(
-            f"fi{hub_ref_id} already has a nanopub publish row "
-            f"({existing_row.state}) as artifact_type="
-            f"{existing_row.artifact_type!r}",
-            next=(
-                "a hub's artifact type is frozen at its first publish row and "
-                "survives reopen — reword the hypothesis into its own hub"
-            ),
+    # One transaction for the mint, its parked payload and the create-time
+    # extras: a refusal anywhere below (collision guards, an extras link the
+    # store refuses) rolls the hub back instead of stranding it (gr676914).
+    with store.atomic():
+        authoring.admit_new_hub(
+            store, mint_cap, claim, [h for _rid, h in resolved if h is not None]
         )
-
-    # Converged onto a hub that is not ours. `mint_hub`'s pub_id is derived
-    # from sentence+scope alone, and on a collision it returns the existing
-    # hub WITHOUT applying `extra_meta` — the same property that makes a
-    # re-proposal a safe no-op makes a collision with an ordinary claim hub
-    # silent. Without this check we would hang motivation edges and the
-    # `hypothesis-proposed` triage tag on somebody's real, evidence-bearing
-    # claim, drop it into the human queue mislabelled, and still not set the
-    # marker (so the approve form would prefill from passage candidates as
-    # if nothing had happened). Checking the marker rather than the evidence
-    # edges catches the evidence-free collision too, and lets a genuine
-    # re-proposal of our own hypothesis through.
-    hub_ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
-    if hub_ref is None or (hub_ref.meta or {}).get(META_ARTIFACT_TYPE) != (
-        ARTIFACT_HYPOTHESIS
-    ):
-        raise BadInput(
-            f"fi{hub_ref_id} already exists as an ordinary claim hub with "
-            f"this sentence",
-            next=(
-                "a hub is identified by its sentence and scope, so this "
-                f"proposal collided with a claim somebody already holds — "
-                f"read fi{hub_ref_id} and reword into a distinct conjecture"
-            ),
-        )
-
-    for ref_id, source_handle in resolved:
-        meta = {"source_handle": source_handle} if source_handle else None
-        hublib.attach_motivation(
+        hub_ref_id = hublib.mint_hub(
             store,
-            hub_ref_id=hub_ref_id,
-            motivator_ref_id=ref_id,
-            meta=meta,
-            set_by=set_by,
+            claim,
+            set_by=set_by,  # type: ignore[arg-type]
+            extra_meta={
+                # Caller ``meta=`` rides under the hypothesis's own keys —
+                # artifact_type / proposed_payload are not caller-overridable.
+                **(meta or {}),
+                META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS,
+                META_PROPOSED_PAYLOAD: payload,
+            },
         )
 
-    # Provenance both ways: the dream memory that reasoned its way here, and
-    # (via `PRECIS_CURRENT_AGENTLOG`) the tick that produced it. Written here
-    # rather than left to the memory autolinker, which only fires when the
-    # memory is written *after* the hub and names its handle.
-    _link_origin(store, hub_ref_id=hub_ref_id, from_memory=from_memory)
+        # Converged onto a hub that is already in the publish pipeline: refuse
+        # before writing anything else. `nanopub_reopen` keeps `artifact_type`,
+        # so re-typing an existing claim row as a hypothesis assembles the wrong
+        # artifact (see the module docstring's second guard).
+        existing_row = store.nanopub_publish_row(hub_ref_id)
+        if existing_row is not None:
+            raise BadInput(
+                f"fi{hub_ref_id} already has a nanopub publish row "
+                f"({existing_row.state}) as artifact_type="
+                f"{existing_row.artifact_type!r}",
+                next=(
+                    "a hub's artifact type is frozen at its first publish row and "
+                    "survives reopen — reword the hypothesis into its own hub"
+                ),
+            )
 
-    store.add_tag(hub_ref_id, Tag.open(PROPOSED_TAG))
+        # Converged onto a hub that is not ours. `mint_hub`'s pub_id is derived
+        # from sentence+scope alone, and on a collision it returns the existing
+        # hub WITHOUT applying `extra_meta` — the same property that makes a
+        # re-proposal a safe no-op makes a collision with an ordinary claim hub
+        # silent. Without this check we would hang motivation edges and the
+        # `hypothesis-proposed` triage tag on somebody's real, evidence-bearing
+        # claim, drop it into the human queue mislabelled, and still not set the
+        # marker (so the approve form would prefill from passage candidates as
+        # if nothing had happened). Checking the marker rather than the evidence
+        # edges catches the evidence-free collision too, and lets a genuine
+        # re-proposal of our own hypothesis through.
+        hub_ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
+        if hub_ref is None or (hub_ref.meta or {}).get(META_ARTIFACT_TYPE) != (
+            ARTIFACT_HYPOTHESIS
+        ):
+            raise BadInput(
+                f"fi{hub_ref_id} already exists as an ordinary claim hub with "
+                f"this sentence",
+                next=(
+                    "a hub is identified by its sentence and scope, so this "
+                    f"proposal collided with a claim somebody already holds — "
+                    f"read fi{hub_ref_id} and reword into a distinct conjecture"
+                ),
+            )
 
-    handle = handle_registry.format_handle("finding", hub_ref_id)
-    return Response(
-        body=(
-            f"hypothesis hub {handle} minted (candidate for review)\n"
-            f"claim: {sentence[:120]}\n"
-            # Live edge count, not newly-written: `attach_motivation` is
-            # idempotent, so a re-proposal would otherwise report zero.
-            f"motivated by: {len(resolved)} edge(s) across {len(papers)} "
-            f"independent source(s)\n"
-            f"check it before leaving it: get(kind='finding', id='{handle}', "
-            "view='mint-preflight')\n"
-            "a human approves/signs it — this door never does"
+        for ref_id, source_handle in resolved:
+            meta = {"source_handle": source_handle} if source_handle else None
+            hublib.attach_motivation(
+                store,
+                hub_ref_id=hub_ref_id,
+                motivator_ref_id=ref_id,
+                meta=meta,
+                set_by=set_by,
+            )
+
+        # Provenance both ways: the dream memory that reasoned its way here, and
+        # (via `PRECIS_CURRENT_AGENTLOG`) the tick that produced it. Written here
+        # rather than left to the memory autolinker, which only fires when the
+        # memory is written *after* the hub and names its handle.
+        _link_origin(store, hub_ref_id=hub_ref_id, from_memory=from_memory)
+
+        store.add_tag(hub_ref_id, Tag.open(PROPOSED_TAG))
+
+        handle = handle_registry.format_handle("finding", hub_ref_id)
+        resp = Response(
+            body=(
+                f"hypothesis hub {handle} minted (candidate for review)\n"
+                f"claim: {sentence[:120]}\n"
+                # Live edge count, not newly-written: `attach_motivation` is
+                # idempotent, so a re-proposal would otherwise report zero.
+                f"motivated by: {len(resolved)} edge(s) across {len(papers)} "
+                f"independent source(s)\n"
+                f"check it before leaving it: get(kind='finding', id='{handle}', "
+                "view='mint-preflight')\n"
+                "a human approves/signs it — this door never does"
+            )
         )
-    )
+        return apply_put_extras(
+            store,
+            "finding",
+            hub_ref_id,
+            resp,
+            tags=tags,
+            target=link_target,
+            relation=relation,
+        )
 
 
 def update_hypothesis(

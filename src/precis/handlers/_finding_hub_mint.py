@@ -87,7 +87,11 @@ from typing import TYPE_CHECKING, Any
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Unsupported, Upstream
-from precis.handlers._finding_common import multi_article_advisory
+from precis.handlers._finding_common import (
+    apply_put_extras,
+    check_put_extras,
+    multi_article_advisory,
+)
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
 from precis.store.types import ActorSlug, Tag
@@ -149,6 +153,9 @@ def put_hub(
     dedup: bool | str = True,
     embedder: Any = None,
     extra_meta: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    link: str | None = None,
+    rel: str | None = None,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
@@ -162,7 +169,13 @@ def put_hub(
     ``extra_meta`` merges into the minted hub's ``refs.meta`` on a real
     mint only — an ``attach``/converge outcome writes no hub row, so the
     keys are dropped there (same rule as :func:`mint_hub`'s own
-    ``extra_meta``)."""
+    ``extra_meta``).
+
+    The ``put`` schema's create-time ``tags=``/``link=``/``rel=`` extras
+    are honoured on whichever hub the outcome names — the minted hub on a
+    fresh mint, the matched neighbour on an attach/converge — and the ack
+    line says where they landed (gr676914; earlier they were accepted and
+    silently dropped)."""
     resp = _put_hub(
         store,
         sentence=sentence,
@@ -172,6 +185,9 @@ def put_hub(
         dedup=dedup,
         embedder=embedder,
         extra_meta=extra_meta,
+        tags=tags,
+        link=link,
+        rel=rel,
         block_fn=block_fn,
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
@@ -210,6 +226,9 @@ def _put_hub(
     dedup: bool | str,
     embedder: Any,
     extra_meta: dict[str, Any] | None,
+    tags: list[str] | None,
+    link: str | None,
+    rel: str | None,
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
@@ -218,20 +237,90 @@ def _put_hub(
     claim = CanonicalClaim(sentence=sentence, scope=dict(scope or {}))
     mode, attach_to = _parse_dedup(dedup)
 
+    # Resolve the create-time extras BEFORE the cascade or a mint writes
+    # anything: a malformed tag or an unresolvable link= target refuses
+    # here rather than stranding a hub the refused put never names
+    # (gr263195's rule), and a rel= with no link= refuses instead of
+    # silently dropping (gr676914).
+    link_target, relation = check_put_extras(
+        store, kind="finding", tags=tags, link=link, rel=rel
+    )
+    if (
+        link_target is not None
+        and attach_to is not None
+        and link_target.pos is None
+        and link_target.ref_id == attach_to
+    ):
+        raise BadInput(
+            f"link={link!r} points at the hub dedup='attach:fi{attach_to}' "
+            "attaches to — a hub can't link to itself",
+            next="drop link= (the hub already is that ref) or attach to a "
+            "different hub",
+        )
+
+    # Retraction checks (trigger 1 — a Crossref network call) must never
+    # run inside the atomic below: the write doors collect the paper ref
+    # ids they would check into this sink instead, and _in_tx drains them
+    # via run_retraction_checks once the OUTER transaction has committed
+    # (the pool-exhaustion deadlock attach_evidence's docstring names).
+    pending_checks: list[int] = []
+
+    def _in_tx(write: Callable[[], tuple[Response, int] | None]) -> Response | None:
+        # One transaction around the outcome's writes AND the extras: an
+        # extras refusal (self-link on a converge/attach, a link the store
+        # refuses) rolls back the mint/attach too, never strands it.
+        with store.atomic():
+            outcome = write()
+            if outcome is None:
+                return None
+            resp, hub_ref_id = outcome
+            resp = apply_put_extras(
+                store,
+                "finding",
+                hub_ref_id,
+                resp,
+                tags=tags,
+                target=link_target,
+                relation=relation,
+            )
+        # Committed — now safe to reach the network (trigger 1).
+        run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
+        return resp
+
+    def _done(write: Callable[[], tuple[Response, int]]) -> Response:
+        resp = _in_tx(write)
+        assert resp is not None
+        return resp
+
     if mode == "attach":
         assert attach_to is not None
-        return _attach_by_choice(store, claim, attach_to, supporters, set_by=set_by)
+        return _done(
+            lambda: _attach_by_choice(
+                store,
+                claim,
+                attach_to,
+                supporters,
+                set_by=set_by,
+                pending_checks=pending_checks,
+            )
+        )
 
     if mode == "off":
-        result = authoring.seed_claim_hub(
-            store,
-            sentence=sentence,
-            scope=scope,
-            supporters=supporters,
-            set_by=set_by,
-            extra_meta=extra_meta,
-        )
-        return Response(body=_mint_response_body(result, sentence) + "\ndedup skipped")
+
+        def _seed() -> tuple[Response, int]:
+            result = authoring.seed_claim_hub(
+                store,
+                sentence=sentence,
+                scope=scope,
+                supporters=supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+                pending_checks=pending_checks,
+            )
+            body = _mint_response_body(result, sentence) + "\ndedup skipped"
+            return Response(body=body), result["hub_ref_id"]
+
+        return _done(_seed)
 
     if embedder is None:
         raise Unsupported(
@@ -248,7 +337,11 @@ def _put_hub(
     # any same-passage / containment logic runs: an idempotent re-put is never
     # refused, even when the hub has no embedding yet (a same-passage sibling
     # would otherwise be judged against itself).
-    converged = _converge_identical(store, claim, supporters, set_by=set_by)
+    converged = _in_tx(
+        lambda: _converge_identical(
+            store, claim, supporters, set_by=set_by, pending_checks=pending_checks
+        )
+    )
     if converged is not None:
         return converged
     passage_hubs = _same_passage_neighbours(store, supporters)
@@ -325,15 +418,39 @@ def _put_hub(
             extra_meta = {**(extra_meta or {}), "dedup_override": stamped}
 
     if placement.action == "attach":
-        return _attach_to_existing(
-            store, claim, placement, judged, supporters, set_by=set_by
+        return _done(
+            lambda: _attach_to_existing(
+                store,
+                claim,
+                placement,
+                judged,
+                supporters,
+                set_by=set_by,
+                pending_checks=pending_checks,
+            )
         )
     if placement.action == "needs_review":
-        return _mint_with_review_todo(
-            store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
+        return _done(
+            lambda: _mint_with_review_todo(
+                store,
+                claim,
+                placement,
+                supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+                pending_checks=pending_checks,
+            )
         )
-    return _mint_new(
-        store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
+    return _done(
+        lambda: _mint_new(
+            store,
+            claim,
+            placement,
+            supporters,
+            set_by=set_by,
+            extra_meta=extra_meta,
+            pending_checks=pending_checks,
+        )
     )
 
 
@@ -531,8 +648,9 @@ def _converge_identical(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
-) -> Response | None:
-    """The attach response when a live hub already carries this exact
+    pending_checks: list[int],
+) -> tuple[Response, int] | None:
+    """The attach outcome when a live hub already carries this exact
     ``(sentence, scope)`` pub_id; ``None`` when there is none."""
     hub_id = authoring.find_hub_by_pub_id(
         store, make_pub_id(make_taproot_hub_paper_id(claim.sentence, claim.scope))
@@ -549,7 +667,13 @@ def _converge_identical(
     ]
     placement = Placement(action="attach", hub_ref_id=hub_id, reason=reason)
     return _attach_to_existing(
-        store, claim, placement, judged, supporters, set_by=set_by
+        store,
+        claim,
+        placement,
+        judged,
+        supporters,
+        set_by=set_by,
+        pending_checks=pending_checks,
     )
 
 
@@ -573,7 +697,8 @@ def _attach_by_choice(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
-) -> Response:
+    pending_checks: list[int],
+) -> tuple[Response, int]:
     """``dedup='attach:fi<N>'`` — the agent's own choice from a near-duplicate
     refusal: no search, no judge, straight to the shared attach path."""
     ref = store.get_ref(kind="finding", id=hub_ref_id)
@@ -606,7 +731,13 @@ def _attach_by_choice(
         )
     ]
     return _attach_to_existing(
-        store, claim, placement, judged, supporters, set_by=set_by
+        store,
+        claim,
+        placement,
+        judged,
+        supporters,
+        set_by=set_by,
+        pending_checks=pending_checks,
     )
 
 
@@ -675,7 +806,8 @@ def _attach_to_existing(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
-) -> Response:
+    pending_checks: list[int],
+) -> tuple[Response, int]:
     """``attach`` — the closest verdict was a confirmed ``same``: attach
     ``supporters`` as evidence on ``placement.hub_ref_id`` directly
     (:func:`~precis.taproot.hub.attach_evidence`), never through
@@ -709,12 +841,13 @@ def _attach_to_existing(
     # backstop): an exception partway through must roll every edge attached
     # so far back too, not leave a half-attached set. Retraction checks
     # (trigger 1, a network call) must never run inside an open transaction
-    # (pool-exhaustion deadlock risk) -- collected in owned_checks and
-    # drained via run_retraction_checks only after commit.
+    # (pool-exhaustion deadlock risk): attach_evidence collects them into
+    # the caller's pending_checks sink, which _put_hub drains via
+    # run_retraction_checks only after the OUTER atomic commits — the tx
+    # here is just a savepoint under it.
     attached = 0
     already = 0
     ungrounded = 0
-    owned_checks: list[int] = []
     with store.tx() as conn:
         for supporter in resolved:
             paper_ref_id = supporter["paper_ref_id"]
@@ -741,14 +874,11 @@ def _attach_to_existing(
                 meta=_supporter_meta(claim, supporter),
                 set_by=set_by,
                 conn=conn,
-                pending_checks=owned_checks,
+                pending_checks=pending_checks,
             )
             attached += 1
             if not src_handle:
                 ungrounded += 1
-
-    # Transaction committed -- now safe to reach the network (trigger 1).
-    run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)
 
     hub_handle = handle_registry.format_handle("finding", hub_ref_id)
     body = (
@@ -760,7 +890,7 @@ def _attach_to_existing(
         f"cite it inline as [{hub_handle}] — resolves to the current derived "
         "originator(s) on every render"
     )
-    return Response(body=body)
+    return Response(body=body), hub_ref_id
 
 
 # ── new / new_contradicts — mint as today ───────────────────────────────
@@ -774,7 +904,8 @@ def _mint_new(
     *,
     set_by: ActorSlug,
     extra_meta: dict[str, Any] | None = None,
-) -> Response:
+    pending_checks: list[int],
+) -> tuple[Response, int]:
     """``new`` / ``new_contradicts`` — no matching claim: mint through the
     existing door unchanged. A ``new_contradicts`` verdict additionally
     writes the hub<->hub ``disputes`` link
@@ -789,6 +920,7 @@ def _mint_new(
         supporters=supporters,
         set_by=set_by,
         extra_meta=extra_meta,
+        pending_checks=pending_checks,
     )
     hub_ref_id = result["hub_ref_id"]
     if (
@@ -801,7 +933,7 @@ def _mint_new(
             relation=validate_relation("disputes", store=store),
             set_by=set_by,
         )
-    return Response(body=_mint_response_body(result, claim.sentence))
+    return Response(body=_mint_response_body(result, claim.sentence)), hub_ref_id
 
 
 # ── needs_review — mint anyway, file one todo naming both hubs ──────────
@@ -815,7 +947,8 @@ def _mint_with_review_todo(
     *,
     set_by: ActorSlug,
     extra_meta: dict[str, Any] | None = None,
-) -> Response:
+    pending_checks: list[int],
+) -> tuple[Response, int]:
     """``needs_review`` — a risky, unconfirmed ``same`` verdict. The
     automated cascade callers (``apply_placement``) attach nothing here and
     rely on a later re-run; an agent's ``put`` has no re-run to fall back
@@ -828,6 +961,7 @@ def _mint_with_review_todo(
         supporters=supporters,
         set_by=set_by,
         extra_meta=extra_meta,
+        pending_checks=pending_checks,
     )
     hub_ref_id = result["hub_ref_id"]
     nearest_ref_id = placement.hub_ref_id
@@ -857,7 +991,7 @@ def _mint_with_review_todo(
         f"cite it inline as [{hub_handle}] — resolves to the current derived "
         "originator(s) on every render"
     )
-    return Response(body=body)
+    return Response(body=body), hub_ref_id
 
 
 def _file_dedup_review_todo(

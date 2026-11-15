@@ -19,10 +19,11 @@ import re
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from psycopg_pool import ConnectionPool
 
 from precis.dispatch import Hub
 from precis.embedder import EmbedderUnavailable
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers import _finding_hub_mint
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert, Tag
@@ -426,9 +427,11 @@ class TestPutHubCascadeAttach:
         self, store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The deferred retraction check runs exactly once, after the
-        supporter-loop transaction has committed — never inside it (see
+        put's whole transaction has committed — never inside it (see
         ``attach_evidence``'s docstring: a Crossref round-trip inside an
         open transaction risks pool-exhaustion deadlock)."""
+        from precis.store.pool import _PINNED
+
         existing_sentence = "Pd/C catalyzes Suzuki coupling."
         existing_hub = mint_hub(
             store, CanonicalClaim(sentence=existing_sentence, scope={})
@@ -440,9 +443,19 @@ class TestPutHubCascadeAttach:
         def _fake_run_retraction_checks(
             store: Any, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
         ) -> None:
+            # _put_hub wraps the attach AND the create-time extras in one
+            # store.atomic(): the drain must run after THAT commits, not
+            # merely after the supporter loop's savepoint. A pinned
+            # connection here would mean the check still runs inside the
+            # open transaction.
+            assert _PINNED.get() is None, (
+                "retraction check ran while the put's atomic transaction was still open"
+            )
             # If this ran before commit, the edge it's checking wouldn't be
             # visible on a fresh connection yet -- assert it already is.
-            with store.pool.connection() as conn:
+            # Bypass the pin-aware checkout so a regression can't hide
+            # behind the pinned connection seeing its own uncommitted write.
+            with ConnectionPool.connection(store.pool) as conn:
                 row = conn.execute(
                     "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
                     (paper, existing_hub),
@@ -465,6 +478,45 @@ class TestPutHubCascadeAttach:
         )
 
         assert calls == [([paper], existing_hub)]
+
+    def test_mint_drains_retraction_check_after_outer_commit(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same deferred-drain contract on the mint path: ``seed_claim_hub``
+        hands its collected checks to ``_put_hub``'s sink instead of
+        draining inside the still-open atomic — the caller drains."""
+        from precis.store.pool import _PINNED
+
+        paper = _seed_paper(store, cite_key="miller23a")
+        calls: list[tuple[list[int], int | None]] = []
+
+        def _fake_run_retraction_checks(
+            store: Any, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
+        ) -> None:
+            assert _PINNED.get() is None, (
+                "retraction check ran while the put's atomic transaction was still open"
+            )
+            with ConnectionPool.connection(store.pool) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                    (paper, hub_ref_id),
+                ).fetchone()
+            assert row is not None, "retraction check ran before the edge committed"
+            calls.append((list(paper_ref_ids), hub_ref_id))
+
+        monkeypatch.setattr(
+            _finding_hub_mint, "run_retraction_checks", _fake_run_retraction_checks
+        )
+
+        resp = _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+        )
+        hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+        assert calls == [([paper], hub_id)]
 
 
 class TestPutHubCascadeNeedsReview:
@@ -1136,3 +1188,217 @@ class TestEmbedderOutage:
     def test_nearest_hubs_raises_upstream(self, store) -> None:
         with pytest.raises(Upstream, match="embedder at capacity"):
             nearest_hubs("any sentence", {}, store, _DownEmbedder())
+
+
+# ── create-time tags=/link=/rel= extras on the mint door (gr676914) ────────
+
+
+def _tag_values(store, ref_id: int) -> set[str]:
+    return {t.value for t in store.tags_for(ref_id)}
+
+
+def _link_relations(store, src_ref_id: int, dst_ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (src_ref_id, dst_ref_id),
+            ).fetchall()
+        ]
+
+
+def test_put_hub_applies_tags_and_link(store) -> None:
+    """gr676914: ``put(supporters=..., tags=, link=, rel=)`` carries the
+    extras out on the hub the outcome names — the freshly minted hub on a
+    mint, the matched neighbour on an attach — never silently dropped."""
+    from tests.workers._helpers import seed_ref
+
+    _seed_paper(store, cite_key="miller23a")
+    mem = seed_ref(store, title="a note the claim relates to", kind="memory")
+
+    # Fresh mint: extras land on the new hub.
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="A wholly novel claim with no neighbours.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        dedup=False,
+        tags=["topic:capture"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+    assert f"fi{hub_id}" in resp.body
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:capture" in _tag_values(store, hub_id)
+    assert "related-to" in _link_relations(store, hub_id, mem)
+
+    # Attach outcome: no new hub minted — the extras land on the MATCHED
+    # hub, which is the hub the response names.
+    existing_sentence = "Pd/C catalyzes Suzuki coupling."
+    existing_hub = mint_hub(store, CanonicalClaim(sentence=existing_sentence, scope={}))
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="Pd on carbon catalyzes the Suzuki reaction.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        embedder=object(),
+        block_fn=_block_hit(existing_hub, existing_sentence),
+        judge_fn=lambda a, b: _verdict("same", 0.95),
+        tags=["topic:suzuki"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    assert "converged onto" in resp.body and f"fi{existing_hub}" in resp.body
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:suzuki" in _tag_values(store, existing_hub)
+    assert "related-to" in _link_relations(store, existing_hub, mem)
+
+
+def test_put_hub_bad_link_target_writes_nothing(store) -> None:
+    """gr676914 slice 3: a bad ``link=`` refuses BEFORE any write — a
+    malformed target raises BadInput, an unresolvable handle raises
+    NotFound, and neither strands a minted hub (the gr263195 rule)."""
+    _seed_paper(store, cite_key="miller23a")
+    before = store.count_refs(kind="finding")
+
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link="not-a-target",
+        )
+    with pytest.raises(NotFound):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link="fi999999",
+        )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_conflicting_status_tag_refuses_before_any_write(store) -> None:
+    """gr676914 review: a create-time STATUS tag that isn't the mint's own
+    STATUS:canonical refuses with BadInput before any write — applied, the
+    closed-prefix add would displace the canonical stamp and drop the hub
+    from the search cohort."""
+    _seed_paper(store, cite_key="miller23a")
+    before = store.count_refs(kind="finding")
+    with pytest.raises(BadInput, match="STATUS:tracing"):
+        _make_handler(store).put(
+            title="A wholly novel claim with no neighbours.",
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            tags=["STATUS:tracing"],
+        )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_mint_own_status_tag_is_allowed(store) -> None:
+    """The mint's own STATUS:canonical is not a conflict — the hub is born
+    with it, and re-stamping the same value alongside other tags is fine."""
+    _seed_paper(store, cite_key="miller23a")
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="A wholly novel claim with no neighbours.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        dedup=False,
+        tags=["STATUS:canonical", "topic:capture"],
+    )
+    hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+    assert "canonical" in _tag_values(store, hub_id)
+    assert "topic:capture" in _tag_values(store, hub_id)
+
+
+def test_put_hub_extras_refusal_rolls_back_mint_and_attach(store) -> None:
+    """gr676914 review: an extras refusal after the outcome's writes (a
+    self-link on a converge, rel='rejects' without a reason) rolls the
+    mint/attach back — no stranded hub, no stranded evidence."""
+    paper = _seed_paper(store, cite_key="miller23a")
+    sentence = "Pd/C catalyzes Suzuki coupling."
+    existing = mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+    refs_before = store.count_refs(kind="finding")
+    tags_before = _tag_values(store, existing)
+
+    # Converge onto ``existing`` with link= naming that same hub: the
+    # store refuses the self-link after the attach wrote — all rolled back.
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence=sentence,
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=_block_hit(existing, sentence),
+            tags=["topic:rolledback"],
+            link=f"fi{existing}",
+        )
+    assert "topic:rolledback" not in _tag_values(store, existing)
+    assert _tag_values(store, existing) == tags_before
+    assert store.count_refs(kind="finding") == refs_before
+    # The supporter's evidence edge rolled back too — the attach wrote it
+    # inside the same transaction the extras refusal unwound.
+    assert _link_relations(store, paper, existing) == []
+
+    # rel='rejects' is refused before any write on a fresh mint.
+    with pytest.raises(BadInput):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link=f"fi{existing}",
+            rel="rejects",
+        )
+    assert store.count_refs(kind="finding") == refs_before
+
+
+def test_put_hub_extras_refusal_rolls_back_fresh_mint(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same atomicity on the mint path: a link= the store refuses at
+    WRITE time (not prevalidation — the target resolves fine) rolls back
+    the minted hub AND its evidence edge (gr263195's no-stranded-write
+    rule applied to the extras)."""
+    from precis.store import Store
+    from tests.workers._helpers import seed_ref
+
+    paper = _seed_paper(store, cite_key="miller23a")
+    mem = seed_ref(store, title="a note", kind="memory")
+    refs_before = store.count_refs(kind="finding")
+
+    real_add_link = Store.add_link
+
+    def _flaky_add_link(self: Any, *, dst_ref_id: int, **kw: Any) -> Any:
+        if dst_ref_id == mem:
+            raise BadInput("boom: extras link refused at write time")
+        return real_add_link(self, dst_ref_id=dst_ref_id, **kw)
+
+    monkeypatch.setattr(Store, "add_link", _flaky_add_link)
+
+    with pytest.raises(BadInput, match="boom"):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link=f"me{mem}",
+        )
+
+    assert store.count_refs(kind="finding") == refs_before
+    # The evidence edge rolled back with the mint — nothing points at a hub.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s", (paper,)
+        ).fetchone()
+    assert row is None

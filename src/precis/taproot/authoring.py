@@ -398,6 +398,7 @@ def seed_claim_hub(
     set_by: ActorSlug = "agent",
     mint_cap: MintCap | None = None,
     extra_meta: dict[str, Any] | None = None,
+    pending_checks: list[int] | None = None,
 ) -> dict[str, Any]:
     """Mint (or converge onto) a claim hub for ``sentence``/``scope`` and
     attach each of ``supporters`` as evidence.
@@ -476,6 +477,15 @@ def seed_claim_hub(
     ``mint_cap`` (a run-shared :class:`~precis.taproot.canon.MintCap`) caps
     NEW hubs per first-supporter grounding chunk; a refused mint raises
     :class:`~precis.taproot.canon.MintCapped` with nothing written.
+
+    ``pending_checks`` is the same sink contract
+    :func:`~precis.taproot.hub.attach_evidence` documents: when given, the
+    trigger-1 paper ref ids this call collects are appended to it instead
+    of being drained here, because the CALLER's transaction is still open
+    when this returns (``_put_hub`` wraps the mint + create-time extras in
+    one ``store.atomic()``) and the drain is a network call that must
+    never run inside a held transaction. The caller drains via
+    :func:`~precis.taproot.hub.run_retraction_checks` after ITS commit.
 
     Raises:
         BadInput: one or more supporters' ``paper`` doesn't resolve (or
@@ -602,8 +612,14 @@ def seed_claim_hub(
                 ungrounded += 1
             seen_edges.add(edge_key)
 
-    # Transaction committed -- now safe to reach the network (trigger 1).
-    run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)
+    if pending_checks is not None:
+        # The caller's transaction is still open (we joined it via
+        # store.atomic(), so the tx above was only a savepoint) — hand the
+        # collected checks back; the caller drains after ITS commit.
+        pending_checks.extend(owned_checks)
+    else:
+        # Transaction committed -- now safe to reach the network (trigger 1).
+        run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)
 
     return {
         "pub_id": pub_id,

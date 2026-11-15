@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._finding_hypothesis import (
     ARTIFACT_HYPOTHESIS,
     META_ARTIFACT_TYPE,
@@ -55,6 +55,13 @@ def _links(
 
 def _hub_id(body: str) -> int:
     return int(body.split("fi", 1)[1].split()[0])
+
+
+def _link_count(store: Store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT count(*) FROM links").fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def test_proposal_mints_a_hypothesis_hub_with_motivation_edges(store: Store) -> None:
@@ -106,6 +113,55 @@ def test_proposal_mints_a_hypothesis_hub_with_motivation_edges(store: Store) -> 
 
     tags = {t.value for t in store.tags_for(hub_ref_id)}
     assert PROPOSED_TAG in tags
+
+
+def test_put_hypothesis_applies_tags_and_link(store: Store) -> None:
+    """gr676914: the hypothesis door honours the ``put`` schema's
+    create-time ``tags=``/``link=``/``rel=`` on the minted hub — earlier
+    they were accepted and silently dropped."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    mem = seed_ref(store, title="the note that provoked it", kind="memory")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        tags=["topic:nanobuds"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+
+    hub_ref_id = _hub_id(resp.body)
+    assert "+1 tag" in resp.body and "+1 link" in resp.body
+    assert "topic:nanobuds" in {t.value for t in store.tags_for(hub_ref_id)}
+    related = dict(_links(store, hub_ref_id, "related-to"))
+    assert mem in related and related[mem] is None
+
+
+def test_put_hypothesis_conflicting_status_tag_refuses_before_any_write(
+    store: Store,
+) -> None:
+    """gr676914 review: a create-time STATUS tag that isn't the mint's own
+    STATUS:canonical refuses with BadInput before any write, in the
+    hypothesis door too."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    before = store.count_refs(kind="finding")
+    with pytest.raises(BadInput, match="STATUS:tracing"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+            tags=["STATUS:tracing"],
+        )
+    assert store.count_refs(kind="finding") == before
 
 
 def test_ref_level_motivator_is_accepted_without_a_passage(store: Store) -> None:
@@ -492,3 +548,106 @@ def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> N
             (existing,),
         ).fetchall()
     assert [int(r[0]) for r in evidence] == [pa1]
+
+
+def test_put_hypothesis_bad_extras_write_nothing(store: Store) -> None:
+    """gr676914 review: a refused extras (rel='rejects' with no reason, an
+    unresolvable link=) leaves no hypothesis hub behind."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    before = store.count_refs(kind="finding")
+    for link, rel in (
+        (f"pc{ch1}", "rejects"),
+        ("fi999999", None),
+        (None, "related-to"),
+    ):
+        with pytest.raises((BadInput, NotFound)):
+            _handler(store).put(
+                title=_SENTENCE,
+                hypothesis=True,
+                motivation="leap",
+                testable_by="experiment",
+                llm_models=["test-model"],
+                motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+                link=link,
+                rel=rel,
+            )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hypothesis_extras_refusal_rolls_back_mint(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr676914 review: an extras refusal at WRITE time (the link target
+    resolves — the store refuses the edge itself) rolls the whole mint
+    back inside the atomic: no hub, no motivation edges."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    mem = seed_ref(store, title="the note that provoked it", kind="memory")
+    before = store.count_refs(kind="finding")
+    links_before = _link_count(store)
+
+    real_add_link = Store.add_link
+
+    def _flaky_add_link(self: Any, *, dst_ref_id: int, **kw: Any) -> Any:
+        if dst_ref_id == mem:
+            raise BadInput("boom: extras link refused at write time")
+        return real_add_link(self, dst_ref_id=dst_ref_id, **kw)
+
+    monkeypatch.setattr(Store, "add_link", _flaky_add_link)
+
+    with pytest.raises(BadInput, match="boom"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+            link=f"me{mem}",
+        )
+
+    assert store.count_refs(kind="finding") == before
+    # The motivation edges wrote inside the same atomic — they went too.
+    assert _link_count(store) == links_before
+
+
+def test_put_hypothesis_extras_refusal_rolls_back_converge(store: Store) -> None:
+    """gr676914 review: a re-proposal that converges onto the existing
+    hypothesis hub and then fails inside the atomic (a link= pointing at
+    that same hub — a self-link refused at write time) leaves the hub
+    exactly as the first put left it: the new motivation edge and the
+    extras tag roll back too."""
+    pa1, ch1 = _paper_with_chunk(store, "First source")
+    pa2, ch2 = _paper_with_chunk(store, "Second source")
+    _, ch3 = _paper_with_chunk(store, "Third source")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+    )
+    hub_ref_id = _hub_id(resp.body)
+    before = store.count_refs(kind="finding")
+
+    with pytest.raises(BadInput, match="itself"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            # pc3's motivation edge is NEW on this converge — the write
+            # the rollback must erase.
+            motivated_by=[f"pc{ch1}", f"pc{ch3}"],
+            tags=["topic:converged"],
+            link=f"fi{hub_ref_id}",
+        )
+
+    assert store.count_refs(kind="finding") == before
+    motivated = {dst for dst, _c in _links(store, hub_ref_id, "motivated-by")}
+    assert motivated == {pa1, pa2}
+    assert "topic:converged" not in {t.value for t in store.tags_for(hub_ref_id)}
