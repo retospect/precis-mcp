@@ -88,6 +88,7 @@ class _Chunks:
 class _Store:
     def __init__(self) -> None:
         self.refs: dict[int, _Ref] = {}
+        self.jobs: list[_Ref] = []
         self.tags: dict[int, list[Tag]] = {}
         self.chunks = _Chunks()
 
@@ -113,9 +114,18 @@ class _Store:
         assert kind == "todo"
         return self.refs.get(id)
 
+    def add_job(
+        self, ref_id: int, todo_id: int, *, meta: dict[str, Any] | None = None
+    ) -> None:
+        """A ``kind='job'`` child of ``todo_id`` — e.g. the predecessor a
+        salvage commit or a reap comment reads back."""
+        self.jobs.append(_Ref(ref_id, "job", dict(meta or {}), todo_id))
+
     def recent_refs(
         self, kinds: list[str], *, parent_id: int | None = None, **_: Any
     ) -> list[_Ref]:
+        if kinds == ["job"]:
+            return [j for j in reversed(self.jobs) if j.parent_id == parent_id]
         assert kinds == ["todo"]
         return [r for r in self.refs.values() if r.parent_id == parent_id]
 
@@ -1611,6 +1621,42 @@ def _reused_tree_with_lock(
     return lock
 
 
+def _reused_tree_with_live_repo(
+    seams: dict[str, Any], tmp_path: Path, *, age_s: float
+) -> Path:
+    """A reused slice tree REAL git cut — a linked worktree of a
+    throwaway repo at ``tmp_path/repo`` — so a spawned ``cat-file
+    --batch`` stays alive inside it (a bare dir kills it instantly).
+    Returns the real admin dir's ``index.lock``, aged ``age_s``."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=test"]
+
+    def rgit(*args: str) -> None:
+        subprocess.run(
+            [*git, "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+
+    rgit("init", "-q", "-b", "main")
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    rgit("add", "-A")
+    rgit("commit", "-q", "-m", "initial")
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    rgit("worktree", "add", "-q", "-b", "slice/42", str(tree), "main")
+    gitdir = repo / ".git" / "worktrees" / "slice-td42"
+    seams["abs_gitdir"] = str(gitdir)
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    then = time.time() - age_s
+    os.utime(lock, (then, then))
+    return lock
+
+
 def test_submit_reaps_a_stale_index_lock_before_the_reuse_checkout(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1620,8 +1666,8 @@ def test_submit_reaps_a_stale_index_lock_before_the_reuse_checkout(
     lock = _reused_tree_with_lock(
         seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
     )
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
 
@@ -1652,8 +1698,12 @@ def test_submit_keeps_a_live_index_lock_and_burns_no_attempt(
     monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
     age = 5.0 if why == "fresh" else land_slice.INDEX_LOCK_STALE_S + 600
     lock = _reused_tree_with_lock(seams, tmp_path, age_s=age)
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: why == "held")
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(
+        land_slice,
+        "_lock_holders",
+        lambda p: [("1", "git status")] if why == "held" else [],
+    )
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
 
@@ -1679,8 +1729,8 @@ def test_submit_waits_out_a_live_index_lock(
     mid-wait the launch proceeds instead of bouncing a doomed re-mint
     back to the tick."""
     lock = _reused_tree_with_lock(seams, tmp_path, age_s=5.0)
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [("1", "git add")])
     monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "10")
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
@@ -1743,14 +1793,14 @@ def test_submit_keeps_an_index_lock_replaced_between_judgement_and_unlink(
     lock = _reused_tree_with_lock(
         seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
     )
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
     real_state = land_slice._index_lock_state
     swapped = False
 
     def state_then_replace(
         lock: Path, checkout: Path
-    ) -> tuple[str, os.stat_result | None]:
+    ) -> tuple[str, os.stat_result | None, str]:
         nonlocal swapped
         verdict = real_state(lock, checkout)
         if verdict[0] == "stale" and not swapped:
@@ -1774,6 +1824,295 @@ def test_submit_keeps_an_index_lock_replaced_between_judgement_and_unlink(
     assert not any(a[:1] == ["checkout"] for a, _c in seams["git"])
     assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
     assert "attempt:2" not in store.tag_strings(42)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a real git child + ps/proc cwd reads are POSIX-only",
+)
+def test_submit_force_reaps_a_live_git_lock_over_the_hard_cap(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 slice 2 / D2: a slice-tree ``index.lock`` still "live" at
+    :data:`INDEX_LOCK_HARD_S` — a real git child holding the tree (the
+    ``_spawn_live_git`` shape) — is FORCE-reaped at the reuse checkout:
+    the git is signalled, the lock unlinked, the todo gets the reaper
+    comment and the job stamps ``index_lock_reaped`` with
+    ``forced: True``. Under the cap the same child is only waited on
+    (never signalled)."""
+    from tests.test_index_lock_reap import _spawn_live_git
+
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    lock = _reused_tree_with_live_repo(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_HARD_S + 60
+    )
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    proc = _spawn_live_git(tree, dict(os.environ))
+    try:
+        ctx, handle = _submit(store, seams)
+    finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        proc.wait(timeout=10)
+
+    # The live git was signalled and is gone; the lock was removed and
+    # the launch proceeded — a failed reap would have been
+    # index-lock-stuck instead.
+    proc.poll()
+    assert proc.returncode is not None
+    assert handle is not None and ctx.failure is None
+    assert not lock.exists()
+    assert seams["launch"]
+    record = ctx.meta_set["index_lock_reaped"]
+    assert record["forced"] is True and record["age_s"] > land_slice.INDEX_LOCK_HARD_S
+    assert any("git" in h for h in record["signalled"])
+    comment = "\n".join(store.comments(42))
+    assert "index.lock reaper" in comment and "forced-reaped" in comment
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a real git child + ps/proc cwd reads are POSIX-only",
+)
+def test_submit_waits_on_a_live_git_lock_under_the_hard_cap(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the hard cap the same live git child is only waited on —
+    the lock keeps and the submit fails attempt-free; the child itself
+    is NEVER signalled (the cap is what buys the kill)."""
+    from tests.test_index_lock_reap import _spawn_live_git
+
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    lock = _reused_tree_with_live_repo(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 60
+    )
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    proc = _spawn_live_git(tree, dict(os.environ))
+    try:
+        ctx, handle = _submit(store, seams)
+    finally:
+        alive_before_close = proc.poll() is None
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        proc.wait(timeout=10)
+
+    assert alive_before_close, "the wait must never signal the holder's git"
+    assert handle is None and ctx.status == "failed"
+    assert lock.exists()
+    assert seams["launch"] == []
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert "attempt:2" not in store.tag_strings(42)
+
+
+def test_submit_force_reap_never_signals_a_non_git_holder(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 D3: a non-git holder (the Colima VM's file share is the
+    prod shape — a fake pid 4711 stands in) over the hard cap gets NO
+    signal: the lock is still unlinked, and only git pids may ever be
+    killed."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_HARD_S + 60
+    )
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    # lsof names a non-git holder; the judge keeps it live
+    # (git-cwd-unreadable is a doubt), but D3 says it is never obeyed
+    # and never signalled.
+    monkeypatch.setattr(
+        land_slice,
+        "_lock_holders",
+        lambda p: [("4711", "com.apple.Virtualization.VirtualMachine")],
+    )
+    monkeypatch.setattr(
+        land_slice, "_git_in_tree", lambda c: (None, "git-cwd-unreadable")
+    )
+    killed: list[tuple[int, int]] = []
+    real_kill = os.kill
+
+    def spy_kill(pid: int, sig: int) -> None:
+        if sig != 0:
+            killed.append((pid, sig))
+            return
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(run_slice.os, "kill", spy_kill)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    # A git holder cannot be found (the VM is never git), so nothing was
+    # signalled — the lock still goes: "cannot judge at that age" is a
+    # doubt, not a veto (D2).
+    assert killed == []
+    assert handle is not None and ctx.failure is None
+    assert not lock.exists()
+    record = ctx.meta_set["index_lock_reaped"]
+    assert record["forced"] is True
+    assert record["signalled"] == [] and record["killed"] == []
+    assert any("Virtualization" in h for h in record["holders"])
+
+
+def test_poll_commit_retries_after_reaping_a_stale_lock(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 slice 3: a clean-exit session whose ``git add`` meets a
+    stale ``index.lock`` does not conclude "no commit" — the poll
+    judges, reaps and retries, and the session's edits still land as
+    its own commit."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    # The lock appears after the submit's own clear pass — it belongs
+    # to the reused tree's gitdir the commit path resolves.
+    gitdir = tmp_path / "repo" / ".git" / "worktrees" / "slice-td42"
+    gitdir.mkdir(parents=True)
+    seams["abs_gitdir"] = str(gitdir)
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 60)
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
+    tree = Path(handle["worktree"])
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(se): one drc solve per block (td42)\n", encoding="utf-8"
+    )
+    inner = run_slice._git
+    locked = {"n": 1}
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["add", "-A"] and locked["n"]:
+            locked["n"] -= 1
+            return subprocess.CompletedProcess(
+                [],
+                128,
+                stdout="",
+                stderr=(f"fatal: Unable to create '{gitdir}/index.lock': File exists."),
+            )
+        return inner(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", git)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(se): one drc solve per block (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Could not commit.\ntests: ran"}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert not lock.exists()  # the stale lock was reaped mid-commit
+    commits = [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert pctx.meta_set.get("commit_skipped") is None
+    assert "index-lock" not in str(pctx.meta_set.get(run_slice.ATTEMPT_FREE_KEY))
+
+
+def test_poll_commit_lock_held_is_attempt_free_never_no_commit(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same ``git add`` meeting a lock that outlives the commit's
+    own wait is infra, not "no commit": the job fails attempt-free with
+    ``commit_skipped`` stamped — never ``NO_COMMIT_KEY`` — so the next
+    submit salvages the dirty tree's edits."""
+    store = _Store()
+    store.add_todo(42, "t", tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    gitdir = tmp_path / "repo" / ".git" / "worktrees" / "slice-td42"
+    gitdir.mkdir(parents=True)
+    seams["abs_gitdir"] = str(gitdir)
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    # A live git's fresh lock outlives even the stale-aged wait: the
+    # judge keeps answering "live". Cap the commit wait to ~nothing so
+    # the poll isn't parked.
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_STALE_S", "0.1")
+    monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        land_slice, "_index_lock_state", lambda l, c: ("live", None, "held-by-git")
+    )
+    tree = Path(handle["worktree"])
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(se): one drc solve per block (td42)\n", encoding="utf-8"
+    )
+    inner = run_slice._git
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["add", "-A"]:
+            return subprocess.CompletedProcess(
+                [],
+                128,
+                stdout="",
+                stderr=(f"fatal: Unable to create '{gitdir}/index.lock': File exists."),
+            )
+        return inner(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", git)
+    seams["porcelain"] = " M a.py\n"
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Could not commit.\ntests: ran"}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert pctx.meta_set["commit_skipped"] == "index-lock"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert seams["lands"] == []
+    # No attempt burned and the lease went back, so the re-dispatch
+    # salvages the dirty tree instead of resetting it.
+    assert "attempt:2" not in store.tag_strings(42)
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_salvages_a_commit_skipped_predecessor(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr684320 slice 3: the next submit that finds the predecessor's
+    ``commit_skipped`` stamp and a dirty tree holding
+    scratch/commit-msg.txt commits those edits BEFORE
+    ``_reset_reused_worktree``'s clean would drop them — the commit
+    rides the branch tip through the reset."""
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    store.add_job(800, 42, meta={"commit_skipped": "index-lock"})
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    (tree / "scratch").mkdir(parents=True)
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(widget): build it (td42)\n", encoding="utf-8"
+    )
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None
+    cmds = [a for a, _cwd in seams["git"]]
+    commits = [a for a in cmds if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["commit_text"] == "fix(widget): build it (td42)\n"
+    # Salvage precedes the reuse reset: the commit is the branch tip
+    # ``checkout -f`` keeps, not the dead attempt's scratch.
+    assert cmds.index(commits[0]) < cmds.index(["checkout", "-f", "slice/42"])
+    assert any("salvaged" in text for kind, text in ctx.chunks if kind == "job_event")
 
 
 def test_submit_unpinned_child_uses_lane_default_model(
@@ -8606,7 +8945,7 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
 
     key = "sk-commit-note-key"
     note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
-    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)

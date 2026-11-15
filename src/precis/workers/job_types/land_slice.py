@@ -595,6 +595,13 @@ INDEX_LOCK_STALE_S = 600
 #: path would charge the branch for infra that is not its fault).
 INDEX_LOCK_WAIT_S = 30.0
 
+#: The hard cap on a slice worktree's own ``index.lock`` (gr684320): a
+#: lock still "live" this old is a runaway or a ghost the judge cannot
+#: clear — run_slice's forced reap kills its git holders and removes it
+#: at reuse. The land never force-reaps: the primary checkout's lock and
+#: dev trees keep the keep-on-doubt rule (gr541144).
+INDEX_LOCK_HARD_S = 1800
+
 #: How far down origin/main the already-landed subject scan reads. A
 #: missed match costs one ship run, not a wrong record.
 ALREADY_LANDED_WINDOW = 400
@@ -696,6 +703,19 @@ def index_lock_wait_s() -> float:
         )
     except ValueError:
         return INDEX_LOCK_WAIT_S
+
+
+def index_lock_hard_s() -> float:
+    """Age over which a slice worktree's own ``index.lock`` is
+    force-reaped at reuse, its git holders killed
+    (``PRECIS_LAND_INDEX_LOCK_HARD_S``, default
+    :data:`INDEX_LOCK_HARD_S`)."""
+    try:
+        return float(
+            os.environ.get("PRECIS_LAND_INDEX_LOCK_HARD_S") or INDEX_LOCK_HARD_S
+        )
+    except ValueError:
+        return INDEX_LOCK_HARD_S
 
 
 def ship_bin(tree: Path) -> str:
@@ -2692,7 +2712,11 @@ def _classify_land_lock(
             "why": f"the land lock is held by a live pid {pid} ({who})",
         }
     holders = _lock_holders(gitdir / LAND_LOCK_FILE) or []
-    holding = ", ".join(holders) if holders else "no live holder listed"
+    holding = (
+        ", ".join(f"{pid} ({command})" if command else pid for pid, command in holders)
+        if holders
+        else "no live holder listed"
+    )
     state = (
         f"stamped pid {pid} is dead"
         if pid is not None
@@ -2851,40 +2875,95 @@ def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result | None]:
-    """``(state, judged)``: ``state`` is ``"absent" | "stale" | "live"``
-    and ``judged`` the stat the judgement ran on (``None`` when absent).
-    The removal path carries ``judged`` to the unlink so only the inode
-    that was judged can ever be removed — never a replacement that
-    raced in after it. ``"stale"`` only on positive evidence — the same
-    keep-on-doubt rule scripts/reap-index-locks runs: mtime older than
-    :func:`index_lock_stale_s`, no process holds the file open
-    (:func:`_held_open` answered ``False``), and no live git has its cwd
-    inside ``checkout`` (:func:`_git_in_tree` answered ``False``). A
-    young lock, one lsof or ps cannot judge, or one with a live git in
-    the tree is ``"live"`` — waited on, never removed."""
+def _index_lock_state(
+    lock: Path, checkout: Path
+) -> tuple[str, os.stat_result | None, str]:
+    """``(state, judged, why)``: ``state`` is ``"absent" | "stale" |
+    "live"``, ``judged`` the stat the judgement ran on (``None`` when
+    absent), and ``why`` the reason a ``"live"`` lock was kept —
+    ``young`` | ``git-in-tree`` | ``held-by-git`` | ``lsof-missing`` |
+    ``lsof-error`` | ``ps-error`` | ``git-cwd-unreadable`` | ``stat-
+    failed`` (``""`` for absent/stale). The removal path carries
+    ``judged`` to the unlink so only the inode that was judged can ever
+    be removed — never a replacement that raced in after it.
+    ``"stale"`` only on positive evidence — the same keep-on-doubt rule
+    scripts/reap-index-locks runs, plus gr684320's holder rule: mtime
+    older than :func:`index_lock_stale_s`, no live git has its cwd
+    inside ``checkout`` (:func:`_git_in_tree` answered ``False``), and
+    no *git* holds the file open (:func:`_lock_holders` answered with no
+    git command — a non-git holder such as a container VM's file share
+    is recorded, never obeyed). A young lock, one lsof or ps cannot
+    judge, or one a git touches is ``"live"`` — waited on, never
+    removed."""
     try:
         st = lock.stat()
+    except FileNotFoundError:
+        return "absent", None, ""
     except OSError:
-        return "absent", None
+        return "live", None, "stat-failed"
     if time.time() - st.st_mtime < index_lock_stale_s():
-        return "live", st
-    if _git_in_tree(checkout) is not False:
-        return "live", st
-    if _held_open(lock) is not False:
-        return "live", st
-    return "stale", st
+        return "live", st, "young"
+    in_tree, doubt = _git_in_tree(checkout)
+    if in_tree is not False:
+        return "live", st, "git-in-tree" if in_tree else (doubt or "ps-error")
+    holders = _lock_holders(lock)
+    if holders is None:
+        return "live", st, ("lsof-missing" if _lsof_bin() is None else "lsof-error")
+    if any(_is_git_command(command) for _pid, command in holders):
+        return "live", st, "held-by-git"
+    return "stale", st, ""
 
 
-def _lock_holders(lock: Path) -> list[str] | None:
-    """The pids holding ``lock`` open (lsof), or ``None`` when lsof
-    cannot answer — missing, dead, timed out, or stderr. lsof exits 1
-    on an ordinary "nothing holds it": that is ``[]``, not a failure."""
-    if shutil.which("lsof") is None:
+#: ``lsof`` lives in ``/usr/sbin`` on macOS and the slice workers' PATH
+#: lacks it (gr684320 — that alone kept every lock "live" at any age).
+#: ``PRECIS_LSOF_FALLBACKS`` replaces this list (os.pathsep-separated)
+#: so a test can pin its fake; set empty to simulate "no lsof anywhere".
+_LSOF_FALLBACKS = ("/usr/sbin/lsof", "/usr/bin/lsof")
+
+
+def _lsof_bin() -> str | None:
+    """The lsof binary to run: PATH first, then the fixed fallback
+    paths. ``None`` when lsof cannot be found at all — callers must
+    treat that as "cannot judge", never as "nobody holds it"."""
+    found = shutil.which("lsof")
+    if found:
+        return found
+    configured = os.environ.get("PRECIS_LSOF_FALLBACKS")
+    candidates = (
+        [p for p in configured.split(os.pathsep) if p]
+        if configured is not None
+        else list(_LSOF_FALLBACKS)
+    )
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _is_git_command(command: str) -> bool:
+    """True when ``command``'s argv0 basenames to ``git`` or ``git-*``
+    (gr684320 D3): only git processes count as index.lock holders, and
+    only they may ever be signalled — a non-git holder (an editor
+    indexing the file, a container VM's file share) never keeps a lock
+    and is never killed."""
+    parts = command.strip().split(None, 1)
+    base = os.path.basename(parts[0]) if parts else ""
+    return base == "git" or base.startswith("git-")
+
+
+def _lock_holders(lock: Path) -> list[tuple[str, str]] | None:
+    """``(pid, command)`` pairs for the processes holding ``lock`` open
+    (lsof), or ``None`` when lsof cannot answer — missing, dead, timed
+    out, or stderr. lsof exits 1 on an ordinary "nothing holds it":
+    that is ``[]``, not a failure. The command is ``ps -o args=``'s
+    line, ``""`` when ps cannot name it — a nameless holder is not a
+    git holder."""
+    bin_ = _lsof_bin()
+    if bin_ is None:
         return None
     try:
         cp = subprocess.run(
-            ["lsof", "-t", "--", str(lock)],
+            [bin_, "-t", "--", str(lock)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2893,17 +2972,28 @@ def _lock_holders(lock: Path) -> list[str] | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if cp.stderr.strip():
+    if cp.returncode not in (0, 1) or cp.stderr.strip():
         return None
-    return [p for p in cp.stdout.split() if p]
-
-
-def _held_open(lock: Path) -> bool | None:
-    """``True``/``False``/``None`` for "a live process has ``lock``
-    open" — :func:`_lock_holders` with the pid list dropped. ``None``
-    keeps the lock on doubt."""
-    holders = _lock_holders(lock)
-    return None if holders is None else bool(holders)
+    out: list[tuple[str, str]] = []
+    for pid in cp.stdout.split():
+        if not pid:
+            continue
+        command = ""
+        try:
+            ps = subprocess.run(
+                ["ps", "-o", "args=", "-p", pid],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=False,
+            )
+            if ps.returncode == 0:
+                command = ps.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        out.append((pid, command))
+    return out
 
 
 def _proc_cwd(pid: str) -> str | None:
@@ -2912,11 +3002,12 @@ def _proc_cwd(pid: str) -> str | None:
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         pass
-    if shutil.which("lsof") is None:
+    bin_ = _lsof_bin()
+    if bin_ is None:
         return None
     try:
         cp = subprocess.run(
-            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            [bin_, "-a", "-p", pid, "-d", "cwd", "-Fn"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2964,11 +3055,14 @@ def _proc_dead(pid: str) -> bool:
     return _is_zombie(pid)
 
 
-def _git_in_tree(checkout: Path) -> bool | None:
-    """``True``/``False``/``None`` for "a live git/git-* of this user has
-    its cwd inside ``checkout``" — the writer a lock is meant to stop.
-    ``None`` (the process table or a live git's cwd is unreadable) keeps
-    the lock: a lock whose holder cannot be disproven is live."""
+def _git_in_tree(checkout: Path) -> tuple[bool | None, str | None]:
+    """``(in_tree, doubt)`` for "a live git/git-* of this user has its
+    cwd inside ``checkout``" — the writer a lock is meant to stop.
+    ``(True, None)`` names the writer; ``(False, None)`` means the scan
+    *disproved* one; ``(None, <doubt>)`` — ``ps-error`` when the process
+    table cannot be read, ``git-cwd-unreadable`` when a live git's cwd
+    could not be resolved — keeps the lock: a lock whose holder cannot
+    be disproven is live."""
     try:
         cp = subprocess.run(
             ["ps", "-U", str(os.getuid()), "-o", "pid=,comm="],
@@ -2979,11 +3073,12 @@ def _git_in_tree(checkout: Path) -> bool | None:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return None, "ps-error"
     if cp.returncode != 0:
-        return None
+        return None, "ps-error"
     root = os.path.realpath(checkout)
     saw_proc = False
+    saw_cwd_miss = False
     for line in cp.stdout.splitlines():
         parts = line.split(None, 1)
         if len(parts) != 2:
@@ -2997,14 +3092,17 @@ def _git_in_tree(checkout: Path) -> bool | None:
         if cwd is None:
             if _proc_dead(pid):
                 continue
-            return None
+            saw_cwd_miss = True
+            continue
         real = os.path.realpath(cwd)
         if real == root or real.startswith(root + os.sep):
-            return True
+            return True, None
+    if saw_cwd_miss:
+        return None, "git-cwd-unreadable"
     # A ps that parsed nothing at all did not answer — a user's process
     # table is never empty — so the empty/garbage scan cannot disprove
     # a live writer either.
-    return False if saw_proc else None
+    return (False, None) if saw_proc else (None, "ps-error")
 
 
 def _reap_index_lock(
@@ -3059,30 +3157,47 @@ def _clear_index_locks(
     deadline = time.monotonic() + index_lock_wait_s()
     for lock, checkout in _index_lock_pairs(gitdir, tree):
         while True:
-            state, judged = _index_lock_state(lock, checkout)
+            state, judged, why = _index_lock_state(lock, checkout)
             if state == "absent":
                 break
-            if (
-                state == "stale"
-                and judged is not None
-                and _reap_index_lock(ctx, lock, judged)
-            ):
-                break
+            if state == "stale" and judged is not None:
+                # The judge saw no git holder — record what does hold it
+                # (a non-git holder is diagnosed, never obeyed) before
+                # the unlink makes lsof's answer empty.
+                holders = _lock_holders(lock) or []
+                if _reap_index_lock(ctx, lock, judged):
+                    ctx.set_meta(
+                        index_lock_reaped={
+                            "age_s": int(time.time() - judged.st_mtime),
+                            "size": judged.st_size,
+                            "why": "",
+                            "forced": False,
+                            "holders": [
+                                f"{pid} {command}".strip() for pid, command in holders
+                            ],
+                        }
+                    )
+                    break
+                # The reap lost the race to a replacement lock — judge it
+                # again rather than trusting the stale verdict.
             if time.monotonic() >= deadline:
+                age = int(time.time() - judged.st_mtime) if judged else 0
+                ctx.set_meta(index_lock={"age_s": age, "why": why})
                 _fail(
                     ctx,
                     todo_id,
                     lane,
                     f"index.lock {lock} was still held after "
-                    f"{index_lock_wait_s():.0f}s — a live git owns the "
-                    "checkout",
+                    f"{index_lock_wait_s():.0f}s ({why or 'live'}) — a "
+                    "live git owns the checkout",
                     handoff=(
                         "land DEFERRED (not red): index.lock "
-                        f"{lock} was held by a live git past the brief "
-                        "wait — nothing on the branch to fix. The tick "
-                        "re-mints the land attempt-free; if it keeps "
-                        "recurring, find the git process running in "
-                        "that checkout."
+                        f"{lock} stayed live past the brief wait "
+                        f"(why={why or '?'}, age {age}s) — nothing on "
+                        "the branch to fix. The tick re-mints the land "
+                        "attempt-free; a lock that keeps re-forming is "
+                        "the slice reaper's problem, not the land's "
+                        "(gr684320)."
                     ),
                     attempt_free="index-lock",
                 )
@@ -5510,6 +5625,7 @@ __all__ = [
     "GATE_KILL_CROSS",
     "GATE_KILL_XDIST_RE",
     "HOST_REFUSAL_MARKS",
+    "INDEX_LOCK_HARD_S",
     "INDEX_LOCK_STALE_S",
     "INDEX_LOCK_WAIT_S",
     "LAND_LOCK_FILE",
@@ -5533,6 +5649,7 @@ __all__ = [
     "gate_kill_line",
     "gate_red_excerpt",
     "host_refusal_line",
+    "index_lock_hard_s",
     "index_lock_stale_s",
     "index_lock_wait_s",
     "is_host_refusal",

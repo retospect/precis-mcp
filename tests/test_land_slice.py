@@ -6743,8 +6743,8 @@ def test_stale_index_lock_is_reaped_with_a_log_line(
     lock.write_bytes(b"")
     old = time.time() - 1200
     os.utime(lock, (old, old))
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
     store = _Store()
     store.add_todo(42)
 
@@ -6770,8 +6770,8 @@ def test_linked_worktree_primary_index_lock_is_also_reaped(
     lock.write_bytes(b"")
     old = time.time() - 1200
     os.utime(lock, (old, old))
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
     store = _Store()
     store.add_todo(42)
 
@@ -6790,7 +6790,7 @@ def test_live_index_lock_waits_then_fails_retryable(
     gitdir = Path(seams["gitdir"])
     (gitdir / "index.lock").write_bytes(b"")
     monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (True, None))
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
 
@@ -6816,7 +6816,7 @@ def test_live_index_lock_clearing_mid_wait_still_ships(
     monkeypatch.setattr(
         land_slice,
         "_index_lock_state",
-        lambda lock, checkout: (next(states, "absent"), None),
+        lambda lock, checkout: (next(states, "absent"), None, ""),
     )
     monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
     store = _Store()
@@ -6831,32 +6831,47 @@ def test_index_lock_state_keeps_every_doubt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The keep-on-doubt ladder: absent → young → git-in-tree →
-    unjudgeable → held-open all keep the lock; only the old, fully
+    unjudgeable → held-by-git all keep the lock; only the old, fully
     disproven lock reads stale — and returns the stat it was judged
-    on, the identity the unlink must re-match."""
+    on, the identity the unlink must re-match. gr684320: ``why`` names
+    the keep reason and only a GIT holder keeps — a non-git holder
+    (the slice host's VM file share) is recorded, never obeyed."""
     lock = tmp_path / "index.lock"
-    assert land_slice._index_lock_state(lock, tmp_path) == ("absent", None)
+    assert land_slice._index_lock_state(lock, tmp_path) == ("absent", None, "")
     lock.write_bytes(b"")
-    state, _judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "live"  # young
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "young")
     old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 60)
     os.utime(lock, (old, old))
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: True)
-    state, _judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "live"
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: None)
-    state, _judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "live"
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
-    state, _judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "live"
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: None)
-    state, _judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "live"
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
-    state, judged = land_slice._index_lock_state(lock, tmp_path)
-    assert state == "stale" and judged == lock.stat()
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (True, None))
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "git-in-tree")
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (None, "ps-error"))
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "ps-error")
+    monkeypatch.setattr(
+        land_slice, "_git_in_tree", lambda c: (None, "git-cwd-unreadable")
+    )
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "git-cwd-unreadable")
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [("4242", "git status")])
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "held-by-git")
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: None)
+    monkeypatch.setattr(land_slice, "_lsof_bin", lambda: "/x/lsof")
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "lsof-error")
+    monkeypatch.setattr(land_slice, "_lsof_bin", lambda: None)
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "lsof-missing")
+    monkeypatch.setattr(
+        land_slice,
+        "_lock_holders",
+        lambda p: [("99", "com.apple.Virtualization.VirtualMachine")],
+    )
+    state, judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("stale", "") and judged == lock.stat()
 
 
 def test_reap_index_lock_removes_only_the_judged_inode(tmp_path: Path) -> None:
@@ -6918,8 +6933,8 @@ def test_index_lock_replaced_between_judgement_and_unlink_is_kept(
     lock.write_bytes(b"")
     old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 600)
     os.utime(lock, (old, old))
-    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
-    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
     monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
     monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
     real_state = land_slice._index_lock_state
@@ -6927,7 +6942,7 @@ def test_index_lock_replaced_between_judgement_and_unlink_is_kept(
 
     def state_then_replace(
         lock: Path, checkout: Path
-    ) -> tuple[str, os.stat_result | None]:
+    ) -> tuple[str, os.stat_result | None, str]:
         nonlocal swapped
         verdict = real_state(lock, checkout)
         if verdict[0] == "stale" and not swapped:
@@ -7061,11 +7076,11 @@ def test_already_landed_no_match_still_ships(
     assert handle is not None and seams["launch"]
 
 
-def test_held_open_lsof_no_holders_is_false(
+def test_lock_holders_lsof_no_holders_is_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """lsof's exit 1 with empty output is the ordinary "nothing holds
-    this file" — ``False``, not "can't tell" (keep-on-doubt would pin
+    this file" — ``[]``, not "can't tell" (keep-on-doubt would pin
     every provably-dead lock forever)."""
     lock = tmp_path / "index.lock"
     lock.write_bytes(b"")
@@ -7075,10 +7090,10 @@ def test_held_open_lsof_no_holders_is_false(
         "run",
         lambda *a, **kw: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
     )
-    assert land_slice._held_open(lock) is False
+    assert land_slice._lock_holders(lock) == []
 
 
-def test_held_open_lsof_stderr_is_unknown(
+def test_lock_holders_lsof_stderr_is_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Any lsof stderr means the open-handle question went unanswered —
@@ -7093,15 +7108,107 @@ def test_held_open_lsof_stderr_is_unknown(
             [], 1, stdout="", stderr="lsof: can't stat"
         ),
     )
-    assert land_slice._held_open(lock) is None
+    assert land_slice._lock_holders(lock) is None
+
+
+def test_lock_holders_names_pid_and_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each lsof pid is named by ``ps -o args=`` so the judge can tell a
+    git writer from the VM's file share (gr684320 D3); a pid ps cannot
+    name keeps ``""`` — a nameless holder is never a git holder."""
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        if argv[0].endswith("lsof"):
+            return subprocess.CompletedProcess(argv, 0, stdout="5150\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=" git status --porcelain\n", stderr=""
+        )
+
+    monkeypatch.setattr(land_slice.shutil, "which", lambda cmd: "/usr/sbin/lsof")
+    monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
+    assert land_slice._lock_holders(lock) == [("5150", "git status --porcelain")]
+
+
+def test_lsof_bin_falls_back_to_sbin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320: the worker's PATH has no lsof (macOS keeps it in
+    /usr/sbin), which kept every lock "live" at any age — the fixed
+    fallback paths un-judge it; ``PRECIS_LSOF_FALLBACKS`` pins them for
+    tests and an empty value simulates no lsof anywhere."""
+    fake = tmp_path / "lsof"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(land_slice.shutil, "which", lambda cmd: None)
+    monkeypatch.setenv("PRECIS_LSOF_FALLBACKS", str(fake))
+    assert land_slice._lsof_bin() == str(fake)
+    monkeypatch.setenv("PRECIS_LSOF_FALLBACKS", "")
+    assert land_slice._lsof_bin() is None
+    real = tmp_path / "real-lsof"
+    real.write_text("#!/bin/sh\n", encoding="utf-8")
+    real.chmod(0o755)
+    monkeypatch.delenv("PRECIS_LSOF_FALLBACKS")
+    monkeypatch.setattr(
+        land_slice,
+        "_LSOF_FALLBACKS",
+        (str(tmp_path / "nope"), str(real)),
+    )
+    assert land_slice._lsof_bin() == str(real)
+
+
+def test_old_lock_judges_stale_with_fallback_lsof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gr684320 end state: PATH without lsof, a fake at a patched
+    fallback path reporting no holders → a 0-byte old lock is "stale";
+    no lsof anywhere keeps it "live" with ``lsof-missing``; a fake
+    lsof naming a NON-git pid still judges "stale" (D3 — the VM file
+    share that fooled the old any-holder rule)."""
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 60)
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (False, None))
+    monkeypatch.setattr(land_slice.shutil, "which", lambda cmd: None)
+
+    # A fake lsof at a patched fallback path answers "nothing holds it".
+    fake = tmp_path / "fake-lsof"
+    fake.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PRECIS_LSOF_FALLBACKS", str(fake))
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("stale", "")
+
+    # No lsof anywhere → keep on doubt, reason named.
+    monkeypatch.setenv("PRECIS_LSOF_FALLBACKS", "")
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("live", "lsof-missing")
+
+    # A non-git holder (the Colima VM shape) is diagnosed, not obeyed.
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        if argv[0] == str(fake):
+            # lsof answers: one pid holds the lock.
+            return subprocess.CompletedProcess(argv, 0, stdout="4711\n", stderr="")
+        # ps -o args= names it — the VM's file share, never a git.
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="com.apple.Virtualization.VirtualMachine\n", stderr=""
+        )
+
+    monkeypatch.setenv("PRECIS_LSOF_FALLBACKS", str(fake))
+    monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
+    state, _judged, why = land_slice._index_lock_state(lock, tmp_path)
+    assert (state, why) == ("stale", "")
 
 
 def test_git_in_tree_unparseable_ps_is_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A ps listing that parses to zero ``pid comm`` rows never answered
-    the question — ``None`` keeps the lock; only a parsed scan with no
-    git in the checkout disproves the writer."""
+    the question — ``(None, 'ps-error')`` keeps the lock; only a parsed
+    scan with no git in the checkout disproves the writer."""
     monkeypatch.setattr(
         land_slice.subprocess,
         "run",
@@ -7109,4 +7216,4 @@ def test_git_in_tree_unparseable_ps_is_unknown(
             [], 0, stdout="garbage\n%%%\n", stderr=""
         ),
     )
-    assert land_slice._git_in_tree(tmp_path) is None
+    assert land_slice._git_in_tree(tmp_path) == (None, "ps-error")

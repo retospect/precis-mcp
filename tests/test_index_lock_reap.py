@@ -356,16 +356,23 @@ def test_non_empty_old_lock_is_kept(lock_repo: dict[str, Path], tmp_path: Path) 
     assert "would reap" not in result.stdout
 
 
-def test_lock_held_open_is_kept(lock_repo: dict[str, Path], tmp_path: Path) -> None:
-    """Old + empty but a live process still holds the fd — the writer may
-    be mid-fill, so the lsof check must outrank size+age."""
+def test_lock_held_by_a_non_git_is_still_reported(
+    lock_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr684320 D3: only a GIT process counts as a lock holder — a
+    non-git holder (this test's own python fd; the slice host's VM file
+    share is the prod shape) is named in the report but never obeys it,
+    so the stale lock still reads "would reap" and --apply removes it."""
     lock = _make_stale(_admin_lock(lock_repo, "A"))
     env = _reap_env(tmp_path)
     fd = os.open(lock, os.O_RDONLY)
     try:
         result = _run_reaper(lock_repo["primary"], env)
         assert lock.exists()
-        assert "would reap" not in result.stdout
+        assert _would_reap(lock).search(result.stdout), result.stdout
+        assert "non-git holder" in result.stdout, result.stdout
+        result = _run_reaper(lock_repo["primary"], env, "--apply")
+        assert not lock.exists()
     finally:
         os.close(fd)
 
@@ -451,7 +458,9 @@ def test_missing_lsof_reports_and_keeps(
 ) -> None:
     """Condition 3 fails closed: with no lsof the sweep cannot prove a lock
     is unheld, so it reports the stale candidate and keeps it — the "just
-    report" half of the spec, pinned."""
+    report" half of the spec, pinned. The PATH carries no lsof and
+    ``PRECIS_LSOF_FALLBACKS`` is emptied, so the /usr/sbin fallback can't
+    rescue it either — "no lsof anywhere" is what the test means."""
     lock = _make_stale(_admin_lock(lock_repo, "A"))
     bindir = tmp_path / "no-lsof-bin"
     bindir.mkdir()
@@ -460,6 +469,7 @@ def test_missing_lsof_reports_and_keeps(
         assert real, f"{tool} must exist for this test"
         (bindir / tool).symlink_to(real)
     env = _test_env(path=str(bindir))
+    env["PRECIS_LSOF_FALLBACKS"] = ""
     result = _run_reaper(lock_repo["primary"], env)
     assert lock.exists()
     assert "lsof" in result.stdout, result.stdout

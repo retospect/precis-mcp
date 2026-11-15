@@ -1420,16 +1420,23 @@ def test_identical_free_failures_cap_to_a_coordinator_ask(
 ) -> None:
     """gr662077: at :data:`FREE_RUN_CAP` identical free failures the
     node parks behind a coordinator ask — a wedged holder is a human
-    call, and closing the ask re-arms the node."""
+    call, and closing the ask re-arms the node. The reason here is
+    ``lane-wait``: plain ``index-lock`` waits are exempt since
+    gr684320 (the reaper clears them — they never reach a cap)."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     for _ in range(pd.FREE_RUN_CAP):
-        _index_lock_job(store, task)
+        _failed_job(
+            store,
+            task,
+            "run_slice: no lane free for task class 'code'",
+            meta={"attempt_free": "lane-wait"},
+        )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (0, 1)
     (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
     ask_ref = store.get_ref(kind="todo", id=ask)
-    assert ask_ref is not None and "index-lock" in str(ask_ref.title)
+    assert ask_ref is not None and "lane-wait" in str(ask_ref.title)
     assert "ask-coordinator" in _open_tags(store, ask)
     assert _blocked_by_ids(store, task) == [ask]
     # Parked: nothing mints while the ask sits open.
@@ -1438,6 +1445,179 @@ def test_identical_free_failures_cap_to_a_coordinator_ask(
     # Answering re-arms the run — the next tick dispatches fresh.
     _answer_ask(store, ask, "acknowledged")
     res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_plain_index_lock_waits_never_cap(store: Store) -> None:
+    """gr684320 D4: a plain ``index-lock`` wait no longer ends in an
+    ask — backoff tops out at 30 min and the forced reap is at 30 min,
+    so a waiting node clears itself. Eight in a row (past the old cap
+    of six) still mint no ask; the node re-dispatches on its own once
+    the newest wait ages out of backoff."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    t0 = datetime.now(UTC)
+    for _ in range(8):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store, now=t0)
+    # Held by backoff (the run is past the grace), never asked.
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+    # Past the backoff cap the node re-dispatches on its own.
+    res = pd.run_pass(store, now=t0 + pd.FREE_BACKOFF_MAX + timedelta(minutes=5))
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def _index_lock_stuck_job(store: Store, task: int) -> int:
+    return _failed_job(
+        store,
+        task,
+        "run_slice: index.lock survived the forced reap",
+        meta={
+            "attempt_free": "index-lock-stuck",
+            "index_lock": {"age_s": 1900, "why": "held-by-git"},
+        },
+    )
+
+
+def test_index_lock_stuck_asks_at_two(store: Store) -> None:
+    """gr684320 (a): ``index-lock-stuck`` — a forced reap that failed or
+    a lock that re-formed at once — is the only lock shape that still
+    asks, and it caps at two in a row; the ask's body carries the
+    judge's ``index_lock`` record the run_slice job stamped."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _index_lock_stuck_job(store, task)
+    res = pd.run_pass(store)
+    # One stuck failure is under the cap — the node re-queues at once.
+    assert (res.dispatched, res.asks) == (1, 0)
+    # The re-mint dies the same way: two in a row is the human call.
+    newest, _ = _jobs_under(store, task)[-1]
+    _set_job_status(store, newest, "failed")
+    store.stamp_ref_meta(
+        newest,
+        {
+            "attempt_free": "index-lock-stuck",
+            "index_lock": {"age_s": 1900, "why": "held-by-git"},
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_meta = _meta(store, ask)["ask"]
+    assert ask_meta["context"] == "attempt_free 'index-lock-stuck' x2 consecutive"
+    body = _body_text(store, ask)
+    assert "age_s=1900" in body and "held-by-git" in body
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert _blocked_by_ids(store, task) == [ask]
+    # The stuck ask does NOT self-close — a failed reap stays a human
+    # call; only the plain 'index-lock' context does (gr684320 want 2).
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert _status(store, ask) == "open"
+
+
+def _reaped_index_lock_job(store: Store, task: int, age_s: int) -> int:
+    return _failed_job(
+        store,
+        task,
+        "run_slice: reaped stale index.lock",
+        meta={
+            "index_lock_reaped": {
+                "age_s": age_s,
+                "size": 0,
+                "why": "held-by-git",
+                "forced": True,
+                "holders": ["4242 01:23:45 git status"],
+            }
+        },
+    )
+
+
+def test_index_lock_reformed_asks_after_three_reaps(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 (b) / want 3: three ``index_lock_reaped`` jobs on one
+    node since its re-arm floor mean the lock keeps re-forming — the
+    recurring cause, not the symptom — so the node parks behind a
+    coordinator ask listing each reap's age, keep reason and holder
+    command lines."""
+    use_lanes(monkeypatch)  # a four-rung ladder: two reaps are not the cap
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _reaped_index_lock_job(store, task, age_s=1900)
+    _reaped_index_lock_job(store, task, age_s=800)
+    res = pd.run_pass(store)
+    # Two reaps are under the cap — the node still re-dispatches.
+    assert (res.dispatched, res.asks) == (1, 0)
+    newest, _ = _jobs_under(store, task)[-1]
+    _set_job_status(store, newest, "failed")
+    store.stamp_ref_meta(
+        newest,
+        {
+            "index_lock_reaped": {
+                "age_s": 1950,
+                "size": 0,
+                "why": "",
+                "forced": True,
+                "holders": [],
+            }
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert _meta(store, ask)["ask"]["context"] == "index.lock re-formed x3"
+    body = _body_text(store, ask)
+    assert "reaped 3 times" in body
+    assert "1900s" in body and "held-by-git" in body
+    assert "4242 01:23:45 git status" in body
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert _blocked_by_ids(store, task) == [ask]
+
+
+def _legacy_index_lock_ask(store: Store, task: int) -> int:
+    """Mint the pre-gr684320 ask by hand: a coordinator ask parked on
+    ``task`` whose ``meta.ask.context`` is the plain ``attempt_free
+    'index-lock'`` run — the shape that used to need a human to clear
+    the lock (td682871/td682392 sat as showstoppers on it)."""
+    plan = pd._load(store)
+    return pd._mint_coordinator_ask(
+        store,
+        plan,
+        plan.nodes[task],
+        title=(f"td{task}: 'index-lock' failure x6 in a row — a coordinator call"),
+        body="find and clear the holder of the slice worktree's index.lock",
+        context="attempt_free 'index-lock' x6 consecutive",
+        now=datetime.now(UTC),
+        block_node=True,
+    )
+
+
+def test_a_legacy_index_lock_ask_self_closes(store: Store) -> None:
+    """gr684320 want 2: the ``attempt_free 'index-lock'`` asks the old
+    cap minted are stale the moment the reaper exists — the tick
+    answers them ``acknowledged`` with a note naming the fix and the
+    node re-arms on the same pass, so no human ever closes one."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.FREE_RUN_CAP):
+        _index_lock_job(store, task)
+    ask = _legacy_index_lock_ask(store, task)
+
+    res = pd.run_pass(store)
+
+    assert _status(store, ask) == "done"
+    assert "ask-user" not in _open_tags(store, ask)
+    assert any(f"td{ask}: index-lock ask self-closed" in n for n in res.notes)
+    comments = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert any("acknowledged" in c and "gr684320" in c for c in comments)
+    # Re-armed by the same pass's rearm step: the node dispatches fresh
+    # (the closed ask stopped flooring _free_run and blocking).
     assert (res.dispatched, res.asks) == (1, 0)
 
 
