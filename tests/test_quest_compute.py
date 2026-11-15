@@ -1940,12 +1940,13 @@ class TestHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 1
 
-    def test_autocatpath_redispatch_held_by_restale_cap_zero(
+    def test_autocatpath_infra_retry_exempt_from_restale_cap_zero(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """gr543908: ``fidelity_restale_cap=0`` holds the harvest's automatic
-        re-dispatches too — a failed aggregate is noted as held, nothing is
-        minted and the retry counter is untouched."""
+        """gr593138 (Reto 2026-11-12): ``fidelity_restale_cap=0`` holds
+        automatic re-runs but a mechanical infra failure still re-queues
+        once on the pinned engine, spending the quest's mechanical budget;
+        with the budget gone it is noted as held and nothing is minted."""
         qid = self._reaction_quest(store)
         store.stamp_ref_meta(qid, {"fidelity_restale_cap": 0})
         sid = compute_mod.ensure_candidate(
@@ -1955,13 +1956,40 @@ class TestHarvest:
         self._failed_autocatpath_aggregate(store, sid)
 
         calls: list[int] = []
+
+        def _dispatch(*a: Any, **k: Any) -> str:
+            calls.append(1)
+            return "autocatpath[emt] dispatched"
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _dispatch)
+
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [1]
+        assert step.ruled_out == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 1
+        assert meta.get("quest_mechanical_reruns") == 1
+        qmeta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert qmeta.get("mechanical_reruns_used") == 1
+
+    def test_autocatpath_infra_retry_held_when_mechanical_budget_spent(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid = self._reaction_quest(store)
+        store.stamp_ref_meta(
+            qid, {"fidelity_restale_cap": 0, "fidelity_mechanical_budget": 0}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._failed_autocatpath_aggregate(store, sid)
+        calls: list[int] = []
         monkeypatch.setattr(
             compute_mod, "dispatch_autocatpath", lambda *a, **k: calls.append(1)
         )
-
         step = compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == []
-        assert step.ruled_out == 0
         assert any("fidelity_restale_cap=0" in n for n in step.notes)
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert "quest_autocatpath_infra_retries" not in meta
@@ -11574,10 +11602,49 @@ class TestTierPromotion:
 
     def test_restale_cap_zero_disables(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_minting_dispatch(monkeypatch)
-        qid = self._restale_quest(store, fidelity_restale_cap=0)
+        qid = self._restale_quest(
+            store, fidelity_restale_cap=0, fidelity_mechanical_cap=0
+        )
         self._stale_candidate(store, qid, "a", 0.1)
         self._stale_candidate(store, qid, "bb", 0.2, basis=self._NEW)
         assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_restale_cap_zero_still_requeues_stale_engine_capped(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr593138: the hold exempts the mechanical stale-ENGINE rerun, under
+        the per-pass mechanical cap, the per-candidate retry cap and the
+        per-quest budget."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(
+            store,
+            fidelity_restale_cap=0,
+            fidelity_mechanical_cap=1,
+            fidelity_mechanical_budget=1,
+        )
+        best = self._stale_candidate(store, qid, "a", 0.1)
+        self._stale_candidate(store, qid, "bb", 0.2)
+        self._stale_candidate(store, qid, "ccc", 0.0, basis=self._NEW)
+        compute_mod.promote_tiers(store, qid)
+        assert [sid for sid, _t in calls] == [best]
+        meta = store.fetch_refs_by_ids({best})[best].meta or {}
+        assert meta.get("quest_mechanical_reruns") == 1
+        # budget (1) now spent: the next pass mints nothing more
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert len(calls) == 1
+
+    def test_restale_cap_zero_skips_network_only_staleness(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Same engine version, different network digest is not a mechanical
+        failure — it waits for the hold to lift."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=0)
+        same_engine = {**self._NEW, "digest": "abc"}
+        self._stale_candidate(store, qid, "a", 0.1, basis=same_engine)
+        self._stale_candidate(store, qid, "bb", 0.2, basis=self._NEW)
+        compute_mod.promote_tiers(store, qid)
         assert calls == []
 
     def test_restale_cap_zero_holds_promote_passes_too(

@@ -2504,6 +2504,7 @@ _LOSING_JOB_FLAG_KEYS: tuple[str, ...] = (
     "barrier_absurd",
     "barrier_unrelaxed_geometry",
     "barrier_seed_blocker",
+    "barrier_failure_class",
     "barrier_independent_seeds",
     "warnings",
 )
@@ -4646,6 +4647,13 @@ def harvest_measures(
     # re-dispatch this pass performs (infra retry, stale-era/off-lane
     # amnesty, stuck-seed repair) — the same gate promote_tiers honours.
     rerun_held = _automatic_rerun_hold(store, quest_id, quest_meta)
+
+    def mech_held() -> bool:
+        # gr593138: the hold exempts mechanical (infra / stuck-seed) retries
+        # on the pinned engine while the quest's mechanical budget lasts;
+        # the amnesty arms stay held outright.
+        return rerun_held and _mechanical_budget_left(store, quest_id) <= 0
+
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
@@ -4932,6 +4940,16 @@ def harvest_measures(
                             by_key = dict(prior) if isinstance(prior, dict) else {}
                         by_key["barrier"] = kept_basis
                         measures["network_basis_by_key"] = by_key
+            if not stashed and "barrier_trusted" in measures:
+                # gr593138: every untrusted stamp carries a failure class —
+                # mechanical re-queues itself, science goes to the agent.
+                measures["barrier_failure_class"] = (
+                    None
+                    if measures.get("barrier_trusted") is not False
+                    else trust_gate.failure_class(
+                        measures.get("barrier_blocked_by") or [], absurd=bool(absurd)
+                    )
+                )
             store.stamp_ref_meta(s.id, measures)
             candidate_meta.update(measures)
             _fold_viewport_updates(viewport_updates, measures)
@@ -5508,10 +5526,11 @@ def harvest_measures(
                     notes.append(
                         f"stuck seed for [{handle}] (retry-eligible, not re-dispatched)"
                     )
-                elif rerun_held:
+                elif mech_held():
                     notes.append(
                         f"stuck seed for [{handle}] "
-                        "(re-dispatch held: fidelity_restale_cap=0)"
+                        "(re-dispatch held: fidelity_restale_cap=0, "
+                        "mechanical budget spent)"
                     )
                 elif _seed_timeout_held(store, s, handle, cp_job_meta, notes):
                     # Deadline-killed at a wall the retry would not raise: no
@@ -5534,6 +5553,8 @@ def harvest_measures(
                         if is_no_live_lane(snote):
                             _note_no_live_lane(notes, "stuck-seed re-dispatch", snote)
                         elif _dispatch_landed(snote):
+                            if rerun_held:
+                                _spend_mechanical_rerun(store, quest_id, s.id)
                             _bump_seed_infra_retry_count(store, s.id)
                             notes.append(
                                 f"stuck seed for [{handle}] → re-dispatched "
@@ -5605,10 +5626,11 @@ def harvest_measures(
                         f"autocatpath infra failure for [{handle}] "
                         "(retry-eligible, not ruled out)"
                     )
-                elif rerun_held:
+                elif mech_held():
                     notes.append(
                         f"autocatpath infra failure for [{handle}] "
-                        "(re-dispatch held: fidelity_restale_cap=0)"
+                        "(re-dispatch held: fidelity_restale_cap=0, "
+                        "mechanical budget spent)"
                     )
                 elif cp_retries < _MAX_INFRA_RETRIES:
                     cnote = dispatch_autocatpath(
@@ -5622,6 +5644,8 @@ def harvest_measures(
                     if is_no_live_lane(cnote):
                         _note_no_live_lane(notes, "autocatpath retry", cnote)
                     elif _dispatch_landed(cnote):
+                        if rerun_held:
+                            _spend_mechanical_rerun(store, quest_id, s.id)
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
                         )
@@ -6475,6 +6499,50 @@ def _automatic_rerun_hold(
     return int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0) <= 0
 
 
+#: Mechanical-rerun exemption from the hold (gr593138, Reto ruling
+#: 2026-11-12): under ``fidelity_restale_cap=0`` a stale-engine / infra /
+#: timeout failure still re-queues on the pinned engine, capped three ways —
+#: per pass (``meta.fidelity_mechanical_cap``), per candidate
+#: (:data:`_MAX_MECHANICAL_RERUNS`) and per quest
+#: (``meta.fidelity_mechanical_budget`` less ``meta.mechanical_reruns_used``).
+#: Science-class stamps (``barrier_failure_class``) never take this door.
+_DEFAULT_MECHANICAL_CAP = 2
+_DEFAULT_MECHANICAL_BUDGET = 20
+_MAX_MECHANICAL_RERUNS = 2
+
+
+def _mechanical_budget_left(
+    store: Store, quest_id: int, qmeta: dict[str, Any] | None = None
+) -> int:
+    """Mechanical reruns the quest may still spend while the hold is on."""
+    if qmeta is None:
+        qref = store.get_ref(kind="quest", id=quest_id)
+        qmeta = qref.meta or {} if qref is not None else {}
+    budget = int(
+        qmeta.get("fidelity_mechanical_budget", _DEFAULT_MECHANICAL_BUDGET) or 0
+    )
+    return max(budget - int(qmeta.get("mechanical_reruns_used", 0) or 0), 0)
+
+
+def _spend_mechanical_rerun(store: Store, quest_id: int, cand_id: int) -> None:
+    """Count one landed mechanical rerun against the quest budget and the
+    candidate's retry cap."""
+    qref = store.get_ref(kind="quest", id=quest_id)
+    used = int(
+        ((qref.meta or {}) if qref is not None else {}).get("mechanical_reruns_used", 0)
+        or 0
+    )
+    store.stamp_ref_meta(quest_id, {"mechanical_reruns_used": used + 1})
+    cref = store.get_ref(kind="structure", id=cand_id)
+    n = int(
+        ((cref.meta or {}) if cref is not None else {}).get(
+            "quest_mechanical_reruns", 0
+        )
+        or 0
+    )
+    store.stamp_ref_meta(cand_id, {"quest_mechanical_reruns": n + 1})
+
+
 def promote_tiers(
     store: Store, quest_id: int, *, hub: Any | None = None, by: str = "agent"
 ) -> list[str]:
@@ -6562,6 +6630,11 @@ def promote_tiers(
       already carries the current basis, so it is skipped. That is by
       design, not a stuck candidate.
 
+    Under the hold (``fidelity_restale_cap=0``) only a MECHANICAL
+    stale-ENGINE restale runs (gr593138, Reto 2026-11-12), capped by
+    ``fidelity_mechanical_cap`` per pass, two per candidate and
+    ``fidelity_mechanical_budget`` per quest; network-only staleness waits.
+
     Returns one short note per promotion dispatched; never raises (a
     promotion bug must not cost an already-successful harvest/graduation
     result — the caller, :func:`run_compute_step`, also wraps this in its
@@ -6581,12 +6654,21 @@ def promote_tiers(
             qmeta.get("fidelity_promote_verify", _DEFAULT_TIER_PROMOTE_VERIFY) or 0
         )
         cap_restale = int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0)
-        if cap_restale <= 0:
+        mech_only = cap_restale <= 0
+        if mech_only:
             # Operator hold (gr543908): fidelity_restale_cap=0 stops every
             # automatic re-mint this pass performs — the two promote passes
             # mint new evaluations on existing candidates too, not just
-            # restale re-dispatches.
-            return notes
+            # restale re-dispatches. Exempt (gr593138): the stale-ENGINE
+            # restale re-dispatch, a mechanical rerun on the pinned engine,
+            # under its own per-pass/per-candidate/per-quest caps.
+            cap_neb = cap_verify = 0
+            cap_restale = min(
+                int(qmeta.get("fidelity_mechanical_cap", _DEFAULT_MECHANICAL_CAP) or 0),
+                _mechanical_budget_left(store, quest_id, qmeta),
+            )
+            if cap_restale <= 0:
+                return notes
         hub = hub or _hub_for(store)
 
         from precis.quest.frontier import (
@@ -6712,6 +6794,11 @@ def promote_tiers(
                 tier = c.flags.get("tier")
                 if not c.flags.get("network_stale") or tier not in _TIERS:
                     continue
+                if mech_only and (
+                    int((s.meta or {}).get("quest_mechanical_reruns", 0) or 0)
+                    >= _MAX_MECHANICAL_RERUNS
+                ):
+                    continue
                 if _resolved_template(
                     _apply_tier_config(reaction, str(tier))
                 ) != current_basis.get("template"):
@@ -6720,6 +6807,20 @@ def promote_tiers(
                     # network, it would only collapse onto the same job.
                     continue
                 pw = _tier_pathway_meta(store, c.ref_id, str(tier))
+                if mech_only:
+                    # Held: only an engine-stale measure is a mechanical
+                    # failure; a network/environment-only difference waits
+                    # for the hold to lift.
+                    ev_basis = (
+                        _network_basis(pw) if pw is not None else None
+                    ) or c.flags.get("network_basis")
+                    if not (
+                        isinstance(ev_basis, dict)
+                        and trust_gate.engine_version_stale(
+                            ev_basis.get("version"), current_basis.get("version")
+                        )
+                    ):
+                        continue
                 if pw is not None:
                     if pw.get("status") == "computing":
                         continue
@@ -6775,6 +6876,8 @@ def promote_tiers(
                     )
                     continue
                 n_dispatched += 1
+                if mech_only:
+                    _spend_mechanical_rerun(store, quest_id, c.ref_id)
                 stale_keys = c.flags.get("network_stale_keys")
                 keys_s = (
                     f" ({', '.join(k for k in stale_keys if isinstance(k, str))})"

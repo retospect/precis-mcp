@@ -1291,3 +1291,17 @@ def test_compare_toon_renders_gate_column_and_legends() -> None:
     assert "n/a" in out  # no gate supplied → n/a, never a blank
     assert "NOT the trust gate" in out
     assert "view='trust'" in out
+
+
+def test_failure_class_mechanical_input_science() -> None:
+    """gr593138: engine blockers are mechanical, seeds are input, everything
+    else (and an absurd magnitude) is science; science wins a mix."""
+    from precis.utils.trust_gate import failure_class
+
+    assert failure_class([]) is None
+    assert failure_class(["engine:stale"]) == "mechanical"
+    assert failure_class(["engine:unknown"]) == "mechanical"
+    assert failure_class(["seeds:1-independent"]) == "input"
+    assert failure_class(["endpoint:union-disagree"]) == "science"
+    assert failure_class(["engine:stale", "anchor:none"]) == "science"
+    assert failure_class([], absurd=True) == "science"

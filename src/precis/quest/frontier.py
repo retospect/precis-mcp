@@ -1612,6 +1612,8 @@ def _candidate_from_structure(
         flags["selectivity_trusted"] = bool(meta.get("selectivity_trusted"))
     if "barrier_blocked_by" in meta:
         flags["barrier_blocked_by"] = meta.get("barrier_blocked_by")
+    if meta.get("barrier_failure_class"):
+        flags["barrier_failure_class"] = meta.get("barrier_failure_class")
     if "selectivity_blocked_by" in meta:
         flags["selectivity_blocked_by"] = meta.get("selectivity_blocked_by")
     # The seed-independence blocker + run provenance (gr522897): the

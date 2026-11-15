@@ -247,6 +247,42 @@ def seed_blocker(
     return f"seeds:{n}-independent"
 
 
+#: Failure classes of an untrusted barrier stamp (gr593138). ``mechanical``:
+#: the machine, not the material, failed the gate (stale/unknown engine) — a
+#: rerun on the pinned engine fixes it, no judgement needed. ``input``: the
+#: run lacked evidence a fresh run supplies (seed independence). ``science``:
+#: the measurement itself is in question (endpoint split, detachment, wrong
+#: binder, absurd magnitude, no anchor) — a rerun would not change the
+#: verdict; it goes to the quest agent / a human with the blocker named.
+FAILURE_MECHANICAL = "mechanical"
+FAILURE_INPUT = "input"
+FAILURE_SCIENCE = "science"
+
+
+def failure_class(blocked_by: Iterable[Any], *, absurd: bool = False) -> str | None:
+    """Class of an untrusted stamp from its blocker ids (``None`` when
+    nothing blocks). Any science blocker wins over a mechanical one: a
+    rerun on the current engine cannot clear it, so the stamp is not
+    auto-requeued."""
+    ids = [str(b) for b in blocked_by]
+    if not ids and not absurd:
+        return None
+    if absurd:
+        return FAILURE_SCIENCE
+    classes: set[str] = set()
+    for b in ids:
+        if b.startswith("engine:"):
+            classes.add(FAILURE_MECHANICAL)
+        elif b.startswith("seeds:"):
+            classes.add(FAILURE_INPUT)
+        else:
+            classes.add(FAILURE_SCIENCE)
+    for c in (FAILURE_SCIENCE, FAILURE_INPUT, FAILURE_MECHANICAL):
+        if c in classes:
+            return c
+    return None
+
+
 def seed_row(
     records: list[dict[str, Any]],
     *,
