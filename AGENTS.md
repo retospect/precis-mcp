@@ -269,11 +269,13 @@ point: the `se-design` skill. Missing one → gripe.
 - Container-first; shell cwd is already this worktree — never `cd`. Other
   trees are NOT reachable by `git -C` (the harness refuses it) — read them
   with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
-- One plain command per Bash call: no loops, heredocs, `$(…)`,
-  `&&`/`;`/`||` chains, or shell variables holding paths — the harness's
-  worktree-isolation guard refuses them (gr456287, ~127/12 h); a chain
-  another driver tolerates is still off-rule (gr514492). Write a script
-  with the Write tool, then run it as one plain command.
+- Prefer one plain command per Bash call. The harness guard refuses what
+  it cannot prove stays inside this tree — anything with git in a
+  loop/pipeline/`$(…)`/chain, `git -C`, a heredoc or program whose text
+  names git, `X=1; cmd "$X"` — and passes some other shapes; do not rely
+  on either (gr456287, gr514492). Write a script with the Write tool,
+  then run it as one plain command. Table:
+  `docs/conventions/container-ops.md` §Refused shapes.
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
 - MCP handler errors: a call does what its ack says or refuses with a next

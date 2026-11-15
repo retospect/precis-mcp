@@ -80,11 +80,16 @@ Optional ship message from the user: `$ARGUMENTS`
    `--pinned` and moves `gated`/`prod`. Run it in the background, output to
    a log:
    ```
-   scripts/release > .claude/release.log 2>&1; echo "RELEASE_EXIT=$?" >> .claude/release.log
+   scripts/release > .claude/release.log 2>&1
    ```
-   Wait on it with `scripts/ship-wait .claude/release.log` in the
-   background — it exits on green, red or cancelled with the verdict and
-   the first failure line, nonzero on red or cancelled. That watcher is
+   One plain call, nothing chained after it: the background task's exit
+   code is `scripts/release`'s own, and it is the exit code the table
+   below reads. Wait on the gate with a second call,
+   `scripts/ship-wait .claude/release.log`, in the background — it exits
+   on green, red or cancelled with the verdict and the first failure line,
+   nonzero on red or cancelled. It reads the log's markers, so its green
+   can land at "CI green on" before the deploy finishes: take the exit
+   code from the release task, not from the waiter. That watcher is
    the only way to wait on the gate: no polling subagents, no log-tail
    loops. The deploy step still tees to the main
    checkout's `.deploy-logs/<ts>-<ref>.log`.
@@ -129,10 +134,14 @@ Optional ship message from the user: `$ARGUMENTS`
    before; every required daemon's boot sha and readiness match, including
    the serving worker. Then run the command the log's `next:` line prints:
    ```
-   scripts/round deploy --confirm-runtime <S> --runtime-evidence "<services, boot SHAs, readiness, session MCP>" && scripts/round close
+   scripts/round deploy --confirm-runtime <S> --runtime-evidence "<services, boot SHAs, readiness, session MCP>"
    ```
-   That publishes `deployed/r<N>`, deletes the release branch and closes
-   the round. Every deploy restarts the shared session MCP: `fleet say` the
+   Then, as a second call once that exits 0:
+   ```
+   scripts/round close
+   ```
+   Confirm publishes `deployed/r<N>` and deletes the release branch; close
+   closes the round. Every deploy restarts the shared session MCP: `fleet say` the
    sha, restart time and "verify a write landed before retrying". End with
    this exact three-line block (verify each line against `origin/main` and
    `origin/prod`):

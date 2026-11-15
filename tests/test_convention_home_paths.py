@@ -183,3 +183,86 @@ def test_scan_roots_are_not_vacuous() -> None:
             if p.suffix.lower() not in _BINARY_SUFFIXES
         ]
         assert files, f"{root}/ has no scannable files — gate would be vacuous"
+
+
+# ── plain-shell recipes (gr514953) ───────────────────────────────────────────
+#
+# AGENTS.md prefers one plain command per Bash call, and the harness guard
+# refuses git inside a chain or ``$(…)``. The commands, skills and agents the
+# repo ships must not prescribe the shapes the rule forbids, or agents learn
+# the rule is optional. Only fenced code blocks are scanned — prose may name a
+# forbidden shape in order to forbid it.
+
+_RECIPE_GLOBS = (
+    ".claude/commands/*.md",
+    ".claude/skills/*/SKILL.md",
+    ".claude/agents/*.md",
+)
+_FENCE_RE = re.compile(r"^\s*```")
+_CMD = r"(?:scripts/|git\b|rtk git\b)"
+_RECIPE_PATTERNS = {
+    '; echo "': re.compile(r';\s*echo\s+"'),
+    "&& between two commands": re.compile(_CMD + r"[^\n]*?\s&&\s+" + _CMD),
+    "$(": re.compile(r"\$\("),
+}
+#: ``(relpath, token)`` -> why a fenced block may keep the shape. Keep short.
+_RECIPE_ALLOW: dict[tuple[str, str], str] = {}
+
+
+def _fenced_lines(text: str) -> list[tuple[int, str]]:
+    """``(lineno, line)`` for every line inside a fenced code block, with a
+    backslash-continued command joined onto its first line."""
+    out: list[tuple[int, str]] = []
+    inside = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if _FENCE_RE.match(line):
+            inside = not inside
+            continue
+        if not inside:
+            continue
+        if out and out[-1][1].endswith("\\") and out[-1][0] == lineno - 1:
+            out[-1] = (lineno, out[-1][1][:-1] + " " + line.strip())
+        else:
+            out.append((lineno, line))
+    return out
+
+
+def _recipe_hits() -> tuple[list[str], int]:
+    hits: list[str] = []
+    scanned = 0
+    for glob in _RECIPE_GLOBS:
+        for path in sorted(_ROOT.glob(glob)):
+            scanned += 1
+            rel = path.relative_to(_ROOT).as_posix()
+            for lineno, line in _fenced_lines(read_text(path)):
+                for token, pat in _RECIPE_PATTERNS.items():
+                    if pat.search(line) and (rel, token) not in _RECIPE_ALLOW:
+                        hits.append(f"{rel}:{lineno}: {token}: {line.strip()}")
+    return hits, scanned
+
+
+def test_commands_and_agents_prescribe_plain_shell() -> None:
+    hits, scanned = _recipe_hits()
+    assert scanned > 10, f"recipe globs matched only {scanned} files — vacuous"
+    assert not hits, (
+        "fenced recipe blocks prescribe shapes the one-plain-command rule "
+        "forbids (AGENTS.md; docs/conventions/container-ops.md §Refused "
+        "shapes) — split into one call per command, or add a justified "
+        "_RECIPE_ALLOW entry:\n  " + "\n  ".join(hits)
+    )
+
+
+def test_recipe_patterns_catch_the_forbidden_shapes() -> None:
+    """The patterns flag what the rule forbids and pass plain commands."""
+
+    def flagged(line: str) -> set[str]:
+        return {t for t, p in _RECIPE_PATTERNS.items() if p.search(line)}
+
+    assert flagged('scripts/release > l 2>&1; echo "X=$?" >> l') == {'; echo "'}
+    assert flagged("git add -u && git commit -F m") == {"&& between two commands"}
+    assert flagged("scripts/a && scripts/b") == {"&& between two commands"}
+    assert flagged('git commit -m "$(cat m)"') == {"$("}
+    assert flagged("git add -u") == set()
+    assert flagged("scripts/release > .claude/release.log 2>&1") == set()
+    assert flagged("cd x && make") == set()
+    assert _fenced_lines("a\n```\nx \\\n  y\n```\nb\n") == [(4, "x  y")]

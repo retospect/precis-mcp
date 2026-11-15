@@ -68,7 +68,6 @@ Optional ship message from the user: `$ARGUMENTS`
 4. **Deploy that exact sha.** Read it back rather than assuming:
    ```
    git rev-parse origin/main
-   scripts/deploy <that full 40-char sha>
    ```
    There is no `.ship-sha` pin here — only a full gate writes one — so pass the
    sha explicitly. Never pass the branch name `main`: it re-resolves at deploy
@@ -77,15 +76,17 @@ Optional ship message from the user: `$ARGUMENTS`
    not move, so `prod` sits ahead of `gated` until a full gate passes — that
    gap is the published form of "the cluster runs untested code".
 
-   Run it **in the background** and arm a Monitor on the log it announces on
-   its first `▶` line, covering milestones AND every failure signature:
+   Run it **in the background**, output to a log, as one plain call:
    ```
-   tail -F "$LOG" | grep -E --line-buffered '^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]'
+   scripts/deploy <that full 40-char sha> > .claude/qgo-deploy.log 2>&1
    ```
-   **Read the script's own exit code, not the background task's** — a trailing
-   `echo` in the same shell line makes a failed deploy report exit 0. Capture
-   it with `; echo "DEPLOY_EXIT=$?"` and check that. If it is non-zero, say so
-   plainly: the cluster may be on mixed versions.
+   Then watch `.claude/qgo-deploy.log` for the milestone (`▶`) and failure
+   signatures (`✖`, `PLAY [`, `fatal:`, `FAILED`, `UNREACHABLE`, `ERROR!`,
+   `failed=[1-9]`) — `scripts/ship-wait .claude/qgo-deploy.log` in the
+   background reports the first `✖`. **Read the script's own exit code:**
+   nothing is chained after the command, so the background task's exit code
+   is the deploy's. If it is non-zero, say so plainly: the cluster may be on
+   mixed versions.
 
 5. **Start a repair gate ONLY if a slot is free.** Check the slot count above.
    If it is 0 or 1 (a 2-slot semaphore), launch a background

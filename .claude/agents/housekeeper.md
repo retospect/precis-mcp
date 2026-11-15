@@ -15,15 +15,26 @@ then remove.
   squash-absorbed into base, no live session holding the lock): present them
   to the user via **AskUserQuestion** (multiSelect) and ask which to remove.
   Default the recommendation to "all of them" but let the user deselect any.
-- For each confirmed one, in order:
+- For each confirmed one, one plain Bash call per step, in order:
   ```
-  git worktree unlock <path>     # only if it was locked by a dead session
+  git worktree unlock <path>
+  ```
+  (only if it was locked by a dead session)
+  ```
   git worktree remove <path>
+  ```
+  ```
   git branch -d worktree-<name>
-  # reclaim the worktree's isolated test-DB project (gr176375) — by name, so no
-  # compose file is needed after removal; best-effort, skip if docker is absent
-  source scripts/lib/compose-project.sh 2>/dev/null && \
-    docker compose -p "$(compose_project_for <path>)" down -v 2>/dev/null || true
+  ```
+  Then reclaim the worktree's isolated test-DB project (gr176375) — by
+  name, so no compose file is needed after removal; best-effort, skip if
+  docker is absent or the call fails. The project name is
+  `precis-test-<name>`, where `<name>` is the worktree directory's
+  basename lowercased with any char outside `[a-z0-9_-]` mapped to `-`
+  (the derivation in `scripts/lib/compose-project.sh`); write it out
+  literally:
+  ```
+  docker compose -p precis-test-<name> down -v
   ```
   Use `-d` (safe delete), never `-D` — if it refuses, that means the branch
   isn't actually fully merged and you stop and report it rather than forcing

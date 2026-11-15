@@ -22,7 +22,7 @@ nesting can defeat it) still trips the deny. ``ALLOW_HEREDOC=1`` is the
 escape hatch — rare and obvious, same rationale as
 ``guard-piped-exit-code.py``.
 
-Wired in ``.claude/settings.json`` (PreToolUse, matcher ``Bash``).
+Present, not wired: see docs/reference/hooks.md (gr514124).
 """
 
 from __future__ import annotations

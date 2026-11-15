@@ -83,9 +83,11 @@ Note from the user: `$ARGUMENTS`
 
 5. **Deploy the candidate.**
    ```
-   scripts/round deploy > .claude/round-deployN.log 2>&1; echo "DEPLOY_EXIT=$?" >> .claude/round-deployN.log
+   scripts/round deploy > .claude/round-deployN.log 2>&1
    ```
-   Background, waiter on `^DEPLOY_EXIT=`; `--dry-run` first if in doubt. It
+   Background, nothing chained after it: the task's exit code is the
+   script's own. Watch `.claude/round-deployN.log` for a `✖` line;
+   `--dry-run` first if in doubt. It
    refuses a main candidate that is not an ancestor of main, any verdict older than
    `PRECIS_ROUND_MAX_CANDIDATE_HOURS` (default 6), or that `gated`/`prod` cannot
    fast-forward to; otherwise it moves `gated` and runs
