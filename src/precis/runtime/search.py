@@ -73,7 +73,10 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime.scope import DOMAINS, Domain, current_domain
-from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
+from precis.store._chunks_ops import (
+    _ANN_DROPPED_PARTIAL_KINDS,
+    ANN_STATEMENT_TIMEOUT_MS,
+)
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
 from precis.utils import handle_registry, search_trace
@@ -291,6 +294,75 @@ CROSS_KIND_PER_KIND_S = 4.0
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
+
+#: Process-wide fan-out cost memory (gr664988): an EMA of the
+#: worker-seconds a kind's ``search_hits`` actually took inside a
+#: cross-kind call — including cancelled/errored attempts, whose
+#: cap-spanning durations are the honest signal. ~34 kinds share
+#: ``CROSS_KIND_MAX_WORKERS`` workers inside the deadline, so the
+#: queue cannot drain when a few kinds each spend the whole per-kind
+#: cap — and submitting in kind-alphabet order spent the deadline's
+#: first worker-seconds on early-letter heavy kinds (anki, job,
+#: paper…) while the cheap tail (skill, todo, web…) starved to
+#: TimeoutError on queue position alone, taking the useful hits out
+#: of the merge with it. The fan-out submits jobs cheapest-first:
+#: the deadline then serves the kinds most likely to answer, and
+#: what still misses is the genuinely-slow set the footer names.
+_cross_kind_costs: dict[str, float] = {}
+_cross_kind_costs_lock = threading.Lock()
+
+#: Weight a new observation carries in the EMA — half. One bad turn
+#: sinks a kind behind every cheaper measured kind, and a kind that
+#: recovers floats back within a few calls.
+_CROSS_KIND_COST_ALPHA = 0.5
+
+#: Cold-start cost priors for kinds whose fan-out leg is predictably
+#: at-cap before any measurement exists — the dropped-partial kinds
+#: (``_ANN_DROPPED_PARTIAL_KINDS``), whose ANN leg permanently takes
+#: the global-fallback route: a post-filter over the paper-dominated
+#: global index that keeps almost none of their rows, the documented
+#: 10-30 s worst case that cannot fit the per-kind cap under load.
+#: ``_ANN_GLOBAL_KINDS`` is the opposite routing category — those
+#: kinds dominate the global index, so the post-filter keeps nearly
+#: every candidate and answers in ~0.3 s; seeding paper slow just hid
+#: a healthy kind behind the tail (review td665388). A partial-index
+#: kind whose index is unready is a runtime condition the per-call
+#: route probe already degrades to lexical, not a static prior.
+#: Seeded at the cap so a fresh process already schedules them last;
+#: measured durations replace the prior at EMA rate.
+_CROSS_KIND_COST_PRIOR_S: dict[str, float] = {
+    k: CROSS_KIND_PER_KIND_S for k in _ANN_DROPPED_PARTIAL_KINDS
+}
+
+
+def _record_cross_kind_cost(kind: str, elapsed_s: float) -> None:
+    """Fold one fan-out attempt's worker-seconds into ``kind``'s EMA."""
+    with _cross_kind_costs_lock:
+        prev = _cross_kind_costs.get(kind)
+        if prev is None:
+            prev = _CROSS_KIND_COST_PRIOR_S.get(kind)
+        _cross_kind_costs[kind] = (
+            elapsed_s
+            if prev is None
+            else prev + _CROSS_KIND_COST_ALPHA * (elapsed_s - prev)
+        )
+
+
+def _cross_kind_job_key(kind: str) -> tuple[float, str]:
+    """A kind's fan-out submission key — cheapest first.
+
+    An unmeasured kind costs ``0`` for ordering: a never-tried kind
+    may be fast and gets the benefit of the doubt over a known-slow
+    one — which is also what rescues a kind the deadline starved last
+    call, since a job that never ran records nothing and starts the
+    next call at the front. Measured kinds order by EMA; the kind
+    name is the deterministic tie (cold start degrades to the old
+    alphabetical order).
+    """
+    with _cross_kind_costs_lock:
+        measured = _cross_kind_costs.get(kind)
+    cost = measured if measured is not None else _CROSS_KIND_COST_PRIOR_S.get(kind, 0.0)
+    return (cost, kind)
 
 
 def _cross_kind_executor() -> ThreadPoolExecutor:
@@ -3449,6 +3521,17 @@ class SearchMixin(RuntimeShape):
         ``mode='semantic'`` or an exact-term mode (``'verbatim'``,
         ``'literal'``) would have its match semantics silently changed
         by a lexical rewrite, so those keep the timeout too.
+
+        gr664988: jobs submit cheapest-first on the process-wide cost
+        EMA (:func:`_cross_kind_job_key`), not alphabetically — an
+        early-letter kind that habitually spends the whole per-kind
+        cap used to hold a shared worker while the cheap tail starved
+        to TimeoutError on queue position alone. Cost order spends
+        the deadline on the kinds most likely to answer; the tail it
+        still cannot reach is the genuinely-slow set. Every attempt
+        that ran feeds the EMA back (:func:`_record_cross_kind_cost`);
+        a job the deadline never reached records nothing, so it leads
+        the next call instead of starving twice.
         """
         from concurrent.futures import wait
 
@@ -3459,6 +3542,7 @@ class SearchMixin(RuntimeShape):
         )
 
         jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
+        jobs.sort(key=lambda j: _cross_kind_job_key(j[0]))
         out: dict[str, list[SearchHit] | Exception] = {}
         if not jobs:
             return out
@@ -3516,7 +3600,14 @@ class SearchMixin(RuntimeShape):
             # makes — a saturated pool or an uncapped non-ANN statement
             # can no longer hold a worker past the call deadline.
             CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
-            return self._cross_kind_invoke_search_hits(handler, k, kw)
+            started = time.monotonic()
+            try:
+                return self._cross_kind_invoke_search_hits(handler, k, kw)
+            finally:
+                # Whatever the kind actually cost — hits, a caught
+                # exception, or a server-side cancel at the cap — is
+                # next call's ordering signal (gr664988).
+                _record_cross_kind_cost(k, time.monotonic() - started)
 
         pool = _cross_kind_executor()
         futures = {

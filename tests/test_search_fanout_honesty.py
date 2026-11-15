@@ -258,6 +258,9 @@ def test_min_start_budget_returns_timeout(
     kinds = rt._cross_kind_kinds()[:5]
     monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 0.45)
     monkeypatch.setattr(search_mod, "CROSS_KIND_MIN_START_MS", 2000)
+    # Cost-ordered submission (gr664988) must not reorder this fixture:
+    # a clean memory restores the all-unmeasured alphabetical order.
+    search_mod._cross_kind_costs.clear()
     # min_start = min(2000, 45) = 45ms. The first 4 kinds hold all 4
     # workers for 0.42 s; the 5th dequeues with ~30 ms left → early return.
 

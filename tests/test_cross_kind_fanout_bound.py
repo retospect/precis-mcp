@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -45,9 +48,27 @@ def _frozen_clock(
 
 def _serial_fan_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the shared executor down to one worker so submission order
-    is execution order — a deterministic queue for floor-window tests."""
+    is execution order — a deterministic queue for floor-window tests.
+
+    Cost-ordered submission (gr664988) must not reorder these fixtures:
+    a clean cost memory restores the all-unmeasured alphabetical order
+    the ``kinds`` slices assume — earlier tests in the same process
+    leave measured EMAs that would otherwise reshuffle the queue."""
     monkeypatch.setattr(search_mod, "CROSS_KIND_MAX_WORKERS", 1)
     monkeypatch.setattr(search_mod, "_cross_kind_pool", None)
+    search_mod._cross_kind_costs.clear()
+
+
+@contextmanager
+def _fresh_cost_memory() -> Iterator[None]:
+    """Isolate the process-wide fan-out cost EMA (gr664988)."""
+    saved = dict(search_mod._cross_kind_costs)
+    search_mod._cross_kind_costs.clear()
+    try:
+        yield
+    finally:
+        search_mod._cross_kind_costs.clear()
+        search_mod._cross_kind_costs.update(saved)
 
 
 def test_fan_out_concurrency_never_exceeds_cap(
@@ -841,3 +862,80 @@ def test_prepare_filtered_ann_recaps_each_late_statement(
     assert any(ver_i < i < guc_i and cap <= 1_000 for i, cap in caps)
     assert caps[-1][0] > guc_i and caps[-1][1] <= 600
     assert [cap for _i, cap in caps] == sorted((cap for _i, cap in caps), reverse=True)
+
+
+def test_fan_out_submits_cheapest_measured_kinds_first(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664988: alphabetical submission spent the deadline's first
+    worker-seconds on early-letter heavy kinds while the cheap tail
+    starved to TimeoutError on queue position. The fan-out now submits
+    unmeasured kinds first, then ascending measured cost — a serial
+    executor makes the submission order directly observable."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:5]
+    with _fresh_cost_memory():
+        slow, fast = kinds[0], kinds[1]
+        unmeasured = sorted(kinds[2:])
+        search_mod._cross_kind_costs[slow] = 9.0
+        search_mod._cross_kind_costs[fast] = 0.1
+        order: list[str] = []
+
+        def fake(k: str) -> list:
+            order.append(k)
+            return []
+
+        solo = ThreadPoolExecutor(max_workers=1)
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: solo)
+        _patch_invoke(monkeypatch, rt, fake)
+        rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+
+        assert order == unmeasured + [fast, slow]
+
+
+def test_fan_out_records_what_each_kind_cost(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664988: every attempt that ran feeds the cost EMA — hits or a
+    caught exception alike — so the next call's ordering is measured,
+    not guessed. A kind the deadline never reached records nothing and
+    stays unmeasured (front of the next call's queue)."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:2]
+    with _fresh_cost_memory():
+
+        def fake(k: str) -> list:
+            time.sleep(0.2)
+            return []
+
+        _patch_invoke(monkeypatch, rt, fake)
+        rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+
+        for k in kinds:
+            cost = search_mod._cross_kind_costs.get(k)
+            assert cost is not None and cost >= 0.15, (k, cost)
+
+
+def test_dropped_partial_kinds_start_behind_unmeasured_ones() -> None:
+    """gr664988: a dropped-partial kind (``draft``, ``quest``, ``tex``)
+    carries an at-cap cold-start prior — its ANN leg permanently takes
+    the global-fallback post-filter, the documented 10-30 s worst
+    case — so even a fresh process schedules it after every unmeasured
+    kind instead of alphabetically early. A designated global-index
+    kind (``paper``) carries NO prior: it dominates the global index,
+    its post-filter keeps nearly every candidate (~0.3 s), and seeding
+    it slow hid a healthy kind behind the tail (review td665388)."""
+    from precis.store._chunks_ops import (
+        _ANN_DROPPED_PARTIAL_KINDS,
+        _ANN_GLOBAL_KINDS,
+    )
+
+    assert _ANN_DROPPED_PARTIAL_KINDS, "test expects a dropped-partial kind"
+    assert _ANN_GLOBAL_KINDS, "test expects a designated global-index kind"
+    with _fresh_cost_memory():
+        for k in _ANN_DROPPED_PARTIAL_KINDS:
+            prior = search_mod._cross_kind_job_key(k)[0]
+            assert prior >= search_mod.CROSS_KIND_PER_KIND_S
+            assert prior > search_mod._cross_kind_job_key("memory")[0]
+        for k in _ANN_GLOBAL_KINDS:
+            assert search_mod._cross_kind_job_key(k)[0] == 0.0
