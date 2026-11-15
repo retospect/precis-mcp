@@ -153,6 +153,8 @@ same-paper near-duplicate (attach or force; see
 put, so do not lean on it: group the proposals from all readers by claim
 first, using `view='similar'` between proposals or your own judgment, and
 call the door once per group with every group member as a supporter.
+An `[error:Upstream] dedup judge failed ... no usable rung` is a judge
+outage, not a duplicate: stop and report (see "Judge outage" there).
 
 ## Step 5 — side-facts: cap them
 ## The paper had a useful fact unrelated to the question

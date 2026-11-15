@@ -294,6 +294,13 @@ the quota you have left. On exhaustion a plain put is refused; a force
 mints unjudged (`dedup_override` verdict `'unjudged'`, see force above),
 so forcing through a long outage can mint duplicates: pause the wave.
 
+**Judge outage.** `[error:Upstream] dedup judge failed on N/N candidates
+... no usable rung on this host ... hub not minted` means the server
+process has no Claude credential for the MEDIUM judge, not that your
+claim is a duplicate. Retrying cannot help, and no hub was minted. Stop
+the wave and report it; `dedup='force'` mints unjudged, so use it only
+if the reviewer accepts duplicate risk.
+
 **Transient errors.** "connection closed" on a put may have landed: read
 back (`search(kind='finding', ...)`) before retrying. A LockNotAvailable
 clears on one retry.
