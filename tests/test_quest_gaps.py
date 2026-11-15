@@ -415,6 +415,21 @@ class TestMomentum:
         assert m.open_todo_servers == 2  # neither is done
         assert m.blocked_todo_servers == 1
 
+    def test_held_spec_todo_is_not_open_work(self, store: Any) -> None:
+        """A backlog-spec placeholder (hold:no-dispatch) serving the quest
+        is its place in the tree, not work in flight (quest-rollup.md)."""
+        from tests.conftest import id_of
+
+        th = TodoHandler(hub=Hub(store=store))
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving with a spec under it"))
+        t_open = id_of(th.put(text="open work").body)
+        t_spec = id_of(th.put(text="Some spec (docs/backlog/some-spec.md)").body)
+        for t in (t_open, t_spec):
+            store.add_link(src_ref_id=t, dst_ref_id=qid, relation="serves")
+        store.add_tag(t_spec, Tag.open("hold:no-dispatch"), set_by="system")
+        assert quest_momentum(store, qid).open_todo_servers == 1
+
 
 # ── alignment floor ───────────────────────────────────────────────────
 

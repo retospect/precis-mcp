@@ -577,7 +577,8 @@ def quest_momentum(
         done: set[int] = set()
         blocked: set[int] = set()
         for rid, ns, val in rows:
-            if ns == "STATUS" and val == "done":
+            # hold:no-dispatch (backlog-spec placeholders) is not open work.
+            if (ns, val) in (("STATUS", "done"), ("OPEN", "hold:no-dispatch")):
                 done.add(int(rid))
             if ns == "OPEN" and str(val).startswith("child-failed:"):
                 blocked.add(int(rid))
