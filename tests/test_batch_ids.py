@@ -1009,3 +1009,38 @@ def test_cohort_link_view_is_loud_error(hub: Hub) -> None:
     handler.link(id=ids[0], target=f"gripe:{ids[1]}", rel="related-to")
     with pytest.raises(BadInput):
         handler.search(link=f"gripe:{ids[1]}", view="full")
+
+
+def test_cohort_rulings_arg_survives_the_extras_gate(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    """gr676097 review td685912: ``args={'comments': 'rulings'}`` on the
+    cohort read died at dispatch's extras whitelist — ``search`` consumed
+    it through ``**_kw`` without declaring it, so the advertised spelling
+    was rejected before the handler ran."""
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="ruled gripe\nbody").body)
+    handler.tag(id=gid, add=["STATUS:needs_spec"])
+    handler.put(id=gid, text="Reto 2026-11-14: build it")
+    handler.put(id=gid, text="dup-suggest: gr1 looks similar")
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "status": "needs_spec",
+            "view": "full",
+            "__extras__": {"comments": "rulings"},
+        },
+    )
+    assert "[error" not in body
+    assert "Reto 2026-11-14: build it" in body
+    assert "dup-suggest" not in body
+
+
+def test_cohort_comments_arg_refused_off_the_read(hub: Hub) -> None:
+    """comments= filters the cohort read only; on any other search shape
+    it refuses rather than dropping silently — the same contract the
+    gripe get selectors keep (review td685912)."""
+    handler, _ids = _gripes(hub, 1)
+    with pytest.raises(BadInput, match="cohort read"):
+        handler.search(status="open", comments="rulings")

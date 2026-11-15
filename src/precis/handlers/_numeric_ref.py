@@ -1389,6 +1389,13 @@ class NumericRefHandler(Handler):
         # ``args={'offset': N}`` — the cohort read's (``view='full'|'body'``
         # with no q=) continuation cursor: rows already read (gr676097).
         offset: int | str | None = None,
+        # ``args={'comments': 'rulings'|K|'A-B'}`` — a comment selector
+        # the cohort read forwards to each block's per-id get (gr676097).
+        # Declared like ``offset`` — tunnelled through ``**_kw`` it died
+        # at the dispatch extras gate before the handler ran (review
+        # td685912). Refused off the cohort read below rather than
+        # silently dropped.
+        comments: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Fold the ``q='*'`` match-all spelling before any view dispatch
@@ -1487,6 +1494,19 @@ class NumericRefHandler(Handler):
                     ),
                 )
             cohort_limit = max(1, min(int(page_size), _COHORT_WINDOW))
+        elif comments is not None:
+            # The selector only means something where a block's per-id
+            # get can see it — the cohort views (gripe's full/body run
+            # its comments-carrying renderers). On any other search
+            # shape it would drop silently (review td685912).
+            raise BadInput(
+                "args={'comments': …} selects inside the cohort read "
+                "(view='full'|'body' with no q=)",
+                next=(
+                    f"search(kind={self.kind!r}, view='full', "
+                    "args={'comments': 'rulings'})"
+                ),
+            )
 
         # Resolve the per-kind STATUS default (e.g. gripe → 'open') into
         # the effective tag filter. An explicit status= always applies;
@@ -1661,9 +1681,10 @@ class NumericRefHandler(Handler):
                             "project": project,
                             "include_ref_ids": include_ref_ids,
                             "exclude_ref_ids": exclude_ref_ids,
+                            "comments": comments,
                             **_kw,
                         },
-                        kw={k: v for k, v in _kw.items() if k in ("comments",)},
+                        kw={"comments": comments},
                     )
                 return self._list_by_tags(
                     normalized_tags or [],
@@ -4952,7 +4973,7 @@ class NumericRefHandler(Handler):
         form. A view-level error (unknown view for the kind) raises on
         the first live id instead of stamping one refusal per id.
 
-        Pages whole blocks under :data:`BATCH_VIEW_PAGE_CHARS`
+        Pages whole blocks under :attr:`batch_page_chars`
         (gr515524): a batch whose join would overflow emits the ids that
         fit and names the unread rest as the ``next:`` call's id list —
         a self-describing cursor, instead of letting the result budget

@@ -292,6 +292,8 @@ Read the whole cohort — tags, whole body, every comment — in a few calls:
 search(kind="gripe", status="needs_spec", view="full")
 search(kind="gripe", status="needs_spec", view="full", args={"offset": 7})
 get(kind="gripe", id=[42, 43, 44], view="full")  # same packer, same cursor
+# a page-1 footer prints literally:
+# next: search(kind='gripe', status='needs_spec', view='full', args={'offset': 7})
 ```
 
 `args={'comments': 'rulings'}` keeps only the `Reto <date>:`, `Ruling`,
