@@ -157,7 +157,10 @@ Every `run_slice` job ends with a `meta.outcome` record — the cheap,
 every-run layer: the mechanical gates (the changed `.py` files
 compile, the tests the run owed ran — a code run that left commits
 owes the `tests: ran` receipt whether or not its brief named test
-paths, no exceptions, within the step cap), the outcome word
+paths, within the step cap; a code run's `tests: NOT RUN — <why>`
+leaves that gate unobserved and lands `--checked`, whose own test run
+is the evidence, while a validate run's NOT RUN still fails it), the
+outcome word
 (`completed`, `completed_empty`, `halted_step_cap`,
 `halted_wall_clock`, `error`, `abandoned`), the lane, model, cost and
 wall seconds. The gates decide, not just record: a clean exit that
