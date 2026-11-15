@@ -70,7 +70,7 @@ APPROVAL_PATTERNS = (
     r"allow (this|once|always)|approve (this|once)",
     r"permission (required|request)",
 )
-# Codex's Plan-mode request_user_input modal, as seen on melchior 2026-10-09:
+# Codex's Plan-mode request_user_input modal, as seen on the agent host 2026-10-09:
 # "Question 1/1 (1 unanswered)" … "tab to add notes | enter to submit answer".
 QUESTION_PATTERNS = (
     r"Question \d+/\d+ \(\d+ unanswered\)",

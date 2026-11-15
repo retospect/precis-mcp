@@ -28,7 +28,7 @@
 #                         reach — docker/dev/compose.yaml already wires this
 #                         for the precis-dev build).
 #
-# macOS note: the embedder image is CPU-torch and exists for Linux/Spark.
+# macOS note: the embedder image is CPU-torch and exists for Linux/GB10 nodes.
 # On a Mac you run the embedder NATIVELY (launchd + MPS), not via this
 # image — see ADR 0020.
 set -euo pipefail

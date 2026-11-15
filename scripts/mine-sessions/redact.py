@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import re
 
+from precis.utils.public_scan import NODE_HOSTNAME_PATTERNS
+
 _REDACTED = "[redacted:{}]"
 
 #: (label, pattern) — order matters only for readability; all are applied.
@@ -83,10 +85,7 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 #: Real node hostnames. Gated under ``deploy/`` by the tree test, but a card
 #: naming a node is a disclosure the same way an address is, so the miner
 #: scrubs them everywhere it writes.
-HOSTNAMES = re.compile(
-    r"\b(?:melchior|caspar|balthazar|spark|hephaestus|finnmaccool|aidev)\b",
-    re.IGNORECASE,
-)
+HOSTNAMES = NODE_HOSTNAME_PATTERNS[0][1]
 
 
 def scrub(text: str) -> str:

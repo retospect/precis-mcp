@@ -5,7 +5,7 @@ The launcher now exports ``PRECIS_CASTOR_LANE`` (the worktree-path hook's
 strict mode) and pins the task tree in the system prompt: ``-w NAME``
 resolves to ``<main>/.claude/worktrees/NAME``; without ``-w`` the session's
 own toplevel is used. Tested end-to-end with stub ``claude``/``curl`` on a
-throwaway git repo — no castor contact.
+throwaway git repo and a fixture overlay — no serving-node contact.
 """
 
 from __future__ import annotations
@@ -24,6 +24,38 @@ pytestmark = pytest.mark.skipif(
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "claude-local"
 
+# Fixture overlay (RFC 5737 address, made-up names): the serving node is the
+# first host of the ``sglang_serving`` group.
+_OVERLAY = """\
+all:
+  children:
+    linux:
+      hosts:
+        maple:
+          ansible_host: 127.0.0.1
+        birch:
+          ansible_host: 203.0.113.9
+    sglang_serving:
+      hosts:
+        maple:
+"""
+_NO_SERVING_OVERLAY = """\
+all:
+  children:
+    linux:
+      hosts:
+        birch:
+          ansible_host: 203.0.113.9
+    sglang_serving:
+      hosts: {}
+"""
+
+
+def _overlay(tmp_path: Path, text: str = _OVERLAY) -> str:
+    path = tmp_path / "hosts.yml"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
 
 def _stub(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
@@ -37,13 +69,13 @@ def _lane_run(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     # claude records its argv one-per-line; curl always healthy (both the
-    # castor probe and the shim health check pass, so nothing is spawned).
+    # serving-node probe and the shim health check pass, so nothing is spawned).
     _stub(bin_dir, "claude", '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
     _stub(bin_dir, "curl", "#!/usr/bin/env bash\nexit 0\n")
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "NODE_HOST_CASTOR": "127.0.0.1",
+        "CLUSTER_INVENTORY": _overlay(tmp_path),
     }
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -129,7 +161,7 @@ class TestTreePinning:
             env={
                 **os.environ,
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                "NODE_HOST_CASTOR": "127.0.0.1",
+                "CLUSTER_INVENTORY": _overlay(tmp_path),
             },
             capture_output=True,
             text=True,
@@ -139,3 +171,25 @@ class TestTreePinning:
         )
         assert proc.returncode == 0, proc.stderr
         assert "lane=1" in proc.stdout
+
+    def test_empty_sglang_serving_group_fails_clearly(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub(bin_dir, "claude", "#!/usr/bin/env bash\nexit 0\n")
+        _stub(bin_dir, "curl", "#!/usr/bin/env bash\nexit 0\n")
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), "-p", "hi"],
+            cwd=_repo(tmp_path),
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "CLUSTER_INVENTORY": _overlay(tmp_path, _NO_SERVING_OVERLAY),
+            },
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 2
+        assert "sglang_serving" in proc.stderr

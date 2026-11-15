@@ -9,7 +9,7 @@
 # Why this exists: macOS 15+ denies NFS access to every launchd/cron process
 # unless its interpreter has Full Disk Access, and the grant is pinned to the
 # binary's cdhash — so `brew upgrade python@3.1x` silently breaks it and every
-# daemon EPERMs on /opt/nas (the 2026-07 melchior lockout, dark for days). The
+# daemon EPERMs on /opt/nas (the 2026-07 agent-host lockout, dark for days). The
 # nursery `nas-denied` detector is the real-time backstop (alerts in minutes);
 # this pass is the slow, proactive drift audit: are all Macs' *currently-
 # resolved* daemon interpreters still granted (auth_value=2) and pinned?

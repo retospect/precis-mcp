@@ -35,6 +35,31 @@ _posix_paths_only = pytest.mark.skipif(
 _HOOKS_DIR = Path(__file__).resolve().parents[1] / "scripts" / "hooks"
 
 
+_OVERLAY = """\
+all:
+  vars:
+    postgres_host: birch
+  children:
+    compute:
+      hosts:
+        maple:
+          ansible_host: 192.0.2.10
+        birch:
+          ansible_host: 192.0.2.11
+        cedar:
+          ansible_host: 192.0.2.12
+"""
+
+
+@pytest.fixture(autouse=True)
+def _overlay(tmp_path, monkeypatch):
+    """Point the hook at a fixture overlay with made-up node names."""
+    path = tmp_path / "hosts.yml"
+    path.write_text(_OVERLAY, encoding="utf-8")
+    monkeypatch.setenv("CLUSTER_INVENTORY", str(path))
+    return path
+
+
 def _load(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, _HOOKS_DIR / filename)
     assert spec and spec.loader
@@ -254,27 +279,32 @@ def test_grep_without_count_stays_silent(tmp_path) -> None:
 # ── Rule B: ssh cluster hosts / prod-psql -> cluster-ops ────────────────────
 
 
-def test_ssh_melchior_fires_rule_b() -> None:
-    note = _rule_b("ssh melchior 'journalctl -u precis-worker --since -1h'")
+def test_ssh_maple_fires_rule_b() -> None:
+    note = _rule_b("ssh maple 'journalctl -u precis-worker --since -1h'")
     assert note is not None
     assert "cluster-ops" in note
-    assert "melchior" in note
+    assert "maple" in note
 
 
-def test_ssh_caspar_fires_rule_b() -> None:
-    note = _rule_b("ssh caspar uptime")
+def test_ssh_birch_fires_rule_b() -> None:
+    note = _rule_b("ssh birch uptime")
     assert note is not None
-    assert "caspar" in note
+    assert "birch" in note
 
 
-def test_ssh_balthazar_fires_rule_b() -> None:
-    note = _rule_b("ssh balthazar 'tail -n 50 /var/log/precis-worker.log'")
+def test_ssh_cedar_with_flags_fires_rule_b() -> None:
+    note = _rule_b("ssh -A -T cedar 'tail -n 50 /var/log/x.log'")
     assert note is not None
-    assert "balthazar" in note
+    assert "cedar" in note
 
 
 def test_ssh_other_host_does_not_fire() -> None:
-    assert _rule_b("ssh spark uptime") is None
+    assert _rule_b("ssh spruce uptime") is None
+
+
+def test_ssh_silent_without_overlay(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLUSTER_INVENTORY", str(tmp_path / "missing.yml"))
+    assert _rule_b("ssh maple uptime") is None
 
 
 def test_prod_psql_fires_rule_b() -> None:
@@ -347,7 +377,7 @@ def test_main_fires_on_bare_ident_bash_grep(monkeypatch, capsys) -> None:
 
 
 def test_main_fires_on_ssh_cluster_host(monkeypatch, capsys) -> None:
-    payload = {"tool_name": "Bash", "tool_input": {"command": "ssh melchior uptime"}}
+    payload = {"tool_name": "Bash", "tool_input": {"command": "ssh maple uptime"}}
     rc, out = _run_main(monkeypatch, payload, capsys)
     assert rc == 0
     assert out is not None

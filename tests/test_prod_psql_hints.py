@@ -50,6 +50,7 @@ def _run(tmp_path: Path, *args: str, **env: str) -> subprocess.CompletedProcess[
             "PATH": f"{fake}:{os.environ['PATH']}",
             "HOME": str(tmp_path),
             "PGB_HOST": "fake-host",
+            "PRECIS_PROD_SSH_HOST": "fake-host",
             **env,
         },
         check=False,

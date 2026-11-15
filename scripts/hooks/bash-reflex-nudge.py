@@ -5,7 +5,7 @@ purpose-built tool.
 ``coderef-nudge.py`` only ever sees the native ``Grep`` tool, but a symbol
 search run via ``Bash`` (``rg``/``grep``/``egrep``) is invisible to it — and
 in practice that's most of the traffic. This hook fills that gap plus a
-second, unrelated reflex: cluster ops (``ssh melchior|caspar|balthazar``,
+second, unrelated reflex: cluster ops (``ssh <cluster node>``,
 ``scripts/prod-psql``) run inline on the main loop instead of delegated to
 the cheaper ``cluster-ops``/``cluster-admin`` agents.
 
@@ -36,8 +36,9 @@ ambiguous, both rules stay silent rather than guess.
   excluded (``rg -c`` already skips zeros); single-file counts stay silent.
 
 - **Rule B (cluster-ops).** The command starts with (or contains, after a
-  leading ``cd``) ``ssh melchior|caspar|balthazar`` or invokes
-  ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
+  leading ``cd``) ``ssh <cluster node>`` (node names come from the
+  gitignored cluster overlay at run time; no overlay, no ssh nudge) or
+  invokes ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
   (or ``cluster-admin`` for a documented write/runbook step) so raw log/psql
   dumps land in the sub-agent's cheap context, not the caller's.
 
@@ -72,6 +73,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,7 +122,76 @@ _TYPE_RE = re.compile(r"(?:--type=|-t\s+)(\S+)")
 
 _SHELL_BREAK = {"|", "||", "&&", ";"}
 
-_SSH_RE = re.compile(r"\bssh\s+(?:-\S+\s+)*(melchior|caspar|balthazar)\b")
+_BARE_KEY = re.compile(r"^\s*([A-Za-z0-9_.-]+):\s*$")
+_ANSIBLE_HOST = re.compile(r"^\s*ansible_host:\s*\S")
+
+
+def _overlay_path() -> Path | None:
+    """The gitignored cluster overlay, resolved like scripts/lib/pgb-host.sh:
+    $CLUSTER_INVENTORY, else this checkout's copy, else the main checkout's
+    (the overlay exists only there when running from a worktree)."""
+    env = os.environ.get("CLUSTER_INVENTORY")
+    if env:
+        return Path(env)
+    repo = Path(__file__).resolve().parents[2]
+    own = repo / "deploy" / "inventory" / "hosts.yml"
+    if own.is_file():
+        return own
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    common = proc.stdout.strip()
+    if proc.returncode != 0 or not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = repo / common_path
+    main = (common_path / "..").resolve() / "deploy" / "inventory" / "hosts.yml"
+    return main if main.is_file() else None
+
+
+def _cluster_hosts() -> list[str]:
+    """Host names from the overlay: each bare ``<name>:`` key whose block
+    carries an ``ansible_host:`` (the shape list_cluster_hosts reads). Empty
+    when there is no readable overlay — the ssh rule then stays silent."""
+    path = _overlay_path()
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    hosts: list[str] = []
+    key = ""
+    for line in lines:
+        m = _BARE_KEY.match(line)
+        if m:
+            key = m.group(1)
+        elif key and _ANSIBLE_HOST.match(line):
+            if key not in hosts:
+                hosts.append(key)
+            key = ""
+    return hosts
+
+
+def _ssh_match(body: str) -> re.Match[str] | None:
+    """An ``ssh [flags] <overlay host>`` invocation, or None (fail open)."""
+    if "ssh" not in body:
+        return None
+    hosts = _cluster_hosts()
+    if not hosts:
+        return None
+    alt = "|".join(re.escape(h) for h in hosts)
+    return re.search(rf"\bssh\s+(?:-\S+\s+)*({alt})\b", body)
+
 
 # A leading ``cd <path>`` segment for the redundant-own-tree check. Tolerates a
 # trailing redirect (``2>/dev/null``) and either ``;`` or ``&&`` separator — the
@@ -215,8 +286,9 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
 
 def _rule_b(command: str) -> str | None:
     body = _CD_PREFIX.sub("", command, count=1)
-    if _SSH_RE.search(body):
-        host = _SSH_RE.search(body).group(1)  # type: ignore[union-attr]
+    ssh = _ssh_match(body)
+    if ssh:
+        host = ssh.group(1)
         return (
             f"[cluster-ops] ssh to `{host}` inline burns main-loop context on "
             "raw log/journal output. For a read-only check, the `cluster-ops` "

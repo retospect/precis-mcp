@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+#!/usr/bin/env -S uv run python
 """Normalize agent transcripts + telemetry into one ``Event`` JSONL stream.
 
 Four corpora, one shape (:mod:`schema`): local Claude Code session

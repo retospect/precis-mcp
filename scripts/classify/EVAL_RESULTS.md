@@ -1,6 +1,6 @@
 # Classifier eval — results & model finding
 
-Ran the LLM classifier (`eval-classifier`) over the gold sets on melchior
+Ran the LLM classifier (`eval-classifier`) over the gold sets on the agent host
 against the litellm proxy. Grading is **accept-aware** (correct if the
 prediction equals the gold primary OR an accepted alternative); gate is
 **≥ 85%**. Gold: 200 chunks (role, open-question) + 30 papers (7 ref axes).

@@ -2,7 +2,7 @@
 # scripts/prod-psql — psql into the LIVE precis_prod DB via a cluster node.
 #
 # scripts/db is LOCAL only (precis / precis_test). Prod sits behind pgbouncer
-# on the cluster; reach it by hopping through a node (caspar/melchior) as
+# on the cluster; reach it by hopping through a node (the database host or the agent host) as
 # agent_rw. Wraps the ssh-agent workaround (-o IdentityAgent=none) and the
 # fixed pgbouncer coordinates so you stop retyping them.
 #
@@ -137,7 +137,7 @@
 # (scripts/guide-web's comment says the same).
 #
 # Overrides (env):
-#   PRECIS_PROD_SSH_HOST=melchior     # default caspar
+#   PRECIS_PROD_SSH_HOST=<agent-host> # default: the overlay's postgres_host
 #   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags — DISPLAY flags only,
 #                                     # allowlisted (bundled shorts, -P k=v,
 #                                     # --csv, --no-psqlrc …); charset-limited
@@ -191,7 +191,7 @@ fine.
               statement is refused — EXPLAIN its driving SELECT instead:
               prod-psql --explain "SELECT …the SELECT a claim/insert runs…"
 
-Env:  PRECIS_PROD_SSH_HOST          ssh hop host (default caspar)
+Env:  PRECIS_PROD_SSH_HOST          ssh hop host (default: overlay postgres_host)
       PRECIS_PROD_PSQL_OPTS         extra psql flags — an allowlist of
                                     display flags only (e.g. "-At",
                                     "-Pfooter=off", "--csv", "--no-psqlrc");
@@ -302,10 +302,11 @@ if [[ -n "$COMMAND" ]]; then
     set -- "$COMMAND"
 fi
 
-HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
 # Resolved from the gitignored cluster overlay — the address must not live in
-# this public repo (see scripts/lib/pgb-host.sh).
+# this public repo (see scripts/lib/pgb-host.sh). The ssh hop defaults to the
+# overlay's postgres_host (the database host); the env override wins.
 . "$(dirname "$0")/lib/pgb-host.sh"
+HOST="${PRECIS_PROD_SSH_HOST:-$(resolve_inventory_var postgres_host)}"
 PGB_HOST="$(resolve_pgb_host)"
 PGB_PORT=6432
 PGUSER=agent_rw
@@ -371,7 +372,7 @@ vet_opts
 # -P pager=off and ON_ERROR_STOP make one-shot output clean and fail loudly.
 REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1${OPTS_Q}"
 # -X (skip the remote user's ~/.psqlrc) on the SCRIPTED paths only. That file
-# is written for humans — on caspar it sets `\timing on`, `\x auto` and
+# is written for humans — on the database host it sets `\timing on`, `\x auto` and
 # unicode `\pset` borders — and every one of those lands on STDOUT, so a
 # caller parsing a `-At` scalar gets "1755892345\nTime: 0.4 ms" instead of a
 # number. Bit the deploy drain (never once ran, 2026-08-22) and would bite

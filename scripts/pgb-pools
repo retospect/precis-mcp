@@ -15,7 +15,7 @@
 #   scripts/pgb-pools STATS         # any SHOW target: POOLS STATS CLIENTS SERVERS LISTS CONFIG ...
 #   scripts/pgb-pools POOLS -At     # extra psql flags after the target
 #
-# Overrides (env): PRECIS_PROD_SSH_HOST=melchior (default caspar)
+# Overrides (env): PRECIS_PROD_SSH_HOST=<agent-host> (default: the overlay's postgres_host)
 set -euo pipefail
 
 WHAT="${1:-POOLS}"
@@ -32,8 +32,8 @@ for opt in "$@"; do
     fi
 done
 
-HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
 . "$(dirname "$0")/lib/pgb-host.sh"
+HOST="${PRECIS_PROD_SSH_HOST:-$(resolve_inventory_var postgres_host)}"
 PGB_HOST="$(resolve_pgb_host)"
 PGB_PORT=6432
 

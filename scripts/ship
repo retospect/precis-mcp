@@ -2744,7 +2744,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             # stderr line before every exit. Exit 2 refuses only WITH that
             # line saying status=none — exit 2 without it is the launcher's
             # (the `uv run` shebang could not write its cache or find a
-            # >=3.12 interpreter: melchior's deploy user, gr550941), not a
+            # >=3.12 interpreter: the agent host's deploy user, gr550941), not a
             # verdict, and reads as unknowable like any other failed lookup.
             drift_err="$(mktemp)"
             drift_age="$(scripts/last-gated-main-sha --age-hours --diag --start origin/main --hours "$drift_refuse" 2>"$drift_err")" || drift_rc=$?

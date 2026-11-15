@@ -133,6 +133,14 @@ all:
           ansible_host: 203.0.113.20
           lan_ip: 192.0.2.20
           node_role: compute
+          # scripts/host-ops/os-update (rolling OS + firmware update): the
+          # systemd units it checks after the reboot (comma-separated; a list
+          # containing `vllm` also gets the vLLM health wait) and the peer node
+          # that runs the precis reserve CLI while this host reboots. Both are
+          # required to os-update this host; no default. The peer must be a
+          # second Linux node running precis-worker (this example has none).
+          os_update_units: "docker,precis-worker"
+          os_update_peer: node-worker
       vars:
         os_family: linux
 

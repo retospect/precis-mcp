@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
-"""Anthropic-Messages shim in front of castor's local server, for
-``scripts/claude-local``.
+"""Anthropic-Messages shim in front of the serving node's local server,
+for ``scripts/claude-local``.
 
 Two upstream modes:
 
@@ -18,9 +18,9 @@ In chat mode the Anthropic ``system`` field goes out per ``--system-role``
 (env ``ANTHROPIC_SHIM_SYSTEM_ROLE``): ``system`` sends a system message,
 ``fold`` prepends it to the first user turn, ``auto`` (default) picks
 ``system`` for gpt-oss models and ``fold`` otherwise. Folding came from
-gr500583; a 2026-10-22 probe on castor (task prompt, Read+Bash tools) called a
-tool on turn 1 in 4/5 requests with a system message vs 2/5 folded; after a
-tool result both dropped every call (the drop below, not a system-role stall).
+gr500583; a 2026-10-22 probe on the serving node (task prompt, Read+Bash tools)
+called a tool on turn 1 in 4/5 requests with a system message vs 2/5 folded;
+after a tool result both dropped every call (the drop below, not a system-role stall).
 Chat mode also retries a turn whose tool call SGLang dropped (gpt-oss wrote
 it on the analysis channel; the turn ends on ``<|call|>`` with no
 tool_calls) up to ``ANTHROPIC_SHIM_DROPPED_CALL_RETRIES`` (3) times — except
@@ -34,7 +34,7 @@ of an empty end_turn. Every retry/salvage is logged with running counts.
 ``count_tokens`` is a chars/4 estimate in both modes.
 
 Stdlib only; no dependency on the precis package. Runs anywhere that can
-reach castor; ``scripts/claude-local`` starts it on demand on loopback.
+reach the serving node; ``scripts/claude-local`` starts it on demand on loopback.
 
     scripts/anthropic-shim.py <listen-port> <upstream-host> <upstream-port> [--mode auto|chat|messages] [--system-role auto|system|fold] [--salvage auto|on|off]
 
@@ -575,7 +575,7 @@ class ChatStreamTranslator:
 # to=functions.read code<|message|>{"file_path": "..."}<|call|>``. With
 # Claude Code's full tool set the parser swallows content and reasoning too
 # (both empty, ~100 completion tokens), so the text is rebuilt from the
-# logprob tokens; content is the fallback. Castor 2026-10-22: the dropped
+# logprob tokens; content is the fallback. On the serving node 2026-10-22: the dropped
 # calls named real tools in lowercase (``read`` for ``Read``) or invented
 # ones (``search``). On a dropped turn the shim's retries ask for that and
 # turn the LAST such call into a tool_use, provided its name matches one of

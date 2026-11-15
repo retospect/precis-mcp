@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+#!/usr/bin/env -S uv run python
 """Scoreboard: the one-screen read that starts a `surface-review` pass,
 before anyone opens a single evidence card.
 

@@ -3,11 +3,11 @@
 # (host-lanes apply order). Ported from cluster-desk's host-lanes-play.sh.
 # Refuses when the pinned checkout is not exactly origin/prod, or when prod
 # does not yet contain the host-lanes commit, so a playbook can never install
-# code ahead of prod (the 2026-10-15 castor venv break came from a run out of
+# code ahead of prod (the 2026-10-15 serving-node venv break came from a run out of
 # the main checkout).
 #
-#   scripts/host-ops/play playbooks/20c-precis-heartbeat-serving.yml --limit spark
-#   scripts/host-ops/play playbooks/10-hardening.yml --tags oom-guard --limit castor,pollux,spark
+#   scripts/host-ops/play playbooks/20c-precis-heartbeat-serving.yml --limit <gpu-node>
+#   scripts/host-ops/play playbooks/10-hardening.yml --tags oom-guard --limit <serving-node>,<science-node>,<gpu-node>
 #
 # Env: PROD_CHECKOUT (default derived <main-checkout>-prod;
 # PRECIS_PROD_CHECKOUT also overrides — the prod clone lives next to the main

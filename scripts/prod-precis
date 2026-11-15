@@ -83,7 +83,7 @@ if [[ "${PRECIS_ALLOW_STALE_PROD_TREE:-}" != 1 ]]; then
     fi
 fi
 # The stored DSN is container-oriented (host.docker.internal = the Mac's
-# autossh tunnel to caspar's pgbouncer); on the host that's 127.0.0.1.
+# autossh tunnel to the database host's pgbouncer); on the host that's 127.0.0.1.
 export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
 # Cloud calls need the same configured gateway as services. Honour an explicit
 # environment override; an absent optional file must not break non-cloud CLI.
