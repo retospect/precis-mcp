@@ -47,6 +47,11 @@ Semantics (`precis-memory-help`):
     - get(id=N, view='processing') — current-revision processing evidence;
                                      check before testing recall
     - get(id='/recent')            — list recent memories
+    - get(id='/toc')               — the kind's TOC: every root of the
+                                     live graph, paged (gr568237); the
+                                     bare ``get(view='toc')`` spells it
+                                     too, and ``get(id=N, view='toc')``
+                                     walks one node's part-of subtree
     - get(id=N, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
                                    — the walk: link rings via
                                      ``eye_render.render_eye``; ``+recall``
@@ -874,10 +879,40 @@ class MemoryHandler(NumericRefHandler):
         # sticky:global). Broad-pass finding #10. The sticky scope
         # distinction (per-thread vs global) lives on the tag; this
         # view shows the union so the agent can see "what's pinned
-        # right now" at a glance.
-        return ("recent", "sticky")
+        # right now" at a glance. /toc is the kind's generated table
+        # of contents (gr568237): every root of the live graph, the
+        # same paged forest render ``search(view='toc')`` runs.
+        return ("recent", "sticky", "toc")
 
-    def _list_view(self, view: str) -> Response | None:
+    #: ``id='/toc'`` pages under the byte budget like the tag forest —
+    #: ``args={'page': N, 'page_size': M}`` (gr568237).
+    paged_list_views: ClassVar[frozenset[str]] = frozenset({"toc"})
+
+    def _list_view(
+        self,
+        view: str,
+        *,
+        page: int = 1,
+        page_size: int | None = None,
+        sort: str | None = None,
+        closed_since: str | None = None,
+        closed_until: str | None = None,
+    ) -> Response | None:
+        if view == "toc":
+            if sort is not None:
+                raise BadInput(
+                    "sort= is not applied by id='/toc' — it orders by title",
+                    next="get(kind='memory', id='/toc')",
+                )
+            if closed_since is not None or closed_until is not None:
+                raise BadInput(
+                    "closed_since=/closed_until= bound a closure list — "
+                    "id='/toc' is the live forest",
+                    next="get(kind='memory', id='/toc')",
+                )
+            from precis.handlers._memory_toc import render_kind_toc
+
+            return render_kind_toc(self.store, page=page, page_size=page_size)
         if view == "sticky":
             return self._render_sticky()
         return super()._list_view(view)
@@ -942,8 +977,18 @@ class MemoryHandler(NumericRefHandler):
         rel: str | None = None,
         of_kind: str | None = None,
         direction: str | None = None,
+        # ``args={'page': N, 'page_size': M}`` — the ``id='/toc'`` kind
+        # TOC's (and the bare ``view='toc'`` spelling's) paging; the
+        # base reads them back out of the forwarded kwargs for paged
+        # list views (gr568237).
+        page: int | str | None = None,
+        page_size: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if page is not None:
+            _kw["page"] = page
+        if page_size is not None:
+            _kw["page_size"] = page_size
         # Log offsets count events, or payload characters when event_id
         # selects one event. Keep members' independent cursor contract.
         if depth is not None and (
@@ -1103,6 +1148,23 @@ class MemoryHandler(NumericRefHandler):
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_members(ref, offset=offset, depth=depth)
+        if view == "toc" and id is None:
+            # gr568237: the kind's own TOC — every root of the live
+            # graph, the same paged forest render the tag-scoped
+            # ``search(view='toc')`` runs. The ``id='/toc'`` spelling
+            # routes through the base's list-view door below.
+            if depth is not None or offset is not None:
+                raise BadInput(
+                    "depth=/offset= bound one node's toc — the kind toc "
+                    "pages by args={'page': N, 'page_size': M}",
+                    next="get(kind='memory', id=N, view='toc', args={'depth': 1})",
+                )
+            from precis.handlers._memory_toc import render_kind_toc
+
+            return interpreted(
+                render_kind_toc(self.store, page=page, page_size=page_size),
+                ["view='toc' with no id= read as id='/toc' — the kind TOC"],
+            )
         if view == "toc" and concrete:
             from precis.handlers._memory_toc import render_node_toc
 

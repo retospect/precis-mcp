@@ -19,6 +19,12 @@ more mention source, so generated TOCs can replace them over time.
 ``args={'depth': k}`` collapses below depth *k* with subtree counts;
 ``offset`` pages under the byte budget like ``view='members'``.
 
+``get(kind='memory', id='/toc')`` is the kind's own TOC (gr568237):
+the whole-graph forest — every live memory node whose part-of parents
+are all dead or non-memory (the tops of every tree) — rendered by the
+same paged root listing as the tag forest. A bare
+``get(kind='memory', view='toc')`` spells the same door.
+
 Keywords are the existing extraction — the ``rake-lemma``
 ``chunk_summaries`` row, then ``chunks.keywords`` (KeyBERT) — with
 ``meta.hook`` and the first body line as first-class fallback while the
@@ -97,7 +103,11 @@ def _compile_tags(
         raise BadInput(
             "view='toc' needs at least one positive tags= entry — "
             "the tag defines the forest",
-            next="search(kind='memory', tags=['spec:*'], view='toc')",
+            next=[
+                "get(kind='memory', id='/toc') — the whole-graph TOC "
+                "(every root, no tag filter)",
+                "search(kind='memory', tags=['spec:*'], view='toc') — one tag's forest",
+            ],
         )
     return pos, neg, normalized or []
 
@@ -288,6 +298,75 @@ def count_tag_toc(
     )
 
 
+def _forest_page(
+    store: Store,
+    forest: list[tuple[int, int]],
+    *,
+    label: str,
+    empty_body: str,
+    page: int,
+    page_size: int,
+    more: str,
+) -> Response:
+    """Shared page render for both toc doors — ``forest`` is
+    ``[(root ref_id, member_count)]`` from :func:`_forest`; ``label``
+    is the header/empty-page scope clause (``" tagged ['spec:*']"``,
+    or ``""`` for the whole kind); ``more`` is the ready-made
+    continuation call emitted when the page doesn't cover the forest.
+    """
+    if not forest:
+        return Response(body=empty_body, result_count=0)
+    found = store.fetch_refs_by_ids([root for root, _ in forest])
+    parts = _descriptors(store, [root for root, _ in forest])
+    counts = dict(forest)
+    ordered = sorted(
+        (r for r in found.values() if r.id in counts),
+        key=lambda r: ((r.title or "").lower(), r.id),
+    )
+    budget = max(200, result_context_cap() - _FOOTER_RESERVE)
+    pages: list[list[tuple[int, str]]] = []
+    cur: list[tuple[int, str]] = []
+    used = 0
+    for ref in ordered:
+        if len(pages) == page:
+            break
+        desc = _descriptor(ref, parts)
+        line = f"- {ref.title} ({_handle(ref.id)})"
+        if desc:
+            line += f" — {desc}"
+        line += f" · {counts[ref.id]} member{'s' if counts[ref.id] != 1 else ''}"
+        cost = len(line.encode("utf-8")) + 1
+        if cur and (len(cur) >= page_size or used + cost > budget):
+            pages.append(cur)
+            cur, used = [], 0
+            if len(pages) == page:
+                break
+        cur.append((int(ref.id), line))
+        used += cost
+    if cur and len(pages) < page:
+        pages.append(cur)
+    if len(pages) < page:
+        return Response(
+            body=f"no memory entries on page {page} — "
+            f"{len(ordered)} root{'s' if len(ordered) != 1 else ''}{label}",
+            result_count=0,
+        )
+    page_rows = pages[page - 1]
+    shown = sum(len(c) for c in pages)
+    header = (
+        f"# memory TOC — {len(ordered)} root{'s' if len(ordered) != 1 else ''}{label}"
+    )
+    body = header + "\n" + "\n".join(ln for _rid, ln in page_rows)
+    remaining = len(ordered) - shown
+    if remaining > 0:
+        body += f"\n… {remaining} more — next: {more}"
+    return Response(
+        body=body,
+        result_count=len(page_rows),
+        result_ids=[rid for rid, _ln in page_rows],
+    )
+
+
 def render_tag_toc(
     store: Store,
     *,
@@ -322,75 +401,67 @@ def render_tag_toc(
         include_ref_ids=include_ref_ids,
         exclude_ref_ids=exclude_ref_ids,
     )
-    if not forest:
-        return Response(
-            body=f"no memory entries tagged {canon} start a tree", result_count=0
+    args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
+    if under is not None:
+        args_echo.append(f"'under': {under!r}")
+        if depth is not None:
+            args_echo.append(f"'depth': {depth!r}")
+    elif include_ref_ids is not None:
+        args_echo.append(
+            f"'include_ref_ids': {sorted({int(i) for i in include_ref_ids})}"
         )
-    found = store.fetch_refs_by_ids([root for root, _ in forest])
-    parts = _descriptors(store, [root for root, _ in forest])
-    counts = dict(forest)
-    ordered = sorted(
-        (r for r in found.values() if r.id in counts),
-        key=lambda r: ((r.title or "").lower(), r.id),
+    if exclude_ref_ids:
+        args_echo.append(
+            f"'exclude_ref_ids': {sorted({int(i) for i in exclude_ref_ids})}"
+        )
+    return _forest_page(
+        store,
+        forest,
+        label=f" tagged {canon}",
+        empty_body=f"no memory entries tagged {canon} start a tree",
+        page=page,
+        page_size=page_size,
+        more=(
+            f"search(kind='memory', tags={canon!r}, view='toc', "
+            f"args={{{', '.join(args_echo)}}})"
+        ),
     )
-    budget = max(200, result_context_cap() - _FOOTER_RESERVE)
-    pages: list[list[tuple[int, str]]] = []
-    cur: list[tuple[int, str]] = []
-    used = 0
-    for ref in ordered:
-        if len(pages) == page:
-            break
-        desc = _descriptor(ref, parts)
-        line = f"- {ref.title} ({_handle(ref.id)})"
-        if desc:
-            line += f" — {desc}"
-        line += f" · {counts[ref.id]} member{'s' if counts[ref.id] != 1 else ''}"
-        cost = len(line.encode("utf-8")) + 1
-        if cur and (len(cur) >= page_size or used + cost > budget):
-            pages.append(cur)
-            cur, used = [], 0
-            if len(pages) == page:
-                break
-        cur.append((int(ref.id), line))
-        used += cost
-    if cur and len(pages) < page:
-        pages.append(cur)
-    if len(pages) < page:
-        return Response(
-            body=f"no memory entries on page {page} — "
-            f"{len(ordered)} roots tagged {canon}",
-            result_count=0,
-        )
-    page_rows = pages[page - 1]
-    shown = sum(len(c) for c in pages)
-    header = (
-        f"# memory TOC — {len(ordered)} root"
-        f"{'s' if len(ordered) != 1 else ''} tagged {canon}"
-    )
-    body = header + "\n" + "\n".join(ln for _rid, ln in page_rows)
-    more = len(ordered) - shown
-    if more > 0:
-        args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
-        if under is not None:
-            args_echo.append(f"'under': {under!r}")
-            if depth is not None:
-                args_echo.append(f"'depth': {depth!r}")
-        elif include_ref_ids is not None:
-            args_echo.append(
-                f"'include_ref_ids': {sorted({int(i) for i in include_ref_ids})}"
-            )
-        if exclude_ref_ids:
-            args_echo.append(
-                f"'exclude_ref_ids': {sorted({int(i) for i in exclude_ref_ids})}"
-            )
-        body += (
-            f"\n… {more} more — next: search(kind='memory', tags={canon!r}, "
-            f"view='toc', args={{{', '.join(args_echo)}}})"
-        )
-    return Response(
-        body=body,
-        result_count=len(page_rows),
-        result_ids=[rid for rid, _ln in page_rows],
+
+
+def render_kind_toc(
+    store: Store,
+    *,
+    page: int | str | None = 1,
+    page_size: int | str | None = None,
+) -> Response:
+    """``get(kind='memory', id='/toc')`` — the kind's own TOC (gr568237):
+    the whole-graph forest — every live memory node whose part-of
+    parents are all dead or non-memory (the tops of every tree) — one
+    line each with a descriptor and member count, title-ordered and
+    paged by the same render the tag forest uses. The bare
+    ``get(view='toc')`` folds here; ``get(id=N, view='toc')`` stays
+    the single-subtree walk."""
+    try:
+        n_page = max(int(page or 1), 1)
+        n_size = max(int(page_size or 10), 1)
+    except (TypeError, ValueError):
+        raise BadInput(
+            f"page=/page_size= must be integers, got page={page!r} "
+            f"page_size={page_size!r}",
+            next="get(kind='memory', id='/toc')",
+        ) from None
+    forest = _forest(store, [], [], include_ref_ids=None, exclude_ref_ids=None)
+    return _forest_page(
+        store,
+        forest,
+        label="",
+        empty_body="no live memory roots — the graph is empty",
+        page=n_page,
+        page_size=n_size,
+        more=(
+            "get(kind='memory', id='/toc', "
+            f"args={{'page': {n_page + 1}, 'page_size': {n_size}}})"
+        ),
     )
 
 

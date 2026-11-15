@@ -769,7 +769,9 @@ subtree counts, `offset=` pages. And
 *forest* — every node carrying the tag whose own `part-of` parents do
 not — one line each with keywords and member count. A trailing `*` on
 a `tags=` entry prefix-matches the tag value inside this view only;
-`view='members'` stays the flat paged listing.
+`view='members'` stays the flat paged listing. The kind's own contents
+is `get(kind="memory", id="/toc")` (or bare `get(kind="memory", view="toc")`):
+every root of the live graph, the same forest render (gr568237).
 
 Named repo-dev hub — **Prior art surveyed** (`me608724`, part-of root
 me474312): one node per external project or group already surveyed as
