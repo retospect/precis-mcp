@@ -136,6 +136,10 @@ Bodies are immutable (like all numeric-ref kinds): to reword a card,
 `delete(kind='anki', id=204)` then `put` the new wording. Deleting a card
 removes it from the corpus.
 
+Deleting in the Anki app works too: the next sync sees the note gone from the
+account, tombstones the precis ref, and does **not** push the card back —
+only an explicit new `put` re-cards it.
+
 ## Sync to AnkiWeb
 
 Authoring a card stores it in precis; the **`precis anki-sync`** tick (a cron on

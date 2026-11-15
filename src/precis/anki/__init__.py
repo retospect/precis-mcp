@@ -11,9 +11,12 @@ updates the note in place, never re-guids, so Anki's scheduling history
 survives); the guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, so
 precis can never clobber an account. Media never syncs (cards are text).
 Soft-deleted refs retire their notes on the next tick, scoped to their
-owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
-stats read back into ``meta.anki_stats``; a ``deck-<topic>`` tag maps to a
-``Precis::<topic>`` sub-deck.
+owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. The
+reverse also holds (gr622976): a note the user deleted in Anki stays deleted —
+the tick spots a confirmed-on-server note gone from the mirror after the
+download phase, skips the re-push and tombstones the ref; only an explicit
+new add re-cards it. Decay stats read back into ``meta.anki_stats``; a
+``deck-<topic>`` tag maps to a ``Precis::<topic>`` sub-deck.
 
 - `creds` — per-user AnkiWeb credentials in the secrets vault; also
   `anki_logins()`, the roster the sync fans out over.

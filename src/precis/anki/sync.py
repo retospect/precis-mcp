@@ -15,11 +15,18 @@ orchestrator `sync_tick`:
 The guard (design floor: never corrupt the account): a `FULL_DOWNLOAD` only
 risks our *regenerable* local mirror, so it is allowed. A `FULL_UPLOAD` would
 overwrite AnkiWeb, so it is **refused** — the tick aborts and reports.
+
+Deleted-in-Anki tombstones (gr622976): a note the user deleted in the app is
+removed from the mirror by the sync's download phase. When such a note was
+confirmed on the server before (the mirror's `usn != -1`, or PG's
+``meta.anki_synced_at`` passed in as ``confirmed_ref_ids``), the tick reports
+it via ``SyncResult.deleted_in_anki`` and does NOT re-push it — the store
+layer tombstones the ref so only an explicit new add brings the card back.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.anki.notes import (
@@ -67,19 +74,28 @@ class SyncResult:
     fix_applied: int = 0
     all_cards: list[ForeignCard] | None = None  # populated when project=True
     aborted: str | None = None
+    #: ref_ids whose notes were confirmed on AnkiWeb before this tick but are
+    #: gone from the mirror after the sync's download phase — the user deleted
+    #: them in the app. The store layer tombstones these (gr622976).
+    deleted_in_anki: list[int] = field(default_factory=list)
 
     def summary(self) -> str:
         if self.aborted:
             return f"ABORTED: {self.aborted}"
         boot = " (bootstrap download)" if self.bootstrapped else ""
         rem = f", {self.removed} retired" if self.removed else ""
+        dele = (
+            f", {len(self.deleted_in_anki)} deleted-in-Anki (tombstoned)"
+            if self.deleted_in_anki
+            else ""
+        )
         fix = (
             f", {self.fix_applied}/{self.fix_requested} precis-fix"
             if self.fix_requested
             else ""
         )
         return (
-            f"synced{boot}: {self.pushed} new, {self.updated} updated{rem}, "
+            f"synced{boot}: {self.pushed} new, {self.updated} updated{rem}{dele}, "
             f"{self.stats_written} stat rows read back{fix}"
         )
 
@@ -121,6 +137,31 @@ def upsert_notes(
             col.add_note(note, col.decks.id(spec.deck or deck))
             pushed += 1
     return pushed, updated
+
+
+def read_mirror_ref_ids(col: Any) -> tuple[set[int], set[int]]:
+    """``(present, synced)`` ref_ids of our notes in the mirror.
+
+    ``present`` — every note carrying a ``precis:`` guid. ``synced`` — the
+    subset with ``usn != -1``, Anki's own "already uploaded to the server"
+    marker (-1 queues a note for its first push). A note in ``synced`` that
+    vanishes after a sync's download phase was deleted server-side — the
+    deletion came down the wire. A pending note (``usn == -1``) can NEVER be
+    deleted server-side (the server hasn't seen it), so it is deliberately
+    excluded: after a bootstrap FULL_DOWNLOAD wipes it from the mirror it is
+    simply re-pushed, not tombstoned."""
+    present: set[int] = set()
+    synced: set[int] = set()
+    for guid, usn in col.db.all(
+        f"select guid, usn from notes where guid like '{GUID_PREFIX}%'"
+    ):
+        rid = ref_id_from_guid(guid)
+        if rid is None:
+            continue
+        present.add(rid)
+        if usn != -1:
+            synced.add(rid)
+    return present, synced
 
 
 def remove_notes_for_refs(col: Any, ref_ids: list[int]) -> int:
@@ -215,6 +256,7 @@ def sync_tick(
     fix_model: str | None = None,
     project: bool = False,
     retire_ref_ids: list[int] | None = None,
+    confirmed_ref_ids: set[int] | None = None,
 ) -> tuple[SyncResult, dict[int, dict[str, Any]]]:
     """One full tick against AnkiWeb. Account-safe by construction: a required
     full sync is resolved by *downloading* (only our regenerable mirror is at
@@ -226,12 +268,22 @@ def sync_tick(
 
     ``retire_ref_ids`` are soft-deleted authored refs (the card_forge
     retire/rewrite path) whose notes are removed from the mirror before the push
-    — own-guid lookups only, so foreign notes stay unreachable."""
+    — own-guid lookups only, so foreign notes stay unreachable.
+
+    ``confirmed_ref_ids`` are authored refs the store believes were already
+    pushed to AnkiWeb (``meta.anki_synced_at``). Unioned with the mirror's own
+    ``usn != -1`` evidence, they mark "was on the server": if such a note is
+    absent after the download phase, the user deleted it in the app — it is
+    reported in ``SyncResult.deleted_in_anki`` and NOT re-pushed (gr622976)."""
     Collection, sp = _import_anki()
     CR = sp.SyncCollectionResponse.ChangesRequired
     col = Collection(mirror_path)
     result = SyncResult()
     try:
+        # Snapshot before the merge: which of our notes the mirror believes
+        # are already on the server. A confirmed note missing afterwards was
+        # deleted server-side — the deletion came down the wire this tick.
+        _present_before, synced_before = read_mirror_ref_ids(col)
         auth = col.sync_login(user, password, endpoint)
         out = col.sync_collection(auth, False)
         auth = sp.SyncAuth(hkey=auth.hkey, endpoint=out.new_endpoint or auth.endpoint)
@@ -250,6 +302,18 @@ def sync_tick(
             )
             col.reopen(after_full_sync=True)
             result.bootstrapped = True
+
+        # Tombstone check (gr622976): a note confirmed-on-server (mirror usn,
+        # or PG's anki_synced_at) that is gone now = deleted in the app. Do
+        # not re-push it this tick; the store layer retires the ref so only
+        # an explicit new add brings the card back. Level-triggered via
+        # confirmed_ref_ids: a missed tombstone re-detects next tick instead
+        # of resurrecting the card.
+        present_after, _ = read_mirror_ref_ids(col)
+        deleted = sorted((synced_before | set(confirmed_ref_ids or ())) - present_after)
+        if deleted:
+            result.deleted_in_anki = deleted
+            specs = [s for s in specs if s.ref_id not in deleted]
 
         if fix:
             from precis.anki.fix import run_fix_pass

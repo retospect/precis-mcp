@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.anki.sync import AnkiSyncError
+from precis.errors import NotFound
 from precis.store.advisory import try_xact_advisory_lock
 
 if TYPE_CHECKING:
@@ -63,6 +64,33 @@ def retired_ref_ids(store: Store, *, login: str, window_days: int = 90) -> list[
     return [int(r[0]) for r in rows]
 
 
+def tombstone_deleted_refs(store: Store, ref_ids: list[int], *, login: str) -> int:
+    """Soft-delete this login's authored anki refs whose notes the user deleted
+    in the Anki app (gr622976): the sync detected them gone from the mirror
+    after they had reached AnkiWeb. A card deleted in the app stays deleted —
+    only an explicit new add (a NEW ref, hence a new ``precis:<ref_id>`` guid)
+    brings a card back.
+
+    Guards mirror :func:`retired_ref_ids`' scoping: live-only read (an
+    already-retired ref skips), owned by ``login``, and never a foreign
+    projection (an ``anki-foreign`` row that happens to share the id)."""
+    n = 0
+    for rid in ref_ids:
+        ref = store.get_ref(kind="anki", id=rid)
+        if (
+            ref is None
+            or ref.owner_login != login
+            or (ref.meta or {}).get("source") == "anki-foreign"
+        ):
+            continue
+        try:
+            store.retire_ref(rid)
+        except NotFound:  # a concurrent retire beat us to it
+            continue
+        n += 1
+    return n
+
+
 def _sync_one_user(
     store: Store,
     cfg: Any,
@@ -89,7 +117,15 @@ def _sync_one_user(
     claim_note = f" ({claimed} unowned ref(s) claimed for {login})" if claimed else ""
 
     refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
-    specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
+    specs: list[Any] = []
+    confirmed: set[int] = set()
+    for r in refs:
+        s = spec_from_ref(r)
+        if s is None:
+            continue
+        specs.append(s)
+        if (r.meta or {}).get("anki_synced_at"):
+            confirmed.add(r.id)
     retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
 
     if dry_run:
@@ -144,7 +180,29 @@ def _sync_one_user(
             fix=fix or cfg.anki_fix_enabled,
             project=project or cfg.anki_project_enabled,
             retire_ref_ids=retire_ids,
+            confirmed_ref_ids=confirmed,
         )
+        tombstoned = tombstone_deleted_refs(store, result.deleted_in_anki, login=login)
+        lines = [f"{prefix}: {result.summary()}{claim_note}"]
+        if tombstoned != len(result.deleted_in_anki):
+            # Rare: a detected id failed the own-authored-live guard. Name it
+            # so an unexplained gap between detection and tombstone shows.
+            lines.append(
+                f"{prefix}: {tombstoned}/{len(result.deleted_in_anki)} "
+                "deleted-in-Anki ref(s) tombstoned"
+            )
+        if result.all_cards is not None:
+            from precis.anki.project import project_cards
+
+            proj = project_cards(store, result.all_cards, owner_login=login)
+            lines.append(f"{prefix}: {proj.summary()}")
+        if result.aborted:
+            # No stats write: `anki_synced_at` must only mark a ref whose note
+            # actually reached AnkiWeb. A note upserted during a tick whose
+            # push escalated to FULL_UPLOAD never left the mirror — stamping
+            # it "synced" would let a later bootstrap download tombstone a
+            # card the user never deleted (gr622976).
+            raise AnkiSyncError(f"sync aborted for {login}: {' '.join(lines)}")
         now = datetime.now(UTC).isoformat()
         for ref_id, st in stats.items():
             # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
@@ -155,16 +213,7 @@ def _sync_one_user(
                 ref_id,
                 meta_patch={"anki_stats": st, "anki_synced_at": now},
             )
-        lines = [f"{prefix}: {result.summary()}{claim_note}"]
-        if result.all_cards is not None:
-            from precis.anki.project import project_cards
-
-            proj = project_cards(store, result.all_cards, owner_login=login)
-            lines.append(f"{prefix}: {proj.summary()}")
-        summary = "\n".join(lines)
-        if result.aborted:
-            raise AnkiSyncError(f"sync aborted for {login}: {summary}")
-        return summary
+        return "\n".join(lines)
 
 
 def run_anki_sync(
@@ -254,4 +303,5 @@ __all__ = [
     "AnkiSyncMisconfigured",
     "retired_ref_ids",
     "run_anki_sync",
+    "tombstone_deleted_refs",
 ]

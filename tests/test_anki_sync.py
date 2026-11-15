@@ -203,6 +203,28 @@ class TestReadBack:
         assert len(read_all_cards(col, tag="precis-fix")) == 0
 
 
+class TestMirrorRefIds:
+    """The tombstone detector's mirror read (gr622976): ``usn != -1`` is
+    Anki's own "already reached the server" marker — only synced notes can be
+    deleted server-side; a pending note is re-pushed, never tombstoned."""
+
+    def test_freshly_upserted_note_is_present_but_not_synced(self, col) -> None:
+        from precis.anki.sync import read_mirror_ref_ids, upsert_notes
+
+        upsert_notes(col, _specs((42, {"Text": "{{c1::x}}"})))
+        present, synced = read_mirror_ref_ids(col)
+        assert present == {42}
+        assert synced == set()  # usn=-1 — never reached AnkiWeb
+
+    def test_usn_marked_note_counts_as_synced(self, col) -> None:
+        from precis.anki.sync import read_mirror_ref_ids, upsert_notes
+
+        upsert_notes(col, _specs((42, {"Text": "{{c1::x}}"})))
+        col.db.execute("update notes set usn = 7")  # simulate a completed push
+        present, synced = read_mirror_ref_ids(col)
+        assert present == {42} and synced == {42}
+
+
 class TestRetire:
     def test_remove_notes_for_refs_deletes_only_own_guids(self, col) -> None:
         from precis.anki.sync import remove_notes_for_refs, upsert_notes
@@ -602,6 +624,130 @@ class TestNoOpShortcut:
         monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
         run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
         assert calls == [[ref.id]]
+
+
+class TestDeleteInAnkiTombstone:
+    """gr622976 — a card deleted in the Anki app stays deleted: the sync
+    reports it on ``SyncResult.deleted_in_anki`` and the ref is tombstoned so
+    it is never re-pushed (only an explicit new add re-cards it)."""
+
+    def test_detected_ref_is_retired_not_re_pushed(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        ref = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::x}}", owner_login="reto"
+        )
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (SyncResult(deleted_in_anki=[int(ref.id)]), {}),
+        )
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert store.get_ref(kind="anki", id=int(ref.id)) is None
+        assert (
+            store.get_ref(kind="anki", id=int(ref.id), include_deleted=True) is not None
+        )
+        assert "deleted-in-Anki" in summary
+
+    def test_confirmed_set_covers_only_previously_synced_refs(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        synced = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"anki_synced_at": "2026-11-01T00:00:00+00:00"},
+            owner_login="reto",
+        )
+        fresh = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::y}}", owner_login="reto"
+        )
+        captured: dict = {}
+
+        def _fake(**kw):
+            captured.update(kw)
+            return SyncResult(), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake)
+        run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert int(synced.id) in captured["confirmed_ref_ids"]
+        assert int(fresh.id) not in captured["confirmed_ref_ids"]
+
+    def test_tombstone_guards_owner_foreign_and_unknown_ids(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _add_user(store, "alice", "al")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        mine = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::x}}", owner_login="reto"
+        )
+        theirs = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::y}}", owner_login="alice"
+        )
+        foreign = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="foreign",
+            meta={"source": "anki-foreign", "readonly": True},
+            owner_login="reto",
+        )
+        detected = [int(mine.id), int(theirs.id), int(foreign.id), 10**9]
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (SyncResult(deleted_in_anki=detected), {}),
+        )
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)), login="reto")
+        assert store.get_ref(kind="anki", id=int(mine.id)) is None  # tombstoned
+        assert store.get_ref(kind="anki", id=int(theirs.id)) is not None
+        assert store.get_ref(kind="anki", id=int(foreign.id)) is not None
+        assert "1/4 deleted-in-Anki ref(s) tombstoned" in summary
+
+    def test_aborted_tick_stamps_no_anki_synced_at(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """A note upserted during an aborted (FULL_UPLOAD-escalated) tick never
+        reached AnkiWeb — marking it synced would let a later bootstrap
+        tombstone a card the user never deleted."""
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import AnkiSyncError, SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        ref = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::x}}", owner_login="reto"
+        )
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (
+                SyncResult(aborted="escalated to FULL_UPLOAD"),
+                {int(ref.id): {"reps_total": 1}},
+            ),
+        )
+        with pytest.raises(AnkiSyncError):
+            run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        after = store.get_ref(kind="anki", id=int(ref.id))
+        assert after is not None
+        assert "anki_synced_at" not in (after.meta or {})
 
 
 class TestAnkiCadenceBackoff:
