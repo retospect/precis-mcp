@@ -1682,6 +1682,13 @@ def test_submit_reaps_a_stale_index_lock_before_the_reuse_checkout(
         for kind, text in ctx.chunks
         if kind == "job_event"
     )
+    # The ordinary reap is reported like every reap (review td685661):
+    # the stamp plan_dispatch counts, and the slice todo's comment.
+    record = ctx.meta_set["index_lock_reaped"]
+    assert (
+        record["forced"] is False and record["age_s"] >= land_slice.INDEX_LOCK_STALE_S
+    )
+    assert any("index.lock reaper" in c for c in store.comments(42))
 
 
 @pytest.mark.parametrize("why", ["fresh", "held"])
@@ -2021,6 +2028,12 @@ def test_poll_commit_retries_after_reaping_a_stale_lock(
     assert seams["lands"] == [(42, tree, "claude-sub")]
     assert pctx.meta_set.get("commit_skipped") is None
     assert "index-lock" not in str(pctx.meta_set.get(run_slice.ATTEMPT_FREE_KEY))
+    # The commit-path reap is reported like every reap (review
+    # td685661): the stamp feeds the re-formed-locks escalation, and
+    # the slice todo gets the comment.
+    record = pctx.meta_set["index_lock_reaped"]
+    assert record["forced"] is False and record["age_s"] > 0
+    assert any("index.lock reaper" in c for c in store.comments(42))
 
 
 def test_poll_commit_lock_held_is_attempt_free_never_no_commit(
@@ -2113,6 +2126,138 @@ def test_submit_salvages_a_commit_skipped_predecessor(
     # ``checkout -f`` keeps, not the dead attempt's scratch.
     assert cmds.index(commits[0]) < cmds.index(["checkout", "-f", "slice/42"])
     assert any("salvaged" in text for kind, text in ctx.chunks if kind == "job_event")
+
+
+def test_submit_force_reap_rejects_a_replaced_lock(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td685661: the forced reap unlinks only the inode the aged
+    judgement ran on. A live writer that swaps in its own
+    ``index.lock`` while the holders die keeps it — the replacement is
+    rejected, never deleted under it — and reads as a re-formed lock
+    (``index-lock-stuck``), the shape that asks."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_HARD_S + 60
+    )
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    # Kept live over the hard cap: the cwd scan cannot disprove a
+    # writer, and lsof names only a non-git holder (diagnosed, never
+    # signalled).
+    monkeypatch.setattr(
+        land_slice, "_git_in_tree", lambda c: (None, "git-cwd-unreadable")
+    )
+    monkeypatch.setattr(
+        land_slice,
+        "_lock_holders",
+        lambda p: [("4711", "com.apple.Virtualization.VirtualMachine")],
+    )
+    real_kill = run_slice._kill_git_holders
+
+    def kill_then_replace(*args: Any, **kw: Any) -> Any:
+        out = real_kill(*args, **kw)
+        # The remnant's death freed the path; by the time the reap
+        # re-judges, a live writer's fresh lock sits there.
+        lock.unlink(missing_ok=True)
+        lock.write_bytes(b"live writer's lock")
+        return out
+
+    monkeypatch.setattr(run_slice, "_kill_git_holders", kill_then_replace)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert lock.exists() and lock.read_bytes() == b"live writer's lock"
+    assert seams["launch"] == []
+    assert not any(a[:1] == ["checkout"] for a, _c in seams["git"])
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock-stuck"
+    assert "attempt:2" not in store.tag_strings(42)
+
+
+def test_submit_carries_commit_skipped_through_a_lock_wait(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td685661: an intervening submit that only WAITS on the
+    lock must not drop the predecessor's ``commit_skipped`` provenance
+    — it rides the bounced job forward, so the next submit still
+    salvages the stranded edits instead of the reuse reset deleting
+    them."""
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    store.add_job(800, 42, meta={"commit_skipped": "index-lock"})
+    lock = _reused_tree_with_lock(seams, tmp_path, age_s=5.0)
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: (False, None))
+    monkeypatch.setattr(land_slice, "_lock_holders", lambda p: [])
+
+    ctx, handle = _submit(store, seams)
+
+    # The wait bounced the submit attempt-free — and carried the
+    # recovery stamp onto the bounced job, so the provenance survives
+    # its death on the wait.
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert ctx.meta_set["commit_skipped"] == "index-lock"
+
+    # The bounced job on record carries the stamp: the next submit —
+    # lock cleared by its holder finishing — salvages the stranded
+    # edits before the reset instead of dropping them.
+    store.add_job(801, 42, meta=dict(ctx.meta_set))
+    lock.unlink()
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    (tree / "scratch").mkdir(parents=True, exist_ok=True)
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(widget): build it (td42)\n", encoding="utf-8"
+    )
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+
+    ctx2, handle2 = _submit(store, seams)
+
+    assert handle2 is not None and ctx2.failure is None
+    cmds = [a for a, _cwd in seams["git"]]
+    commits = [a for a in cmds if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["commit_text"] == "fix(widget): build it (td42)\n"
+    assert cmds.index(commits[0]) < cmds.index(["checkout", "-f", "slice/42"])
+    assert any("salvaged" in t for k, t in ctx2.chunks if k == "job_event")
+
+
+@pytest.mark.parametrize("shape", ["no-message", "commit-fails"])
+def test_submit_refuses_reset_when_salvage_cannot_commit(
+    seams: dict[str, Any], tmp_path: Path, shape: str
+) -> None:
+    """review td685661: a ``commit_skipped`` stamp plus a dirty tree
+    whose salvage cannot produce a commit — no usable message, or the
+    commit itself fails — must REFUSE the reuse reset rather than drop
+    the stranded edits silently. The failure is real (a rung spent, so
+    a stuck recovery still asks at the ladder cap) and the stamp rides
+    forward for the next retry."""
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    store.add_job(800, 42, meta={"commit_skipped": "index-lock"})
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    (tree / "scratch").mkdir(parents=True)
+    if shape == "commit-fails":
+        (tree / "scratch" / "commit-msg.txt").write_text(
+            "fix(widget): build it (td42)\n", encoding="utf-8"
+        )
+        seams["staged"] = True
+        seams["commit_rc"] = 1
+    seams["porcelain"] = " M a.py\n"
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert "refusing the reuse reset" in (ctx.failure or "")
+    cmds = [a for a, _cwd in seams["git"]]
+    assert ["checkout", "-f", "slice/42"] not in cmds
+    assert seams["launch"] == []
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert ctx.meta_set["commit_skipped"] == "index-lock"
+    assert "attempt:2" in store.tag_strings(42)
+    assert "STATUS:open" in store.tag_strings(42)
 
 
 def test_submit_unpinned_child_uses_lane_default_model(

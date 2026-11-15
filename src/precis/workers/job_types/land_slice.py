@@ -3166,16 +3166,16 @@ def _clear_index_locks(
                 # the unlink makes lsof's answer empty.
                 holders = _lock_holders(lock) or []
                 if _reap_index_lock(ctx, lock, judged):
-                    ctx.set_meta(
-                        index_lock_reaped={
-                            "age_s": int(time.time() - judged.st_mtime),
-                            "size": judged.st_size,
-                            "why": "",
-                            "forced": False,
-                            "holders": [
-                                f"{pid} {command}".strip() for pid, command in holders
-                            ],
-                        }
+                    # Same trace every reap leaves (review td685661):
+                    # the meta stamp plan_dispatch counts plus the
+                    # slice todo's comment.
+                    _rs._record_reap(
+                        ctx,
+                        lock,
+                        todo_id,
+                        _rs._reap_record(judged, why="", forced=False, holders=holders),
+                        [],
+                        [],
                     )
                     break
                 # The reap lost the race to a replacement lock — judge it
