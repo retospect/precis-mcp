@@ -3519,12 +3519,16 @@ class SearchMixin(RuntimeShape):
             # can no longer hold a worker past the call deadline.
             CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
             result = self._cross_kind_invoke_search_hits(handler, k, kw)
-            if not isinstance(result, QueryCanceled) or lexical_fallback is None:
+            if (
+                not isinstance(result, QueryCanceled)
+                or lexical_fallback is None
+                or base_kwargs.get("mode") is not None
+            ):
                 return result
             # The server cancelled the hybrid legs at the statement cap.
             # Retry once lexical-only if the deadline still fits it — a
             # merged lexical hit beats an errored kind. Only the
-            # default/hybrid mode degrades (explicit mode is caller intent).
+            # omitted mode degrades; even explicit hybrid is caller intent.
             mode = str(kw.get("mode") or "").strip().lower()
             left_ms = int((deadline_at - time.monotonic()) * 1000)
             lexical_floor = min(

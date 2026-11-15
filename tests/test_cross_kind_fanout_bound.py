@@ -890,3 +890,33 @@ def test_cancelled_explicit_list_keeps_error(
     out = rt._cross_kind_fan_out(kinds, {"q": "x"})
     assert isinstance(out[kinds[0]], QueryCanceled)
     assert seen[kinds[0]] == ["hybrid"]
+
+
+@pytest.mark.parametrize(
+    "mode", ["hybrid", "semantic", "lexical", "verbatim", "literal"]
+)
+def test_cancelled_explicit_mode_keeps_error(
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """Explicit mode preserves cancellation even on the default expansion."""
+    from psycopg.errors import QueryCanceled
+
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:1]
+    seen: list[str] = []
+    cancelled = QueryCanceled("canceling statement due to statement timeout")
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> QueryCanceled:
+        seen.append(kw["mode"])
+        return cancelled
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    fallback: set[str] = set()
+    out = rt._cross_kind_fan_out(
+        kinds, {"q": "x", "mode": mode}, lexical_fallback=fallback
+    )
+    assert out[kinds[0]] is cancelled
+    assert seen == [mode]
+    assert fallback == set()
