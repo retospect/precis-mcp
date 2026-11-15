@@ -483,9 +483,13 @@ class TestPerKind:
         assert not err and "Roadmap:" in out
         assert f"  serves: qu{quest.id} — Grow the mesh" in out
 
-    def test_skill_eye_is_the_verbatim_body_plus_its_wikilink_ring(
+    def test_skill_eye_is_the_section_map_plus_its_wikilink_ring(
         self, runtime_with_store: Any
     ) -> None:
+        """gr568475: a whole-skill eye at fisheye+1hop is the SECTION MAP
+        (never the verbatim body — a page is what `verbatim` is for) plus
+        the wikilink ring; the body-only shape this test used to assert
+        was the two-rung special case the gripe deletes."""
         out, err = _get(
             runtime_with_store,
             kind="skill",
@@ -494,6 +498,7 @@ class TestPerKind:
         )
         assert not err
         assert out.startswith("sk:precis-fisheye-help [skill]")
+        assert "sections (drill:" in out  # the section map, one ~N row each
         # gr572706: the ring derives from [[slug]] wikilinks, both
         # directions — precis-fisheye-help's own See-also list out and
         # the skills linking back in.

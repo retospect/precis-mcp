@@ -8,6 +8,14 @@ This is the agent's manual: ``get(kind='skill', id='precis-overview')``
 returns the overview, ``get(kind='skill', id='precis-paper-help')``
 returns the paper-handler docs, etc.
 
+A default whole-skill read is **index-first** (gr568475): over
+:data:`_SKILL_INDEX_FIRST_BYTES` (~6 kB) the serve is one row per H2
+section — ``~N`` handle, size, heading and the ``answers:`` questions
+targeting it — with the body behind ``full=true`` (or
+``extent='verbatim'``); under the threshold the body serves verbatim, one
+call beats two. The old shape (a body that truncates at the transport
+cap with the section map at the bottom, the long-first read) is gone.
+
 A bare ``get(kind='skill')`` lists every **available** skill — i.e.
 every skill whose ``status:`` front-matter is ``active`` (or absent)
 *and* whose subject kind is registered in the live runtime. Skills
@@ -54,6 +62,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
+from precis._result_budget import body_bytes
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -117,6 +126,18 @@ _SKILL_CHUNK_MENTION_RE = re.compile(
 #: Cap on referenced-section rows a chunk trailer lifts — enough for a
 #: "see ~6 / ~7" pair without crowding the toc/card rows.
 _CHUNK_MENTION_NEXT_CAP = 3
+
+#: Whole-skill reads over this many bytes serve the INDEX by default
+#: (gr568475): one row per H2 section — ``~N`` handle, size, heading and
+#: the ``answers:`` questions targeting it — instead of a body that
+#: truncates at 24 kB with the map at the bottom (the long-first read the
+#: gripe measured: ~1 skill in 5 truncated on its default read). Sized at
+#: ~6 kB: well under the 24 kB transport cap so the threshold gate, not
+#: the fitter, decides; small enough that a whole read of a small skill
+#: stays one call (under the threshold the body serves verbatim, one call
+#: beats two). ``full=true`` (or ``extent='verbatim'``) keeps the body
+#: reachable on demand.
+_SKILL_INDEX_FIRST_BYTES = 6 * 1024
 
 
 def _parse_skill_id(
@@ -368,8 +389,112 @@ def _result_budget_hint(slug: str) -> str:
     """Targeted recovery for an oversized whole-skill read."""
     return (
         f"get(kind='skill', id='{slug}/toc') lists this skill's sections; "
-        f"get(kind='skill', id='{slug}~N') fetches only section N"
+        f"get(kind='skill', id='{slug}~N') fetches only section N "
+        f"(a range ~A..B fetches several)"
     )
+
+
+def _skill_section_rows(
+    display: str, text: str
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Index rows for one skill's H2 sections (gr568475).
+
+    Returns ``(rows, loose)``: one row per structural ``chunk_by_h2``
+    section — ``section`` the copy-pasteable ``<display>~N`` handle,
+    ``size`` the kB cell, ``heading`` the (marker-stripped) H2 text,
+    ``answers`` the front-matter ``answers:`` questions targeting that
+    section — plus ``loose``, the questions no section claims (they head
+    the index/serve above the table instead of padding a wrong row).
+
+    An ``answers:`` entry targets the section whose heading (or alias)
+    tokens overlap it most; a tie at zero overlap means it targets no
+    section. Alias H2s (two ``##`` lines over one body) stay one row: the
+    first alias is the heading cell, the rest collapse into the answers
+    column — an alias heading usually *is* the question the body answers.
+    The explicit ``#h2-slug`` anchor syntax that replaces this heuristic
+    is the follow-up slice (docs-and-skills-redesign v1 two-tier
+    addressing), shared with the skill eye's section map.
+    """
+    from precis._result_budget import size_cell
+    from precis.skill_index.chunker import (
+        _extract_front_matter_questions,
+        chunk_by_h2,
+    )
+
+    _summary, answers = _extract_front_matter_questions(text)
+    chunks = chunk_by_h2(text)
+    assigned: list[list[str]] = [[] for _ in chunks]
+    loose: list[str] = []
+    for question in answers:
+        qtokens = set(_content_tokens(question))
+        best_i = -1
+        best_n = 0
+        for i, chunk in enumerate(chunks):
+            heading_tokens = set(
+                _content_tokens(" / ".join((chunk.heading, *chunk.aliases)))
+            )
+            overlap = len(qtokens & heading_tokens)
+            if overlap > best_n:
+                best_i, best_n = i, overlap
+        if best_i >= 0:
+            assigned[best_i].append(question)
+        else:
+            loose.append(question)
+
+    rows: list[dict[str, str]] = []
+    for i, chunk in enumerate(chunks):
+        heading = (
+            strip_heading_mark(chunk.aliases[0])
+            if chunk.aliases
+            else strip_heading_mark(chunk.heading)
+        )
+        alias_questions = [strip_heading_mark(a) for a in chunk.aliases[1:]]
+        rows.append(
+            {
+                "section": f"{display}~{i}",
+                "size": size_cell(len(chunk.text.encode("utf-8"))),
+                "heading": heading or "(intro)",
+                "answers": " · ".join(assigned[i] + alias_questions),
+            }
+        )
+    return rows, loose
+
+
+def _skill_index_body(display: str, text: str) -> str:
+    """The index-first whole-skill serve (gr568475): the section table —
+    one row per H2 section with its ``~N`` handle, size, heading and
+    targeting questions — plus the calls that reach the body and the
+    sections. Rendered through the shared ``render_agent_table``
+    chokepoint; the skill eye's section map consumes the same row
+    computation, so both surfaces never drift apart."""
+    rows, loose = _skill_section_rows(display, text)
+    lines = [f"# {display} — {len(rows)} sections (index)", ""]
+    if loose:
+        lines.append("questions: " + " · ".join(loose))
+        lines.append("")
+    lines.append(
+        render_agent_table(rows, schema=["section", "size", "heading", "answers"])
+    )
+    lines.append(
+        render_next_section(
+            [
+                (
+                    f"get(kind='skill', id='{display}~0')",
+                    "read one section (any ~N handle above)",
+                ),
+                (
+                    f"get(kind='skill', id='{display}~0..2')",
+                    "read a range of sections",
+                ),
+                (
+                    f"get(kind='skill', id={display!r}, full=true)",
+                    "the full body verbatim",
+                ),
+                (f"get(kind='skill', id='{display}/toc')", "the smart TOC"),
+            ]
+        )
+    )
+    return "\n".join(lines)
 
 
 def _budget_outline(slug: str, text: str) -> str:
@@ -1207,6 +1332,26 @@ class SkillHandler(Handler):
         if outcome == "matched" and not full:
             return self._render_serve_stub(display, text, rev)
 
+        # gr568475: a default whole-skill read over
+        # :data:`_SKILL_INDEX_FIRST_BYTES` serves the INDEX — one row per
+        # H2 section with its ~N handle, size, heading and targeting
+        # questions — instead of a body that truncates at the transport
+        # cap with the map at the bottom (the long-first read). Under
+        # the threshold the body serves verbatim: one call beats two.
+        # ``full=true`` keeps the body reachable; the rev line below is
+        # still minted over the scope-filtered body, so the ``have=``
+        # contract (gr477798) is unchanged.
+        index_first = not full and body_bytes(text) > _SKILL_INDEX_FIRST_BYTES
+        if index_first:
+            # The alias banner (gr338442 / gr524267) prefixes the body —
+            # keep it ahead of the index instead of dropping it with the
+            # body it introduced.
+            if text.startswith("(aliased from"):
+                banner, _, body_text = text.partition("\n\n")
+                text = banner + "\n\n" + _skill_index_body(display, body_text)
+            else:
+                text = _skill_index_body(display, text)
+
         # Banner if this skill is filtered from the index — the agent
         # asked for it explicitly, so we serve it, but we want them
         # to know the recipes inside may not all run on this build.
@@ -1216,8 +1361,11 @@ class SkillHandler(Handler):
             text = f"> **Heads up:** {gap}\n\n" + text
         # ``[[slug]]`` wikilinks render as their full serve command in a
         # whole-skill serve (docs/backlog/skill-graph.md slice 1;
-        # documented in precis-addressing-help).
-        text = _expand_wikilinks(text)
+        # documented in precis-addressing-help). The index-first serve
+        # skips expansion — its rows are handles and headings, and its
+        # next: lines are already full serve commands.
+        if not index_first:
+            text = _expand_wikilinks(text)
         header = _family_header(slug, corpus=corpus)
         if header:
             text = header + "\n\n" + text
@@ -1249,6 +1397,14 @@ class SkillHandler(Handler):
         if not was_shown(misled):
             text = text.rstrip() + "\n\n" + misled
         text += f"\n\nskill rev {rev}"
+        if index_first:
+            # The index IS the map — no fitted-body trailer or outline —
+            # but the recovery hint still names the targeted reads a
+            # caller can drill into.
+            return Response(
+                body=text,
+                result_budget_hint=_result_budget_hint(display),
+            )
         return Response(
             body=text,
             result_budget_hint=_result_budget_hint(display),

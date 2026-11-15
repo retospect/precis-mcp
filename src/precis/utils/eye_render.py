@@ -41,13 +41,20 @@ kind, so the ladder generalizes but its shape does not:
   is dispatched on its ``sk:`` prefix ahead of the decimal parse and renders
   straight from the skill corpus (``handlers.skill``'s own accessors —
   ``_load_skill`` / ``_skill_title``, the same ones ``SkillHandler.get``
-  uses). No *spatial* neighborhood (a file has no corpus position), but it
-  does have a **link ring**: the ``[[slug]]`` wikilinks, derived from the
-  shared :class:`~precis.skill_index.SkillGraph` rather than stored edges
-  (gr572706 ruling — outbound ``see-also``, inbound ``see-also-by``).
-  ``toc``/``none`` collapse to a one-line bookmark, ``summary``…``fisheye``
-  render the verbatim body, ``fisheye+1hop`` appends the wikilink ring and
-  ``fisheye+2hop`` the second hop, both in the link-kind shape.
+  uses). Since gr568475 a skill *is* treated as the H2 tree it literally
+  is: ``sk:<slug>~N`` focuses one section and renders through the shared
+  tree-kind spatial ladder (:func:`precis.utils.fisheye.render_fisheye_span`
+  over a ``chunk_by_h2`` adapter — verbatim center, graduated summary/kwd
+  neighbours), and a whole-skill ``sk:<slug>`` at ``fisheye`` renders the
+  **section map** (one ``~N`` row per section, never the body — the old
+  two-rung bookmark-or-body special case is gone). ``verbatim`` still
+  renders the body; ``summary`` the front-matter ``summary:``/synopsis.
+  The *link* ring is the ``[[slug]]`` wikilinks, derived from the shared
+  :class:`~precis.skill_index.SkillGraph` rather than stored edges
+  (gr572706 ruling — outbound ``see-also``, inbound ``see-also-by``):
+  ``fisheye+1hop`` appends it, ``fisheye+2hop`` the second hop as counts,
+  and ``q='<label>'`` / ``q='skill:<label>'`` expand one group, both in the
+  link-kind shape.
 
 Reached from every kind's ``get`` through one door: ``get(kind=K, id=…,
 extent=<rung>)`` (or a ladder label in ``view=``) is routed by the
@@ -605,43 +612,92 @@ def _skill_expand_second_hop(expand: str, second: dict[str, tuple[str, ...]]) ->
     return "\n".join(lines)
 
 
-def _render_skill_eye(
-    handle: str,
-    ext: Extent,
-    *,
-    expand: str | None = None,
-    ring: RingFilter | None = None,
-) -> str:
-    """A skill eye (``sk:<slug>``): file-backed, so it renders straight from
-    the skill corpus via ``handlers.skill``'s own accessors — the same ones
-    ``SkillHandler.get`` uses — rather than a store round trip.
+def _skill_synopsis(text: str) -> str:
+    """A skill's one-line gloss: its front-matter ``summary:``, else the
+    first non-heading content line (gr568475 — the ``summary`` eye rung
+    renders the node alone, and a skill's own summary field is the honest
+    gloss of it)."""
+    from precis.skill_index.chunker import _extract_front_matter_questions
 
-    ``toc``/``none`` render a one-line bookmark, ``summary``…``fisheye``
-    the verbatim body (capped like any other eye): a skill has no corpus
-    position to be a spatial neighbour of. Its *link* ring is derived,
-    not stored — the ``[[slug]]`` wikilinks, outbound plus inbound, from
-    the shared :class:`SkillGraph` (gr572706). ``fisheye+1hop`` appends
-    it; ``fisheye+2hop`` adds the second hop as counts. ``q='<label>'``
-    expands one first-hop group, ``q='skill:<label>'`` one second-hop
-    group — the same grammar a link-kind eye takes. Wikilinks in the
-    body render expanded like the whole-skill serve."""
-    from precis.handlers.skill import _expand_wikilinks, _load_skill, _skill_title
+    summary, _answers = _extract_front_matter_questions(text)
+    if summary:
+        return " ".join(summary.split())
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "---":
+            return " ".join(stripped.split())
+    return ""
 
-    slug = handle[len(_SKILL_HANDLE_PREFIX) :]
-    text = _load_skill(slug)
-    if text is None:
-        raise ValueError(f"eye: no live skill for {handle!r}")
-    title = _skill_title(slug) or slug
-    head = f"{handle} [skill] {title}".rstrip()
-    if ext <= Extent.TOC:
-        return f"· {head}"
-    block = f"{head}\n{_cap(_expand_wikilinks(text), _VERBATIM_CAP)}"
-    if ext < Extent.HOP1:
-        return block
 
-    # ring= narrows like on any eye: a kinds filter without 'skill'
-    # empties the ring; a space or tags filter always does — a file
-    # carries no tags.
+def _section_synopsis(chunk_text: str) -> str:
+    """A section's one-line gloss — its first non-heading content line,
+    collapsed. Heading lines carry no information a ``~N`` row doesn't."""
+    for line in chunk_text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return _cap(" ".join(stripped.split()), _CHUNK_SUMMARY_CAP)
+    return ""
+
+
+#: Most sections a whole-skill eye's map lists — the doc-eye cluster cap's
+#: twin; the tail folds into a ``+N more`` line, never a page (gr568475).
+_MAP_SECTION_CAP = 20
+
+
+def _skill_section_map(slug: str, text: str) -> str:
+    """A whole-skill eye's ``fisheye`` body: the section map — one ``~N``
+    row per H2 section (heading, targeting questions, size), never verbatim
+    body text. Shares its row computation with the index-first whole-skill
+    serve (:func:`precis.handlers.skill._skill_section_rows`), so a row that
+    appears on either surface reads the same. Drill a section by focusing
+    ``sk:<slug>~N`` or a plain ``get(kind='skill', id='<slug>~N')``."""
+    from precis.handlers.skill import _skill_section_rows
+
+    rows, loose = _skill_section_rows(slug, text)
+    shown = rows[:_MAP_SECTION_CAP]
+    lines = [
+        f"— {len(rows)} sections (drill: get(kind='skill', id='{slug}~N') "
+        f"or focus sk:{slug}~N) —"
+    ]
+    if loose:
+        lines.append(f"  questions: {_cap(' · '.join(loose), _CHUNK_SUMMARY_CAP)}")
+    for r in shown:
+        label = r["heading"]
+        if r["answers"]:
+            label = f"{label} — {r['answers']}"
+        row = f"  · {r['section']}  {_cap(label, _CHUNK_SUMMARY_CAP)}"
+        lines.append(f"{row} · {r['size']}" if r["size"] else row)
+    if len(rows) > len(shown):
+        lines.append(f"  +{len(rows) - len(shown)} more sections")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class _SkillEyeSection:
+    """One H2 section of a skill, adapted to the tree-kind eye's
+    :class:`~precis.utils.fisheye._Chunk` protocol (gr568475) — the
+    ``chunk_by_h2`` list becomes a flat reading order (depth 0, no
+    parents), addressed by its ``~N`` selector in ``dc`` and by
+    ``sk:<slug>~N`` in ``handle``."""
+
+    chunk_id: int
+    ref_id: int
+    handle: str
+    chunk_kind: str
+    text: str
+    parent_chunk_id: int | None
+    depth: int
+    dc: str
+
+
+def _skill_ring_sections(
+    slug: str, ext: Extent, *, expand: str | None, ring: RingFilter | None
+) -> list[str]:
+    """The skill eye's hop sections in the link-kind shape — factored out
+    of the whole-skill and section eyes so both render the identical
+    wikilink ring, second hop and ``q=`` expansions. ``ring=`` narrows
+    like on any eye: a kinds filter without 'skill' empties the ring; a
+    space or tags filter always does — a file carries no tags."""
     if ring is not None and (
         (ring.kinds is not None and "skill" not in ring.kinds)
         or ring.spaces is not None
@@ -670,7 +726,115 @@ def _render_skill_eye(
             sections.append(
                 _skill_render_second_hop(second, sum(len(s) for s in groups.values()))
             )
-    return "\n\n".join([block, *sections])
+    return sections
+
+
+def _render_skill_eye(
+    handle: str,
+    ext: Extent,
+    *,
+    expand: str | None = None,
+    ring: RingFilter | None = None,
+) -> str:
+    """A skill eye (``sk:<slug>`` or ``sk:<slug>~N``): file-backed, so it
+    renders straight from the skill corpus via ``handlers.skill``'s own
+    accessors — the same ones ``SkillHandler.get`` uses — rather than a
+    store round trip.
+
+    A skill is an H2 tree, so since gr568475 the ladder is the tree-kind
+    one, not a bookmark-or-body special case. A **section eye**
+    (``sk:<slug>~N``) focuses one section and renders through the shared
+    spatial span (:func:`precis.utils.fisheye.render_fisheye_span` over a
+    ``chunk_by_h2`` adapter): ``kwd`` a one-line bookmark, ``summary`` the
+    section gloss, ``verbatim`` the section text, ``fisheye`` the verbatim
+    center over a graduated neighbourhood of sections. A **whole-skill
+    eye** renders the node alone at the content rungs (``kwd`` a bookmark,
+    ``summary`` the front-matter synopsis, ``verbatim`` the body) and the
+    **section map** — one ``~N`` row per section, never a page — at
+    ``fisheye`` and up. The *link* ring belongs to the skill, not one
+    section: ``fisheye+1hop`` (on either eye) appends the derived
+    ``[[slug]]`` wikilinks (gr572706), ``fisheye+2hop`` the second hop as
+    counts, and ``q='<label>'`` / ``q='skill:<label>'`` expand one group —
+    the same grammar a link-kind eye takes. Wikilinks in a verbatim body
+    render expanded like the whole-skill serve."""
+    from precis.handlers.skill import _expand_wikilinks, _load_skill, _skill_title
+    from precis.skill_index.chunker import chunk_by_h2
+    from precis.utils.fisheye import render_fisheye_span
+    from precis.utils.skill_scope import strip_heading_mark
+
+    raw = handle[len(_SKILL_HANDLE_PREFIX) :]
+    slug, sep, sel = raw.partition("~")
+    text = _load_skill(slug)
+    if text is None:
+        raise ValueError(f"eye: no live skill for {handle!r}")
+    title = _skill_title(slug) or slug
+
+    if sep:
+        # Section eye — sk:<slug>~N through the shared tree-kind ladder.
+        if not sel.strip().isdigit():
+            raise ValueError(
+                f"eye: bad skill section selector in {handle!r} — "
+                f"expected sk:<slug>~<n>"
+            )
+        idx = int(sel)
+        chunks = chunk_by_h2(text)
+        if idx >= len(chunks):
+            raise ValueError(
+                f"eye: no section ~{idx} on sk:{slug} "
+                f"({len(chunks)} section(s): ~0..~{len(chunks) - 1})"
+            )
+        sections = [
+            _SkillEyeSection(
+                chunk_id=i,
+                ref_id=0,
+                handle=f"{_SKILL_HANDLE_PREFIX}{slug}~{i}",
+                chunk_kind="section",
+                text=c.text,
+                parent_chunk_id=None,
+                depth=0,
+                dc=f"{slug}~{i}",
+            )
+            for i, c in enumerate(chunks)
+        ]
+        views = {s.handle: {"summary": _section_synopsis(s.text)} for s in sections}
+        target = sections[idx]
+        heading = strip_heading_mark(chunks[idx].heading)
+        head = f"{handle} [skill] {heading or title}".rstrip()
+        if ext <= Extent.TOC:
+            return f"· {head}"
+
+        def _ring() -> str:
+            return "\n\n".join(
+                _skill_ring_sections(slug, ext, expand=expand, ring=ring)
+            )
+
+        block = render_fisheye_span(sections, target, views, ext, ring=_ring)
+        return f"{head}\n{block}"
+
+    # Whole-skill eye — the node alone at the content rungs, the section
+    # map (never the body) at the neighbourhood rungs.
+    head = f"{handle} [skill] {title}".rstrip()
+    if ext <= Extent.TOC:
+        return f"· {head}"
+    if ext is Extent.SUMMARY:
+        return f"{head}\n{_cap(_skill_synopsis(text), _SUMMARY_CAP)}"
+    if ext is Extent.FULL:
+        body = _cap(_expand_wikilinks(text), _VERBATIM_CAP)
+        total = len(_expand_wikilinks(text))
+        if total > _VERBATIM_CAP:
+            # The verbatim rung is the one rung that promises the text —
+            # when the cap bites, name the call that returns it whole.
+            body += (
+                f"\n… cut: {_VERBATIM_CAP} of {total} chars — full body: "
+                f"get(kind='skill', id={slug!r}, full=true)"
+            )
+        return f"{head}\n{body}"
+
+    block = f"{head}\n{_skill_section_map(slug, text)}"
+    if ext < Extent.HOP1:
+        return block
+    ring_sections = _skill_ring_sections(slug, ext, expand=expand, ring=ring)
+    return "\n\n".join([block, *ring_sections])
 
 
 # ── doc kinds: the keyword-cluster fisheye (paper / patent / web / …) ──

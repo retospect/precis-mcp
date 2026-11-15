@@ -86,7 +86,18 @@ only at `fisheye` and up.
 | Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
 | Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
 | Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, … | the card (title → gist → body) | the link neighborhood by ring |
-| Skill | `skill` (`sk:<slug>`) | the verbatim body; `kwd` a bookmark | the wikilink ring — `see-also` out, `see-also-by` in |
+| Skill | `skill` (`sk:<slug>` or a section `sk:<slug>~N`) | whole: the **section map** — one `~N` row per H2, never the body; section: the reading-order span | the wikilink ring — `see-also` out, `see-also-by` in |
+
+A skill is an H2 tree, so its eye is a tree eye (gr568475): focus one
+section with `sk:<slug>~N` and the `fisheye` rung renders the same
+graduated reading-order span a draft section gets — verbatim center,
+summary neighbours, `kwd` rim — over the skill's sections. A whole-skill
+eye at `fisheye` renders the section map instead: one `~N` row per
+section (heading, targeting questions, size), never the body — read a
+section by focusing its `~N` handle. `verbatim` on either eye still
+renders the text whole. A plain `get(kind='skill', id='<slug>')` over
+~6 kB likewise serves the section index first; `full=true` fetches the
+body.
 
 `Unsupported`, with the reason: a **whole draft or plan** (the eye
 focuses one section — `view='toc'` lists the `dc<id>` handles); a
