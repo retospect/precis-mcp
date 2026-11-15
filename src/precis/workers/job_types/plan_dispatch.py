@@ -5782,10 +5782,13 @@ class _Started:
     blocker): ``state`` is ``landing``, ``in pre-land review`` or
     ``building``; ``branch_files`` the paths its branch touched when it
     last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
-    empty before then."""
+    empty before then; ``repo`` the repo its ``repo:`` tag resolves to —
+    its own, else the nearest tagged ancestor's — resolved in the store
+    because a held build can sit outside the loaded plan's nodes."""
 
     state: str
     branch_files: tuple[str, ...]
+    repo: str
 
 
 def _started_slices(store: Any) -> dict[int, _Started]:
@@ -5796,7 +5799,14 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     second slice editing the same file used to start on a main that
     would not have the first. Generators (triage, brief, reviewer)
     commit nothing and never count. One query, not the loaded plan: a
-    held build can sit outside the loaded subtrees."""
+    held build can sit outside the loaded subtrees. A terminal *ruling*
+    on the todo (``_RULING_STATUSES`` — ``won't-do``, ``auto-timeout``)
+    ends the hold whatever a stale ``pending_land`` or a still-live job
+    says: a dropped plan closing build and reviewer before a verdict
+    never clears the stamp (only ``_record_land`` /
+    ``_review_back_to_builder`` do), and the work is never landing, so
+    it cannot hold overlapping builds forever. ``done`` still counts —
+    its held land may be in flight."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -5819,6 +5829,10 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                AND NOT COALESCE(r.meta ? 'generate', FALSE)
                AND (live.parent_id IS NOT NULL
                     OR jsonb_typeof(r.meta->%s) = 'object')
+               AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%s))
             """,
             (
                 [DEFAULT_OP, "land_slice"],
@@ -5826,6 +5840,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                 _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
                 _templates.PENDING_LAND_KEY,
+                sorted(_RULING_STATUSES),
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
@@ -5834,8 +5849,48 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             "landing" if landing else "in pre-land review" if pending else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
-        out[int(rid)] = _Started(state, paths)
-    return out
+        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
+    if not out:
+        return out
+    # The blocker side of the repo check: ``_node_repos``' reach (own
+    # ``repo:`` tags, else the nearest tagged ancestor's) resolved in the
+    # store, since the loaded plan cannot see an out-of-subtree todo.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE up(origin, anc, depth) AS (
+                SELECT ref_id, ref_id, 0
+                  FROM refs WHERE ref_id = ANY(%s)
+                UNION ALL
+                SELECT u.origin, r.parent_id, u.depth + 1
+                  FROM up u JOIN refs r ON r.ref_id = u.anc
+                 WHERE u.anc IS NOT NULL AND u.depth < 25
+            ),
+            tagged AS (
+                SELECT u.origin, t.value, u.depth,
+                       MIN(u.depth) OVER (PARTITION BY u.origin) AS nearest
+                  FROM up u
+                  JOIN refs r ON r.ref_id = u.anc
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t USING (tag_id)
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND t.namespace = 'OPEN' AND starts_with(t.value, 'repo:')
+            )
+            SELECT origin, value FROM tagged WHERE depth = nearest
+            """,
+            (sorted(out),),
+        ).fetchall()
+    repos: dict[int, list[str]] = {}
+    for origin, value in rows:
+        repos.setdefault(int(origin), []).append(str(value)[len("repo:") :].strip())
+    return {
+        rid: _Started(
+            s.state,
+            s.branch_files,
+            sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
+        )
+        for rid, s in out.items()
+    }
 
 
 def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
@@ -6068,8 +6123,10 @@ def _step_dispatch(
                 continue
             repo = _node_repo(plan, n)
             for hid in sorted(held_sets):
-                other = plan.nodes.get(hid)
-                if other is not None and _node_repo(plan, other) != repo:
+                # started[hid].repo, not _node_repo on plan.nodes: a held
+                # build can sit outside the loaded subtrees, and skipping
+                # the check then held a same-path build in another repo.
+                if started[hid].repo != repo:
                     continue
                 shared = mine & held_sets[hid]
                 if hid != n.id and shared:

@@ -8411,6 +8411,99 @@ def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
     assert f"td{second.ids['task']}" in dispatched
 
 
+@pytest.mark.parametrize("ruling", ["won't-do", "auto-timeout"])
+def test_file_overlap_hold_lifts_when_the_held_build_is_ruled_out(
+    store: Store, ruling: str
+) -> None:
+    """review td686685: a pre-land-held build ruled out never clears its
+    ``pending_land`` stamp — only ``_record_land`` /
+    ``_review_back_to_builder`` do — and the ruling means the work never
+    lands, so the stale stamp must stop holding overlapping builds.
+    ``done`` still holds (its land may be in flight)."""
+    held = _file_plan(store, "Build the thing.")
+    task = held.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "pending_land": {"todo_id": task, "branch": f"slice/{task}"},
+            "branch_files": ["src/precis/workers/plan_dispatch.py"],
+        },
+    )
+    store.add_tag(
+        task, Tag.closed("STATUS", ruling), set_by="system", replace_prefix=True
+    )
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert task not in pd._started_slices(store)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
+def test_file_overlap_hold_lifts_when_the_running_build_is_ruled_out(
+    store: Store,
+) -> None:
+    """The ruling outranks a live job too: a ``won't-do`` build whose
+    run_slice is still marked running is never landing — it holds
+    nothing."""
+    building = _file_plan(store, "Rebuilt src/precis/workers/run_slice.py")
+    _slice_job(store, building.ids["task"], "run_slice", "running")
+    store.add_tag(
+        building.ids["task"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store, dry_run=True)
+    assert building.ids["task"] not in pd._started_slices(store)
+    assert not any("file-overlap hold" in n for n in res.notes)
+
+
+def _started_outside_plans(
+    store: Store, files: list[str], parent: int | None = None
+) -> int:
+    """A started build sitting outside every loaded plan (the overlap
+    hold finds blockers factory-wide, not only in loaded subtrees)."""
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Outside build",
+        meta={"op": "run_slice", "branch_files": files},
+        parent_id=parent,
+    )
+    _slice_job(store, ref.id, "run_slice", "running")
+    return int(ref.id)
+
+
+def test_file_overlap_hold_resolves_an_out_of_plan_blockers_repo(
+    store: Store,
+) -> None:
+    """review td686685: ``plan.nodes.get`` on an out-of-plan blocker is
+    None, and the repo check used to skip it — a cross-repo started
+    build then falsely held a same-path default-repo candidate. The
+    blocker's governing ``repo:`` tag (its own, else the nearest tagged
+    ancestor's, ``_node_repos``' reach) resolves in the store."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="x-repo phase", meta={}, parent_id=None
+    )
+    store.add_tag(phase.id, Tag.open("repo:catpath"), set_by="system")
+    cross = _started_outside_plans(
+        store, ["src/precis/workers/plan_dispatch.py"], parent=phase.id
+    )
+    same = _started_outside_plans(store, ["src/precis/workers/plan_dispatch.py"])
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    started = pd._started_slices(store)
+    assert (started[cross].repo, started[same].repo) == ("catpath", "precis")
+    res = pd.run_pass(store, dry_run=True)
+    holds = [n for n in res.notes if "file-overlap hold" in n]
+    assert len(holds) == 1
+    assert holds[0].startswith(
+        f"td{waiting.ids['task']}: file-overlap hold — waits on td{same} (building)"
+    )
+
+
 def test_file_overlap_hold_skips_generators(store: Store) -> None:
     """A generator (triage, brief, reviewer) commits nothing: its live job
     holds no build, and it is never held itself."""
