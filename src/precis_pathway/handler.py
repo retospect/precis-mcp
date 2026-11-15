@@ -156,6 +156,25 @@ def _gate_arg(args: dict[str, Any]) -> str | None:
     return val
 
 
+def _compare_lens_args(args: dict[str, Any]) -> dict[str, Any]:
+    """The ``view='compare'`` table-lens knobs (gr592637) — popped like
+    :func:`_gate_arg` so :func:`_point_args` keeps rejecting every other
+    unknown arg. ``sort`` is refused: compare ranks by RATE (or SPAN at
+    ``U``); a caller-side sort would scramble that ranking across pages."""
+    from precis.format.table_lens import lens_kwargs
+
+    lens = lens_kwargs(args)
+    if "sort" in lens:
+        lens.pop("sort")
+        raise BadInput(
+            "args={'sort': …} is not a compare arg — the table ranks by "
+            "RATE (SPAN at args={'U': …})",
+            next="get(kind='pathway', id=<slug>, view='compare', "
+            "args={'where': {'gate': 'pass'}})",
+        )
+    return lens
+
+
 def _potential_arg(args: dict[str, Any] | None) -> float | None:
     """``args['U']`` as a finite float (V vs RHE), or None when absent."""
     return _point_args(args)[0]
@@ -254,6 +273,12 @@ class PathwayHandler(Handler):
                 "offset",
                 # view='bundle-plan'/'export' seed-job selector
                 "job",
+                # table-lens protocol (gr592637): server-side where /
+                # columns / limit / cursor over view='compare'.
+                "where",
+                "columns",
+                "limit",
+                "cursor",
             }
         ),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
@@ -1365,6 +1390,14 @@ class PathwayHandler(Handler):
                 next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
                 f"args={{'gate': {gate!r}}})",
             )
+        lens_args = _compare_lens_args(point_args)
+        if lens_args and (view or "").lower() != "compare":
+            named = sorted(lens_args)[0]
+            raise BadInput(
+                f"args={{{named!r}: …}} applies to view='compare' only",
+                next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
+                f"args={{{named!r}: …}})",
+            )
         U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
@@ -1393,7 +1426,15 @@ class PathwayHandler(Handler):
                 self._get_step(store, ref, step_label)
                 if sep
                 else self._get_view(
-                    store, ref, id=id, view=view, args=args, U=U, pH=pH, gate=gate
+                    store,
+                    ref,
+                    id=id,
+                    view=view,
+                    args=args,
+                    U=U,
+                    pH=pH,
+                    gate=gate,
+                    lens_args=lens_args,
                 )
             )
         # gr553326: every read carries the pw<id> handle + the web reader
@@ -1525,6 +1566,7 @@ class PathwayHandler(Handler):
         pH: float | None,
         gate: str | None = None,
         environment: Environment | None = None,
+        lens_args: dict[str, Any] | None = None,
     ) -> Response:
         """The per-view dispatch behind :meth:`get` — resolved ref in,
         the view's body out. ``get`` wraps it in the ``pw<id> ·
@@ -1594,7 +1636,11 @@ class PathwayHandler(Handler):
 
             return Response(body=objective_text(store, ref))
         if v == "compare":
-            return Response(body=self._compare(store, ref, meta, U=U, gate=gate))
+            return Response(
+                body=self._compare(
+                    store, ref, meta, U=U, gate=gate, **(lens_args or {})
+                )
+            )
         if v == "staircase":
             return Response(
                 # U alone is the plain re-tilt (the structure view always
@@ -1890,6 +1936,10 @@ class PathwayHandler(Handler):
         *,
         U: float | None = None,
         gate: str | None = None,
+        where: dict[str, Any] | None = None,
+        columns: list[str] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> str:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table. With
@@ -1903,7 +1953,13 @@ class PathwayHandler(Handler):
         view='trust' headlines (td625117 review: the footnote pointing at
         view='trust' supplied no anchor and cost a lookup per row).
         ``gate='pass'|'blocked'`` filters rows by that verdict; ``n/a``
-        rows (pre-trust-schema) never survive a filter."""
+        rows (pre-trust-schema) never survive a filter.
+
+        The table-lens protocol (gr592637) pages the comparison
+        server-side — ``args={'where': …, 'columns': [...], 'limit': N,
+        'cursor': token}`` — so a long sibling set answers in ~4 kB with
+        the continuation named in the footer instead of cutting rows
+        positionally at the transport cap."""
         from precis.utils import reaction_graph as analysis
         from precis.utils import trust_gate
 
@@ -2013,13 +2069,84 @@ class PathwayHandler(Handler):
                     "for every row's verdict, or read view='trust' on one row."
                 )
             candidates = surviving
-        if len(candidates) < 2 and gate is None:
+        if (
+            len(candidates) < 2
+            and gate is None
+            and not (where or columns or limit or cursor)
+        ):
             return (
                 f"only 1 computed pathway for {substrate}→{target}; nothing to "
                 "compare yet. Run variants (different surface/dopant) to build a "
                 "leaderboard."
             )
-        return compare_toon(candidates, U=U)
+        # Table lens (gr592637): profile + rank every candidate the same
+        # way the full render does, page the scalar rows, then hand the
+        # page's candidates to the unchanged renderer — a paged compare
+        # never disagrees with a full one.
+        from precis.format.table_lens import DEFAULT_BYTE_BUDGET, apply_lens
+
+        from .toon_views import (
+            COMPARE_SCALAR_COLUMNS,
+            compare_profiles,
+            compare_scalar_row,
+        )
+
+        where = dict(where or {})
+        unknown = sorted(set(where) - set(COMPARE_SCALAR_COLUMNS))
+        if unknown:
+            raise BadInput(
+                f"where names column(s) this view does not carry: {', '.join(unknown)}",
+                options=list(COMPARE_SCALAR_COLUMNS),
+                next="get(kind='pathway', id=<slug>, view='compare', "
+                "args={'where': {'gate': 'pass'}})",
+            )
+        if columns:
+            bad = [c for c in columns if c not in COMPARE_SCALAR_COLUMNS]
+            if bad:
+                raise BadInput(
+                    f"columns not in this view's schema: {', '.join(bad)}",
+                    options=list(COMPARE_SCALAR_COLUMNS),
+                    next="get(kind='pathway', id=<slug>, view='compare', "
+                    f"args={{'columns': {list(COMPARE_SCALAR_COLUMNS[:3])!r}}})",
+                )
+        profiles = compare_profiles(candidates, U=U)
+        scalar_rows: list[dict[str, Any]] = []
+        for p in profiles:
+            row = compare_scalar_row(p)
+            rid = p["c"].get("ref_id")
+            if rid is not None:
+                row["ref_id"] = int(rid)
+            scalar_rows.append(row)
+        call = (
+            f"get(kind='pathway', "
+            f"id='{handle_registry.try_format('pathway', int(ref.id)) or f'pw{ref.id}'}', "
+            "view='compare'"
+        )
+        page = apply_lens(
+            scalar_rows,
+            where=where,
+            # ref_id rides the projection (internal) so page rows map
+            # back to their candidates; aggregates and the footer never
+            # mention it.
+            columns=[*(columns or list(COMPARE_SCALAR_COLUMNS)), "ref_id"],
+            limit=limit,
+            cursor=cursor,
+            byte_budget=DEFAULT_BYTE_BUDGET,
+            internal=("ref_id",),
+        )
+        if page.matched == 0:
+            return (
+                f"no rows match where={where!r} — drop or widen it "
+                f"(columns: {', '.join(COMPARE_SCALAR_COLUMNS)})"
+            )
+        by_id = {
+            int(p["c"]["ref_id"]): p["c"]
+            for p in profiles
+            if p["c"].get("ref_id") is not None
+        }
+        page_candidates = [by_id[int(r["ref_id"])] for r in page.rows]
+        body = compare_toon(page_candidates, U=U, only=columns)
+        return f"{body}\n{page.footer(call)}"
 
     # -- staircase (SPSO slice 3, the che_affine read) --------------------
     def _staircase(

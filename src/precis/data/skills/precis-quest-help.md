@@ -287,14 +287,28 @@ tail, frontier/gaps panels, servers-lite) — readable without calling
 what varies) rather than band. It renders the compact agent table
 `precis-toon` documents by default;
 `args={'format': 'text'}` swaps in the fixed-width copy the tick
-prompt embeds — "what the next tick would see now". `view='results'`
-and `view='frontier'` are **budgeted** like the tick's copy (2500
-tokens; rows drop from the tail, never the newest ten; the body says
-`(+K … rows omitted)`); `args={'budget': 8000}` widens it. The measure
+prompt embeds — "what the next tick would see now". The measure
 columns are the pathway axes plus the quest's declared **objective**
 columns — for a quest with no `meta.rubric_objectives` that is `energy`,
 so a completed structure relax shows its converged result instead of an
-empty row. On an
+empty row.
+
+`results`, `leaderboard` and `frontier` page through the shared
+**table lens** (gr592637) — a view is a lens on rows that stay in the
+DB, so trimming server-side loses nothing another call cannot get back.
+`args={'where': {col: value|{'min': x, 'max': y}|[values]}}` filters
+(`band` is a column on `frontier`: `where={'band': 'provisional'}`),
+`args={'columns': [...]}` projects, `args={'limit': N}` caps the page,
+and `args={'cursor': token}` continues from the previous page's footer
+— the footer always carries the total and matched counts, aggregates
+over the hidden rows, and the literal `next:` call, never a positional
+cut at a transport cap. The default page is sized to ~4 kB, so the
+common answer ("best trusted candidate" is
+`args={'trusted': true, 'sort': 'barrier'}`) arrives in one call. An
+explicit `args={'budget': N}` keeps the legacy positional truncation
+instead (rows drop from the tail, never the newest ten, the body says
+`(+K … rows omitted)`); on `frontier` a bare `args={'limit': N}` still
+widens the evidence ladder (gr592563). Rows are never cut mid-row. On an
 `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
 says the body has no Pareto frontier — it never proposes, so nothing
 converges.

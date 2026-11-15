@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
@@ -1865,7 +1866,101 @@ _CONF_LEGEND = (
 )
 
 
-def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
+#: The scalar column set every compare table carries — the row shape the
+#: table lens pages (gr592637). State/‡ interleaved columns ride along
+#: when networks align; they are network-shaped, not selectable.
+COMPARE_SCALAR_COLUMNS: tuple[str, ...] = (
+    "cand",
+    "candidate",
+    "gate",
+    "anchor",
+    "lever",
+    "RATE",
+    "SPAN",
+    "conf",
+)
+
+
+def _compare_lever(
+    candidates: list[dict[str, Any]], U: float | None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The ``U`` re-levering shared by :func:`compare_toon` and the
+    handler's lens path — identical graphs, identical header notes, so a
+    paged render never disagrees with a full one."""
+    if U is None:
+        return candidates, []
+    notes: list[str] = []
+    levered: list[dict[str, Any]] = []
+    unshifted: list[str] = []
+    for c in candidates:
+        if analysis.has_potential_lever(c["graph"]):
+            levered.append({**c, "graph": analysis.at_potential(c["graph"], U)})
+        else:
+            unshifted.append(str(c["slug"]))
+            levered.append(c)
+    notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
+    if unshifted:
+        notes.append("# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted))
+    return levered, notes
+
+
+def _compare_rank(p: dict[str, Any], U: float | None) -> tuple[bool, float]:
+    """One profile's table rank — RATE ascending, or SPAN at ``U``
+    (RATE is U-independent); unmeasured sinks last."""
+    if U is not None:
+        span = p["summ"]["span"]
+        return (span is None, float(span) if span is not None else 0.0)
+    ea = (p["summ"]["rate_limiting"] or {}).get("ea")
+    return (ea is None, float(ea) if ea is not None else 0.0)
+
+
+def compare_profiles(
+    candidates: list[dict[str, Any]], *, U: float | None = None
+) -> list[dict[str, Any]]:
+    """``[{c, path, cols, summ}]`` for every candidate — profiled and
+    ranked exactly the way the compare table renders them. The handler's
+    lens path pages these; :func:`compare_toon` renders them."""
+    candidates, _notes = _compare_lever(candidates, U)
+    profiles: list[dict[str, Any]] = []
+    for c in candidates:
+        path, cols = analysis.profile_positions(c["graph"], c["root"], c["target"])
+        summ = analysis.summarize(c["graph"], c["root"], c["target"])
+        profiles.append({"c": c, "path": path, "cols": cols, "summ": summ})
+    profiles.sort(key=lambda p: _compare_rank(p, U))
+    return profiles
+
+
+def compare_scalar_row(p: dict[str, Any]) -> dict[str, Any]:
+    """One profile's scalar compare cells (:data:`COMPARE_SCALAR_COLUMNS`)
+    — the lens's row shape (gr592637). ``cand`` carries the pw<id> handle
+    beside the slug (gr553326); bare slug when the caller supplied no
+    ref_id (unit-level compares)."""
+    c = p["c"]
+    ref_id = c.get("ref_id")
+    if ref_id is None:
+        cand = str(c["slug"])
+    else:
+        handle = try_format("pathway", int(ref_id)) or f"pw{ref_id}"
+        cand = f"{handle} {c['slug']}"
+    rl = p["summ"]["rate_limiting"] or {}
+    return {
+        "cand": cand,
+        "candidate": str(c.get("candidate") or "-"),
+        "gate": str(c.get("gate") or "n/a"),
+        "anchor": str(c.get("anchor") or "n/a"),
+        "lever": c.get("lever", ""),
+        "RATE": _ea_or_na(rl.get("ea")),
+        "SPAN": _b(p["summ"]["span"]) or "n/a",
+        "conf": _conf(rl.get("low_confidence"), known=rl.get("ea") is not None),
+    }
+
+
+def compare_toon(
+    candidates: list[dict[str, Any]],
+    *,
+    U: float | None = None,
+    only: Collection[str] | None = None,
+) -> str:
     """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
     anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
     gr592665) is the ``st<N> <title>`` cell naming the structure the
@@ -1880,88 +1975,38 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
     that potential and the table ranks by SPAN at U instead (RATE is
     U-independent); a candidate without ``n_H`` stays unshifted and is
-    named in the header."""
+    named in the header. ``only`` narrows the scalar columns
+    (:data:`COMPARE_SCALAR_COLUMNS`) — the table lens's ``columns=``
+    projection (gr592637); the interleaved network columns always ride
+    an aligned table."""
     if not candidates:
         return "no computed candidates to compare."
 
-    notes: list[str] = []
-    if U is not None:
-        levered: list[dict[str, Any]] = []
-        unshifted: list[str] = []
-        for c in candidates:
-            if analysis.has_potential_lever(c["graph"]):
-                levered.append({**c, "graph": analysis.at_potential(c["graph"], U)})
-            else:
-                unshifted.append(str(c["slug"]))
-                levered.append(c)
-        candidates = levered
-        notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
-        if unshifted:
-            notes.append(
-                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
-            )
-
+    candidates, notes = _compare_lever(candidates, U)
     profiles: list[dict[str, Any]] = []
     for c in candidates:
         path, cols = analysis.profile_positions(c["graph"], c["root"], c["target"])
         summ = analysis.summarize(c["graph"], c["root"], c["target"])
         profiles.append({"c": c, "path": path, "cols": cols, "summ": summ})
+    profiles.sort(key=lambda p: _compare_rank(p, U))
+
+    def _keep(name: str) -> bool:
+        return only is None or name in only
 
     paths = {tuple(p["path"]) for p in profiles}
     aligned = len(paths) == 1 and all(p["path"] for p in profiles)
 
-    def _cand_cell(c: dict[str, Any]) -> str:
-        # gr553326: the pw<id> handle beside the slug — a bare slug never
-        # reached the ref id the /refs/pathway/<id> reader keys on. Bare
-        # slug when the caller supplied no ref_id (unit-level compares).
-        ref_id = c.get("ref_id")
-        if ref_id is None:
-            return str(c["slug"])
-        handle = try_format("pathway", int(ref_id)) or f"pw{ref_id}"
-        return f"{handle} {c['slug']}"
-
-    def _row_scalars(p: dict[str, Any]) -> dict[str, Any]:
-        rl = p["summ"]["rate_limiting"] or {}
-        return {
-            "cand": _cand_cell(p["c"]),
-            "candidate": str(p["c"].get("candidate") or "-"),
-            "gate": str(p["c"].get("gate") or "n/a"),
-            "anchor": str(p["c"].get("anchor") or "n/a"),
-            "lever": p["c"].get("lever", ""),
-            "RATE": _ea_or_na(rl.get("ea")),
-            "SPAN": _b(p["summ"]["span"]) or "n/a",
-            "conf": _conf(rl.get("low_confidence"), known=rl.get("ea") is not None),
-        }
-
-    def _sort_key(p: dict[str, Any]) -> tuple[bool, float]:
-        # numeric, not on the 2-dp strings: "10.00" < "9.00" lexically.
-        if U is not None:
-            span = p["summ"]["span"]
-            return (span is None, float(span) if span is not None else 0.0)
-        ea = (p["summ"]["rate_limiting"] or {}).get("ea")
-        return (ea is None, float(ea) if ea is not None else 0.0)
-
-    profiles.sort(key=_sort_key)
     prefix = "".join(n + "\n" for n in notes)
 
     if not aligned:
-        rows = [_row_scalars(p) for p in profiles]
+        rows = [compare_scalar_row(p) for p in profiles]
         note = "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)\n"
         return (
             prefix
             + note
             + toon.dump(
                 rows,
-                schema=[
-                    "cand",
-                    "candidate",
-                    "gate",
-                    "anchor",
-                    "lever",
-                    "RATE",
-                    "SPAN",
-                    "conf",
-                ],
+                schema=[c for c in COMPARE_SCALAR_COLUMNS if _keep(c)],
             )
             + "\n"
             + _GATE_LEGEND
@@ -1980,11 +2025,13 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         else:
             col_names.append(col["pos"])
             legend.append(f"{col['pos']} {col['label']}")
-    schema = ["cand", "candidate", "gate", "anchor", *col_names, "RATE", "SPAN", "conf"]
+    scalar_lead = [c for c in ("cand", "candidate", "gate", "anchor") if _keep(c)]
+    scalar_tail = [c for c in ("RATE", "SPAN", "conf") if _keep(c)]
+    schema = [*scalar_lead, *col_names, *scalar_tail]
 
     rows = []
     for p in profiles:
-        row = _row_scalars(p)
+        row = {k: v for k, v in compare_scalar_row(p).items() if _keep(k)}
         for col, name in zip(p["cols"], col_names):
             row[name] = (
                 _e(col["value"]) if col["kind"] == "state" else _ea_or_na(col["value"])

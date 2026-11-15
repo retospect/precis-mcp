@@ -1142,3 +1142,160 @@ class TestTrustedSortViews:
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
         assert f"barrier ×1 (trusted: {self._handle(a)})" in body
         assert "U_L_abs ×1 (trusted: none)" in body
+
+
+# ── table-lens protocol (gr592637) ──────────────────────────────────────
+
+_CURSOR_RE = re.compile(r"next: get\(kind='quest'.*args=\{'cursor': '([^']+)'\}")
+
+
+def _cursor(body: str) -> str | None:
+    m = _CURSOR_RE.search(body)
+    return m.group(1) if m else None
+
+
+def _vary_ops(element: str, i: int) -> list[dict[str, Any]]:
+    """One adatom at a unique site — 300 distinct structures. The z
+    coordinate varies too: the canonical symmetry hash treats in-plane
+    positions on this square slab as equivalents of each other, but z is
+    not periodic, so a distinct z keeps every structure its own."""
+    return [
+        {
+            "op": "add_atom",
+            "element": element,
+            "frac": [0.003 * i, 0.02 + 0.003 * i, 0.45 + 0.001 * i],
+        }
+    ]
+
+
+class TestTableLensResults:
+    """Slice 2 (gr592637): view='results' pages through the shared lens."""
+
+    def _many(self, store: Any, n: int) -> tuple[int, list[int]]:
+        qid = _mk_quest(store)
+        sids = []
+        for i in range(n):
+            sid = _mk_candidate(store, qid, f"cand-{i}", _vary_ops("Ag", i))
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.2 + 0.001 * i, "barrier_trusted": True}
+            )
+            sids.append(sid)
+        return qid, sids
+
+    def test_results_cursor_reaches_all_rows(self, store: Any) -> None:
+        """gr592637: 300 rows, default lens page — following the footer's
+        cursor visits every row exactly once (the newest included), and
+        the footer names the literal next call."""
+        qid, sids = self._many(store, 300)
+        from precis.utils import handle_registry
+
+        handles = [
+            h
+            for h in (handle_registry.try_format("structure", s) for s in sids)
+            if h is not None
+        ]
+        assert len(handles) == 300 and len(set(handles)) == 300
+
+        h = QuestHandler(hub=Hub(store=store))
+        seen: list[str] = []
+        args: dict[str, Any] | None = None
+        pages = 0
+        while True:
+            body = h.get(id=qid, view="results", args=args).body
+            pages += 1
+            page_handles = [x for x in handles if x in body]
+            seen.extend(x for x in page_handles if x not in seen)
+            token = _cursor(body)
+            if token is None:
+                break
+            assert "next: get(kind='quest'" in body
+            args = {"cursor": token}
+        assert pages > 1, "300 rows must not fit one page"
+        assert sorted(seen) == sorted(handles)
+
+    def test_results_trusted_alias_equals_where(self, store: Any) -> None:
+        """``args={'trusted': true}`` and ``args={'where': {'trusted':
+        'yes'}}`` cut the same rows — the alias only adds the header's
+        ``filter:`` note naming itself."""
+        qid = _mk_quest(store)
+        sids = []
+        for i, el in enumerate(("Ag", "Cu", "Pt")):
+            sid = _mk_candidate(store, qid, f"{el} n=1", _dopant_ops(el, 1))
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid,
+                {
+                    "barrier": 0.3 + 0.1 * i,
+                    "barrier_trusted": el != "Pt",  # Pt stays untrusted
+                },
+            )
+            sids.append(sid)
+        from precis.utils import handle_registry
+
+        handles = [
+            h
+            for h in (handle_registry.try_format("structure", s) for s in sids)
+            if h is not None
+        ]
+        h = QuestHandler(hub=Hub(store=store))
+        alias = h.get(id=qid, view="results", args={"trusted": True}).body
+        where = h.get(id=qid, view="results", args={"where": {"trusted": "yes"}}).body
+        alias_rows = sorted(x for x in handles if x in alias)
+        where_rows = sorted(x for x in handles if x in where)
+        assert len(alias_rows) == 2 and alias_rows == where_rows
+        assert "filter: trusted only" in alias
+        assert "filter: trusted only" not in where
+
+    def test_class_arg_refused(self, store: Any) -> None:
+        """``args={'class': …}`` on a table view is a BadInput naming the
+        lens knobs (class stays declared for kinetics-summary, gr553327,
+        but never meant anything to the tables)."""
+        from precis.errors import BadInput
+
+        qid = _mk_quest(store)
+        sid = _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
+        _converge(store, sid)
+        h = QuestHandler(hub=Hub(store=store))
+        for view in ("results", "leaderboard", "frontier"):
+            with pytest.raises(BadInput, match="class"):
+                h.get(id=qid, view=view, args={"class": "frontier"})
+
+
+class TestTableLensFrontier:
+    """Slice 3 (gr592637): the frontier's bands page through the lens —
+    band is a column, the ``(+K omitted)`` line is the footer's cursor."""
+
+    def test_frontier_provisional_paging(self, store: Any) -> None:
+        """284 provisional rows (the qu164903 shape at scale): paging
+        where={'band': 'provisional'} via the footer cursor reaches every
+        handle exactly once — none unreachable."""
+        qid = _mk_quest(store)
+        sids = []
+        for i in range(284):
+            sid = _mk_candidate(store, qid, f"cand-{i}", _vary_ops("Cu", i))
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.3 + 0.001 * i, "barrier_trusted": False}
+            )
+            sids.append(sid)
+        from precis.utils import handle_registry
+
+        handles = [
+            h
+            for h in (handle_registry.try_format("structure", s) for s in sids)
+            if h is not None
+        ]
+        assert len(handles) == 284 and len(set(handles)) == 284
+
+        h = QuestHandler(hub=Hub(store=store))
+        seen: list[str] = []
+        args: dict[str, Any] = {"where": {"band": "provisional"}}
+        while True:
+            body = h.get(id=qid, view="frontier", args=args).body
+            seen.extend(x for x in handles if x in body and x not in seen)
+            token = _cursor(body)
+            if token is None:
+                break
+            args = {"cursor": token}
+        assert sorted(seen) == sorted(handles)

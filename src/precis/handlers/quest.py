@@ -43,6 +43,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -721,10 +722,16 @@ _DEFAULT_VIEW_BUDGET = 2500
 _VIEW_CHARS_PER_TOKEN = 4
 
 
-def _budget_arg(args: dict[str, Any] | None) -> int:
-    """``args['budget']`` as a positive int, default :data:`_DEFAULT_VIEW_BUDGET`."""
+def _budget_arg(
+    args: dict[str, Any] | None, *, default: int | None = _DEFAULT_VIEW_BUDGET
+) -> int | None:
+    """``args['budget']`` as a positive int — ``default`` when absent.
+
+    The table views pass ``default=None`` so an explicit
+    ``args={'budget': N}`` keeps the legacy positional-truncation path
+    while the lens protocol sizes the default page (gr592637)."""
     if not isinstance(args, dict) or "budget" not in args:
-        return _DEFAULT_VIEW_BUDGET
+        return default
     raw = args["budget"]
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise BadInput(
@@ -886,6 +893,47 @@ def _view_args_line(*, trusted: bool, sort: tuple[str, str] | None) -> str | Non
     if sort is not None:
         bits.append(f"sorted by {sort[0]} ({sort[1]})")
     return "filter: " + " · ".join(bits) if bits else None
+
+
+def _table_lens_args(
+    args: dict[str, Any] | None, *, view: str, ref_id: int
+) -> dict[str, Any]:
+    """The table-lens knobs (gr592637) for one of the tabular views —
+    popped out of ``args`` and validated as a group.
+
+    ``args={'class': …}`` is refused here, not at the dispatch gate:
+    ``class`` stays a declared ``get`` arg because
+    ``view='kinetics-summary'`` reads it (gr553327), but it never meant
+    anything to the table views — the lens speaks
+    ``where``/``columns``/``limit``/``cursor``."""
+    if not isinstance(args, dict):
+        return {}
+    if "class" in args:
+        raise BadInput(
+            f"args={{'class': …}} is not a {view} filter — the table lens "
+            "takes args={'where': {col: value}, 'columns': [...], "
+            "'limit': N, 'cursor': token}",
+            next=(
+                f"get(kind='quest', id='qu{ref_id}', view='{view}', "
+                "args={'where': {'band': 'frontier'}})"
+            ),
+        )
+    from precis.format.table_lens import lens_kwargs
+
+    lens = lens_kwargs(args)
+    # The quest table views consume args={'sort': '<measure>'} themselves —
+    # _sort_arg/_sort_spec_for resolve it on the measure's declared objective
+    # sense (gr592277) and the rows reach the lens pre-sorted. Handing the
+    # same key to the lens as a raw column sort would both duplicate the
+    # get() kwarg and lose the declared-sense semantics.
+    lens.pop("sort", None)
+    return lens
+
+
+def _lens_call(ref_id: int, view: str) -> str:
+    """The MCP call prefix a lens footer continues (gr592637: the footer
+    names the exact next call — ``next: get(kind='quest', …)``)."""
+    return f"get(kind='quest', id='qu{ref_id}', view='{view}'"
 
 
 #: Default ``view='logbook'`` page size. At the measured ~280 B/entry of
@@ -1110,6 +1158,12 @@ class QuestHandler(NumericRefHandler):
                 # candidate-view trust filter + measure sort (gr592277)
                 "trusted",
                 "sort",
+                # table-lens protocol (gr592637): server-side where /
+                # columns / limit / cursor over the tabular views
+                # (frontier / leaderboard / results).
+                "where",
+                "columns",
+                "cursor",
             }
         ),
     }
@@ -2120,22 +2174,37 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
+            # Read the legacy knobs before the lens pops its own: sort is
+            # shared, and a bare args={'limit': N} keeps its gr592563
+            # meaning (the evidence-ladder width) — it pages the lens
+            # only alongside another lens arg.
+            budget = _budget_arg(args, default=None)
+            trusted = _trusted_arg(args)
+            sort = _sort_arg(args)
+            raw_limit = args.get("limit") if isinstance(args, dict) else None
+            lens_args = _table_lens_args(args, view="frontier", ref_id=ref.id)
+            if raw_limit is not None and set(lens_args) <= {"limit"}:
+                lens_args.pop("limit", None)
+            if "limit" in lens_args:
+                lens_args["lens_limit"] = lens_args.pop("limit")
             return Response(
                 body=self._render_frontier(
                     ref,
-                    budget=_budget_arg(args),
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
-                    limit=_ladder_limit(
-                        args.get("limit") if isinstance(args, dict) else None
-                    ),
+                    budget=budget,
+                    trusted=trusted,
+                    sort=sort,
+                    limit=_ladder_limit(raw_limit),
+                    **lens_args,
                 )
             )
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
                 body=self._render_leaderboard(
-                    ref, trusted=_trusted_arg(args), sort=_sort_arg(args)
+                    ref,
+                    trusted=_trusted_arg(args),
+                    sort=_sort_arg(args),
+                    **_table_lens_args(args, view="leaderboard", ref_id=ref.id),
                 )
             )
         if view == "results" and concrete:
@@ -2143,15 +2212,22 @@ class QuestHandler(NumericRefHandler):
             return Response(
                 body=self._render_results(
                     ref,
-                    budget=_budget_arg(args),
+                    budget=_budget_arg(args, default=None),
                     fmt=_results_format_arg(args),
                     trusted=_trusted_arg(args),
                     sort=_sort_arg(args),
+                    **_table_lens_args(args, view="results", ref_id=ref.id),
                 )
             )
         if view == "series" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_series(ref, budget=_budget_arg(args)))
+            # The default makes _budget_arg return the tick budget here —
+            # the `or` is only for the type-checker.
+            return Response(
+                body=self._render_series(
+                    ref, budget=_budget_arg(args) or _DEFAULT_VIEW_BUDGET
+                )
+            )
         if view == "measures" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_measures(ref))
@@ -2628,18 +2704,30 @@ class QuestHandler(NumericRefHandler):
         self,
         ref: Ref,
         *,
-        budget: int = _DEFAULT_VIEW_BUDGET,
+        budget: int | None = None,
         trusted: bool = False,
         sort: str | None = None,
         limit: int = _LADDER_PAGE,
+        lens_limit: int | None = None,
+        where: dict[str, Any] | None = None,
+        columns: list[str] | None = None,
+        cursor: str | None = None,
     ) -> str:
         """`view='frontier'` — the Pareto frontier of candidate materials.
 
-        Budgeted to ``budget`` tokens (chars/4; default = the tick's results
-        budget, ``args={'budget': N}`` overrides): rows drop from the tail of
-        the LAST band first (awaiting-a-sim → provisional → dominated →
-        frontier), each band keeping an ``(+K omitted)`` line, so the
-        confirmed frontier is the last thing to lose a row (gr345353).
+        The default read pages the four bands through the table-lens
+        protocol (gr592637): the bands flatten to one row set (``band``
+        is a column), ``args={'where': …, 'columns': [...], 'limit': N,
+        'cursor': token}`` cut it server-side, band headers stay, and
+        the footer names the exact call that continues — rows are never
+        truncated positionally at the transport cap.
+
+        An explicit ``args={'budget': N}`` keeps the legacy
+        positional-truncation contract instead: rows drop from the tail
+        of the LAST band first (awaiting-a-sim → provisional →
+        dominated → frontier), each band keeping an ``(+K omitted)``
+        line, so the confirmed frontier is the last thing to lose a row
+        (gr345353).
 
         ``args={'trusted': true}`` keeps only candidates with an
         affirmative trust verdict and ``args={'sort': '<measure>'}``
@@ -2758,10 +2846,12 @@ class QuestHandler(NumericRefHandler):
 
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
             if ladder_band is not None:
-                # The same ``_fit_bands`` budget contract as the banded
-                # render below — a lone ladder band still trims rungs off
-                # its tail under ``args={'budget': N}`` (review td677831).
-                return _fit_bands(lines, [ladder_band], budget=budget)
+                if budget is not None:
+                    # The same ``_fit_bands`` budget contract as the banded
+                    # render below — a lone ladder band still trims rungs off
+                    # its tail under ``args={'budget': N}`` (review td677831).
+                    return _fit_bands(lines, [ladder_band], budget=budget)
+                return "\n".join([*lines, ladder_band[0], *ladder_band[1]])
             if had_candidates:
                 lines.append(
                     "no candidates pass the trusted filter — none carries an "
@@ -2771,54 +2861,224 @@ class QuestHandler(NumericRefHandler):
             else:
                 lines.append("no candidate structures serve this quest yet.")
             return "\n".join(lines)
-        frontier_rows = [_fmt(c) for c in fr.frontier]
-        if not frontier_rows:
-            if raw_fr.frontier:
-                # The unfiltered frontier is non-empty — the trusted
-                # filter alone emptied it; say that, not "none
-                # evaluated" (gr592277).
-                frontier_rows = [
-                    f"  ({len(raw_fr.frontier)} frontier candidate(s) "
-                    "failed the trusted filter — drop args={'trusted': true})"
-                ]
+
+        if budget is not None:
+            # Legacy positional truncation (explicit args={'budget': N}):
+            # rows drop from the tail of the LAST band first (gr345353).
+            frontier_rows = [_fmt(c) for c in fr.frontier]
+            if not frontier_rows:
+                if raw_fr.frontier:
+                    # The unfiltered frontier is non-empty — the trusted
+                    # filter alone emptied it; say that, not "none
+                    # evaluated" (gr592277).
+                    frontier_rows = [
+                        f"  ({len(raw_fr.frontier)} frontier candidate(s) "
+                        "failed the trusted filter — drop args={'trusted': true})"
+                    ]
+                else:
+                    # The empty-frontier explanation reads the UNFILTERED
+                    # split — its untrusted counts + trusted-complement
+                    # names are exactly what the filter hides.
+                    frontier_rows = _frontier_empty_lines(raw_fr)
+            bands: list[tuple[str, list[str]]] = [
+                (
+                    f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
+                    frontier_rows,
+                )
+            ]
+            if ladder_band is not None:
+                bands.append(ladder_band)
+            if fr.dominated:
+                bands.append(
+                    (
+                        f"── dominated ({len(fr.dominated)}) — explored + beaten ──",
+                        [_fmt(c) for c in fr.dominated],
+                    )
+                )
+            if fr.provisional:
+                bands.append(
+                    (
+                        f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
+                        [_fmt_provisional(pc) for pc in fr.provisional],
+                    )
+                )
+            if fr.unevaluated:
+                bands.append(
+                    (
+                        f"── awaiting a sim ({len(fr.unevaluated)}) ──",
+                        [f"  {c.handle} {c.name}" for c in fr.unevaluated],
+                    )
+                )
+            return _fit_bands(lines, bands, budget=budget)
+
+        # Table-lens path (gr592637): the four bands flatten to one row
+        # set — ``band`` is a column — and the lens pages it. Band
+        # headers stay (counts read the full matched set); the old
+        # ``(+K omitted)`` line is replaced by the footer's cursor.
+        flat = self._frontier_flat_rows(fr, raw_fr, trusted=trusted)
+
+        def _disp(r: Mapping[str, Any]) -> str:
+            if not r["handle"] and not r["name"]:
+                return r["notes"]
+            if r["band"] == "awaiting":
+                line = f"  {r['handle']} {r['name']}"
             else:
-                # The empty-frontier explanation reads the UNFILTERED
-                # split — its untrusted counts + trusted-complement
-                # names are exactly what the filter hides.
-                frontier_rows = _frontier_empty_lines(raw_fr)
-        bands: list[tuple[str, list[str]]] = [
-            (
-                f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
-                frontier_rows,
+                line = (
+                    f"  {r['handle']} {r['name']} — {r['measures'] or '(no measures)'}"
+                )
+            return line + (f" {r['notes']}" if r["notes"] else "")
+
+        from precis.format.table_lens import DEFAULT_BYTE_BUDGET, apply_lens
+
+        schema = ["band", "handle", "name", "measures", "notes"]
+        lens_where = dict(where or {})
+        unknown = sorted(set(lens_where) - set(schema))
+        if unknown:
+            raise BadInput(
+                f"where names column(s) this view does not carry: {', '.join(unknown)}",
+                options=schema,
+                next=(
+                    f"{_lens_call(ref.id, 'frontier')}, "
+                    "args={'where': {'band': 'provisional'}})"
+                ),
             )
-        ]
+        if columns:
+            bad = [c for c in columns if c not in schema]
+            if bad:
+                raise BadInput(
+                    f"columns not in this view's schema: {', '.join(bad)}",
+                    options=schema,
+                    next=(
+                        f"{_lens_call(ref.id, 'frontier')}, "
+                        f"args={{'columns': {schema[:3]!r}}})"
+                    ),
+                )
+        page = apply_lens(
+            flat,
+            where=lens_where,
+            columns=columns,
+            limit=lens_limit,
+            cursor=cursor,
+            byte_budget=DEFAULT_BYTE_BUDGET,
+            row_bytes=lambda r, _cols: len(_disp(r)),
+        )
+        if page.matched == 0:
+            lines.append(
+                f"no rows match where={lens_where!r} — drop or widen it "
+                f"(columns: {', '.join(schema)})"
+            )
+            return "\n".join(lines)
+        band_counts: dict[str, int] = {}
+        for r in page.matched_rows:
+            band_counts[r["band"]] = band_counts.get(r["band"], 0) + 1
+        labels = {
+            "frontier": lambda n: f"── Pareto frontier ({n}) — current best ──",
+            "dominated": lambda n: f"── dominated ({n}) — explored + beaten ──",
+            "provisional": lambda n: f"── provisional (measured, unconfirmed) ({n}) ──",
+            "awaiting": lambda n: f"── awaiting a sim ({n}) ──",
+        }
+        out = list(lines)
+        prev_band: str | None = None
+        for r in page.rows:
+            if r["band"] != prev_band:
+                if prev_band is not None:
+                    out.append("")
+                out.append(labels[r["band"]](band_counts.get(r["band"], 0)))
+                prev_band = r["band"]
+            out.append(_disp(r))
         if ladder_band is not None:
-            bands.append(ladder_band)
-        if fr.dominated:
-            bands.append(
-                (
-                    f"── dominated ({len(fr.dominated)}) — explored + beaten ──",
-                    [_fmt(c) for c in fr.dominated],
-                )
+            out.append("")
+            out.append(ladder_band[0])
+            out.extend(ladder_band[1])
+        out.append(page.footer(_lens_call(ref.id, "frontier")))
+        return "\n".join(out)
+
+    def _frontier_flat_rows(
+        self, fr: Any, raw_fr: Any, *, trusted: bool
+    ) -> list[dict[str, Any]]:
+        """The four Pareto bands flattened to lens rows — ``band`` a
+        column, the banded display strings decomposed into
+        handle/name/measures/notes cells (gr592637).
+
+        The two empty-frontier explanations (the trusted-filter note and
+        :func:`_frontier_empty_lines`) ride as rows with empty
+        handle/name and the verbatim line in ``notes`` — display passes
+        them through untouched, so their pinned wording survives."""
+
+        def _candidate_row(band: str, c: Any) -> dict[str, Any]:
+            ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
+            graduated = any(
+                str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id)
             )
-        if fr.provisional:
-            bands.append(
-                (
-                    f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
-                    [_fmt_provisional(pc) for pc in fr.provisional],
-                )
-            )
-        if fr.unevaluated:
-            bands.append(
-                (
-                    f"── awaiting a sim ({len(fr.unevaluated)}) ──",
-                    [f"  {c.handle} {c.name}" for c in fr.unevaluated],
-                )
-            )
-        return _fit_bands(lines, bands, budget=budget)
+            return {
+                "band": band,
+                "handle": c.handle,
+                "name": c.name,
+                "measures": ms,
+                "notes": "★ needs-experiment" if graduated else "",
+            }
+
+        def _provisional_row(pc: Any) -> dict[str, Any]:
+            c = pc.candidate
+            bits = []
+            for k, v in sorted(pc.measures.items()):
+                mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
+                bits.append(f"{k}={v:g}{mark}")
+            notes = "★ provisional-frontier" if pc.on_frontier else ""
+            if pc.reasons:
+                bracketed = f"[{'; '.join(pc.reasons)}]"
+                notes = f"{notes} {bracketed}" if notes else bracketed
+            return {
+                "band": "provisional",
+                "handle": c.handle,
+                "name": c.name,
+                "measures": " ".join(bits),
+                "notes": notes,
+            }
+
+        flat: list[dict[str, Any]] = []
+        frontier_rows = [_candidate_row("frontier", c) for c in fr.frontier]
+        if not frontier_rows:
+            if raw_fr.frontier and trusted:
+                frontier_rows = [
+                    {
+                        "band": "frontier",
+                        "handle": "",
+                        "name": "",
+                        "measures": "",
+                        "notes": (
+                            f"  ({len(raw_fr.frontier)} frontier candidate(s) "
+                            "failed the trusted filter — drop args={'trusted': true})"
+                        ),
+                    }
+                ]
+            elif not raw_fr.frontier:
+                frontier_rows = [
+                    {
+                        "band": "frontier",
+                        "handle": "",
+                        "name": "",
+                        "measures": "",
+                        "notes": line,
+                    }
+                    for line in _frontier_empty_lines(raw_fr)
+                ]
+        flat.extend(frontier_rows)
+        flat.extend(_candidate_row("dominated", c) for c in fr.dominated)
+        flat.extend(_provisional_row(pc) for pc in fr.provisional)
+        flat.extend(_candidate_row("awaiting", c) for c in fr.unevaluated)
+        return flat
 
     def _render_leaderboard(
-        self, ref: Ref, *, trusted: bool = False, sort: str | None = None
+        self,
+        ref: Ref,
+        *,
+        trusted: bool = False,
+        sort: str | None = None,
+        where: dict[str, Any] | None = None,
+        columns: list[str] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> str:
         """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
 
@@ -2830,8 +3090,12 @@ class QuestHandler(NumericRefHandler):
         counterpart of ``view='frontier'`` (which is the banded human summary);
         both render the same :func:`quest_frontier`, so there is no second
         ranking to drift.
-        """
-        from precis.format import render_agent_table
+
+        The table-lens protocol (gr592637) pages the table server-side —
+        ``args={'where': …, 'columns': [...], 'limit': N, 'cursor': token}``
+        — so a long leaderboard answers in ~4 kB with the continuation
+        the footer instead of cutting rows positionally at the transport
+        cap."""
         from precis.quest import frontier as frontier_mod
 
         raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
@@ -2863,7 +3127,7 @@ class QuestHandler(NumericRefHandler):
             if any(str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id))
         }
         rows, schema = frontier_mod.leaderboard(fr, graduated=graduated, sort=sort_spec)
-        body = render_agent_table(rows, schema=schema)
+        schema = [c for c in schema if c != "ref_id"]
         from precis.quest import protocol as protocol_mod
 
         protocol = protocol_mod.protocol_lines(self.store, ref.id)
@@ -2876,19 +3140,38 @@ class QuestHandler(NumericRefHandler):
         proto_block = "\n".join(protocol) + "\n" if protocol else ""
         note = _view_args_line(trusted=trusted, sort=sort_spec)
         filter_block = note + "\n" if note else ""
-        return (
+        header = (
             f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-            f"{proto_block}tier: {tier_legend}\n{filter_block}\n{body}"
+            f"{proto_block}tier: {tier_legend}\n{filter_block}\n"
         )
+        table = self._lens_table(
+            rows,
+            schema,
+            where=where,
+            columns=columns,
+            limit=limit,
+            cursor=cursor,
+            byte_budget=None,
+            call=_lens_call(ref.id, "leaderboard"),
+            empty_where=(
+                f"no rows match where={dict(where or {})!r} — drop or widen it "
+                f"(columns: {', '.join(schema)})"
+            ),
+        )
+        return f"{header}{table}"
 
     def _render_results(
         self,
         ref: Ref,
         *,
-        budget: int = _DEFAULT_VIEW_BUDGET,
+        budget: int | None = None,
         fmt: str = "toon",
         trusted: bool = False,
         sort: str | None = None,
+        where: dict[str, Any] | None = None,
+        columns: list[str] | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> str:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
@@ -2907,10 +3190,15 @@ class QuestHandler(NumericRefHandler):
         any carried measure on its declared objective sense, unmeasured
         last (gr592277).
 
-        Budgeted to ``budget`` tokens over the rendered table (default =
-        the tick's own 2500; ``args={'budget': N}`` overrides), dropping
-        rows from the lineage tail but never the newest ten, and saying
-        how many were dropped (gr345353)."""
+        The table-lens protocol (gr592637) cuts the TOON table
+        server-side: ``args={'where': {col: value|range|set}}``,
+        ``args={'columns': [...]}``, ``args={'limit': N}`` and
+        ``args={'cursor': token}`` page the rows — the response stays
+        ~4 kB and the footer names the exact call that continues or
+        widens it; rows are never truncated mid-row. ``args={'budget':
+        N}`` alone keeps the legacy positional truncation (rows drop
+        from the lineage tail but never the newest ten, with the count
+        said — gr345353); the text copy honours ``budget`` only."""
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
@@ -2942,39 +3230,118 @@ class QuestHandler(NumericRefHandler):
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
         # in the logbook (gr567692).
-        schema = list(results_columns(fr.objectives))
+        schema = [c for c in results_columns(fr.objectives) if c != "ref_id"]
+        args_note = _view_args_line(trusted=trusted, sort=sort_spec)
+        args_block = args_note + "\n" if args_note else ""
+        header = f"# results — quest {ref.id}: {head}\n{args_block}\n"
+
+        lens_where = dict(where or {})
+        if trusted:
+            lens_where.setdefault("trusted", "yes")
+        use_lens = bool(lens_where or columns or limit or cursor) or (
+            budget is None and fmt != "text"
+        )
+        if use_lens:
+            return header + self._lens_table(
+                rows,
+                schema,
+                where=lens_where,
+                columns=columns,
+                limit=limit,
+                cursor=cursor,
+                byte_budget=budget,
+                call=_lens_call(ref.id, "results"),
+                empty_where=(
+                    f"no rows match where={lens_where!r} — drop or widen it "
+                    f"(columns: {', '.join(schema)})"
+                ),
+            )
+
+        # Legacy positional truncation: explicit budget= (or the opt-in
+        # text copy), no lens args. Rows drop from the lineage tail but
+        # never the newest ten (gr345353).
+        tokens = budget if budget is not None else _DEFAULT_VIEW_BUDGET
         # The text copy is measured against the plain fixed-width table —
         # ``fit_rows_to_budget``'s default render — not
         # ``render_results_table`` itself, which trims internally and would
         # hide drops from ``omitted``.
         if fmt == "text":
             kept, omitted = fit_rows_to_budget(
-                rows, token_budget=budget, columns=schema
+                rows, token_budget=tokens, columns=schema
             )
         else:
             kept, omitted = fit_rows_to_budget(
                 rows,
-                token_budget=budget,
+                token_budget=tokens,
                 render=lambda rs: render_agent_table(rs, schema=schema),
             )
         note = (
-            f"\n(+{omitted} of {len(rows)} rows omitted for the {budget}-token "
+            f"\n(+{omitted} of {len(rows)} rows omitted for the {tokens}-token "
             "budget — args={'budget': N} widens it)"
             if omitted
             else ""
         )
-        args_note = _view_args_line(trusted=trusted, sort=sort_spec)
-        args_block = args_note + "\n" if args_note else ""
         if fmt == "text":
             return (
-                f"# results — quest {ref.id}: {head}\n{args_block}\n"
+                f"{header}"
                 "## text table (as embedded in the tick prompt)\n"
-                f"{render_results_table(kept, token_budget=budget, columns=schema)}"
+                f"{render_results_table(kept, token_budget=tokens, columns=schema)}"
                 f"{note}"
             )
+        return f"{header}{render_agent_table(kept, schema=schema)}{note}"
+
+    def _lens_table(
+        self,
+        rows: list[dict[str, Any]],
+        schema: list[str],
+        *,
+        where: dict[str, Any] | None,
+        columns: list[str] | None,
+        limit: int | None,
+        cursor: str | None,
+        byte_budget: int | None,
+        call: str,
+        empty_where: str,
+    ) -> str:
+        """One tabular view's lens page (gr592637): validate the
+        projection against the view's schema, cut the page, render the
+        TOON table + footer. Shared by ``results`` and ``leaderboard``."""
+        from precis.format import render_agent_table
+        from precis.format.table_lens import DEFAULT_BYTE_BUDGET, apply_lens
+
+        where = dict(where or {})
+        unknown = sorted(set(where) - set(schema))
+        if unknown:
+            raise BadInput(
+                f"where names column(s) this view does not carry: {', '.join(unknown)}",
+                options=schema,
+                next=f"{call}, args={{'where': {{'{schema[0]}': …}}}})",
+            )
+        if columns:
+            bad = [c for c in columns if c not in schema]
+            if bad:
+                raise BadInput(
+                    f"columns not in this view's schema: {', '.join(bad)}",
+                    options=schema,
+                    next=f"{call}, args={{'columns': {schema[:3]!r}}})",
+                )
+        page = apply_lens(
+            rows,
+            where=where,
+            columns=columns,
+            limit=limit,
+            cursor=cursor,
+            byte_budget=(
+                byte_budget * _VIEW_CHARS_PER_TOKEN
+                if byte_budget is not None
+                else DEFAULT_BYTE_BUDGET
+            ),
+            internal=("ref_id",),
+        )
+        if page.matched == 0:
+            return empty_where + f"\n(lens: 0 of 0 rows · {page.total} total)"
         return (
-            f"# results — quest {ref.id}: {head}\n{args_block}\n"
-            f"{render_agent_table(kept, schema=schema)}{note}"
+            f"{render_agent_table(page.rows, schema=page.columns)}\n{page.footer(call)}"
         )
 
     def _render_series(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
