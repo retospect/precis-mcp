@@ -379,12 +379,17 @@ def test_queries_eval_corpus_section_recall(
         if not target:
             continue
         measured += 1
+        # The fused path whitespace-normalises each phrasing
+        # (_dedupe_phrasings) before it reaches _ranked_rows_full —
+        # most YAML prompts are multi-line, so match on the
+        # normalised form or the stub never fires.
+        norm_prompt = " ".join(case.prompt.split())
         with monkeypatch.context() as patch:
             patch.setattr(
                 skill,
                 "_ranked_rows_full",
-                lambda q, target=target, prompt=case.prompt, hits=hits, **kw: (
-                    target if q == prompt else [],
+                lambda q, target=target, norm=norm_prompt, hits=hits, **kw: (
+                    target if q == norm else [],
                     Counter(),
                     set(),
                     hits,
@@ -404,6 +409,13 @@ def test_queries_refuses_incompatible_winner_cap(
     skill: SkillHandler,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Pins removed: real title pins (e.g. "alpha"→precis-math-help)
+    # legitimately join legs as section candidates — the scenario needs
+    # all four legs' top-1 inside ONE skill to trip the winner cap.
+    monkeypatch.setattr(
+        "precis.handlers.skill._skill_title_tokens",
+        lambda slug: (frozenset(), frozenset()),
+    )
     phrasings = ["alpha", "bravo", "charlie", "delta"]
     _stub(
         skill,

@@ -519,13 +519,19 @@ _SKILL_QUERY_RAW_CAP = 8
 #: memories" without collapsing genuinely different sub-tasks.
 _PHRASING_DUPE_RATIO = 0.92
 
-#: Absolute lexical floor per leg (gr568491 item 4): a bare two-word
-#: overlap (score 0.14) is not leg evidence — three matched content
-#: words, or two with a compound, clears it. Verbatim phrase hits
-#: (>=0.30) pass; title/identity boosts alone do not. Semantic rows carry their
-#: own ``_SKILL_SEMANTIC_FLOOR``. The gap cut from gr496170 is relative
-#: to the leg's top score and cannot tell that top is itself junk.
-_SKILL_LEXICAL_FLOOR = 0.15
+#: Absolute lexical floor per leg (gr568491 item 4), calibrated on the
+#: skill-eval probe corpus
+#: (``test_queries_eval_corpus_section_recall``): two matched content
+#: words (``_word_overlap_score`` 0.14) is the weakest real signal —
+#: the corpus's named skills include 2-token identity matches ("run a
+#: web search" → precis-web-help) — while a lone word (0.12) is
+#: coincidence, not leg evidence. Verbatim phrase hits (>=0.30) pass;
+#: title/identity boosts do not — pins re-derive an unboosted overlap
+#: score before this floor applies (``_fused_leg_rows``). Semantic
+#: rows carry their own ``_SKILL_SEMANTIC_FLOOR``. The gap cut from
+#: gr496170 is relative to the leg's top score and cannot tell that
+#: top is itself junk.
+_SKILL_LEXICAL_FLOOR = 0.14
 
 #: Fisheye caps for the fused menu (gr568491 item 3): a section hit by
 #: several phrasings rises, but no skill may occupy more than this many
@@ -874,25 +880,6 @@ def _verbatim_section_idx(slug: str, q: str) -> int | None:
     return None
 
 
-def _row_section_key(row: _SkillSearchRow, *, q: str) -> tuple[str, str | None]:
-    """Fused-row identity for a merged per-slug row (lexical / title /
-    slug pin). A row whose section already names ``~N`` keys to that
-    section so it merges with the semantic section row underneath; a
-    verbatim substring row resolves to the chunk holding the phrase —
-    a literal match's location is a fact, not a guess. Everything else
-    is whole-skill evidence keyed ``(slug, None)``."""
-    sec = (row.section or "").strip()
-    if sec.startswith("~"):
-        token = sec[1:].split(" ", 1)[0].split("—", 1)[0]
-        if token.isdigit():
-            return (row.slug, f"~{int(token)}")
-    if row.source == "lexical" and "substring" in sec:
-        idx = _verbatim_section_idx(row.slug, q)
-        if idx is not None:
-            return (row.slug, f"~{idx}")
-    return (row.slug, None)
-
-
 def _fused_leg_rows(
     text: str,
     rows: list[_SkillSearchRow],
@@ -900,12 +887,24 @@ def _fused_leg_rows(
 ) -> list[tuple[tuple[str, str | None], _SkillSearchRow]]:
     """One phrasing's ranked ``(key, row)`` candidates for the fusion.
 
-    Section rows come from floored semantic hits (per-section dedup
-    keeps the best twin) and lexical evidence scored within each section.
-    Title/slug pins must earn section relevance without their boost.
-    Rows under the per-regime absolute floors
-    never make the leg: a weak row here would smuggle an off-target
-    phrasing's junk past the agreement test (gr568491 item 4).
+    Rows are addressable sections. Floored semantic hits keep their
+    ``~N`` chunk (a front-matter ``question_only`` twin lands on the
+    card, ``~0``); merged per-slug rows — lexical, title and slug pins —
+    anchor to the structural chunk their evidence lives in: a verbatim
+    hit to the chunk holding the phrase, anything else to the chunk
+    with the most phrasing tokens, or the card itself when the
+    evidence is identity-level.
+
+    The per-leg floor is absolute and applies to *unboosted* evidence
+    (gr568491 item 4): title/slug boosts are ranking signals, not
+    relevance evidence — a pin re-derives the demote-score the
+    single-q path falls back to (``_word_overlap_score`` on
+    title-matched tokens), a slug-named phrasing is verbatim-class
+    (the caller typed the id), and a lexical row's own score is
+    already honest. Anything under ``_SKILL_LEXICAL_FLOOR`` never
+    reaches the fusion, so an off-target phrasing can't smuggle a
+    junk row past the agreement test — or claim the guaranteed
+    top-1 slot.
     """
     cands: dict[tuple[str, str | None], _SkillSearchRow] = {}
 
@@ -915,43 +914,75 @@ def _fused_leg_rows(
             cands[key] = row
 
     for hit in sem_hits:
+        if hit.score < _SKILL_SEMANTIC_FLOOR:
+            continue
         key = _section_key_for_hit(hit)
-        if (
-            key[1] is not None
-            and key[1].startswith("~")
-            and hit.score >= _SKILL_SEMANTIC_FLOOR
-        ):
-            offer(key, _semantic_row(hit))
+        if key[1] is None and hit.variant == "question_only":
+            key = (hit.slug, "~0")  # front-matter questions live on the card
+        if key[1] is None or not key[1].startswith("~"):
+            continue
+        offer(key, _semantic_row(hit))
+
+    qtokens = set(_content_tokens(text))
     for row in rows:
         if row.source == "semantic":
-            continue  # covered by its section row
-        # Title boosts are ranking signals, not relevance evidence. Locate
-        # lexical evidence in actual sections and floor its unboosted score.
-        body = _load_skill(row.slug) or ""
+            continue  # its section rows came from the hits above
+        if row.source == "slug":
+            # The phrasing literally names the served slug — the same
+            # verbatim-class evidence _lexical_row gives a phrase hit.
+            evidence = 0.30
+        elif row.source == "title":
+            # The pin's boost says nothing about relevance; the honest
+            # measure is the overlap the demote path (gr575142) scores.
+            # Identity matches count double — the same "the specific
+            # term outweighs its generic parts" weighting the pin code
+            # gives compounds: the corpus's weakest real pin is a lone
+            # family-root word ("patent CN… claim" → precis-patent-help),
+            # and one identity token + its mention is the 2-word floor.
+            ident, sections = _skill_title_tokens(row.slug)
+            matched = qtokens & (ident | sections)
+            ident_matched = qtokens & ident
+            evidence = _word_overlap_score(
+                len(matched) + len(ident_matched),
+                sum("-" in t or "_" in t for t in matched),
+            )
+        else:
+            evidence = row.score  # lexical scores are already unboosted
+        if evidence < _SKILL_LEXICAL_FLOOR:
+            continue
+        if row.slug in SkillHandler._SYNTHESIZED_SKILLS:
+            # Synth skills have no chunks — the bare slug is the only
+            # honest row (get() dispatches on the slug itself).
+            offer((row.slug, None), row)
+            continue
+        body = _load_skill(row.slug)
+        if body is None:
+            continue
         body = scope_render(body, current_scope() or "write")[0]
-        tokens = set(_content_tokens(text))
-        for idx, chunk in enumerate(chunk_by_h2(body)):
-            matched = tokens & set(_content_tokens(chunk.text))
-            literal = text.casefold() in chunk.text.casefold()
-            score = (
-                0.30
-                if literal
-                else _word_overlap_score(
-                    len(matched), sum("-" in t or "_" in t for t in matched)
-                )
-            )
-            if score < _SKILL_LEXICAL_FLOOR:
+        chunks = chunk_by_h2(body)
+        if not chunks:
+            continue
+        if "substring" in (row.section or ""):
+            # Verbatim hit: the phrase's location is a fact, not a guess.
+            idx = _verbatim_section_idx(row.slug, text) or 0
+        else:
+            overlaps = [len(qtokens & set(_content_tokens(c.text))) for c in chunks]
+            best = max(overlaps)
+            if best == 0 and row.source == "lexical":
+                # The claimed word matches locate in no section — the
+                # hit can't anchor, so it isn't fused evidence.
                 continue
-            offer(
-                (row.slug, f"~{idx}"),
-                _SkillSearchRow(
-                    slug=row.slug,
-                    score=score,
-                    source="lexical",
-                    section=chunk.heading or "Introduction",
-                    snippet=chunk.text,
-                ),
-            )
+            idx = overlaps.index(best)
+        offer(
+            (row.slug, f"~{idx}"),
+            _SkillSearchRow(
+                slug=row.slug,
+                score=row.score,
+                source=row.source,
+                section=strip_heading_mark(chunks[idx].heading) or "Introduction",
+                snippet=chunks[idx].text,
+            ),
+        )
     return sorted(
         cands.items(), key=lambda kv: (-kv[1].score, kv[0][0], kv[0][1] or "")
     )
@@ -1942,8 +1973,6 @@ class SkillHandler(Handler):
                 family=family,
                 configured_only=configured_only,
             )
-        if phrasings:
-            q = phrasings[0]  # one effective phrasing → the single-q path
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
         # rest of the surface (``search(kind='memory', tags=[...])``,
         # for instance) degrades on empty q to a list view; doing the
