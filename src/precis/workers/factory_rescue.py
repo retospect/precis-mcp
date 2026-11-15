@@ -796,9 +796,10 @@ def _node_signals(
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
     comment chunk, its newest event, per child job its created_at,
-    STATUS stamp, newest chunk, newest event, session-log mtime
-    (:func:`_job_log_at`) and park relaunch instant
-    (:func:`_job_parked_until`, gr643076), and ``unblocked_at`` — when its
+    STATUS stamp, newest chunk, newest event and park relaunch instant
+    (:func:`_job_parked_until`, gr643076), the node's session-log mtime
+    once (:func:`_job_log_at`, the newest over its jobs — one per-todo
+    log, gr681342), and ``unblocked_at`` — when its
     newest ``blocked-by`` predecessor finished (the idle clock starts
     when the node became dispatchable, not when it was created)."""
     signals: list[tuple[str, datetime]] = []
@@ -812,6 +813,7 @@ def _node_signals(
         signals.append(("newest comment", chunk_at))
     if event_at is not None:
         signals.append(("newest event", event_at))
+    node_log_at: datetime | None = None
     for j in jobs:
         jrow = rows.get(j.id)
         jcreated = jrow[0] if jrow else j.created_at
@@ -823,11 +825,16 @@ def _node_signals(
         if jrow is not None and jrow[3] is not None:
             signals.append((f"job jo{j.id} newest event", jrow[3]))
         log_at = _job_log_at(j)
-        if log_at is not None:
-            signals.append((f"job jo{j.id} log mtime", log_at))
+        if log_at is not None and (node_log_at is None or log_at > node_log_at):
+            node_log_at = log_at
         parked_at = _job_parked_until(j)
         if parked_at is not None:
             signals.append((f"job jo{j.id} parked until", parked_at))
+    if node_log_at is not None:
+        # One per-todo session log (run_slice.log) serves every job of the
+        # node, so each job "reading" the same mtime was one signal
+        # repeated and read as per-job liveness (gr681342).
+        signals.append(("node log mtime", node_log_at))
     label, ts = max(signals, key=lambda s: s[1])
     lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
     return ts, label, lines
@@ -959,6 +966,68 @@ def _lane_verdict(
     return f"no enabled lane fits {task_class}"
 
 
+#: How long past a dispatcher hold's end (free backoff, ``retry_after``)
+#: the node still reads as waiting: the tick runs about once a minute, so
+#: a node this far past its ready time with no job minted is a real stall.
+#: The idle clock restarts at the hold's end with this window, not the
+#: 20-minute stage deadline (gr681342).
+DISPATCH_GRACE = timedelta(minutes=5)
+
+
+def _retry_after(j: Any) -> datetime | None:
+    """The job's ``meta.retry_after`` (ISO, stamped by ``record_failure``
+    on a transient failure), or ``None`` when absent or unreadable."""
+    raw = j.meta.get("retry_after")
+    if not isinstance(raw, str):
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+
+
+def _dispatcher_hold(
+    now: datetime, plan: Any, n: Any, newest: Any
+) -> tuple[datetime, str] | None:
+    """``(ready time, reason)`` while the dispatcher is deliberately not
+    minting for this node, or ``None``. Two holds: the free-failure
+    backoff (:func:`plan_dispatch.free_backoff_ready_at`, the dispatch
+    step's own formula) and a ``retry_after`` on the newest job. The
+    later ready time wins, and a hold still counts for
+    :data:`DISPATCH_GRACE` after its end (the idle clock restarts there)."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    if newest is None:
+        return None
+    holds: list[tuple[datetime, str]] = []
+    free_reason, run = pd._free_run(plan, n)
+    if free_reason is not None:
+        ready = pd.free_backoff_ready_at(newest.created_at, run)
+        if ready is not None:
+            holds.append((ready, f"free-backoff: '{free_reason}' x{run}"))
+    retry = _retry_after(newest)
+    if retry is not None:
+        holds.append((retry, f"retry_after on jo{newest.id}"))
+    live = [h for h in holds if now < h[0] + DISPATCH_GRACE]
+    return max(live, key=lambda h: h[0]) if live else None
+
+
+def _parent_gate_tag(n: Any) -> str | None:
+    """The open tag on ``n`` that makes ``parent_not_paused`` refuse to
+    claim its jobs, or ``None`` (the shared ``_DOABLE_EXCLUSION_TAGS`` set;
+    a terminal parent is exempt, as in the gate itself, gr575883)."""
+    from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+
+    if n.status in TERMINAL_TODO_STATUSES:
+        return None
+    for v in n.open_tags:
+        for t in _DOABLE_EXCLUSION_TAGS:
+            if v == t or (t.endswith(":") and v.startswith(t)):
+                return str(v)
+    return None
+
+
 def _stage_for(
     store: Store, now: datetime, plan: Any, n: Any, is_gate: bool
 ) -> tuple[str, str, Any, str] | None:
@@ -1005,6 +1074,17 @@ def _stage_for(
                 f"job jo{live.id} parked until {_iso(parked_at)}{why}",
             )
         if live.status == "queued":
+            gate_tag = _parent_gate_tag(n)
+            if gate_tag is not None:
+                # The claim gate (``parent_not_paused``) refuses this job
+                # until the tag clears — its silence is the gate's, and
+                # the operator should see which tag holds it (gr681342).
+                return (
+                    "parked",
+                    "parked",
+                    live,
+                    f"waiting (job jo{live.id} queued, gated by {gate_tag})",
+                )
             return (
                 "stalled",
                 "queued",
@@ -1029,6 +1109,22 @@ def _stage_for(
             if verdict.startswith("parked"):
                 return "parked", "parked", j, verdict
             return "stalled", "idle", j, verdict
+    hold = _dispatcher_hold(now, plan, n, j)
+    if hold is not None:
+        ready, why = hold
+        if ready > now:
+            return (
+                "parked",
+                "parked",
+                j,
+                f"held by the dispatcher until {_iso(ready)} ({why})",
+            )
+        return (
+            "parked",
+            "parked",
+            j,
+            f"waiting ({why}; dispatch due since {_iso(ready)})",
+        )
     return "stalled", "idle", j, "stage idle silent past its deadline"
 
 

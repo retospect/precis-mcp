@@ -1232,6 +1232,184 @@ def test_silent_node_past_the_deadline_since_unblock_is_rescued(
     assert "44 min ago" in comment or "45 min ago" in comment
 
 
+# ── dispatcher holds are waits, not stalls (gr681342) ─────────────
+
+
+def _free_failed_jobs(store: Store, task: int, runs: int) -> list[int]:
+    """``runs`` consecutive identical ``attempt_free`` failures — the
+    dispatcher's free-backoff input (``plan_dispatch._free_run``)."""
+    return [
+        _job(
+            store,
+            task,
+            status="failed",
+            meta_extra={"attempt_free": "index lock held"},
+        )
+        for _ in range(runs)
+    ]
+
+
+def test_free_backoff_wait_is_parked_not_stalled(store: Store) -> None:
+    """Seven identical free failures back the re-mint off the full 30 min
+    from the newest mint. 25 min in, the node is only waiting on the
+    dispatcher: 25 min of silence is past the 20 min idle deadline, yet no
+    ask is filed."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("held by the dispatcher until" in note for note in res.notes)
+    assert any("free-backoff" in note for note in res.notes)
+
+
+def test_free_backoff_past_ready_with_no_dispatch_is_stalled(store: Store) -> None:
+    """The same node 6 min past its ready time (30 min + grace) with
+    nothing minted is a real stall — the tick runs about once a minute."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=36))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_free_backoff_just_past_ready_is_still_waiting(store: Store) -> None:
+    """The idle clock restarts at the hold's end: 2 min past ready is the
+    dispatcher's next tick, not a stall."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=32))
+
+    assert res.rescued == []
+    assert any("dispatch due since" in note for note in res.notes)
+
+
+def test_free_backoff_ready_formula_is_the_dispatchers() -> None:
+    """The watchdog and the dispatch step share one formula."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    assert pd.free_backoff_ready_at(base, pd.FREE_RUN_GRACE - 1) is None
+    assert pd.free_backoff_ready_at(base, pd.FREE_RUN_GRACE) == base + timedelta(
+        minutes=2
+    )
+    assert pd.free_backoff_ready_at(base, 20) == base + pd.FREE_BACKOFF_MAX
+
+
+def test_future_retry_after_on_the_newest_job_is_parked(store: Store) -> None:
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=40)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert any("retry_after on jo" in note for note in res.notes)
+
+
+def test_lapsed_retry_after_no_longer_holds(store: Store) -> None:
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=10)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+
+
+def test_live_queued_job_is_a_wait_not_an_idle_stall(store: Store) -> None:
+    """A queued job waits for an executor slot — 25 min of silence is past
+    the idle deadline, but a queued node is judged on its queue (30 min),
+    never as idle."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_queued_job_gated_by_a_child_failed_tag_names_the_tag(
+    store: Store,
+) -> None:
+    """``parent_not_paused`` refuses to claim a job under a node carrying
+    ``child-failed:<job>``; past the 30 min queue deadline on a dead queue
+    that read as a stall. It is the gate's wait, and the note names it."""
+    root = _root(store)
+    task = _node(store, root, tags=("child-failed:jo123",))
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("gated by child-failed:jo123" in note for note in res.notes)
+
+
+def test_blocked_by_an_open_ask_after_a_failed_job_is_a_wait(store: Store) -> None:
+    """The blocker owns the wait: an idle node behind an open ask is not
+    filed as its own stall."""
+    root = _root(store)
+    ask = _ask(store, root, tags=("ask-user",))
+    task = _node(store, root)
+    _job(store, task, status="failed")
+    store.add_link(
+        src_ref_id=task, dst_ref_id=ask, relation="blocked-by", set_by="system"
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.held == 1
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_node_log_mtime_is_one_signal_not_one_per_job(
+    store: Store, tmp_path: Path
+) -> None:
+    """Every job of a node reads the same per-todo ``run_slice.log``;
+    the evidence lists its mtime once, as the node's."""
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("x\n", encoding="utf-8")
+    stale = NOW - timedelta(hours=1)
+    os.utime(log, (stale.timestamp(), stale.timestamp()))
+    handle = {"compute_handle": {"pid": 1, "log": str(log)}}
+    _job(store, task, status="failed", meta_extra=handle)
+    _job(store, task, status="running", meta_extra=handle)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+    (comment,) = _comments(store, task)
+    assert comment.count("log mtime") == 1
+    assert "- node log mtime:" in comment
+
+
 # ── dry run, kill switch, dedupe, evidence ────────────────────────
 
 

@@ -755,6 +755,21 @@ FREE_RUN_GRACE = 3
 FREE_BACKOFF_BASE = timedelta(minutes=2)
 FREE_BACKOFF_MAX = timedelta(minutes=30)
 
+
+def free_backoff_ready_at(newest_created_at: datetime, run: int) -> datetime | None:
+    """When a node's free-failure backoff ends: the newest failed job's
+    mint plus the exponential wait for a ``run``-long identical run, or
+    ``None`` while the run is under :data:`FREE_RUN_GRACE` (immediate
+    re-mint). One home for the formula — the dispatch step applies it and
+    the stall watchdog reads it to tell a backoff wait from a stall
+    (gr681342)."""
+    if run < FREE_RUN_GRACE:
+        return None
+    return newest_created_at + min(
+        FREE_BACKOFF_MAX, FREE_BACKOFF_BASE * 2 ** (run - FREE_RUN_GRACE)
+    )
+
+
 #: ``meta.spend`` on a task node — the dispatcher's spend record
 #: ``{usd, cap_usd, blocked, at}`` (gr599486). ``blocked: True`` means
 #: a paid rung's ``rung_caps`` cap refused the climb; the rescue step
@@ -6390,17 +6405,13 @@ def _step_dispatch(
             # :data:`FREE_RUN_CAP` ``_free_done`` reads as capped and the
             # hygiene step asks the coordinator.
             _reason, run = _free_run(plan, n)
-            if run >= FREE_RUN_GRACE:
-                ready = newest.created_at + min(
-                    FREE_BACKOFF_MAX,
-                    FREE_BACKOFF_BASE * 2 ** (run - FREE_RUN_GRACE),
+            ready = free_backoff_ready_at(newest.created_at, run)
+            if ready is not None and ready > now:
+                res.notes.append(
+                    f"td{n.id}: held — '{free_reason}' free failure "
+                    f"x{run} in a row; next dispatch at {_iso(ready)}"
                 )
-                if ready > now:
-                    res.notes.append(
-                        f"td{n.id}: held — '{free_reason}' free failure "
-                        f"x{run} in a row; next dispatch at {_iso(ready)}"
-                    )
-                    continue
+                continue
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
         if reland is not None:
             # An infra-red land re-runs ship on the same branch with the
