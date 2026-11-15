@@ -12,9 +12,11 @@ scoped connection itself — one ``considered`` link (scope → source) whose
 ``considerations`` history row. Canonical-identity dedup keeps one edge per
 (scope, source) pair — a judgment at another chunk endpoint of the same
 ref pair supersedes the older edge, so the current verdict resolves at
-ref-pair granularity; the history keeps each run's verdict, so one paper can
-be rejected for one question and useful to another, and re-judging a pair
-never collapses the earlier verdict.
+ref-pair granularity; the history keeps each run's verdict AND its recorded
+evidence (``passages`` and the ref-level ``supporters`` association,
+migration 0330 — review td688001), so one paper can be rejected for one
+question and useful to another, and re-judging a pair never collapses the
+earlier verdict or drops its evidence.
 
 Validity is revision-scoped: the door stamps ``meta.scope_sha`` /
 ``meta.source_sha`` at judgment time. The scope pin is always the scope
@@ -142,6 +144,7 @@ CONSIDER_JUDGMENT_KEYS: frozenset[str] = frozenset(
         "reason",
         "depth",
         "passages",
+        "supporters",
         "actor",
         "model",
         "run",
@@ -235,9 +238,10 @@ def validate_considered_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     verdict IS its reason) and ``depth`` (how far the judge read).
     ``depth='none'`` pairs only with ``uncertain`` — missing text is
     acquisition state, not rejection. Optional ``passages`` (evidence
-    handles/snippets), ``actor``/``model``/``run``/``prompt`` and
-    ``checked_at`` are validated when present; stamped keys
-    (:data:`CONSIDERED_STAMPED_KEYS`) are refused.
+    handles/snippets), ``supporters`` (the supporting evidence-source
+    identities a mint-side judgment leaned on), ``actor``/``model``/
+    ``run``/``prompt`` and ``checked_at`` are validated when present;
+    stamped keys (:data:`CONSIDERED_STAMPED_KEYS`) are refused.
     """
     if not isinstance(meta, dict):
         raise BadInput(
@@ -298,6 +302,13 @@ def validate_considered_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
             f"considered meta.passages must be a list of evidence "
             f"handles or quoted spans, got {passages!r}",
             next="meta={'passages': ['pc<chunk>', …]}",
+        )
+    supporters = meta.get("supporters")
+    if supporters is not None and not isinstance(supporters, list):
+        raise BadInput(
+            f"considered meta.supporters must be a list of "
+            f"evidence-source identities, got {supporters!r}",
+            next="meta={'supporters': ['pa<ref>', 'pc<chunk>', …]}",
         )
     for key in ("actor", "model", "run", "prompt"):
         value = meta.get(key)
@@ -399,16 +410,18 @@ class ConsiderationMixin:
         """Append one judgment to ``considerations`` and refresh the
         edge's ``meta.judgments`` count. Runs inside the ``add_link``
         transaction, after the edge INSERT; history is kept per judgment
-        — canonical-identity dedup never collapses two runs' verdicts."""
+        — verdict, reason, depth and the complete evidence association
+        (``passages``, ``supporters``) — canonical-identity dedup never
+        collapses two runs' verdicts."""
         checked_at = _parse_checked_at(meta.get("checked_at"))
         row = c.execute(
             "INSERT INTO considerations "
             "  (link_id, scope_ref_id, scope_chunk_id, source_ref_id, "
             "   source_chunk_id, verdict, reason, reading_depth, passages, "
-            "   scope_sha, source_sha, actor, model, run, prompt, set_by, "
-            "   checked_at) "
+            "   supporters, scope_sha, source_sha, actor, model, run, "
+            "   prompt, set_by, checked_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            "        %s, %s, %s, %s) "
+            "        %s, %s, %s, %s, %s) "
             "RETURNING consideration_id",
             (
                 link_id,
@@ -420,6 +433,7 @@ class ConsiderationMixin:
                 meta["reason"].strip(),
                 meta["depth"],
                 Jsonb(meta.get("passages") or []),
+                Jsonb(meta.get("supporters") or []),
                 meta.get("scope_sha"),
                 meta.get("source_sha"),
                 meta.get("actor"),
@@ -626,13 +640,16 @@ class ConsiderationMixin:
         self, c: Connection, scope_ref_id: int, source_ref_id: int
     ) -> None:
         """Settle one canonical pair after a merge: the surviving edge
-        carries the pair's latest unwithdrawn judgment and the rest of
-        its live ``considered`` edges drop (review td662210)."""
+        carries the pair's latest unwithdrawn judgment — the whole
+        verdict block, ``supporters`` included, restored from the
+        history row so a rebuild never strips the winning run's
+        evidence association (review td688001) — and the rest of its
+        live ``considered`` edges drop (review td662210)."""
         latest = c.execute(
             "SELECT consideration_id, link_id, scope_chunk_id,"
             "       source_chunk_id, verdict, reason, reading_depth,"
-            "       passages, scope_sha, source_sha, actor, model, run,"
-            "       prompt, checked_at "
+            "       passages, supporters, scope_sha, source_sha, actor,"
+            "       model, run, prompt, checked_at "
             "FROM considerations "
             "WHERE scope_ref_id = %s AND source_ref_id = %s"
             "  AND withdrawn_at IS NULL "
@@ -656,6 +673,7 @@ class ConsiderationMixin:
             reason,
             depth,
             passages,
+            supporters,
             scope_sha,
             source_sha,
             actor,
@@ -701,6 +719,7 @@ class ConsiderationMixin:
         )
         for key, value in (
             ("passages", passages),
+            ("supporters", supporters),
             ("actor", actor),
             ("model", model),
             ("run", run),

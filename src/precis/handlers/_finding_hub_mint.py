@@ -21,7 +21,21 @@ minting — :func:`~precis.taproot.canon.block` (ANN over existing hubs) ->
   (:func:`_attach_to_existing`). Never routes through
   :func:`~precis.taproot.authoring.seed_claim_hub` — that mints on
   ``(sentence, scope)`` identity, which is exactly the identity this
-  branch is bypassing.
+  branch is bypassing. The converge mints no row, so the writer
+  annotation (``meta.{model,prompt_version,run_id,why}``) would drop —
+  instead the run's observation rides a ``considered`` edge from the
+  run's scope (``from_memory=``, else ``meta.run_id``'s agentlog, else
+  the env-attributed run) to the hub — verdict ``useful``, the run's
+  ``why`` as its reason, every supporter's identity on the edge
+  (grounded pins in ``passages``, the full set incl. ref-level sources
+  in ``supporters``), the env-attributed run in ``run`` when
+  ``run_id`` is absent (gr626718, the link-reason ruling's positive
+  half — "far ref is relevant here because <reason>"). The edge write
+  shares the attach's transaction, so a reported converge always
+  retained its observation — a failure fails the put, never drops it
+  silently. Every judgment also lands an append-only ``considerations``
+  history row, so two runs converging on one hub each keep their own
+  reasoned record for fix-forward audit.
 * ``new`` / ``new_contradicts`` — no matching claim (or a contradicting
   one): mints via :func:`~precis.taproot.authoring.seed_claim_hub` as
   before; a contradiction additionally gets the hub<->hub ``disputes``
@@ -79,6 +93,7 @@ and surfacing it here only invited an agent to try citing it directly.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import replace
@@ -126,6 +141,8 @@ if TYPE_CHECKING:
     from precis.store.store import Store
     from precis.store.types import Ref
 
+log = logging.getLogger(__name__)
+
 BlockFn = Callable[[CanonicalClaim, Any, Any], list[MergeCandidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
@@ -149,6 +166,7 @@ def put_hub(
     dedup: bool | str = True,
     embedder: Any = None,
     extra_meta: dict[str, Any] | None = None,
+    from_memory: str | None = None,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
@@ -161,8 +179,10 @@ def put_hub(
 
     ``extra_meta`` merges into the minted hub's ``refs.meta`` on a real
     mint only — an ``attach``/converge outcome writes no hub row, so the
-    keys are dropped there (same rule as :func:`mint_hub`'s own
-    ``extra_meta``)."""
+    keys hang on the run's ``considered`` observation edge instead (see
+    :func:`_attach_to_existing`). ``from_memory`` names the run's scope
+    ref (the memory/quest that reasoned here) for that edge — falling
+    back to ``meta.run_id``'s agentlog, then the env-attributed run."""
     resp = _put_hub(
         store,
         sentence=sentence,
@@ -172,6 +192,7 @@ def put_hub(
         dedup=dedup,
         embedder=embedder,
         extra_meta=extra_meta,
+        from_memory=from_memory,
         block_fn=block_fn,
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
@@ -210,6 +231,7 @@ def _put_hub(
     dedup: bool | str,
     embedder: Any,
     extra_meta: dict[str, Any] | None,
+    from_memory: str | None,
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
@@ -220,7 +242,15 @@ def _put_hub(
 
     if mode == "attach":
         assert attach_to is not None
-        return _attach_by_choice(store, claim, attach_to, supporters, set_by=set_by)
+        return _attach_by_choice(
+            store,
+            claim,
+            attach_to,
+            supporters,
+            set_by=set_by,
+            extra_meta=extra_meta,
+            from_memory=from_memory,
+        )
 
     if mode == "off":
         result = authoring.seed_claim_hub(
@@ -248,7 +278,14 @@ def _put_hub(
     # any same-passage / containment logic runs: an idempotent re-put is never
     # refused, even when the hub has no embedding yet (a same-passage sibling
     # would otherwise be judged against itself).
-    converged = _converge_identical(store, claim, supporters, set_by=set_by)
+    converged = _converge_identical(
+        store,
+        claim,
+        supporters,
+        set_by=set_by,
+        extra_meta=extra_meta,
+        from_memory=from_memory,
+    )
     if converged is not None:
         return converged
     passage_hubs = _same_passage_neighbours(store, supporters)
@@ -326,7 +363,14 @@ def _put_hub(
 
     if placement.action == "attach":
         return _attach_to_existing(
-            store, claim, placement, judged, supporters, set_by=set_by
+            store,
+            claim,
+            placement,
+            judged,
+            supporters,
+            set_by=set_by,
+            extra_meta=extra_meta,
+            from_memory=from_memory,
         )
     if placement.action == "needs_review":
         return _mint_with_review_todo(
@@ -531,6 +575,8 @@ def _converge_identical(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
+    extra_meta: dict[str, Any] | None = None,
+    from_memory: str | None = None,
 ) -> Response | None:
     """The attach response when a live hub already carries this exact
     ``(sentence, scope)`` pub_id; ``None`` when there is none."""
@@ -549,7 +595,14 @@ def _converge_identical(
     ]
     placement = Placement(action="attach", hub_ref_id=hub_id, reason=reason)
     return _attach_to_existing(
-        store, claim, placement, judged, supporters, set_by=set_by
+        store,
+        claim,
+        placement,
+        judged,
+        supporters,
+        set_by=set_by,
+        extra_meta=extra_meta,
+        from_memory=from_memory,
     )
 
 
@@ -573,6 +626,8 @@ def _attach_by_choice(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
+    extra_meta: dict[str, Any] | None = None,
+    from_memory: str | None = None,
 ) -> Response:
     """``dedup='attach:fi<N>'`` — the agent's own choice from a near-duplicate
     refusal: no search, no judge, straight to the shared attach path."""
@@ -606,7 +661,14 @@ def _attach_by_choice(
         )
     ]
     return _attach_to_existing(
-        store, claim, placement, judged, supporters, set_by=set_by
+        store,
+        claim,
+        placement,
+        judged,
+        supporters,
+        set_by=set_by,
+        extra_meta=extra_meta,
+        from_memory=from_memory,
     )
 
 
@@ -675,6 +737,8 @@ def _attach_to_existing(
     supporters: list[dict[str, Any]],
     *,
     set_by: ActorSlug,
+    extra_meta: dict[str, Any] | None = None,
+    from_memory: str | None = None,
 ) -> Response:
     """``attach`` — the closest verdict was a confirmed ``same``: attach
     ``supporters`` as evidence on ``placement.hub_ref_id`` directly
@@ -682,6 +746,22 @@ def _attach_to_existing(
     :func:`~precis.taproot.authoring.seed_claim_hub` (which mints/converges
     on THIS claim's own ``(sentence, scope)`` identity — exactly the
     identity this branch is bypassing in favour of the matched neighbour).
+
+    The converge mints no ref, so the writer annotation
+    (``extra_meta.{model,prompt_version,run_id,why}``) has no row to land
+    on — it rides a ``considered`` edge from the run's scope to the
+    matched hub instead (gr626718, the link-reason ruling's positive
+    half): verdict ``useful``, the run's ``why`` as the reason, the
+    complete supporter set on the edge (grounded pins in ``passages``,
+    every supporter incl. ref-level sources in ``supporters``), the
+    env-attributed run in ``run`` when ``run_id`` is absent. The edge
+    write shares this transaction — a failure rolls the attached
+    evidence back too and the put fails audibly for retry (atomic
+    retention: a reported converge always kept its observation,
+    never a silent drop). The ``considerations`` history keeps one
+    row per judgment, so two runs converging on the same hub each
+    leave their own reasoned record — the fix-forward audit trail
+    mint-time dedup used to drop.
     """
     hub_ref_id = placement.hub_ref_id
     if hub_ref_id is None:  # pragma: no cover — defensive; place() always
@@ -704,6 +784,13 @@ def _attach_to_existing(
             next="fix every listed supporter and retry",
         )
 
+    scope = _observation_scope(store, extra_meta, from_memory)
+    obs_meta = (
+        _observation_meta(store, resolved, extra_meta, set_by=set_by)
+        if scope is not None
+        else None
+    )
+
     # One transaction for the whole supporter loop (mirrors
     # authoring.seed_claim_hub's mint+attach loop, gr263195's atomicity
     # backstop): an exception partway through must roll every edge attached
@@ -714,6 +801,7 @@ def _attach_to_existing(
     attached = 0
     already = 0
     ungrounded = 0
+    observed = False
     owned_checks: list[int] = []
     with store.tx() as conn:
         for supporter in resolved:
@@ -747,6 +835,22 @@ def _attach_to_existing(
             if not src_handle:
                 ungrounded += 1
 
+        if scope is not None:
+            # The run's observation (gr626718) shares the converge's
+            # transaction — atomic retention, the gripe's contract: an
+            # edge-write failure rolls the evidence back too and the put
+            # fails audibly for retry, never reporting a converge whose
+            # reasoned edge silently dropped.
+            store.add_link(
+                src_ref_id=scope[0],
+                dst_ref_id=hub_ref_id,
+                relation="considered",
+                meta=obs_meta,
+                set_by=set_by,
+                conn=conn,
+            )
+            observed = True
+
     # Transaction committed -- now safe to reach the network (trigger 1).
     run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)
 
@@ -757,10 +861,150 @@ def _attach_to_existing(
         f"evidence: {attached} attached, {already} already present"
         + (f", {ungrounded} ref-level (ungrounded)" if ungrounded else "")
         + f"\nreason: {placement.reason}\n"
-        f"cite it inline as [{hub_handle}] — resolves to the current derived "
+        + (
+            f"observation: {scope[1]} --considered[useful]--> {hub_handle} "
+            "(this run's reasoned edge)\n"
+            if observed and scope is not None
+            else ""
+        )
+        + f"cite it inline as [{hub_handle}] — resolves to the current derived "
         "originator(s) on every render"
     )
     return Response(body=body)
+
+
+def _observation_scope(
+    store: Store, extra_meta: dict[str, Any] | None, from_memory: str | None
+) -> tuple[int, str] | None:
+    """The ``(ref_id, handle)`` this run's converge-observation edge hangs
+    on — the scope of its ``considered`` verdict.
+
+    Resolution order: the caller's ``from_memory`` provenance (the
+    memory/quest that reasoned its way here — same param the hypothesis
+    door uses for its origin links), then ``meta.run_id`` resolved to a
+    live agentlog (``ag<N>`` handle or a bare id), then the run the
+    environment attributes this write to (``PRECIS_CURRENT_AGENTLOG``).
+    ``None`` when nothing resolves — a put with no run identity records
+    no observation rather than inventing a scope.
+    """
+    if from_memory:
+        try:
+            resolved = store.resolve_handle(from_memory)
+        except Exception:
+            log.warning(
+                "hub-mint: unresolvable from_memory=%r", from_memory, exc_info=True
+            )
+            resolved = None
+        if resolved is not None:
+            # A chunk handle scopes to its owning ref — the considered
+            # edge judges the scope ref, never a chunk endpoint.
+            handle = handle_registry.try_format(resolved.kind, int(resolved.ref_id))
+            if handle is not None:
+                return int(resolved.ref_id), handle
+    run_id = (extra_meta or {}).get("run_id")
+    if run_id is not None and str(run_id).strip():
+        parsed = handle_registry.parse(str(run_id).strip())
+        ref_id: int | None = None
+        if parsed is not None and parsed[0] == "agentlog" and not parsed[1]:
+            ref_id = parsed[2]
+        elif str(run_id).strip().isdigit():
+            ref_id = int(str(run_id).strip())
+        if ref_id is not None and store.get_ref(kind="agentlog", id=ref_id) is not None:
+            return ref_id, handle_registry.format_handle("agentlog", ref_id)
+    env_id = _env_run_ref_id(store)
+    if env_id is not None:
+        return env_id, handle_registry.format_handle("agentlog", env_id)
+    return None
+
+
+def _env_run_ref_id(store: Store) -> int | None:
+    """The environment-attributed run's agentlog ``ref_id``, or ``None``
+    — ``PRECIS_CURRENT_AGENTLOG`` / the in-process tick override
+    (:func:`precis.agentlog.current_from_env`), gated on the ref
+    actually being a live agentlog."""
+    from precis import agentlog
+
+    env_id = agentlog.current_from_env()
+    if env_id is not None and store.get_ref(kind="agentlog", id=env_id) is not None:
+        return int(env_id)
+    return None
+
+
+def _supporter_identities(store: Store, resolved: list[dict[str, Any]]) -> list[str]:
+    """Every resolved supporter's identity for the observation edge —
+    its ``source_handle`` pin when the supporter is passage-grounded,
+    else the live source ref's universal handle (``pa<N>``/``pt<N>``/…)
+    so a ref-level supporter still names the evidence the run leaned
+    on. Falls back to the supporter's raw ``paper`` token when the
+    ref's kind has no handle code (defensive — ``resolve_supporters``
+    already gated the kind to an evidence source)."""
+    refs = store.fetch_refs_by_ids(
+        [int(s["paper_ref_id"]) for s in resolved], include_deleted=False
+    )
+    out: list[str] = []
+    for s in resolved:
+        source_handle = s.get("source_handle")
+        if source_handle:
+            out.append(str(source_handle))
+            continue
+        ref = refs.get(int(s["paper_ref_id"]))
+        handle = (
+            handle_registry.try_format(ref.kind, int(ref.id))
+            if ref is not None
+            else None
+        )
+        out.append(handle or str(s.get("paper") or s["paper_ref_id"]))
+    return out
+
+
+def _observation_meta(
+    store: Store,
+    resolved: list[dict[str, Any]],
+    extra_meta: dict[str, Any] | None,
+    *,
+    set_by: ActorSlug,
+) -> dict[str, Any]:
+    """The ``considered``-edge meta for one run's converge observation —
+    the writer annotation restated in the verdict block's spelling
+    (``run_id`` → ``run``, ``prompt_version`` → ``prompt``), the run's
+    ``why`` as the reason, and this run's complete evidence association
+    on the edge: ``passages`` keeps every supporter's grounding chunk
+    pin (no cap — a truncated pin list would lose supporters) and
+    ``supporters`` names every resolved supporter, ref-level ones by
+    their source handle. ``run`` falls back to the env-attributed
+    agentlog when ``run_id`` is absent, so a ``from_memory``-scoped
+    judgment still names the run that wrote it. Falls back to a
+    generic reason when ``why`` is absent or a content-free marker —
+    ``validate_considered_meta`` requires a real sentence, and the
+    endpoint-text refusal (gr626896) never sees the claim restated
+    here since the reason names the mechanism, not the sentence."""
+    meta = dict(extra_meta or {})
+    why = str(meta.get("why") or "").strip()
+    if why in (".", "reviewed-obvious"):
+        why = ""
+    passages = [str(s["source_handle"]) for s in resolved if s.get("source_handle")]
+    out: dict[str, Any] = {
+        "verdict": "useful",
+        "reason": why or "dedup converge — this run reached the same claim",
+        "depth": "passages" if passages else "metadata",
+        "actor": str(set_by),
+        "supporters": _supporter_identities(store, resolved),
+    }
+    if passages:
+        out["passages"] = passages
+    run = str(meta.get("run_id") or "").strip()
+    if not run:
+        env_run = _env_run_ref_id(store)
+        if env_run is not None:
+            run = handle_registry.format_handle("agentlog", env_run)
+    for key, value in (
+        ("run", run),
+        ("model", str(meta.get("model") or "").strip()),
+        ("prompt", str(meta.get("prompt_version") or "").strip()),
+    ):
+        if value:
+            out[key] = value
+    return out
 
 
 # ── new / new_contradicts — mint as today ───────────────────────────────

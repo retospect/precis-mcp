@@ -340,9 +340,9 @@ def test_get_view_considerations(runtime_with_store: PrecisRuntime) -> None:
 
 def test_rejudgment_replaces_omitted_judgment_fields(store: Store) -> None:
     """A re-judgment replaces the verdict block: optional keys the new
-    judgment omits (passages, actor/model/run/prompt) are gone from the
-    edge — never silently retained from the previous judgment — while the
-    history keeps each run's own provenance."""
+    judgment omits (passages, supporters, actor/model/run/prompt) are
+    gone from the edge — never silently retained from the previous
+    judgment — while the history keeps each run's own provenance."""
     scope = _mk_memory(store, title="scope", text="the question")
     src = _mk_paper(store, slug="cv-r1", title="R1", text=f"{_Q} r1.")
     _judge(
@@ -352,6 +352,7 @@ def test_rejudgment_replaces_omitted_judgment_fields(store: Store) -> None:
         verdict="not-useful",
         reason="first run: out",
         passages=["pc-quote"],
+        supporters=["pa1", "pc-quote"],
         actor="a-1",
         model="m-1",
         run="run-1",
@@ -368,15 +369,51 @@ def test_rejudgment_replaces_omitted_judgment_fields(store: Store) -> None:
     meta = store.links_for(scope, relation="considered", direction="out")[0].meta
     assert meta["verdict"] == "useful"
     assert meta["reason"] == "second run: on-axis after all"
-    for omitted in ("passages", "actor", "model", "run", "prompt"):
+    for omitted in ("passages", "supporters", "actor", "model", "run", "prompt"):
         assert omitted not in meta, f"{omitted} retained from the old judgment"
     hist = _history(store, scope)
     assert len(hist) == 2
     by_verdict = {j["verdict"]: j for j in hist}
     assert by_verdict["not-useful"]["model"] == "m-1"
     assert by_verdict["not-useful"]["passages"] == ["pc-quote"]
+    assert by_verdict["not-useful"]["supporters"] == ["pa1", "pc-quote"]
     assert by_verdict["not-useful"]["prompt"] == "p-1"
     assert by_verdict["useful"]["model"] is None
+    assert by_verdict["useful"]["supporters"] == []
+
+
+def test_rejudgment_keeps_each_runs_supporters(store: Store) -> None:
+    """review td688001 (gr626718): two runs judge the same scope→source
+    pair with different ref-level evidence associations — the edge
+    carries the latest run's ``supporters`` while the append-only
+    history keeps EACH run's own set, so re-judging never loses the
+    earlier run's audit."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-s8", title="S8", text=f"{_Q} s8.")
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="useful",
+        reason="first run: in",
+        supporters=["pa11"],
+    )
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: confirmed",
+        supporters=["pa22", "pa33"],
+    )
+    meta = store.links_for(scope, relation="considered", direction="out")[0].meta
+    assert meta["supporters"] == ["pa22", "pa33"]
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    by_reason = {j["reason"]: j for j in hist}
+    assert by_reason["first run: in"]["supporters"] == ["pa11"]
+    assert by_reason["second run: confirmed"]["supporters"] == ["pa22", "pa33"]
 
 
 def test_chunk_replacement_preserves_judgment_history(store: Store) -> None:
@@ -974,6 +1011,43 @@ def test_merge_loser_later_verdict_beats_the_twin(store: Store) -> None:
     hist = _history(store, scope)
     assert len(hist) == 2
     assert {j["source_ref_id"] for j in hist} == {surv}
+
+
+def test_merge_restores_latest_judgments_supporters(store: Store) -> None:
+    """review td688001: merge reconstruction rebuilds the canonical
+    edge's verdict block from the latest judgment — ``supporters``
+    included. Without the restore, the rebuild strips judgment keys and
+    the winning run's ref-level evidence association is gone for good."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m24", title="M24", text=f"{_Q} m24.")
+    dup = _mk_paper(store, slug="cv-m25", title="M24", text=f"{_Q} m24.")
+    _judge(
+        store,
+        scope,
+        surv,
+        verdict="not-useful",
+        reason="first run: out",
+        supporters=["pa11"],
+    )
+    _judge(
+        store,
+        scope,
+        dup,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: on-axis",
+        supporters=["pa22"],
+    )
+    _merge(store, dup, surv)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].meta["verdict"] == "useful"
+    assert edges[0].meta["supporters"] == ["pa22"]
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    by_verdict = {j["verdict"]: j for j in hist}
+    assert by_verdict["not-useful"]["supporters"] == ["pa11"]
+    assert by_verdict["useful"]["supporters"] == ["pa22"]
 
 
 def test_merge_survivor_later_verdict_keeps_exclusion_off(

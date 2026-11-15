@@ -1136,3 +1136,470 @@ class TestEmbedderOutage:
     def test_nearest_hubs_raises_upstream(self, store) -> None:
         with pytest.raises(Upstream, match="embedder at capacity"):
             nearest_hubs("any sentence", {}, store, _DownEmbedder())
+
+
+# ── dedup-converge run observation (gr626718, link-reason ruling) ───────────
+
+
+def _mk_agentlog(store, *, title: str = "plan_tick #1") -> int:
+    return store.insert_ref(kind="agentlog", slug=None, title=title, meta={}).id
+
+
+def _mk_memory(store, *, title: str = "research note") -> int:
+    return store.insert_ref(kind="memory", slug=None, title=title, meta={}).id
+
+
+def _converge_put(
+    store,
+    hub: int,
+    *,
+    sentence: str,
+    supporters=None,
+    extra_meta=None,
+    from_memory=None,
+):
+    return _finding_hub_mint.put_hub(
+        store,
+        sentence=sentence,
+        scope={},
+        supporters=supporters or [{"paper": "miller23a"}],
+        embedder=object(),
+        block_fn=_block_hit(hub, "Pd/C catalyzes Suzuki coupling."),
+        judge_fn=lambda a, b: _verdict("same", 0.95),
+        extra_meta=extra_meta,
+        from_memory=from_memory,
+    )
+
+
+def _considered_in(store, hub: int):
+    return store.links_for(hub, direction="in", relation="considered")
+
+
+class TestConvergeObservation:
+    """gr626718: a dedup converge mints no ref, so the run's writer
+    annotation would drop — it rides a ``considered`` edge (verdict
+    ``useful``) from the run's scope to the matched hub instead, and every
+    judgment lands an append-only ``considerations`` row."""
+
+    def test_attach_writes_considered_edge_with_reason(self, store) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        paper = _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+
+        resp = _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={
+                "model": "sonnet-5",
+                "prompt_version": "mesher-v3",
+                "run_id": f"ag{run}",
+                "why": "the run reached the same Suzuki claim from miller23a",
+            },
+        )
+
+        assert "converged onto" in resp.body
+        assert "observation:" in resp.body and f"ag{run}" in resp.body
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        edge = edges[0]
+        assert edge.src_ref_id == run and edge.dst_ref_id == existing
+        assert edge.meta["verdict"] == "useful"
+        assert edge.meta["reason"] == (
+            "the run reached the same Suzuki claim from miller23a"
+        )
+        assert edge.meta["run"] == f"ag{run}"
+        assert edge.meta["model"] == "sonnet-5"
+        assert edge.meta["prompt"] == "mesher-v3"
+        assert edge.meta["actor"] == "agent"
+        # The ungrounded supporter still names its source ref.
+        assert edge.meta["supporters"] == [f"pa{paper}"]
+        # No supporter source_handle -> claim-level read depth.
+        assert edge.meta["depth"] == "metadata"
+        assert "passages" not in edge.meta
+        history = store.consideration_history(scope_ref_id=run)
+        assert len(history) == 1
+        assert history[0]["verdict"] == "useful"
+        assert history[0]["source_ref_id"] == existing
+        # The history row keeps the run's evidence association too —
+        # an edge overwrite can never lose it (review td688001).
+        assert history[0]["supporters"] == [f"pa{paper}"]
+
+    def test_two_runs_converge_each_leaves_own_reasoned_link(self, store) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+        run_a = _mk_agentlog(store, title="run A")
+        run_b = _mk_agentlog(store, title="run B")
+
+        _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"run_id": f"ag{run_a}", "why": "run A's observation"},
+        )
+        _converge_put(
+            store,
+            existing,
+            sentence="Palladium on carbon catalyzes Suzuki couplings.",
+            extra_meta={"run_id": f"ag{run_b}", "why": "run B's observation"},
+        )
+
+        edges = _considered_in(store, existing)
+        assert {e.src_ref_id for e in edges} == {run_a, run_b}
+        reasons = {e.src_ref_id: e.meta["reason"] for e in edges}
+        assert reasons[run_a] == "run A's observation"
+        assert reasons[run_b] == "run B's observation"
+        assert len(store.consideration_history(source_ref_id=existing)) == 2
+        # The finding itself is still singular.
+        assert store.count_refs(kind="finding") == 1
+
+    def test_same_scope_rejudgment_keeps_history_not_second_edge(self, store) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+        mem = _mk_memory(store)
+
+        _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"why": "first convergence"},
+            from_memory=f"me{mem}",
+        )
+        _converge_put(
+            store,
+            existing,
+            sentence="Palladium on carbon catalyzes Suzuki couplings.",
+            extra_meta={"why": "second convergence"},
+            from_memory=f"me{mem}",
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        assert edges[0].meta["reason"] == "second convergence"
+        history = store.consideration_history(scope_ref_id=mem)
+        assert len(history) == 2
+
+    def test_same_scope_two_runs_keep_their_own_supporters(self, store) -> None:
+        """review td688001 (gr626718): two runs under ONE scope converge
+        with different ref-level supporters — the edge carries the
+        latest run's set while the append-only history keeps each run's
+        own evidence association."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        p1 = _seed_paper(store, cite_key="miller23a")
+        p2 = _seed_paper(store, cite_key="jones24b")
+        mem = _mk_memory(store)
+
+        _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            supporters=[{"paper": "miller23a"}],
+            extra_meta={"why": "first convergence"},
+            from_memory=f"me{mem}",
+        )
+        _converge_put(
+            store,
+            existing,
+            sentence="Palladium on carbon catalyzes Suzuki couplings.",
+            supporters=[{"paper": "jones24b"}],
+            extra_meta={"why": "second convergence"},
+            from_memory=f"me{mem}",
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        assert edges[0].meta["supporters"] == [f"pa{p2}"]
+        history = store.consideration_history(scope_ref_id=mem)
+        assert len(history) == 2
+        by_reason = {j["reason"]: j for j in history}
+        assert by_reason["first convergence"]["supporters"] == [f"pa{p1}"]
+        assert by_reason["second convergence"]["supporters"] == [f"pa{p2}"]
+
+    def test_env_run_scope(self, store, monkeypatch) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+        monkeypatch.setenv("PRECIS_CURRENT_AGENTLOG", str(run))
+
+        resp = _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"why": "env-attributed run"},
+        )
+
+        assert "observation:" in resp.body
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1 and edges[0].src_ref_id == run
+
+    def test_no_scope_records_no_observation(self, store) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+
+        resp = _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"why": "unattributed run"},
+        )
+
+        assert "converged onto" in resp.body
+        assert "observation:" not in resp.body
+        assert _considered_in(store, existing) == []
+
+    def test_mint_path_writes_no_observation_edge(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+
+        resp = _finding_hub_mint.put_hub(
+            store,
+            sentence="A genuinely novel claim nobody has minted.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=_block_none,
+            extra_meta={"run_id": f"ag{run}", "why": "first mint"},
+        )
+
+        assert "claim hub fi" in resp.body
+        assert "observation:" not in resp.body
+        assert store.consideration_history(scope_ref_id=run) == []
+
+    def test_attach_by_choice_records_observation(self, store) -> None:
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+
+        resp = _finding_hub_mint.put_hub(
+            store,
+            sentence="reworded variant of the compound claim",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=_never_called,
+            judge_fn=_never_called,
+            dedup=f"attach:fi{compound}",
+            extra_meta={"run_id": f"ag{run}", "why": "agent chose attach"},
+        )
+
+        assert "converged onto" in resp.body
+        edges = _considered_in(store, compound)
+        assert len(edges) == 1
+        assert edges[0].src_ref_id == run
+        assert edges[0].meta["reason"] == "agent chose attach"
+
+    def test_passage_supporters_become_passages_pins(self, store) -> None:
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        paper = _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+            ).fetchone()[0]
+
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            scope={},
+            supporters=[{"paper": "miller23a", "source_handle": f"pc{chunk_id}"}],
+            embedder=object(),
+            block_fn=_block_hit(existing, "Pd/C catalyzes Suzuki coupling."),
+            judge_fn=lambda a, b: _verdict("same", 0.95),
+            extra_meta={"run_id": f"ag{run}", "why": "grounded at a passage"},
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        assert edges[0].meta["depth"] == "passages"
+        assert edges[0].meta["passages"] == [f"pc{chunk_id}"]
+        assert edges[0].meta["supporters"] == [f"pc{chunk_id}"]
+
+    def test_observation_write_failure_rolls_back_the_whole_converge(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Atomic retention (gr626718 review): the observation edge
+        shares the converge's transaction — a failed edge write fails
+        the put and rolls the attached evidence back too, never a
+        reported converge whose reasoned edge silently dropped."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        paper = _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+
+        real_add_link = store.add_link
+
+        def _boom(**kw: Any):
+            if kw.get("relation") == "considered":
+                raise RuntimeError("boom: observation edge write failed")
+            return real_add_link(**kw)
+
+        monkeypatch.setattr(store, "add_link", _boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _converge_put(
+                store,
+                existing,
+                sentence="Pd on carbon catalyzes the Suzuki reaction.",
+                extra_meta={"run_id": f"ag{run}", "why": "doomed observation"},
+            )
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, existing),
+            ).fetchone()
+        assert row is None, (
+            "the evidence edge must roll back with the observation write — "
+            "a failed converge attaches nothing"
+        )
+        assert _considered_in(store, existing) == []
+        assert store.consideration_history(scope_ref_id=run) == []
+
+    def test_all_supporters_preserved_grounded_and_ref_level(self, store) -> None:
+        """gr626718 review: the edge names EVERY supporter — grounded
+        ones as their ``pc`` pin (also in ``passages``), ref-level ones
+        as their source handle — so a run's complete evidence
+        association survives."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        paper = _seed_paper(store, cite_key="miller23a")
+        paper2 = _seed_paper(store, cite_key="jones24b")
+        run = _mk_agentlog(store)
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+            ).fetchone()[0]
+
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            scope={},
+            supporters=[
+                {"paper": "miller23a", "source_handle": f"pc{chunk_id}"},
+                {"paper": "jones24b"},
+            ],
+            embedder=object(),
+            block_fn=_block_hit(existing, "Pd/C catalyzes Suzuki coupling."),
+            judge_fn=lambda a, b: _verdict("same", 0.95),
+            extra_meta={"run_id": f"ag{run}", "why": "mixed grounding"},
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        meta = edges[0].meta
+        assert meta["passages"] == [f"pc{chunk_id}"]
+        assert meta["supporters"] == [f"pc{chunk_id}", f"pa{paper2}"]
+        assert meta["depth"] == "passages"
+
+    def test_passage_pins_are_never_truncated(self, store) -> None:
+        """gr626718 review: ``passages`` keeps every grounded pin — a
+        cap (the earlier [:10]) loses this run's evidence association."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        paper = _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+        store.chunks.insert_chunks(
+            paper,
+            [
+                ChunkInsert(ord=i, text=f"body chunk {i} of miller23a.", meta={})
+                for i in range(1, 13)
+            ],
+        )
+        with store.pool.connection() as conn:
+            chunk_ids = [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord",
+                    (paper,),
+                ).fetchall()
+            ]
+        assert len(chunk_ids) > 10
+        supporters = [
+            {"paper": "miller23a", "source_handle": f"pc{cid}"} for cid in chunk_ids
+        ]
+
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            scope={},
+            supporters=supporters,
+            embedder=object(),
+            block_fn=_block_hit(existing, "Pd/C catalyzes Suzuki coupling."),
+            judge_fn=lambda a, b: _verdict("same", 0.95),
+            extra_meta={"run_id": f"ag{run}", "why": "grounded at many passages"},
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        expected = [f"pc{cid}" for cid in chunk_ids]
+        assert edges[0].meta["passages"] == expected
+        assert edges[0].meta["supporters"] == expected
+
+    def test_env_run_attribution_when_scope_is_from_memory(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr626718 review: ``from_memory`` supplies the scope, but the
+        env-attributed agentlog still lands in the judgment's ``run`` —
+        a shared-scope verdict keeps its run attribution."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+        mem = _mk_memory(store)
+        run = _mk_agentlog(store)
+        monkeypatch.setenv("PRECIS_CURRENT_AGENTLOG", str(run))
+
+        _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"why": "memory-scoped, env-attributed"},
+            from_memory=f"me{mem}",
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        assert edges[0].src_ref_id == mem
+        assert edges[0].meta["run"] == f"ag{run}"
+        history = store.consideration_history(scope_ref_id=mem)
+        assert history[0]["run"] == f"ag{run}"
+
+    def test_marker_why_falls_back_to_generic_reason(self, store) -> None:
+        """A content-free marker ``why`` (``'.'``/``'reviewed-obvious'``)
+        records the converge fallback reason rather than sinking the put
+        on the considered door's real-reason admission."""
+        existing = mint_hub(
+            store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+        )
+        _seed_paper(store, cite_key="miller23a")
+        run = _mk_agentlog(store)
+
+        _converge_put(
+            store,
+            existing,
+            sentence="Pd on carbon catalyzes the Suzuki reaction.",
+            extra_meta={"run_id": f"ag{run}", "why": "."},
+        )
+
+        edges = _considered_in(store, existing)
+        assert len(edges) == 1
+        assert edges[0].meta["reason"] == (
+            "dedup converge — this run reached the same claim"
+        )

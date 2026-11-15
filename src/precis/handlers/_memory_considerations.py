@@ -12,7 +12,7 @@ acquisition markers — followed by the append-only judgment history (every
 run's verdict; the edge keeps only the latest; a door-withdrawn judgment
 shows its ``withdrawn`` stamp). The history pages: ``args={'limit': N,
 'offset': M}`` windows it, and every row shows its recorded evidence —
-passages, prompt and the revision pins it was judged against.
+passages, supporters, prompt and the revision pins it was judged against.
 """
 
 from __future__ import annotations
@@ -59,8 +59,8 @@ def _verdict_line(v: Any, titles: dict[int, str]) -> str:
 
 def _history_row(j: dict[str, Any]) -> str:
     """One judgment-history row with its recorded evidence: provenance,
-    passages, prompt and the revision pins (gr662069 review — the audit
-    trail is only auditable if the view can read it back)."""
+    passages, supporters, prompt and the revision pins (gr662069 review
+    — the audit trail is only auditable if the view can read it back)."""
     src_handle = _handle(j["source_kind"], j["source_ref_id"])
     provenance = ", ".join(f"{k}={j[k]}" for k in ("actor", "model", "run") if j.get(k))
     stamp = j["checked_at"].isoformat() if j.get("checked_at") else "?"
@@ -79,6 +79,9 @@ def _history_row(j: dict[str, Any]) -> str:
     passages = j.get("passages") or []
     if passages:
         pins.append(f"passages={passages}")
+    supporters = j.get("supporters") or []
+    if supporters:
+        pins.append(f"supporters={supporters}")
     if j.get("prompt"):
         pins.append(f"prompt={j['prompt']!r}")
     if pins:

@@ -375,7 +375,10 @@ class FindingHandler(NumericRefHandler):
         same passage) is refused with ``options`` attach / refine / force:
         ``dedup='attach:fi<N>'`` attaches the supporters to that hub,
         ``dedup='force'`` mints anyway and stamps ``meta.dedup_override``.
-        See :mod:`precis.handlers._finding_hub_mint`.
+        On a converge the run's observation (``meta.why``, ``run_id``)
+        is kept as a ``considered`` edge from the run's scope —
+        ``from_memory=`` names it (else the run's agentlog) — to the
+        matched hub. See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
         ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
@@ -424,7 +427,9 @@ class FindingHandler(NumericRefHandler):
         # ``link(kind='finding', meta=...)`` already carries to the edge,
         # gr504789/gr506767). It merges into the minted ref's meta under
         # the handler's own keys; on a dedup *converge* (hub mode) no row
-        # is minted so it is dropped, same rule as mint_hub's extra_meta.
+        # is minted, so the annotation rides the run's ``considered``
+        # observation edge to the matched hub instead (gr626718 —
+        # ``_finding_hub_mint._attach_to_existing``).
         if meta is not None and not isinstance(meta, dict):
             raise BadInput(
                 f"meta= must be a dict, got {type(meta).__name__}",
@@ -532,6 +537,7 @@ class FindingHandler(NumericRefHandler):
                 dedup=dedup,
                 embedder=getattr(self.hub, "embedder", None),
                 extra_meta=meta,
+                from_memory=from_memory,
             )
 
         # --- Acquisition mode (claim-first mint) ---

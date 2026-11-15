@@ -596,8 +596,24 @@ A machine writer (a gardener/mesher/scout pass, any run under a
 **who produced it**: `meta={'model': '<model id>',
 'prompt_version': '<prompt>', 'run_id': '<run>', 'why': '<reason>'}`
 on `put(kind='finding')` merges into the new ref's meta. On a
-dedup converge no row is minted, so the annotation drops — same rule
-as every mint-time meta. The same annotation gates machine-written
+dedup converge no row is minted, so the annotation rides the run's
+**observation edge** instead: the hub door writes a `considered`
+link from the run's scope to the matched hub — verdict `useful`,
+the run's `why` as its reason, every supporter's identity on the
+edge (grounded `pc` pins in `passages`, the full set incl.
+ref-level sources in `supporters`) — and every judgment lands an
+append-only `considerations` history row carrying that run's own
+block (`supporters` included — re-judging or a merge replaces the
+edge's block, never the history's), so two runs converging
+on one finding each keep their own reasoned link for fix-forward
+audit. The scope resolves from `from_memory=` (the memory/quest
+that reasoned here), then `meta.run_id`'s agentlog, then the
+env-attributed run; a put with no run identity records none.
+`meta.run` names the run — `run_id` verbatim, else the
+env-attributed agentlog — so a memory-scoped verdict still knows
+its writer. The edge shares the converge's transaction: a failed
+observation write fails the put outright rather than dropping the
+run's reason silently. The same annotation gates machine-written
 *edges* (`link` calls under a writer context): evidence pins in
 `meta.evidence` plus `meta.{model,prompt_version,run_id,why}` — the
 admission rules and which rels are human-only are in
