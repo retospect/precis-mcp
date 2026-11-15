@@ -389,14 +389,16 @@ class TestHydeCorpusHits:
 
 
 class _S2Stub:
-    """Records S2 calls; optionally raises."""
+    """Records S2 calls (queries and limits); optionally raises."""
 
     def __init__(self, raises: Exception | None = None) -> None:
         self.calls: list[str] = []
+        self.limits: list[int] = []
         self.raises = raises
 
     def __call__(self, query: str, limit: int) -> list[dict[str, Any]]:
         self.calls.append(query)
+        self.limits.append(limit)
         if self.raises is not None:
             raise self.raises
         return [{"doi": "10.1/new", "title": "new"}]
@@ -414,9 +416,12 @@ def _stub_acquire(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 class TestLocalFirst:
-    def test_answered_by_held_finding_acquires_nothing(
+    def test_answered_by_held_finding_still_peeks(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """gr626691 ("always peek a little, every time"): an answered graph
+        no longer skips outside — it runs the bounded peek instead of the
+        full acquire leg."""
         s2 = _S2Stub()
         monkeypatch.setattr(s2mod, "search_s2_papers", s2)
         acquires = _stub_acquire(monkeypatch)
@@ -427,12 +432,15 @@ class TestLocalFirst:
         )
         out = fn(store, "claim provenance", [])
 
-        assert [rid for rid, _ in out] == [50, 51, 52]
-        assert s2.calls == []  # zero S2 calls
-        assert acquires == []
+        # local hits first, then the peek's acquired candidate
+        assert [rid for rid, _ in out] == [50, 51, 52, 901]
+        assert s2.calls == ["claim provenance"]
+        assert s2.limits == [2]  # the peek bound, not the full acquire leg
+        assert len(acquires) == 1
         rep = fn.report_for("claim provenance")
         assert rep is not None
-        assert (rep.local, rep.acquired, rep.external_ran) == (3, 0, False)
+        assert (rep.local, rep.acquired, rep.external_ran) == (3, 1, True)
+        assert rep.peeked is True and rep.forced is False
         # the hybrid cross-kind primitive over all five kinds
         assert store.local_calls[0]["kinds"] == list(qsearch.LOCAL_KINDS)
 
@@ -487,11 +495,15 @@ class TestLocalFirst:
     ) -> None:
         s2 = _S2Stub()
         monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
         fn = qsearch.make_acquiring_search(1, _fake_hub())
         store: Any = FakeStore(held_ids=[10, 11, 12])
         out = fn(store, "q", [10, 11])
-        assert [rid for rid, _ in out] == [12]
-        assert s2.calls == []  # graph answered even though two are already linked
+        # graph still answered even though two local hits are already
+        # linked — the peek runs but stays bounded.
+        assert [rid for rid, _ in out] == [12, 901]
+        assert s2.calls == ["q"]
+        assert s2.limits == [2]
 
     def test_floor_applies_to_enough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         s2 = _S2Stub()
@@ -543,21 +555,23 @@ class TestRunSearchStepLocalFirst:
         assert "local 1, acquired 1" in self.entries[0]["text"]
         assert "graph thin, outside searched" in self.entries[0]["text"]
 
-    def test_answered_query_logbook_says_outside_skipped(
+    def test_answered_query_logbook_says_outside_peeked(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         s2 = _S2Stub()
         monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
         fn = qsearch.make_acquiring_search(7, _fake_hub())
         store: Any = _StepStore(
             held_ids=[(50, "finding"), (51, "finding"), (52, "paper"), (53, "paper")]
         )
         qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
 
-        assert "local 4, acquired 0" in self.entries[0]["text"]
-        assert "outside skipped" in self.entries[0]["text"]
-        assert s2.calls == []
-        # bounded by MAX_LINK_PER_QUERY
+        assert "local 4, acquired 1" in self.entries[0]["text"]
+        assert "outside peeked" in self.entries[0]["text"]
+        assert s2.calls == ["q"]
+        assert s2.limits == [2]
+        # bounded by MAX_LINK_PER_QUERY — the peek's candidate is past it
         assert [ln["src_ref_id"] for ln in store.links] == [50, 51, 52]
         assert all(ln["relation"] == "serves" for ln in store.links)
 
@@ -566,14 +580,36 @@ class TestRunSearchStepLocalFirst:
     ) -> None:
         s2 = _S2Stub()
         monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
         fn = qsearch.make_acquiring_search(7, _fake_hub())
         store: Any = _StepStore(
             held_ids=[(60, "draft"), (61, "memory"), (62, "concept"), (63, "paper")]
         )
         qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
 
-        assert s2.calls == []  # 4 local hits answered it
-        assert [ln["src_ref_id"] for ln in store.links] == [62, 63]
+        assert s2.calls == ["q"]  # 4 local hits answered it — the peek still runs
+        # drafts and memories are never linked; the peek's paper is
+        assert [ln["src_ref_id"] for ln in store.links] == [62, 63, 901]
+
+    def test_peek_candidates_still_link_through_the_step(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A peeked acquire is an ordinary candidate: it flows through
+        ``run_search_step``'s floor + MAX_LINK_PER_QUERY + gate like a
+        thin-graph acquisition — here 4 local hits answer the query (the
+        peek ran), but drafts/memories don't link, leaving room under the
+        cap for the peeked paper."""
+        monkeypatch.setattr(s2mod, "search_s2_papers", _S2Stub())
+        _stub_acquire(monkeypatch)
+        fn = qsearch.make_acquiring_search(7, _fake_hub())
+        store: Any = _StepStore(
+            held_ids=[(60, "draft"), (61, "memory"), (62, "draft"), (63, "paper")]
+        )
+        step = qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
+        rep = fn.report_for("q")
+        assert rep is not None and rep.peeked
+        assert step.papers_linked == 2
+        assert [ln["src_ref_id"] for ln in store.links] == [63, 901]
 
     def test_s2_failure_does_not_raise_and_is_logged(
         self, monkeypatch: pytest.MonkeyPatch
@@ -714,51 +750,52 @@ class TestRoadmapTickCliEmbedder:
 
 
 class TestForceExternal:
-    """``force_external`` — the roadmap supply role's escalation: the outside
-    leg runs even when the graph already answers."""
+    """``force_external`` — the roadmap supply role's escalation: the FULL
+    outside leg runs even when the graph already answers (vs. the default
+    small peek, gr626691)."""
 
-    def _wire(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
-        s2_calls: list[str] = []
-
-        def _s2(query: str, limit: int) -> list[dict[str, Any]]:
-            s2_calls.append(query)
-            return [{"doi": "10.1/aaa", "title": "paper a"}]
-
-        monkeypatch.setattr(s2mod, "search_s2_papers", _s2)
+    def _wire(self, monkeypatch: pytest.MonkeyPatch) -> _S2Stub:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
         monkeypatch.setattr(
             "precis.handlers.paper.PaperHandler.acquire",
             lambda self, **kw: _FakeResponse(body="acquire: minted stub paper id=901"),
         )
-        return s2_calls
+        return s2
 
-    def test_default_skips_outside_when_graph_answers(
+    def test_default_peeks_when_graph_answers(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        s2_calls = self._wire(monkeypatch)
+        s2 = self._wire(monkeypatch)
         fn = qsearch.make_acquiring_search(1, _fake_hub())
         assert fn.force_external is False
         store: Any = FakeStore(held_ids=[10, 11, 12])
         out = fn(store, "q", [])
-        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
-        assert s2_calls == []
+        # local hits first, then the peek's acquired candidate
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0), (901, None)]
+        assert s2.calls == ["q"]
+        assert s2.limits == [2]  # the peek bound, not the full leg's 4
         rep = fn.report_for("q")
-        assert rep is not None and rep.external_ran is False and rep.forced is False
-        assert "outside skipped" in qsearch._sources_clause(rep)
+        assert rep is not None and rep.external_ran is True
+        assert rep.forced is False and rep.peeked is True
+        assert "outside peeked" in qsearch._sources_clause(rep)
 
     def test_forced_runs_outside_with_three_local_hits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        s2_calls = self._wire(monkeypatch)
+        s2 = self._wire(monkeypatch)
         fn = qsearch.make_acquiring_search(1, _fake_hub(), force_external=True)
         assert fn.force_external is True
         store: Any = FakeStore(held_ids=[10, 11, 12])
         out = fn(store, "q", [])
         # local hits first, then the acquired paper
         assert out == [(10, 1.0), (11, 1.0), (12, 1.0), (901, None)]
-        assert s2_calls == ["q"]
+        assert s2.calls == ["q"]
+        assert s2.limits == [4]  # escalation gets the full acquire leg
         rep = fn.report_for("q")
         assert rep is not None
         assert rep.external_ran is True and rep.forced is True
+        assert rep.peeked is False
         assert rep.local == 3 and rep.acquired == 1
         assert (
             "graph answered, outside searched (escalated)"
@@ -768,14 +805,16 @@ class TestForceExternal:
     def test_forced_flag_is_a_live_attribute(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        s2_calls = self._wire(monkeypatch)
+        s2 = self._wire(monkeypatch)
         fn = qsearch.make_acquiring_search(1, _fake_hub())
         store: Any = FakeStore(held_ids=[10, 11, 12])
         fn.force_external = True
         fn(store, "a", [])
         fn.force_external = False
         fn(store, "b", [])
-        assert s2_calls == ["a"]
+        # both ran outside; the flag picks full leg vs peek per call
+        assert s2.calls == ["a", "b"]
+        assert s2.limits == [4, 2]
 
     def test_thin_graph_is_not_labelled_escalated(
         self, monkeypatch: pytest.MonkeyPatch
@@ -802,6 +841,80 @@ class TestForceExternal:
         assert rep is not None and rep.external_ran
         assert rep.external_error is not None
         assert rep.external_error.startswith(("ImportError", "ModuleNotFoundError"))
+        assert "outside search failed" in qsearch._sources_clause(rep)
+
+
+# ── gr626691: the answered-graph peek ────────────────────────────────────
+
+
+class TestAnsweredPeek:
+    """gr626691 (Reto 2026-11-11: "always peek a little, every time"): a
+    query the graph answers (≥ ``LOCAL_ENOUGH`` hits above the floor) still
+    runs a small bounded external lookup — seen/rejected exclusions and the
+    budget apply exactly as on the full leg."""
+
+    def _wire(self, monkeypatch: pytest.MonkeyPatch) -> _S2Stub:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        monkeypatch.setattr(
+            "precis.handlers.paper.PaperHandler.acquire",
+            lambda self, **kw: _FakeResponse(body="acquire: minted stub paper id=901"),
+        )
+        return s2
+
+    def test_peek_obeys_its_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PRECIS_QUEST_PEEK_PER_QUERY caps the S2 page the peek asks for."""
+        monkeypatch.setenv("PRECIS_QUEST_PEEK_PER_QUERY", "1")
+        s2 = self._wire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        assert s2.limits == [1]
+        rep = fn.report_for("q")
+        assert rep is not None and rep.peeked and rep.acquired == 1
+        assert [rid for rid, _ in out][:3] == [10, 11, 12]
+
+    def test_zero_disables_the_peek(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_QUEST_PEEK_PER_QUERY", "0")
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
+        assert s2.calls == []
+        rep = fn.report_for("q")
+        assert rep is not None and rep.external_ran is False
+        assert "outside skipped" in qsearch._sources_clause(rep)
+
+    def test_peek_candidates_respect_seen_exclusions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An acquired id the caller already excluded (an existing
+        ``serves`` server or a judged-out ``not-useful`` source — both are
+        passed in as ``exclude_ref_ids``) is dropped like any other leg's
+        hit."""
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)  # every acquire acks id=901
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [901])
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
+        assert s2.calls == ["q"]  # the peek still ran — its candidate was held out
+
+    def test_peek_s2_failure_keeps_local_hits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub(raises=RuntimeError("429"))
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
+        rep = fn.report_for("q")
+        assert rep is not None and rep.peeked and "429" in (rep.external_error or "")
         assert "outside search failed" in qsearch._sources_clause(rep)
 
 

@@ -522,13 +522,18 @@ older reaction network (template@version)" until re-measured.
 
 ## A research tick — searches and compute
 
-**Searches go local first.** A tick's `searches` hit our own graph (papers,
-findings, drafts, concepts, memories) before anything outside. Semantic
-Scholar is queried and papers acquired only under 3 relevant local hits;
-an S2 failure keeps them. Local papers, findings
+**Searches go local first, but always peek.** A tick's `searches` hit our
+own graph (papers,
+findings, drafts, concepts, memories) before anything outside. The full
+Semantic Scholar + acquire leg runs only under 3 relevant local hits —
+plus a small bounded peek (2 S2 candidates, `PRECIS_QUEST_PEEK_PER_QUERY`)
+even when the graph answered, so a stocked corpus can't hide newer
+opposing evidence; an S2 failure keeps the local hits either way. Local
+papers, findings
 and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
-`[local N, acquired M; …]`.
+`[local N, acquired M; …]` (`outside peeked` when the graph answered and
+the peek ran; `outside skipped` only when the peek is turned off).
 
 **A relevance gate stands before each link** (gr592951). A candidate
 carrying neither title nor abstract is NEVER linked — the line says
