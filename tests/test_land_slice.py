@@ -696,12 +696,17 @@ def test_record_land_clears_pending_land() -> None:
     store.add_todo(
         46,
         status="done",
-        meta={"pending_land": {"todo_id": 46, "branch": "slice/46"}},
+        meta={
+            "pending_land": {"todo_id": 46, "branch": "slice/46"},
+            "preland_fix_rounds": {"count": 2, "finding": "0123456789abcdef"},
+        },
     )
     wrote = land_slice._record_land(store, 46, "abc1234def", "feat(x): y")
     assert "pending_land cleared" in wrote
     assert "landed comment" in wrote
     assert not store.refs[46].meta.get("pending_land")
+    # gr684815: the pre-land FIX-round count ends with the land.
+    assert not store.refs[46].meta.get("preland_fix_rounds")
     assert store.comments(46)[-1].startswith("landed: abc1234de")
 
 

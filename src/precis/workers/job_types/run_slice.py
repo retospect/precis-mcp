@@ -288,6 +288,12 @@ _BRIEF_PREFIXES: tuple[str, ...] = ("brief:", "handoff:")
 #: wins over while an ``attempt:`` tag stands (gr571311).
 _LANDER_HANDOFF_PREFIX = "handoff: lander:"
 
+#: How the tick's pre-land FIX/REVERT hand-back begins
+#: (``plan_dispatch._review_back_to_builder``). A reviewer session's own
+#: last message can begin the same way, so :func:`_outranks_brief` also
+#: wants the tick's trailer (gr684815).
+_REVIEW_HANDBACK_PREFIX = "handoff: review:"
+
 _DEFAULT_MAX_TURNS = 300
 _DEFAULT_WALL_S = 4 * 3600
 _DEFAULT_TASK_CLASS = "code"
@@ -2693,6 +2699,19 @@ def _render_repo_brief(
     return "\n".join(lines) + "\n"
 
 
+def _outranks_brief(handoff: str) -> bool:
+    """A ``handoff:`` the machine wrote as the next session's instruction:
+    the lander's failure note, or the tick's pre-land review hand-back.
+    Neither is a dead session's last message, so each steers the retry
+    like a ``brief:`` does (:func:`_brief_parts`)."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    lowered = handoff.lower()
+    return lowered.startswith(_LANDER_HANDOFF_PREFIX) or (
+        lowered.startswith(_REVIEW_HANDBACK_PREFIX) and PRELAND_HANDBACK_MARK in handoff
+    )
+
+
 def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     """``(body, newest brief:/handoff: comment)`` of the todo.
 
@@ -2703,15 +2722,18 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     shadow the real instructions for the retry. A lander handoff
     (:data:`_LANDER_HANDOFF_PREFIX`) is different: it is the failure
     instruction the reopened todo exists to act on, so it keeps winning
-    by recency."""
+    by recency. So does the tick's pre-land review hand-back (gr684815):
+    shadowed by an older ``brief:``, the rebuild never saw the finding
+    and the reviewer returned the same FIX every round. A dead session's
+    handoff yields to whichever of those steers is newest."""
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
     )
     latest: str | None = None
     latest_ord = -1
-    brief: str | None = None
-    brief_ord = -1
+    steer: str | None = None
+    steer_ord = -1
     for c in chunks:
         if c.chunk_kind != _COMMENT_KIND:
             continue
@@ -2721,16 +2743,16 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
             continue
         if int(c.ord) > latest_ord:
             latest, latest_ord = text, int(c.ord)
-        if lowered.startswith("brief:") and int(c.ord) > brief_ord:
-            brief, brief_ord = text, int(c.ord)
+        if (lowered.startswith("brief:") or _outranks_brief(text)) and (
+            int(c.ord) > steer_ord
+        ):
+            steer, steer_ord = text, int(c.ord)
     if (
-        latest is not None
-        and latest_ord > brief_ord
-        and brief is not None
-        and not latest.lower().startswith(_LANDER_HANDOFF_PREFIX)
+        steer is not None
+        and latest_ord > steer_ord
         and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
     ):
-        latest = brief
+        latest = steer
     return body, latest
 
 

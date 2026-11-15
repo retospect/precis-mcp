@@ -6932,6 +6932,99 @@ def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
     assert len(review_jobs) >= 2
 
 
+def _rebuild_and_review(
+    store: Store, build: int, review: int, verdict: str
+) -> pd.PassResult:
+    """One more pre-land cycle after a send-back: the reopened build's
+    newest ``run_slice`` ends clean and defers its land again, the
+    released reviewer runs and posts ``verdict``; returns the pass that
+    read it."""
+    _set_job_status(store, _run_slice_jobs(store, build)[-1], "succeeded")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    _succeed_newest(store, review)
+    _todo_comment(store, review, verdict)
+    return pd.run_pass(store)
+
+
+def _run_slice_jobs(store: Store, todo: int) -> list[int]:
+    return [
+        jid for jid, m in _jobs_under(store, todo) if m.get("job_type") == "run_slice"
+    ]
+
+
+def test_preland_fix_handback_outranks_an_older_brief(store: Store) -> None:
+    """gr684815: the hand-back the tick writes is the one
+    ``run_slice._brief_parts`` keeps above an older ``brief:`` — the two
+    modules share the trailer — and the first round is counted on the
+    build."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build = mint.ids["build"]
+    pd.run_pass(store)
+    handback = next(
+        c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
+    )
+    assert run_slice._outranks_brief(handback)
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["finding"]
+
+
+def test_preland_fix_rounds_cap_asks_the_coordinator(store: Store) -> None:
+    """gr684815: every pre-land send-back re-arms the builder's retry
+    budget, so nothing bounded the build→review loop. At
+    ``PRELAND_FIX_CAP`` verdicts in a row the tick mints no rebuild: the
+    build is held on one coordinator ask, and the count clears so the
+    answer buys a fresh one."""
+    mint = _reviewed_pending(store, "review: FIX — finding one")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    _rebuild_and_review(store, build, review, "review: FIX — finding two")
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 2
+    assert _blocked_by_ids(store, build) == []
+    before = len(_run_slice_jobs(store, build))
+
+    res = _rebuild_and_review(store, build, review, "review: FIX — finding three")
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "finding three" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    # The finding is still handed back and the build reopened — but no
+    # rebuild job mints while the ask stands.
+    assert _status(store, build) == "open"
+    assert any("finding three" in c for c in _todo_comments(store, build))
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+    assert _status(store, review) == "open"
+    pd.run_pass(store)
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _blocked_by_ids(store, build) == [ask]
+
+
+def test_preland_same_finding_twice_asks_the_coordinator(store: Store) -> None:
+    """gr684815: the same finding twice running means the rebuild is not
+    reaching the reviewer (or the reviewer repeats itself) — a third
+    identical round tells nothing new, so the ask comes at the second.
+    Whitespace and case do not make a finding new."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    before = len(_run_slice_jobs(store, build))
+    res = _rebuild_and_review(
+        store, build, review, "review: FIX —  A.py misses the  empty case"
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
 def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
     """``run_slice._preland_reviewer`` — the lookup the build's clean
     exit runs: a live todo ``generate={role: reviewer, from: td<id>}``

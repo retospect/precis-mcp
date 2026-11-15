@@ -914,6 +914,59 @@ def test_brief_parts_keeps_lander_handoff_over_brief() -> None:
     assert latest == "brief: the real brief"
 
 
+def test_brief_parts_keeps_review_handback_over_brief() -> None:
+    """gr684815: the tick's pre-land FIX hand-back is the finding the
+    rebuild exists to act on. While an ``attempt:`` tag stands it must
+    not be demoted to an older ``brief:`` — shadowed, the builder never
+    saw the finding and the reviewer returned the same FIX every round.
+    A session's own last message that merely begins ``handoff: review:``
+    (no tick trailer) still loses to the brief."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    handback = (
+        "handoff: review: FIX — a.py misses the empty case\n\n"
+        f"(review td77, {PRELAND_HANDBACK_MARK} — rebuild on it from the "
+        "brief with this finding in mind)"
+    )
+    store = _Store()
+    store.add_todo(
+        42,
+        "Build the widget",
+        body="Do X, then Y.",
+        comments=("brief: a coordinator note", handback),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == handback
+    store.add_todo(
+        43,
+        "Review the widget",
+        body="Read the diff.",
+        comments=(
+            "brief: the branch is fixed; verify with git show",
+            "handoff: review: FIX — a.py misses the empty case",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 43)
+    assert latest == "brief: the branch is fixed; verify with git show"
+    # The rebuild died and left its own last message: the finding is
+    # still the newest steer, so the retry gets it, not the older brief.
+    store.add_todo(
+        44,
+        "Build the widget",
+        body="Do X, then Y.",
+        comments=(
+            "brief: a coordinator note",
+            handback,
+            "handoff: got as far as the parser",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 44)
+    assert latest == handback
+
+
 def test_generator_brief_creates_children_and_never_lands(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:

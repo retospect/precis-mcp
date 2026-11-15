@@ -89,7 +89,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    honours and whose ``waiting-for:`` prefix keeps every descendant out
    of dispatch — and one ``ask-coordinator`` ask (``blocks:`` the root,
    so it counts as open work, not a record) collects the chain's
-   complete findings and landed shas for one briefed builder. ``REVERT``
+   complete findings and landed shas for one briefed builder. A FIX or
+   REVERT on a branch a pre-land reviewer still holds (gr570506) mints
+   nothing: the build reopens with the finding as its ``handoff:`` and
+   the reviewer stays open for the rebuild. Those rounds are counted in
+   ``meta.preland_fix_rounds``; at :data:`PRELAND_FIX_CAP` in a row, or
+   on the same finding twice running, the build is held on an
+   ``ask-coordinator`` ask instead of rebuilding (gr684815). ``REVERT``
    mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
@@ -372,6 +378,7 @@ Workers never import handlers: every write here is a store call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -510,6 +517,12 @@ FIX_ESCALATE_DEPTH = 3
 #: the chain's findings and landed shas, so one briefed builder gets one
 #: brief instead of a chain of partial fixes.
 FIX_CHAIN_CAP = 4
+
+#: Pre-land FIX/REVERT verdicts in a row on one build before the tick
+#: stops rebuilding it and asks the coordinator (gr684815). Nothing
+#: bounded that loop — every send-back re-arms the builder's retry
+#: budget — and one build ran thirty-odd rounds on a single finding.
+PRELAND_FIX_CAP = 3
 
 #: The tag a FIX-chain-capped plan root parks on (gr604629): a
 #: ``waiting-for:`` marker for the coordinator — no auto-release and no
@@ -2890,6 +2903,84 @@ def _mint_preland_land(
     return job_id
 
 
+def _preland_round(t: _Node, kind: str, rest: str) -> tuple[int, str, bool]:
+    """``(count, finding digest, repeated)`` of the pre-land FIX/REVERT
+    being sent back to ``t`` (gr684815): one more than the count
+    ``meta.preland_fix_rounds`` holds, and whether the finding is the
+    previous round's again, whitespace and case aside."""
+    prev = t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY)
+    prev = prev if isinstance(prev, dict) else {}
+    try:
+        count = int(prev.get("count") or 0) + 1
+    except (TypeError, ValueError):
+        count = 1
+    text = " ".join(f"{kind} {rest}".lower().split())
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return count, digest, prev.get("finding") == digest
+
+
+def _park_preland_rounds(
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    t: _Node,
+    kind: str,
+    rest: str,
+    count: int,
+    repeated: bool,
+    now: datetime,
+) -> None:
+    """Hold the sent-back build ``t`` on a coordinator ask instead of
+    rebuilding again (gr684815): the build→review loop reached
+    :data:`PRELAND_FIX_CAP` rounds, or the reviewer returned the same
+    finding twice running. The count clears, so the answer buys a fresh
+    one."""
+    why = (
+        f"review td{n.id} returned the same pre-land {kind} twice running"
+        if repeated
+        else f"review td{n.id} sent the branch back {count} times in a row"
+    )
+    w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
+    res.asks += 1
+    if w.dry_run:
+        # Mirror the hold so the dispatch step mints no rebuild this pass.
+        plan.blockers.setdefault(t.id, []).append(
+            _Blocker(id=-t.id, status="open", is_ask=True, created_at=now)
+        )
+        res.notes.append(f"td{t.id}: would ask coordinator — {why}")
+        return
+    ask_id = _mint_coordinator_ask(
+        w.store,
+        plan,
+        t,
+        title=f"td{t.id}: pre-land review loop stopped — a coordinator call",
+        body=(
+            f"The plan tick stopped rebuilding td{t.id} "
+            f"({t.title.splitlines()[0] if t.title else ''}): {why}. "
+            "Another rebuild is unlikely to end differently: either the "
+            "builder is not acting on the finding, or the reviewer is not "
+            "reading the rebuilt branch.\n\n"
+            f"Newest verdict (review td{n.id}):\n{kind} — {rest}\n\n"
+            f"The branch is on origin and td{t.id} is open, blocked by "
+            "this ask. Read the branch against the finding, then leave a "
+            f"`brief:` comment on td{t.id} (what to change) or on review "
+            f"td{n.id} (how to verify what is already there) and close "
+            f"this ask `acknowledged` — td{t.id} rebuilds and the round "
+            f"count starts over. To drop the work, close td{t.id} "
+            "STATUS:won't-do."
+        ),
+        context=why,
+        now=now,
+        block_node=True,
+    )
+    w.comment(
+        t,
+        f"plan_dispatch: {why} — no rebuild mints; held on ask td{ask_id} (gr684815).",
+    )
+    res.notes.append(f"td{t.id}: pre-land review loop stopped — ask td{ask_id} ({why})")
+
+
 def _review_back_to_builder(
     store: Any,
     plan: _Plan,
@@ -2898,6 +2989,7 @@ def _review_back_to_builder(
     n: _Node,
     kind: str,
     rest: str,
+    now: datetime,
 ) -> None:
     """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
     the work goes back to the builder"). Nothing landed, so no fix or
@@ -2905,7 +2997,10 @@ def _review_back_to_builder(
     it reopens with the findings as its ``handoff:`` — the next build's
     brief — and the reviewer stays open for the rebuild (its
     ``blocked-by`` edge re-arms while the target is open and releases
-    when the next build defers again)."""
+    when the next build defers again). The rounds are counted
+    (gr684815): at :data:`PRELAND_FIX_CAP` in a row, or on the same
+    finding twice running, the target is held on a coordinator ask
+    instead of rebuilding."""
     targets = _pending_targets(plan, n)
     ruled: list[int] = []
     for t in targets:
@@ -2934,11 +3029,24 @@ def _review_back_to_builder(
         w.comment(
             t,
             f"handoff: review: {kind} — {rest}\n\n(review td{n.id}, "
-            "pre-land: the branch is still on origin — rebuild on it "
+            f"{_templates.PRELAND_HANDBACK_MARK} — rebuild on it "
             "from the brief with this finding in mind)",
         )
         if t.status != "open":
             w.set_status(t, "open")
+        count, digest, repeated = _preland_round(t, kind, rest)
+        if repeated or count >= PRELAND_FIX_CAP:
+            _park_preland_rounds(plan, w, res, n, t, kind, rest, count, repeated, now)
+        else:
+            w.stamp_meta(
+                t,
+                {
+                    _templates.PRELAND_FIX_ROUNDS_KEY: {
+                        "count": count,
+                        "finding": digest,
+                    }
+                },
+            )
     sent_back = [t.id for t in targets if t.id not in ruled]
     res.notes.append(
         f"td{n.id}: review {kind} pre-land — back to the builder: "
@@ -3032,7 +3140,7 @@ def _step_reviews(
             # has not landed sends the work back to the builder — nothing
             # is on main to fix or revert — and the reviewer stays open
             # for the rebuild it then re-gates.
-            _review_back_to_builder(store, plan, w, res, n, kind, rest)
+            _review_back_to_builder(store, plan, w, res, n, kind, rest, now)
             if all(_closed(t) for t in _review_targets(plan, n)):
                 # gr663909: every held target was ruled closed while the
                 # review ran — nothing is left to re-gate, and an open

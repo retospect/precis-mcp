@@ -277,6 +277,17 @@ PENDING_LAND_KEY = "pending_land"
 #: a later successful defer clears it, ``land_slice._record_land``
 #: discharges it.
 PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
+#: The trailer ``plan_dispatch`` ends a pre-land FIX/REVERT hand-back
+#: with (gr684815). ``run_slice._brief_parts`` reads it to tell the
+#: tick's hand-back — the finding the rebuild exists to act on — from a
+#: session's own last message, which may also begin ``handoff: review:``.
+PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
+#: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
+#: finding}`` — the pre-land FIX/REVERT verdicts in a row since the last
+#: land or coordinator ask, and a digest of the newest finding.
+#: ``plan_dispatch`` counts and caps it; ``land_slice._record_land``
+#: clears it.
+PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 
 #: The verdict lines a reviewer posts; ``plan_dispatch`` parses them.
 REVIEW_GRAMMAR = (

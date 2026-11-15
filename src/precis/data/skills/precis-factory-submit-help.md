@@ -97,7 +97,9 @@ a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
    one verdict comment: `review: LAND` · `review: FIX — <findings>` ·
    `review: REVERT — <why>`. LAND mints the held `land_slice`;
    FIX/REVERT send the branch back to the builder with the findings as
-   its handoff — nothing is on main to fix or revert.
+   its handoff — nothing is on main to fix or revert. Three send-backs
+   in a row, or the same finding twice running, stop the loop: the
+   build is held on an `ask-coordinator` ask instead of rebuilding.
 3. **land** — `land_slice` runs `scripts/ship --quick`: rebase, lint,
    squash-merge onto main, `landed: <sha>` on the todo, then deletes
    branch and worktree. **No pull requests, ever** — `gh pr` is denied

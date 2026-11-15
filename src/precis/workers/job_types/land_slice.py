@@ -321,6 +321,7 @@ from precis.plans.templates import (
     PENDING_LAND_KEY,
     PENDING_SHA,
     PRELAND_DEFER_FAILED_KEY,
+    PRELAND_FIX_ROUNDS_KEY,
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
@@ -1520,9 +1521,14 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
         # The pre-land hold (gr570506) is discharged: the landed: comment
         # is the record now, and the stamp must not read a post-land
         # review as pre-land. A stale preland_defer_failed (gr663738)
-        # discharges with it.
+        # and the FIX-round count (gr684815) discharge with it.
         store.stamp_ref_meta(
-            todo_id, {PENDING_LAND_KEY: None, PRELAND_DEFER_FAILED_KEY: None}
+            todo_id,
+            {
+                PENDING_LAND_KEY: None,
+                PRELAND_DEFER_FAILED_KEY: None,
+                PRELAND_FIX_ROUNDS_KEY: None,
+            },
         )
         wrote.append("pending_land cleared")
     if _rs._todo_status(store, todo_id) != "done":
