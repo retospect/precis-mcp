@@ -63,7 +63,7 @@ from _prod_ro import add_db_args, connect_ro  # noqa: E402
 
 SOURCE = "chase:verify"
 
-#: Env chain the candidate arm dispatches under (same seam medium_castor_eval
+#: Env chain the candidate arm dispatches under (same seam medium_local_eval
 #: uses): one rung, the rung an operator flip would write.
 CANDIDATE_CHAIN_ENV = "PRECIS_LLM_CHAIN_BIG"
 
@@ -347,7 +347,7 @@ def regroup(
 
 def served_endpoint(conn: Any, model: str) -> str:
     """A local rung's ``served_by`` endpoint, read from the llm catalog card —
-    the same read medium_castor_eval does. Held in memory only (LAN address,
+    the same read medium_local_eval does. Held in memory only (LAN address,
     public repo)."""
     from urllib.parse import urlparse
 
@@ -374,7 +374,7 @@ def candidate_rung(
     """The candidate's single rung + endpoint (``None`` for a cloud rung).
 
     ``--endpoint-url`` mode synthesises the proven local-rung shape
-    (medium_castor_eval's LOCAL_RUNG: low reasoning effort, bounded
+    (medium_local_eval's LOCAL_RUNG: low reasoning effort, bounded
     ``max_tokens``). ``--op-chain`` takes rung 0 of ``llm.op.chase:verify``
     verbatim — the row the coordinator writes before the run — and resolves
     a local rung's endpoint from the card's ``served_by``.

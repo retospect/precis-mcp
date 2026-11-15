@@ -293,7 +293,7 @@ Seams:
   `local-compute` ranks `backlog/llm-lane-scheduler.md`, the `llm-local`
   class — one allocator per box (capacity controller + class lanes;
   absorbed `llm-dispatch-feedback-controller.md`), with
-  `castor-agent-lane.md`'s two lanes as classes in it. Two scheduling
+  `serving-agent-lane.md`'s two lanes as classes in it. Two scheduling
   levels stay distinct: the job queue (`cluster-scheduling.md`,
   `job-scheduling-fairness.md`, factory/platform) decides which job runs;
   lanes decide which LLM call gets a slot; fillers are pull generators so

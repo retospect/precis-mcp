@@ -846,7 +846,7 @@ def _dropped_message(retries: int, reason: str) -> str:
         f"upstream dropped the model's tool call on {retries + 1} attempts "
         f"(last: {reason}). gpt-oss wrote the call on the harmony analysis "
         "channel, which SGLang's gpt-oss tool parser ignores; see "
-        "docs/backlog/castor-agent-lane.md (slice 0a)"
+        "docs/backlog/serving-agent-lane.md (slice 0a)"
     )
 
 

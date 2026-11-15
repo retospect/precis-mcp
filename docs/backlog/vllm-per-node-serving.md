@@ -24,7 +24,7 @@ counters this item lands — and does not resolve rates or timeouts
 ## Motivation / why
 
 Everything the fleet serves locally today is llama.cpp
-(`llamacpp-fleet-ops.md`, `spark-provisioning.md`), and the pair's
+(`llamacpp-fleet-ops.md`, `gb10-provisioning.md`), and the pair's
 `llama-server` has been stopped and disabled since 2026-08-23 with big-tier
 traffic falling to cloud Sonnet. The new workload — many concurrent agent
 sessions doing multi-hop tool use — wants continuous batching, prefix
@@ -286,7 +286,7 @@ level that matters, and gpt-oss on vLLM leads everything (ceiling about
 **Bench host: the GPU node — superseded 2026-10-02** (Slice 0 ran on the local-serving node from
 local NVMe). The GPU node's host traps (nvidia runtime not in a role, Docker Hub
 egress, the hung `/mnt/cluster` mount, the orphaned `/opt/precis`) live in
-`spark-provisioning.md`; the eval world's placement is `eval-run-spine.md`.
+`gb10-provisioning.md`; the eval world's placement is `eval-run-spine.md`.
 
 **Resolved since:**
 
@@ -297,7 +297,7 @@ egress, the hung `/mnt/cluster` mount, the orphaned `/opt/precis`) live in
   debugged, unless SGLang regresses.
 * **KV budget:** fp8 KV measured ~211k full-attention + ~169k
   sliding-window tokens at 0.86, smaller at the shipped 0.80
-  (`castor-agent-lane.md` §3): eight agent sessions at 20–30k context
+  (`serving-agent-lane.md` §3): eight agent sessions at 20–30k context
   fit, thirty-two do not. The weighted-units question in
   `llm-lane-scheduler.md` is where that is accounted per request.
 * **Which tier:** small and the per-op medium chains (summarise, verify)

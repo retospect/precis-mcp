@@ -40,7 +40,7 @@ Per node:
 
 - **Resident models**: llama-swap entries on the big Mac (model, quant,
   file size, ctx, `--parallel`, coexist group), GPU-twin serving
-  (`spark-pair-big-model-serving` runbook values), embedders (bge-m3
+  (the twin-serving values repo-dev memory holds), embedders (bge-m3
   service, the session MCP's embedder), the SMALL Mac's model.
 - **Memory**: unified RAM / VRAM footprint per resident model, KV cache at
   the configured ctx × parallel, and headroom.

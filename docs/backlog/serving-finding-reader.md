@@ -439,7 +439,7 @@ Acceptance:
   never ruled on.
 - Editing or merging human-written findings; promoting trust; nanopub.
 - The lane allocator (`llm-lane-scheduler.md`) and the local-model agent
-  harness (`castor-agent-lane.md`). The reader runs on today's claim
+  harness (`serving-agent-lane.md`). The reader runs on today's claim
   order and slots.
 - Reading papers for no target: every run names a `serves`.
 

@@ -74,7 +74,7 @@ while building the hold):
 
 ## autocatpath: GPU-node dev loop (measure + iterate on the GPU box)
 
-_Grouped 2026-09-26; was `autocatpath-spark-dev-loop`._
+_Grouped 2026-09-26; was the autocatpath GPU-node dev-loop item._
 
 **Why.** Deployed catpath 0.7.0 does **not** use the GPU. Measured
 2026-08-09 while a real seed (`no_to_nh3_pd`, PID 574501, `device=cuda`,

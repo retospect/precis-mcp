@@ -9,7 +9,7 @@ inventory group `sglang_serving`. The recipe below is the historical
 **What.** Big-model inference sharded across the two paired GB10 nodes via
 **llama.cpp RPC over the 200G ConnectX/RoCE link**. Brought up 2026-08-05Z.
 Node bringup and the interconnect:
-[`dgx-spark-node-bringup`](./dgx-spark-node-bringup.md).
+[`gb10-node-bringup`](./gb10-node-bringup.md).
 
 **Endpoint (OpenAI-compatible).** The local-serving node, port 8080, bound to all interfaces;
 web chat UI at the root, API under `/v1` (any dummy key). Reachable on the

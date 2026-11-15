@@ -7,7 +7,7 @@ pillar: local-compute
 
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
-Shipped 2026-10-21 (`fix/spark-provisioning`): the `vllm` and `sglang` roles
+Shipped 2026-10-21 (`fix/gb10-provisioning`): the `vllm` and `sglang` roles
 now converge the nvidia docker runtime themselves
 (`deploy/roles/vllm/tasks/main.yml`, `deploy/roles/sglang/tasks/main.yml`) —
 install-check `nvidia-ctk`, run `nvidia-ctk runtime configure
@@ -18,7 +18,7 @@ and stays out of scope.
 
 ## Docker Hub egress on the GPU node blocked (gr189697) — needed only for the TTS pause
 
-_Grouped 2026-09-26; was `spark-dockerhub-egress`._
+_Grouped 2026-09-26; was the GB10 dockerhub-egress item._
 
 TLS handshake to Docker Hub/ECR (AWS-hosted) stalls from the GPU node; ghcr.io
 works. Unblock path (not executed): pre-seed python:3.12-slim-bookworm from
@@ -57,7 +57,7 @@ Traps: the bench role must not enter inventory (no service group, no capability 
 
 ## Open questions / decisions log
 
-- Parked 2026-10-26 (`fix/spark-provisioning`, re-dispatch): the only shipped-shaped
+- Parked 2026-10-26 (`fix/gb10-provisioning`, re-dispatch): the only shipped-shaped
   slice (nvidia docker runtime convergence) already landed 2026-10-21
   (`b12b88eb5`, already on `main`). Everything left in this file needs either
   a live-inventory ruling (next item) or cluster-admin host access neither of

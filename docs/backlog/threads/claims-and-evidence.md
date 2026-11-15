@@ -128,7 +128,7 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
 
 ## Horizon
 
-1. **backlog/castor-finding-reader.md** (draft) — a local-serving-node background job
+1. **backlog/serving-finding-reader.md** (draft) — a local-serving-node background job
    that mints cited claim hubs from full-text papers through the canon
    cascade; unblocks qu509651's qualitative answers (0/62 papers read).
    Waits on Reto's ruling on its open questions.

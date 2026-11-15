@@ -59,7 +59,7 @@ correct it.
 2. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
    detection, frozen eval world) — waits on Do next 3 and on local-compute's
    the GPU node prerequisites (the `/mnt/cluster` NFS hang and the GPU node host prep,
-   `spark-provisioning.md` §Host items); reproducible, comparable
+   `gb10-provisioning.md` §Host items); reproducible, comparable
    eval runs. `backlog/model-qualification.md` (unthreaded) is its first
    consumer.
 3. **backlog/curation-gate.md** (+ its prerequisite

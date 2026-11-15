@@ -1,7 +1,7 @@
-"""Castor MEDIUM-tier load eval — replay real MEDIUM calls through both routes.
+"""Local MEDIUM-tier load eval — replay real MEDIUM calls through both routes.
 
-MEASURE ONLY — no routing change. For the "castor load" question (gr489474):
-would the MEDIUM tier's real workload hold up on castor's served
+MEASURE ONLY — no routing change. For the serving-node load question (gr489474):
+would the MEDIUM tier's real workload hold up on the serving node's
 ``openai/gpt-oss-120b`` instead of the current cloud rung? This script answers
 with production traffic, not synthetic tasks: it samples logged calls from
 ``llm_call_log``/``llm_blob`` (the serialized ``LlmRequest`` IS the production
@@ -40,7 +40,7 @@ network writes are the LLM dispatches themselves. Raw output (real paper
 text + answers) lands in the gitignored ``gold_set/local/`` dir — never
 commit it. The endpoint URL is held in memory only, never written anywhere.
 
-    uv run python scripts/llm_eval/medium_castor_eval.py --prod --n 50
+    uv run python scripts/llm_eval/medium_local_eval.py --prod --n 50
 """
 
 from __future__ import annotations
@@ -426,7 +426,7 @@ def judge_pair(
         model=JUDGE_MODEL,
         prompt=prompt,
         max_usd=JUDGE_MAX_USD,
-        source="castor-eval:judge",
+        source="local-eval:judge",
         log_call=False,
     )
     t0 = time.monotonic()
@@ -458,7 +458,7 @@ def _pct(values: list[float], q: float) -> float | None:
 def report_markdown(payload: dict[str, Any]) -> str:
     """The committed results doc — numbers only (no endpoint, no prompt text)."""
     lines = [
-        "# Castor MEDIUM-tier load eval",
+        "# Local MEDIUM-tier load eval",
         "",
         payload["blurb"],
         "",
@@ -496,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--judge-prompt-chars", type=int, default=12000)
     ap.add_argument(
         "--out",
-        default=str(HERE / "gold_set" / "local" / "medium_castor_eval.jsonl"),
+        default=str(HERE / "gold_set" / "local" / "medium_local_eval.jsonl"),
         help="raw JSONL (gitignored default; holds real text — never commit)",
     )
     ap.add_argument(

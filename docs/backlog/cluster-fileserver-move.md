@@ -318,7 +318,7 @@ live on the file server exclusively."
 6. **Pause the science lanes** through the job system, so no dft, fold or
    retrosynth job is mid-write. Run the rsync delta pass.
 7. **Linux Sparks.** Run `nfs_client` to point fstab at the NAS, then
-   reboot inside the scheduled OS-update window (`spark-provisioning.md`).
+   reboot inside the scheduled OS-update window (`gb10-provisioning.md`).
    The reboot is the only way to clear today's processes stuck in D state
    on the hung database host mount.
    - Touches: fstab and systemd automount on the GPU node and the DGX nodes.

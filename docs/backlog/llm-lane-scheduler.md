@@ -131,8 +131,8 @@ the local-serving node, Reto's numbers where he gave them:
 | `user` (interactive: MCP session calls, chat, agent turns) | 1 | 0 | 4 | no |
 | `classify` | 2 | 2 | 8 | no |
 | `llm_summarize` | 3 | 4 | 16 | no |
-| `castor_agent` (`castor-agent-lane.md` agent lane; Reto 2026-10-22: one channel at a time) | 2 | 0 | 1 | no |
-| `castor_batch` (`castor-agent-lane.md` batch lane, `llm.op.castor_lane:*`) | 3 | 0 | 16 | no |
+| `castor_agent` (`serving-agent-lane.md` agent lane; Reto 2026-10-22: one channel at a time) | 2 | 0 | 1 | no |
+| `castor_batch` (`serving-agent-lane.md` batch lane, `llm.op.castor_lane:*`) | 3 | 0 | 16 | no |
 | `graph_garden` | 4 | 2 | slots | yes |
 
 A request carries its class, mapped from `req.source` (`llm.op.<source>`,
@@ -171,7 +171,7 @@ caller is waiting.
 The pool is config rows per endpoint: `{host, model, slots,
 capabilities}`. A second local-serving node or a GPU node adds slots to the same model pool, or
 serves a different model (a small model for classify). Reto 2026-10-22
-(`castor-agent-lane.md` ruling): "a second GB10-class host with the same
+(`serving-agent-lane.md` ruling): "a second GB10-class host with the same
 model is the option for more coding capacity" — that host is a second
 row in this pool, nothing else. The router matches a class's required
 capability or model to endpoints; floors and maxes apply per pool, not
@@ -215,7 +215,7 @@ The gateway's one advantage, true queueing without polling, is not worth
 a second process until p95 queue wait shows polling slack matters.
 
 Server-side priority scheduling (SGLang `--enable-priority-scheduling`,
-proposed in `castor-agent-lane.md` §6) is not a second allocator: at most
+proposed in `serving-agent-lane.md` §6) is not a second allocator: at most
 the lane class maps to a `priority` the local wire forwards so the
 server's retraction policy agrees with the lanes. Off until a measured
 retraction storm says otherwise.
@@ -369,6 +369,6 @@ to a failed call.
 - Carried: PID on running sequences vs bang-bang on waiting/KV
   thresholds. Start with the threshold loop the admission prototype
   describes, and add the integral term only if the box oscillates.
-- Carried from `castor-agent-lane.md` §6: the SGLang per-request
+- Carried from `serving-agent-lane.md` §6: the SGLang per-request
   `priority` field name is undocumented in the OpenAI-compatible body;
   probe `/v1/chat/completions` before forwarding anything.

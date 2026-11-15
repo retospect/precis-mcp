@@ -85,7 +85,7 @@ Promoted from gr194396's sibling gr194304.
 
 ## GB10 node pair: spend the ~76G idle headroom on a larger big-tier model
 
-_Grouped 2026-09-26; was `spark-pair-larger-model`._
+_Grouped 2026-09-26; was the GB10-pair larger-model item._
 
 Measured 2026-08-10 with DeepSeek-V4-Flash UD-Q8_K_XL (151G, RPC-sharded)
 serving at `-np 4` (4×~32k slots): the local-serving node 82G used / 38G available, the second DGX node

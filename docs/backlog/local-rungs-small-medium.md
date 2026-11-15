@@ -69,7 +69,7 @@ eval's output as a standalone capability with no consumer.
 - BIG/FRONTIER tiers — those stay cloud (sonnet/opus) per the applied
   ladder; this item is SMALL/MEDIUM only.
 - Reviving the DGX-pair `llama-server` — that's a separate decision
-  (`spark-distributed-llm-serving` runbook territory), not assumed by this
+  (`gb10-distributed-llm-serving` runbook territory), not assumed by this
   item.
 
 ## Acceptance criteria

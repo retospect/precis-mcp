@@ -2,8 +2,8 @@
 
 Measurement for the local-serving-node load decision (gr489474, Reto "option 1",
 2026-10-18) — replay, no routing change. Harness:
-`scripts/llm_eval/medium_castor_eval.py`; raw output is gitignored
-(`scripts/llm_eval/gold_set/local/medium_castor_eval.jsonl`).
+`scripts/llm_eval/medium_local_eval.py`; raw output is gitignored
+(`scripts/llm_eval/gold_set/local/medium_local_eval.jsonl`).
 
 50 real MEDIUM calls replayed side-by-side: the prod cloud rung (claude_p →
 haiku) vs the local rung (gpt-oss-120b on the served endpoint). judge =

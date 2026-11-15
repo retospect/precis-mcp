@@ -5,7 +5,7 @@ joins the cluster. Done for the local-serving node and the second DGX node (2026
 twins doing headless LLM + sim serving, linked hip-to-hip over the ConnectX
 QSFP cable. An older standalone GPU node also exists. Serving stack: SGLang, role
 `deploy/roles/sglang/README.md` (the llama.cpp RPC pair,
-[`spark-distributed-llm-serving`](./spark-distributed-llm-serving.md), is
+[`gb10-distributed-llm-serving`](./gb10-distributed-llm-serving.md), is
 retired). Access:
 [`cluster-ssh-remote-access`](./cluster-ssh-remote-access.md). Starved-userland
 tell: pings but ssh banner-times-out (same class as the GB10 compute-niceness

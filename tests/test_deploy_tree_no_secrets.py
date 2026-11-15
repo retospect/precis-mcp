@@ -20,8 +20,9 @@ they have deliberately different scopes:
   memory. The failure message names ``path:line`` only. Two file lists
   narrow the scan: :data:`_HOSTNAME_EXEMPT` (permanent: a sealed migration's
   comment, a data file where the word is the domain term) and
-  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: docs that link to a file still named after one, tests of a script
-  that still does). Tests use made-up host names (``maple``, ``birch``).
+  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: files that carry the castor
+  lane name until its rename, and a byte-matched pathway fixture). Tests use
+  made-up host names (``maple``, ``birch``).
 
 ``deploy/inventory/`` is the LIVE per-cluster overlay (real ``hosts.yml``,
 ``group_vars/all/vault.yml`` …). It is **gitignored + local-only** and is
@@ -185,15 +186,12 @@ _HOSTNAME_EXEMPT: dict[str, str] = {
     "src/precis/utils/public_scan.py": "the pattern source itself",
     "docs/backlog/april-corpus-nas-migration.md": "a real directory name on the NAS",
     "docs/backlog/claude-code-on-local-serving.md": _VENDOR_NAME,
-    "docs/runbooks/dgx-spark-node-bringup.md": _VENDOR_NAME,
+    "docs/runbooks/gb10-node-bringup.md": _VENDOR_NAME,
     "scripts/classify/clusters.csv": _BIBLIO_DATA,
     "tests/test_deploy_tree_no_secrets.py": "this gate's own samples",
 }
 
-_NODE_NAMED_PATH = (
-    "links to a file, flag, branch or old slug named after a node; renames pending"
-)
-_LANE_RENAME = "carries the castor lane / file name; renamed in a later landing"
+_LANE_RENAME = "carries the castor lane name; renamed in a later landing"
 _PACKAGED_CASE = "byte-matches the packaged pathway repro case"
 
 #: TEMPORARY expected-failure list: files whose hostname hits are known and
@@ -201,28 +199,10 @@ _PACKAGED_CASE = "byte-matches the packaged pathway repro case"
 #: ``test_hostname_file_lists_have_no_stale_entries`` fails once the file is
 #: clean. Remove when the file is clean.
 _HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
-    "docs/backlog/autocatpath-seed-health.md": _NODE_NAMED_PATH,
-    "docs/backlog/castor-agent-lane.md": _NODE_NAMED_PATH,
-    "docs/backlog/castor-finding-reader.md": _NODE_NAMED_PATH,
-    "docs/backlog/castor-llm-routing.md": _NODE_NAMED_PATH,
-    "docs/backlog/cluster-fileserver-move.md": _NODE_NAMED_PATH,
-    "docs/backlog/llamacpp-fleet-ops.md": _NODE_NAMED_PATH,
-    "docs/backlog/llm-capacity-plan.md": _NODE_NAMED_PATH,
-    "docs/backlog/llm-lane-scheduler.md": _NODE_NAMED_PATH,
-    "docs/backlog/local-rungs-small-medium.md": _NODE_NAMED_PATH,
-    "docs/backlog/spark-fleet-embedder.md": _NODE_NAMED_PATH,
-    "docs/backlog/spark-provisioning.md": _NODE_NAMED_PATH,
-    "docs/backlog/threads/claims-and-evidence.md": _NODE_NAMED_PATH,
-    "docs/backlog/threads/deploy-fleet-ops.md": _NODE_NAMED_PATH,
-    "docs/backlog/threads/INDEX.md": _NODE_NAMED_PATH,
-    "docs/backlog/threads/local-compute.md": _NODE_NAMED_PATH,
-    "docs/backlog/threads/serving-programme.md": _NODE_NAMED_PATH,
-    "docs/backlog/vllm-per-node-serving.md": _NODE_NAMED_PATH,
-    "docs/runbooks/spark-distributed-llm-serving.md": _NODE_NAMED_PATH,
-    "scripts/anthropic-shim.py": _LANE_RENAME,
+    "docs/backlog/serving-agent-lane.md": _LANE_RENAME,
+    "docs/backlog/serving-llm-routing.md": _LANE_RENAME,
     "scripts/claude-local": _LANE_RENAME,
     "scripts/hooks/guard-worktree-path.py": _LANE_RENAME,
-    "scripts/llm_eval/medium_castor_eval.py": _LANE_RENAME,
     "tests/fixtures/pathway/repro_case.json": _PACKAGED_CASE,
     "tests/test_claude_local.py": _LANE_RENAME,
 }

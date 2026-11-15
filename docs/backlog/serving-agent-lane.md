@@ -23,7 +23,7 @@ r84, gr500583); the product router reaches the local-serving node through a `llm
 chain with `placement: local` (`precis.utils.llm.operations.resolve_op_chain`,
 `router._served_local_rung`, slot accounting in `local_serving.acquire`);
 the gardener proposer runs that way today (me502337); the MEDIUM replay
-eval (`docs/reference/castor-medium-load-eval.md`) measured 86-100 %
+eval (`docs/reference/local-medium-load-eval.md`) measured 86-100 %
 agreement with the cloud rung on verify/reground/locate at 3-8 s per call.
 The single-shot batch shape is specced in
 [local-coder-batch-harness](local-coder-batch-harness.md); the proxy
@@ -178,7 +178,7 @@ builder — the footer text grants nothing; the settings file does.
   builder fixed it (the fleet state's `.prompt` and pane `ctx` are not
   retained; use the `cost_usd` envelope from the original session where
   `llm_call_log` has it, else the median builder-session cost from
-  `docs/reference/castor-medium-load-eval.md`'s method on 5 recent
+  `docs/reference/local-medium-load-eval.md`'s method on 5 recent
   claude-builder gripes).
 - Acceptance thresholds for trusting a task type: pass ≥ 7/10 and no
   fail that touched a file outside the brief's list. Below that, the
@@ -260,7 +260,7 @@ retractions) into the existing Prometheus; `llm_call_log` by
 `source LIKE 'castor_lane:%'`; the shim's log (one line per request:
 turn, prompt tokens, finish reason, tool names); `fleet-wave stuck-watch`
 for panes; the host side is
-[castor-resource-observability](castor-resource-observability.md).
+[serving-node-resource-observability](serving-node-resource-observability.md).
 
 **Failure modes, each with its detector:** reasoning-only turn (shim:
 finish `stop` with no content after a tool result → the fold regressed);

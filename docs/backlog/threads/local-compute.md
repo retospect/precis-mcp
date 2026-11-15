@@ -29,9 +29,9 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Still open:** the `llm_summarize` placement read (summarise chain live since 2026-10-11 11:53Z; first 24 h 3,521 local / 16,416 overflowed to cloud at the agent host's capacity-4 slot). Revert: delete `llm.op.llm_summarize`.
 
-**classify → the local-serving node, 2026-10-23 (Reto 4-step go, tree g4-classify-castor):** `classify` left EXCLUDED_OPERATIONS for the op registry (SMALL, `env=PRECIS_CLASSIFY_MODEL`; the worker pass had already dropped the `summarizer` pin, so default routing is unchanged). The Tier-2 escalate client moved to `classify:escalate` — unregistered on purpose so `PRECIS_CLASSIFY_ESCALATE_MODEL`'s pin survives (the re-judge must differ from tier 1). Step (b): ~200-chunk gold check the local-serving node gpt-oss-120b (`reasoning_effort low`, `max_tokens 512`) vs the glm `llm.chain.small` row before any prod `llm.op.classify` write.
+**classify → the local-serving node, 2026-10-23 (Reto 4-step go, tree g4-classify):** `classify` left EXCLUDED_OPERATIONS for the op registry (SMALL, `env=PRECIS_CLASSIFY_MODEL`; the worker pass had already dropped the `summarizer` pin, so default routing is unchanged). The Tier-2 escalate client moved to `classify:escalate` — unregistered on purpose so `PRECIS_CLASSIFY_ESCALATE_MODEL`'s pin survives (the re-judge must differ from tier 1). Step (b): ~200-chunk gold check the local-serving node gpt-oss-120b (`reasoning_effort low`, `max_tokens 512`) vs the glm `llm.chain.small` row before any prod `llm.op.classify` write.
 
-**The local-serving node sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off the agent host and put it on one of the sparks"):**
+**The local-serving node sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off the agent host and put it on one of the [GB10 nodes]"):**
 
 - **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung the local-serving node under load 2026-10-14 — scheduler 100% CPU; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
 - **Placement (c7be07641):** small tier moves off the big Mac onto the local-serving node — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `<serving-node> | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). The second DGX node stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on the agent host) — noted for Reto in `llm-capacity-plan.md`.
@@ -93,7 +93,7 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
    filed 2026-10-12 from Reto's credits ask: proxy the local-serving node's gpt-oss 120B as
    an Anthropic endpoint for Sonnet-class fleet roles, measure against
    Sonnet on a gripe batch, then decide on a cheap cloud fallback plan.
-   Successor: **[castor-agent-lane](../castor-agent-lane.md)** (draft,
+   Successor: **[serving-agent-lane](../serving-agent-lane.md)** (draft,
    2026-10-22) — answers the proxy question (`scripts/claude-local` +
    shim, no LiteLLM/CCR), splits agent lane vs batch lane, slice 0 is a
    10-gripe pilot with a measured pass rate; ranked here because it is
@@ -239,7 +239,7 @@ task set.
    into one exclusive big model, one local embeddings and one GPU science
    lanes. Ruled 22:03Z (local-compute-5): **local-serving node big model, second DGX node
    science, GPU node embeddings**. In order:
-   a. **backlog/spark-provisioning.md §Host items** — the
+   a. **backlog/gb10-provisioning.md §Host items** — the
       `/mnt/cluster` NFS hang (server: the database host) hits only the Linux GB10 nodes;
       the Macs read it fine. The database host's nfsd is healthy, so the approved
       restart (local-compute-6) stopped at its read-only gate. The leading
@@ -305,10 +305,10 @@ task set.
         `49-vllm.yml`, model as a variable) is with the orchestrator, held
         until the model pick. It is untested on a host.
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
-   c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
+   c. **backlog/gb10-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three GB10 nodes inside the round
       deploy window (Reto's ruling 4).
-   d. **backlog/spark-fleet-embedder.md** — Reto ruled the split
+   d. **backlog/gpu-fleet-embedder.md** — Reto ruled the split
       2026-10-02 (local-compute-5, option 1): local-serving node big model, second DGX node
       science, GPU node embeddings. The GPU node's role is a fleet LAN embedder that
       replaces the per-node loopback copies, in a new `embedder` group, NOT
@@ -363,7 +363,7 @@ task set.
    **backlog/llamacpp-fleet-ops.md** — Slices 0–2 shipped (SGLang on
    the local-serving node); per-node model choice against a measured ceiling.
 7. **backlog/torch-extras-conflict.md** — venv hygiene on the GB10 nodes
-   (spark-provisioning moved up into Do-next 4c).
+   (gb10-provisioning moved up into Do-next 4c).
 8. *(moved up to Do-next 2b on 2026-10-03.)* On Reto's "done" for the tunnel
    key, verify the tunnel and the login-node daemon-reaping risk. Git
    history keeps the host:port from 04004d7aa (no rewrite, Reto).

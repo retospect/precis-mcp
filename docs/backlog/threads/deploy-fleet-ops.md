@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Audit the vault-truncation blast radius before lower-ranked deploy work (Do next 1).
 - **Blocked by:** Nothing; verify the incident premise against deployed state.
 - **Unblocks:** Deployments without silent partial configuration.
-- **Acceptance:** Use [melchior-vault-truncation-blast-radius](../melchior-vault-truncation-blast-radius.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use [agent-host-vault-truncation-blast-radius](../agent-host-vault-truncation-blast-radius.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `unified-yawning-rossum` (the deploy session)
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -35,7 +35,7 @@ residue, then batched ops and flip steps.
 
 ## Do next
 
-1. **backlog/melchior-vault-truncation-blast-radius.md** — which deploys ran
+1. **backlog/agent-host-vault-truncation-blast-radius.md** — which deploys ran
    without 14 vault secrets 18–22 Aug; silent partial config is the worst
    deploy failure, and the answer scopes any residue.
 2. **backlog/deploy-concurrency.md** — a deploy lock two people can hold;

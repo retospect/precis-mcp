@@ -48,8 +48,8 @@ is not part of this one.
   (`_apply_placement`), so "the local-serving node, then Sonnet if the local-serving node's answer fails
   a check" cannot be written as a chain. Callers work around this alone:
   survey_extract falls back to its per-cell local path, chase returns `None`.
-- The MEDIUM replay eval (`docs/reference/castor-medium-load-eval.md`,
-  `scripts/llm_eval/medium_castor_eval.py`) found 86–100 % agreement with
+- The MEDIUM replay eval (`docs/reference/local-medium-load-eval.md`,
+  `scripts/llm_eval/medium_local_eval.py`) found 86–100 % agreement with
   the cloud rung on verify, reground and locate, at 3–8 s versus 23–38 s
   per call. `negate` scored 12 %. So every candidate is shadow-measured
   before cutover.
@@ -178,7 +178,7 @@ paid arm as today and uses its answer. It also runs the local arm under
 Ops with no live paid path (table recipe as landed is local-only; dtree
 has no code path at all) shadow offline. They run through
 `scripts/llm_eval/local_first_shadow.py --op <name>`, which generalizes
-`medium_castor_eval.py`: read-only on prod, a `--cap-usd` stop, raw output
+`medium_local_eval.py`: read-only on prod, a `--cap-usd` stop, raw output
 gitignored under `gold_set/local/`.
 
 Cutover bars (Wilson 95 % bounds, as `extract/accept.py` uses):
@@ -302,7 +302,7 @@ S1–S6 above, the shadow runs, and their recorded numbers.
 ## Explicitly NOT in scope
 
 - The local-model coding-agent lane, `scripts/claude-local`, the shim and
-  fleet launch ([castor-agent-lane](castor-agent-lane.md)).
+  fleet launch ([serving-agent-lane](serving-agent-lane.md)).
   - Overlap: the same endpoint, slots, `llm_call_log`, lane classes, and
     the `reasoning_effort`/`max_tokens` lessons.
   - Difference: that lane is dev-side (scripts, builders), and its batch
@@ -311,11 +311,11 @@ S1–S6 above, the shadow runs, and their recorded numbers.
     the point. It still never escalates a batch op on saturation.
   - Its slice 3 (`scripts/castor/triage-gripes`) duplicates S3's subject
     from outside the tick; see the open questions.
-- The paper→findings reader ([castor-finding-reader](castor-finding-reader.md)).
+- The paper→findings reader ([serving-finding-reader](serving-finding-reader.md)).
   It is local-only with an Opus spot-check gate. It may adopt the helper
   later and is not changed here.
 - Host memory and OOM alerting on the local-serving node
-  ([castor-resource-observability](castor-resource-observability.md)).
+  ([serving-node-resource-observability](serving-node-resource-observability.md)).
   This item's load is bounded by D6; that item watches the host.
 - The dream-into-gardener fold (parallel spec): a future consumer only.
 - Routing whole tiers (`llm.chain.<tier>`) to the local-serving node
