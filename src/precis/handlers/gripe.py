@@ -1764,52 +1764,59 @@ class GripeHandler(NumericRefHandler):
         add, claim_reading = self._claim_status(id, add, remove)
         if claim_reading:
             readings = [*readings, claim_reading]
-        self._require_resolved_comment(id, add)
-        add, prio_from_tag = split_prio(add)
-        clear_prio = False
-        if remove:
-            kept = [t for t in remove if prio_tag_int(t) is None]
-            clear_prio = len(kept) != len(remove)
-            remove = kept or None
-        if prio is None:
-            prio = prio_from_tag
-        if prio is not None or clear_prio:
-            ref_id = self._coerce_id(id)
-            self._resolve_live_ref(ref_id)
-            self.store.set_prio(ref_id, prio)
-            if not add and not remove:
-                # Only a prio write happened — the base tag() would reject an
-                # otherwise-empty call.
-                shown = (
-                    f"prio={prio_display(prio)}" if prio is not None else "prio=cleared"
-                )
-                # The prio write above committed on its own connection; the
-                # gr504803 audit row lands right after it.
-                self._record_tag_reason(ref_id, reason)
+        # gr635292: a ``reason=`` that starts ``resolved:`` is appended as
+        # the closing comment by the gate below; pin one transaction so a
+        # failure after the append can't leave the comment landed without
+        # the STATUS write (batch ids already run inside
+        # ``_tag_batch``'s atomic — this nests as a savepoint).
+        with self.store.atomic():
+            self._require_resolved_comment(id, add, reason=reason)
+            add, prio_from_tag = split_prio(add)
+            clear_prio = False
+            if remove:
+                kept = [t for t in remove if prio_tag_int(t) is None]
+                clear_prio = len(kept) != len(remove)
+                remove = kept or None
+            if prio is None:
+                prio = prio_from_tag
+            if prio is not None or clear_prio:
+                ref_id = self._coerce_id(id)
+                self._resolve_live_ref(ref_id)
+                self.store.set_prio(ref_id, prio)
+                if not add and not remove:
+                    # Only a prio write happened — the base tag() would reject
+                    # an otherwise-empty call; the gr504803 audit row still
+                    # lands with it (now inside this call's atomic).
+                    shown = (
+                        f"prio={prio_display(prio)}"
+                        if prio is not None
+                        else "prio=cleared"
+                    )
+                    self._record_tag_reason(ref_id, reason)
+                    return interpreted(
+                        Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
+                        readings,
+                    )
+            # gr633601: leaving ``needs_spec`` sheds ``reto:ask`` in the same
+            # write — the spec-wait is over, so the pending ask leaves the
+            # owner's decision queue with it. The tag-verb twin of the put
+            # path's :meth:`_drop_answered_ask`; batch ids skip the read (the
+            # same remove would apply to non-qualifying refs too).
+            adds = {t.strip() for t in add or ()}
+            if (
+                any(t.startswith("STATUS:") for t in adds)
+                and "STATUS:needs_spec" not in adds
+                and "reto:ask" not in adds
+                and "reto:ask" not in {t.strip() for t in remove or ()}
+            ):
+                held = {str(t) for t in self.store.tags_for(self._coerce_id(id))}
+                if {"STATUS:needs_spec", "reto:ask"} <= held:
+                    remove = [*(remove or []), "reto:ask"]
+            with _PARK_UNTIL.bind(park_until), _translate_status_check():
                 return interpreted(
-                    Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
+                    super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),
                     readings,
                 )
-        # gr633601: leaving ``needs_spec`` sheds ``reto:ask`` in the same
-        # write — the spec-wait is over, so the pending ask leaves the
-        # owner's decision queue with it. The tag-verb twin of the put
-        # path's :meth:`_drop_answered_ask`; batch ids skip the read (the
-        # same remove would apply to non-qualifying refs too).
-        adds = {t.strip() for t in add or ()}
-        if (
-            any(t.startswith("STATUS:") for t in adds)
-            and "STATUS:needs_spec" not in adds
-            and "reto:ask" not in adds
-            and "reto:ask" not in {t.strip() for t in remove or ()}
-        ):
-            held = {str(t) for t in self.store.tags_for(self._coerce_id(id))}
-            if {"STATUS:needs_spec", "reto:ask"} <= held:
-                remove = [*(remove or []), "reto:ask"]
-        with _PARK_UNTIL.bind(park_until), _translate_status_check():
-            return interpreted(
-                super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),
-                readings,
-            )
 
     def _check_thread_tags(
         self, tags: list[str] | None, *, id: object = "<id>", create: bool = False
@@ -2016,15 +2023,38 @@ class GripeHandler(NumericRefHandler):
             )
         return add, None
 
-    def _require_resolved_comment(self, id: str | int, add: list[str] | None) -> None:
+    def _require_resolved_comment(
+        self, id: str | int, add: list[str] | None, *, reason: str | None = None
+    ) -> None:
         """A terminal STATUS — and a verify state (on main, sha noted,
-        gr541800/gr543584) — needs a newest comment starting ``resolved:``."""
+        gr541800/gr543584) — needs a newest comment starting ``resolved:``.
+
+        gr635292: a ``reason=`` that starts ``resolved:`` doubles as that
+        comment — appended here (inside the caller's transaction) so one
+        ``tag`` call closes. Any other ``reason=`` stays an audit note and
+        the refusal fills it into the working two-call ``next=``."""
         if not any(t in _RESOLVED_REQUIRED_TAGS for t in add or ()):
             return
         ref_id = self._coerce_id(id)
         self._resolve_live_ref(ref_id)
         if self._newest_is_resolved(ref_id):
             return
+        reason_txt = (reason or "").strip()
+        if reason_txt.startswith(_RESOLVED_PREFIX):
+            self._append_comment(id=ref_id, text=reason_txt)
+            return
+        if reason_txt:
+            example = f"{_RESOLVED_PREFIX} {reason_txt}"
+            raise BadInput(
+                f"closing a {self._sense()} needs a newest comment starting "
+                f"{_RESOLVED_PREFIX!r} — reason= is an audit note, "
+                "not a comment",
+                next=(
+                    f"put(kind={self.kind!r}, id={ref_id}, text={example!r}) then "
+                    f"tag(kind={self.kind!r}, id={ref_id}, "
+                    f"add={list(add or ())!r})"
+                ),
+            )
         wontfix = "STATUS:wontfix" in (add or ())
         if wontfix:
             example = "resolved: wontfix — <reason>"

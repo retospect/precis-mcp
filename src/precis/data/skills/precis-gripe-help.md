@@ -642,7 +642,9 @@ put(
 
 One call — comment and close land together (two calls,
 `tag(kind='gripe', id=42, add=['STATUS:done'])` after the put, work
-too). `STATUS:done` and `STATUS:wontfix` are refused unless the gripe's
+too; or carry the resolution in the tag itself —
+`tag(kind='gripe', id=42, add=['STATUS:done'], reason='resolved: <sha> — <how verified>')`
+closes in one call). `STATUS:done` and `STATUS:wontfix` are refused unless the gripe's
 newest comment starts `resolved:`. Won't-do is
 `resolved: wontfix — <reason>` plus `STATUS:wontfix`. `delete` is only for
 duplicates, spam and gripes filed in error; a soft-deleted gripe still

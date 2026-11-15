@@ -402,6 +402,65 @@ def test_unpark_gripe_comment_is_meta_marked(hub: Hub) -> None:
     assert "STATUS:wontfix" in _tags(h, gid)
 
 
+def test_tag_reason_resolved_closes_in_one_call(hub: Hub) -> None:
+    """gr635292: ``tag``'s ``reason=`` starting ``resolved:`` is appended
+    as the closing comment in the same call — no separate put needed."""
+    h, gid = _gripe(hub)
+    h.tag(id=gid, add=["STATUS:done"], reason="resolved: abc (r1) — ok")
+    assert "STATUS:done" in _tags(h, gid)
+    comments = [
+        c.text
+        for c in h.store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments == ["resolved: abc (r1) — ok"]
+
+
+def test_tag_reason_resolved_closes_batch(hub: Hub) -> None:
+    """The batch ``id=[…]`` form applies the same reason=-comment close
+    to every id inside ``_tag_batch``'s transaction."""
+    h, gid = _gripe(hub)
+    h2, gid2 = _gripe(hub)
+    h.tag(
+        id=[gid, gid2],
+        add=["STATUS:wontfix"],
+        reason="resolved: wontfix — by design",
+    )
+    for hh, g in ((h, gid), (h2, gid2)):
+        assert "STATUS:wontfix" in _tags(hh, g)
+        comments = [
+            c.text
+            for c in hh.store.chunks.list_chunks_for_ref(g)
+            if c.chunk_kind == "gripe_comment"
+        ]
+        assert comments == ["resolved: wontfix — by design"]
+
+
+def test_tag_reason_without_prefix_still_refused(hub: Hub) -> None:
+    """A ``reason=`` without the ``resolved:`` prefix stays an audit
+    note — the gate still refuses and nothing lands as a comment."""
+    h, gid = _gripe(hub)
+    with pytest.raises(BadInput, match="audit note"):
+        h.tag(id=gid, add=["STATUS:done"], reason="looked fine to me")
+    assert "STATUS:open" in _tags(h, gid)
+    assert not [
+        c
+        for c in h.store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+
+
+def test_refusal_next_echoes_reason_text(hub: Hub) -> None:
+    """The no-prefix refusal's ``next=`` is the working two-call fix with
+    the caller's own reason filled in, not the ``<reason>`` placeholder."""
+    h, gid = _gripe(hub)
+    with pytest.raises(BadInput) as ei:
+        h.tag(id=gid, add=["STATUS:wontfix"], reason="dup of gr7")
+    nxt = str(ei.value.next)
+    assert "dup of gr7" in nxt
+    assert f"put(kind='gripe', id={gid}, text='resolved: dup of gr7')" in nxt
+
+
 def test_batch_close_with_parked_dependant(hub: Hub) -> None:
     """gr673558 verbatim: a batch ``tag`` closing a parent and its
     parked dependant rolled back entirely — the parent's cascade note
