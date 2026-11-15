@@ -1893,6 +1893,41 @@ def test_host_dark_fires_for_host_with_units_no_activity(store: Store) -> None:
     assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
+def test_host_dark_detail_hints_db_auth_when_units_were_up(store: Store) -> None:
+    """gr681494: units running at the last beat means the host's OS was up
+    when it went silent — the likely cause is a database credential its
+    workers can no longer authenticate with, so the detail names
+    ``fe_sendauth``. Empty ``units`` (nothing known running) gets no hint."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={"worker_units": {"units": {"w": {}}}},
+    )
+    hits = [
+        f for f in _detect_host_dark(store) if f.fingerprint_key == f"host-dark:{host}"
+    ]
+    assert len(hits) == 1
+    assert "fe_sendauth" in hits[0].detail
+
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={
+            "worker_units": {"units": {}},
+            "activity": {"precis-worker": {"claimed": 1}},
+        },
+    )
+    hits = [
+        f for f in _detect_host_dark(store) if f.fingerprint_key == f"host-dark:{host}"
+    ]
+    assert len(hits) == 1
+    assert "fe_sendauth" not in hits[0].detail
+
+
 def test_dead_worker_message_is_hedged_across_platforms() -> None:
     """gr180078: no hardcoded launchctl-only text."""
     for plat in ("Darwin", "Linux", "darwin", "linux", None):

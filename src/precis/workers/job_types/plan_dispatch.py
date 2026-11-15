@@ -6861,9 +6861,15 @@ def _step_unplaced(
     ask (:func:`_mint_unplaced_ask`), deduped on ``meta.unplaced_ask`` —
     a closed ask is the ruling, never re-minted. The heal check settles
     it: the node closes first → the ask closes ``won't-do``; the gap
-    heals or the job leaves ``queued`` → ``done``."""
+    heals or the job leaves ``queued`` → ``done``.
+
+    gr681494: the ask mints only when no dark host offers the job's whole
+    token set either — a job whose only fit is a host the ``host-dark``
+    alert already names waits on that one page instead of adding a
+    per-job "provision a host?" ask to the flood."""
     from precis.workers.executors._common import (
         advertised_by_host,
+        dark_advertised_by_host,
         lane_adapter_map,
         placement_gap,
         placement_requires,
@@ -6886,6 +6892,7 @@ def _step_unplaced(
         return
     with store.pool.connection() as conn:
         advertised = advertised_by_host(conn)
+        dark = dark_advertised_by_host(conn)
         lane_map = lane_adapter_map(conn)
     for n, mark in marked:
         ask_id = mark.get("ask")
@@ -6936,6 +6943,25 @@ def _step_unplaced(
             or _UNPLACED_ASK_KEY in n.meta
             or _closed(n)
         ):
+            continue
+        # gr681494: a job whose whole token set fits one dark host waits
+        # on that host's ``host-dark`` page — the one alert already names
+        # the cause, so the per-job provision ask is noise. A ``target_node``
+        # pin narrows the check to that host, as ``placement_gap`` does.
+        tokens = placement_requires(j.meta, lane_map)
+        pin = (j.meta.get("params") or {}).get("target_node")
+        waiting_on = next(
+            (
+                h
+                for h in ([str(pin)] if pin else sorted(dark))
+                if tokens <= dark.get(h, set())
+            ),
+            None,
+        )
+        if waiting_on is not None:
+            res.notes.append(
+                f"td{n.id}: job jo{j.id} waiting on host-dark:{waiting_on}"
+            )
             continue
         if w.dry_run:
             res.asks += 1

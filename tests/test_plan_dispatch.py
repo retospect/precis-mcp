@@ -8630,6 +8630,136 @@ def test_unplaced_ask_dry_run_counts_without_writing(store: Store) -> None:
     assert pd._UNPLACED_ASK_KEY not in _meta(store, task)
 
 
+def _dark_advertise(
+    store: Store,
+    host: str,
+    slots: dict[str, int | None],
+    *,
+    minutes_ago: float = 60,
+    meta: dict | None = None,
+) -> None:
+    """``_advertise`` for a host that has since gone dark: the slot map is
+    fossil (a live heartbeat pass is the only retractor) and the heartbeat
+    row is past HOST_DARK_SILENCE_MIN."""
+    import json
+
+    store.sync_host_resource_slots(host, slots)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval, %s::jsonb) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts, "
+            "meta = EXCLUDED.meta",
+            (host, str(minutes_ago), json.dumps(meta or {})),
+        )
+        conn.commit()
+
+
+def test_unplaced_ask_waits_on_a_dark_host(store: Store) -> None:
+    """gr681494: a job whose placement tokens fit ONLY a dark host files
+    no provision ask — the one ``host-dark`` alert already names the
+    cause — and the pass notes the wait. A retired host is no host at
+    all: the same gap mints the ask."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    # meta.adapter pins the claude-sub lane's binary: the job's set is
+    # {repo_checkout, claude_bin, git} — exactly node-a's fossil advert.
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+    _dark_advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert pd._UNPLACED_ASK_KEY not in _meta(store, task)
+    assert any("host-dark:node-a" in n for n in res.notes)
+
+    # Control: retired beats excluded — the gap has no dark host to wait on.
+    _dark_advertise(
+        store,
+        "node-a",
+        {"repo_checkout": 1, "claude_bin": 1, "git": 1},
+        meta={"retired": True},
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+
+
+def test_unplaced_ask_mints_past_the_host_dark_cap(store: Store) -> None:
+    """td681892: ``host-dark`` pages the 50 stalest hosts only. A job that
+    fits only the 51st dark host gets NO replacement alert, so its ask
+    must still mint — suppression covers exactly the alerted set."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+    # 50 darker hosts crowd node-a out of the alert's ORDER BY ts ASC
+    # LIMIT 50 window; node-a is the freshest stale row.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "SELECT 'crowd-' || g, now() - make_interval(mins => 100 + g), "
+            "'{}'::jsonb FROM generate_series(1, 50) g",
+        )
+        conn.commit()
+    _dark_advertise(
+        store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1}, minutes_ago=60
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+
+
+def test_dark_cap_ties_select_the_alerted_hosts(store: Store) -> None:
+    """td681892 review: both cap queries used to ORDER BY ts alone, so
+    heartbeats tied at the LIMIT-50 boundary could sort into different
+    windows per query — the pass would suppress an ask for a host the
+    ``host-dark`` alert never named. Both now break ties on host: the
+    suppressed set IS the alerted set."""
+    from precis.workers.executors._common import dark_advertised_by_host
+    from precis.workers.nursery import _detect_host_dark
+
+    # 52 stale heartbeats at the same instant — a 52-way tie at the cap,
+    # with 'zz-fit' (the job's only fit) the name-sort loser.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "SELECT h.host, now() - make_interval(mins => 100), '{}'::jsonb "
+            "FROM ("
+            "SELECT 'tie-' || g AS host FROM generate_series(1, 51) g "
+            "UNION ALL SELECT 'zz-fit'"
+            ") h",
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free) "
+            "SELECT 'tie-' || g, 'repo_checkout', 1, 1 "
+            "FROM generate_series(1, 51) g",
+        )
+        conn.commit()
+    store.sync_host_resource_slots(
+        "zz-fit", {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+    )
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+
+    res = pd.run_pass(store)
+    # 'zz-fit' fell out of the deterministic window: its ask still mints.
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+    assert not any("host-dark" in n for n in res.notes)
+    # And the suppress map held exactly the 50 the alert pages.
+    with store.pool.connection() as conn:
+        suppressed = set(dark_advertised_by_host(conn))
+    alerted = {
+        str(f.fingerprint_key).removeprefix("host-dark:")
+        for f in _detect_host_dark(store)
+    }
+    assert suppressed == alerted
+    assert len(alerted) == 50
+    assert "zz-fit" not in alerted
+
+
 # ── Tick lock ─────────────────────────────────────────────────────
 
 

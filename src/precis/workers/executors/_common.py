@@ -1180,6 +1180,54 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     return out
 
 
+def dark_advertised_by_host(conn: Connection) -> dict[str, set[str]]:
+    """``host -> {resources it last advertised}`` for hosts whose
+    ``host_heartbeat`` is stale — the dark complement of
+    :func:`_advertised_by_host` (gr681494).
+
+    A dark host's ``resource_slots`` rows are fossil, not retracted — only
+    a *live* heartbeat pass retracts them — so they still describe what the
+    host would offer were it alive. ``plan_dispatch._step_unplaced`` reads
+    the map to collapse its "job unplaceable — provision a host?" asks: a
+    job whose placement tokens fit only a dark host waits on the ONE
+    ``host-dark`` alert instead of fanning out a per-job ask.
+
+    The heartbeat predicate mirrors ``nursery._detect_host_dark`` exactly
+    (stale ``ts``, not ``meta.retired``, not ``meta.ephemeral``, not a
+    12-hex container id, not an empty-probe dev checkout): an ask is only
+    safe to suppress for a host that alert will actually page. That
+    includes its coverage cap — the detector pages the 50 stalest hosts
+    (``ORDER BY ts, host LIMIT 50``), so this map holds the same 50
+    (td681892): suppressing the ask of a host past the cap would hide a
+    gap no alert names. The ``host`` tie-break keeps the two windows
+    identical on equal timestamps — without it Postgres could return
+    different boundary rows for each query, suppressing an ask for a
+    host the alert never named.
+    """
+    rows = conn.execute(
+        "SELECT rs.host, rs.resource FROM resource_slots rs "
+        "JOIN ("
+        "SELECT hh.host FROM host_heartbeat hh "
+        "WHERE hh.ts < now() - %(silence)s::interval "
+        "AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true' "
+        "AND (hh.meta->>'retired') IS NULL "
+        "AND hh.host !~ '^[0-9a-f]{12}$' "
+        "AND NOT ("
+        "hh.meta ? 'worker_units' "
+        "AND (hh.meta->'worker_units' = '{}'::jsonb "
+        "OR hh.meta->'worker_units'->'units' = '{}'::jsonb) "
+        "AND COALESCE(hh.meta->'activity', '{}'::jsonb) = '{}'::jsonb"
+        ") "
+        "ORDER BY hh.ts ASC, hh.host LIMIT 50"
+        ") hh ON hh.host = rs.host",
+        {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
+    ).fetchall()
+    out: dict[str, set[str]] = {}
+    for host, resource in rows:
+        out.setdefault(str(host), set()).add(str(resource))
+    return out
+
+
 def _host_recently_dark(conn: Connection, host: str) -> bool:
     """True when ``host`` has a ``host_heartbeat`` row that is stale but not
     ancient — i.e. it beat recently enough that its slot map should come
@@ -3389,6 +3437,7 @@ __all__ = [
     "append_chunk",
     "claim_executor_jobs",
     "current_status",
+    "dark_advertised_by_host",
     "effective_requires",
     "is_cancel_requested",
     "job_type_requires",

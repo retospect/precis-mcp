@@ -1658,7 +1658,12 @@ def _dead_worker_detail(
     )
 
 
-def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
+def _host_dark_detail(
+    host: str,
+    silent_h: float,
+    platform: str | None,
+    meta: dict[str, Any] | None = None,
+) -> str:
     """Hedged, OS-aware body for a host-dark finding (gr186752).
 
     The complement of :func:`_dead_worker_detail`: since the heartbeat pass
@@ -1669,6 +1674,12 @@ def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
     alert that case still needs. ``platform`` comes from the stale
     heartbeat row's own ``meta->>'platform'``, which persists even though
     the row itself has gone stale.
+
+    gr681494: when the stale row's ``meta.worker_units.units`` snapshot is
+    non-empty — units were up at the last beat — the detail also names the
+    likely cause: a host whose OS is up but whose database credential broke
+    looks exactly like this (its workers cannot authenticate, so nothing
+    writes), which is a different fix than restarting daemons.
     """
     base = (
         f"{host}'s host_heartbeat has been silent {silent_h:.1f}h "
@@ -1678,11 +1689,20 @@ def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
         "liveness signal down with it (gr186752). Every daemon on this host "
         "is presumed dead until the heartbeat resumes. "
     )
-    return (
+    detail = (
         base
         + _platform_recovery_hint(platform)
         + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
     )
+    units = ((meta or {}).get("worker_units") or {}).get("units") or {}
+    if units:
+        detail += (
+            " Likely cause: units were running at the last beat; a host "
+            "that is up but silent often cannot authenticate to the "
+            "database — check the worker log for fe_sendauth and the "
+            "credential files."
+        )
+    return detail
 
 
 def _detect_dead_workers(store: Store) -> list[Symptom]:
@@ -1945,7 +1965,7 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT hh.host, hh.ts, hh.meta->>'platform' AS platform
+            SELECT hh.host, hh.ts, hh.meta
               FROM host_heartbeat hh
              WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
                AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
@@ -1963,7 +1983,10 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
                    )
                    AND COALESCE(hh.meta->'activity', '{}'::jsonb) = '{}'::jsonb
                )
-             ORDER BY hh.ts ASC
+             -- Tie-break on host (td681892): ``dark_advertised_by_host``
+             -- suppresses unplaced asks for exactly the hosts this window
+             -- selects, so a ts tie at the cap must pick the same 50.
+             ORDER BY hh.ts ASC, hh.host
              LIMIT 50
             """,
             {
@@ -1971,15 +1994,16 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
             },
         ).fetchall()
     out: list[Symptom] = []
-    for host, ts, platform in rows:
+    for host, ts, meta in rows:
         silent = _hours_since(ts)
+        platform = meta.get("platform") if isinstance(meta, dict) else None
         out.append(
             Symptom(
                 category="host-dark",
                 ref_id=None,
                 fingerprint_key=f"host-dark:{host}",
                 title=f"{host} host_heartbeat silent {silent:.1f}h",
-                detail=_host_dark_detail(str(host), silent, platform),
+                detail=_host_dark_detail(str(host), silent, platform, meta),
             )
         )
     return out
