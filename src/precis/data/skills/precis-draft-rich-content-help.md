@@ -335,7 +335,13 @@ Formulas reference **column names** (`qty*unit_price`), evaluate per row,
 and are stored internally by column id — renames rewrite nothing.
 Operators: `+ - * / // % **`, comparisons, `and/or/not`, and
 `x if cond else y`. Functions:
-`abs round min max sum avg sqrt log exp if_(cond, a, b)`. Names are the
+`abs round min max sum avg sqrt log exp if_(cond, a, b)`. `min`/`max`/
+`sum`/`avg` fold two-or-more columns of the SAME row —
+`sum(qty, shipping)` is each row's qty+shipping — never down a column:
+a one-column call like `sum(qty)` reads as a column total, so a new or
+changed formula spelling it is refused. The column total is a `footer=`
+aggregate (below), which a formula cannot reference — there is no
+share-of-total spelling. Names are the
 only references — attribute access, subscripts, f-strings, comprehensions
 and imports are refused at write time. So is a formula that names a
 column the table doesn't have: a new/changed formula must resolve every

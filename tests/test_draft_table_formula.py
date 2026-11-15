@@ -158,6 +158,38 @@ def test_new_formula_naming_unknown_column_refused(
         draft.edit(id=tc.dc, add_column={"name": "tax", "formula": "qtyy * 0.1"})
 
 
+def test_one_column_fold_refused_at_write(draft: DraftHandler, hub: Hub) -> None:
+    """gr685375's repro: ``add_column`` with ``sum(<one col>)`` looks
+    like a column total but folds the row's own cell — refused at write
+    with the footer and the row-wise form named."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        columns=[{"name": "qty"}, {"name": "cost", "formula": "qty * 2"}],
+        rows=[[2, None]],
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    with pytest.raises(BadInput, match="one column") as e:
+        draft.edit(id=tc.dc, add_column={"name": "share", "formula": "sum(cost)"})
+    assert "footer=" in str(e.value.next)
+    # the gripe's exact shape — a fold nested in a bigger expression
+    with pytest.raises(BadInput, match="one column"):
+        draft.edit(
+            id=tc.dc,
+            add_column={
+                "name": "share",
+                "formula": "round(cost / sum(cost) * 100, 1)",
+            },
+        )
+    # the row-wise form still lands
+    draft.edit(id=tc.dc, add_column={"name": "with_tax", "formula": "sum(cost, qty)"})
+    tbl = _meta(hub, tc.handle)["table"]
+    assert tbl["rows"][0][-1] == 6
+
+
 def test_formula_cycle_lands_with_cycle_cells_and_warning(
     draft: DraftHandler, hub: Hub
 ) -> None:
