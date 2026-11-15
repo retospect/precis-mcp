@@ -2354,3 +2354,23 @@ def test_headline_tables_never_pool_sources_or_scopes():
         baseline="rowkw",
     )
     assert "vs `rowkw`" in md3 and "rowkw only" in md3
+
+
+def test_paired_table_lists_an_arm_absent_from_a_whole_group_as_missing():
+    # no-kwd ran only the planted task: in the qasper group its line still
+    # lists, both baseline qasper tasks counting as missing rather than
+    # the comparison dropping out of the table (td684910)
+    rows = [
+        _cost("q1", "all-on", True, source="qasper"),
+        _cost("q2", "all-on", False, source="qasper"),
+        _cost("p1", "all-on", True, source="planted"),
+        _cost("p1", "no-kwd", True, source="planted"),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    qasper = md.split("### Found within budget — qasper tasks")[1].split("###")[0]
+    assert "| all-on (baseline) | 2 | 1 | 0 | 0 | 1 | +0 | — | 0 |" in qasper
+    assert "| no-kwd | 0 | 0 | 0 | 0 | 0 | +0 | — | 2 |" in qasper
+    planted = md.split("### Found within budget — planted tasks")[1].split("###")[0]
+    assert "| no-kwd | 1 | 1 | 0 | 0 | 0 | +0 | — | 0 |" in planted
