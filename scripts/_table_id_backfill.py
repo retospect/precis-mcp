@@ -5,7 +5,7 @@ Usage (via the ``table-id-backfill`` shell wrapper):
     table-id-backfill              # dry run: report what would change
     table-id-backfill --apply      # write it
 
-Spreadsheet-tables slice 1a (docs/backlog/spreadsheet-tables.md §13): every
+One-time pass for draft tables written before rows and columns had ids: every
 canonical ``meta.table`` gains ``columns`` + ``rowmeta`` carrying random
 4-char ids and fractional ``pos`` keys. The pass walks live
 ``chunk_kind='table'`` chunks on **draft refs only** whose ``meta`` carries

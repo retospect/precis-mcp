@@ -82,8 +82,10 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 - **Prose framework** — [terse-prose-framework](../terse-prose-framework.md)
   (idea, Reto 2026-10-14: tag-driven prose lint + story graph + card; not
   hit by the October paper).
-- **Content model** — `spreadsheet-tables` (spec 2026-10-26: ids,
-  TOON patch, formulas, pulls, vendors; then `bom-tables`) ·
+- **Content model** — spreadsheet-tables (graph spec me685600, plan
+  td685665: ids, TOON patch and formulas built; pulls, vendors, cited
+  values, units and standalone tables open) · bom-tables (graph spec
+  me685771, plan td685784; waits on the pull slice td685673) ·
   `draft-table-structured-enrichment` ·
   `draft-footnotes-annotations` ·
   `diagram-editing-and-chunk-binding` · `draft-refresh` ·
