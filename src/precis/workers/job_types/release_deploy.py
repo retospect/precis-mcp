@@ -166,7 +166,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         "job_event",
         f"{NAME}: " + _release.mark_deploy_started(ctx.store, int(params["todo_id"])),
     )
-    return _rc.launch_script(ctx, NAME, ["--deploy-only", rn])
+    return _rc.launch_script(ctx, NAME, ["--deploy-only", rn], env=_rc.pass_env(ctx))
 
 
 #: The deploy playbook's own "Report the bounce-scope decision" line

@@ -631,6 +631,7 @@ def _launch_confirm(ctx: Any, rn: str, ev: Evidence) -> dict[str, Any] | None:
             ev.text,
         ],
         script="round",
+        env=_rc.pass_env(ctx),
     )
     if isinstance(handle, dict):
         handle.update(phase="confirm", rn=rn, sha=ev.sha, evidence=ev.text)
@@ -806,7 +807,11 @@ def _launch_close(ctx: Any) -> dict[str, Any] | None:
         exit_file = base.with_suffix(".exit")
         exit_file.unlink(missing_ok=True)
         pid = _rc._launch(
-            [str(path), "close"], cwd=root, log_path=log_path, exit_file=exit_file
+            [str(path), "close"],
+            cwd=root,
+            log_path=log_path,
+            exit_file=exit_file,
+            extra_env=_rc.pass_env(ctx),
         )
     except Exception as exc:
         log.warning("%s: scripts/round close failed to launch", NAME, exc_info=True)
