@@ -489,3 +489,25 @@ def test_proposal_parses_json_from_prose_reply(monkeypatch: pytest.MonkeyPatch) 
     assert got == {"verdict": "ambiguous", "reason": "x"}
     reply.text = "I cannot tell."
     assert conditions_repair.propose_conditions(cand, "paper") is None
+
+
+def test_quote_with_markdown_and_tex_markup_validates() -> None:
+    """The chunker keeps TeX/markdown markup ("$U = 0$ V *versus* RHE");
+    folding must treat it as the same text (fi349041, 2026-11-15)."""
+    from precis.taproot.conditions_repair import validate_add
+
+    old = "DFT on Ru-Cu gives a H2-formation ΔG of 0.33 eV on the Ru site."
+    new = (
+        "DFT on Ru-Cu gives a H2-formation ΔG of 0.33 eV at U = 0 V vs RHE "
+        "on the Ru site."
+    )
+    paper = "Free energies were computed at  $U = 0$  V *versus* RHE with CHE."
+    added = [
+        {
+            "condition": "potential",
+            "text": "at U = 0 V vs RHE",
+            "quote": "at  $U = 0$  V *versus* RHE",
+        }
+    ]
+    failed, details = validate_add(old, new, added, paper, missing=("potential",))
+    assert "quote-mismatch" not in failed, details

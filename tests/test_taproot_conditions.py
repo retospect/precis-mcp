@@ -470,3 +470,18 @@ def test_profiles_carry_sources_and_finding_slot() -> None:
         )
         == []
     )
+
+
+def test_chemical_steps_need_no_potential() -> None:
+    """H* dimerization (Tafel), desorption and dissociation are chemical
+    steps under CHE: no -eU term (prod dry run 2026-11-15, fi349344)."""
+    chem = (
+        "DFT calculations show defective NiO gives a free energy change of "
+        "-0.42 eV for H* dimerization to H2, versus -2.58 eV on pristine NiO."
+    )
+    assert check_conditions(chem) == []
+    pds = (
+        "DFT calculations identify *NH₃ desorption as the potential-determining "
+        "step with ΔG = 0.62 eV on Cu(111)."
+    )
+    assert check_conditions(pds)[0].missing == ("potential",)

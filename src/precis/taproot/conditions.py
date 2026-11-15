@@ -116,6 +116,17 @@ _STEP_OR_CHARGED = re.compile(
     _I,
 )
 _BARRIER = re.compile(r"barrier|activation (free )?energ|transition state|\bEa\b", _I)
+#: A chemical (non-electrochemical) step under CHE: no proton-electron pair
+#: crosses the interface, so its free energy carries no -eU term (Nørskov
+#: 2004). H* dimerization (the Tafel step), recombination, desorption and
+#: dissociation qualify unless the sentence also calls the step
+#: potential-determining (prod dry run 2026-11-15: fi349041, fi349344).
+_CHEMICAL_STEP = re.compile(
+    r"(?s:^(?!.*(?:potential[- ](?:determining|limiting)|limiting potential|\bPDS\b|"
+    r"electrochemical step)).*(?:dimeri[sz]|\bTafel\b|recombination|desorption|"
+    r"dissociation))",
+    _I,
+)
 _ELECTRO_STEP = re.compile(
     r"electrochemical (step|barrier|reaction)|potential[- ](determining|limiting)|"
     r"proton[- ]electron|proton[- ]coupled|\bPCET\b|\bCPET\b",
@@ -345,7 +356,7 @@ PROFILES: tuple[ConditionProfile, ...] = (
         family="dft-step-thermo",
         trigger=_STEP_WORDS,
         requires=(_DFT,),
-        excludes=(_BARRIER,),
+        excludes=(_BARRIER, _CHEMICAL_STEP),
         groups=(_POTENTIAL_DFT,),
         defaults=(
             "neutral adsorption descriptors (ΔG_H*, H*, O*, OH*) at the CHE reference state",

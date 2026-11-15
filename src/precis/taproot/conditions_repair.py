@@ -285,8 +285,24 @@ def select_conditions_cohort(
 
 # ── folding ──────────────────────────────────────────────────────────────
 
-_MINUS_TRANS = str.maketrans({"−": "-", "–": "-", "—": "-", "‐": "-", "‑": "-", "­": ""})
+_MINUS_TRANS = str.maketrans(
+    {
+        "−": "-",
+        "–": "-",
+        "—": "-",
+        "‐": "-",
+        "‑": "-",
+        "­": "",
+        # Markdown / TeX markup the chunker keeps ("at  $U = 0$  V *versus* RHE").
+        "$": "",
+        "*": "",
+        "\\": "",
+        "{": "",
+        "}": "",
+    }
+)
 _WS_RE = re.compile(r"\s+")
+_VERSUS_RE = re.compile(r"\bversus\b|\bvs\.", re.IGNORECASE)
 
 
 def _fold(text: str) -> str:
@@ -294,6 +310,7 @@ def _fold(text: str) -> str:
     whitespace collapsed, casefolded. Applied to both sides of every
     comparison, so it only makes two spellings of one thing equal."""
     out = unicodedata.normalize("NFKC", text).translate(_MINUS_TRANS)
+    out = _VERSUS_RE.sub("vs", out)
     return _WS_RE.sub(" ", out).strip().casefold()
 
 
@@ -317,8 +334,11 @@ _KEYWORDS: dict[str, re.Pattern[str]] = {
     }.items()
 }
 _DFT_POTENTIAL = re.compile(
-    r"\bU\s*=|computational hydrogen electrode|\bCHE\b|applied potential|0 V\b|"
-    r"constant[- ]potential|limiting potential",
+    # DFT-specific only: an experimental "-0.5 V vs RHE" elsewhere in a
+    # combined paper is not the computation's potential (2026-11-15 dry run:
+    # 4 of 5 not-reported verdicts downgraded on such hits).
+    r"\bU\s*=|computational hydrogen electrode|\bCHE\b|(?<![\d.])0 V\b|"
+    r"constant[- ]potential|grand[- ]canonical",
     re.IGNORECASE,
 )
 
