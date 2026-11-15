@@ -8994,11 +8994,22 @@ def test_kimi_parse_last_assistant_line(tmp_path: Path) -> None:
 
 
 def test_kimi_parse_tolerates_content_parts(tmp_path: Path) -> None:
+    """gr687501: text parts join on a blank line so a verdict starting a
+    part stays at a line start for the dispatcher's verdict parse."""
     log = (
         '{"role":"assistant","content":'
         '[{"type":"text","text":"a"},{"type":"text","text":"b"}]}\n'
     )
-    assert get_adapter("kimi_tree").parse_result(log, tmp_path) == ("ab", False)
+    assert get_adapter("kimi_tree").parse_result(log, tmp_path) == ("a\n\nb", False)
+    glued = (
+        '{"role":"assistant","content":'
+        '[{"type":"text","text":"narration:"},'
+        '{"type":"text","text":"review: LAND (read-only, tests not run)"}]}\n'
+    )
+    assert get_adapter("kimi_tree").parse_result(glued, tmp_path) == (
+        "narration:\n\nreview: LAND (read-only, tests not run)",
+        False,
+    )
 
 
 @pytest.mark.parametrize("exit_code", [1, 3, None])

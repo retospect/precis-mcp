@@ -160,8 +160,9 @@ def parse_kimi_result(
 ) -> tuple[str | None, bool]:
     """The last ``{"role":"assistant"}`` stream-json line's content —
     the session's final message. ``content`` is a string or a list of
-    text parts. No usable assistant line, or a non-zero exit, is an
-    error."""
+    text parts, joined on a blank line so a verdict starting a part
+    stays at a line start for the dispatcher's parse (gr687501). No
+    usable assistant line, or a non-zero exit, is an error."""
     text: str | None = None
     for line in log_text.strip().splitlines():
         line = line.strip()
@@ -177,11 +178,12 @@ def parse_kimi_result(
         if isinstance(content, str):
             candidate = content
         elif isinstance(content, list):
-            candidate = "".join(
+            parts = [
                 part.get("text", "")
                 for part in content
                 if isinstance(part, dict) and part.get("type") == "text"
-            )
+            ]
+            candidate = "\n\n".join(t for t in parts if t)
         else:
             continue
         if candidate.strip():

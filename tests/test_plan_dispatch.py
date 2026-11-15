@@ -6529,6 +6529,21 @@ def test_parse_verdict_verbatim_glued_tails(
         # with a non-placeholder rest; REVERT never comes from a token.
         ("all done.review: LAND", ("LAND", "")),
         ("wrapped up\nreview: LAND", ("LAND", "")),
+        # gr687501: a streamed text block glued to its narration leaves
+        # ``:`` or ``)`` before the token — those are boundary
+        # punctuation too (the verbatim td686752 handoff tail).
+        (
+            "handoff: Quick syntax sanity check on the two changed files "
+            "(not lint/typecheck — just parse):review: LAND (read-only, "
+            "tests not run)\n\nfindings",
+            ("LAND", "findings"),
+        ),
+        ("all done: review: LAND", ("LAND", "")),
+        ("checked it (see the diff) review: FIX — x", ("FIX", "x")),
+        # … but the same marks still gloss, quote or template out.
+        ("grammar: review: LAND (clean)", None),
+        ("one of: review: LAND | review: FIX — <list>", None),
+        ("verdict: review: REVERT — breaks it", None),
         # Markdown line-start markers still count as a line start — the
         # emphasis that opened the token is stripped off its rest
         # (gr568824).
@@ -8218,6 +8233,24 @@ def test_review_reads_a_glued_handoff(store: Store) -> None:
         "tests/test_work_board_queue.py::test_blocked_row_shows_after_marker "
         "fails on landed main (reproduced in-container)"
     )
+
+
+def test_review_reads_a_paren_glued_handoff(store: Store) -> None:
+    """gr687501: ``…just parse):review: LAND`` — the verdict token glued
+    after ``):`` by a block-concatenating lane is the verdict, not a
+    miss that retries the reviewer into rescue."""
+    mint = _reviewed(
+        store,
+        "handoff: Quick syntax sanity check on the two changed files "
+        "(not lint/typecheck — just parse):review: LAND (read-only, "
+        "tests not run)\n\nfindings",
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "LAND"
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
 
 
 def test_review_line_comment_beats_a_glued_handoff_token(store: Store) -> None:

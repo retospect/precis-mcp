@@ -46,8 +46,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    REVERT never
    comes from a glued token — or a ``review: LAND|FIX`` token at a line
    start (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit
-   between the line start and the token) or right after sentence-final
-   punctuation, outside backticks/parens — the verdict lines too, so a
+   between the line start and the token) or right after boundary
+   punctuation (``.!?``, plus the ``:``/``)`` a glued text block leaves
+   before the verdict, gr687501), outside backticks/parens — the
+   verdict lines too, so a
    quoted grammar echo never turns a real line into a disagreement
    (td591267) — no
    ``<…>`` rest (a lane gluing
@@ -899,8 +901,11 @@ _READONLY_MARKER_RE = re.compile(
 #: never matches before ``_``, td636385); a glued ``LANDED``/``LAND_x``
 #: still misses.
 _VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)_*\b", re.IGNORECASE)
-#: Sentence-final punctuation a glued token may directly follow.
-_SENTENCE_END = frozenset(".!?")
+#: Punctuation a glued token may directly follow: sentence-final
+#: ``.!?`` (gr573564), plus ``:`` and ``)`` — a streamed text block
+#: glued to its narration leaves ``…just parse):review: LAND`` with no
+#: separator at all (gr687501).
+_TOKEN_BOUNDARY_PUNCT = frozenset(".!?:)")
 #: Markdown line-start markers a fallback token may directly follow
 #: (``- ``/``* `` bullets, ``**``/``~~`` emphasis, ``#`` heading,
 #: ``> `` quote — gr568824's bold mid-brief verdict line).
@@ -1793,7 +1798,10 @@ def _comments(store: Any, todo_id: int) -> list[Any]:
 
 def _token_boundary(text: str, start: int) -> bool:
     """A fallback token counts only at a line start or directly after
-    sentence-final punctuation (``…main.review: FIX — …``); a token
+    boundary punctuation — sentence-final ``.!?`` (``…main.review: FIX
+    — …``), plus the ``:`` and ``)`` a streamed text block glued to its
+    narration leaves before the token (``…just parse):review: LAND``,
+    gr687501); a token
     mid-sentence (``I will post review: LAND if…``) is narration. Markdown
     line-start markers — ``- ``/``* `` bullets, ``**`` bold, ``#``
     headings, ``> `` quotes — may sit between the line start and the
@@ -1801,7 +1809,7 @@ def _token_boundary(text: str, start: int) -> bool:
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
-    if i < 0 or text[i] == "\n" or text[i] in _SENTENCE_END:
+    if i < 0 or text[i] == "\n" or text[i] in _TOKEN_BOUNDARY_PUNCT:
         return True
     j = i
     while j >= 0 and text[j] in _MD_MARKERS:
