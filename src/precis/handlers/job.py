@@ -5220,12 +5220,12 @@ class JobHandler(NumericRefHandler):
         """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
         its executor's claim order and what it waits behind (gr495292: a
         queued ``pcb_route`` showed neither). Read-only, advisory — the
-        order mirrors ``claim_executor_jobs``' ``(class_rank,
-        factory_pref, aged_prio, queued_since, ref_id)`` key (slice 6,
-        D6: origin class first; gr657333: within a class the
-        dark-factory pipeline ops outrank bulk work, then in-class aged
-        prio) but not its per-lane share term (gr506754) or
-        capability-scarcity re-rank. It
+        order mirrors the rank keys of ``claim_executor_jobs``' claim
+        order — ``(class_rank, factory_pref, aged_prio, queued_since,
+        ref_id)`` (slice 6, D6: origin class first; gr657333: within a
+        class the dark-factory pipeline ops outrank bulk work, then
+        in-class aged prio) — but not its lane-deficit share term
+        (gr595541) or capability-scarcity re-rank. It
         shows this row's origin class, any class promotion ageing has
         earned it, and the per-class count of rows ahead; the reasons are
         the claim gates visible from the row itself: operator suspension, a

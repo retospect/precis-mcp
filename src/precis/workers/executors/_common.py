@@ -193,10 +193,11 @@ _RELEASE_LEG_TYPES_SQL = (
 #: class they rank ahead of bulk seed/drain work — jo656686's
 #: ``run_slice`` sat FIFO behind 58 queued ``autocatpath_seed`` rows for
 #: 51+ min on ``ssh_node``: the class order ties them (both
-#: ``background``) and the share term only prefers the fewer-running
-#: share, so a fresh pipeline op can still lose an equal-share pick to
-#: every older bulk row. The ``release_*`` ops are listed for
-#: completeness — the 2.5 band already outranks background, so their
+#: ``background``) and the lane-deficit term only prefers the lane the
+#: host has under-served, so a fresh pipeline op can still lose an
+#: equal-deficit pick to every older bulk row. The ``release_*`` ops
+#: are listed for completeness — the 2.5 band already outranks
+#: background, so their
 #: membership is a no-op today that keeps the set self-describing.
 FACTORY_PIPELINE_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
@@ -369,8 +370,8 @@ def lane_has_waiters(
     Lane gates mirror :func:`claim_executor_jobs` for this host: same
     ``meta.executor``, the ``target_node`` pin check, a claimable
     status, a free lease, not operator-suspended. The ranking compares
-    each waiter's full claim key — ``(claim_rank, factory_pref,
-    aged_prio, queued_since, ref_id)`` from :func:`_claim_order_sql` and
+    each waiter's claim key — ``(claim_rank, factory_pref, aged_prio,
+    queued_since, ref_id)`` from :func:`_claim_order_sql` and
     :data:`FACTORY_PIPELINE_JOB_TYPES` — against the running job's key
     evaluated as-if-just-yielded: its base class (the yield re-stamps
     the tag, so no accumulated age or promotion; ``-1`` for prio 1), its
@@ -380,7 +381,12 @@ def lane_has_waiters(
     jobs already waiting" rule. The factory element lets a queued
     ``run_slice``/``land_slice`` preempt a running bulk seed at its next
     slice boundary (gr657333) — a bulk waiter never preempts a running
-    factory op."""
+    factory op. The lane-deficit share term (gr595541) and the
+    Python-only scarcity/affinity terms are not mirrored here — the
+    predicate tracks only the SQL rank keys, so it can miss a yield a
+    starved lane's waiter would earn on deficit, or take one the real
+    order's deficit term would deny; yield checks stay heuristic by
+    design."""
     age_step = claim_age_step_s()
     class_age = claim_class_age_s()
     class_rank = claim_class_rank_enabled()
