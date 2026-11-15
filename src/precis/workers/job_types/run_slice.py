@@ -158,7 +158,9 @@ that holds the lane's credentials with ``params.target_node``):
   tree, a ``tests:`` obligation never honoured (a code run that left
   commits owes the receipt whether or not its brief named test paths),
   a step-cap halt — mints nothing and closes nothing, validate runs
-  included; the run ends ``failed`` like the cases below.
+  included (a validate run that delivered ``validated:``/``moot:`` owes
+  no test receipt on top — the verdict IS its deliverable, gr685988);
+  the run ends ``failed`` like the cases below.
   The release-fix loop's fix
   node (``blocked-by`` a live ``ci_red_digest`` under a
   ``release-pass`` root) gets a weaker ruling INSTEAD
@@ -5420,6 +5422,31 @@ def tests_not_run(text: str | None) -> bool:
     return last is not None and _TESTS_NOT_RUN_RE.match(text, last.start()) is not None
 
 
+def _gate_why(name: str, task_class: str) -> str:
+    """Why a ``task_class`` run owed gate ``name`` — appended to the
+    gate-failure comment so a reader can tell a skipped test from a
+    docs read (gr685988): the gate name alone never said which class's
+    obligation tripped."""
+    if name == "tests_ran":
+        if task_class == _outcome.TEST_TASK_CLASS:
+            return (
+                "a validate run owes a `tests: ran` receipt or a "
+                "`validated:`/`moot:` first-line verdict — the test "
+                "session's deliverable IS its verdict; it gave neither"
+            )
+        return (
+            f"a {task_class!r} run that left commits owes the "
+            "`tests: ran` receipt — the every-run gate; it gave none"
+        )
+    if name == "compiled":
+        return "the slice's changed .py files did not byte-compile"
+    if name == "no_exceptions":
+        return "the adapter reported an error or the worktree vanished"
+    if name == "within_step_cap":
+        return "the session reached the turn cap"
+    return "required of this run"
+
+
 #: The ``compiled`` gate's probe: byte-compile the slice's changed
 #: ``.py`` files on the worker (gr595545 — review td655142: exit 0
 #: proved the session ended, not that its produce parses).
@@ -7148,7 +7175,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         summary.append("Tests: supplied acceptance tests passed on the worker.")
     elif tests_not_run(result):
         # gr674798: legible on the summary either way the rule lands —
-        # a code run's checked mint or a validate run's failed gate.
+        # a code run's checked mint, a validate verdict's close, or a
+        # verdict-less validate's failed gate.
         summary.append("Tests: session declared `tests: NOT RUN` (gr674798).")
     clean = (
         exit_code == 0
@@ -7183,6 +7211,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     # ladder either way.
     gate_ok = True
     gate_failed: list[str] = []
+    gate_reasons: dict[str, str] = {}
     compiled = None
     corrected = False
     tests_expected = False
@@ -7205,6 +7234,18 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         branch_paths = changed_paths(tree) if not vanished else None
         if task_class == _outcome.TEST_TASK_CLASS:
             tests_expected = True
+            if not tests_observed:
+                # gr685988: a validate run that delivered its verdict —
+                # ``validated:``/``moot:`` on the final message's first
+                # line, or anywhere in the result the way the close arms
+                # read it — owes no test receipt on top: the brief's
+                # re-run-or-LLM-read IS the validation, and a docs or
+                # skill fix has no test to run. ``tests: NOT RUN`` is
+                # recorded (``None``), not a failure; a validate run
+                # carrying no verdict still owes the receipt.
+                closing = verdict or any_verdict(result)
+                if closing is not None and closing[0] in ("validated", "moot"):
+                    tests_observed = None
         elif task_class == _DEFAULT_TASK_CLASS:
             # Every code run that produced owes the tests receipt —
             # the every-run gate (review td655142): a brief naming no
@@ -7221,9 +7262,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 # on. Its evidence comes from the checked mint below —
                 # ``--checked`` when ``ship_flag``'s spot selection
                 # allows, else ``--quick`` and the release gate's CI
-                # run (gr599427). Only the code class may declare:
-                # a validate run's NOT RUN stays a failed gate — the
-                # test session's deliverable IS the test run.
+                # run (gr599427). A validate run declares through its
+                # verdict instead (the ``validated:``/``moot:`` waiver
+                # above, gr685988); a validate NOT RUN carrying no
+                # verdict stays the failed gate it always was.
                 tests_observed = None
         compiled = _compile_gate(tree, branch_paths)
         corrected = any(not p.startswith("tests/") for p in branch_paths or ())
@@ -7243,6 +7285,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             test_failure=test_failure,
         )
         gate_failed = sorted(k for k, v in gates.items() if v is False)
+        gate_reasons = {name: _gate_why(name, task_class) for name in gate_failed}
     except Exception:  # pragma: no cover — a gate fault does not convict
         log.warning("run_slice: hard-gate eval on td%d failed", todo_id)
         gate_ok = True
@@ -7742,8 +7785,14 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         # and the no-commit close alike. The run is a failed attempt on
         # the ladder, the outcome record saying which gate the "done"
         # lied about; a validate run's gate failure is no exemption.
+        # gr685988: each failed gate names why the node's class owed it,
+        # so a skipped test never reads as a docs read.
         nothing = "exited clean but failed the hard gate(s): " + (
-            ", ".join(gate_failed) or "unrecorded"
+            ", ".join(
+                f"{name} — {gate_reasons.get(name) or 'required of this run'}"
+                for name in gate_failed
+            )
+            or "unrecorded"
         )
         summary.append(f"Close: none — {nothing}.")
     # gr595545: eval-run-spine's two columns on the job row — the

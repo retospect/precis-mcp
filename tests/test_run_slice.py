@@ -4361,14 +4361,18 @@ def test_poll_tests_not_run_marker_lands_checked(
     assert rec["gate_pass"] is True
 
 
-def test_poll_validate_not_run_marker_fails_the_gate(
+def test_poll_validate_verdict_waives_the_not_run_gate(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr674798: the declaration reprieve is the code run's alone — a
-    validate run whose deliverable IS the test run still fails the
-    tests gate on ``tests: NOT RUN`` (review td655142). The
-    different-model pick is stood empty; the gate is what is under
-    test."""
+    """gr685988 (replaces ``test_poll_validate_not_run_marker_fails_the_gate``,
+    which pinned the gr674798-era spec this gripe corrects): a validate
+    run whose final message opens ``validated:`` delivered its
+    deliverable — the brief's re-run-or-LLM-read IS the validation, and
+    a docs or skill fix has no test to run — so a ``tests: NOT RUN``
+    tail records unobservable, never a failed gate. The node closes
+    done on the verdict; no retry burns (the six docs-only chains the
+    gripe names each stranded exactly here). The different-model pick
+    is stood empty; the gate is what is under test."""
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
@@ -4391,11 +4395,121 @@ def test_poll_validate_not_run_marker_fails_the_gate(
     )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert seams["lands"] == []
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is None
+    assert rec["tests_observed"] is None
+    assert rec["gate_pass"] is True
+
+
+def test_poll_validate_moot_waives_the_not_run_gate(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988: ``moot:`` is the validate's other no-commit verdict —
+    a first-line moot rides the same waiver (the tick's ``verdict:moot``
+    drop owns the plan-level close)."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "moot: the gripe's reason is gone on main\n"
+                "tests: NOT RUN — nothing left to check",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert "verdict:moot" in tags
+    rec = pctx.meta_set["outcome"]
+    assert rec["gate_pass"] is True
+
+
+def test_poll_validate_verdictless_not_run_still_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988's scope: the waiver is the VERDICT's, not the class's —
+    a validate run that ends ``tests: NOT RUN`` carrying no
+    ``validated:``/``moot:`` line gave the tick nothing to rule on, so
+    the tests gate still fails the attempt and the failure comment says
+    which class obligation tripped."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Read the docs change; inconclusive.\ntests: NOT RUN — no db",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert pctx.failure is not None and "tests_ran" in pctx.failure
+    assert "validate" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    assert "STATUS:done" not in store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is False
+    assert rec["gate_pass"] is False
+
+
+def test_poll_build_verdict_does_not_waive_the_tests_gate(
+    seams: dict[str, Any],
+) -> None:
+    """gr685988 want: the waiver belongs to the validate class alone —
+    the same ``validated:`` first line on a code node that left commits
+    keeps the every-run receipt obligation and fails ``tests_ran``."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 fix(x): the fix (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "validated: the fix holds\nDone.",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert seams["lands"] == []
     assert pctx.failure is not None and "tests_ran" in pctx.failure
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
-    assert "STATUS:done" not in store.tag_strings(42)
     rec = pctx.meta_set["outcome"]
     assert rec["gates"]["tests_ran"] is False
     assert rec["gate_pass"] is False
@@ -10993,10 +11107,15 @@ def test_poll_validate_correction_samples_review(
 def test_poll_gate_failure_vetoes_the_validate_close(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """review td655142: a VALIDATE run owes tests every run — a clean
-    exit that never ran them does not close the node, it fails the
-    attempt. The different-model pick is stood empty; the gate is
-    what is under test."""
+    """review td655142, kept after gr685988: a gate the verdict cannot
+    waive still vetoes the close — a validate run that hit the step
+    cap ends ``failed`` even though it posted ``validated:`` (the
+    gr685988 waiver lifts only ``tests_ran`` on a verdict-carrying
+    run; a verdict-less validate still fails that gate — see
+    ``test_poll_validate_verdictless_not_run_still_fails``). The
+    different-model pick is stood empty; the gate is what is under
+    test."""
+    monkeypatch.setenv("PRECIS_RUN_SLICE_MAX_TURNS", "10")
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
@@ -11009,16 +11128,24 @@ def test_poll_gate_failure_vetoes_the_validate_close(
     _finish(
         handle,
         0,
-        json.dumps({"is_error": False, "result": "validated: the fix holds"}) + "\n",
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "validated: the fix holds",
+                "num_turns": 10,
+            }
+        )
+        + "\n",
     )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert pctx.failure is not None and "hard gate" in pctx.failure
+    assert "within_step_cap" in pctx.failure
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
     assert "STATUS:done" not in store.tag_strings(42)
     rec = pctx.meta_set["outcome"]
-    assert rec["gates"]["tests_ran"] is False
+    assert rec["gates"]["within_step_cap"] is False
     assert rec["gate_pass"] is False
 
 

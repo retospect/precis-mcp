@@ -3571,7 +3571,11 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     the hit must not disarm the guard: it bounds ``_attempt_jobs`` at
     its mint, hiding the denied job from ``_human_hit`` the pass after
     it files, so the stamp is read off the job the verdict would come
-    from — until a newer job exists (td604695). A ``validated:``/
+    from — until a newer job exists (td604695). A launch refusal's
+    clean meta is no all-clear either: the stamp is checked again on
+    the source job the ``since`` bound reads off, so a denied session
+    behind a refused retry still cannot close (td695902). A
+    ``validated:``/
     ``no-op:`` on a build a pre-land review still gates is "the pushed
     branch is ready as it stands", never "nothing to land" (gr681208):
     the ``meta.preland_held`` stash a FIX/REVERT left re-holds the land
@@ -3602,11 +3606,38 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         # after the answer re-arms, until a newer job runs (td604695).
         if last is not None and last.meta.get(HUMAN_ONLY_KEY):
             continue
-        verdict = _verdict_comment(
-            store, n.id, since=last.created_at if last is not None else None
+        # gr685988: the ``since`` bound must read off the newest job a
+        # verdict could come FROM — an ended job that ran a session. A
+        # launch refusal (``model_rule_refusal``/``host_refusal``/
+        # ``attempt_free``/voided) never ran; letting its mint own the
+        # bound disowns the earlier session's posted verdict — a
+        # validate's `validated:` stayed masked behind the refused
+        # retry the different-model rule filed, stranding the chain.
+        src = next(
+            (
+                j
+                for j in reversed(ended if ended else plan.jobs(n))
+                if j.status in _JOB_ENDED
+                and not _no_attempt(j)
+                and j.meta.get(MODEL_RULE_KEY) is None
+            ),
+            None,
         )
-        if verdict is None and last is not None and last.status == "failed":
-            verdict = any_verdict(_job_event_text(store, last.id))
+        bound = src if src is not None else last
+        # td695902 review: the stamp must ride the job the verdict is
+        # read FROM, not only the newest ended one — a launch refusal
+        # never ran, so ``last``'s clean meta says nothing about the
+        # denied session sitting behind it. That session's posted
+        # verdict is still the human-only ask's ruling: no close ahead
+        # of it, exactly as the ``last`` check above rules when the
+        # denied job is itself newest.
+        if src is not None and src.meta.get(HUMAN_ONLY_KEY):
+            continue
+        verdict = _verdict_comment(
+            store, n.id, since=bound.created_at if bound is not None else None
+        )
+        if verdict is None and src is not None and src.status == "failed":
+            verdict = any_verdict(_job_event_text(store, src.id))
         if verdict is None or _foreign_verdict(store, n, verdict):
             continue
         kind_, why = verdict

@@ -134,9 +134,11 @@ def hard_gates(
       whether or not its ask named test paths (review td655142:
       the every-run gate; a later lander check is no substitute for
       THIS run's evidence). The caller decides which runs may
-      declare: the poll maps NOT RUN to ``None`` on code runs only
-      — a validate run's NOT RUN stays ``False``; its deliverable
-      IS the test run.
+      declare: the poll maps NOT RUN to ``None`` on code runs, and
+      on a validate run whose session delivered its verdict —
+      ``validated:``/``moot:`` is the test session's deliverable and
+      the brief's read needs no suite (gr685988); a validate run
+      carrying no verdict still fails on ``False``.
     * ``no_exceptions`` — no adapter-reported error and the worktree
       did not vanish under the run.
     * ``within_step_cap`` — the session ended before ``max_turns``;

@@ -5809,6 +5809,149 @@ def test_validated_verdict_ignored_after_failed_preland_defer(
     assert res.dispatched == 1
 
 
+def test_failed_validate_validated_comment_closes_done(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988: a validate run marked failed still closes on its
+    posted verdict — the ``handoff:`` ``validated:`` outranks the
+    ``tests_ran`` gate failure it was recorded under; the next tick
+    rules the node done and mints no retry."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session exited clean but failed the hard gate(s): "
+        "tests_ran; todo back to open, attempt:1",
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the fix holds — the gripe's repro is gone "
+        "on main.\n\ntests: NOT RUN — validation only; docs-only change",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert _status(store, task) == "done"
+
+
+def test_failed_validate_verdict_masked_by_refused_retry_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988: a validate's run failed the ``tests_ran`` gate but its
+    ``handoff:`` posted ``validated:`` — then the retry the tick minted
+    was refused by the different-model rule. A launch refusal never ran
+    a session, so its mint must not bound the comment read: the next
+    tick still honours the verdict and closes done instead of stranding
+    the chain on the coordinator ask the refusal files."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session exited clean but failed the hard gate(s): "
+        "tests_ran; todo back to open, attempt:1",
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the fix holds — the gripe's repro is gone "
+        "on main.\n\ntests: NOT RUN — validation only; docs-only change",
+    )
+    why = (
+        "run_slice: the test session must run a different model than the "
+        "run's code session(s) ['swe-2-high']; refusing the launch"
+    )
+    _failed_job(store, task, why + "\n", meta={pd.MODEL_RULE_KEY: why})
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert _status(store, task) == "done"
+    assert any(
+        c.startswith("plan_dispatch: closed on verdict `validated:")
+        for c in _todo_comments(store, task)
+    )
+
+
+def test_denied_validate_verdict_masked_by_refused_retry_never_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td695902 review (gr685988): the ``human_only_hit`` guard rides the
+    job the verdict is read FROM, not only the newest ended one — a
+    denied session whose failed run sits behind a refused retry
+    (``model_rule_refusal``, a launch that never ran) still owns the
+    human-only ruling; its posted ``validated:`` cannot close the node.
+    The refusal's own routing — the different-model coordinator ask —
+    files instead."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session for td0 touched deny_write_paths: "
+        "`deploy/inventory/x.yml`; todo back to open\n"
+        "--- log tail ---\n"
+        "validated: the fix holds\n",
+        lane="devin",
+        model="swe-2-high",
+        meta={pd.HUMAN_ONLY_KEY: ["deploy/inventory/x.yml"]},
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: attempt FAILED, touched deny_write_paths: "
+        "`deploy/inventory/x.yml`.\n\n"
+        "validated: the fix holds — the gripe's repro is gone on main.\n\n"
+        "tests: NOT RUN — validation only; docs-only change",
+    )
+    why = (
+        "run_slice: the test session must run a different model than the "
+        "run's code session(s) ['swe-2-high']; refusing the launch"
+    )
+    _failed_job(store, task, why + "\n", meta={pd.MODEL_RULE_KEY: why})
+    res = pd.run_pass(store)
+    assert _status(store, task) != "done"
+    assert (res.dispatched, res.asks) == (0, 1)
+    assert not any(
+        c.startswith("plan_dispatch: closed on verdict")
+        for c in _todo_comments(store, task)
+    )
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "different model" in _body_text(store, ask)
+
+
 def test_human_only_hit_verdict_never_closes(store: Store) -> None:
     """td604234 (gr602896 review): a denied attempt still posts its
     ``handoff:`` — ``attempt FAILED, touched deny_write_paths: …`` over
