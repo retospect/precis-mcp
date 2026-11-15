@@ -841,3 +841,52 @@ def test_prepare_filtered_ann_recaps_each_late_statement(
     assert any(ver_i < i < guc_i and cap <= 1_000 for i, cap in caps)
     assert caps[-1][0] > guc_i and caps[-1][1] <= 600
     assert [cap for _i, cap in caps] == sorted((cap for _i, cap in caps), reverse=True)
+
+
+def _cancel_on_hybrid(seen: dict[str, list[str]]) -> Any:
+    from psycopg.errors import QueryCanceled
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> Any:
+        mode = str(kw.get("mode") or "hybrid")
+        seen.setdefault(kind, []).append(mode)
+        if mode == "hybrid":
+            return QueryCanceled("canceling statement due to statement timeout")
+        return ["lexical-hit"]
+
+    return fake
+
+
+def test_cancelled_kind_retries_lexical(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A default-expansion kind cancelled on hybrid is retried lexical,
+    merged, and named in the fallback set (the footer source)."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:1]
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        type(rt), "_cross_kind_invoke_search_hits", _cancel_on_hybrid(seen)
+    )
+    fallback: set[str] = set()
+    out = rt._cross_kind_fan_out(kinds, {"q": "x"}, lexical_fallback=fallback)
+    assert out[kinds[0]] == ["lexical-hit"]
+    assert seen[kinds[0]] == ["hybrid", "lexical"]
+    assert fallback == {kinds[0]}
+
+
+def test_cancelled_explicit_list_keeps_error(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The explicit kind-list path (``lexical_fallback=None``) keeps the
+    QueryCanceled error and does not retry."""
+    from psycopg.errors import QueryCanceled
+
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:1]
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        type(rt), "_cross_kind_invoke_search_hits", _cancel_on_hybrid(seen)
+    )
+    out = rt._cross_kind_fan_out(kinds, {"q": "x"})
+    assert isinstance(out[kinds[0]], QueryCanceled)
+    assert seen[kinds[0]] == ["hybrid"]

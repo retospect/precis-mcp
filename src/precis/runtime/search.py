@@ -49,6 +49,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from psycopg.errors import QueryCanceled
+
 from precis.errors import (
     BadInput,
     Internal,
@@ -3516,7 +3518,31 @@ class SearchMixin(RuntimeShape):
             # makes — a saturated pool or an uncapped non-ANN statement
             # can no longer hold a worker past the call deadline.
             CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
-            return self._cross_kind_invoke_search_hits(handler, k, kw)
+            result = self._cross_kind_invoke_search_hits(handler, k, kw)
+            if not isinstance(result, QueryCanceled) or lexical_fallback is None:
+                return result
+            # The server cancelled the hybrid legs at the statement cap.
+            # Retry once lexical-only if the deadline still fits it — a
+            # merged lexical hit beats an errored kind. Only the
+            # default/hybrid mode degrades (explicit mode is caller intent).
+            mode = str(kw.get("mode") or "").strip().lower()
+            left_ms = int((deadline_at - time.monotonic()) * 1000)
+            lexical_floor = min(
+                CROSS_KIND_LEXICAL_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100)
+            )
+            if mode not in ("", "hybrid") or left_ms < lexical_floor:
+                return result
+            ANN_STATEMENT_TIMEOUT_MS.set(
+                min(left_ms, int(CROSS_KIND_PER_KIND_S * 1000))
+            )
+            CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
+            retry = self._cross_kind_invoke_search_hits(
+                handler, k, {**kw, "mode": "lexical"}
+            )
+            if isinstance(retry, Exception):
+                return result
+            lexical_fallback.add(k)
+            return retry
 
         pool = _cross_kind_executor()
         futures = {
