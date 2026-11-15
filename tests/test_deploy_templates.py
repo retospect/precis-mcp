@@ -448,16 +448,56 @@ def test_collapsed_worker_slice_root_renders_on_the_gateway_unarmed() -> None:
     no slice root and every factory land queued fleet-wide (gripe 570787).
     Off the gateway the block is empty — there is no checkout to advertise.
     ``precis_slice_root`` overrides the fix lane's clone path."""
-    expected = {"PRECIS_SLICE_ROOT": "/Users/deploy/precis-fix-repo"}
-    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=False) == expected
-    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=True) == expected
+
+    def root(env: dict[str, str]) -> str | None:
+        return env.get("PRECIS_SLICE_ROOT")
+
+    expected = "/Users/deploy/precis-fix-repo"
+    assert (
+        root(_render_collapsed_worker_slice_env(gateway=True, fix_lane=False))
+        == expected
+    )
+    assert (
+        root(_render_collapsed_worker_slice_env(gateway=True, fix_lane=True))
+        == expected
+    )
     assert _render_collapsed_worker_slice_env(gateway=False, fix_lane=True) == {}
-    assert _render_collapsed_worker_slice_env(
-        gateway=True, fix_lane=False, precis_fix_repo_dir="/srv/fix-repo"
-    ) == {"PRECIS_SLICE_ROOT": "/srv/fix-repo"}
-    assert _render_collapsed_worker_slice_env(
-        gateway=True, fix_lane=False, precis_slice_root="/srv/slices"
-    ) == {"PRECIS_SLICE_ROOT": "/srv/slices"}
+    assert (
+        root(
+            _render_collapsed_worker_slice_env(
+                gateway=True, fix_lane=False, precis_fix_repo_dir="/srv/fix-repo"
+            )
+        )
+        == "/srv/fix-repo"
+    )
+    assert (
+        root(
+            _render_collapsed_worker_slice_env(
+                gateway=True, fix_lane=False, precis_slice_root="/srv/slices"
+            )
+        )
+        == "/srv/slices"
+    )
+
+
+def test_collapsed_worker_advertises_the_devin_lane_on_the_gateway() -> None:
+    """The heartbeat's ``devin_bin`` lane token (capability_probe,
+    gr676054) is probed from 20b's env, the gateway's only heartbeating
+    unit. The CLI sits in ``~/.local/bin``, off that unit's PATH, so without
+    ``PRECIS_DEVIN_BIN`` the probe deletes the host's row and every
+    devin-lane run_slice queues unplaceable (r317 restart, 2026-11-15,
+    td684896). Same value as 20g's slices lane; off the gateway, nothing."""
+    env = _render_collapsed_worker_slice_env(gateway=True, fix_lane=False)
+    assert env["PRECIS_DEVIN_BIN"] == "/Users/deploy/.local/bin/devin"
+    assert (
+        _render_collapsed_worker_slice_env(
+            gateway=True, fix_lane=False, precis_devin_bin="/opt/devin"
+        )["PRECIS_DEVIN_BIN"]
+        == "/opt/devin"
+    )
+    assert "PRECIS_DEVIN_BIN" not in _render_collapsed_worker_slice_env(
+        gateway=False, fix_lane=False
+    )
 
 
 def _render_drain_base_env(**extra: object) -> dict[str, str]:

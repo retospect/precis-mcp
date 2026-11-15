@@ -413,10 +413,18 @@
     # re-rendered from these templates and a hand-set value vanished — this
     # var, not the plist, is the place to set it). Gateway-only (the checkout
     # lives there) and NOT gated on precis_fix_lane_enabled: the slice lanes
-    # share the fix lane's clone (precis_fix_repo_dir) but not its arming. ──
+    # share the fix lane's clone (precis_fix_repo_dir) but not its arming.
+    # PRECIS_DEVIN_BIN rides along for the same reason: the heartbeat's
+    # `devin_bin` lane token (capability_probe.LANE_BIN_TOKENS, gr676054)
+    # resolves the CLI from THIS unit's env, and the CLI lives in
+    # ~/.local/bin, which is not on this unit's PATH. Unset, the probe
+    # deletes the host's devin_bin row and every devin-lane run_slice queues
+    # "no host advertises devin_bin" (r317 restart, 2026-11-15, td684896).
+    # Same value as 20g's slices lane. ──
     _l_b_slice_env: >-
       {{ (
-        {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'))}
+        {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo')),
+         'PRECIS_DEVIN_BIN': precis_devin_bin | default('/Users/deploy/.local/bin/devin')}
       ) if inventory_hostname in groups['gateway'] else {} }}
     # ── slice tokens (dark factory). PRECIS_MCP_SLICE_TOKEN_DIR is the shared
     # MCP server's per-slice grant registry (the mcp-http ensure script's
