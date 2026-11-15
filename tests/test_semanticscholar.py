@@ -981,9 +981,59 @@ def test_s2_error_raises_carry_next() -> None:
     with pytest.raises(Upstream) as exc:
         SemanticScholarHandler._s2_parse_response(_FakeResp(429))
     assert exc.value.next is not None
-    assert "SEMANTIC_SCHOLAR_API_KEY" in str(exc.value.next)
+    # gr676917: the recovery is a spaced retry, not the operator-only
+    # "set SEMANTIC_SCHOLAR_API_KEY" the old wording led with.
+    assert "retry" in str(exc.value.next)
+    assert "SEMANTIC_SCHOLAR_API_KEY" not in str(exc.value.next)
 
     with pytest.raises(Upstream) as exc:
         SemanticScholarHandler._s2_parse_response(_FakeResp(404))
     assert exc.value.next is not None
     assert "search(kind='paper'" in str(exc.value.next)
+
+
+# ---------------------------------------------------------------------------
+# gr676917: every S2 GET — single-call paths included — rides the shared
+# ``s2`` limiter and retries 429/5xx under it, and an exhausted 429 names
+# a step the calling agent can take (not "set an API key").
+# ---------------------------------------------------------------------------
+
+
+def test_single_call_retries_on_429(handler, monkeypatch) -> None:
+    """A single-call S2 GET that meets a 429 waits out the shared-limiter
+    jitter and retries instead of failing the ``get()`` — a stub raw GET
+    answering 429 then 200 still yields the parsed page."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("precis.utils.http._default_sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda *a, **k: None)
+    reset_circuit()
+
+    calls = {"n": 0}
+    payload = {"data": [_s2_hit(title="Retried Paper")], "total": 1}
+
+    def fake_raw(url: str, params: dict) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429)
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(handler, "_s2_raw_get", fake_raw)
+    result = handler._fetch("carbon nanotubes")
+
+    assert calls["n"] == 2  # the first 429 no longer ends the call
+    assert len(sleeps) == 1 and 0.0 <= sleeps[0] <= 2.0  # full jitter, base 2 s
+    assert result.meta["result_count"] == 1
+    assert "Retried Paper" in result.body_blocks[0].text
+
+
+def test_429_next_is_agent_actionable() -> None:
+    """The 429 refusal's ``next:`` must be a step the calling agent can
+    take — "set SEMANTIC_SCHOLAR_API_KEY" is operator configuration a
+    ``get()`` caller cannot perform."""
+    from precis.errors import Upstream
+
+    with pytest.raises(Upstream) as exc:
+        SemanticScholarHandler._s2_parse_response(_FakeResp(429))
+    nxt = str(exc.value.next)
+    assert "SEMANTIC_SCHOLAR_API_KEY" not in nxt
+    assert "retry" in nxt

@@ -199,6 +199,21 @@ _ATTRIBUTION = (
     "primary paper, not this aggregator query."
 )
 
+#: Agent-facing 429 wording, shared by the backoff-exhausted raise in
+#: :meth:`SemanticScholarHandler._s2_raw_get_backoff` and the
+#: ``_s2_parse_response`` guard (gr676917): every S2 GET rides the
+#: shared ``s2`` limiter and retries under it, so a 429 that still
+#: surfaces means the limiter is saturated — the recovery is one spaced
+#: retry, never a loop and never an operator-only key change.
+_S2_429_MESSAGE = (
+    "Semantic Scholar rate-limited (HTTP 429): retries exhausted — the "
+    "shared s2 limiter is saturated"
+)
+_S2_429_NEXT = (
+    "retry this call once after ~30 s; do not loop; batch with "
+    "get(kind='semanticscholar', id=[...]) where a batch form exists"
+)
+
 
 class SemanticScholarHandler(CacheBackedHandler):
     """``semanticscholar`` — paper search via the S2 Graph API.
@@ -599,9 +614,12 @@ class SemanticScholarHandler(CacheBackedHandler):
         """Resolve one paper by DOI via ``/paper/DOI:<doi>`` (gr489407).
 
         A 404 is a clean "not found" row, not an Upstream error — the
-        caller verifying a DOI needs that answer, not a retry hint."""
+        caller verifying a DOI needs that answer, not a retry hint. The
+        call rides the shared ``s2`` limiter like every S2 GET
+        (gr676917): a 429/5xx is paced and retried under it before it
+        can surface as an ``Upstream``."""
         url = f"{_S2_PAPER_BASE}/DOI:{doi}"
-        resp = self._s2_raw_get(url, {"fields": _S2_FIELDS})
+        resp, _attempts = self._s2_raw_get_backoff(url, {"fields": _S2_FIELDS})
         if resp.status_code == 404:
             return FetchResult(
                 title=f"S2 paper lookup: {doi}",
@@ -870,26 +888,24 @@ class SemanticScholarHandler(CacheBackedHandler):
             offset = nxt
         return papers, False, requests, retried
 
-    def _s2_get_json_backoff(
-        self, url: str, params: dict[str, Any]
-    ) -> tuple[dict[str, Any], int]:
-        """Like :meth:`_s2_get_json`, but runs under the shared politeness
-        core (:func:`precis.utils.http.with_backoff`, service ``s2``): one
+    def _s2_raw_get_backoff(self, url: str, params: dict[str, Any]) -> tuple[Any, int]:
+        """One S2 Graph GET under the shared politeness core
+        (:func:`precis.utils.http.with_backoff`, service ``s2``): one
         ``s2`` limiter token per attempt, full-jitter backoff on 429/5xx,
         ``Retry-After`` honoured and parked on the shared row, a breaker.
-        The last consecutive 429 raises ``Upstream`` with a "retries
-        exhausted" message distinct from :meth:`_s2_parse_response`'s
-        generic 429 message.
+        EVERY S2 call routes through here (gr676917) — a burst is paced
+        and retried inside the limiter budget instead of failing on the
+        first 429.
 
-        Returns ``(json, attempts)`` — ``attempts`` is how many actual
-        HTTP calls this one page needed (1 when no 429 was hit, more
-        when it was retried) — :meth:`_walk_author_papers` sums these
-        across pages for the ``complete=True`` render's request count.
-
-        Only the ``complete=True`` author walk uses this — it makes
-        several sequential calls and is far likelier to cross the public
-        tier's ~1 req/s ceiling than the other (single-call) fetch paths,
-        which keep the immediate-raise behaviour of :meth:`_s2_get_json`.
+        Returns ``(raw_response, attempts)`` — ``attempts`` is how many
+        actual HTTP calls the call needed (1 when no retry status was
+        hit). A retryable status never comes back: an exhausted budget,
+        an open breaker, a drain or a limiter refusal raises ``Upstream``
+        — the exhausted-429 raise carries the agent-actionable wording in
+        :data:`_S2_429_MESSAGE` — as does a fatal 401/403. Non-retryable
+        statuses (404, 400, …) are returned for the caller to read:
+        :meth:`_s2_parse_response` for the JSON paths, the DOI lookup's
+        clean-404 branch for its own.
         """
         attempts = 0
 
@@ -908,11 +924,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             ) from exc
         except VendorUnavailable as exc:  # budget spent, breaker open, draining
             if exc.status == 429:
-                raise Upstream(
-                    "Semantic Scholar rate-limited (HTTP 429): retries exhausted",
-                    next="retry the same call later, or set "
-                    "SEMANTIC_SCHOLAR_API_KEY for the partner tier",
-                ) from exc
+                raise Upstream(_S2_429_MESSAGE, next=_S2_429_NEXT) from exc
             raise Upstream(
                 f"Semantic Scholar unavailable: {exc}",
                 next="retry the same call shortly; S2 is having an outage",
@@ -928,14 +940,25 @@ class SemanticScholarHandler(CacheBackedHandler):
                 f"Semantic Scholar HTTP {exc.status}",
                 next="retry the same call shortly; S2 may be degraded",
             ) from exc
+        return resp, attempts
+
+    def _s2_get_json_backoff(
+        self, url: str, params: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        """:meth:`_s2_raw_get_backoff` + ``_s2_parse_response``, with the
+        attempt count kept — :meth:`_walk_author_papers` sums these
+        across pages for the ``complete=True`` render's request count
+        (gr356740). Single-call paths use :meth:`_s2_get_json`, which
+        drops it."""
+        resp, attempts = self._s2_raw_get_backoff(url, params)
         return self._s2_parse_response(resp), attempts
 
     @staticmethod
     def _s2_raw_get(url: str, params: dict[str, Any]) -> Any:
         """Issue one GET against the S2 Graph API and return the raw
-        ``httpx.Response`` — no status/JSON handling. Shared by
-        :meth:`_s2_get_json` (single-shot, raises immediately on 429) and
-        :meth:`_s2_get_json_backoff` (retrying multi-page walk).
+        ``httpx.Response`` — no status/JSON handling. This is a single
+        attempt; the pacing, retry and error mapping live in
+        :meth:`_s2_raw_get_backoff`, which calls this per attempt.
         """
         httpx = require_httpx()
         from precis.secrets import get_secret
@@ -957,13 +980,7 @@ class SemanticScholarHandler(CacheBackedHandler):
     def _s2_parse_response(resp: Any) -> dict[str, Any]:
         """Status-check + JSON-parse a raw S2 response (or raise)."""
         if resp.status_code == 429:
-            raise Upstream(
-                "Semantic Scholar rate-limited (HTTP 429); the public tier "
-                "is ~1 req/s. Set SEMANTIC_SCHOLAR_API_KEY for the partner "
-                "tier or retry later.",
-                next="set SEMANTIC_SCHOLAR_API_KEY for the partner tier, or "
-                "retry the same call later",
-            )
+            raise Upstream(_S2_429_MESSAGE, next=_S2_429_NEXT)
         if resp.status_code == 401:
             raise Upstream(
                 "Semantic Scholar rejected the API key (HTTP 401). "
@@ -992,15 +1009,17 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "changed its response shape",
             ) from exc
 
-    @staticmethod
-    def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _s2_get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         """Issue one S2 Graph GET and return parsed JSON (or raise).
 
-        Shared by the search and citation-graph paths so the
-        rate-limit / auth / transport handling lives in one place.
+        Shared by the search, citation-graph and single-page author
+        paths so the rate-limit / auth / transport handling lives in
+        one place — :meth:`_s2_raw_get_backoff`, the shared ``s2``
+        limiter + 429/5xx retry every S2 GET rides (gr676917). The
+        attempt count it reports is unused on a single-call path.
         """
-        resp = SemanticScholarHandler._s2_raw_get(url, params)
-        return SemanticScholarHandler._s2_parse_response(resp)
+        resp, _attempts = self._s2_raw_get_backoff(url, params)
+        return self._s2_parse_response(resp)
 
     def _fetch_search(self, key: str) -> FetchResult:
         # Over-fetch (``_S2_FETCH_LIMIT`` ~30) vs. what actually renders
