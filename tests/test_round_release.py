@@ -3120,6 +3120,25 @@ def test_the_published_row_carries_the_release_pass_marker(
     assert prod.row is not None and prod.row["pass"] == "td4242"
 
 
+def test_a_publish_without_the_marker_keeps_the_rounds_pass(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td678528: a deploy or confirm leg that runs without the marker keeps
+    the pass the cut stamped on the same round; another round's pass is
+    never carried."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("PRECIS_RELEASE_PASS", "td4242")
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    monkeypatch.delenv("PRECIS_RELEASE_PASS")
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deploying")))
+    assert prod.row is not None and prod.row["state"] == "deploying"
+    assert prod.row["pass"] == "td4242"
+    prod.row = {**prod.row, "n": 0}
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deployed")))
+    assert prod.row is not None and "pass" not in prod.row
+
+
 # ── one cutter: PRECIS_RELEASE_PASS (gr675506) ──────────────────
 
 

@@ -577,7 +577,20 @@ def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) 
                 )
                 _publish_dead = True
                 return
-            sent = {**row, "pass": _release_pass()} if _release_pass() else row
+            # A publisher without the marker (a deploy or confirm leg, a
+            # hand verb) keeps the pass the cut stamped on the same round:
+            # `settings set` replaces the whole row (td678528).
+            kept = (
+                cur_row.get("pass")
+                if isinstance(cur_row, dict) and cur_row.get("n") == row.get("n")
+                else None
+            )
+            if _release_pass():
+                sent = {**row, "pass": _release_pass()}
+            elif kept:
+                sent = {**row, "pass": kept}
+            else:
+                sent = row
             rc, _out, err = send(
                 ["settings", "set", ROUND_KEY, json.dumps(sent, separators=(",", ":"))]
             )
