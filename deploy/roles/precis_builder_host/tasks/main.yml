@@ -1,0 +1,254 @@
+---
+# precis_builder_host — builder-lane surface on a Linux or macOS host
+# (gr676054): the fix-repo checkout, docker, the slice-MCP ssh tunnel and
+# the `precis worker --only job_ssh_node` unit. Provisioning order:
+# 19-pgpass and the precis_worker venv (provision tasks) land BEFORE this
+# role — the playbook assembles that order; the lane CLIs come after via
+# scripts/agent-cli-update, not here.
+
+# ── fix-repo checkout (PRECIS_SLICE_ROOT) ────────────────────────────
+# Slices build in worktrees of this clone; the worker's heartbeat probes
+# `repo_checkout` as <this path>/.git — without it the host never
+# advertises and run_slice/land_slice stay unschedulable (gr570787).
+
+- name: Ensure the slice checkout parent is deploy-owned
+  ansible.builtin.file:
+    path: "{{ precis_fix_repo_dir | dirname }}"
+    state: directory
+    owner: "{{ precis_builder_user }}"
+    mode: "0755"
+  become: true
+
+- name: Clone/refresh the slice checkout (public repo, deploy-owned)
+  ansible.builtin.git:
+    repo: https://github.com/retospect/precis-mcp
+    dest: "{{ precis_fix_repo_dir }}"
+    version: main
+    update: true
+    force: true
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  environment:
+    HOME: "{{ precis_builder_home }}"
+
+# ── docker for `scripts/test` inside slices ──────────────────────────
+# Linux gets the distro daemon + compose v2 plugin and a docker-group
+# membership (the socket's group mode is the whole grant — run_slice
+# passes its parent into codex's writable roots). An existing daemon
+# (docker-ce, snap) is left alone: this only fills a gap. macOS builder
+# hosts are expected to already run colima — that provisioning lives in
+# precis_worker_agent, deliberately not duplicated here.
+
+- name: Check for an existing docker daemon (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: docker --version
+  register: _builder_docker_probe
+  changed_when: false
+  failed_when: false
+
+- name: Install docker + compose v2 (Linux, only when absent)
+  when:
+    - os_family == "linux"
+    - _builder_docker_probe.rc != 0
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+    state: present
+    lock_timeout: 120
+  become: true
+  register: _builder_docker_apt
+  until: _builder_docker_apt is succeeded
+  retries: 3
+  delay: 10
+
+- name: Put the deploy user in the docker group (Linux)
+  when: os_family == "linux"
+  ansible.builtin.user:
+    name: "{{ precis_builder_user }}"
+    groups: docker
+    append: true
+  become: true
+
+# ── slice-MCP ssh tunnel ─────────────────────────────────────────────
+# mcp-http's Caddy publishes 127.0.0.1:<port> only, so a remote builder
+# cannot name the server in .mcp.json without also changing the bind —
+# the tunnel keeps the checkout's .mcp.json byte-identical on every host
+# and the bearer surface loopback-only. Skipped on the MCP host itself.
+
+- name: Builder MCP tunnel (remote hosts only)
+  when: inventory_hostname != precis_builder_mcp_host
+  block:
+    - name: The tunnel needs its destination
+      ansible.builtin.fail:
+        msg: >-
+          precis_builder_mcp_host is unset — name the inventory host that
+          serves mcp-http (the loopback Caddy on
+          127.0.0.1:{{ precis_builder_mcp_port }}). On that host itself
+          set it to the same name: the tunnel then skips.
+      when: (precis_builder_mcp_host | default('')) | length == 0
+
+    - name: Ensure deploy's .ssh directory
+      ansible.builtin.file:
+        path: "{{ precis_builder_home }}/.ssh"
+        state: directory
+        owner: "{{ precis_builder_user }}"
+        mode: "0700"
+      become: true
+
+    - name: Generate the builder tunnel key
+      ansible.builtin.command:
+        cmd: >-
+          ssh-keygen -t ed25519
+          -f {{ precis_builder_tunnel_key }} -N ""
+          -C "precis-builder-tunnel@{{ inventory_hostname }}"
+        creates: "{{ precis_builder_tunnel_key }}"
+      become: true
+      become_user: "{{ precis_builder_user }}"
+
+    - name: Read the tunnel public key
+      ansible.builtin.slurp:
+        src: "{{ precis_builder_tunnel_key }}.pub"
+      register: _builder_tunnel_pubkey
+      become: true
+
+    - name: Authorize the key on the MCP host's deploy account
+      ansible.posix.authorized_key:
+        user: deploy
+        key: "{{ _builder_tunnel_pubkey.content | b64decode }}"
+        comment: "precis-builder-tunnel from {{ inventory_hostname }}"
+        state: present
+      delegate_to: "{{ precis_builder_mcp_host }}"
+      become: true
+
+    - name: Accept the MCP host's host key (deploy's known_hosts)
+      ansible.builtin.shell: |
+        ssh-keyscan -t ed25519 {{ hostvars[precis_builder_mcp_host]['lan_ip'] | default(hostvars[precis_builder_mcp_host]['ansible_host'], true) }} >> {{ precis_builder_home }}/.ssh/known_hosts 2>/dev/null
+        sort -u {{ precis_builder_home }}/.ssh/known_hosts -o {{ precis_builder_home }}/.ssh/known_hosts
+      become: true
+      become_user: "{{ precis_builder_user }}"
+      changed_when: false
+
+    - name: render + load the MCP tunnel keepalive unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: builder-mcp-tunnel
+        service_unit_run_as: "{{ precis_builder_user }}"
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_throttle_seconds: 10
+        service_unit_exec: >-
+          /usr/bin/ssh -N -T
+          -o ExitOnForwardFailure=yes
+          -o ServerAliveInterval=30
+          -o ServerAliveCountMax=3
+          -o StrictHostKeyChecking=accept-new
+          -i {{ precis_builder_tunnel_key }}
+          -L 127.0.0.1:{{ precis_builder_mcp_port }}:127.0.0.1:{{ precis_builder_mcp_port }}
+          deploy@{{ hostvars[precis_builder_mcp_host]['lan_ip'] | default(hostvars[precis_builder_mcp_host]['ansible_host'], true) }}
+
+# ── the slice worker unit ────────────────────────────────────────────
+# `--only job_ssh_node`, deliberately NO plan_tick: one ticker stays on
+# the gateway. A second job_ssh_node claimant on the same host is safe —
+# FOR UPDATE SKIP LOCKED arbitrates, and the executor pool counts by
+# lease_host so `claim.executor_cap.ssh_node.<heartbeat host>` bounds
+# this host's slice+compute total.
+
+- name: render + load the builder worker unit
+  ansible.builtin.import_role:
+    name: service_unit
+  vars:
+    service_unit_name: worker-builder
+    service_unit_run_as: "{{ precis_builder_user }}"
+    # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd (as 20b).
+    service_unit_working_dir: /tmp
+    service_unit_process_type: Interactive
+    service_unit_schedule:
+      mode: keepalive
+    service_unit_timeout_stop_sec: 60
+    # KillMode=process (systemd only, ignored on darwin): run_slice's
+    # lane sessions are detached (start_new_session, re-adopted by
+    # handle on the next claim) and must outlive a unit bounce — under
+    # the control-group default a bounce SIGKILLed every in-flight
+    # slice. Same shape as 43's compute lane.
+    service_unit_kill_mode: process
+    service_unit_exec: >-
+      {{ precis_builder_venv }}/bin/precis worker --only job_ssh_node
+      --batch-size {{ precis_builder_batch_size }}
+      --idle-seconds {{ precis_builder_idle_seconds }}
+    # Env parity with 20g's slices lane for every job_type this worker
+    # can win — it shares the ssh_node queue with the compute lane.
+    # DOCKER_HOST only on darwin (colima socket); on Linux the default
+    # /var/run/docker.sock path applies and run_slice's writable-roots
+    # fallback grants it (gr676054). No '#' comments inside the >-
+    # expression — it is Jinja, not YAML.
+    service_unit_env: >-
+      {{ precis_shared_env
+         | combine(precis_identity_env | default({}))
+         | combine({
+             'HOME': precis_builder_home,
+             'PATH': precis_builder_venv + '/bin:'
+               + precis_builder_home + '/.local/bin:'
+               + ('/opt/homebrew/bin:/Library/TeX/texbin:' if os_family == 'darwin' else '')
+               + '/usr/local/bin:/usr/bin:/bin',
+             'PGPASSFILE': precis_builder_home + '/.pgpass',
+             'PRECIS_DEVIN_BIN': precis_builder_home + '/.local/bin/devin',
+             'PRECIS_DATABASE_URL': precis_builder_dsn,
+             'PRECIS_PROCESS': 'precis-worker-builder',
+             'PRECIS_SOURCE': 'precis-worker-builder',
+             'PRECIS_COVERAGE_DB_DIR': precis_builder_home + '/.cache/precis/coverage-db',
+             'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
+             'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+             'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
+             'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+             'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
+             'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+             'PRECIS_SLICE_ROOT': precis_fix_repo_dir,
+             'PRECIS_AUTOCATPATH_KINETICS_SECONDS': precis_autocatpath_kinetics_seconds | string,
+             'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
+             'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
+               | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
+           })
+         | combine({'DOCKER_HOST': 'unix://' + precis_builder_home + '/.colima/docker.sock'}
+             if os_family == 'darwin' else {})
+         | combine(
+             {'PRECIS_DFT_NODE': ((precis_capabilities | default({})).dft | first)}
+             if (((precis_capabilities | default({})).dft | default([])) | length > 0) else {}
+           )
+         | combine(
+             {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
+             if ((claude_run_user | default('')) | length > 0) else {}
+           )
+         | combine(
+             {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
+             if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
+           ) }}
+
+# Code-refresh bounce for the site.yml path ONLY (mirrors 43): on
+# redeploy the orphan sweep restarts loaded non-owned precis-worker-*
+# units — `precis-worker-builder` is listed in `_orphan_lanes_known`
+# (not owned, since this playbook is not in the redeploy flow) so it
+# gets exactly one restart there and is never drift-flagged. The darwin
+# leg mirrors 20g's blanket-glob reasoning.
+- name: Bounce the builder lane on a code refresh (site.yml path, Linux)
+  when:
+    - os_family == "linux"
+    - precis_deploy_changed is not defined
+  ansible.builtin.systemd:
+    name: precis-worker-builder
+    state: restarted
+    daemon_reload: true
+  become: true
+  changed_when: true
+  failed_when: false
+
+- name: Bounce the builder lane on a code refresh (site.yml path, macOS)
+  when:
+    - os_family == "darwin"
+    - precis_deploy_changed is not defined
+  ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-builder
+  become: true
+  changed_when: true
+  failed_when: false

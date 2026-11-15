@@ -22,6 +22,7 @@ _LANES = (
     "playbooks/20b-precis-worker-collapsed.yml",  # --profile all (carries ssh_node)
     "playbooks/20g-precis-worker-slices.yml",  # --only job_ssh_node, gateway
     "playbooks/43-precis-worker-compute.yml",  # --only job_ssh_node, compute
+    "roles/precis_builder_host/tasks/main.yml",  # --only job_ssh_node, builder hosts
 )
 
 

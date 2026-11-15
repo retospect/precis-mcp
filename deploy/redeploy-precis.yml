@@ -1216,6 +1216,10 @@
               if inventory_hostname in
                  ((groups['agent_sandbox_hosts'] | default([]))
                   + (groups['agent_sandbox_lane'] | default([])))
+              else [])
+           + (['precis-worker-builder.service']
+              if inventory_hostname in
+                 (groups['builder_hosts'] | default([]))
               else []) }}
 
     - name: Orphaned lane units on this host (loaded but owned by no play)

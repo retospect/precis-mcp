@@ -1,0 +1,52 @@
+---
+# precis_builder_host — turn a Linux or macOS host into a builder: a
+# `precis worker --only job_ssh_node` claimant that runs run_slice /
+# land_slice jobs (gr676054). Linux renders a systemd unit, macOS a
+# launchd LaunchDaemon — both through the service_unit role.
+#
+# What the role does NOT do: install the lane CLIs (agent_clis is the one
+# door, driven by scripts/agent-cli-update), lay ~/.pgpass (19-pgpass),
+# or install colima on a Mac (precis_worker_agent's provision half).
+# Those are playbook/coordinator steps — see
+# docs/backlog/builder-hosts.md.
+
+precis_builder_user: deploy
+# Deploy user's home, per OS family — clone parent, ssh-key dir, pgpass.
+precis_builder_home: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+
+# The checkout slices build in (PRECIS_SLICE_ROOT): a primary clone of the
+# public repo this worker keeps at origin/main — run_slice worktrees hang
+# off it. Parameterised like the gateway's (precis_fix_repo_dir), never a
+# /Users/deploy literal.
+precis_fix_repo_dir: "{{ precis_builder_home }}/precis-fix-repo"
+
+# The venv the worker unit execs — provisioned by precis_worker/provision
+# (imported ahead of this role in 20i); the name mirrors that role's
+# default so an override lands on both.
+precis_builder_venv: "{{ precis_worker_venv | default('/opt/precis/venv') }}"
+
+# Worker DSN — same expression as precis_worker_dsn (agent_rw pre-cutover,
+# precis_system after); password resolution rides ~deploy/.pgpass (§L).
+precis_builder_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+
+# The host serving the slice session MCP (mcp-http). Its Caddy proxy
+# binds 127.0.0.1 only, so every OTHER builder host reaches it through a
+# persistent ssh -L: the checkout's .mcp.json (127.0.0.1:8765) then
+# resolves identically everywhere and the bearer surface stays loopback.
+# Inventory name. Required when inventory_hostname is not itself the MCP
+# host; the tunnel tasks skip on the server host.
+precis_builder_mcp_host: ""
+
+# Loopback ports both ends — the tunnel binds 127.0.0.1 only.
+precis_builder_mcp_port: 8765
+
+# Dedicated tunnel identity (like ssh_tunnels' tunnel_ed25519): the pubkey
+# lands in the MCP host's deploy authorized_keys via delegate_to.
+precis_builder_tunnel_key: "{{ precis_builder_home }}/.ssh/precis_builder_tunnel_ed25519"
+
+# Slice worker unit knobs. --batch-size bounds NEW claims per tick, not
+# concurrency — the running pool is `claim.executor_cap.ssh_node[.<host>]`
+# (code default 8; the coordinator sets per-host values through the
+# claim-setting door, see the spec's coordinator steps).
+precis_builder_idle_seconds: 5
+precis_builder_batch_size: 4

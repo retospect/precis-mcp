@@ -1,0 +1,66 @@
+---
+# 20i-precis-builder-hosts.yml — the builder-host lane (gr676054).
+#
+# WHY THIS EXISTS. Today only the gateway runs builder sessions
+# (run_slice / land_slice) and it is saturated. This play turns any
+# host in the `builder_hosts` inventory group into a slice claimant:
+# the lane-aware placement gate (registry `builder` token +
+# per-adapter `<a>_bin` probes) advertises exactly the lane binaries
+# the host carries, and `claim.executor_cap.ssh_node[.<host>]` bounds
+# the running pool per host.
+#
+# WHAT THIS IS. One worker unit per host — `precis worker --only
+# job_ssh_node` rendered by roles/precis_builder_host through
+# service_unit (systemd on Linux, launchd on macOS) — plus the pieces a
+# slice needs before it can claim: the fix-repo checkout (PRECIS_SLICE_ROOT
+# / the `repo_checkout` probe), docker for `scripts/test`, and the
+# slice-MCP ssh tunnel (the session MCP binds loopback on its serving
+# host; the tunnel keeps `.mcp.json` byte-identical everywhere).
+# Deliberately NO `--only plan_tick`: one ticker stays on the gateway.
+#
+# PROVISIONING ORDER. This play rides the same provisioning as the
+# collapsed worker, in this order — run the named plays first on a
+# fresh host (scripts/host-ops/play pins the refs):
+#   * 00-users (the deploy account), 19-pgpass (the agent_rw password),
+#   * this play imports precis_worker/provision itself — same venv
+#     (/opt/precis/venv), same service seed, idempotent on a host that
+#     already runs a worker;
+#   * the lane CLIs (claude/codex/kimi/devin) are NOT installed here:
+#     agent_clis is the one door — `scripts/agent-cli-update --host <h>
+#     --apply` after this play, per the spec's canary plan.
+#
+# PER-HOST SIZING. `claim.executor_cap.ssh_node.<heartbeat host>` via
+# the claim-setting door (put kind='job' mode='setting') — the spec
+# (docs/backlog/builder-hosts.md) carries the formula and the exact
+# coordinator lines. No cap key → the code default 8 applies.
+#
+# NOT IN THE REDEPLOY FLOW (yet). The orphan-lane sweep in
+# redeploy-precis.yml knows `precis-worker-builder.service` — it is
+# restarted there like every other unowned lane but never drift-flagged.
+# The site.yml-path bounce lives in the role.
+
+- name: Deploy the builder-host slice lane (job_ssh_node only)
+  # `builder_hosts` is declared by the overlay; the gateway joins as the
+  # batch anchor (a play whose hosts can all be non-critical must keep a
+  # survivor, r36/gr488897) and leaves in the first pre_task unless it is
+  # itself a builder host — the DB host joins the group last in the
+  # canary, with a conservative cap.
+  hosts: builder_hosts:gateway
+  become: true
+  pre_tasks:
+    - name: "Isolation anchor: the gateway only keeps this play's batch alive"
+      ansible.builtin.meta: end_host
+      when: inventory_hostname not in (groups['builder_hosts'] | default([]))
+  tasks:
+    - name: Worker venv + service seed (idempotent — rides 20b's provision)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: provision
+
+    - name: Builder surface — checkout, docker, MCP tunnel, worker unit
+      ansible.builtin.import_role:
+        name: precis_builder_host
+
+  # `precis` family tag so `--tags precis` fans this out with the other
+  # precis-* plays; `precis-builder-hosts` for a targeted refresh.
+  tags: [precis-builder-hosts, precis]
