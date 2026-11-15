@@ -104,7 +104,10 @@ def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, list[str]]:
     revises an entry in place (the count alone is blind to it) counts only
     when it proposes a test signature the quest has not tried before —
     a paraphrase, and a flip back to an already-proposed test, keep the
-    same key. ``(0, [])`` when the quest has no dossier.
+    same key. The entry count adds the anchored ``supports``/``disputes``
+    edges on the quest's hypothesis findings (:func:`_finding_edge_count`)
+    — the support/counter record lives there since gr674774 — so a quest
+    with no dossier still counts its finding edges.
     """
     from precis.quest import dossier as dossier_mod
 

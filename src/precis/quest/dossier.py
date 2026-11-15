@@ -66,10 +66,13 @@ tick prompt separates narrative from ledger (:func:`read_narrative`,
 :func:`read_ledger`).
 
 A third pinned family, the **dialectic blocks** (quest-dossier-dialectic
-§Mechanism), holds the per-hypothesis dialectic — support/counter/
-discriminating-experiment, one block per live hypothesis finding — in the
-same op-mutated, never-rewritten shape as the ledger (:func:`read_dialectic`,
-:func:`apply_dialectic_op`).
+§Mechanism), is the per-hypothesis dialectic's *remaining* storage — one
+block per live hypothesis finding, in the same op-mutated, never-rewritten
+shape as the ledger. Since gr674774 (me674763) only the discriminating
+**experiment** still writes a block; ``open``/``support``/``counter``/
+``settle`` act on the hypothesis finding's own edges, tags and status
+instead, and earlier support/counter blocks survive as rendered history
+(:func:`read_dialectic`, :func:`apply_dialectic_op`).
 """
 
 from __future__ import annotations
@@ -1063,18 +1066,23 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
 
 # --- Dialectic blocks (quest-dossier-dialectic §Mechanism) -------------------
 #
-# The per-hypothesis dialectic lives OUTSIDE the rewritable narrative, in the
+# The per-hypothesis dialectic lived OUTSIDE the rewritable narrative, in the
 # same pinned-chunk shape as the ledger: one `meta.pinned='dialectic'`
 # container per dossier; one child BLOCK chunk per live hypothesis
 # (`meta.pinned='dialectic-hyp'`, `meta.hypothesis=<finding ref id>` — the
 # statement/motivation/testable_by live on the finding ref, never restated);
 # ENTRY chunks as block children (`meta.pinned='dialectic-entry'`,
-# `meta.role=support|counter|experiment`). The model maintains blocks only
-# through `dialectic_ops` (:func:`apply_dialectic_op`) — it never rewrites
-# them, so the structure cannot flatten the way tick-4's ###-skeleton did.
-# `support`/`counter` entries mint real graph edges (`supports` /
-# `disputes` → the hypothesis finding) from their inline handles at apply
-# time, so the dialectic is a queryable graph, not a document shaped like one.
+# `meta.role=support|counter|experiment`). Since gr674774 (me674763) only
+# the `experiment` op still writes here — `open`/`support`/`counter`/`settle`
+# act on the hypothesis finding's own edges, tags and status
+# (`_apply_finding_op`) and write no chunk, so pre-gr674774 support/counter
+# entries are history `read_dialectic` keeps rendering. The model maintains
+# blocks only through `dialectic_ops` (:func:`apply_dialectic_op`) — it never
+# rewrites them, so the structure cannot flatten the way tick-4's
+# ###-skeleton did. The `support`/`counter` ops mint real graph edges
+# (`supports`/`disputes` → the hypothesis finding) from their inline
+# handles at apply time, so the dialectic is a queryable graph, not a
+# document shaped like one.
 
 _DIALECTIC_PINNED = "dialectic"
 _DIALECTIC_HYP_PINNED = "dialectic-hyp"
@@ -1281,7 +1289,8 @@ def read_dialectic(store: Store, owner_id: int) -> str:
 def has_dialectic_blocks(store: Store, owner_id: int) -> bool:
     """True when the owner's dossier holds at least one dialectic block.
     Read-only (no healing, unlike :func:`read_dialectic`) — the tick prompt
-    gates its whole dialectic section on this."""
+    renders its dialectic section unconditionally and gates only the legacy
+    block render on this (gr674774)."""
     did = dossier_ref_id(store, owner_id)
     return did is not None and bool(_load_dialectic_blocks(store, did))
 
