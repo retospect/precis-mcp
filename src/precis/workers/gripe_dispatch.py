@@ -108,6 +108,7 @@ from precis.plans.nodes import finish_mint
 from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
+from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta
@@ -150,6 +151,28 @@ _BUILD_TASK_CLASS = "code"
 #: carries none of these ops or a non-code ``task_class``, so a chain
 #: that has landed stops holding a slot while it waits on them.
 _BUILD_OPS: tuple[str, ...] = ("run_slice", "land_slice")
+#: Open-tag values/prefixes that park a build-ops node — the shared
+#: doable-exclusion registry (``halt``, ``waiting-for:``, ``ask-user``,
+#: ``child-failed:``, ``hold:no-dispatch``) plus ``rescue:`` (the rescue
+#: pass owns the node then). A parked build claims no lane, so its chain
+#: must not hold a mint slot either — gr687946 parked seven dead chains
+#: on ~7 of 27 code-lane slots while eligible gripes waited.
+_PARKED_TAGS: tuple[str, ...] = _DOABLE_EXCLUSION_TAGS + ("rescue:",)
+
+
+def _parked_clause(tag_alias: str) -> str:
+    """SQL OR-clause matching :data:`_PARKED_TAGS` — the bare/prefix
+    convention of ``_doable_exclusion_clause``, minus its claimed-by
+    lease arm (a claimed node is being worked, not parked)."""
+    parts: list[str] = []
+    for t in _PARKED_TAGS:
+        if t.endswith(":"):
+            parts.append(f"{tag_alias}.value LIKE '{t}%%'")
+        else:
+            parts.append(f"{tag_alias}.value = '{t}'")
+    return "(" + " OR ".join(parts) + ")"
+
+
 #: Tags that keep a gripe out of the lane by this door. ``hold:no-autoclose``
 #: marks Reto's never-close gripes (me547530): a land would write
 #: ``resolved:`` on one, so they never enter a chain by this door (BUILDER
@@ -266,10 +289,13 @@ def open_chain_count(store: Store) -> int:
     to :data:`_BUILD_TASK_CLASS` — unset reads ``code``, as
     ``plan_dispatch`` resolves it — and whose STATUS is not terminal.
     Once the build has landed the chain tail (gate, validate, review)
-    may run on for hours without holding a lane slot (gr584410)."""
+    may run on for hours without holding a lane slot (gr584410). A
+    build node parked on a :data:`_PARKED_TAGS` tag or ``STATUS:paused``
+    claims nothing either — a dead chain frees its slot instead of
+    holding it silently (gr687946)."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT count(DISTINCT r.ref_id)
               FROM refs r
               JOIN links l ON l.src_ref_id = r.ref_id AND l.relation = 'related-to'
@@ -295,14 +321,21 @@ def open_chain_count(store: Store) -> int:
                                                 JOIN tags bs ON bs.tag_id = bst.tag_id
                                                WHERE bst.ref_id = bn.ref_id
                                                  AND bs.namespace = 'STATUS'
-                                                 AND bs.value = ANY(%s)))
+                                                 AND bs.value = ANY(%s))
+                              AND NOT EXISTS (SELECT 1 FROM ref_tags pkt
+                                                JOIN tags pk ON pk.tag_id = pkt.tag_id
+                                               WHERE pkt.ref_id = bn.ref_id
+                                                 AND pk.namespace = 'OPEN'
+                                                 AND {_parked_clause("pk")}))
             """,
             (
                 list(_TERMINAL_STATUSES),
                 list(_BUILD_OPS),
                 _BUILD_TASK_CLASS,
                 _BUILD_TASK_CLASS,
-                sorted(TERMINAL_TODO_STATUSES),
+                # Terminal OR paused: a paused build claims no lane, so
+                # its chain holds no slot either.
+                sorted(TERMINAL_TODO_STATUSES | {"paused"}),
             ),
         ).fetchone()
     return int(row[0]) if row else 0

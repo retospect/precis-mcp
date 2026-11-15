@@ -51,7 +51,12 @@ _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
 )
 
 
-def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> str:
+def _doable_exclusion_clause(
+    tag_alias: str = "t",
+    reftag_alias: str = "rt",
+    *,
+    plan_child_failed_free: str | None = None,
+) -> str:
     """Return the SQL OR clause matching every exclusion tag.
 
     The returned expression is parenthesised, suitable for embedding
@@ -71,10 +76,41 @@ def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> 
     minted before the lease semantics) deliberately does NOT exclude —
     that matches its pre-lease behaviour, so old stale claims can't
     suddenly park live leaves.
+
+    ``plan_child_failed_free`` (parent-gate use only): the SQL alias of
+    the JOB row being gated. When given, the ``child-failed:`` arm only
+    matches a tag naming a sibling job NEWER than that row's id — or a
+    non-numeric hand tag — while the parent carries no ``plan:<root>``
+    tag. gr687946: a plan node's retries belong to ``plan_dispatch``'s
+    ladder, which strips the bubble tag when it re-arms; a tag that
+    lands after the re-arm's mint (the bubble's second transaction, a
+    hand or straggler write) used to wedge the queued attempt behind a
+    tag nothing would clear — the child that could succeed could never
+    be claimed. An older sibling's bubble on a plan parent is stale
+    evidence, never a park.
     """
     parts: list[str] = []
     for t in _DOABLE_EXCLUSION_TAGS:
-        if t.endswith(":"):
+        if t == "child-failed:" and plan_child_failed_free is not None:
+            # ``substring(… from 'regex')`` returns the capture group or
+            # '' — NULLIF keeps the ::bigint cast off non-numeric values
+            # (SQL gives no AND evaluation order, so a ``~`` guard alone
+            # is not safe), and COALESCE lands the NULL comparison as
+            # "not older" — a non-numeric hand tag still gates.
+            parts.append(
+                f"({tag_alias}.value LIKE '{t}%%' AND NOT ("
+                "EXISTS ("
+                "SELECT 1 FROM ref_tags prt JOIN tags pt "
+                "ON pt.tag_id = prt.tag_id "
+                f"WHERE prt.ref_id = {plan_child_failed_free}.parent_id "
+                "AND pt.namespace = 'OPEN' AND pt.value LIKE 'plan:%%'"
+                ") "
+                f"AND COALESCE(NULLIF(substring({tag_alias}.value from "
+                f"'^child-failed:([0-9]+)$'), '')::bigint "
+                f"< {plan_child_failed_free}.ref_id, false)"
+                "))"
+            )
+        elif t.endswith(":"):
             parts.append(f"{tag_alias}.value LIKE '{t}%%'")
         else:
             parts.append(f"{tag_alias}.value = '{t}'")
@@ -105,6 +141,11 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
     must not pin the parent's queued jobs forever; the ``NOT EXISTS``
     arm carves terminal parents out of the gate.
 
+    gr687946: a ``child-failed:`` bubble on a ``plan:<root>``-tagged
+    parent never gates a NEWER queued job — the plan tick owns that
+    node's retry ladder (it strips the tag when it re-arms), so a stale
+    or late-landing bubble must not deadlock the attempt it minted.
+
     The predicate carries ONE ``%s`` param slot — the caller binds
     ``sorted(TERMINAL_TODO_STATUSES)`` (:mod:`precis.todo` must not be
     imported here: store is the bottom layer). ``job_alias`` is a
@@ -115,7 +156,7 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
         "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         f"WHERE rt.ref_id = {job_alias}.parent_id "
         "AND t.namespace = 'OPEN' "
-        f"AND {_doable_exclusion_clause()} "
+        f"AND {_doable_exclusion_clause(plan_child_failed_free=job_alias)} "
         "AND NOT EXISTS ("
         "SELECT 1 FROM ref_tags xrt JOIN tags xt ON xt.tag_id = xrt.tag_id "
         f"WHERE xrt.ref_id = {job_alias}.parent_id "

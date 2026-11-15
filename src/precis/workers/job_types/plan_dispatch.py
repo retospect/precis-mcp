@@ -197,7 +197,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    temporary lane holds still wait in ``run_slice``; answering the ask
    after enabling a lane or retargeting the class releases the node.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
-   the failure bubble left. **Re-land** (gr570187): a task whose newest
+   the failure bubble left — and the bubble no longer latches a live-plan
+   parent at all (gr687946): a tag that landed after the re-arm's mint
+   (the bubble's second transaction, a hand or straggler write) used to
+   park the fresh job behind the ``parent_not_paused`` claim gate
+   forever — the child that could clear it could never be claimed. The
+   gate now also exempts a ``child-failed:`` tag on a ``plan:<root>``
+   parent that names an OLDER sibling job, so a stale or late tag can
+   never deadlock the attempt it predates. **Re-land** (gr570187): a
+   task whose newest
    job is a failed ``land_slice`` carrying ``attempt_free == "infra-land"``
    re-mints ``land_slice`` with the failed job's own params (idem
    ``land_slice:td<id>``) — no builder, no ladder rung, no review lane —

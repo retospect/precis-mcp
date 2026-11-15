@@ -479,6 +479,66 @@ def test_landed_build_frees_the_slot_while_the_chain_runs_on(
     assert _roots_for(store, a) == [root]
 
 
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "child-failed:685725",
+        "rescue:builder",
+        "halt",
+        "halt:planner-stuck",
+        "ask-user",
+        "waiting-for:coordinator",
+        "hold:no-dispatch",
+    ],
+)
+def test_parked_build_frees_the_slot(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch, tag: str
+) -> None:
+    """gr687946: a build node parked on a stay-away tag claims no lane —
+    the chain frees its slot instead of holding it silently (seven
+    dead chains sat on ~7 of 27 code slots)."""
+    codex, _sub = two_lanes
+    use_lanes(monkeypatch, codex)  # capacity 1
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=2)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert gd.open_chain_count(store) == 1
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
+
+    store.add_tag(
+        _build_node(store, _roots_for(store, a)[0]),
+        Tag.open(tag),
+        set_by="system",
+    )
+    assert gd.open_chain_count(store) == 0
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert _roots_for(store, b)
+
+
+def test_paused_build_frees_the_slot(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr687946: ``STATUS:paused`` on the build node frees the slot."""
+    codex, _sub = two_lanes
+    use_lanes(monkeypatch, codex)  # capacity 1
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=2)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert gd.open_chain_count(store) == 1
+
+    store.add_tag(
+        _build_node(store, _roots_for(store, a)[0]),
+        Tag.closed("STATUS", "paused"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert gd.open_chain_count(store) == 0
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert _roots_for(store, b)
+
+
 def test_factory_off_mints_nothing(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

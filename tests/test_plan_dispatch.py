@@ -1968,6 +1968,113 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
 
 
+def _gated_job_ids(store: Store) -> set[int]:
+    """Claimable (``STATUS:queued``/``yielded``) jobs the shared
+    ``parent_gate_exclusion_sql`` predicate parks — read-only, unlike a
+    real ``claim_executor_jobs`` call (which leases what it takes)."""
+    from precis.store._todo_sql import parent_gate_exclusion_sql
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id FROM refs r "
+            "JOIN ref_tags srt ON srt.ref_id = r.ref_id "
+            "JOIN tags st ON st.tag_id = srt.tag_id "
+            "  AND st.namespace = 'STATUS' AND st.value = ANY(%s) "
+            "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            f"AND {parent_gate_exclusion_sql('r')}",
+            (["queued", "yielded"], sorted(TERMINAL_TODO_STATUSES)),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def test_retry_claimable_behind_a_late_bubble(store: Store) -> None:
+    """gr687946: a ``child-failed:`` tag that lands AFTER the retry's mint
+    (the bubble's second transaction, a hand or straggler write) must not
+    park the queued attempt — ``parent_not_paused`` exempts an older
+    sibling's bubble on a ``plan:<root>`` parent. jo686618 waited 253
+    min behind exactly this."""
+    from precis.workers.executors._common import claim_executor_jobs
+
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    assert pd.run_pass(store).dispatched == 1
+    first = _jobs_under(store, task)[-1][0]
+    _set_job_status(store, first, "failed")
+    assert pd.run_pass(store).dispatched == 1
+    retry_id = _jobs_under(store, task)[-1][0]
+
+    # The late bubble: the tag lands while the retry already sits queued —
+    # the ordering that deadlocked the real fleet.
+    store.add_tag(task, Tag.open(f"child-failed:{first}"), set_by="system")
+    assert _gated_job_ids(store) == set()
+    # …and the gate lets a NEWER job under the same tagged parent claim
+    # for real (a ``fetch_oa`` probe — a ``run_slice`` row would also
+    # need placement tokens no test host advertises).
+    with store.tx() as conn:
+        probe = mint_background_job(
+            store,
+            conn=conn,
+            job_type="fetch_oa",
+            executor="ssh_node",
+            title="probe",
+            params={},
+            parent_id=task,
+        )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=5, parent_not_paused=True
+        )
+    assert [int(j[0]) for j in claimed] == [int(probe.id)]
+
+    # A tag naming a NEWER sibling is not stale — it still gates, and a
+    # non-plan parent gates exactly as before (the bubble's owner there
+    # is a human or the dispatch worker, not the plan tick).
+    plain = store.insert_ref(kind="todo", slug=None, title="plain")
+    with store.tx() as conn:
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="devin_api",
+            title="plain job",
+            params={},
+            parent_id=int(plain.id),
+        )
+    store.add_tag(task, Tag.open(f"child-failed:{int(ref.id) + 100}"), set_by="system")
+    store.add_tag(int(plain.id), Tag.open(f"child-failed:{first}"), set_by="system")
+    assert _gated_job_ids(store) == {retry_id, int(probe.id), int(ref.id)}
+
+    # A non-numeric hand tag can't prove it's older — it gates too.
+    store.remove_tag(task, Tag.open(f"child-failed:{int(ref.id) + 100}"))
+    store.add_tag(task, Tag.open("child-failed:hand-check"), set_by="system")
+    assert _gated_job_ids(store) == {retry_id, int(probe.id), int(ref.id)}
+
+
+def test_bubble_never_latches_a_live_plan_node(store: Store) -> None:
+    """gr687946: ``bubble_job_failure`` skips a live-plan parent — the
+    plan tick owns its retry ladder, the bubble is for non-plan parents.
+    A dead plan's leftover node is nobody's — it bubbles normally."""
+    from precis.utils.job_bubble import bubble_job_failure
+
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "failed")
+    bubble_job_failure(store, job)
+    assert not any(v.startswith("child-failed:") for v in _open_tags(store, task))
+
+    # Close the root: the tag now names a dead plan, so the bubble lands.
+    store.add_tag(
+        mint.root_id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    job2 = _slice_job(store, task, "run_slice", "failed")
+    bubble_job_failure(store, job2)
+    assert f"child-failed:{job2}" in _open_tags(store, task)
+
+
 def _red_land(
     store: Store,
     task: int,

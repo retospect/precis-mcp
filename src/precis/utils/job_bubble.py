@@ -12,6 +12,14 @@ sees which child failed without reading meta, nursery detection is a flat
 ``WHERE t.value LIKE 'child-failed:%'``, clearing is an ordinary
 ``tag(remove=…)``. Idempotent: re-applying the same tag is a no-op.
 
+A parent that is a live-plan node (open ``plan:<root>`` tag on a
+non-terminal root) is NOT tagged at all (gr687946): ``plan_dispatch``
+owns the retry ladder there — it ignores the tag for dispatch and
+strips it when it re-arms — while the ``parent_not_paused`` claim gate
+would park the fresh attempt behind it. A late-landing tag (this
+helper runs in its own transaction behind the STATUS commit) used to
+deadlock the retry it was supposed to flag.
+
 **Infra-class bounded auto-retry.** ``child-failed:<job_id>`` covers two
 indistinguishable causes: a genuine content-class task error, and an
 infra-class lease-expiry orphan sweep (``sweeper.py``'s
@@ -160,6 +168,25 @@ def bubble_job_failure(
             )
             return
 
+    # gr687946: a ``plan:<root>`` node's retries belong to the
+    # ``plan_dispatch`` tick — its ladder re-arms the node and clears
+    # the tag when it mints the next attempt, so latching the bubble
+    # here is worse than useless: a tag that lands after that mint (this
+    # helper runs in its own transaction, behind the STATUS commit) used
+    # to park the fresh job behind ``parent_not_paused`` forever. Nodes
+    # under a DEAD plan root are not the tick's — they bubble normally.
+    plan_owned = _live_plan_targets(store, targets, conn=conn)
+    if plan_owned:
+        log.info(
+            "bubble: job #%d failed under live plan(s) — todo(s) %s "
+            "skipped (plan_dispatch owns plan-node retries)",
+            job_id,
+            sorted(plan_owned),
+        )
+        targets = [t for t in targets if t not in plan_owned]
+        if not targets:
+            return
+
     is_infra = _is_infra_failure(store, job_id, conn=conn)
     tag = Tag.open(f"child-failed:{job_id}")
 
@@ -254,6 +281,46 @@ def _apply_tags(
         with store.tx() as tx_conn:
             for t in tags:
                 store.add_tag(target, t, set_by="system", conn=tx_conn)
+
+
+def _live_plan_targets(
+    store: Store, targets: list[int], *, conn: Connection | None
+) -> set[int]:
+    """The subset of ``targets`` that are live-plan nodes — an open
+    ``plan:<root>`` tag naming a non-terminal todo.
+
+    The plan tick owns retries for those (``plan_dispatch`` strips a
+    ``child-failed:`` tag when it re-arms, and its retry ladder is the
+    recovery), so the bubble must not latch them (gr687946). A
+    ``plan:<id>`` tag on a dead root's leftover names no live plan —
+    the node bubbles like any ordinary todo.
+    """
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    sql = (
+        "SELECT DISTINCT rt.ref_id "
+        "  FROM ref_tags rt "
+        "  JOIN tags t ON t.tag_id = rt.tag_id "
+        "  JOIN refs proot "
+        "    ON proot.ref_id = NULLIF(substring(t.value from '^plan:([0-9]+)$'), "
+        "                            '')::int "
+        "   AND proot.kind = 'todo' AND proot.retired_at IS NULL "
+        " WHERE rt.ref_id = ANY(%s) "
+        "   AND t.namespace = 'OPEN' "
+        "   AND t.value ~ '^plan:[0-9]+$' "
+        "   AND NOT EXISTS ("
+        "         SELECT 1 FROM ref_tags srt JOIN tags st "
+        "           ON st.tag_id = srt.tag_id "
+        "          WHERE srt.ref_id = proot.ref_id "
+        "            AND st.namespace = 'STATUS' AND st.value = ANY(%s))"
+    )
+    params = (targets, sorted(TERMINAL_TODO_STATUSES))
+    if conn is not None:
+        rows = conn.execute(sql, params).fetchall()
+    else:
+        with store.pool.connection() as c:
+            rows = c.execute(sql, params).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _is_infra_failure(store: Store, job_id: int, *, conn: Connection | None) -> bool:

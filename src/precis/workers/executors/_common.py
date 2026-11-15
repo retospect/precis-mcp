@@ -1857,7 +1857,10 @@ def claim_executor_jobs(
     and a TERMINAL parent (``done`` / ``won't-do`` / ``auto-timeout``)
     is exempt: a finished todo's stale pause tags (a leftover
     ``waiting-for:fleet``) must not pin its queued jobs forever
-    (gr575883).
+    (gr575883). A ``child-failed:`` bubble on a ``plan:<root>`` parent
+    never gates a NEWER queued job either (gr687946): the plan tick's
+    retry ladder owns that node's recovery, so a stale or late-landing
+    bubble must not deadlock the attempt it minted.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")

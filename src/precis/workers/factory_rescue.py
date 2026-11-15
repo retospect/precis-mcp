@@ -1013,17 +1013,32 @@ def _dispatcher_hold(
     return max(live, key=lambda h: h[0]) if live else None
 
 
-def _parent_gate_tag(n: Any) -> str | None:
+def _parent_gate_tag(n: Any, job_id: int | None = None) -> str | None:
     """The open tag on ``n`` that makes ``parent_not_paused`` refuse to
     claim its jobs, or ``None`` (the shared ``_DOABLE_EXCLUSION_TAGS`` set;
-    a terminal parent is exempt, as in the gate itself, gr575883)."""
+    a terminal parent is exempt, as in the gate itself, gr575883).
+
+    gr687946: a ``child-failed:<id>`` tag on a ``plan:<root>`` node only
+    gates when ``<id>`` names a job NEWER than the claimant — the gate's
+    own carve-out for a stale or late-landing bubble (the plan tick's
+    ladder owns the retry). ``job_id`` is the queued job being judged;
+    without it the tag reads as gating, the old answer."""
     from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 
     if n.status in TERMINAL_TODO_STATUSES:
         return None
+    plan_node = any(v.startswith("plan:") for v in n.open_tags)
     for v in n.open_tags:
         for t in _DOABLE_EXCLUSION_TAGS:
             if v == t or (t.endswith(":") and v.startswith(t)):
+                if (
+                    plan_node
+                    and job_id is not None
+                    and t == "child-failed:"
+                    and v[len(t) :].isdigit()
+                    and int(v[len(t) :]) < job_id
+                ):
+                    continue
                 return str(v)
     return None
 
@@ -1074,7 +1089,7 @@ def _stage_for(
                 f"job jo{live.id} parked until {_iso(parked_at)}{why}",
             )
         if live.status == "queued":
-            gate_tag = _parent_gate_tag(n)
+            gate_tag = _parent_gate_tag(n, live.id)
             if gate_tag is not None:
                 # The claim gate (``parent_not_paused``) refuses this job
                 # until the tag clears — its silence is the gate's, and
