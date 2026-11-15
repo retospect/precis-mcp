@@ -1166,6 +1166,31 @@ class StructureMixin:
                 (Jsonb(summary), ref_id, on_version),
             )
 
+    def structure_stamp_electronic(
+        self,
+        ref_id: int,
+        *,
+        on_version: int,
+        summary: dict[str, Any],
+        conn: Connection | None = None,
+    ) -> None:
+        """``meta['last_electronic']`` — the same versioned-stamp contract as
+        :meth:`structure_stamp_last_relax`, for the ``electronic_analysis``
+        descriptor run (gr592999): {run_id, on_version, structure_sha,
+        request_sha, present, absent, functional}. ``request_sha`` is the
+        mint's request identity (spec + dft + label map + version) — the
+        handler's completed-run dedupe reuses only a stamp whose identity
+        matches the live request. A stale-version write is a no-op, so a
+        slow analysis landing after an edit never overwrites what a newer
+        version would say."""
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                "jsonb_build_object('last_electronic', %s::jsonb) "
+                "WHERE ref_id = %s AND (meta->>'version')::int = %s",
+                (Jsonb(summary), ref_id, on_version),
+            )
+
     def structure_record_run(
         self,
         ref_id: int,
@@ -1196,9 +1221,10 @@ class StructureMixin:
         uncached ``clean`` rung). ``forces`` (gripe 161576) is the caller-built
         ``{"vectors": [[fx,fy,fz], ...], "approx": bool, "source": str}``
         payload, canonical-rank-indexed like ``final_geometry`` — NULL when no
-        force estimate was available. ``charges`` is always NULL today (no
-        backend produces partial charges yet); the param exists so a future
-        charge-bearing rung has a column to write without another migration.
+        force estimate was available. ``charges`` carries the
+        ``electronic_analysis`` rung's Bader map (``{"bader": {label:
+        net_e}, "note"?}`` — gr592999); NULL for rungs that produce no
+        per-atom charges.
         ``conn`` joins the preparation save/revision transaction so a job
         retry cannot recover prepared geometry without its run evidence.
         ``pending_run_id`` completes only an uncached queued preparation row;
@@ -1268,6 +1294,27 @@ class StructureMixin:
                     (run_id, step, None, float(fval)),
                 )
         return run_id
+
+    def structure_electronic_runs(
+        self, ref_id: int, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """A design's ``fidelity='electronic'`` descriptor runs, newest
+        first — the ``electronic_analysis`` job's write-back (gr592999).
+        Returns the run id, version, status, the ``params`` payload
+        (descriptors + audit scalars) and the ``charges`` column (Bader
+        map) so ``view='electronic'`` and its compare render without a
+        second query."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, fidelity, status, model, on_version, converged, "
+                    "created_at, params, charges FROM struct_runs "
+                    "WHERE ref_id = %s AND fidelity = 'electronic' "
+                    "ORDER BY id DESC LIMIT %s",
+                    (ref_id, limit),
+                )
+                rows = cur.fetchall()
+        return [cast(dict[str, Any], r) for r in rows]
 
     def structure_runs(self, ref_id: int, *, limit: int = 20) -> list[StructRunRow]:
         """A design's compute history, most-recent first (the fidelity levels).

@@ -2085,6 +2085,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-structure-help",
     ),
     ServiceSpec(
+        name="electronic_analysis",
+        label="Electronic analysis (DFT single point)",
+        category="compute",
+        kind=ServiceKind.COMPUTE,
+        requires=frozenset({"gpu"}),
+        one_line=(
+            "GPAW single point on a stored geometry; stamps Bader/d-band/"
+            "PDOS/COHP descriptors on the structure."
+        ),
+        doc_skill="precis-structure-help",
+    ),
+    ServiceSpec(
         name="struct_search",
         label="Structure search (AGOX/GOFEE)",
         category="compute",

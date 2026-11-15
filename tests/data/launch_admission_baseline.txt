@@ -154,6 +154,7 @@ src/precis/workers/job_types/struct_relax.py::reset_gpu 1
 src/precis/workers/slice_stacks.py::_docker 1
 src/precis_bio/jobs.py::_default_runner 1
 src/precis_chem/jobs.py::_default_runner 1
+src/precis_dft/_container/gpaw_analysis.py::_bader_charges 1
 src/precis_pathway/replay.py::_netns_prefix 1
 src/precis_pathway/replay.py::_subprocess_runner.run 1
 src/precis_pathway/runner.py::_run_request_subprocess 1

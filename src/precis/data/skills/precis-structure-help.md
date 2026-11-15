@@ -523,6 +523,41 @@ in-flight one collapses onto it. Mints are capped per UTC day
 (`PRECIS_STRUCT_MD_DAILY`, default 20); `requested_by=<todo>` blocks on
 the job like a relax.
 
+## Electronic descriptors — `mode='analyze'` (`electronic_analysis`)
+
+Screening gives energetics, never mechanism — the ML potential has no
+charge response. `put(mode='analyze')` mints one `electronic_analysis`
+job: a DFT **single point on the stored geometry** (same GPAW container
+lane as the relax, no relaxation) that stamps orbital-level descriptors
+onto the design (gr592999):
+
+- **Bader charges** per atom (dopant + neighbours) → `struct_runs.charges`;
+- **d-band centre and width** of the dopant set and the surface set;
+- **projected d-DOS at the dopant** (the curve rides the run's params);
+- **pCOHP + ICOHP(E_F)** for each named bond (e.g. `Pd-N`, `Pd-O`, `M-N`), in eV, from the LCAO Hamiltonian and k-weighted occupations (LCAO mode only).
+
+```python
+put(kind="structure", id="ta_fcc1", mode="analyze",
+    args={"dopant": ["a3"],                       # label, or 'el:Ta'
+          "surface": ["el:Pd"],                  # default: most common el
+          "bonds": [{"name": "Pd-N", "a": "el:Pd", "b": "el:N"}],
+          "bond_cutoff": 1.3})                   # optional
+get(kind="structure", id="ta_fcc1", view="electronic")          # the table
+get(kind="structure", id="ta_fcc1", view="electronic",
+    args={"other": "pd111_clean"})               # side-by-side compare
+```
+
+Every descriptor is honest `computed`/`unavailable` + reason (e.g. no
+`bader` binary in the image) — a partial result still lands. Dedupe
+keys the whole request — spec + `dft` block, atom-label map the
+selectors resolve against, and design version: an identical request
+reads the completed run, an in-flight one collapses onto its job,
+but a re-`put`/`edit` (which bumps the version even on identical
+geometry) mints a fresh single point. `requested_by=<todo>` blocks on
+it like a relax. The frontier summary reports `mechanism evidence:
+present|absent` per candidate — present only when a run computed ≥1
+descriptor on the *current* geometry.
+
 ## Search, don't guess — `struct_search`
 
 A `struct_search` job runs an AGOX/GOFEE surrogate search — in-process

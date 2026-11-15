@@ -1526,7 +1526,12 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     lines += _protocol_mod.protocol_lines(store, quest_id)
     for c in fr.frontier:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
-        lines.append(f"- FRONTIER {c.handle} {c.name} — {ms}")
+        # gr592999: explicit present/absent — an un-analysed candidate must
+        # never read as "no mechanism found".
+        lines.append(
+            f"- FRONTIER {c.handle} {c.name} — {ms} "
+            f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+        )
     # Beaten rows: best-first by the primary objective (the leaderboard
     # convention), NOT raw candidate order — qu509651's energy-rubric quest
     # rendered insertion-order dominated[:5], so a dozen measured dopants
@@ -1539,7 +1544,10 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     beaten = sorted(fr.dominated, key=_primary_objective_key(fr.objectives))
     for c in beaten[:_BEATEN_SHOWN]:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
-        lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
+        lines.append(
+            f"- beaten   {c.handle} {c.name} — {ms} "
+            f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+        )
     if len(beaten) > _BEATEN_SHOWN:
         omitted = beaten[_BEATEN_SHOWN:]
         named = ", ".join(c.handle for c in omitted[:_BEATEN_OMITTED_NAMED])
@@ -1572,7 +1580,10 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         )
         star = " ★provisional-frontier" if p.on_frontier else ""
         why = f" [{'; '.join(p.reasons)}]" if p.reasons else ""
-        lines.append(f"- provisional {c.handle} {c.name} — {ms}{star}{why}")
+        lines.append(
+            f"- provisional {c.handle} {c.name} — {ms}{star}{why} "
+            f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+        )
     if len(provisional) > 10:
         lines.append(f"  (+{len(provisional) - 10} more provisional)")
     if fr.unevaluated:

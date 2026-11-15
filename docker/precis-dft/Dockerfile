@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential gfortran pkg-config \
       libxc-dev libopenblas-dev libfftw3-dev \
       libopenmpi-dev openmpi-bin \
-      ca-certificates \
+      ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VENV=/opt/venv
@@ -67,6 +67,29 @@ RUN python -c "import _gpaw, gpaw.mpi as m; \
 ok = getattr(m, 'have_mpi', hasattr(_gpaw, 'Communicator')); \
 assert ok, 'GPAW built WITHOUT MPI — mpirun would run N serial copies'; \
 print('GPAW MPI: on')"
+
+# Henkelman `bader` — the gpaw-analysis subcommand shells out to it for
+# Bader charge partitioning (gr592999), and no Ubuntu/Debian package ships
+# it (checked the jammy/bookworm archives), so it is compiled here from the
+# pinned upstream source with the gfortran already installed for GPAW's C
+# extension. The compile order mirrors upstream's makefile.osx_gfortran
+# OBJS list (the only gfortran makefile it ships; its -pg link flag and
+# macOS naming don't carry over). Pinned to a commit, not a branch.
+ARG BADER_SHA=ede5282a8e6b2a7a45724125043771761ef7f6c0
+RUN set -eux; \
+    curl -fsSL "https://github.com/henkelmangroup/bader/archive/${BADER_SHA}.tar.gz" \
+      | tar -xz -C /tmp; \
+    cd "/tmp/bader-${BADER_SHA}"; \
+    for src in kind_mod.f90 matrix_mod.f90 ions_mod.f90 options_mod.f90 \
+               charge_mod.f90 chgcar_mod.f90 cube_mod.f90 io_mod.f90 \
+               bader_mod.f90 voronoi_mod.f90 multipole_mod.f90 \
+               weight_mod.f90 dsyevj3_mod.f jacobi_mod.f90 \
+               critpoint_mod.f90 automatedcp_mod.f90 main.f90; do \
+        gfortran -O2 -c "$src"; \
+    done; \
+    gfortran -O2 ./*.o -o /usr/local/bin/bader; \
+    cd / && rm -rf "/tmp/bader-${BADER_SHA}"; \
+    bader 2>&1 | head -1
 
 # precis-dft — only the in-container path (cli + _container + structures)
 # is exercised here, and none of it imports precis-mcp, so --no-deps keeps

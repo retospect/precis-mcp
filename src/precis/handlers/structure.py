@@ -178,6 +178,7 @@ _VIEWS = (
     "pair",
     "neb",
     "md",
+    "electronic",
     "generator",
     "completion",
     "completion_digest",
@@ -267,6 +268,38 @@ def _poscar_row_labels(scene: Scene) -> list[str]:
     so a relaxed POSCAR's rows map back to labels → canonical rank."""
     order, groups = export._grouped(scene)
     return [a.label for el in order for a in groups[el]]
+
+
+def _analyze_request_sha(
+    *,
+    analysis: dict[str, Any],
+    dft: dict[str, Any] | None,
+    poscar_labels: list[str],
+    version: int,
+) -> str:
+    """The ``electronic_analysis`` request identity (gr592999, td687448).
+
+    Covers the descriptor spec and the ``dft`` block (settings are part
+    of the physics — a different functional/k-mesh is a different
+    request) plus two things the label-free ``structure_sha`` cannot
+    see: the atom-label map the spec's selectors resolve against, and
+    the design *version* the evidence must live on. The stamp, the
+    electronic view and the frontier's ``mechanism_evidence`` flag all
+    read ``on_version == version``, and a re-put bumps the version even
+    when the geometry is identical — so reuse keyed on sha alone would
+    return evidence the current version can never claim (stale/absent
+    forever, with no way to remint).
+    """
+    blob = json.dumps(
+        {
+            "analysis": analysis,
+            "dft": dft or {},
+            "labels": poscar_labels,
+            "version": version,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
 def _format_gate_rejection(findings: list[Any]) -> str:
@@ -1003,6 +1036,14 @@ class StructureHandler(Handler):
                 "rdf_rmax_A",
                 "rdf_nbins",
                 "seed",
+                # mode='analyze' (gr592999): the descriptor spec for the
+                # DFT single point — atom selectors plus the named-bond
+                # COHP list and optional DFT knob overrides.
+                "dopant",
+                "surface",
+                "bonds",
+                "bond_cutoff",
+                "dft",
                 # mode='trust' (gr592893): the stamp payload
                 # {'<trust_key>': bool|null, 'reason': ..., 'evidence': ...} —
                 # the audited harvest trust-stamp correction door (null
@@ -1130,10 +1171,13 @@ class StructureHandler(Handler):
         # mode='neb' queues one CI-NEB edge between two gated endpoints
         # (gr512126 slice 3) — _put_neb. mode='md' queues one NVT
         # Langevin MD run on the design (gr606465) — _put_md.
+        # mode='analyze' mints one electronic_analysis job: a DFT single
+        # point on the stored geometry stamping Bader/d-band/PDOS/COHP
+        # descriptors (gr592999) — _put_analyze.
         # mode='trust' corrects one harvested trust stamp on the design's
         # meta, audited on the structure + the serving quest's logbook
         # (gr592893) — _put_trust.
-        modes=("rerun", "neb", "md", "trust"),
+        modes=("rerun", "neb", "md", "analyze", "trust"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -1188,6 +1232,8 @@ class StructureHandler(Handler):
             return self._put_neb(id=id, args=args)
         if mode == "md":
             return self._put_md(id=id, args=args)
+        if mode == "analyze":
+            return self._put_analyze(id=id, args=args)
         if mode == "trust":
             return self._put_trust(id=id, args=args)
         a = args or {}
@@ -3044,6 +3090,287 @@ class StructureHandler(Handler):
             )
         )
 
+    # ── mode='analyze' ───────────────────────────────────────────────
+
+    _ANALYZE_ARGS = frozenset(
+        {
+            "dopant",
+            "surface",
+            "bonds",
+            "bond_cutoff",
+            "dft",
+            "requested_by",
+            "parent_id",
+        }
+    )
+
+    def _put_analyze(
+        self, *, id: str | int | None, args: dict[str, Any] | None
+    ) -> Response:
+        """``put(id=<slug>, mode='analyze', args={'dopant': ['a3'|'el:Ta'],
+        'surface': ['el:Pd'], 'bonds': [{'name': 'Pd-N', 'a': 'el:Pd',
+        'b': 'el:N'}], 'bond_cutoff': 1.3, 'dft': {...}})`` — mint one
+        ``electronic_analysis`` job: a DFT single point on the design's
+        *stored* geometry that stamps Bader charges, d-band centre/width,
+        the dopant's projected d-DOS and named-bond COHPs (gr592999).
+
+        The job is a derived compute step (it parents on the structure,
+        like a dispatched relax). ``dopant``/``surface`` are atom
+        selectors — a scene label or ``el:<symbol>`` — the container
+        resolves them against the staged POSCAR row order; a bond's
+        ``a``/``b`` are the same. All are optional: omitting a descriptor
+        family just leaves it ``unavailable`` in the result.
+
+        Dedupe is two-stage and keys on the whole request identity
+        (:func:`_analyze_request_sha`): the descriptor spec + ``dft``
+        block *and* the atom-label map the selectors resolve against
+        *and* the design version the evidence must stamp. An identical
+        completed request (same geometry sha + same request sha, read
+        off the ``last_electronic`` stamp) returns the existing run
+        without minting; an identical *in-flight* one collapses onto
+        the job's idem key. A re-put or edit bumps the version — even
+        on identical geometry — so a post-edit request mints a fresh
+        single point rather than claiming a superseded version's
+        evidence. ``requested_by=<todo>`` arms the wait exactly like a
+        relax."""
+        call = (
+            "put(kind='structure', id='<slug>', mode='analyze', "
+            "args={'dopant': ['<label>|el:<El>'], 'bonds': "
+            "[{'name': 'Pd-N', 'a': 'el:Pd', 'b': 'el:N'}]})"
+        )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='analyze') requires id= (the "
+                "design slug or st<N> handle)",
+                next=call,
+            )
+        a = args or {}
+        unknown = sorted(set(a) - self._ANALYZE_ARGS)
+        if unknown:
+            raise BadInput(
+                f"mode='analyze' args: unknown key(s) {unknown}",
+                next=f"the analysis knobs are {sorted(self._ANALYZE_ARGS)}",
+            )
+
+        def _selectors(key: str) -> list[str]:
+            raw = a.get(key)
+            if raw is None:
+                return []
+            if not isinstance(raw, list) or not all(
+                isinstance(s, str) and s.strip() for s in raw
+            ):
+                raise BadInput(
+                    f"mode='analyze' args.{key} must be a list of "
+                    "non-empty selector strings",
+                    next="a selector is a scene atom label ('a3') or "
+                    "'el:<symbol>' (every atom of that element)",
+                )
+            return [s.strip() for s in raw]
+
+        dopant = _selectors("dopant")
+        surface = _selectors("surface")
+        bonds_raw = a.get("bonds") or []
+        if not isinstance(bonds_raw, list):
+            raise BadInput(
+                "mode='analyze' args.bonds must be a list of "
+                "{'name', 'a', 'b'} objects",
+                next=call,
+            )
+        bonds: list[dict[str, str]] = []
+        for i, b in enumerate(bonds_raw):
+            if not isinstance(b, dict) or not all(
+                isinstance(b.get(k), str) and str(b.get(k)).strip()
+                for k in ("name", "a", "b")
+            ):
+                raise BadInput(
+                    f"mode='analyze' args.bonds[{i}] needs non-empty "
+                    "'name', 'a' and 'b' strings",
+                    next=call,
+                )
+            bonds.append(
+                {"name": b["name"].strip(), "a": b["a"].strip(), "b": b["b"].strip()}
+            )
+        bond_cutoff = a.get("bond_cutoff")
+        if bond_cutoff is not None and not isinstance(bond_cutoff, (int, float)):
+            raise BadInput(
+                "mode='analyze' args.bond_cutoff must be a number "
+                "(covalent-radius multiplier, default 1.3)",
+                next=call,
+            )
+        dft = a.get("dft")
+        if dft is not None and not isinstance(dft, dict):
+            raise BadInput(
+                "mode='analyze' args.dft must be an object of DFT knob "
+                "overrides (functional, kpts, smearing, h, "
+                "spin_polarized)",
+                next=call,
+            )
+
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        scene, _ = self.store.structure_load(ref.id)
+        if not scene.atoms:
+            raise BadInput(
+                "mode='analyze': the design has no atoms — nothing to "
+                "compute a single point on",
+                next="author atoms first, then analyze",
+            )
+        version = int((ref.meta or {}).get("version", 0))
+        slug = str(ref.slug or id)
+        structure_sha = relax_cache.structure_sha(scene)
+        analysis = {
+            **({"dopant": dopant} if dopant else {}),
+            **({"surface": surface} if surface else {}),
+            **({"bonds": bonds} if bonds else {}),
+            **({"bond_cutoff": float(bond_cutoff)} if bond_cutoff is not None else {}),
+        }
+        poscar_labels = _poscar_row_labels(scene)
+        request_sha = _analyze_request_sha(
+            analysis=analysis,
+            dft=dft,
+            poscar_labels=poscar_labels,
+            version=version,
+        )
+
+        # Completed-run dedupe: the versioned last_electronic stamp names
+        # the geometry + request identity (spec, DFT settings, label map,
+        # version) it describes, so an identical re-request points at the
+        # existing run rather than burning a single point. A stamp from a
+        # superseded version — its request_sha differs — mints fresh: the
+        # versioned stamp/view/frontier could never claim that run anyway.
+        last = (ref.meta or {}).get("last_electronic") or {}
+        if (
+            last.get("structure_sha") == structure_sha
+            and last.get("request_sha") == request_sha
+            and last.get("run_id") is not None
+        ):
+            return Response(
+                body=(
+                    f"# electronic analysis already on file — st{ref.id} "
+                    f"({slug}) run {last['run_id']}\n\n"
+                    "An identical request (same version, geometry, atom "
+                    "labels and descriptor spec) already completed — no "
+                    "job minted.\n\n"
+                    f"Descriptors: get(kind='structure', id={slug!r}, "
+                    "view='electronic')."
+                )
+            )
+
+        requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
+        if requester_id is not None:
+            from precis.todo import guards as todo_guards
+
+            todo_guards.check_parent_exists(self.store, requester_id)
+        return self._dispatch_analyze(
+            ref,
+            version=version,
+            scene=scene,
+            structure_sha=structure_sha,
+            analysis=analysis,
+            request_sha=request_sha,
+            poscar_labels=poscar_labels,
+            dft=dft,
+            requester_id=requester_id,
+            slug=slug,
+        )
+
+    def _dispatch_analyze(
+        self,
+        ref: Any,
+        *,
+        version: int,
+        scene: Scene,
+        structure_sha: str,
+        analysis: dict[str, Any],
+        request_sha: str,
+        poscar_labels: list[str],
+        dft: dict[str, Any] | None,
+        requester_id: int | None,
+        slug: str,
+    ) -> Response:
+        """Mint the ``electronic_analysis`` job — the same derived-compute
+        lane as ``_dispatch_relax``: parent on the structure, pin to the
+        one DFT node (image + GPU + NFS scratch), collapse duplicates on
+        the idem key."""
+        from precis.workers.job_types.struct_relax import target_node_for
+
+        target = target_node_for("gpaw", key=request_sha)
+        if not target:
+            raise Internal(
+                "no compute node configured: PRECIS_DFT_NODE is unset on "
+                "this host, so an electronic_analysis job would have "
+                "nowhere to run — deploy renders it from topology "
+                "(precis_capabilities.dft)",
+                next="the node list is deploy env this host lacks",
+            )
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        params = {
+            "structure_ref_id": ref.id,
+            "on_version": version,
+            "structure_sha": structure_sha,
+            "request_sha": request_sha,
+            "order": relax_cache.canonical_order(scene),
+            "poscar_labels": poscar_labels,
+            "poscar": export.to_poscar(scene),
+            "analysis": analysis,
+            **({"dft": dft} if dft else {}),
+            "target_node": target,
+        }
+        with phase(ref.id, "job_put"):
+            job_resp = hub.sibling("job").put(
+                job_type="electronic_analysis",
+                executor="ssh_node",
+                # The build subject owns the job (compute lane).
+                parent_id=ref.id,
+                params=params,
+                # Collapse re-submits of the same analysis (same geometry,
+                # same spec/DFT settings, same label map, same version —
+                # request_sha) onto one in-flight job; a post-edit request
+                # mints a fresh job for the new version instead.
+                idem_key=(
+                    f"electronic_analysis:{ref.id}:{structure_sha}:{request_sha}"
+                ),
+            )
+        note = ""
+        if requester_id is not None:
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "structure._dispatch_analyze: job put() returned no "
+                    "ref_id for requester #%s; skipping requester wiring",
+                    requester_id,
+                )
+            else:
+                self._wire_requester(requester_id, job_resp.ref_id)
+            note = f" (todo #{requester_id} will block on it)"
+        if job_resp.reused:
+            return Response(
+                ref_id=job_resp.ref_id,
+                body=(
+                    f"# electronic_analysis already in flight — "
+                    f"jo{job_resp.ref_id} · st{ref.id} ({slug}){note}\n\n"
+                    "An identical request (same version, geometry, atom "
+                    "labels and descriptor spec) is owned by that job — "
+                    "this call collapsed onto it instead of minting a "
+                    "duplicate.\n\n"
+                    f"Poll: get(kind='job', id={job_resp.ref_id}); "
+                    f"descriptors land on get(kind='structure', "
+                    f"id={slug!r}, view='electronic')."
+                ),
+            )
+        return Response(
+            ref_id=job_resp.ref_id,
+            body=(
+                f"# electronic_analysis dispatched to the DFT node{note}\n"
+                f"st{ref.id} ({slug}) · single point at the stored "
+                f"geometry · descriptors: "
+                f"{', '.join(analysis) or 'all auto-detected'}\n\n"
+                f"{job_resp.body}\n\n"
+                "On completion the run stamps Bader/d-band/PDOS/COHP "
+                "descriptors + 'mechanism evidence' onto the design. "
+                f"Poll: get(kind='structure', id={slug!r}, "
+                "view='electronic')."
+            ),
+        )
+
     # ── get ──────────────────────────────────────────────────────────
     def get(
         self,
@@ -3144,6 +3471,8 @@ class StructureHandler(Handler):
             return self._render_neb(ref, a)
         if view == "md":
             return self._render_md(ref, a)
+        if view == "electronic":
+            return self._render_electronic(ref, a)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -4047,6 +4376,260 @@ class StructureHandler(Handler):
             body=f"# pair {is_slug} ↔ {fs_slug} · {state}\n"
             + render_agent_table(
                 rows, schema=["gate", "input", "threshold", "verdict", "next"]
+            )
+        )
+
+    # ── view='electronic' ────────────────────────────────────────────
+
+    @staticmethod
+    def _electronic_cell_map(run: Mapping[str, Any]) -> dict[str, str]:
+        """``descriptor -> display value`` for one ``fidelity='electronic'``
+        run row — the flat map both the single view and the compare view
+        render from, so a descriptor can never drift out of one table."""
+        params = run.get("params") or {}
+        desc = params.get("descriptors") or {}
+        scalars = {
+            "E_tot (eV)": params.get("E_tot"),
+            "E_Fermi (eV)": params.get("fermi"),
+        }
+        cells: dict[str, str] = {}
+        for name, val in scalars.items():
+            if val is not None:
+                cells[name] = f"{float(val):+.4f}"
+        bader = desc.get("bader") or {}
+        bmap = bader.get("charges") or bader.get("counts") or {}
+        if bader.get("status") == "computed" and isinstance(bmap, dict):
+            suffix = " (counts)" if "counts" in bader else " (e)"
+            for label in sorted(bmap, key=str):
+                cells[f"bader {label}{suffix}"] = f"{float(bmap[label]):+.3f}"
+        elif "bader" in desc:
+            cells["bader"] = f"unavailable ({bader.get('reason') or 'no charge map'})"
+        dband = desc.get("dband") or {}
+        for set_name in ("dopant", "surface"):
+            entry = dband.get(set_name) or {}
+            if entry.get("status") == "computed":
+                if entry.get("center_ev") is not None:
+                    cells[f"d-band centre {set_name} (eV)"] = (
+                        f"{float(entry['center_ev']):+.3f}"
+                    )
+                if entry.get("width_ev") is not None:
+                    cells[f"d-band width {set_name} (eV)"] = (
+                        f"{float(entry['width_ev']):.3f}"
+                    )
+            elif set_name in dband:
+                cells[f"d-band {set_name}"] = (
+                    f"unavailable ({entry.get('reason', '?')})"
+                )
+        pdos = desc.get("pdos") or {}
+        for set_name in sorted(pdos, key=str):
+            entry = pdos[set_name] or {}
+            if entry.get("status") == "computed":
+                energies = [float(e) for e in entry.get("energies_ev") or []]
+                values = [float(v) for v in entry.get("d") or []]
+                channel = str(entry.get("channel") or "d")
+                if energies and values:
+                    peak_e, _peak_v = max(zip(energies, values), key=lambda p: p[1])
+                    cells[f"pdos {set_name} ({channel})"] = (
+                        f"{len(energies)} pts over "
+                        f"[{energies[0]:+.2f}, {energies[-1]:+.2f}] eV · "
+                        f"peak {peak_e:+.2f} eV"
+                    )
+                else:
+                    cells[f"pdos {set_name}"] = (
+                        "unavailable (computed entry carried no curve)"
+                    )
+            else:
+                cells[f"pdos {set_name}"] = f"unavailable ({entry.get('reason', '?')})"
+        cohp = desc.get("cohp") or {}
+        for name in sorted(cohp, key=str):
+            entry = cohp[name] or {}
+            if entry.get("status") == "computed":
+                cells[f"ICOHP {name} (eV)"] = (
+                    f"{float(entry.get('icohp_ev') or 0):+.3f}"
+                )
+            else:
+                cells[f"ICOHP {name} (eV)"] = (
+                    f"unavailable ({entry.get('reason', '?')})"
+                )
+        return cells
+
+    @staticmethod
+    def _electronic_computed_families(run: Mapping[str, Any]) -> list[str]:
+        """The descriptor families an electronic run actually computed —
+        the same ``status == 'computed'`` envelope rule as the job_type's
+        ``_descriptor_present`` (dband/cohp are dicts-of-entries,
+        bader/pdos single envelopes). A converged run that computed
+        nothing is not evidence."""
+        desc = (run.get("params") or {}).get("descriptors") or {}
+        present: list[str] = []
+        for key in ("bader", "dband", "pdos", "cohp"):
+            block = desc.get(key)
+            if not isinstance(block, dict):
+                continue
+            if block.get("status") == "computed" or any(
+                isinstance(v, dict) and v.get("status") == "computed"
+                for v in block.values()
+            ):
+                present.append(key)
+        return present
+
+    def _electronic_verdict(self, ref: Any, run: Mapping[str, Any]) -> str:
+        """The ``mechanism evidence`` line for one electronic run —
+        ``present`` only when the run computed at least one descriptor
+        AND describes the current geometry. A run predating the latest
+        edit, or one whose every descriptor came back ``unavailable``,
+        is honestly absent."""
+        if not self._electronic_computed_families(run):
+            return (
+                f"mechanism evidence: absent — run {run.get('id')} "
+                "computed no descriptors (every family reported "
+                "unavailable)"
+            )
+        version = int((ref.meta or {}).get("version", 0))
+        on_version = int(run.get("on_version") or -1)
+        if on_version != version:
+            return (
+                f"mechanism evidence: absent — run {run.get('id')} "
+                f"describes v{on_version}; the geometry has since changed "
+                f"(now v{version}), so its descriptors are stale"
+            )
+        return "mechanism evidence: present"
+
+    def _render_electronic(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``view='electronic'`` — the ``electronic_analysis`` descriptor
+        runs on this design (gr592999): Bader charges, d-band centre/
+        width per atom set, dopant PDOS summary and named-bond ICOHPs —
+        the orbital-level "mechanism evidence" the frontier flags.
+        ``args={'other': '<slug>'}`` renders the two designs' descriptors
+        side by side (the "A beats B because of an orbital shift" read).
+        ``args={'run': N}`` pins an older run; default is newest."""
+        other_arg = args.get("other")
+        if other_arg is not None:
+            return self._render_electronic_compare(ref, str(other_arg), args)
+        runs = self.store.structure_electronic_runs(ref.id)
+        if not runs:
+            return Response(
+                body=(
+                    f"# {ref.slug}: no electronic-analysis runs\n\n"
+                    "mechanism evidence: absent — no DFT single point has "
+                    "stamped descriptors on this design.\n"
+                    + render_next_section(
+                        [
+                            (
+                                "put(kind='structure', id="
+                                f"{ref.slug!r}, mode='analyze', "
+                                "args={'dopant': ['<label>|el:<El>'], "
+                                "'bonds': [{'name': 'Pd-N', 'a': 'el:Pd', "
+                                "'b': 'el:N'}]})",
+                                "queue the DFT single point",
+                            ),
+                        ]
+                    )
+                )
+            )
+        run_arg = args.get("run")
+        run = runs[0]
+        if run_arg is not None:
+            try:
+                wanted = int(run_arg)
+            except (TypeError, ValueError) as exc:
+                raise BadInput(
+                    f"args 'run' must be a run id, got {run_arg!r}",
+                    next=f"get(kind='structure', id={ref.slug!r}, view='electronic')",
+                ) from exc
+            match = [r for r in runs if int(r["id"]) == wanted]
+            if not match:
+                raise BadInput(
+                    f"no electronic-analysis run {wanted} on this design",
+                    next=f"get(kind='structure', id={ref.slug!r}, "
+                    "view='electronic') lists them",
+                )
+            run = match[0]
+        cells = self._electronic_cell_map(run)
+        rows = [{"descriptor": k, "value": cells[k]} for k in sorted(cells)]
+        if len(runs) > 1:
+            hist = ", ".join(str(r["id"]) for r in runs)
+            hist_line = f"\n\nall descriptor runs (newest first): {hist} — args={{'run': N}} pins one."
+        else:
+            hist_line = ""
+        return Response(
+            body=(
+                f"# {ref.slug}: electronic descriptors — run {run['id']} "
+                f"(v{run['on_version']}, {run.get('model') or 'gpaw'})\n"
+                f"{self._electronic_verdict(ref, run)}\n\n"
+                + render_agent_table(rows, schema=["descriptor", "value"])
+                + hist_line
+                + "\n\nCompare with another design: get(kind='structure', "
+                f"id={ref.slug!r}, view='electronic', "
+                "args={'other': '<slug>'})."
+            )
+        )
+
+    def _render_electronic_compare(
+        self, ref: Any, other_arg: str, args: dict[str, Any]
+    ) -> Response:
+        """The side-by-side descriptor table for
+        ``view='electronic', args={'other': '<slug>'}`` — one column per
+        design, one row per descriptor (union, sorted); a descriptor a
+        side lacks renders ``—`` so the asymmetry is visible, not
+        silently dropped."""
+        oref = resolve_live_slug_ref(self.store, kind="structure", id=other_arg.strip())
+        runs_a = self.store.structure_electronic_runs(ref.id)
+        runs_b = self.store.structure_electronic_runs(oref.id)
+        missing = [
+            str(r.slug) for r, runs in ((ref, runs_a), (oref, runs_b)) if not runs
+        ]
+        if missing:
+            return Response(
+                body=(
+                    f"# electronic compare — {ref.slug} vs {oref.slug}\n\n"
+                    f"no descriptor runs on: {', '.join(missing)} — "
+                    "analysis must land before a compare means anything.\n"
+                    + render_next_section(
+                        [
+                            (
+                                f"put(kind='structure', id={s!r}, mode='analyze')",
+                                f"queue the single point on {s}",
+                            )
+                            for s in missing
+                        ]
+                    )
+                )
+            )
+        cells_a = self._electronic_cell_map(runs_a[0])
+        cells_b = self._electronic_cell_map(runs_b[0])
+        keys = sorted(set(cells_a) | set(cells_b))
+        rows = [
+            {
+                "descriptor": k,
+                str(ref.slug): cells_a.get(k, "—"),
+                str(oref.slug): cells_b.get(k, "—"),
+            }
+            for k in keys
+        ]
+
+        def _note(r: Any, run: Mapping[str, Any]) -> str:
+            """A run marker for the header: ``— stale`` when the
+            descriptors predate the current geometry, ``— no computed
+            descriptors`` when the run produced nothing (the same rule
+            as the single view's evidence line)."""
+            if not self._electronic_computed_families(run):
+                return ", no computed descriptors"
+            version = int((r.meta or {}).get("version", 0))
+            on_version = int(run.get("on_version") or -1)
+            if on_version != version:
+                return f", stale vs v{version}"
+            return ""
+
+        return Response(
+            body=(
+                f"# electronic compare — {ref.slug} (run "
+                f"{runs_a[0]['id']}{_note(ref, runs_a[0])}) "
+                f"vs {oref.slug} (run {runs_b[0]['id']}"
+                f"{_note(oref, runs_b[0])})\n\n"
+                + render_agent_table(
+                    rows, schema=["descriptor", str(ref.slug), str(oref.slug)]
+                )
             )
         )
 

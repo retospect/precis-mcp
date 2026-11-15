@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
@@ -1488,6 +1488,25 @@ def _numeric(v: Any) -> float | None:
     return None
 
 
+def _run_computed_a_descriptor(run: Mapping[str, Any]) -> bool:
+    """Did an ``electronic_analysis`` run row compute at least one
+    descriptor? The same ``status == 'computed'`` envelope rule as the
+    job's ``_descriptor_present`` and the view's verdict — a converged
+    run whose families all came back ``unavailable`` is not evidence."""
+    params = run.get("params") or {}
+    desc = params.get("descriptors") or {}
+    for key in ("bader", "dband", "pdos", "cohp"):
+        block = desc.get(key)
+        if not isinstance(block, dict):
+            continue
+        if block.get("status") == "computed" or any(
+            isinstance(v, dict) and v.get("status") == "computed"
+            for v in block.values()
+        ):
+            return True
+    return False
+
+
 def _candidate_from_structure(
     store: Store, s: Any, *, runs: list[Any] | None = None
 ) -> Candidate:
@@ -1578,6 +1597,34 @@ def _candidate_from_structure(
         params["origin"] = f"search:{search_meta['algo']}#{search_meta['rank']}"
 
     flags: dict[str, Any] = {}
+    # gr592999: does this candidate carry orbital-level descriptors *on
+    # the current geometry*? The ``electronic_analysis`` job's write-back
+    # is the versioned ``last_electronic`` stamp — ``present`` requires a
+    # run on THIS version that actually computed a descriptor (a
+    # converged-but-all-unavailable run, or one describing a superseded
+    # geometry, is absent — never assumed present). An electronic run
+    # row that computed at least one descriptor on the current version
+    # is direct evidence too (covers a stamp write lost to a version
+    # race). A flag, not a measure — it must never rank.
+    _el_version = int(meta.get("version") or 0)
+    _last_el = meta.get("last_electronic")
+    flags["mechanism_evidence"] = (
+        "present"
+        if (
+            isinstance(_last_el, dict)
+            and _last_el.get("run_id") is not None
+            and bool(_last_el.get("present"))
+            and int(_last_el.get("on_version") or -1) == _el_version
+        )
+        or any(
+            r.get("fidelity") == "electronic"
+            and r.get("converged")
+            and int(r.get("on_version") or -1) == _el_version
+            and (r.get("charges") or _run_computed_a_descriptor(r))
+            for r in runs
+        )
+        else "absent"
+    )
     if "barrier_trusted" in meta:
         flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
     elif any(

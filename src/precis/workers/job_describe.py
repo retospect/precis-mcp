@@ -245,6 +245,33 @@ def _d_struct_relax(
     return bits
 
 
+def _d_electronic_analysis(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    # gr592999: DFT single point → descriptors. Same shape as the relax
+    # describer: formula names the structure; a terminal summary already
+    # carries the verdict.
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return f"electronic analysis: {_first_line(summary)}"
+    formula = _first_line(params.get("poscar"))
+    sid = _as_int(params.get("structure_ref_id"))
+    what = formula or (f"st{sid}" if sid is not None else "a structure")
+    bits = f"analysing electronic structure of {what}"
+    host = meta.get("node") or params.get("target_node")
+    if host:
+        bits += f" on {host}"
+    if status in ("running", "queued"):
+        bits += f" ({status})"
+    return bits
+
+
 def _d_derived_drain(
     *,
     params: dict[str, Any],
@@ -524,6 +551,7 @@ def _const(sentence: str) -> Callable[..., str]:
 DESCRIBERS: dict[str, Callable[..., str]] = {
     "quest_tick": _d_quest_tick,
     "struct_relax": _d_struct_relax,
+    "electronic_analysis": _d_electronic_analysis,
     "derived_drain": _d_derived_drain,
     "embed_batch": _d_embed_batch,
     "gripe_validate": _d_gripe_validate,

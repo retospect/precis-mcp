@@ -48,6 +48,9 @@ class _SerialWorld:
     rank = 0
     size = 1
 
+    def broadcast(self, obj: Any, root: int = 0) -> Any:
+        return obj
+
 
 def _world() -> Any:
     """GPAW's MPI communicator, or :class:`_SerialWorld`.

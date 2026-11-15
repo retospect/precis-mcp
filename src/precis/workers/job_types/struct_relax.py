@@ -23,9 +23,11 @@ metadata write can recover the same preparation. Input refusals are classified
 as ``input``; only unexpected preparation failures are ``infra``.
 Legacy POSCAR jobs still run directly.
 
-**Two backends, routed by rung (gr346449).** The precis-dft image exposes
-exactly one subcommand, ``precis-dft-run gpaw-relax``, so it can only compute a
-GPAW rung (:data:`_CONTAINER_FIDELITIES`). The in-process rungs
+**Two backends, routed by rung (gr346449).** The precis-dft image's relax
+subcommand is ``precis-dft-run gpaw-relax``, so a container relax can only
+compute a GPAW rung (:data:`_CONTAINER_FIDELITIES`) — the image's other
+subcommand (``gpaw-analysis``) belongs to the ``electronic_analysis``
+job_type, not a relax rung. The in-process rungs
 (:data:`_INPROC_FIDELITIES` — ``ml``, ``xtb``) run **in this process** on
 the node via :func:`_default_ml_runner`, reusing
 :func:`precis.structure.relax._ml_calculator` /
@@ -210,10 +212,12 @@ _STALE_CONTAINER_HOURS_DEFAULT = 6.0
 #: genuinely long CPU relax. ``PRECIS_DFT_RELAX_TIMEOUT_S``.
 _RELAX_TIMEOUT_S_DEFAULT = 4 * 3600
 
-#: Rungs the ``precis-dft`` container actually implements. Its CLI exposes
-#: exactly one subcommand (``precis-dft-run gpaw-relax``), and the staged
-#: ``params.json`` carries no per-rung DFT settings, so one rung is the whole
-#: of what a container run can honestly compute. ``dft-fast``/``dft-tight``
+#: Rungs the ``precis-dft`` container actually implements. Its CLI's relax
+#: subcommand is ``precis-dft-run gpaw-relax`` (the ``electronic_analysis``
+#: job_type's ``gpaw-analysis`` subcommand is a descriptor pass, not a relax
+#: rung — it lives on its own job_type), and the staged ``params.json``
+#: carries no per-rung DFT settings, so one rung is the whole of what a
+#: container relax can honestly compute. ``dft-fast``/``dft-tight``
 #: are deliberately absent: routing them here would run byte-identical GPAW
 #: defaults and file the results under two different rung labels — the same
 #: class of lie as sending ``ml`` to ``gpaw-relax``. Adding them means
@@ -381,6 +385,7 @@ def build_run_argv(
     container_cmd: str = _CONTAINER_CMD,
     gpus: int = 1,
     gpu_card: int | None = None,
+    command: str = "gpaw-relax",
 ) -> list[str]:
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
     ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
@@ -392,7 +397,11 @@ def build_run_argv(
     so the run threads its BLAS calls; GPAW itself has no OpenMP, so that is a
     BLAS-only speedup. Actual parallel DFT is MPI: :func:`_mpi_ranks` > 0
     wraps the command in ``mpirun -np <n>``, which requires the MPI-enabled
-    image (precis-dft) — hence off by default."""
+    image (precis-dft) — hence off by default. ``command`` names the
+    image's ``precis-dft-run`` subcommand — ``gpaw-relax`` (the relax) or
+    ``gpaw-analysis`` (the ``electronic_analysis`` job_type's single point +
+    descriptor pass, gr592999); the staged contract (POSCAR + params.json
+    → result.json) is identical either way."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     limits = container_limit_flags(
         job_limit=os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip() or None
@@ -434,7 +443,7 @@ def build_run_argv(
         argv += ["mpirun", "--allow-run-as-root", "-np", str(ranks)]
     argv += [
         "precis-dft-run",
-        "gpaw-relax",
+        command,
         "--in",
         _CONTAINER_IN,
         "--out",
@@ -1233,9 +1242,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
             return
 
-    # Fidelity routing (gr346449). The precis-dft image exposes exactly one
-    # subcommand -- ``precis-dft-run gpaw-relax`` -- so a container run can only
-    # ever compute a GPAW rung. Before this gate every rung took that argv:
+    # Fidelity routing (gr346449). The precis-dft image's only relax
+    # subcommand is ``precis-dft-run gpaw-relax`` (``gpaw-analysis`` belongs
+    # to the ``electronic_analysis`` job_type, not a relax rung), so a
+    # container relax can only ever compute a GPAW rung. Before this gate
+    # every rung took that argv:
     # a ``fidelity='ml'`` request ran a spin-polarized RPBE LCAO DFT relax
     # (~47h on 37 atoms, never inside the wall-clock cap) and, when one did
     # finish, sank DFT numbers into the run-cube under a MACE label. Running

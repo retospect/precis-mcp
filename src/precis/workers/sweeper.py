@@ -2109,7 +2109,8 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
     keyed off ``meta`` (never a blanket kill); a docker/ssh failure is
     logged and swallowed so it can never abort the sweep.
 
-    Only the ``struct_relax`` (``ssh_node``-executor) branch is live today:
+    Only the ``struct_relax``/``electronic_analysis``
+    (``ssh_node``-executor) branch is live today:
     it's reached from :func:`_transition_dead_node_orphan_to_failed`
     (gr172886 part-b's dead-node reap, the one case ``ssh_node`` rows DO
     still terminalize outside their own executor). A ``claude_docker``
@@ -2122,14 +2123,24 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
     """
     try:
         job_type = meta.get("job_type")
-        if job_type == "struct_relax":
+        if job_type in ("struct_relax", "electronic_analysis"):
             from precis.workers.job_types import struct_relax
 
-            target_node = (meta.get("params") or {}).get("target_node")
+            params = meta.get("params") or {}
+            target_node = params.get("target_node")
+            # The container name is ``precis-job-<structure_ref_id>`` —
+            # the STRUCTURE ref, not this job's (both job types stage by
+            # structure so a relax and an analysis on one design share the
+            # mutex). Passing the job id would name a container that
+            # doesn't exist and leave the real one orphaned.
+            try:
+                container_ref = int(params.get("structure_ref_id") or ref_id)
+            except (TypeError, ValueError):
+                container_ref = ref_id
             # kill_container now verifies removal (gripe 310809) instead of
             # reporting success on a bare "command issued" — log the honest
             # outcome rather than assuming the old always-True.
-            if not struct_relax.kill_container(ref_id, node=target_node):
+            if not struct_relax.kill_container(container_ref, node=target_node):
                 log.warning(
                     "sweeper: container kill for job #%d on %s was not verified "
                     "removed — it may still be occupying the node/GPU",

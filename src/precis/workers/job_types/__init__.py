@@ -587,6 +587,14 @@ def _load_struct_relax() -> JobTypeSpec:
     return struct_relax.SPEC
 
 
+def _load_electronic_analysis() -> JobTypeSpec:
+    # DFT single point → electronic descriptors (Bader/d-band/PDOS/COHP),
+    # same GPU-container lane as struct_relax (gr592999). Plugin dispatch.
+    from precis.workers.job_types import electronic_analysis
+
+    return electronic_analysis.SPEC
+
+
 def _load_struct_search() -> JobTypeSpec:
     # AGOX/GOFEE surrogate search on the GPU node via ssh_node, in-process
     # (no container). Runs via plugin dispatch.
@@ -1063,6 +1071,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "meditation",
     "card_forge",
     "struct_relax",
+    "electronic_analysis",
     "struct_search",
     "struct_neb",
     "struct_md",
@@ -1183,6 +1192,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "struct_relax":
         _REGISTRY["struct_relax"] = _load_struct_relax()
         return _REGISTRY["struct_relax"]
+    if name == "electronic_analysis":
+        _REGISTRY["electronic_analysis"] = _load_electronic_analysis()
+        return _REGISTRY["electronic_analysis"]
     if name == "struct_search":
         _REGISTRY["struct_search"] = _load_struct_search()
         return _REGISTRY["struct_search"]
