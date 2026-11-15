@@ -88,8 +88,10 @@ put(kind="memory", text={"$ref": "dc2445852"})
 ```
 
 The whole `text=` value must be the exact `{"$ref": "<handle>"}` object.
-A successful exact-handle `get` earlier in the **same MCP session** is
-required; search hits and another session's reads do not count. The write
+A successful exact-handle `get` within the preceding **one hour** is required.
+Authenticated credentials share their receipts across sessions and server
+restarts; another credential's reads and search hits do not count. Without
+a bound principal, the read must be in the same live MCP session. The write
 uses the source's **current** bytes, not a snapshot of the earlier response,
 and leads with `dereferenced text <- <handle> (N chars, sha256:…)` without
 echoing the body. A chunk handle expands to its exact chunk; a record handle

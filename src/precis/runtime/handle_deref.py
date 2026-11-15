@@ -1,10 +1,17 @@
 """Exact-handle value substitution for MCP ``put``/``edit`` text arguments.
 
-A same-session exact read is the receipt that permits substitution. Expansion
-uses current stored bytes, never the earlier rendered response, and never
-leaves expanded content in the tool-call audit arguments.
+A same-session exact read is the receipt that permits substitution — and,
+when the dispatch carries a bound owner stamp (:func:`precis.principal.current_owner_key`),
+a *durable* receipt in the ``read_receipts`` table (migration 0325,
+gr660588): keyed on the credential, not the transport session, so it
+survives an MCP restart and works under ``stateless_http`` where no
+session spans two requests. Session-less, principal-less callers (stdio,
+CLI, tests) keep the in-process receipts dict exactly as before.
+Expansion uses current stored bytes, never the earlier rendered response,
+and never leaves expanded content in the tool-call audit arguments.
 
-Memory complaint hints bind to the same session but not the receipts:
+Memory complaint hints stay session-local and in process memory, apart from
+the durable receipts (never persisted; stateless requests never suppress):
 the exact-get offer (:func:`memory_gripe_hint`) is once per session
 through the hint ledger — its text is identical for every node, so the
 gr561869 per-node rule paid it on every read (gr499041). Numeric memory
@@ -18,6 +25,7 @@ node to key on.
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -26,9 +34,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.errors import BadInput, Denied, NotFound
+from precis.principal import current_owner_key
 from precis.store.types import ResolvedHandle
-from precis.tool_ledger import current_session_key
+from precis.tool_ledger import _stateless_http, current_session_key
 from precis.utils import handle_registry
+
+log = logging.getLogger(__name__)
 
 TEXT_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024
 _RECEIPT_TTL_S = 3600.0
@@ -68,7 +79,7 @@ class _SearchHintMarker:
     """Receipt identity for the session-once search pointer.
 
     ``ref_id=-1`` can never collide with a live memory ref, so the
-    marker shares the receipts table without shadowing a real node.
+    marker shares the session-local hint cache without shadowing a real node.
     """
 
     kind: str = "memory"
@@ -118,10 +129,80 @@ class _ReadReceipts:
 
 
 _RECEIPTS = _ReadReceipts()
+_HINT_RECEIPTS = _ReadReceipts()
 
 
 def reset_read_receipts() -> None:
+    """Clear the in-process receipts (test isolation).
+
+    Durable ``read_receipts`` rows are untouched — clearing them is the
+    test DB's per-test TRUNCATE, and ``_RECEIPTS`` is exactly the layer a
+    restart would lose anyway.
+    """
     _RECEIPTS.clear()
+    _HINT_RECEIPTS.clear()
+
+
+def _receipt_identity(resolved: ResolvedHandle | _SearchHintMarker) -> str:
+    """The receipt's stored identity — ``<kind>:<ref_id>:<chunk_id|->``."""
+    chunk = "-" if resolved.chunk_id is None else str(resolved.chunk_id)
+    return f"{resolved.kind}:{resolved.ref_id}:{chunk}"
+
+
+def _receipt_scope(store: Any) -> tuple[str | None, bool]:
+    """``(scope, durable)`` — who a receipt records and validates under.
+
+    A bound owner stamp + a live store → the durable key + ``True``
+    (``read_receipts`` rows). Anything else → the live session's ledger id
+    + ``False`` (the in-process dict), or ``None`` + ``False`` when the
+    call carries neither.
+    """
+    owner = current_owner_key()
+    if owner is not None and store is not None:
+        return owner, True
+    session_id, _ = current_session_key()
+    return session_id, False
+
+
+def _record(store: Any, resolved: ResolvedHandle | _SearchHintMarker) -> bool:
+    """Write the read receipt — durable when an owner is bound. False when
+    the call carries neither an owner nor a session to hold one."""
+    scope, durable = _receipt_scope(store)
+    if scope is None:
+        return False
+    if durable:
+        try:
+            store.record_receipt(
+                owner_key=scope,
+                identity=_receipt_identity(resolved),
+                ttl_seconds=_RECEIPT_TTL_S,
+            )
+            return True
+        except Exception:
+            # Pre-migration DB, pool hiccup — the read still qualifies
+            # under this live session, exactly as it did before 0325.
+            log.debug("read receipt: durable write failed", exc_info=True)
+    session_id, _ = current_session_key()
+    if session_id is None:
+        return False
+    _RECEIPTS.record(session_id, resolved)
+    return True
+
+
+def _has_receipt(store: Any, resolved: ResolvedHandle | _SearchHintMarker) -> bool:
+    """Durable-owner hit, else the same-session dict — never wider."""
+    owner = current_owner_key()
+    if owner is not None and store is not None:
+        try:
+            if store.has_receipt(owner_key=owner, identity=_receipt_identity(resolved)):
+                return True
+        except Exception:
+            # Fall through to the session dict: a durable-lookup fault
+            # must not strand a receipt this session legitimately holds,
+            # and the session path is no wider than before 0325.
+            log.debug("read receipt: durable lookup failed", exc_info=True)
+    session_id, _ = current_session_key()
+    return session_id is not None and _RECEIPTS.contains(session_id, resolved)
 
 
 def _memory_read_handle(handle: Any, explicit_kind: Any) -> Any:
@@ -165,24 +246,20 @@ def memory_gripe_hint(
     return MEMORY_GRIPE_HINT
 
 
-def memory_search_gripe_hint() -> str | None:
+def memory_search_gripe_hint(*, store: Any = None) -> str | None:
     """The complaint pointer rides the first memory search result of a session.
 
-    Recall is where a stale or contradicted node is first *used* — the
-    exact-get pointer (gr561869) never fires for a session that only
-    searches, which is how the soul/bootstrap trial consumed memory
-    (gr564017). Offered at most once per session; the marker records on
-    return, so a caller that loses the append to a byte cap behaves like
-    the get path (the read receipt records regardless there too). No
-    session → None, same as the get variant.
+    Suppression stays in process memory, scoped to the live MCP session.
+    Stateless requests always offer the hint; no marker reaches the database.
     """
     session_id, _ = current_session_key()
     if session_id is None:
         return None
     marker = _SearchHintMarker()
-    if _RECEIPTS.contains(session_id, marker):
-        return None
-    _RECEIPTS.record(session_id, marker)
+    if not _stateless_http():
+        if _HINT_RECEIPTS.contains(session_id, marker):
+            return None
+        _HINT_RECEIPTS.record(session_id, marker)
     return MEMORY_GRIPE_HINT
 
 
@@ -202,11 +279,7 @@ def record_exact_read(handle: Any, *, store: Any, explicit_kind: Any = None) -> 
         return False
     if explicit_kind is not None and explicit_kind != resolved.kind:
         return False
-    session_id, _ = current_session_key()
-    if session_id is None:
-        return False
-    _RECEIPTS.record(session_id, resolved)
-    return True
+    return _record(store, resolved)
 
 
 def _envelope_handle(value: Any) -> str | None:
@@ -253,15 +326,16 @@ def expand_text_reference(
             f"chunk handle {requested!r} has no exact-handle get read",
             next=f"read and reference its owning record instead: {record_handle}",
         )
-    session_id, _ = current_session_key()
-    if session_id is None:
+    scope, durable = _receipt_scope(store)
+    if scope is None:
         raise BadInput(
             "text $ref requires a live MCP session and an earlier exact read",
             next="pass literal text= instead, or use the MCP get/put path",
         )
-    if not _RECEIPTS.contains(session_id, resolved):
+    if not _has_receipt(store, resolved):
         raise Denied(
-            f"text reference {requested!r} was not read exactly in this MCP session",
+            f"text reference {requested!r} has no live read receipt"
+            + ("" if durable else " in this MCP session"),
             next=f"get(id={requested!r})",
         )
     if resolved.chunk_id is not None:

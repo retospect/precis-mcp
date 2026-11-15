@@ -1988,7 +1988,7 @@ class DispatchMixin(RuntimeShape):
                     from precis.runtime.handle_deref import memory_search_gripe_hint
 
                     try:
-                        hint = memory_search_gripe_hint()
+                        hint = memory_search_gripe_hint(store=self.store)
                         if hint is not None:
                             # The optional line never takes space from the result.
                             cap = _env_cap(

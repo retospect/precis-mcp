@@ -27,10 +27,11 @@ from precis.oauth.store import (
     resolve_access_token,
 )
 from precis.oauth_transport import configure_transport
-from precis.store import Store
+from precis.store import ChunkInsert, Store
 from precis.tools import core
 from precis.user_context import current_principal, require_user, user_scope
 from precis.users import hash_password
+from precis.utils import handle_registry
 
 
 @pytest.fixture
@@ -130,9 +131,9 @@ async def _call(client, raw, session, call_id, verb="get", arguments=None):
     )
 
 
-def _app(store, config, runtime, monkeypatch, profile="typed"):
+def _app(store, config, runtime, monkeypatch, profile="typed", *, stateless=False):
     monkeypatch.setattr(core, "_get_runtime", lambda: runtime)
-    mcp = FastMCP("oauth-test", json_response=True)
+    mcp = FastMCP("oauth-test", json_response=True, stateless_http=stateless)
     monkeypatch.setattr(server, "mcp", mcp)
     monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
     server._register_tools_from_registry()
@@ -253,6 +254,80 @@ def test_oauth_sessions_are_bound_to_user_and_connection(
             assert (
                 await _call(client, other_user, sessions[other_user], 7)
             ).status_code == 401
+
+    asyncio.run(exercise())
+    assert current_principal() is None
+
+
+def test_stateless_oauth_receipts_authenticate_each_request(
+    store: Store,
+    oauth_config: OAuthConfig,
+    runtime_with_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No SDK session ownership map: the bearer alone authorizes each call.
+
+    Reads survive fresh transport apps but never cross OAuth grants, even
+    grants owned by the same account. Revocation still invalidates a receipt.
+    """
+    from precis.runtime.handle_deref import reset_read_receipts
+
+    monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+    alice, bob = _user(store, "alice"), _user(store, "bob")
+    first, identity = _grant(store, oauth_config, alice.id, ("mcp:full",))
+    other_app, _ = _grant(store, oauth_config, alice.id, ("mcp:full",))
+    other_user, _ = _grant(store, oauth_config, bob.id, ("mcp:full",))
+    ref = store.insert_ref(kind="paper", slug="oauth-receipt", title="Receipt")
+    chunk = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="probe")])[0]
+    handle = handle_registry.format_handle("paper", chunk.id, chunk=True)
+
+    async def exercise() -> None:
+        app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            bad = await _call(client, "unknown-bearer", None, 1)
+            assert bad.status_code == 401
+            read = await _call(
+                client, first, None, 2, arguments={"kind": "paper", "id": handle}
+            )
+            assert read.status_code == 200, read.text
+            assert not read.json()["result"].get("isError"), read.text
+            assert "mcp-session-id" not in read.headers
+
+        reset_read_receipts()
+        app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            args = {"kind": "memory", "text": {"$ref": handle}}
+            for raw in (other_app, other_user):
+                denied = await _call(client, raw, None, 3, "put", args)
+                assert denied.status_code == 200, denied.text
+                result = denied.json()["result"]
+                assert result.get("isError"), result
+                assert "[error:Denied]" in result["content"][0]["text"]
+            own = await _call(client, first, None, 4, "put", args)
+            assert own.status_code == 200, own.text
+            result = own.json()["result"]
+            assert not result.get("isError"), result
+            assert "dereferenced text" in result["content"][0]["text"]
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE mcp_oauth_grants SET revoked_at = now() WHERE id = %s",
+                    (identity.grant_id,),
+                )
+                conn.commit()
+            revoked = await _call(client, first, None, 5, "put", args)
+            assert revoked.status_code == 401
 
     asyncio.run(exercise())
     assert current_principal() is None

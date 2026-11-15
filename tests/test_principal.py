@@ -102,6 +102,28 @@ def test_worker_comment_meta_is_explicit_not_bound(
         assert principal.worker_comment_meta() == {"principal": "worker:gripe_dispatch"}
 
 
+def test_current_owner_key_is_the_durable_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr660588: the owner a durable receipt keys on is the bound server-set
+    credential — slice grants strip the role so a grant's reads and writes
+    share one key — and the ``worker:<source>`` fallback is never a durable
+    owner (it names a process, not a principal)."""
+    monkeypatch.delenv(agentlog.SOURCE_ENV_VAR, raising=False)
+    assert principal.current_owner_key() is None
+    with principal.bind(None):
+        assert principal.current_owner_key() is None
+    for bound, key in (
+        ("install", "install"),
+        ("personal:42", "personal:42"),
+        ("oauth:7", "oauth:7"),
+        ("slice:td42:unknown", "slice:td42"),
+        ("slice:td42:builder", "slice:td42"),
+    ):
+        with principal.bind(bound):
+            assert principal.current_owner_key() == key
+
+
 def test_for_slice_parse_round_trip() -> None:
     text = principal.for_slice("td42j7", "generator")
     assert text == "slice:td42j7:generator"

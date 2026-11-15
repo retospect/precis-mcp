@@ -1205,6 +1205,27 @@ _MCP_ICONS = icons.mcp_icons()
 #: mid-conversation and the retry surfaced as a bare 'Error POSTing to
 #: endpoint' (gr538272).
 _SESSION_IDLE_TIMEOUT_S = 24 * 60 * 60
+
+#: ``PRECIS_MCP_STATELESS_HTTP`` (gr660588): opt-in per-request
+#: streamable-http mode — the SDK stops tracking sessions entirely, so a
+#: restart costs only in-flight calls and there is no stale-session
+#: 404/400 path at all. What makes it viable is the durable owner state:
+#: ``read_receipts`` rows (migration 0325) and the owner+hour ledger
+#: group in ``tool_ledger`` no longer need a session object that spans
+#: requests. Default off — stateless also hides a deploy's tool-list
+#: change from a client that never re-``initialize``s (the
+#: session-mcp-http-server spec's reason for keeping stateful).
+_STATELESS_HTTP_ENV = "PRECIS_MCP_STATELESS_HTTP"
+_STATELESS_HTTP_ON = ("1", "true", "yes", "on")
+
+
+def _stateless_http_enabled() -> bool:
+    """``PRECIS_MCP_STATELESS_HTTP`` — read at serve time, streamable only."""
+    return os.environ.get(_STATELESS_HTTP_ENV, "").strip().lower() in (
+        _STATELESS_HTTP_ON
+    )
+
+
 mcp: FastMCP = FastMCP(
     "precis-mcp",
     instructions=_INSTRUCTIONS,
@@ -2886,6 +2907,13 @@ def _run_network_transport(
     sanitized error-body excerpt. Both install BEFORE the bearer gate so
     their request-body reads happen after authentication — an unfinished
     upload can never delay a 401 (review td661882).
+
+    ``PRECIS_MCP_STATELESS_HTTP`` flips streamable-http to the SDK's
+    per-request mode (gr660588): no session tracking, so the bearer
+    gate's per-request authentication is the only identity check (the
+    SDK's ``_session_owners`` map is never consulted) and
+    :func:`_install_session_recover` is skipped — a missing session id
+    is the mode's shape, not a failure.
     """
     import socket
 
@@ -2907,10 +2935,19 @@ def _run_network_transport(
         # unauthenticated); the data-URI entry stays as fallback.
         resource = urlsplit(oauth_config.resource)
         _MCP_ICONS[:] = icons.mcp_icons(f"{resource.scheme}://{resource.netloc}")
+    stateless = transport == "streamable-http" and _stateless_http_enabled()
+    if stateless:
+        # gr660588: opt-in per-request transport. Receipts are durable
+        # (read_receipts, keyed on the owner) and the ledger groups by
+        # owner+hour, so nothing here needs a session object to span
+        # requests. The recover middleware's missing-id 404 is wrong in
+        # this mode — no request carries a session id by design — so it
+        # is skipped; the failure logger stays for any residual 4xx.
+        mcp.settings.stateless_http = True
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     from precis import slice_tokens
 
-    if transport == "streamable-http":
+    if transport == "streamable-http" and not stateless:
         _install_session_recover(app, mcp_path=mcp.settings.streamable_http_path)
     _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
     _install_token_auth(

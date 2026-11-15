@@ -2182,8 +2182,8 @@ def put(
     errors); `todo` declares both — `text=` title, `body=` details, either or
     both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs a same-session
-    `get`).
+    `text={'$ref': '<handle>'}` = that handle's body (needs an exact `get`
+    within one hour under this credential; same session when unauthenticated).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2643,7 +2643,8 @@ def edit(
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `base_sha=` (python `~L` ranges: the read's `sha=`) refuses
     the edit if content changed. `dry_run=True` previews; `reason=` why.
-    `text={'$ref': '<handle>'}` = its body (after a same-session `get`).
+    `text={'$ref': '<handle>'}` = its body (after an exact `get` within one
+    hour under this credential; same session when unauthenticated).
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """

@@ -15,11 +15,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from precis import serve_ledger
+from precis import principal, serve_ledger
 from precis.tools import core
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
+
+    from precis.runtime import PrecisRuntime
+    from precis.store import Store
 
 
 class _FakeSession:
@@ -204,3 +207,50 @@ def test_skill_search_rejects_plural_tags(monkeypatch: pytest.MonkeyPatch) -> No
     # Other kinds keep the plural filter untouched.
     monkeypatch.setattr(core, "_dispatch", lambda verb, payload, ctx=None: "ok")
     assert core.search(kind="paper", q="x", tags=["STATUS:done"]) == "ok"
+
+
+def test_stateless_call_writes_ledger_group_and_resolves_ref(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr660588 slice 3: under ``PRECIS_MCP_STATELESS_HTTP`` every request
+    stands alone — the SDK mints a fresh session object per call — so the
+    tool ledger groups by ``owner@hour`` (non-null ``session_id``) and the
+    durable ``read_receipts`` row still licenses ``$ref`` across what
+    stateful mode would have called two sessions."""
+    from precis import serve_ledger as ledger
+    from precis.store import ChunkInsert
+    from precis.utils import handle_registry
+
+    monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+
+    ref = store.insert_ref(kind="paper", slug="stateless-deref", title="S")
+    block = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="t")])[0]
+    handle = handle_registry.format_handle("paper", block.id, chunk=True)
+
+    with principal.bind("oauth:7"):
+        # Two distinct session objects — the stateless SDK's
+        # fresh-per-request stand-ins.
+        with ledger.session_scope(_FakeSession()):
+            runtime_with_store.dispatch("get", {"id": handle})
+        # A restart loses process counters, but the owner/hour group stays.
+        from precis import tool_ledger
+
+        tool_ledger._SEQ_COUNTERS.clear()
+        with ledger.session_scope(_FakeSession()):
+            out, is_error = runtime_with_store.dispatch_with_status(
+                "put", {"kind": "memory", "text": {"$ref": handle}}
+            )
+    assert not is_error, out
+    assert "dereferenced text" in out
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT session_id, seq FROM tool_calls "
+            "WHERE session_id LIKE '%-st:%' ORDER BY seq"
+        ).fetchall()
+    assert len(rows) == 2
+    (sid_a, seq_a), (sid_b, seq_b) = rows
+    assert sid_a == sid_b and "st:oauth:7@" in sid_a
+    assert seq_a < seq_b

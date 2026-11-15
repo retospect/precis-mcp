@@ -117,6 +117,7 @@ import os
 import re
 import socket
 import threading
+import time
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -249,6 +250,23 @@ def record_call(store: Store | None, rec: ToolCallRecord) -> None:
 
 def _write(store: Store, rec: ToolCallRecord) -> None:
     with store.pool.connection() as conn:
+        seq = rec.seq
+        if rec.session_id is not None and "-st:" in rec.session_id:
+            # Stateless groups survive processes. Allocate their persisted
+            # ordinal in the same transaction as the row, serializing all
+            # writers of this group (including overlapping server processes).
+            conn.execute("SET LOCAL lock_timeout = '250ms'")
+            conn.execute("SET LOCAL statement_timeout = '250ms'")
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (rec.session_id,),
+            )
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM tool_calls WHERE session_id = %s",
+                (rec.session_id,),
+            ).fetchone()
+            assert row is not None
+            seq = int(row[0])
         conn.execute(
             """
             INSERT INTO tool_calls (
@@ -273,7 +291,7 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 rec.result_count,
                 rec.latency_ms,
                 rec.session_id,
-                rec.seq,
+                seq,
                 rec.result_bytes,
                 rec.result_tokens_est,
                 rec.error_head,
@@ -307,6 +325,49 @@ _SESSION_IDS: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 _SEQ_COUNTERS: dict[str, int] = {}
 _SESSION_LOCK = threading.Lock()
 
+#: ``PRECIS_MCP_STATELESS_HTTP`` (gr660588): the opt-in streamable-http
+#: mode where the SDK mints a fresh ServerSession per request — or binds
+#: none — so keying the ledger on the session object would give every
+#: call its own ``session_id`` (seq always 1). Read live, mirroring
+#: ``runtime.scope``'s env-signal rule (tests flip it mid-process); the
+#: serving side applies the same flag to ``FastMCP.settings`` in
+#: ``server._run_network_transport``.
+_STATELESS_ENV = "PRECIS_MCP_STATELESS_HTTP"
+_STATELESS_ON = ("1", "true", "yes", "on")
+
+
+def _stateless_http() -> bool:
+    return os.environ.get(_STATELESS_ENV, "").strip().lower() in _STATELESS_ON
+
+
+def _bound_owner_key() -> str | None:
+    """The authenticated owner's durable key, when one is stamped."""
+    try:
+        from precis import principal
+
+        return principal.current_owner_key()
+    except Exception:
+        return None
+
+
+def _stateless_session_id(session: object | None) -> str | None:
+    """The ledger group under ``stateless_http``: owner + UTC hour.
+
+    ``st:<owner>@<hour>`` keys on the durable credential identity — the
+    same key the durable ``read_receipts`` rows use — so the ledger
+    still correlates one principal's calls across requests, restarts and
+    the fresh-per-request session objects the SDK hands out. The hour
+    bucket keeps a long-running server's group from growing unboundedly
+    while staying wider than one request. An ownerless, sessionless call
+    (CLI / in-process) stays ``None`` — nothing here is more durable
+    than the process that made it.
+    """
+    owner = _bound_owner_key()
+    if owner is None and session is None:
+        return None
+    head = f"{worktree_server.session_prefix()}{_slice_prefix()}{socket.gethostname()}"
+    return f"{head}-st:{owner or 'anon'}@{int(time.time() // 3600)}"
+
 
 def _slice_prefix() -> str:
     """``"slice-td<id>-"`` inside a slice-token-attributed call, else ""."""
@@ -321,13 +382,17 @@ def _slice_prefix() -> str:
 
 def _session_id() -> str | None:
     """The currently-bound session's ledger id, minted on first use —
-    ``None`` outside a session (CLI, inproc ticks, tests)."""
+    ``None`` outside a session (CLI, inproc ticks, tests). Under
+    ``PRECIS_MCP_STATELESS_HTTP`` the durable owner + hour groups the
+    call instead — a per-request session object groups nothing."""
     try:
         from precis import serve_ledger
 
         session = serve_ledger.current_session()
     except Exception:
         return None
+    if _stateless_http():
+        return _stateless_session_id(session)
     if session is None:
         return None
     with _SESSION_LOCK:
@@ -360,10 +425,15 @@ def current_session_key() -> tuple[str | None, int | None]:
     the in-flight call's ledger row (e.g. ``precis_se``'s op-trace
     frames) uses this; the ledger's own write consumes the same value
     via :func:`_mint_session_key`, so both agree on the seq.
-    ``(None, None)`` outside a session."""
+    ``(None, None)`` outside a session. Stateless groups return ``(sid, None)``:
+    their ordinal is only known at write time, allocated under a database
+    lock in :func:`_write`. Exposing a process counter would falsely correlate
+    trace frames with unrelated persisted calls after a restart."""
     sid = _session_id()
     if sid is None:
         return None, None
+    if _stateless_http():
+        return sid, None
     with _SESSION_LOCK:
         return sid, _SEQ_COUNTERS.get(sid, 0) + 1
 
@@ -374,6 +444,8 @@ def _mint_session_key() -> tuple[str | None, int | None]:
     sid = _session_id()
     if sid is None:
         return None, None
+    if _stateless_http():
+        return sid, None
     with _SESSION_LOCK:
         n = _SEQ_COUNTERS.get(sid, 0) + 1
         _SEQ_COUNTERS[sid] = n

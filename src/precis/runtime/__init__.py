@@ -9,7 +9,8 @@ outside it) already relies on — the split is invisible from here down.
 
 Oversized responses refuse with targeted-read recovery rather than partial
 content or continuation cursors. Exact-handle write substitution uses current
-stored bytes and same-session read receipts held only in process memory. The
+stored bytes and one-hour read receipts persisted by authenticated credential.
+Without a bound principal, receipts remain session-local in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
 
 Licensed live responses opt out of pagination caching while retaining the

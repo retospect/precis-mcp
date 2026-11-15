@@ -83,6 +83,13 @@ Capabilities distinguish explicit full MCP access (including writes and shared
 services) from learning-only connections. User identity does not create
 per-document ACLs for the shared corpus.
 
+Exact-handle write substitution uses one-hour ``read_receipts`` keyed on the
+authenticated credential, surviving transport restarts. Unauthenticated MCP
+receipts and hint suppression remain in process memory. Opt-in
+``PRECIS_MCP_STATELESS_HTTP`` authenticates every request and groups ledger
+calls by credential/hour; persisted ordinals are allocated under a database
+lock so restart cannot reorder recall routes. Public rollout is separate.
+
 ```
   precis add <input>
         │  ingest/{marker,pipeline,text_chunker,db_writer}.py
