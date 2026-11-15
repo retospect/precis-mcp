@@ -500,6 +500,47 @@ _GAP_CUT_RATIO = 0.6
 _SLUG_MATCH_SCORE = 3 * _TITLE_MATCH_SCORE
 
 
+#: RRF constant for the multi-phrasing ``queries=`` fusion (gr568491) —
+#: the same k every other RRF site uses (``search_merge._RRF_K``,
+#: ``search_chunks_multi``).
+_FUSED_RRF_K = 60
+
+#: ``queries=`` leg bound, counted AFTER near-duplicate phrasings are
+#: dropped. The phrasings share one intent, so agreement across them is
+#: the signal — a sixth phrasing is rewording, not recall.
+_SKILL_QUERY_LEG_CAP = 5
+
+#: Raw ``queries=`` entries refused before dedupe — the same boundary
+#: the paper kind's broad-retrieval legs enforce (``_BROAD_LEG_CAP``).
+_SKILL_QUERY_RAW_CAP = 8
+
+#: Sequence-similarity bar for "near-identical phrasing" in
+#: :func:`_dedupe_phrasings` — folds "search memory" / "search
+#: memories" without collapsing genuinely different sub-tasks.
+_PHRASING_DUPE_RATIO = 0.92
+
+#: Absolute lexical floor per leg (gr568491 item 4): a bare two-word
+#: overlap (score 0.14) is not leg evidence — three matched content
+#: words, or two with a compound, clears it. Verbatim phrase hits
+#: (>=0.30) and identity pins always pass; semantic rows carry their
+#: own ``_SKILL_SEMANTIC_FLOOR``. The gap cut from gr496170 is relative
+#: to the leg's top score and cannot tell that top is itself junk.
+_SKILL_LEXICAL_FLOOR = 0.15
+
+#: Fisheye caps for the fused menu (gr568491 item 3): a section hit by
+#: several phrasings rises, but no skill may occupy more than this many
+#: rows and the menu stays near ``_FUSED_ROW_CAP`` — more is expanded
+#: by narrowing, never paged.
+_FUSED_PER_SKILL_CAP = 3
+_FUSED_ROW_CAP = 20
+
+#: Per-leg fetch depth for the fused path — each phrasing pulls this
+#: many merged rows plus the floored semantic pool behind them (the
+#: ``page_size * 5`` over-fetch inside ``_ranked_rows``) so the fusion
+#: has a real tail to agree on.
+_FUSED_LEG_PAGE = 20
+
+
 class _SkillSearchRow:
     """Per-slug merged hit for the search response.
 
@@ -743,6 +784,170 @@ def _gap_cut_index(rows: list[_SkillSearchRow]) -> int:
         (i for i in range(1, len(rows)) if _norm_score(rows[i]) < floor),
         len(rows),
     )
+
+
+def _coerce_queries_arg(queries: list[str] | str) -> list[str]:
+    """``queries=`` → a list of non-blank phrasing strings.
+
+    A bare string coerces to one entry (same tolerance the runtime's
+    ``_str_list`` gives list-or-scalar args); blank and ``'*'`` entries
+    drop. Anything else refuses — a silent ``str(dict)`` phrasing would
+    be a worse failure than the error.
+    """
+    if isinstance(queries, str):
+        queries = [queries]
+    if not isinstance(queries, (list, tuple)):
+        raise BadInput(
+            "queries= must be a list of phrasing strings, "
+            f"got {type(queries).__name__}",
+            next=(
+                "search(kind='skill', args={'queries': ['<goal>', "
+                "'<rephrase>', '<another angle>']})"
+            ),
+        )
+    out: list[str] = []
+    for entry in queries:
+        folded = fold_match_all_q(str(entry).strip())
+        if folded and folded.strip():
+            out.append(folded.strip())
+    return out
+
+
+def _dedupe_phrasings(phrasings: list[str]) -> list[str]:
+    """Drop near-identical goal phrasings, keeping first-seen order.
+
+    Three fold rules, cheapest first: whitespace/hyphen-normalised
+    equality (punctuation and case variants), identical content-token
+    sets (word order and stopword variants — "store a memory" vs
+    "memory store"), then a ``difflib`` ratio vs each already-kept
+    phrasing (number/affix variants — "search memory" vs "search
+    memories"). The first spelling of a cluster wins so ``q1`` stays
+    the caller's primary phrasing.
+    """
+    kept: list[str] = []
+    norms: list[str] = []
+    token_sets: list[frozenset[str]] = []
+    for raw in phrasings:
+        p = " ".join(str(raw).split())
+        if not p:
+            continue
+        norm = _norm_for_substr(p)
+        toks = frozenset(_content_tokens(p))
+        if norm in norms or toks in token_sets:
+            continue
+        if any(
+            difflib.SequenceMatcher(None, norm, kn).ratio() >= _PHRASING_DUPE_RATIO
+            for kn in norms
+        ):
+            continue
+        kept.append(p)
+        norms.append(norm)
+        token_sets.append(toks)
+    return kept
+
+
+def _section_key_for_hit(hit: SearchHit) -> tuple[str, str | None]:
+    """Fused-row identity for a semantic hit: ``(slug, '~N')`` when the
+    chunk resolves to a structural section, ``(slug, 'h:<heading>')``
+    for a heading-bearing twin that doesn't, ``(slug, None)`` for a
+    question-twin hit on the whole skill."""
+    idx = _addressable_chunk_idx(hit)
+    if idx is not None:
+        return (hit.slug, f"~{idx}")
+    if hit.heading:
+        return (hit.slug, f"h:{strip_heading_mark(hit.heading)}")
+    return (hit.slug, None)
+
+
+def _verbatim_section_idx(slug: str, q: str) -> int | None:
+    """First structural chunk whose normalised text contains the query
+    phrase — the ``slug~N`` a verbatim substring hit actually lives in.
+    ``None`` for an unreadable skill or a phrase no chunk holds."""
+    text = _load_skill(slug)
+    if text is None:
+        return None
+    text = scope_render(text, "write")[0]
+    needle = _norm_for_substr(q)
+    for i, chunk in enumerate(chunk_by_h2(text)):
+        if needle in _norm_for_substr(chunk.text):
+            return i
+    return None
+
+
+def _row_section_key(row: _SkillSearchRow, *, q: str) -> tuple[str, str | None]:
+    """Fused-row identity for a merged per-slug row (lexical / title /
+    slug pin). A row whose section already names ``~N`` keys to that
+    section so it merges with the semantic section row underneath; a
+    verbatim substring row resolves to the chunk holding the phrase —
+    a literal match's location is a fact, not a guess. Everything else
+    is whole-skill evidence keyed ``(slug, None)``."""
+    sec = (row.section or "").strip()
+    if sec.startswith("~"):
+        token = sec[1:].split(" ", 1)[0].split("—", 1)[0]
+        if token.isdigit():
+            return (row.slug, f"~{int(token)}")
+    if row.source == "lexical" and "substring" in sec:
+        idx = _verbatim_section_idx(row.slug, q)
+        if idx is not None:
+            return (row.slug, f"~{idx}")
+    return (row.slug, None)
+
+
+def _fused_leg_rows(
+    text: str,
+    rows: list[_SkillSearchRow],
+    sem_hits: list[SearchHit],
+) -> list[tuple[tuple[str, str | None], _SkillSearchRow]]:
+    """One phrasing's ranked ``(key, row)`` candidates for the fusion.
+
+    Section rows come from the floored semantic hits (per-section dedup
+    keeps the best twin); whole-skill evidence — lexical rows and
+    title/slug pins — keys to ``(slug, None)`` or to the ``~N`` its
+    section resolved to. Rows under the per-regime absolute floors
+    never make the leg: a weak row here would smuggle an off-target
+    phrasing's junk past the agreement test (gr568491 item 4).
+    """
+    cands: dict[tuple[str, str | None], _SkillSearchRow] = {}
+
+    def offer(key: tuple[str, str | None], row: _SkillSearchRow) -> None:
+        cur = cands.get(key)
+        if cur is None or row.score > cur.score:
+            cands[key] = row
+
+    for hit in sem_hits:
+        offer(_section_key_for_hit(hit), _semantic_row(hit))
+    for row in rows:
+        if row.source == "semantic":
+            continue  # covered by its section row
+        if row.source == "lexical" and row.score < _SKILL_LEXICAL_FLOOR:
+            continue
+        offer(_row_section_key(row, q=text), row)
+    return sorted(
+        cands.items(), key=lambda kv: (-kv[1].score, kv[0][0], kv[0][1] or "")
+    )
+
+
+def _fused_row_cells(
+    key: tuple[str, str | None], row: _SkillSearchRow
+) -> tuple[str, str]:
+    """``(id, section)`` cells for one fused row.
+
+    A ``~N`` key renders the addressable ``slug~N`` id (paste straight
+    into ``get(kind='skill', id=…)``) with the bare heading beside it;
+    a skill-level or heading-only row keeps the row's own evidence
+    label ("3 word matches", "title match").
+    """
+    slug, sec = key
+    if sec is None:
+        return slug, row.section
+    if sec.startswith("~"):
+        section = row.section
+        if section.startswith(sec):
+            section = section[len(sec) :].lstrip(" —") or section
+        return f"{slug}{sec}", section
+    if sec.startswith("h:"):
+        return slug, sec[2:]
+    return slug, row.section
 
 
 class SkillHandler(Handler):
@@ -1573,9 +1778,42 @@ class SkillHandler(Handler):
         family: str | None = None,
         configured_only: bool = False,
         mode: str | None = None,
+        queries: list[str] | str | None = None,
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
+        # gr568491: ``queries=`` — several goal phrasings fused in one
+        # call (paper's name, since paper's is the fused door). ``q``
+        # counts as phrasing ``q1`` when present; the phrasings share
+        # one intent so a section several of them hit rises and a
+        # section one odd phrasing hit sinks — agreement is the signal.
+        phrasings: list[str] = []
+        if queries is not None:
+            if scope is not None:
+                raise BadInput(
+                    "search(kind='skill'): queries= fuses phrasings across "
+                    "the catalogue — it doesn't combine with scope= "
+                    "(one skill)",
+                    next="search(kind='skill', q='<text>', scope='<slug>') "
+                    "finds inside one skill",
+                )
+            raw_phrasings = _coerce_queries_arg(queries)
+            if len(raw_phrasings) > _SKILL_QUERY_RAW_CAP:
+                raise BadInput(
+                    f"queries= has {len(raw_phrasings)} entries, "
+                    f"max {_SKILL_QUERY_RAW_CAP}",
+                    next="pass up to 8 phrasings; near-duplicates are merged",
+                )
+            base = [q.strip()] if q and q.strip() else []
+            phrasings = _dedupe_phrasings(base + raw_phrasings)
+            if len(phrasings) > _SKILL_QUERY_LEG_CAP:
+                raise BadInput(
+                    f"{len(phrasings)} distinct phrasings after merging "
+                    f"near-duplicates — the fused menu caps at "
+                    f"{_SKILL_QUERY_LEG_CAP}",
+                    next="merge phrasings that ask the same thing, or split "
+                    "into a second call",
+                )
         # gr573037: the slim search schema advertises ``scope=`` on
         # every kind; on skill it reads as "search inside that one
         # skill" — the find-in-ref affordance (gr486840). Route it
@@ -1644,6 +1882,38 @@ class SkillHandler(Handler):
         if page_size is None:
             page_size = 10
         page = max(1, int(page))
+        # The fused menu resolves before the empty-q degrade: a call
+        # carrying only ``queries=`` (no ``q``) is the normal shape.
+        if len(phrasings) >= 2:
+            # The fused table is fisheye-capped, not paged (gr568491
+            # item 3): +N more expands by narrowing, so page=/page_size=
+            # are refused with the narrowing calls.
+            if page != 1:
+                raise BadInput(
+                    "the fused queries= menu is capped, not paged — narrow "
+                    "the phrasings or a skill to expand",
+                    next="search(kind='skill', q='<one phrasing>', page=2) "
+                    "pages a single-phrasing search",
+                )
+            if page_size_explicit:
+                raise BadInput(
+                    "the fused queries= menu has a fixed fisheye cap "
+                    f"(~{_FUSED_ROW_CAP} rows, ≤{_FUSED_PER_SKILL_CAP} per "
+                    "skill) — page_size= doesn't apply",
+                    next="narrow with args={'family': ...} or "
+                    "get(kind='skill', id='<slug>/toc')",
+                )
+            return self._search_fused(
+                phrasings,
+                mode_norm=mode_norm,
+                tag=tag,
+                tags=tags,
+                kinds=kinds,
+                family=family,
+                configured_only=configured_only,
+            )
+        if phrasings:
+            q = phrasings[0]  # one effective phrasing → the single-q path
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
         # rest of the surface (``search(kind='memory', tags=[...])``,
         # for instance) degrades on empty q to a list view; doing the
@@ -2006,8 +2276,23 @@ class SkillHandler(Handler):
         page_size: int,
         query_vec: list[float] | None = None,
     ) -> tuple[list[_SkillSearchRow], Counter[str], set[str]]:
+        """The single-q contract on :meth:`_ranked_rows_full` — merged
+        rows, per-slug semantic counts and hidden slugs."""
+        all_rows, per_slug, hidden, _sem_hits = self._ranked_rows_full(
+            q, mode_norm=mode_norm, page_size=page_size, query_vec=query_vec
+        )
+        return all_rows, per_slug, hidden
+
+    def _ranked_rows_full(
+        self,
+        q: str,
+        *,
+        mode_norm: str,
+        page_size: int,
+        query_vec: list[float] | None = None,
+    ) -> tuple[list[_SkillSearchRow], Counter[str], set[str], list[SearchHit]]:
         """Merged + score-sorted skill rows — the ranking core shared by
-        :meth:`search` and :meth:`search_hits`.
+        :meth:`search`, :meth:`search_hits` and the ``queries=`` fusion.
 
         Runs the two retrieval streams — the semantic index (floored at
         ``_SKILL_SEMANTIC_FLOOR``) and the substring / word-overlap
@@ -2016,7 +2301,9 @@ class SkillHandler(Handler):
         Read-scope hit fencing runs here and its hidden-slug set comes
         back with the rows; the axis (``tag``/``kinds``/``family``) and
         write-only row filters stay with the caller. Returns
-        ``(all_rows, sem_hits_per_slug, hidden_slugs)``.
+        ``(all_rows, sem_hits_per_slug, hidden_slugs, semantic_hits)`` —
+        the last leg is the floored, fenced semantic stream the fused
+        path re-splits into section rows.
         """
         # gr512233 slice 3: one scope verdict per call. On a read
         # connection, hits from a ``scope: write`` skill or a fully
@@ -2305,7 +2592,252 @@ class SkillHandler(Handler):
             ),
         )
 
-        return all_rows, sem_hits_per_slug, hidden_slugs
+        return all_rows, sem_hits_per_slug, hidden_slugs, semantic_hits
+
+    def _search_fused(
+        self,
+        phrasings: list[str],
+        *,
+        mode_norm: str,
+        tag: str | None,
+        tags: list[str] | str | None,
+        kinds: str | None,
+        family: str | None,
+        configured_only: bool,
+    ) -> Response:
+        """The ``queries=`` multi-phrasing search (gr568491).
+
+        The phrasings share one intent — a section several of them hit
+        is the signal, a section one odd phrasing hit is noise. Each
+        phrasing is a full hybrid leg (floored per leg BEFORE fusion:
+        cosine rows under ``_SKILL_SEMANTIC_FLOOR`` and word-overlap
+        rows under ``_SKILL_LEXICAL_FLOOR`` drop, so an off-target
+        phrasing can't smuggle a junk row past the agreement test);
+        legs fuse by RRF and every rendered row shows which query
+        indices voted for it (``q1,q4``) so the agent learns the
+        corpus's vocabulary before reading anything.
+
+        Rows are sections (``slug~N``) plus skill-level rows for
+        whole-skill evidence (word matches, unresolved title pins).
+        Caps are fisheye: ≤ ``_FUSED_PER_SKILL_CAP`` rows per skill,
+        ~``_FUSED_ROW_CAP`` rows total, "+N more" expands by narrowing
+        — never a page. Every phrasing keeps its leg's top-1 row
+        regardless of fusion: phrasings fuse, but distinct sub-tasks
+        ("memory search" vs "tagging") must each stay represented.
+        """
+        conn_scope = current_scope()
+        vecs = self._embed_query_vecs(phrasings, mode_norm)
+        hidden_slugs: set[str] = set()
+        legs: list[list[tuple[tuple[str, str | None], _SkillSearchRow]]] = []
+        for i, text in enumerate(phrasings):
+            rows, _per_slug, hidden, sem_hits = self._ranked_rows_full(
+                text,
+                mode_norm=mode_norm,
+                page_size=_FUSED_LEG_PAGE,
+                query_vec=vecs[i],
+            )
+            hidden_slugs |= hidden
+            legs.append(_fused_leg_rows(text, rows, sem_hits))
+
+        # RRF: a row several phrasings rank climbs; a row one odd
+        # phrasing ranks stays shallow. Ties fall to the better leg
+        # score, then the key — deterministic per corpus.
+        totals: dict[tuple[str, str | None], float] = {}
+        voted: dict[tuple[str, str | None], set[int]] = {}
+        best: dict[tuple[str, str | None], _SkillSearchRow] = {}
+        for li, leg in enumerate(legs):
+            for rank, (key, row) in enumerate(leg, 1):
+                totals[key] = totals.get(key, 0.0) + 1.0 / (_FUSED_RRF_K + rank)
+                voted.setdefault(key, set()).add(li)
+                cur = best.get(key)
+                if cur is None or row.score > cur.score:
+                    best[key] = row
+        # Every phrasing keeps its leg's top-1 row regardless of the
+        # fused order or the caps below (gr568491 item 2).
+        guaranteed = {leg[0][0] for leg in legs if leg}
+        order = sorted(
+            totals,
+            key=lambda k: (-totals[k], -best[k].score, k[0], k[1] or ""),
+        )
+
+        # Same post-rank filters as the single-q path: axis door,
+        # read-scope write-only fence, bound domain, availability gap.
+        wanted = _axis_filter_set(tag=tag, tags=tags, kinds=kinds, family=family)
+        if wanted is not None:
+            order = [k for k in order if k[0] in wanted]
+        if conn_scope == "read":
+            kept = []
+            for k in order:
+                if _skill_is_write_only(k[0]):
+                    hidden_slugs.add(k[0])
+                else:
+                    kept.append(k)
+            order = kept
+        domain = current_domain() if family is None else None
+        domain_name = domain.name if domain is not None else ""
+        domain_families = domain.families if domain is not None else None
+        domain_hidden: set[str] = set()
+        if domain_families is not None:
+            kept = []
+            for k in order:
+                if _skill_family_of(k[0]) in domain_families:
+                    kept.append(k)
+                else:
+                    domain_hidden.add(k[0])
+            order = kept
+        gaps: dict[str, str] = {}
+        for k in order:
+            parts = _availability_gap_parts(k[0], hub=self.hub)
+            if parts is not None:
+                gaps[k[0]] = parts[0]
+        if configured_only:
+            order = [k for k in order if k[0] not in gaps]
+
+        # Fisheye caps — guaranteed top-1s may overrun them.
+        per_skill: Counter[str] = Counter()
+        visible: list[tuple[str, str | None]] = []
+        for k in order:
+            if (
+                len(visible) >= _FUSED_ROW_CAP
+                or per_skill[k[0]] >= _FUSED_PER_SKILL_CAP
+            ) and k not in guaranteed:
+                continue
+            visible.append(k)
+            per_skill[k[0]] += 1
+
+        legend = "\n".join(
+            f"q{i + 1}: {text}" + ("" if legs[i] else "  (no leg hits)")
+            for i, text in enumerate(phrasings)
+        )
+        footers = (
+            (
+                f"\n\n({len(hidden_slugs)} write-scope "
+                f"{'hit' if len(hidden_slugs) == 1 else 'hits'} hidden "
+                "— read-only connection)"
+            )
+            if hidden_slugs
+            else ""
+        ) + (
+            f"\n\n({_domain_hidden_note(domain_hidden, domain_name)})"
+            if domain_hidden
+            else ""
+        )
+        if not visible:
+            # Same honest-empty split as the single-q path: "ran and
+            # matched nothing" vs "semantic couldn't run this turn".
+            if self._semantic_available():
+                head = f"no skill sections match the {len(phrasings)} phrasings"
+                tip = (
+                    "This search ran and matched nothing. Reword once if the "
+                    "phrasing was unusual; otherwise open the index — the "
+                    "skill may be named differently, or this isn't a skill:"
+                )
+            else:
+                head = (
+                    "no lexical matches for the phrasings; semantic search "
+                    "is warming and didn't contribute this turn"
+                )
+                tip = (
+                    "Retry in ~30s once the embedder warms, or fall back to the index:"
+                )
+            return Response(
+                body=(
+                    f"{head}\n\n{legend}\n\n{tip}"
+                    + render_next_section(
+                        [
+                            *_family_rows_for_query(phrasings[0], family),
+                            (
+                                "get(kind='skill')",
+                                "browse the grouped catalogue",
+                            ),
+                            (
+                                "get(kind='skill', id='toc')",
+                                "table of contents with synopses",
+                            ),
+                        ]
+                    )
+                    + footers
+                )
+            )
+
+        table_rows = []
+        for k in visible:
+            slug, _sec = k
+            row = best[k]
+            id_cell, sec_cell = _fused_row_cells(k, row)
+            if slug in gaps:
+                id_cell += f" [not configured: {gaps[slug]}]"
+            table_rows.append(
+                {
+                    "id": id_cell,
+                    "q": ",".join(f"q{i + 1}" for i in sorted(voted[k])),
+                    "section": sec_cell,
+                    "keywords": keyword_summary(row.snippet, top_k=5),
+                    "size": _skill_size_cell(slug),
+                }
+            )
+        head = (
+            f"# {len(visible)} skill section{'s' if len(visible) != 1 else ''} "
+            f"across {len(phrasings)} phrasings"
+        )
+        body = f"{head}\n\n{legend}\n\n" + render_agent_table(
+            table_rows, schema=["id", "q", "section", "keywords", "size"]
+        )
+        top_slug = visible[0][0]
+        top_id = f"{top_slug}{visible[0][1]}" if visible[0][1] is not None else top_slug
+        remaining = len(order) - len(visible)
+        if remaining:
+            body += (
+                f"\n\n…and {remaining} more sections — expand by narrowing: "
+                f"get(kind='skill', id='{top_slug}/toc') maps the top skill's "
+                "sections; a single search(kind='skill', q='<phrasing>') "
+                "deep-ranks it"
+            )
+        # The single-q path's "related:" door — sibling skills the
+        # graph links from the top hit.
+        linked = _get_skill_graph().linked(top_slug)
+        related = tuple(
+            s
+            for s in linked
+            if not (conn_scope == "read" and _skill_is_write_only(s))
+            and (domain_families is None or _skill_family_of(s) in domain_families)
+        )[:_FOOTER_LINK_CAP]
+        if related:
+            body += "\n\nrelated: " + ", ".join(related)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='skill', id={top_id!r})",
+                    "read the top section",
+                ),
+                (
+                    "get(kind='skill', id='toc')",
+                    "table of contents with synopses",
+                ),
+            ]
+        )
+        return Response(body=body + footers)
+
+    def _embed_query_vecs(
+        self, phrasings: list[str], mode_norm: str
+    ) -> list[list[float] | None]:
+        """One batched embed for every phrasing leg.
+
+        ``None`` per leg on any failure — ``_ranked_rows_full`` then
+        falls back to its own embed path, so a batch outage degrades
+        rather than refuses.
+        """
+        empty: list[list[float] | None] = [None] * len(phrasings)
+        if mode_norm in ("lexical", "verbatim"):
+            return empty
+        index = self._get_index()
+        embedder = getattr(index, "_embedder", None) if index is not None else None
+        if embedder is None:
+            return empty
+        from precis.handlers._paper_search import _embed_query_batch
+
+        vecs = _embed_query_batch(embedder, phrasings)
+        return list(vecs) if len(vecs) == len(phrasings) else empty
 
     # ── search helpers ─────────────────────────────────────────────
 

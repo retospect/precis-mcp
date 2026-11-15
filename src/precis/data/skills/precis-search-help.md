@@ -743,10 +743,19 @@ args={'title': '…'})`.
 search(kind="skill", q="how do I edit a markdown file")
 search(kind="skill", q="paginate paper search")
 search(kind="skill", q="patent prior art")
+# one goal, several phrasings — fused into a single ranked section menu:
+search(kind="skill", args={"queries": [
+    "store a new memory", "search memories", "tag a thought",
+]})
 ```
 
 Natural-language queries work — phrase your query the way you'd ask
-it. Skill hits whose kind or required tool isn't available in the current
+it. `args={'queries': [...]}` takes up to 5 distinct phrasings of the
+same goal (near-duplicates merge) and returns one ranked list of skill
+*sections* (`slug~N`), each row marked with which queries hit it
+(`q1,q4`); every phrasing keeps its top hit. Then
+`get(kind='skill', id='<slug~N>')` reads the chosen section.
+Skill hits whose kind or required tool isn't available in the current
 build carry `[not configured: <why>]` so you don't follow them to no-op
 recipes; add `args={'configured_only': True}` to drop them.
 
