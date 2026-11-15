@@ -106,6 +106,10 @@ review that stamp records.
 ## Edit paper metadata — title, venue, year, DOI
 ## Repair a stub's metadata in place — title, identifiers, venue
 
+Identify the title from the title block after the article start, never chunk 0
+of an issue-page PDF. Heed the edit warning when the proposed title or DOI lacks
+body support; a multi-article record needs the split route below.
+
 A paper whose metadata is missing (a bad-import stub) can be
 unfindable; repair it with `edit(kind='paper', id='<slug>', title=…,
 authors=[…])`, which rebuilds the card. A title-only stub's *identifier* is

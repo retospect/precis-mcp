@@ -6017,6 +6017,13 @@ class PaperHandler(Handler):
                 arxiv_clear=arxiv_clear,
             )
         changed: list[str] = []
+        identity_warnings = (
+            self._article_identity_warnings(
+                ref_id, title=new_title, doi=str(doi).strip() if has_doi else None
+            )
+            if self.spec.kind == "paper" and (new_title is not None or has_doi)
+            else []
+        )
         doi_edit_check: tuple[str, str] | None = None
         with self.store.tx() as conn:
             updated = self.store.update_paper_fields(
@@ -6121,6 +6128,8 @@ class PaperHandler(Handler):
                 )
         changed_str = ", ".join(changed) if changed else "no change"
         body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
+        if identity_warnings:
+            body += "\n" + "\n".join(identity_warnings)
         if reminted:
             body += f" cite_key re-minted — {reminted}"
         if doi_edit_check is not None:
@@ -9428,6 +9437,46 @@ class PaperHandler(Handler):
             body=f"declared {child_h} the supplementary information of "
             f"{parent_h}; cite as {parent_h}."
         )
+
+    def _article_identity_warnings(
+        self, ref_id: int, *, title: str | None, doi: str | None
+    ) -> list[str]:
+        """Advisory evidence checks from the article opening, never chunk zero.
+
+        Issue-page PDFs can start with another article's tail (gr663170).
+        Keep legitimate repairs writable: lexical absence is a warning,
+        not proof that the proposed identity is wrong.
+        """
+        from precis.ingest.article_spread import article_start_ord, foreign_tail_ord
+        from precis.utils.title_body import title_body_score
+
+        warnings: list[str] = []
+        if any(
+            tag.namespace == "open" and tag.value == "multi-article"
+            for tag in self.store.tags_for(ref_id)
+        ):
+            warnings.append(
+                "warning: tagged multi-article: no single title exists - split it "
+                "(see precis-paper-ref-help) instead of retitling"
+            )
+        chunks = self.store.chunks.list_chunks_for_ref(ref_id)
+        start = article_start_ord(self.store, ref_id) or foreign_tail_ord(chunks) or 0
+        article = [chunk for chunk in chunks if chunk.ord >= start]
+        if title is not None and article:
+            score = title_body_score(title, "\n".join(c.text for c in article[:6]))
+            if score is not None and score.score < 0.5:
+                warnings.append(
+                    "warning: title not supported by the article body "
+                    f"(score {score.score:.2f}; missing: {', '.join(score.missing)}) "
+                    "- check the title block, not chunk 0 "
+                    f"(matched: {', '.join(score.matched) or 'none'})"
+                )
+        if doi is not None and len(chunks) >= 3:
+            if not any(doi.casefold() in c.text.casefold() for c in article):
+                warnings.append(
+                    "warning: doi not found in the body outside the leading chunks"
+                )
+        return warnings
 
     def _doi_edit_warning(self, ref_id: int, *, doi: str, current_title: str) -> str:
         """Warn when a DOI edit risks a future wrong-paper metadata clobber.

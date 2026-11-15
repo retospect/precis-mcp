@@ -1,9 +1,8 @@
 """Handlers — one adapter per kind (~70 kinds).
 
-Each module implements :class:`precis.protocol.Handler` for one kind and
-declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
-register with the :class:`precis.dispatch.Hub` at boot (contract + failure
-modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
+Modules implement :class:`precis.protocol.Handler`, declare verbs via
+:class:`precis.protocol.KindSpec` and register with :class:`precis.dispatch.Hub`
+at boot (contract: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 Staged (URL-backed draft) findings preserve a URL and verbatim quote
 without fetching; paper import promotes only a source-and-quote match to
@@ -56,6 +55,8 @@ richer newest-in-full / one-liner policy in
 can't express it; both kinds share that one implementation).
 
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
+
+Paper identity warnings exclude misleading issue-page prefixes.
 
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
 all handler body writes lock the owning ref, and anchored writes also
