@@ -238,7 +238,7 @@ JO482106_CONFIG: dict[str, Any] = {
 #: engine-versioned pins: the key folds in the engine version, so an
 #: engine bump re-derives the pin and re-labels it from the lock that
 #: produced it — never loosen it.
-JO482106_KEY = "66c96e1b45bd24b3d0f7047eaee402ee63233337a0b857c8f0f22a7e4ed7a4bf"
+JO482106_KEY = "1bebc67b9769700cb11af3366716cdf822fe5b98f219b0c155dfd5b45270d9a0"
 
 
 def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:
@@ -269,7 +269,7 @@ def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:
 #: reads it through the runner's version seam so a host whose installed
 #: autocatpath drifts from uv.lock does not turn this normalisation check
 #: red (gr596075) — a bump re-derives both the key and this label.
-JO482106_ENGINE = "0.50.0"
+JO482106_ENGINE = "0.51.0"
 
 
 def test_anchor_key_pins_jo482106s_normalised_key(

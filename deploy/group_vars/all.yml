@@ -74,7 +74,7 @@ precis_suspended_job_types: ""
 # precis_web/install.yml refuses the install when no wheel at this version
 # sits in the wheelhouse (gr489600). The one place a pin bump edits besides
 # pyproject.toml/uv.lock.
-autocatpath_min_version: "0.50.0"
+autocatpath_min_version: "0.51.0"
 
 # Autocatpath seed walls (gr614723, Reto 2026-11-10): full-network general
 # NEB gets 24 h; exhaustive coadsorbed verify gets 48 h, the code clamp ceiling.
