@@ -59,6 +59,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr(_fg, "factory_git_token", lambda: None)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
@@ -435,6 +436,81 @@ def test_poll_records_red(store: Store, monkeypatch: pytest.MonkeyPatch) -> None
     spec = _meta(store, mint.ids["gate"])["gate"]
     verdict = gates.evaluate(store, spec, todo_id=mint.ids["gate"])
     assert not verdict.open and "CI red" in verdict.why
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "failure", "success"])
+def test_poll_superseded_run_adopts_head_without_a_fix_iteration(
+    store: Store, monkeypatch: pytest.MonkeyPatch, conclusion: str
+) -> None:
+    mint = _cut(store)
+    head = "a" * 40
+    runs = [
+        _run(31, "completed", conclusion),
+        _run(32, "in_progress", None, head_sha=head),
+    ]
+    _fake_github(monkeypatch, runs)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: head)
+    children = _children(store, mint.ids["loop"])
+    parks: list[str] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append(note)
+        return True
+
+    ctx = Ctx(
+        store,
+        {"todo_id": mint.ids["poll"], "sha": SHA, "range": RNG},
+        defer=defer,
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "pending"
+    assert f"superseded by {head[:9]}" in ctx.chunks[-1][1]
+    assert len(parks) == 1
+    rel = R.release_of(store, mint.ids["poll"])
+    assert rel is not None and rel["sha"] == head
+    assert gates.read_ci_verdicts(store) == []
+    pd.run_pass(store)
+    assert _children(store, mint.ids["loop"]) == children
+    next_ctx = Ctx(store, ctx.stamped["params"], defer=lambda at, note: True)
+    cvp._dispatch(next_ctx, cvp.SPEC)
+    assert next_ctx.failures == []
+    assert next_ctx.stamped["ci_verdict_poll"]["run_id"] == "32"
+    assert next_ctx.stamped["ci_verdict_poll"]["state"] == "pending"
+    assert gates.read_ci_verdicts(store) == []
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "success"])
+def test_poll_unreadable_head_records_no_verdict(
+    store: Store, monkeypatch: pytest.MonkeyPatch, conclusion: str
+) -> None:
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", conclusion)])
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: None)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=lambda at, note: True)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "pending"
+    assert gates.read_ci_verdicts(store) == []
+
+
+@pytest.mark.parametrize("head", ["a" * 40, None])
+def test_digest_refuses_stale_or_unreadable_release_head(
+    store: Store,
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    head: str | None,
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    children = _children(store, mint.ids["loop"])
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: head)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    assert crd.submit(ctx, None) is None
+    assert ("superseded" if head else "unreadable") in ctx.failures[0]
+    assert checkout["argv"] == []
+    assert _children(store, mint.ids["loop"]) == children
 
 
 @pytest.mark.parametrize(

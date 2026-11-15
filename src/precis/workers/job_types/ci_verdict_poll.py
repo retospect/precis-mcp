@@ -14,6 +14,12 @@ https://api.github.com/repos/<owner>/<repo>/actions/runs?head_sha=<sha>``
 through :func:`precis.utils.safe_fetch.safe_get` (unauthenticated is fine
 for the public repo at 60/h; ``GH_TOKEN`` from the env, else the factory's
 vault token, is sent — :func:`precis.workers.factory_git.github_api_headers`).
+Completed runs are checked against the live release branch head before
+recording a verdict. A moved head supersedes either verdict: adopt it via
+``record_head`` and park for its run. An unreadable head also stays pending,
+so a fix push cancelling the old run cannot spend another fix iteration.
+The red digest repeats this head check before launching its script.
+
 The newest check.yml run (on the release branch when one is known):
 
 - completed ``success``/``skipped``/``neutral`` → ``green``; any other
@@ -1020,6 +1026,25 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
                 f"baseline (<= {before}) — the rerun's own verdict has "
                 "not landed"
             )
+    if state in ("green", "red") and target["branch"]:
+        # A fix push cancels the previous release run. Its completed
+        # verdict belongs to the old head, never to the current release.
+        head = fetch_head(target["repo"], target["branch"])
+        if head is None:
+            state = "pending"
+            why = "release head unreadable; cannot confirm the run is current"
+        elif head != sha:
+            state = "pending"
+            why = f"superseded by {head[:9]}"
+            log.info("%s: %s %s", NAME, sha[:9], why)
+            todo_id = params.get("todo_id")
+            if isinstance(todo_id, int):
+                _release.record_head(ctx.store, todo_id, head)
+                # Explicit overrides must follow the head on the next wake too.
+                params.pop("sha", None)
+                params.pop("range", None)
+                ctx.set_meta(params=params)
+        meta["state"] = state
     ctx.set_meta(ci_verdict_poll=meta)
     if state in ("green", "red"):
         line = _release.record_ci_verdict(ctx.store, sha, rng, state, run_id)

@@ -836,6 +836,24 @@ def submit(ctx: Any, spec: Any) -> Any:
             ctx, NAME, [str(params["run_id"]), "--probe"], script="ci-failed"
         )
     todo_id = params["todo_id"]
+    rel = _release.release_of(ctx.store, todo_id)
+    if rel is not None:
+        try:
+            target = _cvp.resolve_target(ctx.store, {"todo_id": todo_id})
+        except _cvp.PollError as exc:
+            ctx.record_failure(str(exc))
+            return None
+        head = _cvp.fetch_head(target["repo"], target["branch"])
+        if head is None or head != target["sha"]:
+            reason = (
+                f"superseded by {head[:9]}"
+                if head is not None
+                else "release head unreadable"
+            )
+            ctx.record_failure(
+                f"{NAME}: {reason}; next: poll the current release head before digesting"
+            )
+            return None
     run_id = str(params.get("run_id") or "")
     if not run_id:
         rel = _release.release_of(ctx.store, todo_id)
