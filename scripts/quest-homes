@@ -268,6 +268,7 @@ quest_of_todo AS (
     FROM chain c
     JOIN links l ON l.src_ref_id = c.ref_id AND l.relation = 'serves'
     JOIN refs q ON q.ref_id = l.dst_ref_id AND q.kind = 'quest'
+                AND q.retired_at IS NULL
    ORDER BY c.start_id, c.depth
 )"""
 
@@ -277,7 +278,10 @@ live AS (
   SELECT g.ref_id, left(g.title, 80) AS title,
          COALESCE((SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
                     WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS'
-                    LIMIT 1), 'open') AS status
+                    LIMIT 1), 'open') AS status,
+         (SELECT rt.created_at FROM ref_tags rt JOIN tags t USING (tag_id)
+           WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS'
+           LIMIT 1) AS status_at
     FROM refs g
    WHERE g.kind = 'gripe' AND g.retired_at IS NULL
 )
@@ -291,19 +295,26 @@ SELECT live.ref_id, live.status, live.title,
          WHERE l.dst_ref_id = live.ref_id AND l.relation = 'fixes') AS fix_quest,
        (SELECT 'qu' || min(l.dst_ref_id) FROM links l
           JOIN refs q ON q.ref_id = l.dst_ref_id AND q.kind = 'quest'
+                      AND q.retired_at IS NULL
          WHERE l.src_ref_id = live.ref_id AND l.relation = 'serves') AS serves
   FROM live
+ -- live gripes, plus those closed inside the churn window, so the 30-day
+ -- "fixed" count has homes from day one
  WHERE live.status NOT IN ('done', 'wontfix')
+    OR live.status_at > now() - interval '30 days'
  ORDER BY live.ref_id;
 """
 
 SPEC_TODOS_SQL = f"""
 WITH {_QUEST_OF_TODO.strip()}
-SELECT r.ref_id, substring(r.title from 'docs/backlog/([a-z0-9-]+)\\.md') AS slug,
+SELECT r.ref_id,
+       substring(r.title from '\\(docs/backlog/([a-z0-9-]+)\\.md\\)\\s*$') AS slug,
        'qu' || qt.quest_id AS quest, r.parent_id
   FROM refs r LEFT JOIN quest_of_todo qt ON qt.todo_id = r.ref_id
- WHERE r.kind = 'todo' AND r.retired_at IS NULL AND r.parent_id IS NULL
-   AND r.title ~ 'docs/backlog/[a-z0-9-]+\\.md';
+ -- a spec's project todo is NAMED after it: "<title> (docs/backlog/<slug>.md)"
+ -- at the end of the title (a todo that merely mentions a doc is not one)
+ WHERE r.kind = 'todo' AND r.retired_at IS NULL
+   AND r.title ~ '\\(docs/backlog/[a-z0-9-]+\\.md\\)\\s*$';
 """
 
 

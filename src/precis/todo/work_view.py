@@ -357,8 +357,14 @@ def _todo_servers(store: Store, quest_id: int) -> list[Ref]:
     links = store.links_for(quest_id, direction="in", relation="serves")
     ids = {ln.src_ref_id for ln in links}
     refs = store.fetch_refs_by_ids(ids, include_deleted=False)
+    # Backlog-spec placeholders mark where a spec lives, not work: off the
+    # board, or one would hide an all-blocked quest's needs-you state.
+    from precis.quest.gaps import _backlog_spec_ids
+
+    todos = [r for r in refs.values() if r.kind == "todo"]
+    spec_ids = _backlog_spec_ids(store, [r.id for r in todos])
     return sorted(
-        (r for r in refs.values() if r.kind == "todo"),
+        (r for r in todos if r.id not in spec_ids),
         key=lambda r: (r.prio if r.prio is not None else 5, r.id),
     )
 

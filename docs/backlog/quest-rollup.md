@@ -59,7 +59,7 @@ rollup at some level."
   `_todo_sql.py::direction_todo_sql`) are the quest's own planning tree:
   excluded from work counts.
 - **Catch-all is computed, not a stored quest:** live root todos serving no
-  quest, gripes with no fix todo under a quest, alerts whose subject traces
+  quest, gripes with no home (Homes, below), alerts whose subject traces
   to no quest. Prod 2026-11-14: 255 of 289 live roots (484 live todos) serve
   no quest, nearly all "Fix grNNN" roots — slice 1 drains them.
 
@@ -84,10 +84,20 @@ fires:
 (2026-11-15, specs only) placed 320 live specs: 233 by pillar, 65 by
 prefix, 16 by thread, 5 by citation, 1 unplaced.
 
-The project todo minted for the spec (ruling 3) `serves` that quest and
-carries `spec:<slug>`, `backlog-spec` and `hold:no-dispatch`: it is the
-spec's place in the tree, not a build order, so no lane picks it up (the
-rollup shows it under 📄, not ⏸). The
+The project todo minted for the spec (ruling 3) is a root todo whose title
+ends `(docs/backlog/<slug>.md)`; it `serves` that quest and carries
+`spec:<slug>`, `backlog-spec` and `hold:no-dispatch`: it is the spec's
+place in the tree, not a build order, so no lane picks it up (the rollup
+shows it under 📄, not ⏸). A todo that merely mentions the doc mid-title is
+not the project todo.
+
+**Homing links are not servers.** A `backlog-spec` todo or a gripe that
+`serves` a quest is placement, not evidence or work:
+`quest/gaps.py::_live_servers` drops both, so the quest tick's prompt,
+gaps, momentum and alignment ignore them, and the `/work` board
+(`work_view._todo_servers`) and the nursery's orphan scan skip
+`backlog-spec` todos. The rollup and the quest's own `get` view read the
+links directly. The
 front matter is the source; the todo's `serves` link follows it, and
 `scripts/backlog-lint` flags drift between them.
 
@@ -100,10 +110,13 @@ front matter is the source; the todo's `serves` link follows it, and
 | 3d-design | 125 | qu686092 Precis designs things that get made (serves qu161906; qu570323 PCB boards moved under it) |
 | personal | 7 | qu686093 Precis works for its own user |
 
-**Gripes.** The stored home is a direct gripe → quest `serves` link; the
-rollup reads that link (or, failing it, the fix todo's quest) and computes
-nothing else. The rules below choose the link when a gripe is filed or
-backfilled, first match wins:
+**Gripes.** The home is the gripe's own `serves` link to a quest; when it
+has none, the quest its fix todo resolves to; else the catch-all. The
+rollup computes nothing else, and the 🐞 group counts by that home. A gripe
+serves at most one quest (slice 2's single-parent rule covers gripes). If a
+fix todo is later placed under a different quest, the gripe's own link
+still wins; the move is a re-link, not a recompute. The rules below choose
+the link when a gripe is filed or backfilled, first match wins:
 1. the quest of its fix todo (`fixes`/`fixed-by`), when that todo is placed;
 2. the quest of the spec it belongs to: a `spec:<slug>` tag, or a
    `cluster:<name>` equal to a live spec slug or thread name;
@@ -111,7 +124,8 @@ backfilled, first match wins:
 4. a `cluster:` prefix naming the subject (`pcb-` → qu570323, `memory-`/
    `search-`/`claims-` → qu635085, `draft-`/`paper-`/`bib-` → qu459585,
    `neb-`/`pathway-`/`autocatpath-` → qu500066, …);
-5. a `project:` with a subject quest (`memory`, `catpath`, `pcb`, …);
+5. a `pillar:` tag → that pillar's default quest, else a `project:` with a
+   subject quest (`memory`, `catpath`, `pcb`, …);
 6. **Gripe fixes** (qu686227, under qu540835): a platform gripe (`precis`,
    `infra`, `release`, or no project tag) with no better home;
 7. the catch-all.
@@ -132,10 +146,30 @@ Per line, one more icon group, over a 7-day window by default:
 Hover shows the same three numbers for 1 d / 7 d / 30 d and the done-todo
 count for the window. The page header carries the whole-system line, e.g.
 "Gripes 7 d: 30 filed · 20 fixed · 12 open · todos 41 done", with a
-`?window=1d|7d|30d` switch. Close time is `ref_tags.created_at` of the
-current terminal `STATUS:` tag (the axis replaces within the prefix, so
-that row's timestamp is when the gripe closed); a reopened-then-closed
-gripe counts once, at its last close. No schema change.
+`?window=1d|7d|30d` switch.
+
+Counting rules:
+- **Close time** is `ref_tags.created_at` of the current terminal `STATUS:`
+  tag. The closed axis replaces within the prefix by DELETE + INSERT
+  (`store/_tags_ops.py`), so today re-tagging a done gripe `STATUS:done`
+  re-stamps it and it counts as fixed again; slice 6 makes a same-value
+  re-add a no-op so the stamp holds. There is no tag event log to read
+  instead (`ref_events` carries no tag events).
+- **Reopened then closed:** counts once, at its last close.
+- **Filed** is `refs.created_at`; a gripe retired (`retired_at`) counts in
+  neither filed nor fixed nor open, whatever its window: retirement is the
+  junk/test door, not a resolution.
+- **Duplicates:** a gripe closed as a duplicate of another (`wontfix` or
+  `done` with a `superseded-by` link; `duplicate-of` is its alias in
+  `utils/relations.py`) shows apart in the
+  hover with `wontfix`, never as fixed; the keeper carries the fix.
+- **Homes for closed gripes:** the churn window needs gripes closed in the
+  last 30 days to have homes too. `scripts/quest-homes` already selects
+  them; the 2026-11-15 apply ran before that and placed live gripes only,
+  so a re-run (from a tree that contains `origin/prod`) places ~2.7k
+  recently closed gripes before slice 6 ships.
+
+No schema change.
 
 ## The view
 
@@ -156,7 +190,7 @@ items, hover on an item shows status and links.
 | ⛔ blocked | `blocked`, `blocked-by` links, `waiting-for:` (nonzero only) |
 | ✓ age | latest completion in the subtree ("3m") |
 | 🙋 needs you | `asks_view.asks_model` classes, per subtree |
-| 🐞 gripes | live gripes whose fix todo is in the subtree |
+| 🐞 gripes | live gripes homed in the subtree (own `serves` link, else fix todo; Homes) |
 | 🚨 alerts | unacked alerts whose subject traces into the subtree |
 | 🖥 resources | distinct lanes / hosts / models of live jobs underneath |
 | 📄 spec | the backlog doc a project todo names |
@@ -186,7 +220,12 @@ quests, ~700 live todos):
    front matter on every live spec, a project todo per spec, gripe → quest
    `serves` links, and the Gripe fixes quest qu686227. Re-runnable; new
    specs and gripes are picked up by a re-run until slices 1 and 5 make
-   the placement automatic.
+   the placement automatic. Review fixes the same day: the first apply
+   took 13 decision/fix todos that only mentioned a spec for its project
+   todo and linked them to quests; those links were removed and real
+   project todos minted. The script now matches only a trailing
+   `(docs/backlog/<slug>.md)` and skips retired quests. Still to run: the
+   closed-in-30-days gripes (Churn).
 1. **Placement on file.** The gripe pipeline links each new gripe (and its
    fix root todo) to its home quest by the Homes rules, Gripe fixes only
    as the fallback; the rule maps move out of the script into the
@@ -204,8 +243,11 @@ quests, ~700 live todos):
    `draft`/`in-progress` spec with no project todo serving a quest, and a
    `quest:` line that disagrees with the todo's `serves`; the 📄 icon on
    the line.
-6. **Churn.** The 📈 group and the header line (Churn); unit-tested on a
-   seeded set of gripes with known create and close times.
+6. **Churn.** The 📈 group and the header line (Churn); a same-value
+   closed-axis re-add becomes a no-op in `store/_tags_ops.py` so close
+   stamps hold; unit-tested on a seeded set of gripes with known create and
+   close times, including a re-stamp, a reopen, a retirement and a
+   duplicate.
 
 ## Settled (Reto, 2026-11-15)
 

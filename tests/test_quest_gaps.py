@@ -430,6 +430,31 @@ class TestMomentum:
         store.add_tag(t_spec, Tag.open("hold:no-dispatch"), set_by="system")
         assert quest_momentum(store, qid).open_todo_servers == 1
 
+    def test_homing_links_are_not_servers(self, store: Any) -> None:
+        """A gripe homed under the quest and a backlog-spec placeholder todo
+        serve it for the rollup only: gaps, momentum and the tick prompt
+        (all via ``_live_servers``) and the /work board skip them."""
+        from precis.quest.gaps import _live_servers
+        from precis.todo.work_view import _todo_servers
+        from tests.conftest import id_of
+
+        th = TodoHandler(hub=Hub(store=store))
+        qid = _created_id(_handler(store).put(text="A striving with homed refs"))
+        t_work = id_of(th.put(text="real work").body)
+        t_spec = id_of(th.put(text="Some spec (docs/backlog/some-spec.md)").body)
+        store.add_tag(t_spec, Tag.open("backlog-spec"), set_by="system")
+        with store.tx() as conn:
+            gripe = store.insert_ref(
+                kind="gripe", slug=None, title="a bug", meta={}, conn=conn
+            )
+            store.add_tag(
+                gripe.id, Tag.closed("STATUS", "open"), set_by="agent", conn=conn
+            )
+        for src in (t_work, t_spec, gripe.id):
+            store.add_link(src_ref_id=src, dst_ref_id=qid, relation="serves")
+        assert [r.id for r in _live_servers(store, qid)] == [t_work]
+        assert [r.id for r in _todo_servers(store, qid)] == [t_work]
+
 
 # ── alignment floor ───────────────────────────────────────────────────
 

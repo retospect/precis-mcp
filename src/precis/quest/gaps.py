@@ -114,13 +114,25 @@ class Health:
 # ── server fetch (shared) ─────────────────────────────────────────────
 
 
+#: Open tag on a backlog spec's placeholder todo (docs/backlog/quest-rollup.md).
+BACKLOG_SPEC_TAG = "backlog-spec"
+
+
 def _live_servers(store: Store, quest_id: int) -> list[Ref]:
-    """Live refs that ``serves`` this quest (one hop, inbound)."""
+    """Live refs that ``serves`` this quest (one hop, inbound) — the quest's
+    evidence and work. Two homing links are not servers in that sense and
+    are dropped here, so every gap, momentum and tick-prompt reader agrees:
+    a gripe homed under the quest, and a ``backlog-spec`` placeholder todo
+    (both placed by the quest rollup's Homes rules; the rollup and the
+    quest's own ``get`` view read the links directly)."""
     links = store.links_for(quest_id, direction="in", relation="serves")
     ids = [ln.src_ref_id for ln in links]
     if not ids:
         return []
     refs = store.fetch_refs_by_ids(set(ids))
+    spec_todos = _backlog_spec_ids(
+        store, [i for i, r in refs.items() if r is not None and r.kind == "todo"]
+    )
     out: list[Ref] = []
     seen: set[int] = set()
     for i in ids:
@@ -128,9 +140,24 @@ def _live_servers(store: Store, quest_id: int) -> list[Ref]:
             continue
         seen.add(i)
         r = refs.get(i)
-        if r is not None and r.retired_at is None:
-            out.append(r)
+        if r is None or r.retired_at is not None:
+            continue
+        if r.kind == "gripe" or r.id in spec_todos:
+            continue
+        out.append(r)
     return out
+
+
+def _backlog_spec_ids(store: Store, todo_ids: list[int]) -> set[int]:
+    if not todo_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' AND t.value = %s",
+            (todo_ids, BACKLOG_SPEC_TAG),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _handle(store_kind: str, ref_id: int) -> str:

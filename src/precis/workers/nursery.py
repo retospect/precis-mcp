@@ -582,6 +582,12 @@ def _detect_orphans(store: Store) -> list[Symptom]:
                -- Rotation fence (retire-dossier): direction todos are a
                -- quest's attempt tree, not work — never orphans.
                AND NOT {direction_todo_sql("r")}
+               -- Backlog-spec placeholders (quest-rollup.md) mark where a
+               -- spec lives under its quest; not strategic work.
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                      WHERE rtg.ref_id = rt.root_id AND t.namespace = 'OPEN'
+                        AND t.value = 'backlog-spec')
              ORDER BY r.ref_id
              LIMIT 50
             """,
