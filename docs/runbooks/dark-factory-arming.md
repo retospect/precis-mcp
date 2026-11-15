@@ -888,7 +888,41 @@ How a second-repo batch is minted (`templates.mint_repo_batch`, the
 - If the door fails, a dev session calls `mint_repo_batch` with the same
   arguments on prod (Reto 2026-11-15).
 
+Gate image wait (F7, Reto 2026-11-15): the pin-bump node does not close on
+its land. The land writes `landed:` and leaves the node open; ship's
+land_notify is held for a pin land, mirrored or not, and the lander writes
+the subject's other handles itself. The dispatcher's next tick mints a
+`pin_bump` pinned to the land's host (`target_node`), which goes straight
+to the wait. A no-op bump waits in the same job. Every 2 minutes the job
+runs `docker image inspect precis-dev` on that host with the land env (no
+credential) and reads the `precis.autocatpath_rev` label. The node closes,
+and the glue unblocks, when that label is one of these:
+
+- the pinned sha;
+- the sha that precis origin/main's `uv.lock` pins, when this pin's land
+  is under that main (a later pin of the same package landed first);
+- a commit that the job's catpath mirror, as fetched when the bump ran,
+  says descends from the pinned sha.
+
+The job reads these locally and fetches nothing. A stale, unlabelled or
+missing image files one ask, "td<pin>: rebuild the gate image on <host>",
+under the plan root. The ask does not block the node, because the open
+node already holds the glue. Docker that does not answer files the ask
+after 6 h. If the ask is closed while the image still lacks the pin, it is
+filed again, at most once an hour. A wait behind for over 6 h also raises
+the `pin_bump` `stale-open` alert, even while its job is parked. To clear
+it, run
+`scripts/build-image precis-dev` on that host from a precis checkout at or
+after the pin's land (pull first). The node and the ask close by themselves
+within about 2 minutes. The factory never builds the image. Only the land
+host's image is checked. A hand close of the node, or a hand
+`scripts/ship … (td<pin>)` that closes it, ends the wait; the job then
+succeeds quietly and the dispatcher closes the open ask.
+
 Known limits:
+
+- A parked image wait is a running `ssh_node` job: it holds one of the
+  land host's executor slots until the image is rebuilt.
 
 - Second-repo lands hold a per-repo lease for the whole gate
   (`src/precis/workers/repo_lease.py`). A land that finds it taken parks and

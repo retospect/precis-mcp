@@ -261,6 +261,11 @@ def pin(
     )
     monkeypatch.setattr(land_slice, "_process_alive", lambda pid: False)
     monkeypatch.setattr(pb, "REAP_GRACE_S", 0)
+
+    def no_docker() -> Any:
+        raise AssertionError("a test reached the real docker image inspect")
+
+    monkeypatch.setattr(pb, "_inspect_gate_image", no_docker)
     monkeypatch.setattr(
         run_slice, "_signal_group", lambda pgid, sig: p.signals.append((pgid, int(sig)))
     )
@@ -1203,6 +1208,7 @@ def test_a_green_verify_stamps_the_record_and_parks_in_handoff(pin: Pin) -> None
         "worktree": str(pin.tree()),
         "branch": "slice/77",
         "job": 901,
+        "image_rev": pin.new,
     }
     assert ctx.status is None and ctx.failure is None
     assert handle["phase"] == "handoff" and handle["commit"] == commit
@@ -1335,27 +1341,42 @@ def _no_op_job(pin: Pin) -> tuple[_Ctx, dict[str, Any]]:
     return ctx, handle
 
 
-def test_a_no_op_closes_its_node_with_pinned_and_never_landed(pin: Pin) -> None:
-    """If this fails a no-op leaves its node open (the dispatcher closes a pin
-    node only on a land), writes a `landed:` comment for a bump that landed
-    nothing, or mints a land."""
+def test_a_no_op_waits_for_the_image_before_closing(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F7 (replaces the no-op's own close): a no-op writes ``pinned:``
+    (never ``landed:``), mints no land and keeps its node open until the gate
+    image carries the lock's sha, then closes it. If this fails a no-op
+    unblocks the glue on a stale image, or closes with a lie."""
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     ctx, handle = _no_op_job(pin)
     tip = pin.tip()
-    assert pb.poll(ctx, handle) is True
-    assert ctx.status == "succeeded" and ctx.failure is None
-    assert pin.store.comments(PIN) == [
-        f"pinned: autocatpath v0.50.0 already at {pin.new[:9]} (no-op)"
-    ]
-    assert "STATUS:done" in pin.store.tag_strings(PIN)
+    assert pb.poll(ctx, handle) is False
+    assert ctx.status is None and ctx.failure is None
+    assert handle["phase"] == "image" and handle["noop"] is True
+    pinned = f"pinned: autocatpath v0.50.0 already at {pin.new[:9]} (no-op)"
+    assert pin.store.comments(PIN) == [pinned]
+    assert "STATUS:doing" in pin.store.tag_strings(PIN)
     rec = pin.record()
     assert rec["state"] == "landed" and rec["noop"] is True
-    assert rec["landed_sha"] == tip
+    assert rec["landed_sha"] == tip and rec["image_rev"] == pin.new
+    _gate_image(monkeypatch, "main")
+    assert pb.poll(ctx, handle) is False
+    assert "STATUS:doing" in pin.store.tag_strings(PIN)
+    assert pin.record()["image"]["reason"] == "stale"
+    _gate_image(monkeypatch, pin.new)
+    _due_now(handle)
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert "STATUS:done" in pin.store.tag_strings(PIN)
+    assert pin.store.comments(PIN) == [
+        pinned,
+        f"image: precis-dev on spruce carries autocatpath {pin.new[:9]}; "
+        "glue unblocked",
+    ]
     assert pin.mints == [] and pin.branch_head() is None
     assert not any("landed:" in c for c in pin.store.comments(PIN))
-    assert ctx.chunks[-1][0] == "job_summary" and "no-op" in ctx.chunks[-1][1]
-    # a repeated poll writes nothing new
-    assert pb.poll(ctx, handle) is True
-    assert len(pin.store.comments(PIN)) == 1
+    assert ctx.chunks[-1][0] == "job_summary" and "node closed" in ctx.chunks[-1][1]
 
 
 def test_a_no_op_resolves_the_batch_gripes_with_the_precis_tip(pin: Pin) -> None:
@@ -1364,7 +1385,7 @@ def test_a_no_op_resolves_the_batch_gripes_with_the_precis_tip(pin: Pin) -> None
     _batch(pin)
     ctx, handle = _no_op_job(pin)
     tip = pin.tip()
-    assert pb.poll(ctx, handle) is True
+    assert pb.poll(ctx, handle) is False
     assert [c.text for c in pin.store.chunks.list_chunks_for_ref(91)] == [
         f"resolved: {tip[:9]} (main, release pending) — autocatpath v0.50.0, td81"
     ]
@@ -1376,9 +1397,376 @@ def test_a_no_op_leaves_a_node_closed_by_the_coordinator_alone(pin: Pin) -> None
     closed won't-do."""
     ctx, handle = _no_op_job(pin)
     pin.store.add_tag(PIN, Tag.closed("STATUS", "won't-do"), replace_prefix=True)
+    assert pb.poll(ctx, handle) is False
     assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
     assert "STATUS:won't-do" in pin.store.tag_strings(PIN)
     assert "STATUS:done" not in pin.store.tag_strings(PIN)
+
+
+# ── the gate image wait (F7) ───────────────────────────────────────
+
+
+def _gate_image(
+    monkeypatch: pytest.MonkeyPatch,
+    label: str | None = None,
+    *,
+    rc: int = 0,
+    err: str = "",
+    exc: Exception | None = None,
+) -> list[int]:
+    """Stand ``docker image inspect precis-dev`` at the seam: an image whose
+    rev label is ``label`` (``None``: no labels at all), a non-zero exit with
+    ``err``, or ``exc`` raised. Returns the call log."""
+    calls: list[int] = []
+
+    def inspect() -> subprocess.CompletedProcess[str]:
+        calls.append(1)
+        if exc is not None:
+            raise exc
+        labels = (
+            None if label is None else {pb.REV_LABEL: label, pb.GIT_SHA_LABEL: "f" * 40}
+        )
+        out = f"sha256:{'9' * 64} {json.dumps(labels)}\n" if rc == 0 else ""
+        return subprocess.CompletedProcess(["docker"], rc, stdout=out, stderr=err)
+
+    monkeypatch.setattr(pb, "_inspect_gate_image", inspect)
+    return calls
+
+
+def _image_wait(pin: Pin) -> tuple[_Ctx, dict[str, Any]]:
+    """A bump handed off and landed (the land's ``finish``, at the precis tip:
+    a commit on main), then the dispatcher's next job past its resolve poll:
+    parked in ``image``, due."""
+    ctx, handle = _handoff(pin)
+    assert pb.poll(ctx, handle) is True
+    pb.finish(pin.store, PIN, pin.tip())
+    oracle, mirrors = len(pin.oracle), len(pin.mirrors)
+    ctx2, handle2 = _submitted(pin)
+    assert pb.poll(ctx2, handle2) is False, ctx2.failure
+    assert handle2["phase"] == "image" and handle2["noop"] is False
+    assert (len(pin.oracle), len(pin.mirrors)) == (oracle, mirrors)
+    return ctx2, handle2
+
+
+def test_image_phase_closes_the_node_when_the_gate_image_carries_the_pin(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a landed pin whose gate image carries it stays open
+    (the glue never unblocks), or closes without the record saying why."""
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, pin.new)
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert "STATUS:done" in pin.store.tag_strings(PIN)
+    assert pin.store.comments(PIN)[-1] == (
+        f"image: precis-dev on spruce carries autocatpath {pin.new[:9]}; glue unblocked"
+    )
+    image = pin.record()["image"]
+    assert image["ready"] is True and image["reason"] == "match"
+    assert (image["want"], image["have"], image["host"]) == (pin.new, pin.new, "spruce")
+    assert image["git_sha"] == "f" * 40 and image["image_id"] == "sha256:" + "9" * 64
+    assert pin.record()["state"] == "landed"
+    _clean(pin, ctx)
+
+
+def test_a_stale_label_parks_without_an_attempt(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails an image built before the pin (its label the old engine)
+    closes the node, or the wait fails the job instead of parking. The rig's
+    origin/main still locks the old sha over the land, as a main that moved
+    the pin back would: the main-lock path must not take it."""
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, pin.old)
+    assert pb.poll(ctx, handle) is False
+    assert ctx.status is None and ctx.failure is None
+    assert "STATUS:doing" in pin.store.tag_strings(PIN)
+    image = pin.record()["image"]
+    assert (image["reason"], image["have"], image["want"]) == (
+        "stale",
+        pin.old,
+        pin.new,
+    )
+    assert image["host"] == "spruce" and "ready" not in image
+    assert image["since"] == image["checked_at"]
+    due = datetime.strptime(handle["not_before"], TS).replace(tzinfo=UTC)
+    left = (due - datetime.now(UTC)).total_seconds()
+    assert pb.IMAGE_PARK_S - 10 < left <= pb.IMAGE_PARK_S
+    assert handle["phase"] == "image"
+    assert pb.poll(ctx, handle) is False  # not due: no check at all
+
+
+@pytest.mark.parametrize(
+    ("over", "reason"),
+    [
+        ({"rc": 1, "err": "Error: No such image: precis-dev"}, "absent"),
+        ({"rc": 1, "err": "Error response from daemon: No such object"}, "absent"),
+        ({"label": None}, "unlabelled"),
+        ({"label": ""}, "unlabelled"),
+        ({"label": "main"}, "stale"),
+    ],
+)
+def test_an_absent_or_unlabelled_image_counts_as_stale(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch, over: dict[str, Any], reason: str
+) -> None:
+    """If this fails a missing image, one with no rev label, or one built
+    against an unpinned ``main`` reads as carrying the pin."""
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, **{"label": None, **over})
+    assert pb.poll(ctx, handle) is False
+    assert ctx.status is None
+    assert pin.record()["image"]["reason"] == reason
+    assert reason in pb.STALE_REASONS
+    assert "STATUS:doing" in pin.store.tag_strings(PIN)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"exc": FileNotFoundError("docker")},
+        {"exc": subprocess.TimeoutExpired(["docker"], 30)},
+        {"rc": 1, "err": "Cannot connect to the Docker daemon at unix:///x.sock"},
+    ],
+)
+def test_an_unreachable_docker_parks_as_infra_not_stale(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch, over: dict[str, Any]
+) -> None:
+    """If this fails docker that cannot answer fails the job, closes the
+    node, or reads as a stale image (an immediate rebuild ask)."""
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, **over)
+    assert pb.poll(ctx, handle) is False
+    assert ctx.status is None and ctx.failure is None
+    image = pin.record()["image"]
+    assert image["reason"] == pb.UNREACHABLE_REASON and image["have"] is None
+    assert "STATUS:doing" in pin.store.tag_strings(PIN)
+
+
+def test_a_later_pin_on_main_counts_as_carrying_the_pin(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The realistic descendant (default, no Reto question): a later pin B of
+    the same package lands on main before A's image is rebuilt, and the
+    image is built from main, labelled B's sha. A closes: B is what
+    origin/main's lock carries and A's land is under that tip. Nothing is
+    fetched. If this fails A waits forever for an image no one will build."""
+    ctx, handle = _image_wait(pin)
+    newer = pin.cut("0.51.0")
+    pin.precis_commit(pin.texts("0.51.0", newer))  # pin B lands on main
+    mirrors, oracle = len(pin.mirrors), len(pin.oracle)
+    _gate_image(monkeypatch, newer)
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failure
+    image = pin.record()["image"]
+    assert image["ready"] is True and image["reason"] == "pinned-on-main"
+    assert image["have"] == newer and image["want"] == pin.new
+    assert (len(pin.mirrors), len(pin.oracle)) == (mirrors, oracle)
+
+
+def test_a_main_pin_does_not_count_when_the_land_is_not_under_main(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails main's locked sha passes for a pin whose own land is not
+    on that main (the label says nothing about A then)."""
+    ctx, handle = _image_wait(pin)
+    branch = pin.branch_head()  # the bump's own commit, never merged to main
+    assert branch is not None and branch != pin.tip()
+    pin.store.refs[PIN].meta["pin_bump"]["landed_sha"] = branch
+    newer = pin.cut("0.51.0")
+    pin.precis_commit(pin.texts("0.51.0", newer))
+    _gate_image(monkeypatch, newer)
+    assert pb.poll(ctx, handle) is False
+    assert pin.record()["image"]["reason"] == "stale"
+
+
+def test_a_descendant_already_in_the_mirror_counts(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror's path: catpath's main was already past the release when
+    the bump mirrored it, and the image was built against that main
+    (``scripts/build-image``'s fallback). Any other 40-hex label stays
+    stale."""
+    newer = pin.cat_commit("0.50.1")  # on catpath main before the bump runs
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, "0" * 40)  # 40-hex, not in the mirror
+    assert pb.poll(ctx, handle) is False
+    assert pin.record()["image"]["reason"] == "stale"
+    _gate_image(monkeypatch, newer)
+    _due_now(handle)
+    assert pb.poll(ctx, handle) is True
+    image = pin.record()["image"]
+    assert image["ready"] is True and image["reason"] == "newer"
+    assert image["have"] == newer and image["want"] == pin.new
+
+
+def test_a_no_op_whose_landed_stamp_fails_is_attempt_free(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a no-op whose ``landed`` stamp the store refused goes
+    on to the image wait with a ``committed`` record, and that wait then
+    charges the node an attempt."""
+    ctx, handle = _no_op_job(pin)
+    real = pin.store.stamp_ref_meta
+
+    def refuse(ref_id: int, updates: dict[str, Any]) -> None:
+        record = updates.get("pin_bump")
+        if isinstance(record, dict) and record.get("state") == "landed":
+            raise RuntimeError("store down")
+        real(ref_id, updates)
+
+    monkeypatch.setattr(pin.store, "stamp_ref_meta", refuse)
+    assert pb.poll(ctx, handle) is True
+    _attempt_free(ctx, "pin-record")
+    assert pin.record()["state"] == "committed"
+
+
+def test_repeated_stale_polls_stamp_and_report_once(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails every 2-minute poll rewrites the record (and its
+    ``since``, so the unreachable ask never comes) or adds a job event."""
+    ctx, handle = _image_wait(pin)
+    _gate_image(monkeypatch, pin.old)
+    stamps: list[dict[str, Any]] = []
+    real = pin.store.stamp_ref_meta
+
+    def spy(ref_id: int, updates: dict[str, Any]) -> None:
+        stamps.append(updates)
+        real(ref_id, updates)
+
+    monkeypatch.setattr(pin.store, "stamp_ref_meta", spy)
+    for _ in range(3):
+        _due_now(handle)
+        assert pb.poll(ctx, handle) is False
+    events = [t for k, t in ctx.chunks if k == "job_event" and " is stale " in t]
+    assert len(stamps) == 1 and len(events) == 1
+    _gate_image(monkeypatch, rc=1, err="Error: No such image: precis-dev")
+    _due_now(handle)
+    assert pb.poll(ctx, handle) is False
+    assert len(stamps) == 2
+    assert [t for k, t in ctx.chunks if k == "job_event" and " is absent " in t]
+    assert pin.record()["image"]["reason"] == "absent"
+
+
+def test_the_image_check_runs_docker_without_a_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If this fails the image check runs anything but a plain ``docker
+    image inspect`` of precis-dev, or a credential in the worker env reaches
+    it (the docker endpoint knobs still do)."""
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", TOKEN)
+    monkeypatch.setenv("GH_TOKEN", TOKEN)
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", TOKEN)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/docker.sock")
+    seen: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append((list(argv), kw))
+        return subprocess.CompletedProcess(argv, 0, stdout="sha256:x null\n", stderr="")
+
+    monkeypatch.setattr(pb.subprocess, "run", fake_run)
+    pb._inspect_gate_image()
+    ((argv, kw),) = seen
+    assert argv == [
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}} {{json .Config.Labels}}",
+        "precis-dev",
+    ]
+    env = kw["env"]
+    assert TOKEN not in json.dumps(env) and TOKEN not in json.dumps(argv)
+    assert "GH_TOKEN" not in env and "PRECIS_FACTORY_GIT_TOKEN" not in env
+    assert env["DOCKER_HOST"] == "unix:///tmp/docker.sock"
+    assert kw["timeout"] and kw.get("shell") is not True
+
+
+def test_a_landed_record_resumes_straight_into_the_image_wait(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the job after the land re-reads the release, fetches,
+    or is refused (a repo closed to the factory after the land would strand
+    the node open); ``_image_wait`` also pins that it never fetches."""
+    ctx, handle = _handoff(pin)
+    assert pb.poll(ctx, handle) is True
+    pb.finish(pin.store, PIN, "c" * 40)
+    monkeypatch.setattr(lanes, "open_repos", lambda store: frozenset({"precis"}))
+    pin.store.refs[REL].meta.pop("repo_release")  # never read again
+    params = {**PARAMS, "target_node": "spruce"}
+    assert pb.validate_submit(pin.store, params=params) is None
+    oracle, mirrors = len(pin.oracle), len(pin.mirrors)
+    ctx2, handle2 = _submitted(pin, target_node="spruce")
+    assert pb.poll(ctx2, handle2) is False, ctx2.failure
+    assert handle2["phase"] == "image"
+    assert (len(pin.oracle), len(pin.mirrors)) == (oracle, mirrors)
+    assert any("has landed; waiting" in t for _, t in ctx2.chunks)
+    # a record that has not landed is still refused for the closed repo
+    pin.store.refs[PIN].meta["pin_bump"]["state"] = "handed"
+    assert pb.validate_submit(pin.store, params=params) is not None
+
+
+def test_a_node_closed_by_hand_ends_the_wait_quietly(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a node the coordinator closed (or a hand ``scripts/ship``
+    landed) keeps a job polling docker, fails it, or reopens the node."""
+    ctx, handle = _image_wait(pin)
+    calls = _gate_image(monkeypatch, pin.old)
+    comments = list(pin.store.comments(PIN))
+    pin.store.add_tag(PIN, Tag.closed("STATUS", "won't-do"), replace_prefix=True)
+    assert pb.poll(ctx, handle) is True
+    assert ctx.status == "succeeded" and ctx.failure is None
+    assert calls == [] and pin.store.comments(PIN) == comments
+    assert "STATUS:won't-do" in pin.store.tag_strings(PIN)
+
+
+def test_image_ready_closes_the_open_image_ask(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the rebuild ask the dispatcher filed stays open after
+    the node closed itself, or an ask already settled is written again."""
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    ctx, handle = _image_wait(pin)
+    pin.store.add_todo(300, status="open")
+    pin.store.refs[PIN].meta[pb.IMAGE_ASK_KEY] = {"ask": 300, "want": pin.new}
+    _gate_image(monkeypatch, pin.new)
+    assert pb.poll(ctx, handle) is True
+    assert "STATUS:done" in pin.store.tag_strings(300)
+    assert pin.store.comments(300) == [
+        f"answer: precis-dev on spruce now carries {pin.new[:9]}; td77 closed itself"
+    ]
+    assert pb.poll(ctx, handle) is True  # the node is closed: quiet
+    assert len(pin.store.comments(300)) == 1
+
+
+def test_the_dispatchers_restated_keys_match() -> None:
+    """If this fails plan_dispatch reads a key or reason the image wait does
+    not write (the two modules do not import each other)."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    assert pd.PIN_RECORD_KEY == pb.RECORD_KEY
+    assert pd.PIN_IMAGE_ASK_KEY == pb.IMAGE_ASK_KEY
+    assert pd.PIN_GATE_IMAGE == pb.GATE_IMAGE
+    assert pd.PIN_IMAGE_STALE == pb.STALE_REASONS
+    assert pd.PIN_IMAGE_UNREACHABLE == pb.UNREACHABLE_REASON
+
+
+def test_gate_image_matches_compose_and_dockerfile_label() -> None:
+    """If this fails the wait inspects an image the gate does not run in, or
+    reads a label ``scripts/build-image`` does not write."""
+    repo = Path(__file__).resolve().parents[1]
+    compose = (repo / "docker" / "dev" / "compose.yaml").read_text(encoding="utf-8")
+    assert f"    image: {pb.GATE_IMAGE}\n" in compose
+    dockerfile = (repo / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert f"LABEL {pb.REV_LABEL}=$AUTOCATPATH_REV" in dockerfile
+    assert f"{pb.GIT_SHA_LABEL}=$PRECIS_GIT_SHA" in dockerfile
+    build = (repo / "scripts" / "build-image").read_text(encoding="utf-8")
+    assert "autocatpath_locked_sha uv.lock" in build
+    assert "AUTOCATPATH_REV=${AUTOCATPATH_REV}" in build
 
 
 # ── finish: the gripe walk ─────────────────────────────────────────

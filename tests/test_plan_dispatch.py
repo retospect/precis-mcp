@@ -9519,7 +9519,12 @@ def pin_op(store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch) -> An
     real = pd.get_job_type
     fake = SimpleNamespace(
         params_schema={
-            "properties": {"todo_id": {}, "release_todo": {}, "pin_repo": {}},
+            "properties": {
+                "todo_id": {},
+                "release_todo": {},
+                "pin_repo": {},
+                "target_node": {},
+            },
             "required": ["todo_id", "release_todo", "pin_repo"],
             "additionalProperties": False,
         },
@@ -9543,10 +9548,12 @@ def _pin_plan(
     release_tags: tuple[str, ...] = ("repo:catpath",),
     ready: bool = True,
     retries: int = 1,
+    glue: bool = False,
 ) -> T.PlanMint:
-    """root: b1 -> rel (repo_release, ``release_tags``) -> pin (pin_bump).
-    ``ready`` closes the slice and every release node so the pin is next;
-    ``releases=0`` leaves the pin with no blocker."""
+    """root: b1 -> rel (repo_release, ``release_tags``) -> pin (pin_bump),
+    plus a ``glue`` slice blocked by the pin when asked. ``ready`` closes
+    the slice and every release node so the pin is next; ``releases=0``
+    leaves the pin with no blocker."""
 
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
@@ -9560,6 +9567,14 @@ def _pin_plan(
             {"op": op, "retries": retries},
             blocked_by=tuple(names),
         )
+        if glue:
+            m.node(
+                "glue",
+                "Glue",
+                {"op": "run_slice"},
+                body="Glue it.",
+                blocked_by=("pin",),
+            )
 
     mint = T._run(store, None, build)
     if ready:
@@ -9663,19 +9678,291 @@ def test_succeeded_pin_bump_without_a_land_keeps_the_node_open(
     assert any("waiting for its land_slice" in n for n in res.notes)
 
 
-def test_succeeded_land_after_a_pin_bump_closes_the_node(
-    store: Store, pin_op: Any
-) -> None:
-    """The ``land_slice`` that follows the job closes the node, as for a
-    slice; if this fails a landed bump leaves its node (and every glue
-    todo blocked by it) open."""
-    mint = _pin_plan(store)
+def _pin_landed(store: Store, pin: int, **image: Any) -> None:
+    """The pin node's record as the land and the image wait leave it:
+    ``landed``, with ``image`` when given."""
+    record: dict[str, Any] = {
+        "state": "landed",
+        "package": "autocatpath",
+        "landed_sha": "d" * 40,
+        "image_rev": "e" * 40,
+    }
+    if image:
+        record["image"] = image
+    store.stamp_ref_meta(pin, {"pin_bump": record})
+
+
+def _landed_pin(store: Store, **kw: Any) -> tuple[T.PlanMint, int]:
+    """A pin node whose bump was handed off and landed on ``spruce``."""
+    mint = _pin_plan(store, **kw)
     pin = mint.ids["pin"]
     _slice_job(store, pin, "pin_bump", "succeeded")
-    _slice_job(store, pin, "land_slice", "succeeded")
+    _slice_job(
+        store,
+        pin,
+        "land_slice",
+        "succeeded",
+        params={"todo_id": pin, "target_node": "spruce"},
+    )
+    _pin_landed(store, pin)
+    return mint, pin
+
+
+def _since(hours: float) -> str:
+    return (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _image_asks(store: Store, root: int, pin: int) -> list[int]:
+    out = []
+    for c in _children(store, root):
+        ref = store.get_ref(kind="todo", id=c)
+        if ref is not None and str(ref.title).startswith(f"td{pin}: rebuild the gate"):
+            out.append(c)
+    return out
+
+
+def test_succeeded_land_after_a_pin_bump_redispatches_the_image_wait(
+    store: Store, pin_op: Any
+) -> None:
+    """F7 (rewrites the land-closes-the-node test): the land leaves the node
+    open and the next tick mints the image wait on the land's host, with no
+    cap ask although ``retries`` is 1. If this fails a landed bump unblocks
+    its glue on a stale image, caps into an ask, or checks another host."""
+    mint, pin = _landed_pin(store)
+    res = pd.run_pass(store)
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+    assert any(f"task td{pin} held open: gate image wait" in n for n in res.notes)
+    assert (res.dispatched, res.asks) == (1, 0)
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump"
+    assert job["params"] == {
+        "todo_id": pin,
+        "release_todo": mint.ids["rel"],
+        "pin_repo": "catpath",
+        "target_node": "spruce",
+    }
+    plan = pd._load(store, [mint.root_id])
+    assert pd._attempts(plan, plan.nodes[pin]) == 0
+
+
+def test_a_pin_node_with_a_ready_image_record_closes(store: Store, pin_op: Any) -> None:
+    """The backstop: a record whose image wait stamped ``image.ready`` closes
+    the node once no job runs, whatever the newest job says. If this fails a
+    wait that died between its stamp and its close strands the glue."""
+    _mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "failed", meta={"attempt_free": "x"})
+    _pin_landed(store, pin, ready=True, want="e" * 40, host="spruce")
     res = pd.run_pass(store)
     assert _status(store, pin) == "done"
-    assert any(f"task td{pin} closed: land_slice" in n for n in res.notes)
+    assert any(f"task td{pin} closed: the gate image carries" in n for n in res.notes)
+
+
+def test_image_wait_files_exactly_one_ask_naming_build_image(
+    store: Store, pin_op: Any
+) -> None:
+    """A stale gate image raises ONE coordinator ask naming the host, both
+    shas, the landed sha, `scripts/build-image precis-dev` and the glue it
+    holds; repeat passes and a later reason change file nothing new. If this
+    fails nobody learns the image must be rebuilt, or the queue floods."""
+    mint, pin = _landed_pin(store, glue=True)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store,
+        pin,
+        want="e" * 40,
+        have="a" * 40,
+        reason="stale",
+        host="spruce",
+        since=_since(0.1),
+    )
+    res = pd.run_pass(store)
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    assert res.asks == 1
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and ref.title == f"td{pin}: rebuild the gate image on spruce"
+    body = _body_text(store, ask)
+    for text in (
+        "scripts/build-image precis-dev",
+        "spruce",
+        "a" * 9,
+        "e" * 9,
+        "d" * 9,
+        f"td{mint.ids['glue']}",
+        "~2 min",
+    ):
+        assert text in body, (text, body)
+    assert _meta(store, pin)["pin_image_ask"] == {"ask": ask, "want": "e" * 40}
+    # the ask reaches the coordinator queue under the root, and does not
+    # block the pin node (the glue is already blocked by the open node)
+    assert ref.parent_id == mint.root_id
+    assert pd.COORDINATOR_ASK_TAG in _open_tags(store, ask)
+    plan = pd._load(store, [mint.root_id])
+    assert plan.open_asks(plan.nodes[pin]) == []
+    _pin_landed(store, pin, want="e" * 40, reason="absent", host="spruce")
+    pd.run_pass(store)
+    assert _image_asks(store, mint.root_id, pin) == [ask]
+
+
+@pytest.mark.parametrize(("hours", "asks"), [(1, 0), (7, 1)])
+def test_unreachable_docker_asks_only_after_the_stale_window(
+    store: Store, pin_op: Any, hours: float, asks: int
+) -> None:
+    """Docker that cannot answer is infrastructure: no ask until it has
+    lasted ``PIN_STALE_AFTER``. If this fails a docker restart pages the
+    coordinator, or a dead daemon holds the glue silently."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store,
+        pin,
+        want="e" * 40,
+        have=None,
+        reason="unreachable",
+        host="spruce",
+        since=_since(hours),
+    )
+    pd.run_pass(store)
+    assert len(_image_asks(store, mint.root_id, pin)) == asks
+
+
+def test_an_open_image_ask_closes_with_its_pin_node(store: Store, pin_op: Any) -> None:
+    """If this fails a pin node closed by hand (or by its wait before it
+    could close the ask) leaves a rebuild ask open for nobody."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _mark_done(store, pin)
+    res = pd.run_pass(store)
+    assert _status(store, ask) == "done"
+    assert _todo_comments(store, ask)[-1].startswith(f"answer: td{pin} is closed")
+    assert any(f"image ask td{ask} closed with its node" in n for n in res.notes)
+    # the mark is cleared once its ask is closed: not re-read every pass
+    assert _meta(store, pin).get("pin_image_ask") is None
+    res = pd.run_pass(store)
+    assert not [n for n in res.notes if "image ask" in n]
+
+
+def test_a_closed_image_ask_without_a_rebuild_asks_again_hourly(
+    store: Store, pin_op: Any
+) -> None:
+    """An ask closed while the image still lacks the pin (acknowledged, a
+    rebuild that did not take) is asked again, at most once an hour after
+    it closed. If this fails the node waits forever with no signal."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    assert _image_asks(store, mint.root_id, pin) == [ask]
+    mark = _meta(store, pin)["pin_image_ask"]
+    assert mark["ask"] == ask and mark["closed_at"]
+    store.stamp_ref_meta(pin, {"pin_image_ask": {**mark, "closed_at": _since(2)}})
+    res = pd.run_pass(store)
+    asks = _image_asks(store, mint.root_id, pin)
+    assert len(asks) == 2 and res.asks == 1
+    assert f"td{ask}" in _body_text(store, asks[1])
+    assert _meta(store, pin)["pin_image_ask"] == {"ask": asks[1], "want": "e" * 40}
+
+
+def test_a_parked_image_wait_past_the_window_raises_stale_open(
+    store: Store, pin_op: Any
+) -> None:
+    """A live but parked image wait whose image has been behind for over
+    ``PIN_STALE_AFTER`` still raises the stale-open alert; if this fails the
+    parked job hides a node that will never close."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _tagged(store, mint.ids["rel"], hours=8)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store, pin, want="e" * 40, reason="stale", host="spruce", since=_since(1)
+    )
+    pd.run_pass(store)
+    assert _stale_alerts(store, pin) == []
+    _pin_landed(
+        store, pin, want="e" * 40, reason="stale", host="spruce", since=_since(7)
+    )
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    assert "gate image" in alert["detail"]
+
+
+def test_a_failed_image_wait_is_redispatched_while_its_ask_is_open(
+    store: Store, pin_op: Any
+) -> None:
+    """The image ask must not block the pin node: a wait that ended without
+    closing it (a store hiccup, a cancel) is minted again while the ask is
+    open. If this fails nothing re-checks the image and nobody closes the
+    ask: a deadlock."""
+    mint, pin = _landed_pin(store)
+    wait = _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _set_job_status(store, wait, "failed")
+    store.stamp_ref_meta(wait, {"attempt_free": "infra-pin-bump"})
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump" and job["params"]["target_node"] == "spruce"
+    assert _status(store, ask) == "open"
+
+
+def test_a_rewait_without_a_land_goes_to_the_host_it_was_checking(
+    store: Store, pin_op: Any
+) -> None:
+    """A no-op's wait has no land to name a host: its re-dispatch goes to
+    the host the first image poll stamped. If this fails it checks another
+    host's image."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "failed", meta={"attempt_free": "x"})
+    store.stamp_ref_meta(
+        pin,
+        {
+            "pin_bump": {
+                "state": "landed",
+                "noop": True,
+                "image": {
+                    "want": "e" * 40,
+                    "reason": "unreachable",
+                    "host": "spruce",
+                    "since": _since(0.1),
+                },
+            }
+        },
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump" and job["params"]["target_node"] == "spruce"
+
+
+def test_glue_stays_blocked_while_the_pin_waits_for_its_image(
+    store: Store, pin_op: Any
+) -> None:
+    """Reto 2026-11-15: glue blocked by the pin does not unblock on the land
+    alone, only once the gate image carries the pin. If this fails the glue
+    builds against an image without the new engine."""
+    mint, pin = _landed_pin(store, glue=True)
+    glue = mint.ids["glue"]
+    pd.run_pass(store)
+    assert _jobs_under(store, glue) == []
+    plan = pd._load(store, [mint.root_id])
+    assert plan.blocked(plan.nodes[glue])
+    for jid, _m in _jobs_under(store, pin):
+        _set_job_status(store, jid, "succeeded")
+    _pin_landed(store, pin, ready=True, want="e" * 40, host="spruce")
+    pd.run_pass(store)
+    assert _status(store, pin) == "done"
+    plan = pd._load(store, [mint.root_id])
+    assert not plan.blocked(plan.nodes[glue])
 
 
 def test_failed_land_redispatches_pin_bump_as_one_attempt(

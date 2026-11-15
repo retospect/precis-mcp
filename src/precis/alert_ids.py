@@ -862,9 +862,11 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "warn",
         "pin_bump",
         triage="get(kind='todo', id=<todo>, view='comments'): the pin_bump "
-        "job failed, was never dispatched or handed off a land that never "
-        "ran; clear the cause (an ask, a held land) or move the pin by hand "
-        "and close the node.",
+        "job failed, was never dispatched, handed off a land that never "
+        "ran, or its gate image wait was cancelled (meta.pin_bump.image "
+        "says what it last saw); clear the cause (an ask, a held land, "
+        "scripts/build-image precis-dev on the land host) or move the pin "
+        "by hand and close the node.",
     ),
     AlertRule(
         "lane_health",

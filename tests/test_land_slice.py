@@ -1803,6 +1803,89 @@ def test_a_plain_slice_land_touches_no_pin_record(seams: dict[str, Any]) -> None
     assert "pin_bump" not in store.refs[42].meta
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "pin:" not in summary
+    # and a plain land keeps ship's own land_notify (nothing held)
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_LAND_NOTIFY" not in kw["env"]
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_a_pin_land_records_landed_but_leaves_the_node_open(
+    seams: dict[str, Any],
+) -> None:
+    """td659522 F7 (Reto 2026-11-15): the land writes ``landed:`` and the
+    record, but a pin-bump node stays open until its gate image carries the
+    pin. If this fails glue blocked by the node unblocks on the land alone
+    and builds against a stale gate image."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert store.refs[42].meta["pin_bump"]["state"] == "landed"
+    assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+    tags = store.tag_strings(42)
+    assert "STATUS:done" not in tags and "STATUS:doing" in tags
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "STATUS held: gate image wait (F7)" in summary
+
+
+def test_a_pin_land_holds_ships_land_notify_even_unmirrored(
+    seams: dict[str, Any],
+) -> None:
+    """With no factory token (no mirror) ship's land_notify would still close
+    the pin node from the subject's ``(td42)``: it runs with the notify marks
+    held, and the lander writes the subject's other handles itself. If this
+    fails an unmirrored pin land closes its node behind the image wait, or
+    the other todos it names are never recorded."""
+    store = _Store()
+    _pin_todo(store)
+    store.add_todo(43)
+    seams["subjects"] = ["chore(deps): pin autocatpath v0.50.0 (td42, td43)"]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
+    assert kw["env"]["PRECIS_GRIPE_NOTE"] == "0"
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert "STATUS:done" not in store.tag_strings(42)
+    assert "STATUS:done" in store.tag_strings(43)
+    assert store.comments(43)[-1].startswith("landed: abc123400")
+
+
+def test_the_pin_check_fails_closed_when_the_store_cannot_say() -> None:
+    """The pin check guards the close: a store that cannot be read holds
+    ship's land_notify (and defers the notify) rather than let it close a
+    pin node behind its image wait."""
+
+    class _Broken(_Store):
+        def get_ref(self, *, kind: str, id: int) -> _Ref | None:
+            raise RuntimeError("db down")
+
+    assert land_slice._carries_pin(_Broken(), 42) is True
+    store = _Store()
+    store.add_todo(42)
+    assert land_slice._carries_pin(store, 42) is False
+
+
+def test_record_land_closes_a_pin_node_whose_image_is_ready() -> None:
+    """Once the record says the gate image carries the pin, a land record
+    (a hand reland, the deferred notify) closes the node as for a slice; if
+    this fails a ready pin node can only ever close through its job."""
+    store = _Store()
+    _pin_todo(store, state="landed", image={"ready": True, "want": FULL_SHA})
+    wrote = land_slice._record_land(store, 42, FULL_SHA, SUBJECT)
+    assert "STATUS:done" in wrote and "STATUS:done" in store.tag_strings(42)
+    store2 = _Store()
+    _pin_todo(store2, state="landed", image={"reason": "stale", "want": FULL_SHA})
+    wrote = land_slice._record_land(store2, 42, FULL_SHA, SUBJECT)
+    assert "STATUS held: gate image wait (F7)" in wrote
+    assert "STATUS:done" not in store2.tag_strings(42)
 
 
 def _patch_sync_seams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

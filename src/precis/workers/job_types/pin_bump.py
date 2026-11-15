@@ -69,14 +69,31 @@ this job). Phases, in the handle's ``phase``:
   (:data:`HANDOFF_CLASS`); the record stays ``committed`` and the next job
   resumes straight here (a live land under the idem key is adopted). A
   committed record whose commit is still the branch head on the same tip is
-  resumed to it. A no-op mints no land and the dispatcher closes a pin node
-  only on a land, so the job closes the node itself: the same gripe
-  resolution, one ``pinned:`` comment (never ``landed:``), ``STATUS:done``.
+  resumed to it. A no-op mints no land: it runs the same gripe resolution,
+  writes one ``pinned:`` comment (never ``landed:``) and goes on to
+  ``image``.
+* ``image`` (parked, F7; Reto 2026-11-15): the node stays open until the
+  gate image on the land host carries the new engine, so glue blocked by
+  it does not unblock on the land alone. A ``landed`` record (the
+  dispatcher's next job after the land, pinned to the land's host, or a
+  no-op) skips straight here from ``resolve``. Each poll runs a plain
+  ``docker image inspect`` of :data:`GATE_IMAGE` under the credential-free
+  land env and reads :data:`REV_LABEL`: the record's ``image_rev``, the
+  sha precis ``origin/main``'s lock carries over this pin's land (a later
+  pin of the package), or a sha the job's mirror already says descends
+  from it, is ready (all read locally, no fetch); anything else parks
+  :data:`IMAGE_PARK_S` and stamps ``image`` (``want``, ``have``,
+  ``reason``, ``host``, ``since``) on the record once per change, and the
+  dispatcher raises an ask naming ``scripts/build-image precis-dev``.
+  Ready stamps
+  ``image.ready``, comments, closes the node and its image ask, and
+  succeeds. The factory never builds the image.
 
 :func:`finish` is the closing tail ``land_slice`` runs right before its
 land record (``_landed_finish``, on any todo whose meta carries a pin
 record): it stamps the record ``landed`` and resolves the batch's
-gripes. :func:`land_refusal` is the lander's content check for the one
+gripes; the lander then leaves the node open for the ``image`` wait.
+:func:`land_refusal` is the lander's content check for the one
 human-only line the commit carries (the ``autocatpath_min_version`` floor):
 ``land_slice`` admits ``deploy/group_vars/all.yml`` past its deny gate only
 when it answers ``None``. :func:`validate_submit` serialises pin bumps (one
@@ -107,6 +124,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import tomllib
@@ -607,6 +625,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "release_todo": {"type": "integer"},
         # The dependency's profile name; its ``pinner`` must be this job.
         "pin_repo": {"type": "string"},
+        # The host the land ran on: the image wait checks its gate image.
+        "target_node": {"type": "string"},
     },
     "required": ["todo_id", "release_todo", "pin_repo"],
     "additionalProperties": False,
@@ -621,8 +641,10 @@ DESCRIPTION: str = (
     "mirror, edit pyproject.toml, uv.lock and deploy/group_vars/all.yml as "
     "text, derive the coverage anchor key with the new engine installed "
     "credential-free, commit the four files on slice/<id>, run the pin "
-    "tests, then mint the land_slice for the branch and succeed (a no-op "
-    "closes its node itself). Refused while PRECIS_FACTORY=off, for a "
+    "tests, then mint the land_slice for the branch and succeed. After the "
+    "land (or for a no-op) it waits until the precis-dev gate image on the "
+    "land host carries the new engine, then closes the node; it never "
+    "builds the image. Refused while PRECIS_FACTORY=off, for a "
     "repo whose profile names another pinner, and for a repo that is not "
     "open, and held (holding:) while another pin bump is in flight."
 )
@@ -648,8 +670,20 @@ RESOLVE_PHASE = "resolve"
 DERIVE_PHASE = "derive"
 VERIFY_PHASE = "verify"
 HANDOFF_PHASE = "handoff"
+IMAGE_PHASE = "image"
 #: Seconds the final phase waits before its first poll (due at once).
 HANDOFF_PARK_S = 0
+#: Seconds between two image checks while the gate image is behind.
+IMAGE_PARK_S = 120
+#: The gate image the land host's ``scripts/test`` and ``scripts/ship`` run
+#: in, and the label ``scripts/build-image`` writes the locked engine sha to.
+GATE_IMAGE = "precis-dev"
+REV_LABEL = "precis.autocatpath_rev"
+GIT_SHA_LABEL = "precis.git_sha"
+#: ``image.reason`` values: the image is behind (the coordinator rebuilds
+#: it) or docker could not answer (infrastructure, asked only after a while).
+STALE_REASONS: frozenset[str] = frozenset({"stale", "unlabelled", "absent"})
+UNREACHABLE_REASON = "unreachable"
 #: Newest job rows scanned per type by the serialise check.
 SCAN_LIMIT = 50
 
@@ -771,10 +805,12 @@ main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
 
 def _refusal(store: Any, params: dict[str, Any]) -> str | None:
     """Why this job may not run (td659522), or ``None``: the factory is on,
-    the pin-bump todo is live, the params are exactly the three, ``pin_repo``
-    names a profile whose ``pinner`` is this job and that ``factory.
-    open_repos`` lists, and ``release_todo`` is a live or done todo. Read at
-    submit and again when the parked job wakes."""
+    the pin-bump todo is live, the params are the three (plus an optional
+    ``target_node``), ``pin_repo`` names a profile whose ``pinner`` is this
+    job and that ``factory.open_repos`` lists, and ``release_todo`` is a
+    live or done todo. A node whose record is already ``landed`` only waits
+    for the gate image, so a repo closed after the land does not strand it.
+    Read at submit and again when the parked job wakes."""
     lead = "pin_bump: "
     if _rs.factory_off():
         return lead + "the factory is off (PRECIS_FACTORY=off); next: unset it"
@@ -803,7 +839,7 @@ def _refusal(store: Any, params: dict[str, Any]) -> str | None:
             lead
             + f"the profile for {repo!r} names no pinner; next: move the pin by hand"
         )
-    if repo not in _lanes.open_repos(store):
+    if repo not in _lanes.open_repos(store) and not _landed(store, params):
         return (
             lead
             + f"factory.open_repos does not list {repo!r}; next: move the pin by hand"
@@ -942,6 +978,28 @@ def _stored(store: Any, todo_id: int) -> dict[str, Any] | None:
     ref = store.get_ref(kind="todo", id=todo_id)
     record = (getattr(ref, "meta", None) or {}).get(RECORD_KEY) if ref else None
     return record if isinstance(record, dict) else None
+
+
+def _waits_for_image(record: dict[str, Any] | None, params: dict[str, Any]) -> bool:
+    """Whether ``record`` is this release's pin, already ``landed`` (a bump
+    on main, or a no-op past its gripe resolution): only the gate image
+    wait is left."""
+    return (
+        record is not None
+        and record.get("state") == "landed"
+        and record.get("release_todo") == params.get("release_todo")
+    )
+
+
+def _landed(store: Any, params: dict[str, Any]) -> bool:
+    """:func:`_waits_for_image` read from the store; ``False`` on any
+    failure."""
+    if store is None:
+        return False
+    try:
+        return _waits_for_image(_stored(store, int(params["todo_id"])), params)
+    except Exception:
+        return False
 
 
 # ── Git and the tree ───────────────────────────────────────────────
@@ -1374,10 +1432,14 @@ def _record(
     from_version: str,
     from_sha: str,
     commit: str | None,
+    image_rev: str,
     noop: bool = False,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """The ``meta.pin_bump`` record. A no-op names no tree or branch."""
+    """The ``meta.pin_bump`` record. A no-op names no tree or branch.
+    ``image_rev`` is the engine sha the lock carries once this lands (the
+    release sha for a bump, the tip's locked sha for a no-op): what the gate
+    image's :data:`REV_LABEL` must say before the node closes."""
     record: dict[str, Any] = {
         "state": state,
         "repo": run.params["pin_repo"],
@@ -1393,6 +1455,7 @@ def _record(
         "worktree": None if noop else str(_tree_path(run.root, run.todo_id)),
         "branch": None if noop else _rs.slice_branch(run.todo_id),
         "job": _rl._job_id(run.ctx),
+        "image_rev": image_rev,
     }
     if noop:
         record["noop"] = True
@@ -1419,10 +1482,17 @@ def _to_handoff(run: _Run, record: dict[str, Any]) -> None:
 
 
 def _no_op(
-    run: _Run, release: _Release, tip: str, floor: str, rev: str, why: str
+    run: _Run,
+    release: _Release,
+    tip: str,
+    floor: str,
+    rev: str,
+    lock_sha: str,
+    why: str,
 ) -> bool:
     """The pin is already there (or past it): stamp the committed record with
-    ``noop`` and park in the final phase, which closes the node."""
+    ``noop`` and park in the final phase, which goes on to the image wait
+    for ``lock_sha`` (the engine the tip's lock carries)."""
     record = _record(
         run,
         release,
@@ -1431,6 +1501,7 @@ def _no_op(
         from_version=floor,
         from_sha=rev,
         commit=None,
+        image_rev=lock_sha,
         noop=True,
         note=why,
     )
@@ -1491,6 +1562,17 @@ def _poll_resolve(run: _Run) -> bool:
             "it is retried once the repo is open.",
             _rl.CLOSED_CLASS,
         )
+    landed = _stored(ctx.store, todo_id)
+    if _waits_for_image(landed, params):
+        # The pin is on main (or was a no-op): only the gate image wait is
+        # left, and nothing here reads the release or fetches.
+        ctx.append_chunk(
+            "job_event",
+            f"pin_bump: the pin of td{todo_id} has landed; waiting for the "
+            f"{GATE_IMAGE} gate image",
+        )
+        _to_image(run, landed or {})
+        return False
     profile = _lanes.repo_profile(str(params["pin_repo"]).strip())
     assert profile is not None  # _refusal checked it
     release = _read_release(ctx.store, params["release_todo"], profile)
@@ -1606,6 +1688,7 @@ def _poll_resolve(run: _Run) -> bool:
                 tip,
                 floor,
                 rev,
+                lock_sha,
                 f"the pin {floor} at {rev[:9]} is already past {release.version}",
             )
         if not pin_behind:
@@ -1640,7 +1723,9 @@ def _poll_resolve(run: _Run) -> bool:
         sha=release.sha,
     )
     if coherent and _anchor_engine(files[ANCHOR_PATH]) == release.version:
-        return _no_op(run, release, tip, floor, rev, "the pin already carries it")
+        return _no_op(
+            run, release, tip, floor, rev, lock_sha, "the pin already carries it"
+        )
     # The text-edited lock is only right when nothing resolution depends on
     # moved between the sha(s) it carries and the new one.
     new_view = _dep_view(theirs)
@@ -2130,6 +2215,7 @@ def _poll_verify_green(run: _Run) -> bool:
         from_version=str(handle["from_version"]),
         from_sha=str(handle["from_sha"]),
         commit=commit,
+        image_rev=release.sha,
     )
     if not _stamp(run.ctx, todo_id, record):
         return run.free(
@@ -2443,11 +2529,11 @@ def _succeed(run: _Run, summary: str, **meta: Any) -> bool:
     return True
 
 
-def _close_noop(run: _Run, record: dict[str, Any] | None) -> bool:
-    """A no-op bump mints no land, and the dispatcher closes a pin node only
-    on a succeeded land: resolve the batch's gripes with the precis tip, write
-    ``pinned:`` (never ``landed:``; nothing landed), close the node and
-    succeed. Every step is idempotent, so a retry after a failure repeats it."""
+def _pin_noop(run: _Run, record: dict[str, Any] | None) -> bool:
+    """A no-op bump mints no land: resolve the batch's gripes with the precis
+    tip (the record goes ``landed``), write ``pinned:`` (never ``landed:``;
+    nothing landed) and go on to the image wait, which closes the node.
+    Every step is idempotent, so a retry after a failure repeats it."""
     ctx, todo_id = run.ctx, run.todo_id
     if (
         record is None
@@ -2462,35 +2548,44 @@ def _close_noop(run: _Run, record: dict[str, Any] | None) -> bool:
     package, version = str(record.get("package")), str(record.get("version"))
     sha = str(record.get("sha"))
     finish(ctx.store, todo_id, tip)
+    landed = _stored(ctx.store, todo_id)
+    if landed is None or landed.get("state") != "landed":
+        # finish never raises: a refused stamp leaves the record committed,
+        # which the image wait would charge. Retried, attempt-free.
+        return run.free(
+            f"could not stamp the no-op pin record on td{todo_id} landed",
+            "the node could not be marked (infrastructure); retried.",
+            RECORD_CLASS,
+        )
     note = f"pinned: {package} v{version} already at {sha[:9]} (no-op)"
     try:
         newest = (_ls._newest_comment(ctx.store, todo_id) or "").lstrip()
         if not newest.lower().startswith("pinned:"):
             _rs._append_comment(ctx.store, todo_id, note)
-        if _rs._terminal_status(ctx.store, todo_id) is None:
-            _ls._close_todo(ctx.store, todo_id)
     except Exception:
-        log.warning("pin_bump: closing no-op td%d failed", todo_id, exc_info=True)
+        log.warning("pin_bump: noting no-op td%d failed", todo_id, exc_info=True)
         return run.free(
-            f"could not close the no-op node td{todo_id}",
-            "the node could not be closed (infrastructure); retried.",
+            f"could not note the no-op on td{todo_id}",
+            "the node could not be marked (infrastructure); retried.",
             RECORD_CLASS,
         )
-    return _succeed(
-        run,
-        f"pin_bump td{todo_id}: v{version} already pinned at {sha[:9]} (no-op), "
-        "node closed",
+    ctx.append_chunk(
+        "job_event",
+        f"pin_bump: v{version} already pinned at {sha[:9]} (no-op); waiting "
+        f"for the {GATE_IMAGE} gate image",
     )
+    _to_image(run, _stored(ctx.store, todo_id) or record)
+    return False
 
 
 def _poll_handoff(run: _Run) -> bool:
-    """The final phase. A no-op closes its node; a committed bump mints its
-    land (adopting a live one under the idem key), stamps ``handed`` and
-    succeeds. ``True`` when the job is terminal."""
+    """The final phase. A no-op goes on to the image wait; a committed bump
+    mints its land (adopting a live one under the idem key), stamps
+    ``handed`` and succeeds. ``True`` when the job is terminal."""
     ctx, root, todo_id = run.ctx, run.root, run.todo_id
     record = _stored(ctx.store, todo_id)
     if run.handle.get("noop"):
-        return _close_noop(run, record)
+        return _pin_noop(run, record)
     commit = _rl._hex(run.handle.get("commit"))
     if (
         record is None
@@ -2556,6 +2651,325 @@ def _poll_handoff(run: _Run) -> bool:
     )
 
 
+# ── The gate image wait (F7) ───────────────────────────────────────
+
+#: ``todo.meta`` key of the dispatcher's image ask on the pin node
+#: (``{"ask": id, "want": sha}``), a top-level key the record's stamps never
+#: touch (``plan_dispatch.PIN_IMAGE_ASK_KEY``).
+IMAGE_ASK_KEY = "pin_image_ask"
+
+_NO_IMAGE_RE = re.compile(r"no such (?:image|object)", re.IGNORECASE)
+_LABEL_MAX = 80
+
+
+@dataclass(frozen=True)
+class _Image:
+    """One look at the gate image. ``reason`` is one of
+    :data:`_READY_REASONS`, one of :data:`STALE_REASONS`, or :data:`UNREACHABLE_REASON`;
+    ``have`` is its :data:`REV_LABEL` (capped, masked)."""
+
+    reason: str
+    have: str | None = None
+    image_id: str | None = None
+    git_sha: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.reason in _READY_REASONS
+
+
+def _to_image(run: _Run, record: dict[str, Any]) -> None:
+    """Swap the handle for the parked image wait, due at once."""
+    fresh: dict[str, Any] = {
+        "op": NAME,
+        "repo": _lanes.DEFAULT_REPO,
+        "pin_repo": run.params["pin_repo"],
+        "release_todo": run.params["release_todo"],
+        "phase": IMAGE_PHASE,
+        "noop": bool(record.get("noop")),
+    }
+    run.handle.clear()
+    run.handle.update(fresh)
+    _rl.park_until(run.ctx, run.handle, 0)
+
+
+def _host() -> str:
+    return os.environ.get("PRECIS_NODE") or socket.gethostname()
+
+
+def _inspect_gate_image() -> subprocess.CompletedProcess[str]:
+    """``docker image inspect`` of :data:`GATE_IMAGE` on this host (seam): its
+    id and its labels as JSON. Plain ``docker`` under the scrubbed land env,
+    so no credential reaches it. Raises ``OSError`` or
+    ``subprocess.SubprocessError`` when docker cannot be run."""
+    return subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}} {{json .Config.Labels}}",
+            GATE_IMAGE,
+        ],
+        env=_ls.land_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+
+def _label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return mask_secrets(value.strip()[:_LABEL_MAX], warn=False)
+
+
+#: Ready reasons besides ``match``: a later pin locked on precis main, or a
+#: descendant the job's mirror already holds.
+_READY_REASONS = frozenset({"match", "pinned-on-main", "newer"})
+
+
+def _pinned_on_main(
+    root: Path, todo_id: int, want: str, record: dict[str, Any], rev: str
+) -> bool:
+    """Whether ``rev`` is the package sha precis ``origin/main``'s lock
+    carries, with this pin's land (``landed_sha``; a no-op's is the tip it
+    pinned at) an ancestor of that tip: a later pin of the same package
+    landed over this one, and an image built from main carries both. A
+    ``rev`` the job's mirror holds must also descend from ``want`` there,
+    so a main that moved the pin back (a revert) does not count; a later
+    sha the mirror never fetched is taken on main's word. Reads the clone's
+    tracking ref as the last fetch left it, no credential and no fetch; any
+    git or parse failure is ``False``."""
+    landed = _rl._hex(record.get("landed_sha")) or _rl._hex(record.get("base"))
+    main = _rl._hex(
+        _rl._read(
+            root,
+            ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"],
+        )
+    )
+    if not landed or not main:
+        return False
+    try:
+        lock = _rr._show(root, main, LOCK_PATH)
+        locked = _lock_pin(lock or "", str(record.get("package")))[1]
+    except PinError:
+        return False
+    if locked != rev or _rr._on_base(root, landed, main) is not True:
+        return False
+    mirror = _mirror.mirror_dir(root, f"pin-td{todo_id}")
+    held = (
+        mirror.is_dir()
+        and _ls._git(["cat-file", "-e", f"{rev}^{{commit}}"], mirror).returncode == 0
+    )
+    return not held or _rr._on_base(mirror, want, rev) is True
+
+
+def _check_image(root: Path, todo_id: int, want: str, record: dict[str, Any]) -> _Image:
+    """Whether the gate image carries ``want``: its label equal to it; the
+    sha precis main's lock carries over this pin's land
+    (:func:`_pinned_on_main`, the realistic later pin); or a 40-hex label
+    the job's own source mirror already says descends from it (catpath's
+    main past the release when the bump ran). All read locally, no fetch.
+    A non-sha label (``main``), a missing label or a missing image is
+    behind; docker that cannot answer is unreachable."""
+    try:
+        proc = _inspect_gate_image()
+    except (OSError, subprocess.SubprocessError):
+        log.warning("pin_bump: docker image inspect failed", exc_info=True)
+        return _Image(UNREACHABLE_REASON)
+    if proc.returncode != 0:
+        said = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+        return _Image("absent" if _NO_IMAGE_RE.search(said) else UNREACHABLE_REASON)
+    image_id, _, raw = (proc.stdout or "").strip().partition(" ")
+    try:
+        labels = json.loads(raw) if raw.strip() else None
+    except ValueError:
+        labels = None
+    labels = labels if isinstance(labels, dict) else {}
+    rev = labels.get(REV_LABEL)
+    rev = rev.strip() if isinstance(rev, str) else ""
+    seen = {
+        "have": _label(rev),
+        "image_id": _label(image_id),
+        "git_sha": _label(labels.get(GIT_SHA_LABEL)),
+    }
+    if not rev:
+        return _Image("unlabelled", **seen)
+    if rev == want:
+        return _Image("match", **seen)
+    if _SHA.fullmatch(rev) is None:
+        return _Image("stale", **seen)
+    try:
+        if _pinned_on_main(root, todo_id, want, record, rev):
+            return _Image("pinned-on-main", **seen)
+    except (OSError, subprocess.SubprocessError):
+        log.warning("pin_bump: reading precis main's lock failed", exc_info=True)
+    mirror = _mirror.mirror_dir(root, f"pin-td{todo_id}")
+    try:
+        newer = (
+            _SHA.fullmatch(rev) is not None
+            and mirror.is_dir()
+            and _rr._on_base(mirror, want, rev) is True
+        )
+    except (OSError, subprocess.SubprocessError):
+        newer = False
+    return _Image("newer" if newer else "stale", **seen)
+
+
+def _image_want(root: Path, record: dict[str, Any]) -> str:
+    """The engine sha the gate image must carry: the record's ``image_rev``;
+    for a record stamped before it existed, the release sha of a bump or the
+    sha the tip's lock carries for a no-op. ``""`` when none reads."""
+    want = _rl._hex(record.get("image_rev"))
+    if want or not record.get("noop"):
+        return want or _rl._hex(record.get("sha"))
+    base = _rl._hex(record.get("base"))
+    lock = _rr._show(root, base, LOCK_PATH) if base else None
+    try:
+        return _lock_pin(lock or "", str(record.get("package")))[1]
+    except PinError:
+        return ""
+
+
+def _close_image_ask(store: Any, todo_id: int, host: str, want: str) -> None:
+    """Answer and close the dispatcher's image ask on the node, if it is
+    still open."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    mark = (getattr(ref, "meta", None) or {}).get(IMAGE_ASK_KEY) if ref else None
+    ask = mark.get("ask") if isinstance(mark, dict) else None
+    if not isinstance(ask, int) or isinstance(ask, bool):
+        return
+    if store.get_ref(kind="todo", id=ask) is None:
+        return
+    if _rs._terminal_status(store, ask) is not None:
+        return
+    _rs._append_comment(
+        store,
+        ask,
+        f"answer: {GATE_IMAGE} on {host} now carries {want[:9]}; td{todo_id} "
+        "closed itself",
+    )
+    _ls._close_todo(store, ask)
+
+
+def _image_ready(run: _Run, record: dict[str, Any], image: dict[str, Any]) -> bool:
+    """The gate image carries the pin (``image.ready`` is stamped): comment,
+    close the node and its image ask, succeed. Idempotent; a store that
+    refuses fails attempt-free and the next job repeats it."""
+    ctx, todo_id = run.ctx, run.todo_id
+    host, want = str(image.get("host") or _host()), str(image.get("want") or "")
+    package = str(record.get("package") or "the engine")
+    note = f"image: {GATE_IMAGE} on {host} carries {package} {want[:9]}; glue unblocked"
+    try:
+        newest = (_ls._newest_comment(ctx.store, todo_id) or "").lstrip()
+        if not newest.lower().startswith("image:"):
+            _rs._append_comment(ctx.store, todo_id, note)
+        if _rs._terminal_status(ctx.store, todo_id) is None:
+            _ls._close_todo(ctx.store, todo_id)
+        _close_image_ask(ctx.store, todo_id, host, want)
+    except Exception:
+        log.warning("pin_bump: closing td%d after the image failed", todo_id)
+        return run.free(
+            f"could not close td{todo_id} once the gate image carried the pin",
+            "the node could not be closed (infrastructure); retried.",
+            RECORD_CLASS,
+        )
+    return _succeed(
+        run,
+        f"pin_bump td{todo_id}: {GATE_IMAGE} on {host} carries {package} "
+        f"{want[:9]} ({image.get('reason')}); node closed",
+    )
+
+
+def _poll_image(run: _Run) -> bool:
+    """The gate image wait. A node closed by hand ends it quietly; the
+    gate image carrying the record's engine closes the node; anything else
+    stamps ``image`` once per change and parks :data:`IMAGE_PARK_S`.
+    ``True`` when the job is terminal."""
+    ctx, todo_id = run.ctx, run.todo_id
+    status = _rs._terminal_status(ctx.store, todo_id)
+    if status is not None:
+        return _succeed(
+            run,
+            f"pin_bump td{todo_id}: the node is closed (STATUS:{status}); the "
+            "image wait ends",
+        )
+    record = _stored(ctx.store, todo_id)
+    if record is None or record.get("state") != "landed":
+        return run.charged(
+            f"the landed pin record of td{todo_id} is gone",
+            "the landed record on the node is missing or changed; the gate "
+            "image wait ends.",
+        )
+    want = _image_want(run.root, record)
+    if not want:
+        return run.charged(
+            f"the pin record of td{todo_id} names no engine sha for the gate image",
+            "the landed record names no engine sha the gate image could carry.",
+        )
+    image = record.get("image")
+    image = image if isinstance(image, dict) else {}
+    if image.get("ready") is True and image.get("want") == want:
+        return _image_ready(run, record, image)
+    seen = _check_image(run.root, todo_id, want, record)
+    host, now = _host(), _ls._now().strftime(_ls._TS_FMT)
+    if seen.ready:
+        ready = {
+            "ready": True,
+            "want": want,
+            "have": seen.have,
+            "reason": seen.reason,
+            "host": host,
+            "image_id": seen.image_id,
+            "git_sha": seen.git_sha,
+            "checked_at": now,
+        }
+        if not _stamp(ctx, todo_id, {**record, "image": ready}):
+            return run.free(
+                f"could not stamp the pin record on td{todo_id}",
+                "the node could not be marked (infrastructure); retried.",
+                RECORD_CLASS,
+            )
+        return _image_ready(run, record, ready)
+    if (
+        image.get("want"),
+        image.get("have"),
+        image.get("reason"),
+        image.get("host"),
+    ) != (
+        want,
+        seen.have,
+        seen.reason,
+        host,
+    ):
+        waiting = {
+            "want": want,
+            "have": seen.have,
+            "reason": seen.reason,
+            "host": host,
+            "since": now,
+            "checked_at": now,
+        }
+        if not _stamp(ctx, todo_id, {**record, "image": waiting}):
+            return run.free(
+                f"could not stamp the pin record on td{todo_id}",
+                "the node could not be marked (infrastructure); retried.",
+                RECORD_CLASS,
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"pin_bump: {GATE_IMAGE} on {host} is {seen.reason} (label "
+            f"{(seen.have or 'none')[:12]}, wants {want[:9]}); parked, checked "
+            f"again every {IMAGE_PARK_S} s",
+        )
+    _rl.park_until(ctx, run.handle, IMAGE_PARK_S)
+    return False
+
+
 # ── Poll and kill ──────────────────────────────────────────────────
 
 
@@ -2568,7 +2982,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     params = dict((ctx.meta or {}).get("params") or {})
     phase = handle.get("phase")
-    if phase in (RESOLVE_PHASE, HANDOFF_PHASE) and not _rr._due(handle):
+    if phase in (RESOLVE_PHASE, HANDOFF_PHASE, IMAGE_PHASE) and not _rr._due(handle):
         return False
     todo_id = params.get("todo_id")
     if not isinstance(todo_id, int) or isinstance(todo_id, bool):
@@ -2588,6 +3002,8 @@ def poll(ctx: Any, handle: Any) -> bool:
         return _poll_detached(run, "verify", _poll_verify_green)
     if phase == HANDOFF_PHASE:
         return _poll_handoff(run)
+    if phase == IMAGE_PHASE:
+        return _poll_image(run)
     ctx.record_failure(f"pin_bump: unknown phase {phase!r}")
     return True
 
@@ -2595,8 +3011,11 @@ def poll(ctx: Any, handle: Any) -> bool:
 def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM a live run's process group (never
     the worker's own) and drop the worktree and branch this job made. A
-    parked handle has neither (a committed bump waiting in ``handoff`` is
-    kept for the resume), and nothing here raises."""
+    parked handle (``resolve``, ``handoff``, ``image``) has neither: a
+    committed bump waiting in ``handoff`` is kept for the resume, and a
+    killed image wait leaves the node open (the ``pin_bump/stale-open``
+    alert covers it).
+    Nothing here raises."""
     if not isinstance(handle, dict) or handle.get("phase") not in (
         DERIVE_PHASE,
         VERIFY_PHASE,

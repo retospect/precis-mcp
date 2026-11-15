@@ -96,7 +96,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``shipped — landed on main:`` line, else ``git rev-parse origin/main``)
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
   ``STATUS:done`` go on the todo only when land_notify did not already
-  write them (its comment is the todo's newest); the sha is written into
+  write them (its comment is the todo's newest) — a pin-bump node keeps
+  its STATUS until its gate image carries the pin (td659522 F7: ship ran
+  with land_notify held, the lander writes the subject's other handles,
+  and ``pin_bump``'s image wait closes the node); the sha is written into
   the plan's pending ``sha-in-prod`` gate (:func:`pending_gate`). When ship
   took its nothing-new guard (:func:`nothing_new`: the branch's tree equals
   origin/main's, nothing squashed) no sha is the slice's: the todo closes
@@ -1507,7 +1510,12 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
     """The ``landed:`` comment + ``STATUS:done``, each only when land_notify
     did not write it. ``sha=None`` is the nothing-new land: the comment is
     :data:`NO_DIFF_NOTE`, so no reader of ``landed: <sha>`` finds a sha
-    (gr561142). Returns what this wrote."""
+    (gr561142). Returns what this wrote.
+
+    A pin-bump node (``meta.pin_bump``, td659522 F7) gets the ``landed:``
+    comment but stays open until its record says the gate image carries
+    the new engine (``image.ready``): glue blocked by the node must not
+    unblock on the land alone, and ``pin_bump``'s image wait closes it."""
     wrote: list[str] = []
     newest = (_newest_comment(store, todo_id) or "").lstrip()
     if not newest.lower().startswith("landed:"):
@@ -1532,10 +1540,28 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
             },
         )
         wrote.append("pending_land cleared")
-    if _rs._todo_status(store, todo_id) != "done":
+    if _pin_image_wait(ref):
+        wrote.append("STATUS held: gate image wait (F7)")
+    elif _rs._todo_status(store, todo_id) != "done":
         _close_todo(store, todo_id)
         wrote.append("STATUS:done")
     return wrote
+
+
+def _pin_record(ref: Any) -> dict[str, Any] | None:
+    """The ``meta.pin_bump`` record of a todo ref, or ``None``."""
+    record = (getattr(ref, "meta", None) or {}).get("pin_bump") if ref else None
+    return record if isinstance(record, dict) else None
+
+
+def _pin_image_wait(ref: Any) -> bool:
+    """A pin-bump node whose gate image does not carry the pin yet (its
+    record's ``image.ready`` is not true): the land leaves it open."""
+    record = _pin_record(ref)
+    if record is None:
+        return False
+    image = record.get("image")
+    return not (isinstance(image, dict) and image.get("ready") is True)
 
 
 def _plan_tag(store: Any, todo_id: int) -> str | None:
@@ -3381,6 +3407,13 @@ def _launch_ship(
         # system/global config) because the mirror and the checkout are
         # adversary-writable (review finding 2).
         ship_env = land_env()
+        if _carries_pin(ctx.store, todo_id):
+            # td659522 F7: ship's land_notify would close a pin-bump node
+            # on the land; it stays open for the gate image wait, so the
+            # notify marks are held as for a mirrored land and the lander
+            # writes them itself (``notify_deferred``, ``_record_land``).
+            ship_env["PRECIS_LAND_NOTIFY"] = "0"
+            ship_env["PRECIS_GRIPE_NOTE"] = "0"
         token = _factory_git.factory_git_token()
         mirror: Path | None = None
         url: str | None = None
@@ -5119,8 +5152,21 @@ def poll(ctx: Any, handle: Any) -> bool:
         sha=sha,
         exit_code=exit_code,
         status=status,
-        notify_deferred=mirror_in_play,
+        # A pin-bump land ran ship with land_notify held (td659522 F7).
+        notify_deferred=mirror_in_play or _carries_pin(ctx.store, todo_id),
     )
+
+
+def _carries_pin(store: Any, todo_id: int) -> bool:
+    """Whether ``todo_id`` is a pin-bump node (its meta carries a
+    ``pin_bump`` record). Fails closed — ``True`` when the store cannot
+    say: this guards ship's land_notify close, and holding the notify for
+    a plain slice only moves its marks to the lander's deferred write."""
+    try:
+        return _pin_record(store.get_ref(kind="todo", id=todo_id)) is not None
+    except Exception:
+        log.warning("land_slice: reading td%d's pin record failed", todo_id)
+        return True
 
 
 def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
@@ -5132,7 +5178,10 @@ def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
     the ``pin_bump/stale-open:{todo}`` alert would fire). A plain slice
     carries no pin record and is skipped; a no-diff reland finishes at
     the record's own commit. Never raises — the land is real, the record
-    is a report; ``finish``'s own ``landed`` stamp is idempotent."""
+    is a report; ``finish``'s own ``landed`` stamp is idempotent. The
+    node is not closed here or by :func:`_record_land`: the ``landed``
+    record is what the dispatcher's next ``pin_bump`` resumes into the
+    gate image wait (td659522 F7)."""
     try:
         ref = store.get_ref(kind="todo", id=todo_id)
         record = (getattr(ref, "meta", None) or {}).get("pin_bump")

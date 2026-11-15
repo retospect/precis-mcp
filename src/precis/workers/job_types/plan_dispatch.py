@@ -148,9 +148,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    newest job succeeded; a ``run_slice`` task whose newest job is a
    succeeded ``land_slice`` (a succeeded build alone never closes it, and
    a build plus its red land count as one attempt); a ``pin_bump`` node
-   follows that rule too (its job hands a branch to ``land_slice`` and
-   succeeds, so a succeeded ``pin_bump`` alone neither closes the node nor
-   re-dispatches it, and a failed land re-dispatches the build).
+   closes only once its record's ``image.ready`` says the land host's gate
+   image carries the pin (td659522 F7, Reto 2026-11-15; its job's image
+   wait stamps it and closes the node, this is the backstop). Its job hands
+   a branch to ``land_slice`` and succeeds, so a succeeded ``pin_bump``
+   alone neither closes the node nor re-dispatches it, and a failed land
+   re-dispatches the build; a succeeded land is no attempt, and the next
+   tick mints the image wait, pinned to the land's ``target_node``.
    Deepest first, so nested phases cascade in one pass.
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
@@ -261,6 +265,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (gr574881) — while an orphan mint (no ``blocked-by``/``part-of`` edge, no
    body — its own orphan-ask edge is the ask's dedup mark, not a link) is
    not released and files one ask on the plan root instead;
+   an open pin-bump node whose image wait found the gate image behind the
+   pin (``image.reason`` stale/unlabelled/absent, or docker unreachable for
+   over :data:`PIN_STALE_AFTER`) files ONE coordinator ask naming
+   ``scripts/build-image precis-dev`` on that host, under the root and not
+   blocking the node (deduped on :data:`PIN_IMAGE_ASK_KEY` while it is open
+   for the same wanted sha; closed with the image still behind, it is asked
+   again at most hourly), and an open image ask whose node is closed is
+   closed with it (td659522 F7); such a wait behind for over
+   :data:`PIN_STALE_AFTER` also raises the stale-open alert although its
+   parked job is live;
    a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at its retry
    cap is parked. The cap is an explicit ``meta.retries`` pin, else the
@@ -450,6 +464,22 @@ CLAIM_STALE = timedelta(hours=4)
 #: tagged raises the ``pin_bump/stale-open:{todo}`` alert (td659522 step 4).
 PIN_STALE_AFTER = timedelta(hours=6)
 _PIN_STALE_SOURCE = RULES_BY_ID["pin_bump/stale-open:{todo}"].rule
+
+#: ``pin_bump.RECORD_KEY`` and ``pin_bump.IMAGE_ASK_KEY``, restated (a test
+#: pins the spellings equal): the pin record on the node, and the image
+#: ask's dedup mark ``{"ask": id, "want": sha}`` (td659522 F7).
+PIN_RECORD_KEY = "pin_bump"
+PIN_IMAGE_ASK_KEY = "pin_image_ask"
+#: ``image.reason`` values of a gate image behind the pin; ``unreachable``
+#: docker asks only once it has lasted :data:`PIN_STALE_AFTER`.
+PIN_IMAGE_STALE = frozenset({"stale", "unlabelled", "absent"})
+PIN_IMAGE_UNREACHABLE = "unreachable"
+#: ``pin_bump.GATE_IMAGE``: the image the gate runs in, the one the ask
+#: tells the coordinator to rebuild (``scripts/build-image precis-dev``).
+PIN_GATE_IMAGE = "precis-dev"
+#: An image ask closed while the image still lacks the pin is asked again,
+#: at most this long after the previous ask closed.
+PIN_IMAGE_REASK_AFTER = timedelta(hours=1)
 
 #: A plan job queued longer than this with no host advertising its placement
 #: capabilities gets a pass note (td543917).
@@ -1515,12 +1545,16 @@ class _Writer:
                 self.store.add_tag(n.id, Tag.open(value), set_by="system")
 
     def comment(self, n: _Node, text: str) -> None:
+        self.comment_id(n.id, text)
+
+    def comment_id(self, ref_id: int, text: str) -> None:
+        """:meth:`comment` on a todo outside the loaded plan."""
         if self.dry_run:
             return
-        existing = list(self.store.chunks.list_chunks_for_ref(n.id))
+        existing = list(self.store.chunks.list_chunks_for_ref(ref_id))
         ord_ = max((int(c.ord) for c in existing), default=0) + 1
         self.store.chunks.insert_chunks(
-            n.id,
+            ref_id,
             [
                 ChunkInsert(
                     ord=ord_,
@@ -3889,10 +3923,26 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # then a succeeded land_slice (its ship closes the todo first;
             # this is the backstop). A succeeded run_slice alone never does.
             jobs = plan.jobs(n)
-            # A pin-bump node follows the slice rule (td659522 step 4): its
-            # job hands the branch to a land_slice and succeeds before
-            # the bump is on main.
-            if _op_type(n) in (DEFAULT_OP, PIN_BUMP_OP) and not (
+            # A pin-bump node closes only once its gate image carries the
+            # pin (td659522 F7, Reto 2026-11-15): its record's
+            # ``image.ready``, which its own image wait stamps before it
+            # closes the node (this is the backstop). The land alone never
+            # closes it — glue blocked by it would build on a stale image.
+            if _op_type(n) == PIN_BUMP_OP:
+                if _pin_image_ready(n) and not plan.live_job(n):
+                    w.set_status(n, "done")
+                    res.phases_closed += 1
+                    res.notes.append(
+                        f"task td{n.id} closed: the gate image carries the pin"
+                    )
+                elif (
+                    jobs
+                    and jobs[-1].status == "succeeded"
+                    and jobs[-1].meta.get("job_type") == "land_slice"
+                ):
+                    res.notes.append(f"task td{n.id} held open: gate image wait (F7)")
+                continue
+            if _op_type(n) == DEFAULT_OP and not (
                 jobs and jobs[-1].meta.get("job_type") == "land_slice"
             ):
                 continue
@@ -4075,6 +4125,7 @@ def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
     jobs = plan.jobs(n)
+    pin = _is_pin_bump(n)
     return [
         j
         for i, j in enumerate(jobs)
@@ -4090,6 +4141,12 @@ def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
             j.status == "succeeded"
             and j.meta.get("job_type") in (DEFAULT_OP, PIN_BUMP_OP)
             and any(k.meta.get("job_type") == "land_slice" for k in jobs[i + 1 :])
+        )
+        # A pin bump's land is not its end: the node waits for the gate
+        # image next (td659522 F7), so the succeeded land is no attempt
+        # and the image wait is not a retry over the cap.
+        and not (
+            pin and j.status == "succeeded" and j.meta.get("job_type") == "land_slice"
         )
     ]
 
@@ -4757,6 +4814,39 @@ def _is_pin_bump(n: _Node) -> bool:
     """``n`` is a pin-bump node: its resolved mechanical op is
     :data:`PIN_BUMP_OP` (td659522 step 4)."""
     return _resolve_op(n)[0] == PIN_BUMP_OP
+
+
+def _pin_image(n: _Node) -> dict[str, Any]:
+    """The ``image`` stamp of a pin-bump node's record (``{}`` for none):
+    what its gate image wait last saw (td659522 F7)."""
+    record = n.meta.get(PIN_RECORD_KEY)
+    image = record.get("image") if isinstance(record, dict) else None
+    return image if isinstance(image, dict) else {}
+
+
+def _pin_image_ready(n: _Node) -> bool:
+    """The pin node's gate image carries the pin: ``image.ready`` on its
+    record, stamped by the image wait before it closes the node."""
+    return _pin_image(n).get("ready") is True
+
+
+def _pin_land_host(plan: _Plan, n: _Node) -> str | None:
+    """The ``params.target_node`` of the pin node's newest ``land_slice``
+    when that land succeeded (the host whose gate image the next job
+    checks; a failed image wait after it does not lose it). Without one —
+    a no-op mints no land — the host a ``landed`` record's image wait
+    stamped (``image.host``), so a re-dispatched wait checks the same
+    image. Else ``None``."""
+    lands = [j for j in plan.jobs(n) if j.meta.get("job_type") == "land_slice"]
+    host: Any = None
+    if lands and lands[-1].status == "succeeded":
+        params = lands[-1].meta.get("params")
+        host = params.get("target_node") if isinstance(params, dict) else None
+    if not (isinstance(host, str) and host.strip()):
+        record = n.meta.get(PIN_RECORD_KEY)
+        if isinstance(record, dict) and record.get("state") == "landed":
+            host = _pin_image(n).get("host")
+    return host if isinstance(host, str) and host.strip() else None
 
 
 def _pin_awaits_land(plan: _Plan, n: _Node) -> bool:
@@ -6066,6 +6156,11 @@ def _step_dispatch(
                     f"td{n.id}: {PIN_BUMP_OP} succeeded; waiting for its land_slice"
                 )
                 continue
+            # td659522 F7: after a land the next job is the gate image wait;
+            # it checks the image on the host the land ran on.
+            land_host = _pin_land_host(plan, n)
+            if land_host is not None:
+                params.setdefault("target_node", land_host)
         reland = _reland_params(plan, n, w.store)
         if job_type == DEFAULT_OP and reland is None:
             task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
@@ -7343,9 +7438,17 @@ def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> 
     tagged over :data:`PIN_STALE_AFTER` ago and which has no live job raises
     ``pin_bump/stale-open:{todo}`` (warn; ``raise_alert`` dedups on the
     fingerprint). A succeeded ``pin_bump`` whose land never appeared is such a
-    node: its newest job is terminal and nothing else runs."""
+    node: its newest job is terminal and nothing else runs. So is one whose
+    live job is a parked gate image wait (td659522 F7) that has seen the
+    image behind the pin for over :data:`PIN_STALE_AFTER`: the parked job
+    would otherwise hide a node that may never close."""
     for n in plan.todos():
-        if _closed(n) or not _is_pin_bump(n) or plan.live_job(n):
+        if _closed(n) or not _is_pin_bump(n):
+            continue
+        image = _pin_image(n)
+        since = _pin_image_since(image) if image.get("ready") is not True else None
+        waiting = since is not None and now - since > PIN_STALE_AFTER
+        if plan.live_job(n) and not waiting:
             continue
         releases = _pin_releases(plan, n)
         if len(releases) != 1:
@@ -7368,14 +7471,186 @@ def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> 
             fingerprint=f"stale-open:{n.id}",
             title=f"pin bump td{n.id} still open {hours} h after {tag} was tagged",
             detail=(
-                f"pin-bump node td{n.id} is open with no live job; release node "
-                f"td{rel.id} tagged {tag} {hours} h ago (limit "
-                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h). The bump "
-                "failed, was never dispatched, or its land never ran."
+                (
+                    f"pin-bump node td{n.id} has waited over "
+                    f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h for the "
+                    f"{PIN_GATE_IMAGE} gate image on {image.get('host')} "
+                    f"({image.get('reason')}); "
+                    if waiting
+                    else f"pin-bump node td{n.id} is open with no live job; "
+                )
+                + f"release node td{rel.id} tagged {tag} {hours} h ago (limit "
+                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h). "
+                + (
+                    "Its image ask may have been closed without a rebuild."
+                    if waiting
+                    else "The bump failed, was never dispatched, or its land never ran."
+                )
             ),
             severity="warn",
             subject_ref_id=n.id,
         )
+
+
+def _todo_status_of(plan: _Plan, store: Any, ref_id: int) -> str | None:
+    """``ref_id``'s STATUS: the loaded node's, else the store's tags."""
+    node = plan.nodes.get(ref_id)
+    if node is not None:
+        return node.status
+    for t in store.tags_for(ref_id):
+        if t.prefix == "STATUS":
+            return str(t.value)
+    return None
+
+
+def _pin_image_since(image: dict[str, Any]) -> datetime | None:
+    try:
+        at = datetime.strptime(str(image.get("since")), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return at.replace(tzinfo=UTC)
+
+
+def _step_pin_image_ask(
+    plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """td659522 F7 (Reto 2026-11-15): an OPEN pin-bump node whose image wait
+    found the land host's gate image behind the pin (``image.reason`` one
+    of :data:`PIN_IMAGE_STALE`, or docker unreachable for over
+    :data:`PIN_STALE_AFTER`) gets ONE coordinator ask naming
+    ``scripts/build-image precis-dev``. The ask sits under the plan root and
+    does not block the node: the glue is already blocked by the open node,
+    and a block would stop the re-dispatch of a wait that ended without
+    closing it. The factory never rebuilds the image; the wait closes the
+    node and the ask on its first poll after the rebuild. Deduped on the
+    node's :data:`PIN_IMAGE_ASK_KEY` while that ask is open for the same
+    wanted sha; an ask closed while the image still lacks the pin is asked
+    again, at most :data:`PIN_IMAGE_REASK_AFTER` after it was first seen
+    closed (``closed_at`` on the mark). Backstop: an open image ask whose
+    node is closed (by hand, or before the wait could close it) is closed
+    with it, and the mark is cleared."""
+    for n in plan.todos():
+        if not _is_pin_bump(n):
+            continue
+        mark = n.meta.get(PIN_IMAGE_ASK_KEY)
+        mark = mark if isinstance(mark, dict) else {}
+        ask_id = mark.get("ask")
+        if not isinstance(ask_id, int) or isinstance(ask_id, bool):
+            ask_id = None
+        ask_status = (
+            _todo_status_of(plan, w.store, ask_id) if ask_id is not None else None
+        )
+        ask_open = ask_status is not None and ask_status not in TERMINAL_TODO_STATUSES
+        if _closed(n):
+            if ask_id is None:
+                continue
+            if ask_open:
+                res.notes.append(f"td{n.id}: image ask td{ask_id} closed with its node")
+                text = (
+                    f"answer: td{n.id} is closed ({n.status}); the image wait is over"
+                )
+                ask = plan.nodes.get(ask_id)
+                if ask is not None:
+                    w.comment(ask, text)
+                    w.set_status(ask, "done")
+                elif not w.dry_run:
+                    w.comment_id(ask_id, text)
+                    w.store.add_tag(
+                        ask_id,
+                        Tag.closed("STATUS", "done"),
+                        set_by="system",
+                        replace_prefix=True,
+                    )
+            w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: None})
+            continue
+        image = _pin_image(n)
+        want, reason = image.get("want"), image.get("reason")
+        if image.get("ready") is True or not isinstance(want, str) or not want:
+            continue
+        if reason == PIN_IMAGE_UNREACHABLE:
+            since = _pin_image_since(image)
+            if since is None or now - since <= PIN_STALE_AFTER:
+                continue
+        elif reason not in PIN_IMAGE_STALE:
+            continue
+        again: int | None = None
+        if ask_id is not None and mark.get("want") == want:
+            if ask_open:
+                continue  # one open ask per wanted sha
+            closed_at = _pin_image_since({"since": mark.get("closed_at")})
+            if closed_at is None:
+                # First pass that sees it closed: start the re-ask clock.
+                w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: {**mark, "closed_at": _iso(now)}})
+                res.notes.append(
+                    f"td{n.id}: image ask td{ask_id} closed, the image still "
+                    "lacks the pin; asking again in "
+                    f"{int(PIN_IMAGE_REASK_AFTER.total_seconds() // 60)} min"
+                )
+                continue
+            if now - closed_at < PIN_IMAGE_REASK_AFTER:
+                continue
+            again = ask_id
+        host = str(image.get("host") or "the land host")
+        record = n.meta.get(PIN_RECORD_KEY) or {}
+        landed = str(record.get("landed_sha") or "")
+        package = str(record.get("package") or "the engine")
+        have = str(image.get("have") or "no label")
+        glue = sorted(
+            bid
+            for bid, blockers in plan.blockers.items()
+            if any(b.id == n.id for b in blockers)
+        )
+        title = f"td{n.id}: rebuild the gate image on {host}"
+        res.notes.append(f"td{n.id}: {title.split(': ', 1)[1]} ({reason})")
+        if w.dry_run:
+            res.asks += 1
+            continue
+        if reason == PIN_IMAGE_UNREACHABLE:
+            seen = (
+                f"docker on {host} has not answered `docker image inspect "
+                f"{PIN_GATE_IMAGE}` for over "
+                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h, so td{n.id} "
+                "cannot tell whether the gate image carries the pin."
+            )
+        else:
+            seen = (
+                f"The {PIN_GATE_IMAGE} gate image on {host} is {reason}: its "
+                f"precis.autocatpath_rev label is {have[:12]}, the pin wants "
+                f"{want[:9]}."
+            )
+        body = (
+            f"td{n.id} moved precis's {package} pin"
+            + (f" (landed as {landed[:9]})" if landed else "")
+            + f". {seen} The factory never builds the image. On {host}, from a "
+            f"precis checkout at or after {landed[:9] or 'that land'} (pull "
+            f"first), run `scripts/build-image {PIN_GATE_IMAGE}`; td{n.id} "
+            "closes itself (and this ask) within ~2 min of the rebuild."
+            + (
+                f" The previous ask td{again} was closed, but the image still "
+                "does not carry the pin."
+                if again is not None
+                else ""
+            )
+            + (
+                " Blocked until then: " + ", ".join(f"td{g}" for g in glue) + "."
+                if glue
+                else ""
+            )
+        )
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=title,
+            body=body,
+            context=f"gate image {reason} on {host}: have {have[:12]}, want {want[:9]}",
+            now=now,
+            # Not a block: the open node already holds the glue, and a
+            # blocked node could not re-dispatch a wait that ended early.
+            block_node=False,
+        )
+        w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: {"ask": ask_id, "want": want}})
+        res.asks += 1
 
 
 def _step_hygiene(
@@ -7390,6 +7665,7 @@ def _step_hygiene(
     _step_unplaced(w.store, plan, w, res, now)
     _step_mint_holds(w.store, plan, w, res, now)
     _step_pin_stale(plan, w, res, now)
+    _step_pin_image_ask(plan, w, res, now)
     for n in plan.todos():
         if _closed(n):
             continue
