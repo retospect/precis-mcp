@@ -60,6 +60,30 @@ _BARRIER_ABSURD_EV = 8.0
 #: (most stable) converged candidate wins.
 DEFAULT_OBJECTIVES: tuple[tuple[str, str], ...] = (("energy", "min"),)
 
+#: The environment-optimizer ranking pair (slab-environment-optimizer spec,
+#: ruling me568266 + decision F 2026-11-13): a quest declaring
+#: ``meta.environment_space`` ranks each slab at its own ``env_best`` —
+#: ``env_best_J`` is the rubric's pick there, ``env_pareto_fraction`` the
+#: share of the box that is viable and selective, a guard so a slab that
+#: wins at one corner only cannot beat one that wins broadly. The fraction
+#: is optional: a slab whose producer has not written it still ranks,
+#: scored worst on that axis.
+ENV_OBJECTIVES: tuple[tuple[str, str], ...] = (
+    ("env_best_J", "max"),
+    ("env_pareto_fraction", "max"),
+)
+
+#: The env objective a producer may not have written yet — optional on the
+#: env front in the non-strict split (graduation's ``strict=True`` requires
+#: both).
+_ENV_OPTIONAL: frozenset[str] = frozenset({"env_pareto_fraction"})
+
+#: The provisional reason every run-point fallback row carries: the
+#: optimizer has not produced env_best for the slab, so it is ranked at its
+#: run point and never compared against the env-ranked cohort
+#: (:func:`_run_point_split`).
+_RUN_POINT_REASON = "no env_best yet: ranked at its run point"
+
 _VALID_SENSES = frozenset({"min", "max"})
 
 
@@ -137,6 +161,13 @@ class FrontierResult:
     #: WHICH required axis an unevaluated-but-converged candidate lacks
     #: instead of "(none converged yet)" (gr345354).
     optional: frozenset[str] = frozenset()
+    #: The quest's run-point objectives when the environment-space ranking
+    #: rule applied (:func:`quest_frontier` — non-empty iff the quest
+    #: declared ``meta.environment_space`` and the caller passed no
+    #: explicit objectives). A renderer needs them for the run-point
+    #: fallback cohort's columns: ``objectives`` is then
+    #: :data:`ENV_OBJECTIVES`, which names none of them.
+    run_point_objectives: list[tuple[str, str]] = field(default_factory=list)
 
 
 #: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
@@ -192,6 +223,8 @@ _AXIS_LABELS: dict[str, str] = {
     "her_margin_at_Uopt": "HER margin at U_opt (eV)",
     "reset_window_area": "Guaranteed-reset window (V·pH)",
     "reset_window_fraction": "Guaranteed-reset window fraction",
+    "env_best_J": "env_best J (eV)",
+    "env_pareto_fraction": "env Pareto fraction",
 }
 
 
@@ -347,6 +380,18 @@ _AXIS_DESCRIPTIONS: dict[str, str] = {
         "The guaranteed-reset window as a fraction of the swept "
         "(U_RHE, pH) grid — reset_window_area normalised. Higher is "
         "better."
+    ),
+    "env_best_J": (
+        "The bottleneck objective J (eV) at the slab's own best "
+        "environment point — the rubric's pick from the stored-point "
+        "evaluator (the minimum over its environment terms, kinetics at "
+        "the run U, never a joint optimum). Higher is better."
+    ),
+    "env_pareto_fraction": (
+        "The share of the box that is viable and selective — the "
+        "fraction of the environment box where the slab passes the "
+        "physical and trust masks; its denominator is the producer's "
+        "sampled sweep box. Higher is better."
     ),
 }
 
@@ -1257,6 +1302,8 @@ _DEFAULT_SENSE: dict[str, str] = {
     "ridge_churn": "min",
     "reset_window_area": "max",
     "reset_window_fraction": "max",
+    "env_best_J": "max",
+    "env_pareto_fraction": "max",
 }
 
 #: Window measures are optional unless the rubric item says
@@ -1273,6 +1320,10 @@ _DEFAULT_OPTIONAL: frozenset[str] = frozenset(
         "her_margin_at_Uopt",
         "reset_window_area",
         "reset_window_fraction",
+        # The env measure a producer may not have written yet (a slab
+        # without env_pareto_fraction still ranks, scored worst there) —
+        # same standing as the window measures above.
+        "env_pareto_fraction",
     }
 )
 
@@ -1475,6 +1526,14 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # The window-measures input fingerprint (window_objectives) — a
         # hash string, already dropped by ``_numeric``.
         "window_measures_input",
+        # Slab-environment-optimizer stamps (quest.environment_stamps):
+        # dicts/lists of evaluated points and cart intents — all
+        # non-numeric already, listed for clarity; they ride as flags /
+        # display context, never measures. The MEASURES beside them
+        # (env_best_J, env_pareto_fraction) are numeric and rank.
+        "env_best",
+        "env_pareto",
+        "env_next",
     }
 )
 
@@ -1723,6 +1782,12 @@ def _candidate_from_structure(
     for k in ("bottleneck_rung", "window_notes"):
         if k in meta:
             flags[k] = meta[k]
+    # Slab-environment-optimizer stamp (quest.environment_stamps): the
+    # rubric's pick at this slab's own best environment point — display
+    # context for the env_limiting/env_footing columns, never a measure
+    # (the dict is already excluded from ``measures`` above).
+    if isinstance(meta.get("env_best"), dict):
+        flags["env_best"] = dict(meta["env_best"])
 
     _bound_u_opt(measures, flags)
 
@@ -1977,6 +2042,12 @@ NETWORK_DEPENDENT_KEYS: tuple[str, ...] = (
     "selectivity_margin",
     "trap_margin",
     "P_side",
+    # env_best is the pick of a stored-point evaluation over BOTH the
+    # network and its environment basis; the fraction is over the same
+    # evidence. Either basis moving reprices them — demote on ANY
+    # mismatch (slab-environment-optimizer spec).
+    "env_best_J",
+    "env_pareto_fraction",
 )
 
 #: The template the neb and verify tiers build
@@ -2309,6 +2380,124 @@ def _provisional_split(
     return final, still_unevaluated
 
 
+def _run_point_split(
+    cohort: Sequence[Candidate],
+    objectives: list[tuple[str, str]],
+    optional: frozenset[str],
+) -> tuple[list[ProvisionalCandidate], list[Candidate]]:
+    """The run-point cohort of an environment-space quest — provisional or
+    unevaluated, never ``frontier``/``dominated`` and never compared with
+    the env-ranked cohort.
+
+    A member qualifies as provisional when its merged view (trusted
+    measures + untrusted values recovered from ``flags`` —
+    :func:`_merge_provisional_measures`, the same rule
+    :func:`_provisional_split` applies) carries a value for at least one
+    run-point objective; each carries :data:`_RUN_POINT_REASON` and
+    ``on_frontier`` marks its place on the cohort's OWN Pareto front over
+    ``objectives`` — the way :func:`_provisional_split` marks a provisional
+    front today, except the pool is the cohort alone (env-ranked slabs sit
+    in a different comparison). Everything else (nothing measured on the
+    run-point objectives) stays truly unevaluated.
+    """
+    obj_keys = [k for k, _ in objectives]
+    provisional: list[ProvisionalCandidate] = []
+    still_unevaluated: list[Candidate] = []
+    for c in cohort:
+        merged, untrusted_keys = _merge_provisional_measures(c)
+        if not any(k in merged for k in obj_keys):
+            still_unevaluated.append(c)
+            continue
+        provisional.append(
+            ProvisionalCandidate(
+                candidate=c,
+                measures=merged,
+                untrusted_keys=untrusted_keys,
+                reasons=[
+                    _RUN_POINT_REASON,
+                    *_provisional_reasons(c, obj_keys, merged),
+                ],
+            )
+        )
+
+    pool = [(pc.candidate.ref_id, pc.measures) for pc in provisional]
+
+    def _is_dominated(ref_id: int, measures: dict[str, float]) -> bool:
+        return any(
+            other_id != ref_id
+            and _dominates_measures(other_measures, measures, objectives, optional)
+            for other_id, other_measures in pool
+        )
+
+    final = [
+        replace(pc, on_frontier=not _is_dominated(pc.candidate.ref_id, pc.measures))
+        for pc in provisional
+    ]
+    return final, still_unevaluated
+
+
+def _env_frontier(
+    env_cohort: list[Candidate],
+    run_cohort: list[Candidate],
+    run_objectives: list[tuple[str, str]],
+    *,
+    optional: frozenset[str],
+    strict: bool,
+) -> FrontierResult:
+    """The two-cohort split for a quest that declared an environment space
+    (the slab-environment-optimizer ranking rule).
+
+    The env-ranked slabs (``measures['env_best_J']`` survived
+    :func:`apply_network_demotion`) are split among themselves on
+    :data:`ENV_OBJECTIVES` and own the result's ``frontier``/``dominated``
+    bands; ``env_pareto_fraction`` is optional there unless ``strict``.
+    The run-point cohort is split among itself on the quest's run-point
+    objectives (:func:`_run_point_split`): its members land in
+    ``provisional`` (measured) or ``unevaluated`` (nothing measured),
+    never in the confirmed bands, and the two cohorts are never compared
+    with each other.
+    """
+    env_optional = frozenset() if strict else _ENV_OPTIONAL
+    env_res = pareto_split(env_cohort, list(ENV_OBJECTIVES), optional=env_optional)
+    env_prov, env_unev = _provisional_split(
+        [*env_res.frontier, *env_res.dominated],
+        env_res.unevaluated,
+        list(ENV_OBJECTIVES),
+        optional=env_optional,
+    )
+    run_prov, run_unev = _run_point_split(run_cohort, run_objectives, optional)
+    return FrontierResult(
+        objectives=list(ENV_OBJECTIVES),
+        frontier=env_res.frontier,
+        dominated=env_res.dominated,
+        provisional=[*env_prov, *run_prov],
+        unevaluated=[*env_unev, *run_unev],
+        optional=env_optional,
+        run_point_objectives=run_objectives,
+    )
+
+
+def _env_limiting_text(c: Candidate) -> str:
+    """The limiting term of the candidate's ``env_best`` stamp (the
+    leaderboard's ``env_limiting`` column), ``""`` when it carries none."""
+    env = c.flags.get("env_best")
+    if isinstance(env, dict):
+        return str(env.get("limiting") or "")
+    return ""
+
+
+def _env_footing_text(c: Candidate) -> str:
+    """The footing of the value the candidate ranked on — the ``env_best``
+    stamp's ``footing`` (``"computed"``/``"interpolated"``), ``"run-point"``
+    on a run-point fallback row, ``""`` outside the env surface."""
+    if c.flags.get("rank_basis") == "run_point":
+        return "run-point"
+    env = c.flags.get("env_best")
+    if isinstance(env, dict):
+        return str(env.get("footing") or "")
+    return ""
+
+
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
 #: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
 #: tier, not ``barrier_fidelity``). A candidate with no tier stamp at all (a
@@ -2374,6 +2563,11 @@ def leaderboard(
         trust = v.get("trust")
         return f"{term} ({trust})" if trust else term
 
+    # The env columns exist only when some candidate carries env_best or
+    # the quest declared an environment space (its rank_basis flag) —
+    # same conditional-column pattern as ``validity`` below, so a quest
+    # that never opted into the optimizer renders bit-identical.
+
     def _rows(cands: list[Candidate], band: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for c in sorted(cands, key=_sort_key):
@@ -2389,6 +2583,8 @@ def leaderboard(
             row["$/rate"] = _rate_readout(c.measures) or "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
             row["validity"] = _validity_text(c)
+            row["env_limiting"] = _env_limiting_text(c)
+            row["env_footing"] = _env_footing_text(c)
             quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
             )
@@ -2440,6 +2636,8 @@ def leaderboard(
                 row["$/rate"] = f"≈{rate}" if approx else rate
             row["graduated"] = ""  # a provisional row can never graduate
             row["validity"] = _validity_text(c)
+            row["env_limiting"] = _env_limiting_text(c)
+            row["env_footing"] = _env_footing_text(c)
             quality = "; ".join(pc.reasons) or "unconfirmed"
             if pc.on_frontier:
                 quality = f"★ would lead — {quality}"
@@ -2462,6 +2660,13 @@ def leaderboard(
         validity_col = []
         for r in rows:
             r.pop("validity", None)
+    if any(r.get("env_limiting") or r.get("env_footing") for r in rows):
+        env_cols = ["env_limiting", "env_footing"]
+    else:
+        env_cols = []
+        for r in rows:
+            r.pop("env_limiting", None)
+            r.pop("env_footing", None)
     schema = [
         "design",
         "name",
@@ -2471,6 +2676,7 @@ def leaderboard(
         "band",
         "graduated",
         *validity_col,
+        *env_cols,
         "quality",
     ]
     return rows, schema
@@ -2758,10 +2964,32 @@ def quest_frontier(
     selectivity was never measured may rank on the working frontier so the
     ladder can promote it, but it must not graduate to a real-world
     experiment on a worst-case placeholder.
+
+    The environment-space ranking rule (slab-environment-optimizer spec,
+    decision F 2026-11-13): when the quest declares a non-empty
+    ``meta.environment_space`` (:func:`precis.quest.environment_space.
+    declares_environment_space`) and the caller passed no explicit
+    ``objectives``, ``env_best`` REPLACES the run-point objectives — it
+    does not join them. A candidate is env-ranked when, after
+    :func:`apply_network_demotion`, its measures carry ``env_best_J``;
+    with at least one env-ranked candidate the frontier/dominated bands
+    come from :data:`ENV_OBJECTIVES` over that cohort alone, while every
+    other candidate falls back to the run-point cohort
+    (:func:`_env_frontier`, each labelled :data:`_RUN_POINT_REASON`).
+    With none, the result is exactly the run-point split below. Every
+    candidate gets ``flags['rank_basis']`` — ``"env_best"`` or
+    ``"run_point"``. Every other quest is unchanged.
     """
+    from precis.quest.environment_space import declares_environment_space
     from precis.quest.gaps import _live_servers
 
     objs = objectives or _objectives_for(store, quest_id)
+    env_space = False
+    if objectives is None:
+        quest_ref = store.get_ref(kind="quest", id=quest_id)
+        env_space = declares_environment_space(
+            quest_ref.meta if quest_ref is not None else None
+        )
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     runs = store.structure_runs_many([int(s.id) for s in structures])
     candidates = [
@@ -2774,6 +3002,17 @@ def quest_frontier(
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     optional = frozenset() if strict else _optional_objectives_for(store, quest_id)
+    if env_space:
+        for c in candidates:
+            c.flags["rank_basis"] = (
+                "env_best" if c.measures.get("env_best_J") is not None else "run_point"
+            )
+        env_cohort = [c for c in candidates if c.flags["rank_basis"] == "env_best"]
+        run_cohort = [c for c in candidates if c.flags["rank_basis"] == "run_point"]
+        if env_cohort:
+            return _env_frontier(
+                env_cohort, run_cohort, objs, optional=optional, strict=strict
+            )
     result = pareto_split(candidates, objs, optional=optional)
     provisional, still_unevaluated = _provisional_split(
         [*result.frontier, *result.dominated],
@@ -2781,11 +3020,19 @@ def quest_frontier(
         objs,
         optional=optional,
     )
+    if env_space:
+        return replace(
+            result,
+            provisional=provisional,
+            unevaluated=still_unevaluated,
+            run_point_objectives=objs,
+        )
     return replace(result, provisional=provisional, unevaluated=still_unevaluated)
 
 
 __all__ = [
     "DEFAULT_OBJECTIVES",
+    "ENV_OBJECTIVES",
     "NETWORK_DEPENDENT_KEYS",
     "PARETO_X_LABEL",
     "PARETO_X_MEASURE",

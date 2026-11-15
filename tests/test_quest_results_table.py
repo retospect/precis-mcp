@@ -1138,3 +1138,115 @@ class TestTrustedSortViews:
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
         assert f"barrier ×1 (trusted: {self._handle(a)})" in body
         assert "U_L_abs ×1 (trusted: none)" in body
+
+
+# ── environment columns (td568641) ────────────────────────────────────
+
+
+def _env_best(j: float, footing: str) -> dict[str, Any]:
+    return {
+        "point": {"U": -0.1, "pH": 7.0},
+        "J": j,
+        "terms": {"m_kin": {"value": j, "reason": ""}},
+        "limiting": "m_kin",
+        "footing": footing,
+    }
+
+
+class TestEnvResultsColumns:
+    def test_no_env_quest_is_byte_identical(self, store: Any) -> None:
+        """A quest that never opted into the optimizer gets the same
+        columns as before — no env_limiting/env_footing."""
+        from precis.quest.results_table import results_columns
+
+        qid = _mk_quest(store)
+        _mk_candidate(store, qid, "Cu", _dopant_ops("Cu", 1))
+        fr = quest_frontier(store, qid)
+        assert results_columns(
+            fr.objectives, run_point_objectives=fr.run_point_objectives
+        ) == results_columns(fr.objectives)
+        assert "env_limiting" not in results_columns(fr.objectives)
+        assert "env_footing" not in results_columns(fr.objectives)
+
+    def test_env_quest_keeps_run_point_columns(self, store: Any) -> None:
+        """The fallback rows rank on the run-point objectives — their
+        columns stay beside the env pair, plus env_limiting/env_footing."""
+        from precis.quest.results_table import results_columns
+
+        cols = results_columns(
+            [("env_best_J", "max"), ("env_pareto_fraction", "max")],
+            run_point_objectives=[("barrier", "min")],
+        )
+        assert "env_best_J" in cols
+        assert "env_pareto_fraction" in cols
+        assert "barrier" in cols
+        assert "env_limiting" in cols
+        assert "env_footing" in cols
+
+    def test_env_footing_three_values(self, store: Any) -> None:
+        """computed / interpolated on env_best rows, run-point on the
+        fallback row — env_limiting names the term J bottoms out on."""
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"environment_space": {"axes": {"T": [350, 900]}}})
+        computed = _mk_candidate(store, qid, "Cu", _dopant_ops("Cu", 1))
+        interp = _mk_candidate(store, qid, "Ag", _dopant_ops("Ag", 1))
+        fallback = _mk_candidate(store, qid, "Au", _dopant_ops("Au", 1))
+        _converge(store, computed, energy=-3.0)
+        _converge(store, interp, energy=-2.0)
+        _converge(store, fallback, energy=-9.0)
+        # The fallback slab has run-point evidence (its barrier lane
+        # measure) but no env_best → provisional, footing "run-point".
+        store.stamp_ref_meta(fallback, {"barrier": 0.5})
+        store.stamp_ref_meta(
+            computed,
+            {
+                "env_best": _env_best(1.0, "computed"),
+                "env_best_J": 1.0,
+                "env_pareto_fraction": 0.9,
+            },
+        )
+        store.stamp_ref_meta(
+            interp,
+            {
+                "env_best": _env_best(2.0, "interpolated"),
+                "env_best_J": 2.0,
+                "env_pareto_fraction": 0.1,
+            },
+        )
+        rows = {r["name"]: r for r in build_results_rows(store, qid)}
+        assert rows["Cu"]["env_footing"] == "computed"
+        assert rows["Ag"]["env_footing"] == "interpolated"
+        assert rows["Au"]["env_footing"] == "run-point"
+        assert rows["Cu"]["env_limiting"] == "m_kin"
+        assert rows["Au"]["env_limiting"] == "-"
+        # The env-ranked pair ranks on the env pair; the fallback row
+        # keeps its run-point objective column populated.
+        assert rows["Au"]["band"] == "provisional"
+        assert rows["Au"]["env_best_J"] == "-"
+
+    def test_leaderboard_env_columns_conditional(self, store: Any) -> None:
+        """Same conditional as the validity column: the env columns
+        appear only while some row carries the stamps."""
+        from precis.quest.frontier import leaderboard
+
+        plain = _mk_quest(store)
+        _mk_candidate(store, plain, "Cu", _dopant_ops("Cu", 1))
+        _rows, schema = leaderboard(quest_frontier(store, plain))
+        assert "env_limiting" not in schema
+        assert "env_footing" not in schema
+
+        env_q = _mk_quest(store)
+        store.stamp_ref_meta(env_q, {"environment_space": {"axes": {"T": [350, 900]}}})
+        ranked = _mk_candidate(store, env_q, "Ag", _dopant_ops("Ag", 1))
+        _mk_candidate(store, env_q, "Au", _dopant_ops("Au", 1))
+        store.stamp_ref_meta(
+            ranked,
+            {"env_best": _env_best(1.0, "computed"), "env_best_J": 1.0},
+        )
+        rows, schema = leaderboard(quest_frontier(store, env_q))
+        assert "env_limiting" in schema
+        assert "env_footing" in schema
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Ag"]["env_footing"] == "computed"
+        assert by_name["Au"]["env_footing"] == "run-point"
+        assert by_name["Ag"]["env_limiting"] == "m_kin"

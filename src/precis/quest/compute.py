@@ -3701,6 +3701,13 @@ _NETWORK_BASIS_KEYS: tuple[str, ...] = (
     "selectivity_margin",
     "trap_margin",
     *_AUTOCATPATH_KINETICS_KEYS,
+    # env_best is evaluated over BOTH the network and its environment
+    # basis — the env stamps (quest.environment_stamps) merge the
+    # pathway's basis under these two keys so a basis move reprices them
+    # (both are in frontier.NETWORK_DEPENDENT_KEYS: demote on ANY
+    # mismatch, a slab then falls back to the run-point cohort).
+    "env_best_J",
+    "env_pareto_fraction",
 )
 
 
@@ -6880,8 +6887,18 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
             "P_side",
             "side_span_margin",
             "trap_depth",
+            "env_best_J",
+            "env_pareto_fraction",
         )
     ),
+    # environment-optimizer stamps (quest.environment_stamps) — derived
+    # from the same stored evidence the barrier lane reads; a stale
+    # engine invalidates them too.
+    "env_best",
+    "env_pareto",
+    "env_next",
+    "env_best_J",
+    "env_pareto_fraction",
     # atom_cost/atom_cost_dearest (slice B) are deliberately NOT here: they
     # are derived from composition alone, not from a sim run — a stale
     # engine invalidates a barrier, never a candidate's own atom count, so

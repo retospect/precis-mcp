@@ -1607,7 +1607,18 @@ def _results_table_section(
     rows = build_results_rows(store, quest_id, fr=fr)
     if not rows:
         return ""
-    table = render_results_table(rows, columns=results_columns(fr.objectives))
+    table = render_results_table(
+        rows,
+        columns=results_columns(
+            fr.objectives,
+            run_point_objectives=fr.run_point_objectives,
+            env=any(
+                r.get("env_footing") not in (None, "", "-")
+                or r.get("env_limiting") not in (None, "", "-")
+                for r in rows
+            ),
+        ),
+    )
     return (
         "\n## Results so far (one row per evaluated candidate — read this "
         "BEFORE proposing)\n"

@@ -2777,8 +2777,21 @@ class QuestHandler(NumericRefHandler):
             )
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
-        # in the logbook (gr567692).
-        schema = list(results_columns(fr.objectives))
+        # in the logbook (gr567692). An environment-space quest also keeps
+        # its run-point objective columns (the fallback rows rank on them)
+        # and gains env_limiting/env_footing while any row carries the env
+        # stamps.
+        schema = list(
+            results_columns(
+                fr.objectives,
+                run_point_objectives=fr.run_point_objectives,
+                env=any(
+                    r.get("env_footing") not in (None, "", "-")
+                    or r.get("env_limiting") not in (None, "", "-")
+                    for r in rows
+                ),
+            )
+        )
         # The text copy is measured against the plain fixed-width table —
         # ``fit_rows_to_budget``'s default render — not
         # ``render_results_table`` itself, which trims internally and would

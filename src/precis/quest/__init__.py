@@ -6,14 +6,14 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
-measurement protocols, deduped dispatch/harvest drift logbook entries, and
-frontier/status protocol histograms; gr593142), `environment_basis` and
+measurement protocols, deduped drift entries, protocol histograms; gr593142),
+`environment_basis` and
 `correction_policy` (engine-free hashes/tuples in the network basis), `atomcost` (static
 element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
-``precis quest figure``), `replay` (the optimisation-benchmark read of the
-measured history — per-axis top-5% coverage + best-so-far/regret of the
-LLM proposer's picks vs a seeded random baseline, gr608711; CLI
+``precis quest figure``), `replay` (the benchmark read of measured
+history — per-axis top-5% coverage + best-so-far/regret vs a seeded
+random baseline, gr608711; CLI
 ``precis quest replay`` + ``get(kind='quest', view='replay')``),
 `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
@@ -21,10 +21,10 @@ milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `narrative_budget` (the growth-ratchet gate,
 owner-agnostic — reusable by any rolling-context rewrite), `trap_check`
 (the planted-trap regression: a dormant sandbox quest whose candidate
-network carries a stale-engine measure, a swapped endpoint and an absurd
-barrier beside one control, ticked N times and scored on the frontier
-gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
-cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop itself is the
+network carries stale-engine, swapped-endpoint and absurd-barrier
+measures beside one control, ticked N times and scored on the frontier
+gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps`` job
+lands the score). The perpetual loop itself is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
 Package-level invariants (detail lives on the named module):
@@ -38,6 +38,10 @@ Package-level invariants (detail lives on the named module):
   log-rate term is unavailable for zero TOF, but its raw zero still fails
   a positive rate floor, so M=0 and J=-infinity.
   The pathway plugin's ``optimum`` read supplies staircase/map/bulk evidence.
+  ``environment_stamps`` writes them (finite only,
+  ``computed``/``interpolated`` footing);
+  ``environment_space.declares_environment_space`` opts a quest into
+  env_best ranking with a labelled run-point fallback.
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).

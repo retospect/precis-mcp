@@ -13598,3 +13598,316 @@ class TestApplyNeb:
             quest_body=QUEST_BODY_INQUIRY,
         )
         assert store.struct_neb_runs_for(is_ref.id) == []
+
+
+# ── environment-space ranking at env_best (td568641) ──────────────────
+
+_ENV_SPACE: dict[str, Any] = {"axes": {"T": [350, 900]}, "TOF_floor": 0.001}
+
+_SPEC_B: dict[str, Any] = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}],
+}
+
+
+def _env_candidate(
+    store: Any, qid: int, spec: dict[str, Any], name: str, energy: float
+) -> int:
+    sid = compute_mod.ensure_candidate(store, qid, {"name": name, "structure": spec})
+    assert sid is not None
+    store.structure_record_run(
+        sid,
+        fidelity="ml",
+        on_version=1,
+        converged=True,
+        n_steps=5,
+        max_disp=0.0,
+        energy=energy,
+    )
+    return sid
+
+
+def _env_best(j: float, footing: str = "computed") -> dict[str, Any]:
+    return {
+        "point": {"U": -0.1, "pH": 7.0, "T": 600.0},
+        "J": j,
+        "terms": {"m_kin": {"value": j, "reason": ""}},
+        "limiting": "m_kin",
+        "footing": footing,
+    }
+
+
+class TestEnvFrontierDeclarations:
+    """env_best_J / env_pareto_fraction are declared measures; the
+    structured stamps never rank."""
+
+    def test_senses_optional_label_description(self) -> None:
+        from precis.quest import frontier as frontier_mod
+
+        assert frontier_mod._DEFAULT_SENSE["env_best_J"] == "max"
+        assert frontier_mod._DEFAULT_SENSE["env_pareto_fraction"] == "max"
+        assert "env_pareto_fraction" in frontier_mod._DEFAULT_OPTIONAL
+        for key in ("env_best_J", "env_pareto_fraction"):
+            assert frontier_mod._AXIS_LABELS[key]
+            assert frontier_mod._AXIS_DESCRIPTIONS[key]
+        assert frontier_mod.ENV_OBJECTIVES == (
+            ("env_best_J", "max"),
+            ("env_pareto_fraction", "max"),
+        )
+        assert frozenset({"env_pareto_fraction"}) == frontier_mod._ENV_OPTIONAL
+        for key in ("env_best", "env_pareto", "env_next"):
+            assert key in frontier_mod._META_NON_MEASURE
+
+    def test_structured_stamps_never_become_measures(self, store: Any) -> None:
+        qid = _mk_quest(store, "An env striving")
+        store.stamp_ref_meta(qid, {"environment_space": dict(_ENV_SPACE)})
+        sid = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "env_best": _env_best(1.2),
+                "env_best_J": 1.2,
+                "env_pareto": [{"point": {"U": -0.1}, "J": 1.2}],
+                "env_next": {
+                    "point": {"U": 0.4},
+                    "reason": "outside the sweep box",
+                    "cart_items": ["coverage_scan"],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        # structured stamps are flags/provenance, never ranking measures
+        assert c.measures.get("env_best_J") == 1.2
+        for key in ("env_best", "env_pareto", "env_next"):
+            assert key not in c.measures
+        assert c.flags["env_best"]["J"] == 1.2
+
+
+class TestEnvFrontier:
+    def _quest(self, store: Any) -> int:
+        qid = _mk_quest(store, "An env striving")
+        store.stamp_ref_meta(qid, {"environment_space": dict(_ENV_SPACE)})
+        return qid
+
+    def test_no_env_space_is_unchanged(self, store: Any) -> None:
+        """Ruling me568770: a quest whose meta lists no environment_space
+        ranks exactly as before — same objectives, same bands, no
+        rank_basis flag."""
+        qid = _mk_quest(store, "A plain striving")
+        sid = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        fr = quest_frontier(store, qid)
+        assert fr.objectives == [("energy", "min")]
+        assert fr.run_point_objectives == []
+        assert [c.ref_id for c in fr.frontier] == [sid]
+        assert "rank_basis" not in fr.frontier[0].flags
+        _rows, schema = __import__(
+            "precis.quest.frontier", fromlist=["leaderboard"]
+        ).leaderboard(fr)
+        assert "env_limiting" not in schema
+        assert "env_footing" not in schema
+
+    def test_env_space_no_env_ranked_ranks_at_run_point(self, store: Any) -> None:
+        """No env_best yet anywhere → today's split, every row run_point."""
+        qid = self._quest(store)
+        a = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        b = _env_candidate(store, qid, _SPEC_B, "Ni", -8.0)
+        fr = quest_frontier(store, qid)
+        assert fr.objectives == [("energy", "min")]
+        assert fr.run_point_objectives == [("energy", "min")]
+        assert [c.ref_id for c in fr.frontier] == [b]
+        assert [c.ref_id for c in fr.dominated] == [a]
+        for c in [*fr.frontier, *fr.dominated]:
+            assert c.flags["rank_basis"] == "run_point"
+
+    def test_one_env_ranked_splits_the_cohorts(self, store: Any) -> None:
+        """The env-ranked slab owns the frontier; the run-point slab —
+        which would dominate it on the old objectives — sits in
+        provisional with the reason, never compared across cohorts."""
+        qid = self._quest(store)
+        env_slab = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        run_slab = _env_candidate(store, qid, _SPEC_B, "Ni", -20.0)
+        store.stamp_ref_meta(env_slab, {"env_best": _env_best(1.2), "env_best_J": 1.2})
+        fr = quest_frontier(store, qid)
+        assert list(fr.objectives) == list(
+            [("env_best_J", "max"), ("env_pareto_fraction", "max")]
+        )
+        assert [c.ref_id for c in fr.frontier] == [env_slab]
+        assert fr.frontier[0].flags["rank_basis"] == "env_best"
+        # Ni (energy -20) would dominate Fe (-5) on the old objectives —
+        # the cohorts are never compared, so it is provisional instead.
+        prov = {pc.candidate.ref_id: pc for pc in fr.provisional}
+        assert run_slab in prov
+        assert "no env_best yet: ranked at its run point" in prov[run_slab].reasons
+        assert prov[run_slab].candidate.flags["rank_basis"] == "run_point"
+        assert prov[run_slab].on_frontier  # leads the run-point cohort
+        assert env_slab not in prov
+        assert not fr.dominated
+
+    def test_candidate_order_changes_nothing(self, store: Any) -> None:
+        qid = self._quest(store)
+        env_slab = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        run_slab = _env_candidate(store, qid, _SPEC_B, "Ni", -20.0)
+        store.stamp_ref_meta(env_slab, {"env_best": _env_best(1.2), "env_best_J": 1.2})
+        first = quest_frontier(store, qid)
+        # Re-fetch through a second call — insertion order is the same,
+        # but the split must be deterministic regardless.
+        second = quest_frontier(store, qid)
+        for a, b in zip(first.frontier, second.frontier, strict=True):
+            assert a.ref_id == b.ref_id
+        assert {pc.candidate.ref_id for pc in first.provisional} == {
+            pc.candidate.ref_id for pc in second.provisional
+        }
+        assert run_slab in {pc.candidate.ref_id for pc in second.provisional}
+
+    def test_j_vs_fraction_both_on_the_front(self, store: Any) -> None:
+        """One slab wins J, the other the fraction — neither dominates."""
+        qid = self._quest(store)
+        peak = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        broad = _env_candidate(store, qid, _SPEC_B, "Ni", -5.0)
+        store.stamp_ref_meta(
+            peak,
+            {
+                "env_best": _env_best(2.0),
+                "env_best_J": 2.0,
+                "env_pareto_fraction": 0.1,
+            },
+        )
+        store.stamp_ref_meta(
+            broad,
+            {
+                "env_best": _env_best(1.0),
+                "env_best_J": 1.0,
+                "env_pareto_fraction": 0.9,
+            },
+        )
+        fr = quest_frontier(store, qid)
+        assert {c.ref_id for c in fr.frontier} == {peak, broad}
+        assert not fr.dominated
+
+    def test_missing_fraction_still_ranks_worst(self, store: Any) -> None:
+        """env_pareto_fraction is optional: a slab without it still ranks
+        but loses the axis to one that has it."""
+        qid = self._quest(store)
+        bare = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        full = _env_candidate(store, qid, _SPEC_B, "Ni", -5.0)
+        store.stamp_ref_meta(bare, {"env_best": _env_best(1.0), "env_best_J": 1.0})
+        store.stamp_ref_meta(
+            full,
+            {
+                "env_best": _env_best(1.0),
+                "env_best_J": 1.0,
+                "env_pareto_fraction": 0.5,
+            },
+        )
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [full]
+        assert [c.ref_id for c in fr.dominated] == [bare]
+
+    def test_strict_requires_both_env_objectives(self, store: Any) -> None:
+        """Graduation's strict split: env_pareto_fraction is required,
+        so a slab without it is not confirmed."""
+        qid = self._quest(store)
+        bare = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        full = _env_candidate(store, qid, _SPEC_B, "Ni", -5.0)
+        store.stamp_ref_meta(bare, {"env_best": _env_best(1.0), "env_best_J": 1.0})
+        store.stamp_ref_meta(
+            full,
+            {
+                "env_best": _env_best(1.0),
+                "env_best_J": 1.0,
+                "env_pareto_fraction": 0.5,
+            },
+        )
+        fr = quest_frontier(store, qid, strict=True)
+        assert [c.ref_id for c in fr.frontier] == [full]
+        prov_ids = {pc.candidate.ref_id for pc in fr.provisional}
+        assert bare in prov_ids
+
+    def test_basis_mismatch_drops_to_run_point(self, store: Any) -> None:
+        """A stale network/environment basis demotes env_best_J off the
+        measures — the slab falls back to the run-point cohort."""
+        qid = self._quest(store)
+        fresh = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        stale = _env_candidate(store, qid, _SPEC_B, "Ni", -5.0)
+        new_basis = {
+            "digest": "d1",
+            "template": "coadsorbed",
+            "version": "0.25.0",
+            "environment_basis": "env-a",
+            "tpd_basis": "none",
+        }
+        old_basis = {
+            "digest": "d0",
+            "template": "parked",
+            "version": "0.24.0",
+            "environment_basis": "env-a",
+            "tpd_basis": "none",
+        }
+        store.stamp_ref_meta(
+            fresh,
+            {
+                "env_best": _env_best(1.0),
+                "env_best_J": 1.0,
+                "network_basis_by_key": {"env_best_J": new_basis},
+            },
+        )
+        store.stamp_ref_meta(
+            stale,
+            {
+                "env_best": _env_best(2.0),
+                "env_best_J": 2.0,
+                "network_basis_by_key": {"env_best_J": old_basis},
+            },
+        )
+        fr = quest_frontier(store, qid)
+        # `stale`'s higher J must NOT win — its basis predates the current
+        # network, so it demotes and joins the run-point cohort.
+        assert [c.ref_id for c in fr.frontier] == [fresh]
+        prov = {pc.candidate.ref_id: pc for pc in fr.provisional}
+        assert stale in prov
+        assert prov[stale].candidate.flags["rank_basis"] == "run_point"
+        assert prov[stale].candidate.flags["network_stale"]
+        assert "env_best_J_untrusted_value" in prov[stale].candidate.flags
+
+    def test_explicit_objectives_bypass_env_rule(self, store: Any) -> None:
+        """An explicit objective override is exactly that — the env rule
+        only applies when the caller passed no objectives."""
+        qid = self._quest(store)
+        env_slab = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        store.stamp_ref_meta(env_slab, {"env_best": _env_best(1.2), "env_best_J": 1.2})
+        fr = quest_frontier(store, qid, objectives=[("energy", "min")])
+        assert fr.objectives == [("energy", "min")]
+        assert [c.ref_id for c in fr.frontier] == [env_slab]
+        assert "rank_basis" not in fr.frontier[0].flags
+
+    def test_env_best_reaches_flags(self, store: Any) -> None:
+        qid = self._quest(store)
+        sid = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        store.stamp_ref_meta(sid, {"env_best": _env_best(1.2)})
+        c = _cand(store, sid)
+        assert c.flags["env_best"]["limiting"] == "m_kin"
+        assert c.flags["env_best"]["footing"] == "computed"
+
+    def test_reset_compute_clears_the_five_keys(self, store: Any) -> None:
+        qid = self._quest(store)
+        sid = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "env_best": _env_best(1.2),
+                "env_best_J": 1.2,
+                "env_pareto": [{"J": 1.2}],
+                "env_next": {"point": {}, "reason": "r", "cart_items": []},
+                "env_pareto_fraction": 0.5,
+            },
+        )
+        compute_mod.reset_compute(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        for key in (
+            "env_best",
+            "env_pareto",
+            "env_next",
+            "env_best_J",
+            "env_pareto_fraction",
+        ):
+            assert meta.get(key) is None, key

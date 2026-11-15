@@ -675,7 +675,10 @@ required for a meta-only patch.
   Declaring one in `rubric_objectives` (`{"key": "window_area_VpH",
   "sense": "max"}`) promotes it to a Pareto axis; `meta.window_objectives`
   tunes the knobs (`eps_eV`, `her_margin_eV`, `reset_eta_eV`,
-  `reset_ea_floor_eV`).
+  `reset_ea_floor_eV`). Declaring `environment_space` (below) switches
+  ranking to the env objectives `env_best_J` + `env_pareto_fraction`
+  instead — the rubric axes become the run-point fallback a slab without
+  env_best still ranks on.
 - **`operating_conditions`** — human-set bulk-Pourbaix point:
   `{"U_RHE": -0.2, "pH": 7, "ion_conc_M": 1e-6,
   "window": {"U_RHE": [-0.4, 0], "pH": [7, 10]}}`. U_RHE and pH
@@ -717,6 +720,17 @@ required for a meta-only patch.
   or weights are inferred. Defaults are never persisted by a tick.
   Ticks cannot change either human-set conditions block. Default
   `get(kind='quest', id=N)` and `view='meta'` show the declared space.
+  Declaring the space switches the frontier's ranking to each slab's own
+  `env_best`: the frontier ranks on `env_best_J` (the bottleneck J at the
+  rubric's pick, sense max) plus optional `env_pareto_fraction` (the
+  share of the box that is viable and selective — a corner-only win
+  cannot beat a broad one), and a slab without env_best yet falls back
+  to its run-point objectives in the provisional band, labelled "no
+  env_best yet: ranked at its run point". The leaderboard and results
+  table show the env footing beside J — `computed` (a stored solve or
+  sweep row at exactly that point), `interpolated` (between adjacent
+  stored grid points — only marginally accurate), or `run-point` on a
+  fallback row — and `env_limiting`, the term J bottoms out on.
 
 ## Trust a barrier before you rank on it
 
