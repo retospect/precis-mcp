@@ -34,7 +34,17 @@ pytestmark = pytest.mark.skipif(
 
 from precis.plans import lanes
 from precis.plans import release as _release_real
-from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
+from precis.plans.lanes import (
+    ANY_CLASS,
+    COST_FREE,
+    COST_METERED,
+    COST_SUBSCRIPTION,
+    Lane,
+    ladder,
+    pick_lane,
+    rung_index,
+    top_rung,
+)
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
 from precis.utils.llm.quota import quota_retry_at
@@ -495,8 +505,8 @@ def test_seed_table_enabled_lanes() -> None:
     assert all(m.startswith("swe-2-") and "lightning" not in m for m in devin.models)
     assert [(r.lane, r.model) for r in ladder("code", lanes=SEED_LANES)] == [
         ("devin", "swe-2-high"),
-        ("devin", "swe-2-max"),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("devin", "swe-2-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
     sub = seed_lane("claude-sub")
@@ -654,22 +664,175 @@ def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     assert picked is not None and picked.name == "devin"
 
 
-def test_pick_lane_devin_wins_with_one_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gr573563: one or two live jobs on devin (cap 3) must not send the
-    pick to an idle paid lane — the cost class is minimised before the
-    live count."""
+def test_pick_lane_devin_wins_on_a_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr685753: free and subscription lanes are one tier, ordered by load
+    fraction -- a devin at 1 of 3 live (0.33) loses to an idle claude-sub,
+    while an idle table keeps table order (devin first)."""
     use_lanes(monkeypatch)
+    picked = pick_lane(None, "code", counts={})
+    assert picked is not None and picked.name == "devin"
     for live in (1, 2):
         picked = pick_lane(None, "code", counts={"devin": live})
-        assert picked is not None and picked.name == "devin"
+        assert picked is not None and picked.name == "claude-sub"
+    # Devin 1 of 3 (0.33) against claude-sub 1 of 2 (0.5): devin is lighter.
+    picked = pick_lane(None, "code", counts={"devin": 1, "claude-sub": 1})
+    assert picked is not None and picked.name == "devin"
 
 
-def test_pick_lane_cost_class_before_load(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gr573563: cost class beats load — a free lane at two of three
-    slots is picked ahead of an idle subscription lane."""
+def test_pick_lane_free_and_subscription_share_a_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr685753: cost class no longer beats load between free and
+    subscription -- a free lane at two of three slots loses to an idle
+    subscription lane (the old gr573563 order sent it to devin)."""
     use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
     picked = pick_lane(None, "code", counts={"devin": 2})
+    assert picked is not None and picked.name == "claude-sub"
+
+
+def _build_lane(name: str, cap: int, cost: str = COST_SUBSCRIPTION) -> Lane:
+    return Lane(
+        name,
+        "claude_p",
+        "pool",
+        cap,
+        frozenset({"code"}),
+        cost_class=cost,
+    )
+
+
+def test_pick_lane_least_loaded_subscription_gets_the_build() -> None:
+    """gr685753: Devin 3/8, Codex 3/8, Kimi 0/8 -- a ``code`` pick is
+    kimi, the least loaded fraction."""
+    table = (
+        _build_lane("devin", 8, COST_FREE),
+        _build_lane("codex", 8),
+        _build_lane("kimi", 8),
+    )
+    counts = {"devin": 3, "codex": 3, "kimi": 0}
+    picked = pick_lane(None, "code", lanes=table, counts=counts)
+    assert picked is not None and picked.name == "kimi"
+    # Kimi's fraction rises with its live count: at 4 it loses to devin.
+    counts["kimi"] = 4
+    picked = pick_lane(None, "code", lanes=table, counts=counts)
     assert picked is not None and picked.name == "devin"
+
+
+def test_pick_lane_compares_load_fractions_not_counts() -> None:
+    """gr685753: 2 live of cap 8 (0.25) beats 1 live of cap 2 (0.5)."""
+    table = (_build_lane("small", 2), _build_lane("big", 8))
+    picked = pick_lane(None, "code", lanes=table, counts={"small": 1, "big": 2})
+    assert picked is not None and picked.name == "big"
+
+
+def test_pick_lane_every_lane_at_cap_picks_nothing() -> None:
+    """gr685753: every fit lane at its cap -- a wait, not a pick."""
+    table = (
+        _build_lane("devin", 8, COST_FREE),
+        _build_lane("codex", 8),
+        _build_lane("kimi", 8),
+        _build_lane("metered", 2, COST_METERED),
+    )
+    full = {"devin": 8, "codex": 8, "kimi": 8, "metered": 2}
+    assert pick_lane(None, "code", lanes=table, counts=full) is None
+
+
+def test_pick_lane_never_picks_metered_while_a_cheaper_lane_is_open() -> None:
+    """gr685753: a metered lane is tier 1 -- picked only once every free
+    and subscription lane is at its cap, however idle it is and wherever
+    it sits in the table."""
+    table = (
+        _build_lane("metered", 8, COST_METERED),
+        _build_lane("devin", 8, COST_FREE),
+        _build_lane("kimi", 8),
+    )
+    # Devin and kimi nearly full, metered idle: still a tier-0 lane.
+    picked = pick_lane(None, "code", lanes=table, counts={"devin": 7, "kimi": 7})
+    assert picked is not None and picked.name in {"devin", "kimi"}
+    picked = pick_lane(None, "code", lanes=table, counts={"devin": 7, "kimi": 6})
+    assert picked is not None and picked.name == "kimi"
+    # Both tier-0 lanes full: the metered lane opens.
+    picked = pick_lane(None, "code", lanes=table, counts={"devin": 8, "kimi": 8})
+    assert picked is not None and picked.name == "metered"
+
+
+def test_pick_lane_zero_cap_lane_is_never_picked() -> None:
+    """A cap-0 row has no open slot and must not divide by zero."""
+    table = (_build_lane("zero", 0), _build_lane("one", 1))
+    picked = pick_lane(None, "code", lanes=table, counts={})
+    assert picked is not None and picked.name == "one"
+    assert pick_lane(None, "code", lanes=table[:1], counts={}) is None
+
+
+def test_top_rung_is_the_last_lane_last_model_not_the_dealt_last() -> None:
+    """gr685753: ``top_rung`` keeps the pre-round-robin top -- the last fit
+    lane's last model -- even when the dealt ladder ends on another lane;
+    ``None`` when no lane fits."""
+    table = (
+        Lane(
+            "long",
+            "kimi_tree",
+            "p",
+            1,
+            frozenset({"code"}),
+            models=("l1", "l2", "l3"),
+        ),
+        Lane(
+            "last",
+            "claude_p",
+            "p",
+            1,
+            frozenset({"code"}),
+            models=("z1", "z2"),
+        ),
+        Lane("off", "devin_tree", "p", 1, frozenset({"code"}), enabled=False),
+    )
+    assert ladder("code", lanes=table)[-1].lane == "long"
+    top = top_rung("code", lanes=table)
+    assert top is not None and (top.lane, top.model) == ("last", "z2")
+    assert top_rung("docs", lanes=table) is None
+
+
+def test_ladder_code_alternates_lanes() -> None:
+    """gr685753: the retry ladder deals rungs round-robin -- every lane's
+    first rung, then every lane's second -- so consecutive attempts change
+    lane. A lane with fewer models drops out of later rounds."""
+    table = (
+        Lane(
+            "a",
+            "devin_tree",
+            "p",
+            1,
+            frozenset({"code"}),
+            models=("a1", "a2", "a3"),
+            default_model="a1",
+        ),
+        Lane("b", "kimi_tree", "p", 1, frozenset({"code"})),
+        Lane(
+            "c",
+            "claude_p",
+            "p",
+            1,
+            frozenset({"code"}),
+            models=("c0", "c1", "c2"),
+            default_model="c1",
+        ),
+    )
+    got = [(r.lane, r.model) for r in ladder("code", lanes=table)]
+    assert got == [
+        ("a", "a1"),
+        ("b", None),
+        ("c", "c1"),
+        ("a", "a2"),
+        ("c", "c2"),
+        ("a", "a3"),
+    ]
+    # Consecutive rungs change lane while two lanes still have rungs left.
+    assert all(got[i][0] != got[i + 1][0] for i in range(4))
+    # rung_index still reads positions on the dealt list.
+    rungs = ladder("code", lanes=table)
+    assert rung_index(rungs, "c", "c2") == 4
+    assert rung_index(rungs, "b", "unlisted") == 1
 
 
 def test_pick_lane_load_only_within_a_class() -> None:

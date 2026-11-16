@@ -121,7 +121,7 @@ has_auto_run_signal`), so nothing mints a billed `plan_tick` under it;
 `meta.task_class` is informational in phase 1 — nothing reads it on a
 plain code todo yet (`src/precis/plans/lanes.py::pick_lane` reads it in
 the plan shape), so the coordinator picks the vendor by hand; automatic
-routing is phase 2. The vocabulary: `code` (cheapest lane with fit),
+routing is phase 2. The vocabulary: `code` (the least-loaded lane),
 `design` (a spec pass first), `review` (a different vendor), `verify`,
 `docs`. Risk tags (`risk:spend`, `risk:migration`, `risk:prod-write`,
 `risk:public-surface`, `risk:read-only-verb`) are informational too, but

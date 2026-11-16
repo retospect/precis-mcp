@@ -1837,8 +1837,9 @@ def test_retry_climbs_across_lanes(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td561544: with a free vendor lane enabled the ladder is cross-lane —
-    the vendor lane's models from its default up, then the Claude lane's.
-    Each retry climbs one rung above where the last attempt ran."""
+    every lane's first rung, then every lane's second (gr685753
+    round-robin). Each retry climbs one rung above where the last attempt
+    ran."""
     free = L.Lane(
         name="free",
         adapter="devin_tree",
@@ -1861,9 +1862,9 @@ def test_retry_climbs_across_lanes(
     use_lanes(monkeypatch, free, bare, sub)
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("free", "f-high"),
-        ("free", "f-max"),
         ("bare", None),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("free", "f-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
 
@@ -1874,9 +1875,9 @@ def test_retry_climbs_across_lanes(
     mint = T._run(store, None, build)
     task = mint.ids["task"]
     expected = [
-        ("free", "f-max"),
         ("bare", None),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("free", "f-max"),
         ("claude-sub", "claude-opus-5-5"),
         ("claude-sub", "claude-opus-5-5"),  # floored at the top
     ]
@@ -1921,8 +1922,8 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     task = mint.ids["task"]
     rungs = [
         ("devin", "swe-2-high"),
-        ("devin", "swe-2-max"),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("devin", "swe-2-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == rungs
@@ -2149,7 +2150,8 @@ def test_unclassified_red_climbs_the_ladder(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An error line no signature knows escalates exactly as before:
-    one rung up, no ``brief:`` comment, no ask."""
+    one rung up (the next lane's first rung, gr685753), no ``brief:``
+    comment, no ask."""
     use_lanes(monkeypatch)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -2164,7 +2166,10 @@ def test_unclassified_red_climbs_the_ladder(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
     assert _brief_comments(store, task) == []
     assert "mech_retries" not in _meta(store, task)
 
@@ -2415,7 +2420,20 @@ def test_spend_cap_allows_below_the_cap(
         seed_lane("claude-sub"),
         entitlements=_fable_caps(),
     )
-    mint = _one_task_plan(store)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        # A lane pin narrows the ladder to the devin lane's two rungs, so
+        # the paid rung is the next climb (the unpinned ladder alternates
+        # lanes, gr685753).
+        m.node(
+            "task",
+            "The task",
+            {"op": {"type": "run_slice", "params": {"lane": "devin"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
     task = mint.ids["task"]
     _failed_job(
         store,
@@ -2614,8 +2632,9 @@ def test_factory_deny_failure_climbs_then_rescues(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     job_id, meta = _jobs_under(store, task)[-1]
-    assert meta["params"]["lane"] == "devin" and meta["params"]["model"] == "swe-2-max"
-    store.stamp_ref_meta(job_id, {"lane": "devin", "model": "swe-2-max"})
+    assert meta["params"]["lane"] == "claude-sub"
+    assert meta["params"]["model"] == "claude-sonnet-5-5"
+    store.stamp_ref_meta(job_id, {"lane": "claude-sub", "model": "claude-sonnet-5-5"})
     _set_job_status(store, job_id, "failed")
     store.chunks.insert_chunks(
         job_id,
@@ -2899,7 +2918,7 @@ def test_no_commit_failure_without_a_verdict_climbs_the_ladder(
     """gr645163 (Reto 2026-11-12, "escalate to next model"): a clean-exit
     failure with no verdict is the builder's can't-finish — it burns one
     attempt and the retry climbs one ladder rung (devin/swe-2-high →
-    swe-2-max); the instant-cap-to-rescue of td584381 S1a F4 is gone."""
+    claude-sub/sonnet, gr685753); the instant-cap-to-rescue of td584381 S1a F4 is gone."""
     use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -2916,8 +2935,8 @@ def test_no_commit_failure_without_a_verdict_climbs_the_ladder(
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     jobs = _jobs_under(store, task)
     assert len(jobs) == 2
-    assert jobs[-1][1]["params"]["lane"] == "devin"
-    assert jobs[-1][1]["params"]["model"] == "swe-2-max"
+    assert jobs[-1][1]["params"]["lane"] == "claude-sub"
+    assert jobs[-1][1]["params"]["model"] == "claude-sonnet-5-5"
     assert "rescue:builder" not in _open_tags(store, task)
 
 
@@ -3709,7 +3728,7 @@ def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     _failed_job(store, task, "real failure", lane="devin", model="swe-2-high")
     # The newest job is a codex host refusal whose window already ended
     # (no backoff): if it counted as the previous rung, the retry would
-    # climb above codex; ignoring it, the retry takes devin's next rung.
+    # climb above codex; ignoring it, the retry takes the rung above devin's.
     past = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     _failed_job(
         store,
@@ -3721,7 +3740,7 @@ def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert params["lane"] == "devin" and params["model"] == "swe-2-max"
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5-5"
 
 
 def test_an_escalated_mint_carries_the_shadow_decision(
@@ -3742,19 +3761,23 @@ def test_an_escalated_mint_carries_the_shadow_decision(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     job = _jobs_under(store, task)[-1][1]
-    assert job["params"]["lane"] == "devin" and job["params"]["model"] == "swe-2-max"
+    assert job["params"]["lane"] == "claude-sub"
+    assert job["params"]["model"] == "claude-sonnet-5-5"
     stamp = job.get("decision")
     assert stamp is not None and stamp["site"] == "escalate"
     assert stamp["executed"] == "legacy"
     assert stamp["legacy"]["keys"] == [
         "swe-2-high@devin_tree/devin",
-        "swe-2-max@devin_tree/devin",
         "claude-sonnet-5-5@claude_p/claude-sub",
+        "swe-2-max@devin_tree/devin",
         "claude-opus-5-5@claude_p/claude-sub",
     ]
-    assert stamp["legacy"]["chosen"]["lane"] == "devin"
-    # decide()'s free ranking lands on the rung the climb took.
-    assert stamp["agree"] is True
+    assert stamp["legacy"]["chosen"]["lane"] == "claude-sub"
+    # decide()'s free-first ranking still puts devin ahead, while the
+    # legacy ladder now alternates lanes (gr685753): the shadow records the
+    # disagreement it exists to surface.
+    assert stamp["ranked"][0]["lane"] == "devin"
+    assert stamp["agree"] is False
 
 
 def test_a_review_mint_carries_the_shadow_decision(
@@ -8015,8 +8038,9 @@ def test_brief_hold_releases_on_tag_removal(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The coordinator's path: post the ``brief:`` and remove the tag —
-    the next tick dispatches the fix one rung up the ladder (swe-2-max,
-    not the swe-2-high foot that produced the chain) and closes the ask."""
+    the next tick dispatches the fix one rung up the ladder (claude-sub
+    sonnet, not the devin swe-2-high foot that produced the chain) and
+    closes the ask."""
     use_lanes(monkeypatch)
     mint, fix, ask = _depth2_fix(store)
     _todo_comment(store, fix, "brief: the design call")
@@ -8026,7 +8050,10 @@ def test_brief_hold_releases_on_tag_removal(
     assert _status(store, ask) == "done"
     (_job_id, job_meta) = _jobs_under(store, fix)[-1]
     params = job_meta.get("params") or {}
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
 
 
 def test_brief_hold_releases_on_continue(
@@ -8043,7 +8070,10 @@ def test_brief_hold_releases_on_continue(
     assert res.dispatched == 1
     (_job_id, job_meta) = _jobs_under(store, fix)[-1]
     params = job_meta.get("params") or {}
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
 
 
 def test_brief_hold_times_out_and_the_ladder_continues(
@@ -8132,6 +8162,40 @@ def test_fix_chain_round_three_escalates_to_the_top_rung(
         (ref := store.get_ref(kind="todo", id=c)) is None
         or "chain depth 3" not in (ref.title or "")
         for c in _children(store, mint.root_id)
+    )
+
+
+def test_fix_chain_round_three_pins_the_table_top_not_the_dealt_last(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685753: the round-robin ladder ends on whichever lane lists the
+    most models. With a lit kimi lane of four models ahead of claude-sub
+    in the table, ``ladder()[-1]`` is a kimi model, but the third fix
+    round still pins ``top_rung``: the table's last lane's last model
+    (claude-opus-5-5)."""
+    kimi = L.Lane(
+        name="kimi",
+        adapter="kimi_tree",
+        credential_pool="subscription",
+        cap=1,
+        task_classes=frozenset({"code", "review", "validate"}),
+        vendor="moonshot",
+        models=("k-1", "k-2", "k-3", "k-4"),
+        default_model="k-1",
+    )
+    use_lanes(monkeypatch, seed_lane("devin"), kimi, seed_lane("claude-sub"))
+    table = L.load_lanes(store)
+    assert L.ladder("code", lanes=table)[-1] == L.Rung("kimi", "k-4")
+    assert L.top_rung("code", lanes=table) == L.Rung("claude-sub", "claude-opus-5-5")
+    mint, f3 = _depth3_fix(store)
+    fm = _meta(store, f3)
+    assert fm["fix_depth"] == 3
+    assert fm["op"] == {
+        "type": "run_slice",
+        "params": {"model": "claude-opus-5-5"},
+    }
+    assert _todo_comments(store, f3)[-1].startswith(
+        f"plan_dispatch: escalated: round 3 of td{mint.root_id}"
     )
 
 

@@ -25,13 +25,17 @@ an api-adapter account can never mint a lane a submit would die on at
 ``get_adapter``. :func:`pick_lane` never returns a disabled lane.
 
 Pick (:func:`pick_lane`): fit for the task class first, then the
-cheapest fit lane under its cap — cost class (:attr:`Lane.cost_class`,
-free before subscription before metered, gr573563: free compute first)
-before the fewest live ``run_slice`` jobs carrying its ``meta.lane``.
-With ``paid_ok=False`` a fit free lane holds the paid lanes out of the
-pick entirely — a free lane at its cap is a wait, not a paid launch.
-Pacing (the lane most behind its window target) replaces the live-count
-order once the registry carries the window numbers.
+least-loaded fit lane under its cap. A lane's tier is 0 when it is free
+or a flat-rate subscription, 1 when metered; the pick minimises
+``(tier, live / cap, live)``, so the free and subscription lanes (devin,
+codex, claude-sub, kimi) share first attempts by load fraction, not by
+cost class — idle subscription capacity is wasted, not saved (gr685753,
+Reto 2026-11-15: "max out Devin, Kimi and Codex"). A metered lane is
+picked only when no free or subscription lane is open. With
+``paid_ok=False`` a fit free lane holds the paid lanes out of the pick
+entirely — a free lane at its cap is a wait, not a paid launch. Pacing
+(the lane most behind its window target) replaces the load order once
+the registry carries the window numbers.
 
 Backoff (:func:`lane_backoffs`): a launch the lane's host refuses (the
 adapter preflight — binary, login, trust seed) stamps
@@ -45,8 +49,11 @@ retry-cap ask per todo.
 
 Retry (:func:`ladder`): the table in order is also the escalation chain
 ``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
-models from its default upward, free vendor lanes before the Claude
-subscription (Reto td559457).
+models from its default upward, dealt round-robin: every lane's first
+rung, then every lane's second rung, and so on, so a retry moves to
+another vendor's lane before it climbs a model on the same one
+(gr685753; the old chain ran devin's models, then the Claude
+subscription's, and reached kimi last).
 
 Park (gr588221): the account row's ``parked_reason`` set holds the lane
 out of every pick — ``pick_lane``, ``ladder`` and a ``params.lane`` pin
@@ -586,8 +593,8 @@ class Lane:
     (``''`` = ``models`` is exhaustive; a lane with neither accepts no pin,
     so a pinned model never lands on a lane that cannot run it).
     ``cost_class`` is what a launch on the lane costs (one of
-    :data:`COST_ORDER`, cheapest first); :func:`pick_lane` spends free
-    capacity before paid.
+    :data:`COST_ORDER`, cheapest first); :func:`pick_lane` treats free and
+    subscription as one tier and holds metered back until both are full.
     ``parked_reason`` is the lane-health park (gr588221): set, the lane
     is held out of dispatch like ``enabled=False`` without touching the
     human ``enabled`` switch; ``parked_at`` the park's first sighting.
@@ -891,10 +898,13 @@ def pick_lane(
     Fit first (enabled lanes whose ``task_classes`` take the class and,
     with ``model`` -- the slice's ``params.model`` pin -- whose
     :meth:`Lane.accepts_model` takes it: a triage-pinned claude id never
-    lands on the codex lane, which cannot run it), then cost class --
-    :data:`COST_ORDER` order, free before paid (gr573563) -- then the
-    fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
-    lanes under their cap; ties keep table order. ``lanes`` defaults to
+    lands on the codex lane, which cannot run it), then, among lanes
+    under their cap, the minimum of ``(tier, live / cap, live)``: tier 0
+    is a free or subscription lane, tier 1 a metered one (picked only
+    while no tier-0 lane is open), ``live`` the ``run_slice`` jobs
+    carrying that ``meta.lane``. The load fraction means a cap-8 lane at
+    0 live beats a cap-8 lane at 3; ties keep table order (gr685753).
+    ``lanes`` defaults to
     the ``llm_account`` table read at call time (like :func:`ladder`),
     so a row edit is seen;
     ``counts`` skips the live-count DB read (tests, or a caller that
@@ -944,10 +954,16 @@ def pick_lane(
     if not open_lanes:
         return None
     # ``min`` keeps the first of equal keys, so ties keep table order.
-    return min(
-        open_lanes,
-        key=lambda lane: (COST_ORDER.index(lane.cost_class), live.get(lane.name, 0)),
-    )
+    return min(open_lanes, key=lambda lane: _pick_key(lane, live))
+
+
+def _pick_key(lane: Lane, live: Mapping[str, int]) -> tuple[int, float, int]:
+    """The :func:`pick_lane` sort key: ``(tier, live / cap, live)``. Tier
+    0 covers free and subscription lanes, tier 1 metered; ``cap`` is
+    floored at 1 so a zero-cap row cannot divide by zero."""
+    n = live.get(lane.name, 0)
+    tier = 1 if lane.cost_class == COST_METERED else 0
+    return (tier, n / max(lane.cap, 1), n)
 
 
 @dataclass(frozen=True)
@@ -960,6 +976,33 @@ class Rung:
     model: str | None
 
 
+def _lane_rungs(
+    task_class: str, store: Any, lanes: tuple[Lane, ...] | None
+) -> list[list[Rung]]:
+    """Each enabled, unparked fit lane's rungs for ``task_class`` in table
+    order: its ``models`` from ``default_model`` upward, or one model-less
+    rung when it declares none. :func:`ladder` and :func:`top_rung` share
+    it. ``lanes`` or ``store`` is required."""
+    if lanes is None:
+        if store is None:
+            raise TypeError("lanes.ladder: pass store or lanes")
+        lanes = load_lanes(store)
+    per_lane: list[list[Rung]] = []
+    for lane in lanes:
+        if not lane.enabled or lane.parked or not lane.fits(task_class):
+            continue
+        if not lane.models:
+            per_lane.append([Rung(lane.name, None)])
+            continue
+        start = (
+            lane.models.index(lane.default_model)
+            if lane.default_model in lane.models
+            else 0
+        )
+        per_lane.append([Rung(lane.name, m) for m in lane.models[start:]])
+    return per_lane
+
+
 def ladder(
     task_class: str,
     *,
@@ -967,31 +1010,37 @@ def ladder(
     lanes: tuple[Lane, ...] | None = None,
 ) -> tuple[Rung, ...]:
     """The cross-lane retry ladder for ``task_class`` (Reto td559457: a
-    failed slice climbs before the cap asks): every enabled fit lane in
-    table order, each contributing its ``models`` from ``default_model``
-    upward, or one model-less rung when it declares none. With today's
-    table that is devin high → devin max → sonnet → opus (codex carries
-    no ``code`` class — a lane that cannot run the test gate, gr573563).
-    The table is ``lanes`` or the ``llm_account`` read — one of them is
-    required."""
-    if lanes is None:
-        if store is None:
-            raise TypeError("lanes.ladder: pass store or lanes")
-        lanes = load_lanes(store)
+    failed slice climbs before the cap asks). Every enabled fit lane
+    contributes its ``models`` from ``default_model`` upward, or one
+    model-less rung when it declares none; the rungs are dealt
+    round-robin -- every lane's first rung in table order, then every
+    lane's second rung, and so on (gr685753) -- so consecutive attempts
+    alternate lanes. With today's table that is devin high → sonnet →
+    devin max → opus (codex carries no ``code`` class — a lane that
+    cannot run the test gate, gr573563 — and kimi joins once lit).
+    Rungs are positions on this list: :func:`rung_index` and the
+    climbers read them as such. The table is ``lanes`` or the
+    ``llm_account`` read — one of them is required."""
+    per_lane = _lane_rungs(task_class, store, lanes)
     out: list[Rung] = []
-    for lane in lanes:
-        if not lane.enabled or lane.parked or not lane.fits(task_class):
-            continue
-        if not lane.models:
-            out.append(Rung(lane.name, None))
-            continue
-        start = (
-            lane.models.index(lane.default_model)
-            if lane.default_model in lane.models
-            else 0
-        )
-        out.extend(Rung(lane.name, m) for m in lane.models[start:])
+    for depth in range(max((len(rs) for rs in per_lane), default=0)):
+        out.extend(rs[depth] for rs in per_lane if depth < len(rs))
     return tuple(out)
+
+
+def top_rung(
+    task_class: str,
+    *,
+    store: Any = None,
+    lanes: tuple[Lane, ...] | None = None,
+) -> Rung | None:
+    """The last rung of the last fit lane in table order -- the model a
+    fix born escalated is pinned to (gr604629) -- or ``None`` with no fit
+    lane. Not ``ladder(...)[-1]``: the dealt order ends on whichever lane
+    has the most models, so a lit lane with a long model list would move
+    the top (gr685753). Today's table: claude-sub opus."""
+    per_lane = _lane_rungs(task_class, store, lanes)
+    return per_lane[-1][-1] if per_lane else None
 
 
 def rung_index(
@@ -1096,6 +1145,7 @@ __all__ = [
     "pick_lane",
     "record_lane_health",
     "rung_index",
+    "top_rung",
     "unpark_lane",
     "wake_lane_waiter",
 ]

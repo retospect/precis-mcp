@@ -171,8 +171,8 @@ def test_escalate_stamp_compares_against_the_ladder() -> None:
     rungs = lanes_mod.ladder("code", lanes=SEED_LANES)
     assert [(r.lane, r.model) for r in rungs] == [
         ("devin", "swe-2-high"),
-        ("devin", "swe-2-max"),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("devin", "swe-2-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
     stamp = _stamp(
@@ -180,15 +180,15 @@ def test_escalate_stamp_compares_against_the_ladder() -> None:
         site="escalate",
         picked=("devin", "swe-2-max"),
         rungs=rungs,
-        chosen_rung=1,
+        chosen_rung=2,
         counts={},
         backoffs={},
     )
     assert stamp is not None
     assert stamp["legacy"]["keys"] == [
         "swe-2-high@devin_tree/devin",
-        "swe-2-max@devin_tree/devin",
         "claude-sonnet-5-5@claude_p/claude-sub",
+        "swe-2-max@devin_tree/devin",
         "claude-opus-5-5@claude_p/claude-sub",
     ]
     assert stamp["legacy"]["chosen"]["model"] == "swe-2-max"

@@ -2515,10 +2515,12 @@ def _review_fix(
         # gr604629: two rounds could not close the finding — the third is
         # born model-pinned to the ladder's top rung (the ``model`` pin
         # routes through ``pick_lane`` and ``_escalate`` never climbs it
-        # back down), not held for another design call.
+        # back down), not held for another design call. The top is
+        # ``top_rung`` -- the table's last lane's last model -- not
+        # ``ladder()[-1]``, whose round-robin order ends on whichever lane
+        # lists the most models (gr685753).
         task_class = str(node.meta.get("task_class") or _DEFAULT_TASK_CLASS)
-        rungs = _lanes.ladder(task_class, lanes=lane_table)
-        top = rungs[-1] if rungs else None
+        top = _lanes.top_rung(task_class, lanes=lane_table)
         if top is not None:
             params = {"model": top.model} if top.model else {"lane": top.lane}
             w.stamp_meta(node, {"op": {"type": DEFAULT_OP, "params": params}})
