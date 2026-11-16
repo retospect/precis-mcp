@@ -138,6 +138,49 @@ def test_macos_account_is_a_standard_user_checked_against_admin() -> None:
     )
 
 
+def test_macos_account_has_no_blank_password_and_is_hidden() -> None:
+    block = _task(_tasks("user.yml"), "Builder user account (macOS)")["block"]
+    names = [t["name"] for t in block]
+
+    def idx(prefix: str) -> int:
+        return names.index(_task(block, prefix)["name"])
+
+    setpw = _task(block, "Set a random builder password")
+    cmd = " ".join(str(setpw["ansible.builtin.shell"]).split())
+    assert "dscl . -passwd /Users/{{ precis_builder_user }}" in cmd
+    assert "openssl rand -base64" in cmd
+    assert setpw["no_log"] is True, "the password must never be printed"
+    cond = setpw["when"]
+    assert "_builder_user_probe.rc != 0" in cond
+    assert "_builder_blank_before.rc == 0" in cond
+    assert _task(block, "Probe for a blank builder password")["no_log"] is True
+
+    hide = _task(block, "Hide the builder account")
+    assert (
+        hide["ansible.builtin.command"]
+        == "dscl . -create /Users/{{ precis_builder_user }} IsHidden 1"
+    )
+
+    guard = _task(block, "The builder account must not accept a blank password")
+    assert "_builder_blank_after.rc != 0" in str(
+        guard["ansible.builtin.assert"]["that"]
+    )
+    after = _task(block, "Probe the builder password again")
+    assert after["ansible.builtin.command"] == (
+        'dscl . -authonly {{ precis_builder_user }} ""'
+    )
+    assert after["register"] == "_builder_blank_after"
+    assert after["no_log"] is True
+    assert idx("Create the builder account") < idx("Probe for a blank")
+    assert idx("Probe for a blank") < idx("Set a random builder password")
+    assert idx("Set a random builder password") < idx(
+        "Probe the builder password again"
+    )
+    assert idx("Probe the builder password again") < idx(
+        "The builder account must not accept"
+    )
+
+
 def test_deploy_is_never_created_by_this_role() -> None:
     main = _tasks()
     for prefix in ("Builder user account", "Builder user's own .pgpass"):
@@ -360,9 +403,30 @@ def test_builder_user_gets_a_user_npm_prefix_and_a_first_devin_install() -> None
     devin = _task(tasks, "First devin install")
     assert devin["become_user"] == "{{ precis_builder_user }}"
     assert devin["args"]["creates"] == "{{ precis_builder_home }}/.local/bin/devin"
-    assert "https://cli.devin.ai/install.sh" in devin["ansible.builtin.shell"]
+    script = devin["ansible.builtin.shell"]
+    assert "https://cli.devin.ai/install.sh" in script
     assert devin["timeout"] > 0
     assert "failed_when" not in devin and "ignore_errors" not in devin
+
+
+def test_devin_installer_gets_no_stdin_and_success_is_the_binary() -> None:
+    """The installer's interactive login exits 1 without a TTY: it runs with
+    stdin from /dev/null, its exit code is ignored, and the play instead fails
+    when the binary is missing or does not run."""
+    devin = _task(_tasks("user.yml"), "First devin install")
+    lines = [ln.strip() for ln in devin["ansible.builtin.shell"].splitlines()]
+    assert 'bash "$installer" < /dev/null || true' in lines
+    assert "curl | bash" not in " ".join(lines)
+    assert not any(ln.startswith("curl") and "| bash" in ln for ln in lines)
+    binary = "{{ precis_builder_home }}/.local/bin/devin"
+    assert f"test -x {binary}" in lines
+    assert f"{binary} --version > /dev/null" in lines
+    assert lines.index(f"test -x {binary}") > lines.index(
+        'bash "$installer" < /dev/null || true'
+    ), "the binary check must come after the installer"
+    head = devin["ansible.builtin.shell"].splitlines()[0]
+    assert "-e" in head and "pipefail" in head, "a failed check must fail the play"
+    assert devin["args"]["creates"] == binary
 
 
 # ── the builder's own heartbeat identity (gr695674) ───────────────────
