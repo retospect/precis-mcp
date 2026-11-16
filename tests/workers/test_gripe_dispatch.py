@@ -581,7 +581,7 @@ def test_deny_path_report_routes_to_the_coordinator(
     ask carrying the report, and ``hold:no-dispatch`` keeps the gripe
     out of later picks until a human re-judges it."""
     _light(store)
-    gid = _gripe(store, "add a --remote flag to scripts/ship")
+    gid = _gripe(store, "Fix: add a --remote flag to scripts/ship")
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
     assert res.extra["minted"] == []
@@ -650,7 +650,7 @@ def test_route_builder_tag_skips_the_deny_path_route(
     _light(store)
     gid = _gripe(
         store,
-        "add a --remote flag to scripts/ship",
+        "Fix: add a --remote flag to scripts/ship",
         tags=("fix:code", gd.ROUTE_BUILDER_TAG),
     )
     res = gd.run_gripe_dispatch_pass(store, host="h1")
@@ -1657,3 +1657,15 @@ def test_stall_ask_skips_while_plan_tick_holds_lock(store: Store) -> None:
         assert gd.sweep_stalled(store, parked) == []
     assert _status(store, root) == "open"
     assert gd.sweep_stalled(store, parked)[0]["root"] == root
+
+
+def test_deny_path_evidence_sentence_mints_build(store: Store, two_lanes: Any) -> None:
+    """gr702295: a harness path opening evidence is no declared write set."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "scripts/ship cannot land a branch, says the guard log. Repair release_deploy.py.",
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]

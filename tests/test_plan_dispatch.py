@@ -3043,7 +3043,7 @@ def test_deny_path_brief_routes_to_the_coordinator(
             "task",
             "Wire the land's remote flag",
             {"op": "run_slice"},
-            body="Add a --remote flag to scripts/ship for harness diffs.",
+            body="Fix: add a --remote flag to scripts/ship for harness diffs.",
         )
 
     mint = T._run(store, None, build)
@@ -3144,9 +3144,9 @@ def test_graph_only_brief_comment_routes_to_the_coordinator(
     [
         pytest.param(
             "Goal: repair release confirmation",
-            ("brief: Update scripts/ship",),
+            ("brief: Fix: update scripts/ship",),
             True,
-            id="unlabelled-brief-deny-target",
+            id="labelled-brief-deny-target",
         ),
         pytest.param(
             "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
@@ -3162,7 +3162,10 @@ def test_graph_only_brief_comment_routes_to_the_coordinator(
         ),
         pytest.param(
             "Goal: repair release confirmation",
-            ("brief: Update scripts/ship", "brief: Update release confirmation worker"),
+            (
+                "brief: Fix: update scripts/ship",
+                "brief: Update release confirmation worker",
+            ),
             False,
             id="newest-brief-supersedes-denied-brief",
         ),
@@ -3175,7 +3178,7 @@ def test_body_and_newest_brief_route_independently(
     briefs: tuple[str, ...],
     routes: bool,
 ) -> None:
-    """td651223: labelled body intent must not hide an unlabelled brief;
+    """td651223: body intent must not hide a labelled brief;
     evidence stays non-authoritative and superseded briefs stay out."""
     use_lanes(monkeypatch)
 
@@ -3211,7 +3214,7 @@ def test_hidden_brief_never_routes(
     use_lanes(monkeypatch)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
-    _todo_comment(store, task, "brief: Update scripts/ship")
+    _todo_comment(store, task, "brief: Fix: update scripts/ship")
     hidden = max(int(c.ord) for c in store.chunks.list_chunks_for_ref(task))
     store.stamp_ref_meta(task, {"hidden_comments": [hidden]})
     res = pd.run_pass(store)
