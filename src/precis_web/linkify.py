@@ -717,7 +717,8 @@ _MD_CODE = re.compile(r"`([^`]+)`")
 #: fenced alternative runs first so `` ```…``` `` consumes its interior
 #: backticks whole; the single-backtick form mirrors ``_MD_CODE``.
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]+`", re.DOTALL)
-_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+# Literal-star escapes also apply to the first star of a bold delimiter.
+_MD_BOLD = re.compile(r"(?<!\\)\*\*(.+?)(?<!\\)\*\*")
 #: Single-``*`` emphasis — the exact guard the exporters use
 #: (export/latex ``_MD_ITALIC`` = export/docx ``_SPAN``): no adjacent
 #: ``*``/word char (so ``**bold**`` and ``a*b`` are excluded), no space just

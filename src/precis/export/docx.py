@@ -834,7 +834,7 @@ _SPAN = re.compile(
     r"|(?P<code>`[^`]+`)"
     r"|(?P<sub><sub>.+?</sub>)"
     r"|(?P<sup><sup>.+?</sup>)"
-    r"|(?P<bold>\*\*.+?\*\*)"
+    r"|(?P<bold>(?<!\\)\*\*.+?(?<!\\)\*\*)"
     rf"|(?P<italic>(?<![\*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
     rf"[^*]+?(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w))",
     re.DOTALL,

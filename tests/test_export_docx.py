@@ -2745,6 +2745,13 @@ def test_adsorbate_star_and_escaped_star_not_italic() -> None:
     assert "*NO" in para.text and "O*" in para.text
     assert "\\*" not in para.text and "*escaped*" in para.text
 
+    # The escape must also stop the bold arm from consuming its star.
+    for text in (r"\**word**", r"**word\**"):
+        para = docx.Document().add_paragraph()
+        dx._render_inline(text, ctx, para)
+        assert para.text == "**word**"
+        assert not any(r.bold or r.italic for r in para.runs)
+
 
 def _back_matter_headings(draft: DraftHandler, hub: Hub, tmp_path: Path) -> list[str]:
     _seed_paper(hub.live_store, "bm1", "Back matter paper", 2020)

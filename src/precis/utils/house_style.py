@@ -53,7 +53,8 @@ _URL = re.compile(r"https?://[^\s<>)\]]+")
 _HANDLE_BRACKET = re.compile(r"\[\[?[^\[\]\s]+\]\]?")
 _LINK_TARGET = re.compile(r"(?<=\])\([^)\s]*\)")
 
-_BOLD = re.compile(r"\*\*(?=\S)[^\n]+?(?<=\S)\*\*")
+# An escaped first star cannot open or close a bold delimiter either.
+_BOLD = re.compile(r"(?<!\\)\*\*(?=\S)[^\n]+?(?<=\S)(?<!\\)\*\*")
 #: Single-``*`` emphasis — the same shape the exporters render
 #: (``export/latex._MD_ITALIC``), so a flag predicts a real mis-render.
 #: ``\\`` in the boundary classes keeps ``\*`` literal, and the

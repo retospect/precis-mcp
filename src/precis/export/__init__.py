@@ -1,5 +1,9 @@
 """Document export engines (LaTeX → Tier-B).
 
+Literal star escapes apply to bold and italic delimiters alike, so
+adsorbate notation and explicitly escaped stars survive each backend.
+LaTeX stashes escapes before emphasis; Word guards its span delimiters.
+
 The packaged preamble loads ``fontspec``, so PDF compilation and the CLI's
 manual compile hint use LuaLaTeX (``latexmk -lualatex``).
 PDF exports allow five minutes by default for large drafts and their

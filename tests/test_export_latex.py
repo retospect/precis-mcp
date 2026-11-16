@@ -449,11 +449,18 @@ def test_italic_single_star_to_emph() -> None:
     assert "$a*b$" in out  # star inside math not turned into emphasis
 
 
-def test_adsorbate_star_stays_literal() -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        "*NO3- dissociation to *NO2- + O* is more favorable",
+        "*NO₃⁻ dissociation to *NO₂⁻ + O* is more favorable",
+    ],
+)
+def test_adsorbate_star_stays_literal(text: str) -> None:
     # gr674905: surface-chemistry star notation (*NO, *H, *OH, H*, O*, Pd*)
     # is literal prose — the italic rule and the house-style lint read it
     # the same way (utils/adsorbate_star).
-    out, _ = _inline("*NO3- dissociation to *NO2- + O* is more favorable")
+    out, _ = _inline(text)
     assert r"\emph{" not in out
     assert "*NO" in out and "O*" in out
     out, _ = _inline("adsorbed *H and *OH on the surface, plus Pd* and O*")

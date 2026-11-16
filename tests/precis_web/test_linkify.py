@@ -650,13 +650,21 @@ def test_adsorbate_star_not_emphasis() -> None:
     # gr674905: *NO / H* style adsorbate stars are literal in the reader,
     # same rule as the exporters (utils/adsorbate_star).
     out = str(
-        linkify_refs("*NO3- to *NO2- + O*, adsorbed *H *OH Pd* O*", markdown=True)
+        linkify_refs("*NO₃⁻ to *NO₂⁻ + O*, adsorbed *H *OH Pd* O*", markdown=True)
     )
     assert "<em>" not in out and "*NO" in out and "Pd*" in out
     # \* is the literal-star escape — never a delimiter, rendered bare.
     out = str(linkify_refs(r"a \*literal\* star and a *word*", markdown=True))
     assert "*literal*" in out and "\\*" not in out
     assert "<em>word</em>" in out and out.count("<em>") == 1
+
+
+def test_escaped_star_cannot_delimit_bold() -> None:
+    # gr674905: an escaped star must survive even beside a second star.
+    for text in (r"\**word**", r"**word\**"):
+        out = str(linkify_refs(text, markdown=True))
+        assert out == "**word**"
+    assert str(linkify_refs("**word**", markdown=True)) == "<strong>word</strong>"
 
 
 def test_markdown_empty_base_math_folds_base_in() -> None:

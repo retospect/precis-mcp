@@ -58,6 +58,13 @@ def test_escaped_star_not_flagged() -> None:
     assert [f.rule for f in flags] == ["italic_star"]
 
 
+def test_escaped_star_cannot_delimit_bold() -> None:
+    # gr674905: the literal-star escape also applies beside another star.
+    for text in (r"\**word**", r"**word\**"):
+        assert find_style_flags(text) == []
+    assert [f.rule for f in find_style_flags("**word**")] == ["bold"]
+
+
 def test_identifiers_handles_urls_code_do_not_fire() -> None:
     text = (
         "Use snake_case and my_var_name, cite [fi123] and [¶ab_12], see "
