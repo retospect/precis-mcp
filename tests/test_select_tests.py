@@ -96,7 +96,9 @@ def test_path_map_patterns_match_something() -> None:
         )
 
 
-@pytest.mark.timeout(480)  # CI worst 181s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(
+    900
+)  # 233s local, CI slower: 480 killed the xdist worker (gr701511; was 181s x2.5, gr503084)
 @pytest.mark.nightly(
     reason="177 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
