@@ -1332,7 +1332,8 @@ For EACH gripe decide:
         unblocks>", "recommended": true|false}} — exactly one
       recommended.
 - recommend: OPTIONAL when fix is "reto" — the one-line summary of the
-  recommended option (used for the gripe's comment).
+  recommended option (used for the gripe's comment): an imperative action,
+  not a restatement of the problem.
 - memory: the "me<id>" handle of the memory whose CONTENT the gripe
   complains about (stale, thin, ungrounded, contradicted, wrong hub, too
   big) — usually the handle leading its first line. null when the gripe
@@ -1605,12 +1606,22 @@ class Verdict:
 
     @property
     def recommendation(self) -> str | None:
-        """The one-line recommendation: ``recommend`` when the model
-        wrote one, else the recommended ask option's text."""
-        if self.recommend:
+        """Prefer explicit action text, rejecting restatements of the reason."""
+        if self.recommend and not _restates(self.recommend, self.reason):
             return self.recommend
         rec = self.ask.recommended if self.ask is not None else None
-        return rec.option if rec is not None else None
+        if rec is not None and not _restates(rec.option, self.reason):
+            return rec.option
+        return None
+
+
+def _restates(text: str, *others: str) -> bool:
+    """Reject token containment of at least 80%, ignoring case/punctuation."""
+    tokens = set(re.findall(r"\w+", text.lower()))
+    return bool(tokens) and any(
+        len(tokens & set(re.findall(r"\w+", other.lower()))) / len(tokens) >= 0.8
+        for other in others
+    )
 
 
 def _needs_reto(v: Verdict) -> bool:
@@ -2302,8 +2313,8 @@ def _write_verdict(
             # gr595189: one payload, one comment — when the needs-spec
             # note already carries this text, the `recommend:` twin
             # adds only a second label to the same words.
-            rec_text = recommendation or reason or "(see gripe)"
-            if all(c.split(": ", 1)[-1] != rec_text for c in comments):
+            rec_text = recommendation
+            if rec_text and all(c.split(": ", 1)[-1] != rec_text for c in comments):
                 comments.append(f"{_RECOMMEND_PREFIX}{rec_text}")
         elif reto_overflow:
             store.add_tag(
@@ -3123,7 +3134,10 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     ``unsure`` dup pair at severity ≥ 4 asks merge-or-keep, a held
     owner-filed dispute asks close-or-keep."""
     if v.ask is not None:
-        return v.ask
+        rec = v.ask.recommended
+        if rec is None or not _restates(rec.option, v.reason):
+            return v.ask
+        return _fallback_ask(g.ref_id, g.title, v.recommendation)
     if v.verdict in _DISPUTES:
         return RetoAsk(
             question=f"Close gr{g.ref_id} as {v.verdict}?",
@@ -3173,25 +3187,7 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     # the owner to do the scoping (gr595189). The option text is the
     # recommendation word-cut to fit — uncapped, a long one refused the
     # ask lint and the mint fell back onto the reason (gr673371).
-    rec = _one_line(v.recommendation or v.reason or g.title)
-    return RetoAsk(
-        question=f"Apply this recommendation on gr{g.ref_id}?",
-        context=(
-            f"Triage needs a ruling it cannot make itself. Its "
-            f"recommendation: {rec}. Source: gr{g.ref_id}."
-        ),
-        options=(
-            AskOption(
-                option=excerpt(rec, limit=_ASK_OPTION_TEXT_CAP),
-                cost="triage's recommendation",
-                recommended=True,
-            ),
-            AskOption(
-                option="leave as filed",
-                cost="nothing changes — the gripe stays triaged",
-            ),
-        ),
-    )
+    return _fallback_ask(g.ref_id, g.title, v.recommendation)
 
 
 def digest_line(g: ClaimedGripe, v: Verdict) -> str:
@@ -3208,7 +3204,7 @@ def digest_line(g: ClaimedGripe, v: Verdict) -> str:
         )
         question = _one_line(ask.question or g.title)
         return f"gr{g.ref_id} [{v.fix}] — {question} — {opts}"
-    rec = _one_line(v.recommend or v.reason or g.title)
+    rec = _one_line(v.recommendation or "request a fresh triage recommendation")
     return f"gr{g.ref_id} [{v.fix}] — {_one_line(g.title)} — recommend: {rec}"
 
 
@@ -3305,7 +3301,8 @@ def _fallback_ask(gid: int, title: str, rec: str | None) -> RetoAsk:
     context carries the recommendation whole: ``meta.ask`` word-cuts
     it at the lint's context cap and the todo body keeps it all, so
     the owner reads the full call they are approving (gr673371)."""
-    full = _one_line(rec or title) or f"see gr{gid}"
+    # Missing/rejected recommendations must never revive the symptom/title.
+    full = _one_line(rec) if rec else "request a fresh triage recommendation"
     return RetoAsk(
         question=f"Apply triage's recommendation on gr{gid}?",
         context=(
@@ -3650,7 +3647,7 @@ def _sync_reto_asks(
             g.ref_id,
             g.title,
             _reto_ask(g, v),
-            v.recommendation or v.reason,
+            v.recommendation,
         )
         if tid is None:
             continue

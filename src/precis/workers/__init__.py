@@ -142,6 +142,9 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
 
 Notable pass mechanics
 ----------------------
+* ``gripe_triage`` rejects recommendations that restate the verdict reason.
+  Comments and ask fallbacks preserve that rejection: when neither candidate
+  supplies an action, the ask offers fresh triage rather than approving a symptom.
 * ``chunk_keywords`` embeds claimed chunks' paper-local candidates once via
   ``Embedder.embed``, then scores per-chunk slices (per-chunk RPCs held the
   fleet advisory lock ~2 min/32 chunks, gr547587); no pooled connection

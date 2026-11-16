@@ -3539,3 +3539,99 @@ class TestCloseOutcomes:
         head = prompts[0].split("\n### gr", 1)[0]
         for v in ("not-a-bug", "working-as-designed", "noise", "fixed"):
             assert f'"{v}"' in head
+
+
+@pytest.mark.parametrize(
+    ("recommend", "option", "expected"),
+    [
+        (
+            "plan_tick lacked PRECIS_ROOT",
+            "make plan_tick set PRECIS_ROOT",
+            "make plan_tick set PRECIS_ROOT",
+        ),
+        (
+            "make provisioning set PRECIS_ROOT",
+            "make plan_tick set PRECIS_ROOT",
+            "make provisioning set PRECIS_ROOT",
+        ),
+        ("PLAN_TICK lacked PRECIS_ROOT!", "plan_tick lacked PRECIS_ROOT", None),
+        (
+            "make provisioning set PRECIS_ROOT",
+            "plan_tick lacked PRECIS_ROOT",
+            "make provisioning set PRECIS_ROOT",
+        ),
+    ],
+    ids=[
+        "restatement-falls-back-to-option",
+        "action-kept",
+        "both-rejected",
+        "rejected-option-uses-action",
+    ],
+)
+@pytest.mark.parametrize("refused", [False, True])
+def test_recommendation_restatement_paths(
+    store: Store, recommend: str, option: str, expected: str | None, refused: bool
+) -> None:
+    """Rejected symptoms stay rejected in comments, asks and lint fallbacks."""
+    gid = _gripe(store, "plan_tick lacked PRECIS_ROOT")
+    _light(store)
+    prompts: list[str] = []
+    payload = {
+        "verdicts": [
+            _verdict(
+                gid,
+                fix="reto",
+                reason="plan_tick lacked PRECIS_ROOT",
+                recommend=recommend,
+                ask=_ask(
+                    options=[
+                        {
+                            "option": option,
+                            "cost": "repair provisioning",
+                            "recommended": True,
+                        },
+                        {
+                            "option": "x" * 220 if refused else "leave as filed",
+                            "cost": "the tick stays blocked",
+                        },
+                    ]
+                ),
+            )
+        ]
+    }
+
+    def spy(prompt: str) -> LlmResult:
+        prompts.append(prompt)
+        result: LlmResult = _llm(payload)(prompt)
+        return result
+
+    _run(store, llm=spy, notify=True)
+    assert "an imperative action," in prompts[0]
+    assert "not a restatement of the problem" in prompts[0]
+    comments = _comments(store, gid)
+    recommendations = [c for c in comments if c.startswith("recommend:")]
+    if expected is None:
+        assert recommendations == []
+    else:
+        assert f"recommend: {expected}" in recommendations
+    todos = _digest_todos(store)
+    assert len(todos) == 1
+    options = _meta(store, todos[0])["ask"]["options"]
+    assert "lacked PRECIS_ROOT" not in options[0]
+    if expected is None:
+        assert options[0].startswith("request a fresh triage recommendation")
+    elif refused:
+        assert options[0].startswith(expected)
+
+
+@pytest.mark.parametrize(
+    ("text", "other", "expected"),
+    [
+        ("A, B C d!", "a b c d e", True),
+        ("a b c d e", "a b c d", True),
+        ("a b c d e f", "a b c d", False),
+        ("!!!", "", False),
+    ],
+)
+def test_restates_token_containment(text: str, other: str, expected: bool) -> None:
+    assert gripe_triage._restates(text, other) is expected
