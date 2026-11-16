@@ -5427,9 +5427,12 @@ def _slice_test_exists(tree: Path, path: str) -> bool:
 
 
 def _devin_acceptance_tests(
-    tree: Path, handle: dict[str, Any]
-) -> tuple[bool, str | None]:
-    """Return ``(ran, failure)`` for available tests supplied before the build.
+    tree: Path, handle: dict[str, Any], ctx: Any
+) -> tuple[bool, str | None] | None:
+    """Return ``(ran, failure)``, or ``None`` while detached tests are pending.
+
+    Persist the receipt paths and PID so a worker restart resumes polling;
+    no pass waits for the test process (gr687841).
 
     Never discover tests from Devin's output or the generated lint footer:
     those cannot establish that the ask had tests before implementation.
@@ -5446,16 +5449,60 @@ def _devin_acceptance_tests(
         and p not in handle.get("acceptance_tests_missing", [])
         and _slice_test_exists(tree, p)
     ]
-    if not paths:
+    if not paths and not isinstance(handle.get("acceptance_handle"), dict):
         return False, None
-    try:
-        proc = _run(["scripts/test", *paths], tree, timeout=_ACCEPTANCE_TEST_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return True, f"Devin acceptance tests could not run: {exc}"
-    if proc.returncode != 0:
-        tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-60:])
-        return True, f"Devin acceptance tests failed (exit {proc.returncode})\n{tail}"
+    test_handle = handle.get("acceptance_handle")
+    if not isinstance(test_handle, dict):
+        directory = Path(handle["exit_file"]).parent
+        test_handle = {
+            "log": str(directory / "acceptance.log"),
+            "exit_file": str(directory / "acceptance.exit"),
+            "started": time.time(),
+        }
+        Path(test_handle["exit_file"]).unlink(missing_ok=True)
+        try:
+            test_handle["pid"] = _launch(
+                ["scripts/test", *paths],
+                cwd=tree,
+                stdin=None,
+                log=Path(test_handle["log"]),
+                exit_file=Path(test_handle["exit_file"]),
+                env=dict(os.environ),
+            )
+        except OSError as exc:
+            return True, f"Devin acceptance tests could not run: {exc}"
+        if sys.platform == "darwin":
+            test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
+        handle["acceptance_handle"] = test_handle
+        ctx.set_meta(compute_handle=handle)
+    code = _read_exit(test_handle)
+    if code is None:
+        if time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S:
+            _kill_acceptance(handle)
+            return True, "Devin acceptance tests timed out"
+        if _session_alive(test_handle):
+            return None
+        # The run may have written its receipt between the read above and
+        # the liveness probe: re-read before calling it vanished.
+        code = _read_exit(test_handle)
+        if code is None:
+            return True, "Devin acceptance tests vanished without an exit receipt"
+    if code != 0:
+        tail = "\n".join(_read_log(test_handle).splitlines()[-60:])
+        return True, f"Devin acceptance tests failed (exit {code})\n{tail}"
     return True, None
+
+
+def _kill_acceptance(handle: dict[str, Any]) -> None:
+    """Stop only the detached acceptance group; never wait in a worker pass."""
+    test_handle = handle.get("acceptance_handle")
+    if isinstance(test_handle, dict) and _session_alive(test_handle):
+        try:
+            pgid = _handle_pgid(test_handle)
+            if pgid:
+                _signal_group(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def tests_ran(text: str | None) -> bool:
@@ -6948,6 +6995,12 @@ def poll(ctx: Any, handle: Any) -> bool:
     second-repo reviewer's detached tree (``handle["review"]``) is removed
     once the run is over, whatever its outcome (td659522 step 5)."""
     done = _poll_session(ctx, handle)
+    if done and isinstance(handle, dict):
+        acceptance = handle.get("acceptance_handle")
+        if isinstance(acceptance, dict) and _read_exit(acceptance) is None:
+            # A deny-path violation or vanished tree can end the job while
+            # its detached tests still run. Do not leave that group behind.
+            _kill_acceptance(handle)
     if done and isinstance(handle, dict) and isinstance(handle.get("review"), dict):
         _drop_review_tree(handle)
     return done
@@ -7000,8 +7053,6 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or _budget_bound(ctx) > 0
         ):
             return False
-    ctx.set_meta(compute_handle_released=True)
-
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
@@ -7117,25 +7168,6 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
     elif budget_note is not None:
         handoff = f"attempt FAILED, {budget_note}.\n\n{handoff}".strip()
-    if unscrubbed:
-        # The raw result may quote a key the poll cannot name — the todo
-        # gets the withheld comment instead of any session text (review
-        # round 2); the failure record keeps the line-dropped tail.
-        try:
-            _append_comment(ctx.store, todo_id, _HANDOFF_WITHHELD)
-        except Exception:  # pragma: no cover — the job outcome still lands
-            log.warning("run_slice: withheld comment on td%d failed", todo_id)
-    elif handoff:
-        if len(handoff) > _HANDOFF_CAP:
-            handoff = (
-                handoff[:_HANDOFF_HEAD].rstrip()
-                + " …(clipped)… "
-                + handoff[-(_HANDOFF_CAP - _HANDOFF_HEAD) :].lstrip()
-            )
-        try:
-            _append_comment(ctx.store, todo_id, f"handoff: {handoff}")
-        except Exception:  # pragma: no cover — the job outcome still lands
-            log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
     committed = None
     test_failure = None
@@ -7156,9 +7188,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     # only the session and the lander run its code.
                     worker_tests_ran, test_failure = False, None
                 else:
-                    worker_tests_ran, test_failure = _devin_acceptance_tests(
-                        tree, handle
-                    )
+                    acceptance = _devin_acceptance_tests(tree, handle, ctx)
+                    if acceptance is None:
+                        return False
+                    worker_tests_ran, test_failure = acceptance
                 if worker_tests_ran and test_failure is None:
                     after_denied, after_human_hits = _deny_reason(
                         tree, _lanes.deny_paths_for(ctx.store), base
@@ -7196,6 +7229,27 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 )
                 if paths is None or any(not p.startswith("tests/") for p in paths):
                     committed = _commit_for_session(tree, todo_id)
+    if unscrubbed:
+        # The raw result may quote a key the poll cannot name — the todo
+        # gets the withheld comment instead of any session text (review
+        # round 2); the failure record keeps the line-dropped tail.
+        try:
+            _append_comment(ctx.store, todo_id, _HANDOFF_WITHHELD)
+        except Exception:  # pragma: no cover — the job outcome still lands
+            log.warning("run_slice: withheld comment on td%d failed", todo_id)
+    elif handoff:
+        if len(handoff) > _HANDOFF_CAP:
+            handoff = (
+                handoff[:_HANDOFF_HEAD].rstrip()
+                + " …(clipped)… "
+                + handoff[-(_HANDOFF_CAP - _HANDOFF_HEAD) :].lstrip()
+            )
+        try:
+            _append_comment(ctx.store, todo_id, f"handoff: {handoff}")
+        except Exception:  # pragma: no cover — the job outcome still lands
+            log.warning("run_slice: handoff comment on td%d failed", todo_id)
+
+    ctx.set_meta(compute_handle_released=True)
     if test_failure:
         if pairs:
             test_failure = _redact(test_failure, pairs)
@@ -7994,6 +8048,7 @@ def kill(ctx: Any, handle: Any) -> None:
     _drop_submit_key(ctx)
     if not isinstance(handle, dict):
         return
+    _kill_acceptance(handle)
     grant = _handle_grant(handle)
     if grant is not None:
         params = (getattr(ctx, "meta", None) or {}).get("params") or {}

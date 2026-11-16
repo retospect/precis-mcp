@@ -310,7 +310,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return _proc()
 
     def fake_launch(argv: list[str], **kw: Any) -> int:
-        calls["launch"].append((argv, kw))
+        if argv[0] == "scripts/test":
+            proc = run_slice._run(argv, kw["cwd"], 3600)
+            kw["log"].write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
+            kw["exit_file"].write_text(str(proc.returncode), encoding="utf-8")
+        else:
+            calls["launch"].append((argv, kw))
         return 4242
 
     calls["run"] = []
@@ -8305,6 +8310,82 @@ def test_devin_worker_test_failure_keeps_diagnostic_tail(
     assert "test-output-099" in pctx.failure
     assert "AssertionError: widget was 3 instead of 42" in pctx.failure
     assert "test-output-000" not in pctx.failure
+
+
+def test_devin_acceptance_yields_and_resumes_after_restart(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr687841: slow acceptance must return control before any commit or land."""
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    launches: list[dict[str, Any]] = []
+
+    def launch(argv: list[str], **kwargs: Any) -> int:
+        assert argv == ["scripts/test", "tests/test_widget.py"]
+        launches.append(kwargs)
+        return 4343
+
+    monkeypatch.setattr(run_slice, "_launch", launch)
+    monkeypatch.setattr(run_slice, "_session_alive", lambda h: h.get("pid") == 4343)
+    _finish(handle, 0, "Implemented widget.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and seams["lands"] == []
+    assert not pctx.meta_set.get("compute_handle_released")
+    assert not any(a[:1] == ["commit"] for a, _ in seams["git"])
+    # JSON round-trip models a fresh worker process reading the persisted handle.
+    restored = json.loads(json.dumps(pctx.meta_set["compute_handle"]))
+    resumed = _poll_ctx(store, ctx)
+    resumed.meta.update(pctx.meta_set)
+    assert run_slice.poll(resumed, restored) is False
+    assert len(launches) == 1
+    Path(restored["acceptance_handle"]["exit_file"]).write_text("0\n", encoding="utf-8")
+    seams.update(porcelain=" M widget.py\n", staged=True)
+    seams["committed_ahead"] = "def5678 fix(widget): regression (td42)\n"
+    assert run_slice.poll(resumed, restored) is True
+    assert resumed.status == "succeeded"
+    assert len(launches) == 1 and len(seams["lands"]) == 1
+    assert len([c for c in store.comments(42) if c.startswith("handoff:")]) == 1
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_devin_acceptance_missing_receipt_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alive: bool
+) -> None:
+    handle: dict[str, Any] = {
+        "acceptance_handle": {
+            "pid": 4343,
+            "started": 0,
+            "exit_file": str(tmp_path / "missing.exit"),
+        }
+    }
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: alive)
+    monkeypatch.setattr(run_slice.time, "time", lambda: 4000 if alive else 1)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    handle["acceptance_tests"] = []
+    outcome = run_slice._devin_acceptance_tests(tmp_path, handle, None)
+    assert outcome is not None and outcome[0] is True
+    assert outcome[1] is not None
+    assert ("timed out" if alive else "vanished") in outcome[1]
+    assert signals == ([(4343, signal.SIGKILL)] if alive else [])
+
+
+def test_slice_kill_stops_detached_acceptance(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    handle["acceptance_handle"] = {"pid": 4343}
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    run_slice.kill(ctx, handle)
+    assert signals[0] == (4343, signal.SIGKILL)
 
 
 def test_devin_fallback_commit_names_the_fixed_gripe(

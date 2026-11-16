@@ -44,6 +44,8 @@ The coordinator supplies acceptance tests before launch: new files ride
 worktree cleanup; checked-in paths come from the body/latest brief.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
+Acceptance runs are detached and polled across passes so slow tests cannot
+starve shared factory dispatch; timeout and cancellation stop their group.
 Every worker commit still lands checked: ask-specific tests do not cover
 all impacted behavior. First-line verdicts survive test-only dirty trees.
 Cloud ``devin_task`` appends a pending named-branch handoff contract; no
