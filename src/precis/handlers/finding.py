@@ -129,7 +129,11 @@ from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.glyph_health import glyph_caveat
-from precis.utils.link_tag_ops import apply_tag_ops, merge_link_reason
+from precis.utils.link_tag_ops import (
+    apply_tag_ops,
+    merge_link_note,
+    merge_link_reason,
+)
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.ref_hybrid import fused_ref_hits
@@ -930,6 +934,7 @@ class FindingHandler(NumericRefHandler):
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
         reason: str | None = None,
+        note: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Taproot-aware link door for findings.
@@ -976,7 +981,9 @@ class FindingHandler(NumericRefHandler):
                     "target=..., rel=...); get and tag do take id=[...]"
                 ),
             )
-        meta = merge_link_reason(meta, reason, mode=mode)
+        meta = merge_link_note(
+            merge_link_reason(meta, reason, mode=mode), note, mode=mode
+        )
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)

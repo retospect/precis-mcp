@@ -4111,6 +4111,7 @@ class NumericRefHandler(Handler):
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
         reason: str | None = None,
+        note: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from an existing numeric ref.
@@ -4127,14 +4128,18 @@ class NumericRefHandler(Handler):
         Edge meta is per-edge payload, so ``id=[...]`` fan-in refuses it.
         Only kinds with ``link_meta`` take it on this path.
         """
-        from precis.utils.link_tag_ops import merge_link_reason
+        from precis.utils.link_tag_ops import merge_link_note, merge_link_reason
 
-        if not self.link_meta and (meta is not None or reason is not None):
+        if not self.link_meta and (
+            meta is not None or reason is not None or note is not None
+        ):
             raise BadInput(
-                f"link(kind={self.kind!r}) does not accept meta=/reason=",
+                f"link(kind={self.kind!r}) does not accept meta=/reason=/note=",
                 next="link without meta=/reason= (see precis-link-help)",
             )
-        meta = merge_link_reason(meta, reason, mode=mode)
+        meta = merge_link_note(
+            merge_link_reason(meta, reason, mode=mode), note, mode=mode
+        )
         if isinstance(id, list):
             if meta is not None:
                 raise BadInput(

@@ -121,6 +121,39 @@ def merge_link_reason(
     return {**(meta or {}), "reason": reason}
 
 
+def merge_link_note(
+    meta: dict[str, Any] | None,
+    note: Any,
+    *,
+    mode: str,
+) -> dict[str, Any] | None:
+    """Fold ``link()``'s ``note=`` kwarg into ``meta['note']``.
+
+    ``note=`` is the kwarg spelling of ``meta={'note': …}`` (the verb
+    schema advertises it; gr676754). Add-only; both spellings must agree.
+    """
+    if note is None:
+        return meta
+    if mode == "remove":
+        raise BadInput(
+            "note= only applies when adding a link",
+            next="drop note=, or use mode='add'",
+        )
+    if not isinstance(note, str) or not note.strip():
+        raise BadInput(
+            f"note= must be a non-empty string, got {note!r}",
+            next="note='<why this edge exists>'",
+        )
+    if meta is not None and "note" in meta:
+        if meta["note"] == note:
+            return meta
+        raise BadInput(
+            "note= and meta['note'] disagree — the edge carries one note",
+            next="pass one spelling: note='…' or meta={'note': '…'}",
+        )
+    return {**(meta or {}), "note": note}
+
+
 #: Display cap on a link row's ``meta.reason`` — one whitespace-collapsed
 #: line, cut like the teaser columns around it (gr626896: the reason,
 #: including the reviewed-obvious ``'.'``, must display where the edge does).
