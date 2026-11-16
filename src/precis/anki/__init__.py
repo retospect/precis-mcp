@@ -15,6 +15,11 @@ owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
 stats read back into ``meta.anki_stats``; a ``deck-<topic>`` tag maps to a
 ``Precis::<topic>`` sub-deck.
 
+Anki-side deletions retire the authored ref rather than recreating its note.
+The pre-download mirror and ``meta.anki_synced_at`` distinguish missing
+previously synced notes from new adds, including after a mirror rebuild.
+Only an explicit new add (a new ref/guid) brings a deleted card back.
+
 - `creds` — per-user AnkiWeb credentials in the secrets vault; also
   `anki_logins()`, the roster the sync fans out over.
 - `notes` — pure, anki-free helpers (guid/deck/tag conventions, ref→card spec,

@@ -19,7 +19,7 @@ overwrite AnkiWeb, so it is **refused** — the tick aborts and reports.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.anki.notes import (
@@ -67,6 +67,7 @@ class SyncResult:
     fix_applied: int = 0
     all_cards: list[ForeignCard] | None = None  # populated when project=True
     aborted: str | None = None
+    deleted_ref_ids: list[int] = field(default_factory=list)
 
     def summary(self) -> str:
         if self.aborted:
@@ -232,6 +233,13 @@ def sync_tick(
     col = Collection(mirror_path)
     result = SyncResult()
     try:
+        # Remember our notes before pulling remote deletions. Persisted sync
+        # receipts also cover a lost/rebuilt mirror and retries after a crash.
+        known_refs = {
+            rid
+            for (guid,) in col.db.all("select guid from notes")
+            if (rid := ref_id_from_guid(guid)) is not None
+        }
         auth = col.sync_login(user, password, endpoint)
         out = col.sync_collection(auth, False)
         auth = sp.SyncAuth(hkey=auth.hkey, endpoint=out.new_endpoint or auth.endpoint)
@@ -250,6 +258,20 @@ def sync_tick(
             )
             col.reopen(after_full_sync=True)
             result.bootstrapped = True
+
+        present_refs = {
+            rid
+            for (guid,) in col.db.all("select guid from notes")
+            if (rid := ref_id_from_guid(guid)) is not None
+        }
+        result.deleted_ref_ids = [
+            spec.ref_id
+            for spec in specs
+            if (spec.previously_synced or spec.ref_id in known_refs)
+            and spec.ref_id not in present_refs
+        ]
+        deleted = set(result.deleted_ref_ids)
+        specs = [spec for spec in specs if spec.ref_id not in deleted]
 
         if fix:
             from precis.anki.fix import run_fix_pass

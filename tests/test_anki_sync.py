@@ -11,17 +11,98 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from precis.anki.notes import (
     MANAGED_TAG,
+    AnkiCardSpec,
     aggregate_stats,
     guid_for,
     precis_tag,
     ref_id_from_guid,
     spec_from_ref,
 )
+
+
+@pytest.mark.parametrize("full_download", [False, True])
+@pytest.mark.parametrize("had_mirror", [False, True])
+def test_remote_deletion_is_not_recreated(
+    monkeypatch: pytest.MonkeyPatch, full_download: bool, had_mirror: bool
+) -> None:
+    """Pull deletions before upserting; a rebuilt mirror uses the PG receipt."""
+    from precis.anki import sync
+
+    col = MagicMock()
+    # Ref 7 was synced and then deleted remotely. Ref 8 is a new explicit
+    # add of the same text; ref 9 still exists and remains editable.
+    col.db.all.side_effect = [
+        [(guid_for(7),), (guid_for(9),)] if had_mirror else [],
+        [(guid_for(9),), ("foreign-guid",)],
+    ]
+    changes = SimpleNamespace(FULL_UPLOAD=1, FULL_SYNC=2, FULL_DOWNLOAD=3)
+    col.sync_collection.side_effect = [
+        SimpleNamespace(
+            required=3 if full_download else 0, new_endpoint=None, server_media_usn=0
+        ),
+        SimpleNamespace(required=0),
+    ]
+    sp = SimpleNamespace(
+        SyncCollectionResponse=SimpleNamespace(ChangesRequired=changes),
+        SyncAuth=lambda **kw: SimpleNamespace(**kw),
+    )
+    monkeypatch.setattr(sync, "_import_anki", lambda: (lambda path: col, sp))
+    upsert = MagicMock(return_value=(1, 1))
+    monkeypatch.setattr(sync, "upsert_notes", upsert)
+    monkeypatch.setattr(sync, "read_precis_stats", lambda col: {})
+    specs = [
+        AnkiCardSpec(7, {"Text": "{{c1::same}}"}, previously_synced=not had_mirror),
+        AnkiCardSpec(8, {"Text": "{{c1::same}}"}),
+        AnkiCardSpec(9, {"Text": "{{c1::edited}}"}, previously_synced=True),
+    ]
+    result, _ = sync.sync_tick(
+        mirror_path="unused", user="user", password="pw", specs=specs
+    )
+    assert result.deleted_ref_ids == [7]
+    assert upsert.call_args.args[1] == specs[1:]
+    assert result.bootstrapped == full_download
+    col.close.assert_called_once()
+
+
+def test_remote_deletion_retires_ref_across_ticks(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from precis.anki import sync
+    from precis.workers.anki_sync import run_anki_sync
+
+    _add_user(store, "reto", "rs")
+    _configure_creds(monkeypatch, "reto", "reto@example.com")
+    old = store.insert_ref(
+        kind="anki",
+        slug=None,
+        title="{{c1::same}}",
+        owner_login="reto",
+        meta={"anki_synced_at": "2026-11-16T00:00:00Z"},
+    )
+    new = store.insert_ref(
+        kind="anki", slug=None, title="{{c1::same}}", owner_login="reto"
+    )
+    calls: list[list[int]] = []
+
+    def fake_tick(*, specs, **kw):
+        calls.append([s.ref_id for s in specs])
+        if len(calls) == 1:
+            assert next(s for s in specs if s.ref_id == old.id).previously_synced
+            return sync.SyncResult(deleted_ref_ids=[old.id]), {}
+        return sync.SyncResult(), {}
+
+    monkeypatch.setattr(sync, "sync_tick", fake_tick)
+    cfg = _cfg(mirror_dir=str(tmp_path))
+    run_anki_sync(store, cfg)
+    run_anki_sync(store, cfg)
+    assert old.id in calls[0]
+    assert calls[1] == [new.id]
 
 
 class TestPureHelpers:

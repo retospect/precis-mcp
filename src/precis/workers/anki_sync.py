@@ -146,6 +146,10 @@ def _sync_one_user(
             retire_ref_ids=retire_ids,
         )
         now = datetime.now(UTC).isoformat()
+        for ref_id in result.deleted_ref_ids:
+            # Specs are owner-scoped authored refs. Retiring keeps the deletion
+            # durable across ticks; a new explicit add gets a new ref/guid.
+            store.retire_ref(ref_id)
         for ref_id, st in stats.items():
             # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
             # nested `{"anki": {...}}` would REPLACE the whole meta.anki
