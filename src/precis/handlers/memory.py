@@ -4204,10 +4204,18 @@ class MemoryHandler(NumericRefHandler):
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
-                    "size": row_size_cell(sizes.get(r.id, 0)),
+                    "size [kB] (default 1kB)": row_size_cell(sizes.get(r.id, 0)),
                 }
             )
-        schema = ["kind", "id", "summary", "body_words", "links", "age", "size"]
+        schema = [
+            "kind",
+            "id",
+            "summary",
+            "body_words",
+            "links",
+            "age",
+            "size [kB] (default 1kB)",
+        ]
         return render_agent_table(rows, schema=schema)
 
     # ── search: body-chunk search + cross-kind hits come from the base

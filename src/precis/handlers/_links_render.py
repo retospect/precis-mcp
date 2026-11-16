@@ -126,7 +126,8 @@ def render_links_section(
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
-    Three columns: ``{related to	keywords	how to get}``. Column 1
+    Columns: ``{related to	keywords	how to get	size [kB]
+    (default 1kB)}``. Column 1
     holds ``<rel-marker> <target>`` — ``--`` for default ``related-to``
     (no semantic relation specified), the literal rel name otherwise.
     Inbound rows use the passive form via :data:`_INVERSE_REL`
@@ -193,7 +194,8 @@ def render_links_section(
 
         header = f"Links ({limit} of {total}):" if truncated else "Links:"
         out = f"\n\n{header}\n" + render_agent_table(
-            rows, schema=["related to", "keywords", "how to get", "size"]
+            rows,
+            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
         )
         return out
 
@@ -294,7 +296,8 @@ def _link_row(
     ref_sizes: dict[int, int],
     chunk_sizes: dict[int, int],
 ) -> dict[str, str]:
-    """One ``{related to, keywords, how to get, size}`` table row.
+    """One ``{related to, keywords, how to get, size [kB] (default 1kB)}``
+    table row.
 
     The ``related to`` cell names the far endpoint, then ``via`` the
     focus's own chunk when the edge pins one (gr627629 — a chunk-grounded
@@ -322,7 +325,7 @@ def _link_row(
             "related to": f"{rel_marker} {placeholder}".strip(),
             "keywords": "",
             "how to get": "",
-            "size": "",
+            "size [kB] (default 1kB)": "",
         }
     target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)
     teaser = _teaser_for(endpoints.get(other_id))
@@ -345,10 +348,10 @@ def _link_row(
         ).strip(),
         "keywords": teaser,
         "how to get": get_call,
-        # Every row names a size — sub-kB bodies report raw
-        # bytes, so a small memory doesn't render sizeless
-        # next to a sized gripe (gr568219).
-        "size": row_size_cell(n_bytes),
+        # Every row names a size — sub-kB bodies report decimal
+        # kB (gr568219, gr573411); the column header names the
+        # unit and the hidden ~1kB default.
+        "size [kB] (default 1kB)": row_size_cell(n_bytes),
     }
 
 
@@ -469,7 +472,8 @@ def render_links_view(
         )
         out = f"# {noun} {ref.id} - links{filt}\n\n{table_head}\n"
         out += render_agent_table(
-            rows[:shown], schema=["related to", "keywords", "how to get", "size"]
+            rows[:shown],
+            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
         )
         if end < total:
             next_args: dict[str, Any] = {

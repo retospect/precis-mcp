@@ -587,11 +587,12 @@ def test_search_verbatim_finds_exact_sentence(handler: MemoryHandler) -> None:
 
 
 def test_tag_listing_names_size_for_sub_kb_memory(handler: MemoryHandler) -> None:
-    """gr568219: every listing row names a size — a sub-kB body reports
-    raw bytes instead of the blank cell ``size_cell`` gives under 1 kB."""
-    handler.put(text="nitrate reduction on copper", tags=["sizetest"])
+    """gr568219/gr573411: every listing row names a size — a sub-kB body
+    reports decimal kB (``0.4kB``) instead of the blank cell ``size_cell``
+    gives under 1 kB or the raw byte count shown before gr573411."""
+    handler.put(text="x" * 353, tags=["sizetest"])
     r = handler.search(tags=["sizetest"])
-    assert re.search(r"\b\d+B\b", r.body)
+    assert "0.4kB" in r.body
 
 
 def test_search_requires_q(handler: MemoryHandler) -> None:
@@ -2754,16 +2755,17 @@ def test_search_view_index_renders_handle_filename_and_hook(
     )
     out = handler.search(q="quokka", tags=["SPACE:repo-dev"], view="index").body
     lines = out.splitlines()
-    # Every row names a size — sub-kB bodies report raw bytes (gr568219).
+    # Every row names a size — sub-kB bodies report decimal kB
+    # (gr568219, gr573411).
     line_a = next(ln for ln in lines if f"me{a}" in ln)
     assert line_a.startswith(
         f"- Quokka stall (me{a}, quokka_stall.md) — restart the quokka scheduler · "
     )
-    assert re.search(r"· \d+B$", line_a)
+    assert re.search(r"· \d+(?:\.\d+)?kB$", line_a)
     # no hook, no mirror filename: first body line stands in for the hook
     line_b = next(ln for ln in lines if f"me{b}" in ln)
     assert line_b.startswith(f"- Quokka native (me{b}) — Native quokka note · ")
-    assert re.search(r"· \d+B$", line_b)
+    assert re.search(r"· \d+(?:\.\d+)?kB$", line_b)
     assert all(ln.startswith("- ") for ln in lines)
 
 
