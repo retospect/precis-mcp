@@ -738,7 +738,7 @@ def _ensure_candidate_detail(
     # then vary — gr552641's dopant-substitution series off a baseline).
     ops = spec.get("ops") or []
     derive_from = str(spec.get("derive_from") or "").strip()
-    if derive_from and "cell" in spec:
+    if derive_from and spec.get("cell") is not None:
         return (
             None,
             False,
@@ -751,7 +751,7 @@ def _ensure_candidate_detail(
             ),
         )
     has_cell = (
-        "cell" in spec
+        spec.get("cell") is not None
         or bool(derive_from)
         or (
             isinstance(ops, list)

@@ -102,6 +102,99 @@ def test_slab_op_refusal_carries_a_working_example_as_next(structure):
     assert '"size":[3,3,4]' in _reject_reason(exc.value)
 
 
+def test_put_explicit_null_cell_means_absent_not_a_crash(structure):
+    """gr681307: an LLM spec carrying ``"cell": null`` reached
+    ``_build_cell(None)``, and the quest tick's rejection note surfaced the
+    raw ``'NoneType' object has no attribute 'get'``. An explicit null reads
+    as absent (the ops layer's convention), so a cell-establishing op still
+    supplies the cell."""
+    pytest.importorskip("ase.build")
+    resp = structure.put(
+        id="pd_slab_null_cell",
+        text=json.dumps(
+            {
+                "cell": None,
+                "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}],
+            }
+        ),
+    )
+    assert "created" in resp.body
+    assert "Pd12" in resp.body
+
+
+def test_put_null_cell_without_a_cell_op_is_a_named_refusal(structure):
+    """``"cell": null`` and no cell-establishing op → the ordinary
+    needs-a-cell refusal, not a raw AttributeError."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(id="no_cell", text=json.dumps({"cell": None, "ops": []}))
+
+
+def test_put_non_object_cell_is_a_named_refusal(structure):
+    """A ``cell`` that isn't an object (or null) names the field instead of
+    crashing inside ``_build_cell``."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(id="bad_cell", text=json.dumps({"cell": "fcc", "ops": []}))
+
+
+def test_put_null_cell_fields_fall_back_to_defaults(structure):
+    """``pbc``/angle ``null``s inside a cell object read as absent —
+    ``_op_slab``'s explicit-null convention applied to the cell spec."""
+    resp = structure.put(
+        id="null_fields",
+        text=json.dumps(
+            {
+                "cell": {
+                    "a": 10.0,
+                    "b": 10.0,
+                    "c": 10.0,
+                    "pbc": None,
+                    "alpha": None,
+                },
+                "ops": [{"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]}],
+            }
+        ),
+    )
+    assert "created" in resp.body
+    assert "pbc[TTT]" in resp.body
+
+
+def test_put_non_numeric_cell_is_a_named_refusal(structure):
+    """A non-number where a cell field wants a number is a BadInput naming
+    the field, not a raw TypeError."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(
+            id="nan_cell",
+            text=json.dumps({"cell": {"a": "big", "b": 10.0, "c": 10.0}, "ops": []}),
+        )
+
+
+def test_put_non_list_ops_is_a_named_refusal(structure):
+    """``ops`` as an object (one op not wrapped in a list) is a named
+    refusal, not a dict-keys iteration that errors on its first key."""
+    with pytest.raises(BadInput, match="ops"):
+        structure.put(
+            id="dict_ops",
+            text=json.dumps(
+                {
+                    "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+                    "ops": {"op": "slab", "element": "Pd"},
+                }
+            ),
+        )
+
+
+def test_derive_null_op_entry_is_a_named_refusal(structure):
+    """``derive_from`` with a ``null`` ops entry used to hit ``o.get('op')``
+    on None in the relax pre-check — gr681307's second ``'NoneType' …
+    'get'`` crash site. It now falls through to the malformed-op refusal."""
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput, match="op"):
+        structure.put(
+            id="pd_pair_child",
+            args={"derive_from": "pd_pair", "ops": [None]},
+        )
+
+
 def test_atom_and_neighborhood_and_bonds_probes(structure):
     structure.put(id="pd_pair", text=_PD)
     atom = structure.get(id="pd_pair", view="atom", args={"atom": "aPd1"})

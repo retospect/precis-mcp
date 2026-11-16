@@ -594,17 +594,22 @@ def _vec(args: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def _build_cell(spec: dict[str, Any]) -> Cell:
-    pbc = tuple(spec.get("pbc", (True, True, True)))
-    if "lattice" in spec:
-        return Cell(np.array(spec["lattice"], dtype=float), pbc)
+    # An explicit ``null`` on an optional field means "absent → default"
+    # (the same convention the ops layer follows for LLM-emitted JSON);
+    # a non-number where a number is due is a retryable BadInput, never a
+    # raw TypeError the caller surfaces as the refusal reason (gr681307).
     try:
+        pbc = tuple(spec["pbc"]) if spec.get("pbc") is not None else (True, True, True)
+        lattice = spec.get("lattice")
+        if lattice is not None:
+            return Cell(np.array(lattice, dtype=float), pbc)
         return Cell.from_lengths_angles(
             float(spec["a"]),
             float(spec["b"]),
             float(spec["c"]),
-            float(spec.get("alpha", 90.0)),
-            float(spec.get("beta", 90.0)),
-            float(spec.get("gamma", 90.0)),
+            float(spec["alpha"]) if spec.get("alpha") is not None else 90.0,
+            float(spec["beta"]) if spec.get("beta") is not None else 90.0,
+            float(spec["gamma"]) if spec.get("gamma") is not None else 90.0,
             pbc,
         )
     except KeyError as exc:
@@ -612,6 +617,11 @@ def _build_cell(spec: dict[str, Any]) -> Cell:
             f"cell needs 'lattice' or a/b/c (missing {exc})",
             next="cell={'a':8.4,'b':8.4,'c':24,'pbc':[true,true,false]}",
         ) from None
+    except (TypeError, ValueError) as exc:
+        raise BadInput(
+            f"cell fields must be numbers or number arrays — got {spec!r} ({exc})",
+            next="cell={'a':8.4,'b':8.4,'c':24,'pbc':[true,true,false]}",
+        ) from exc
 
 
 #: Ops that establish the cell themselves, so a top-level ``cell`` is optional.
@@ -1293,8 +1303,20 @@ class StructureHandler(Handler):
             )
         payload = _payload(text, args)
         ops = payload.get("ops") or []
-        if "cell" in payload:
-            scene = Scene(cell=_build_cell(payload["cell"]))
+        if not isinstance(ops, list):
+            raise BadInput(
+                "put(kind='structure') 'ops' must be a list of op objects",
+                next=_PUT_EXAMPLE,
+            )
+        cell_spec = payload.get("cell")
+        if cell_spec is not None and not isinstance(cell_spec, dict):
+            raise BadInput(
+                f"put(kind='structure') 'cell' must be an object "
+                f"({{a, b, c, pbc}} or a 'lattice'), got {cell_spec!r}",
+                next=_PUT_EXAMPLE,
+            )
+        if cell_spec is not None:
+            scene = Scene(cell=_build_cell(cell_spec))
         elif _ops_establish_cell(ops):
             # A bulk template (`slab`) or a `set_cell` op provides the cell — the
             # placeholder is overwritten before any atom is placed.
@@ -1983,7 +2005,7 @@ class StructureHandler(Handler):
         scene, _ = self.store.structure_load(parent.id)
         parent_labels = set(scene.atoms)
         op_list = ops or []
-        if any(o.get("op") == "relax" for o in op_list):
+        if any(isinstance(o, dict) and o.get("op") == "relax" for o in op_list):
             raise BadInput(
                 "derive applies graph/marker ops only (no relax)",
                 next="drop the relax op, then relax the derived design with "

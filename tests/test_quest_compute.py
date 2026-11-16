@@ -1029,6 +1029,43 @@ class TestRejectedProposalFeedback:
         assert len(scene.atoms) == 12
         assert {a.element for a in scene.atoms.values()} == {"Pd"}
 
+    def test_null_cell_with_slab_op_materialises(self, store: Any) -> None:
+        """gr681307: a proposal spec carrying ``"cell": null`` used to crash
+        inside ``_build_cell(None)``, so the logbook's ``rejected proposal``
+        note carried the raw ``'NoneType' object has no attribute 'get'``
+        instead of a reason. An explicit null cell is "absent" — the slab
+        op establishes it."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        spec = {
+            "cell": None,
+            "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd(111)", "structure": spec}
+        )
+        assert sid is not None
+        scene, _ = store.structure_load(sid)
+        assert len(scene.atoms) == 12
+        # a null-cell proposal is never a silent crash — no rejection note
+        assert self._observations(store, qid) == []
+
+    def test_null_cell_without_a_cell_op_rejects_with_a_reason(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        step = compute_mod.run_compute_step(
+            store,
+            qid,
+            [{"name": "x", "structure": {"cell": None, "ops": []}}],
+            dispatch=False,
+        )
+        assert step.candidates_created == 0
+        notes = self._observations(store, qid)
+        assert len(notes) == 1
+        assert "cell" in notes[0]
+        assert "NoneType" not in notes[0]
+
 
 class TestDeriveFromSpec:
     """``spec.derive_from`` (gr552641): a candidate cloned off an existing
@@ -1271,6 +1308,34 @@ class TestDeriveFromSpec:
         ]
         assert len(notes) == 1
         assert "no-such-design" in notes[0]
+
+    def test_null_op_entry_is_rejected_with_a_note(self, store: Any) -> None:
+        """gr681307's other ``'NoneType' … 'get'`` site: ``derive``'s relax
+        pre-check called ``o.get('op')`` on a ``null`` ops entry before the
+        malformed-op validation ran — the proposal must be refused with a
+        reason, not a raw AttributeError."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        self._parent(store)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "ops": [
+                {"op": "set_element", "atom": "aPd10", "element": "Co"},
+                None,
+            ],
+        }
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert "NoneType" not in notes[0]
+        assert "op" in notes[0]
 
     def test_retired_derive_from_is_rejected_with_a_note(self, store: Any) -> None:
         pytest.importorskip("ase.build")
