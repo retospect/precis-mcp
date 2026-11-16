@@ -10,7 +10,10 @@ error handlers, and a lifespan building the single
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
 
-**Ref readers.** ``ref_urls`` is the shared native-reader map for Drive,
+**Ref readers.** Memory bodies render Markdown blocks through ``linkify.linkify_toon``;
+inline spans preserve single newlines so older line-oriented bodies remain
+legible. Code stays literal, including nested fences, and raw HTML is escaped.
+``ref_urls`` is the shared native-reader map for Drive,
 handle resolution and tag pivots. Browse-menu membership cannot gate stored
 ref detail: optional kinds still render when their handler is absent. ORCID
 reads its stored identity/authored papers without upstream refresh. File kinds

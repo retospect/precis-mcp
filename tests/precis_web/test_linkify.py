@@ -909,6 +909,47 @@ def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
 # ── TOON / TSV tabular rendering (linkify_toon) ──────────────────────
 
 
+def test_toon_memory_markdown_blocks_preserve_lines() -> None:
+    """gr574981: block formatting must not collapse existing memory lines."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(
+        linkify_toon(
+            "## Work\n\nRouter: first\nBuilder: second\n\n"
+            "3. **Build**\n   continuation\n4. Release\n\n"
+            "- One\n- Two\n\n> Quoted\n> second line\n\n<script>alert(1)</script>",
+            handles={},
+        )
+    )
+    assert '<h2 class="font-semibold my-2">' in out
+    assert '<ol start="3" class="list-decimal pl-5 my-2">' in out
+    assert '<ul class="list-disc pl-5 my-2">' in out
+    assert '<blockquote class="border-l pl-4 my-2">' in out
+    assert 'class="whitespace-pre-wrap">Router: first\nBuilder: second</span>' in out
+    assert "<strong>Build</strong>\ncontinuation</span>" in out
+    assert 'class="whitespace-pre-wrap">Quoted\nsecond line</span>' in out
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_toon_nested_fences_restore_literal_dois() -> None:
+    """Nested code must bypass linkification and restore DOI placeholders."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(
+        linkify_toon(
+            "> ```text\n> doi:10.1234/example <tag>\n> ```\n\n"
+            "- Code:\n\n    ```\n    doi:10.1234/example\n    ```",
+            handles={},
+            doi_links={"10.1234/example": "/paper/example"},
+        )
+    )
+    assert "<pre><code>doi:10.1234/example &lt;tag&gt;\n</code></pre>" in out
+    assert "<pre><code>doi:10.1234/example\n</code></pre>" in out
+    assert "\x00" not in out
+    assert "<a " not in out
+
+
 def test_toon_without_handles_preserves_legacy_fences_and_pipe_tables() -> None:
     """gr561018: non-memory readers retain origin/main's literal prose HTML."""
     from precis_web.linkify import linkify_toon
