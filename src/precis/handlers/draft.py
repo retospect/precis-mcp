@@ -31,6 +31,12 @@ itself by its slug (the universal ``id=``). See ``precis-draft-help``.
 TOON replacement receipts count kept, added and retired live row/column IDs,
 including in dry runs. Filtered grids can otherwise hide accidental retirement;
 omitted calculated columns that survive replacement count as kept.
+
+Text write receipts isolate advisory database reads after commit: losing a
+connection while building hygiene hints must preserve the landed handles and
+revision hash, otherwise callers may retry and duplicate committed prose.
+Write failures themselves still propagate; the advisory guard never wraps
+the mutation.
 """
 
 from __future__ import annotations
@@ -41,7 +47,8 @@ import json
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC
 from typing import Any, ClassVar
 
@@ -133,6 +140,20 @@ from precis.utils.table_toon import (
 )
 
 log = logging.getLogger(__name__)
+
+
+@contextmanager
+def _write_advisories() -> Iterator[list[str]]:
+    """Keep an already committed write's receipt if optional reads fail."""
+    notices: list[str] = []
+    try:
+        yield notices
+    except Exception:
+        log.warning("draft: write committed but receipt hints failed", exc_info=True)
+        notices.append(
+            "\nWrite committed; advisory hints unavailable. Do not retry the write."
+        )
+
 
 # A bare draft chunk handle: the universal handle ``dc<chunk_id>``
 # or the legacy ``¶<base58>`` form. Relative navigation (``^`` / ``+N`` /
@@ -2099,10 +2120,10 @@ class DraftHandler(Handler):
             t3 = time.monotonic()
             self._attribute_touch([c.chunk_id for c in chunks])
             log.info(
-                "draft.put phases slug=%s draft_chunks=%d dangling_refs=%.3fs "
+                "draft.put phases slug=%s added_chunks=%d dangling_refs=%.3fs "
                 "add_chunks=%.3fs sync_draft_links=%.3fs attribute_touch=%.3fs",
                 slug,
-                len(self.store.drafts.chunk_ord_map(ref.id)),
+                len(chunks),
                 t1 - t0,
                 t2 - t1,
                 t3 - t2,
@@ -2134,32 +2155,34 @@ class DraftHandler(Handler):
             # no hygiene checks inside it, gr592769). All of a new chunk's
             # text is "newly introduced", so there's no prior text to diff
             # against.
-            if kind not in ("term", "code"):
-                body += _draft_lint.write_abbrev_hints(
-                    self.store, slug, ref.id, str(text), ""
-                )
-                body += _draft_lint.citation_form_hint(str(text))
-                body += _draft_lint.whole_paper_cite_hint(self.store, str(text), "")
-                body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
-                body += _draft_lint.glyph_cite_hint(self.store, str(text))
-                body += _draft_lint.pin_hint(self.store, str(text))
-                body += _draft_lint.literal_cite_hint(str(text))
-                body += _draft_lint.bare_identifier_hint(str(text))
-                body += _draft_lint.temperature_form_hint(str(text))
-                body += _draft_lint.math_form_hint(str(text))
-                body += _draft_lint.house_style_hint(str(text), kind)
-                body += _draft_lint.sentence_start_hint(
-                    self.store, ref.id, str(text), chunk_kind=kind
-                )
-                body += _draft_lint.bare_xref_hint(str(text))
-                body += _draft_lint.concept_label_hint(
-                    self.store, slug, ref.id, str(text), "", kind
-                )
-                body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
-                for _c in chunks:
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
+            with _write_advisories() as notices:
+                if kind not in ("term", "code"):
+                    body += _draft_lint.write_abbrev_hints(
+                        self.store, slug, ref.id, str(text), ""
                     )
+                    body += _draft_lint.citation_form_hint(str(text))
+                    body += _draft_lint.whole_paper_cite_hint(self.store, str(text), "")
+                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
+                    body += _draft_lint.glyph_cite_hint(self.store, str(text))
+                    body += _draft_lint.pin_hint(self.store, str(text))
+                    body += _draft_lint.literal_cite_hint(str(text))
+                    body += _draft_lint.bare_identifier_hint(str(text))
+                    body += _draft_lint.temperature_form_hint(str(text))
+                    body += _draft_lint.math_form_hint(str(text))
+                    body += _draft_lint.house_style_hint(str(text), kind)
+                    body += _draft_lint.sentence_start_hint(
+                        self.store, ref.id, str(text), chunk_kind=kind
+                    )
+                    body += _draft_lint.bare_xref_hint(str(text))
+                    body += _draft_lint.concept_label_hint(
+                        self.store, slug, ref.id, str(text), "", kind
+                    )
+                    body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
+                    for _c in chunks:
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
+                        )
+            body += "".join(notices)
             return Response(body=_facts_deferred(body, deferred))
 
         # else: create the draft
@@ -3643,40 +3666,42 @@ class DraftHandler(Handler):
                     body += f" ({occurrences} occurrences of find= {suffix})"
                 self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
-                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
-                slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                # A ``code`` chunk's text is verbatim payload — no prose
-                # lint hints inside it (gr592769).
-                if c.chunk_kind != "code":
-                    body += _draft_lint.write_abbrev_hints(
-                        self.store, slug, c.ref_id, new_text, old_text
-                    )
-                    body += _draft_lint.citation_form_hint(new_text)
-                    body += _draft_lint.whole_paper_cite_hint(
-                        self.store, new_text, old_text
-                    )
-                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
-                    body += _draft_lint.glyph_cite_hint(self.store, new_text)
-                    body += _draft_lint.pin_hint(self.store, new_text, old_text)
-                    body += _draft_lint.literal_cite_hint(new_text)
-                    body += _draft_lint.bare_identifier_hint(new_text)
-                    body += _draft_lint.temperature_form_hint(new_text)
-                    body += _draft_lint.math_form_hint(new_text, old_text)
-                    body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
-                    body += _draft_lint.sentence_start_hint(
-                        self.store, c.ref_id, new_text, old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.bare_xref_hint(new_text, old_text)
-                    body += _draft_lint.concept_label_hint(
-                        self.store, slug, c.ref_id, new_text, old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                    )
-                    body += _draft_lint.dangling_edit_hint(
-                        self.store, new_text, old_text
-                    )
+                with _write_advisories() as notices:
+                    ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                    slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                    # A ``code`` chunk's text is verbatim payload — no prose
+                    # lint hints inside it (gr592769).
+                    if c.chunk_kind != "code":
+                        body += _draft_lint.write_abbrev_hints(
+                            self.store, slug, c.ref_id, new_text, old_text
+                        )
+                        body += _draft_lint.citation_form_hint(new_text)
+                        body += _draft_lint.whole_paper_cite_hint(
+                            self.store, new_text, old_text
+                        )
+                        body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
+                        body += _draft_lint.glyph_cite_hint(self.store, new_text)
+                        body += _draft_lint.pin_hint(self.store, new_text, old_text)
+                        body += _draft_lint.literal_cite_hint(new_text)
+                        body += _draft_lint.bare_identifier_hint(new_text)
+                        body += _draft_lint.temperature_form_hint(new_text)
+                        body += _draft_lint.math_form_hint(new_text, old_text)
+                        body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
+                        body += _draft_lint.sentence_start_hint(
+                            self.store, c.ref_id, new_text, old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.bare_xref_hint(new_text, old_text)
+                        body += _draft_lint.concept_label_hint(
+                            self.store, slug, c.ref_id, new_text, old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                        )
+                        body += _draft_lint.dangling_edit_hint(
+                            self.store, new_text, old_text
+                        )
+                body += "".join(notices)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         if text is not None:
@@ -3698,39 +3723,48 @@ class DraftHandler(Handler):
             if c is not None:
                 self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
-                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
-                slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                # A ``code`` chunk's text is verbatim payload — no prose
-                # lint hints inside it (gr592769).
-                if c.chunk_kind != "code":
-                    body += _draft_lint.write_abbrev_hints(
-                        self.store, slug, c.ref_id, str(text), old_text
-                    )
-                    body += _draft_lint.citation_form_hint(str(text))
-                    body += _draft_lint.whole_paper_cite_hint(
-                        self.store, str(text), old_text
-                    )
-                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
-                    body += _draft_lint.glyph_cite_hint(self.store, str(text))
-                    body += _draft_lint.pin_hint(self.store, str(text), old_text)
-                    body += _draft_lint.literal_cite_hint(str(text))
-                    body += _draft_lint.bare_identifier_hint(str(text))
-                    body += _draft_lint.temperature_form_hint(str(text))
-                    body += _draft_lint.math_form_hint(str(text), old_text)
-                    body += _draft_lint.sentence_start_hint(
-                        self.store, c.ref_id, str(text), old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.bare_xref_hint(str(text), old_text)
-                    body += _draft_lint.concept_label_hint(
-                        self.store, slug, c.ref_id, str(text), old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                    )
-                    body += _draft_lint.dangling_edit_hint(
-                        self.store, str(text), old_text
-                    )
+                with _write_advisories() as notices:
+                    ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                    slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                    # A ``code`` chunk's text is verbatim payload — no prose
+                    # lint hints inside it (gr592769).
+                    if c.chunk_kind != "code":
+                        body += _draft_lint.write_abbrev_hints(
+                            self.store, slug, c.ref_id, str(text), old_text
+                        )
+                        body += _draft_lint.citation_form_hint(str(text))
+                        body += _draft_lint.whole_paper_cite_hint(
+                            self.store, str(text), old_text
+                        )
+                        body += _draft_lint.pc_cite_claim_hub_hint(
+                            self.store, str(text)
+                        )
+                        body += _draft_lint.glyph_cite_hint(self.store, str(text))
+                        body += _draft_lint.pin_hint(self.store, str(text), old_text)
+                        body += _draft_lint.literal_cite_hint(str(text))
+                        body += _draft_lint.bare_identifier_hint(str(text))
+                        body += _draft_lint.temperature_form_hint(str(text))
+                        body += _draft_lint.math_form_hint(str(text), old_text)
+                        body += _draft_lint.sentence_start_hint(
+                            self.store, c.ref_id, str(text), old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.bare_xref_hint(str(text), old_text)
+                        body += _draft_lint.concept_label_hint(
+                            self.store,
+                            slug,
+                            c.ref_id,
+                            str(text),
+                            old_text,
+                            c.chunk_kind,
+                        )
+                        body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                        )
+                        body += _draft_lint.dangling_edit_hint(
+                            self.store, str(text), old_text
+                        )
+                body += "".join(notices)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         raise BadInput(
@@ -3843,8 +3877,6 @@ class DraftHandler(Handler):
         )
         self.sync_draft_links(int(block.ref_id))
         self._attribute_touch([block.chunk_id, *(c.chunk_id for c in inserted)])
-        ref = self.store.get_ref(kind="draft", id=int(block.ref_id))
-        slug = ref.slug if ref and ref.slug else str(block.ref_id)
         made = {c.chunk_id for c in inserted}
         top = [c for c in inserted if c.parent_chunk_id not in made]
         body = f"replaced {block.dc} [{block.chunk_kind}] own content"
@@ -3862,45 +3894,51 @@ class DraftHandler(Handler):
                     f"added {len(top)} chunk{'s' if len(top) != 1 else ''}: "
                     + " ".join(str(c.dc) for c in top)
                 )
-            n_kept = len(self.store.drafts.descendant_chunk_ids(block.chunk_id)) - len(
-                inserted
-            )
-            if n_kept:
-                bits.append(
-                    f"kept {n_kept} child chunk"
-                    f"{'s' if n_kept != 1 else ''} (subsections untouched, "
-                    "same ids)"
-                )
+            with _write_advisories() as notices:
+                n_kept = len(
+                    self.store.drafts.descendant_chunk_ids(block.chunk_id)
+                ) - len(inserted)
+                if n_kept:
+                    bits.append(
+                        f"kept {n_kept} child chunk"
+                        f"{'s' if n_kept != 1 else ''} (subsections untouched, "
+                        "same ids)"
+                    )
             if bits:
                 body += " — " + "; ".join(bits)
+            body += "".join(notices)
         else:
             body = f"edited {block.dc}"
-        body += _draft_lint.write_abbrev_hints(
-            self.store, slug, int(block.ref_id), new_raw, old_text
-        )
-        body += _draft_lint.citation_form_hint(new_raw)
-        body += _draft_lint.whole_paper_cite_hint(self.store, new_raw, old_text)
-        body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
-        body += _draft_lint.glyph_cite_hint(self.store, new_raw)
-        body += _draft_lint.pin_hint(self.store, new_raw, old_text)
-        body += _draft_lint.literal_cite_hint(new_raw)
-        body += _draft_lint.bare_identifier_hint(new_raw)
-        body += _draft_lint.temperature_form_hint(new_raw)
-        body += _draft_lint.math_form_hint(new_raw, old_text)
-        body += _draft_lint.house_style_hint(new_raw, "paragraph")
-        body += _draft_lint.sentence_start_hint(
-            self.store, int(block.ref_id), new_raw, old_text
-        )
-        body += _draft_lint.bare_xref_hint(new_raw, old_text)
-        body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
-        body += _draft_lint.title_heading_dup_hint(
-            self.store,
-            int(block.ref_id),
-            block.chunk_id,
-            block.chunk_kind,
-            block.text,
-        )
-        body += _draft_lint.dangling_edit_hint(self.store, new_raw, old_text)
+        with _write_advisories() as notices:
+            ref = self.store.get_ref(kind="draft", id=int(block.ref_id))
+            slug = ref.slug if ref and ref.slug else str(block.ref_id)
+            body += _draft_lint.write_abbrev_hints(
+                self.store, slug, int(block.ref_id), new_raw, old_text
+            )
+            body += _draft_lint.citation_form_hint(new_raw)
+            body += _draft_lint.whole_paper_cite_hint(self.store, new_raw, old_text)
+            body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
+            body += _draft_lint.glyph_cite_hint(self.store, new_raw)
+            body += _draft_lint.pin_hint(self.store, new_raw, old_text)
+            body += _draft_lint.literal_cite_hint(new_raw)
+            body += _draft_lint.bare_identifier_hint(new_raw)
+            body += _draft_lint.temperature_form_hint(new_raw)
+            body += _draft_lint.math_form_hint(new_raw, old_text)
+            body += _draft_lint.house_style_hint(new_raw, "paragraph")
+            body += _draft_lint.sentence_start_hint(
+                self.store, int(block.ref_id), new_raw, old_text
+            )
+            body += _draft_lint.bare_xref_hint(new_raw, old_text)
+            body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
+            body += _draft_lint.title_heading_dup_hint(
+                self.store,
+                int(block.ref_id),
+                block.chunk_id,
+                block.chunk_kind,
+                block.text,
+            )
+            body += _draft_lint.dangling_edit_hint(self.store, new_raw, old_text)
+        body += "".join(notices)
         # The chained-edit token: the span sha of what landed, computed
         # inside the write tx, so a follow-up replace-content needs no
         # re-read (``sha:`` for a leaf — same value, one label).
