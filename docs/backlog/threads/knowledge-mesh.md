@@ -214,11 +214,11 @@ graph-health-metrics, five parked gripes, and the seam with
    once 9 lands. 2026-10-06
    (Reto: "dive into the graph and back out again"): the navigation
    pieces — zoom-out via `UP_RELATIONS`, came-from slot, peek, keyboard
-   map — live in `web-graph-navigation.md` slices 7–9; `/eye/` keeps the
+   map — live in `web-graph-navigation (me694223)` slices 7–9; `/eye/` keeps the
    text ladder. Edge editing from the page is
    **me693490** (draft, blocked-by web-graph-navigation)
    — a human fixing a wrong edge where they see it is the complement of
-   the gardener's proposals (graph-gardener-value.md, below).
+   the gardener's proposals (graph-gardener-value (me693885), below).
 7. **me693370: the qu202467 pilot gaps** (Reto
    2026-10-03, knowledge-mesh-12, option 1). Builds A–D are live and the
    pilot data is written and reviewed (see Resume). Open: 0188 (A2) on its
@@ -230,7 +230,7 @@ graph-health-metrics, five parked gripes, and the seam with
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
    the pillar review). Right after 7 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
-   `materials-molecular-substitution-db.md`.
+   `materials-molecular-substitution-db (gr695283)`.
 9. **memory-file-mirror** — SHIPPED (aa669f59f, c06e338fc, legacy refresh
    8993c22e6, native export afa814bd9), backlog doc deleted 2026-10-15.
    Real import live: 150 refs in namespace `repo-dev-harness-20261007`.
@@ -299,8 +299,8 @@ graph-health-metrics, five parked gripes, and the seam with
 13. **gr690817** — waits on Do-next 7;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
-    open contradiction it records: `measures-substrate.md` §3 owns an
-    `experiment` kind, `experiment-loop.md` says no new kind.
+    open contradiction it records: `measures-substrate (me693370)` §3 owns an
+    `experiment` kind, `experiment-loop (me693311)` says no new kind.
 14. **gr690826** — waits on Horizon 3; a populated
     mesh is the precondition for measuring its own reachability, orphan
     rate and edge precision, which is what gardener (5) fixes against.

@@ -68,8 +68,7 @@ from here:
   ``GET .../retraction-status`` (no-network read) and
   ``POST .../retraction-check`` (live re-check, TTL-gated,
   ``force=1`` bypasses) back the export pane; same shared walk. That walk
-  also carries DOI completeness/validity (docs/backlog/
-  draft-doi-completeness-check.md) on the same two routes' JSON —
+  also carries DOI completeness/validity (gr690484) on the same two routes' JSON —
   advisory only, never export-gating.
 
 Rendering is **raw source** (Tier A); §-numbering/cross-ref resolution is

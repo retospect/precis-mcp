@@ -3351,8 +3351,7 @@ class GripeHandler(NumericRefHandler):
         return Response(body=gf.render_batch(batch, states, bodies, comments))
 
     def _dup_lines(self, ref: Ref) -> list[str]:
-        """Pipeline v2 slice 2 card lines (``docs/backlog/
-        gripe-pipeline-v2.md`` §Data model): ``duplicates: x N`` =
+        """Pipeline v2 slice 2 card lines (``me691700`` §Data model): ``duplicates: x N`` =
         OUTBOUND ``supersedes`` links — this keeper supersedes N parked
         duplicates (the repo convention is source supersedes target) —
         and ``potential duplicate parents: gr<id>(<sim>)`` off

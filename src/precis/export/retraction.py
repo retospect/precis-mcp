@@ -5,8 +5,7 @@ One walk, two consumers — the export gate (`precis_web/routes/drafts.py`)
 and the draft's retraction-watch button — so the two can never disagree
 about what a draft cites or how bad it is.
 
-**DOI completeness rides the same walk** (docs/backlog/
-draft-doi-completeness-check.md, decided 2026-08-12: one walk, not a
+**DOI completeness rides the same walk** (gr690484, decided 2026-08-12: one walk, not a
 parallel module). DOI *presence* — does this cite carry a DOI at all, and
 if not, is it at least resolvable from another identifier (arxiv/pubmed/
 s2)? — is a pure read off ``ref_identifiers``, same cost profile as

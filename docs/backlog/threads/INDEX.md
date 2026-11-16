@@ -93,7 +93,7 @@ Seams:
   se-machine-design consumes it rather than re-deriving it.
 - `src/precis_flow/`, `src/precis_se/flow.py`, me695207
   slices 4a–4b and me694928 — se-machine-design owns
-  the physics (kernels, regime cards, `se-multiphysics.md` slices);
+  the physics (kernels, regime cards, `se-multiphysics (me694808)` slices);
   structure-workspaces ranks and builds the script-facing toolkit
   (`precis_geom.flow`/`physics`/`params`/`optimize`/`fields` in the
   wheel, `evaluate`, the `precis-workspace-optimize-help` skill, the
@@ -135,8 +135,10 @@ Seams:
 - catalysis-selectivity edits the ammonia network content and adds link
   fields (`added`/`removed`, typed `kind`); chemistry owns the engine
   contract and the wheel bump. gr695176
-  moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
-  stays chemistry's, catalysis-selectivity decides where NEB runs.
+  moved to catalysis-selectivity (Do-next 2); the NEB-barriers idea stays
+  chemistry's — the spec transfer deleted `neb-barriers-in-the-catpath-pipeline.md`
+  without minting a graph node, so re-file it if still wanted;
+  catalysis-selectivity decides where NEB runs.
 - catpath owns the engine backlog: validation B1 and C (td633735), the
   poisoned-pathway re-run (td559534) and the `project:catpath` gripes.
   catalysis-selectivity keeps the science (network, objective, ranking)
@@ -204,7 +206,7 @@ Seams:
 - Part refs (shipped 2026-10-02, `precis.handlers.part` docstring) —
   ewod-pcb's datasheet autopull (shipped) gets `datasheet-of` for free:
   setting `part_lcsc` on the pulled datasheet writes the edge too, and
-  `datasheet-facts-mesh.md` (knowledge-mesh Horizon 16) hangs the
+  `datasheet-facts-mesh (me693194)` (knowledge-mesh Horizon 16) hangs the
   extracted facts on the part ref.
 - `fisheye-everywhere` — landed 2026-10-12 (backlog doc deleted
   2026-10-15); the eye ladder on every kind and the `/eye/<handle>`
@@ -212,7 +214,7 @@ Seams:
   pillar 1).
 - me693606 — knowledge-mesh Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
-  ranked in `knowledge-mesh.md` from 2026-09-30.
+  ranked in `knowledge-mesh (me693314)` from 2026-09-30.
 - memory recall/walk/keep slice 1a (shipped) built the store-level
   neighbourhood function that me694223 exposes:
   slice 1 as `GET /graph/<kind>/<id>.json`, slices 2–3 (shipped
@@ -293,9 +295,9 @@ Seams:
   `local-compute` ranks me695298, the `llm-local`
   class — one allocator per box (capacity controller + class lanes;
   absorbed `llm-dispatch-feedback-controller.md`), with
-  `serving-agent-lane.md`'s two lanes as classes in it. Two scheduling
-  levels stay distinct: the job queue (`cluster-scheduling.md`,
-  `job-scheduling-fairness.md`, factory/platform) decides which job runs;
+  `serving-agent-lane (me695333)`'s two lanes as classes in it. Two scheduling
+  levels stay distinct: the job queue (`cluster-scheduling (me695459)`,
+  `job-scheduling-fairness (me691338)`, factory/platform) decides which job runs;
   lanes decide which LLM call gets a slot; fillers are pull generators so
   no job is minted only to wait for a lane (seam recorded 2026-10-23).
 - `scripts/deploy` — the restart-on-installed-file-change work (shipped) and the deploy session's render-tree lock are the same script;

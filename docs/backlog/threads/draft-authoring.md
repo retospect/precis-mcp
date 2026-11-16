@@ -115,7 +115,7 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 ## Seam
 
-- `knowledge-mesh.md` Horizon holds draft-linearization (the draft as a graph
+- `knowledge-mesh (me693314)` Horizon holds draft-linearization (the draft as a graph
   view); this thread holds authoring and export of the draft itself. Neither
   reorders the other.
 - `claims-and-evidence.md` owns the claim side of cite-time attach.

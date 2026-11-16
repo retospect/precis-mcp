@@ -982,8 +982,7 @@ def check_primary_source(
 def check_claim_sentence(
     sentence: str, *, artifact_type: str = "claim"
 ) -> list[GateViolation]:
-    """Claim-sentence lint's blocking half (``docs/backlog/nanopub-corpus-
-    remediation.md`` Phase 1) — the notation and admissibility/grammar
+    """Claim-sentence lint's blocking half (``me691969`` Phase 1) — the notation and admissibility/grammar
     lints run everywhere as advice (``lint_notation``,
     ``lint_claim_sentence`` at authoring/reword); this is the one place
     a subset of that advice becomes a hard mint gate, per

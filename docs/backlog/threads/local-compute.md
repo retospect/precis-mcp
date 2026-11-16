@@ -34,7 +34,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 **The local-serving node sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off the agent host and put it on one of the [GB10 nodes]"):**
 
 - **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung the local-serving node under load 2026-10-14 — scheduler 100% CPU; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
-- **Placement (c7be07641):** small tier moves off the big Mac onto the local-serving node — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `<serving-node> | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). The second DGX node stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on the agent host) — noted for Reto in `llm-capacity-plan.md`.
+- **Placement (c7be07641):** small tier moves off the big Mac onto the local-serving node — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `<serving-node> | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). The second DGX node stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on the agent host) — noted for Reto in `llm-capacity-plan (me695246)`.
 - **Routing fix (this branch):** `local_serving.acquire` now (a) waits up to `PRECIS_LOCAL_SLOT_WAIT_S` (default 10 s, `0` restores old behavior) for a slot to free, and (b) spills to every other LAN-routable `served_by` host for the model — before the router ever sees `paused` and overflows to cloud. This is the cap-4 cause of the ~78% routed-local→cloud fall-through.
 - **A real blocker the eval exposed:** the `local` wire's default `max_tokens` is the summarizer's 220; gpt-oss spends it all on reasoning and returns empty content, every call. Rungs now carry an optional `max_tokens` (parsed into `Rung`, applied when the request doesn't pin one). **The staged writes below carry `"max_tokens":1600`; under the pre-branch code that key is silently ignored — apply only after this branch is deployed.**
 - **chase:verify eval (40-task gold `chase_verify_v1`, each arm twice, scratch DB — no prod writes):**
@@ -81,7 +81,7 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
 **Allocation decision (historical):** yes (2026-10-01, Reto: "Bring it back we will").
 **Resume (2026-10-03, after round 3 deployed 929107f3):**
 - Waiting on:
-  - Reto, for the TOS clicks in `cluster-fileserver-move.md` Phase 0
+  - Reto, for the TOS clicks in `cluster-fileserver-move (me695259)` Phase 0
     step 1. He ruled local-compute-12 on 2026-10-22: two shares, real
     owners, root squashed.
   - knowledge-mesh, for its km-8 task set (model pick and the vllm Slice 1 branch).
@@ -125,7 +125,7 @@ then the three GB10 nodes back on duty (big model, embeddings, science lanes; Re
    estimated per layout inside the note.
    **Ruled 2026-10-03 22:13Z (local-compute-17).** Reto: "A is good but we just
    write it down for now, as a plan for later."
-   - The plan is recorded in `llm-capacity-plan.md` § "Agreed layout plan, NOT
+   - The plan is recorded in `llm-capacity-plan (me695246)` § "Agreed layout plan, NOT
      scheduled".
    - Nothing in it is built until he reopens it. The local-serving node stays the big-model
      box, so (b) below is off.
@@ -223,7 +223,7 @@ endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
 set, then pick model and server (4b); (2) Slice 1: a permanent managed
 service on the local-serving node, exclusive to it, with its own `resource_slots`
-capacity row (`vllm-per-node-serving.md`); (3) local rungs in the tier
+capacity row (`vllm-per-node-serving (me695305)`); (3) local rungs in the tier
 ladder with cloud overflow (5; after round 2 carries the placement guard);
 (4) the feedback controller holding about 32 in flight, graph maintenance
 as filler (6). **Reto confirmed 2026-10-03 (local-compute-15, option 1):**
@@ -314,7 +314,7 @@ task set.
       replaces the per-node loopback copies, in a new `embedder` group, NOT
       `inference` (which would bring the worker/watch/dft plays with it).
       All machines, the file server included, are in
-      `llm-capacity-plan.md`. Ad-hoc heavy compute goes to the GPU node at half
+      `llm-capacity-plan (me695246)`. Ad-hoc heavy compute goes to the GPU node at half
       its cores, never the agent host (ruled, local-compute-7).
 5. **me695247** — unblocked (Reto 2026-10-21):
    small chain goes local gpt-oss now, medium stays Claude pending a per-op
@@ -330,7 +330,7 @@ task set.
    controller) after S0. This is the path that puts the local-serving node to work (Reto
    2026-10-03); without S1 the first background flood takes every local-serving-node
    slot from a live session.
-6b. **cluster-scheduling.md Pillar 3b + job-scheduling-fairness.md
+6b. **cluster-scheduling (me695459) Pillar 3b + job-scheduling-fairness (me691338)
    matrix/deficit** — footprint rows first (gr595536), then cap
    (gr595537), stamps (gr595539), fit-then-deficit pull (gr595541,
    gr595542), memory-kill policy (gr595538). From the 2026-11-08 session.
@@ -342,7 +342,7 @@ task set.
    2026-10-21): this thread holds aggregate embedder capacity, owned by the
    embedder service (`src/precis/embedder_service.py`); host-level admission
    and a shared vector cache declined. The N-client load test rides with 5
-   (`local-rungs-small-medium.md`); the capacity plan (2) carries the rows.
+   (`local-rungs-small-medium (me695247)`); the capacity plan (2) carries the rows.
 
 ## Horizon
 
@@ -384,7 +384,7 @@ task set.
 12. **The capacity-idle monitor — residuals** — ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned
     here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
-    `llm-lane-scheduler.md`'s capacity controller consume it.
+    `llm-lane-scheduler (me695298)`'s capacity controller consume it.
     Half shipped: `get(kind='job', id='/throughput')` reports claims and
     outcomes per host/process plus queue depth by executor. Still open: GPU
     busy fraction and queue depth per tier in `host_heartbeat_log`, and the
@@ -396,7 +396,7 @@ task set.
     timestamp and handle set, submits it as a half-price off-peak batch
     job; accept only if no handle's `updated_at` is after the bundle
     timestamp; over-fetch and track missing-context vs extra shipped.
-    Instance three of the generic loop in `cluster-scheduling.md` Pillar
+    Instance three of the generic loop in `cluster-scheduling (me695459)` Pillar
     3b. Lowest priority, cost saving only.
 
 ## Parked

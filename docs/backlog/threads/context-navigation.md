@@ -18,7 +18,7 @@ design-review: yes
 
 ## Thread context
 
-**Status:** ends when an agent reaches a correct answer with the fewest result bytes and hops, every needed block present, and the meters in `context-navigation.md` §1 say so — the agent half of the Surfaces axis in `docs/roadmap.md`, shared with `agent-surface`. Today the spec is ruled (2026-10-30) and nothing is built; the list follows the spec's §10 order, dependency first.
+**Status:** ends when an agent reaches a correct answer with the fewest result bytes and hops, every needed block present, and the meters in `context-navigation (me690580)` §1 say so — the agent half of the Surfaces axis in `docs/roadmap.md`, shared with `agent-surface`. Today the spec is ruled (2026-10-30) and nothing is built; the list follows the spec's §10 order, dependency first.
 **Last reviewed:** 2026-10-30
 **Worktree:** `context-navigation`
 **Allocation decision:** active — Reto 2026-10-30 (as recommended: runway ends after A0 until the hook check).
@@ -47,4 +47,4 @@ design-review: yes
 
 ## No action needed
 
-- **Gripe title cut** (`block-navigation.md` R12) — ruled 2026-10-30 (cut silently, full line in body), in build elsewhere.
+- **Gripe title cut** (`block-navigation (me694125)` R12) — ruled 2026-10-30 (cut silently, full line in body), in build elsewhere.

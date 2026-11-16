@@ -324,8 +324,7 @@ paper = [
                             # fitz.open via the OA cascade so we keep
                             # the floor tight.
     "opencv-python-headless>=4.10",
-                            # ``cv2`` — the figure digitiser (docs/backlog/
-                            # figure-digitise.md) needs it for colour
+                            # ``cv2`` — the figure digitiser (me695362) needs it for colour
                             # masking / Hough lines. It resolved only
                             # transitively via surya-ocr before gr514225 —
                             # declared so an ``import cv2`` never rides an

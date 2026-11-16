@@ -7107,8 +7107,7 @@ class DraftHandler(Handler):
         refs_by_id: dict[int, Any],
     ) -> str:
         """One line: DOI completeness + validity over every *distinct*
-        cited paper in the draft (docs/backlog/
-        draft-doi-completeness-check.md) — advisory only, never affects
+        cited paper in the draft (gr690484) — advisory only, never affects
         export. ``ref_ids`` is the deduped cite mine (one token scan in
         :meth:`_hygiene_lines` feeds this, the taproot scoreboard and the
         author-source line; ``identifiers``/``refs_by_id`` are that same

@@ -1,6 +1,5 @@
 """Deterministic checks for proposed measure runs — port of the pilot's
-``pilot.py`` literals/units machinery (docs/backlog/
-corpus-quantitative-extraction.md §10-12, Reto knowledge-mesh-10).
+``pilot.py`` literals/units machinery (me694248 §10-12, Reto knowledge-mesh-10).
 
 Every check is a *flag, not a verdict*: they prove mechanical claims
 (the literal is verbatim in its span, the unit is spelled in the text,

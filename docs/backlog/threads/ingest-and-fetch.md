@@ -352,6 +352,6 @@ is verified done on prod.
 - `knowledge` (taxonomy, quests, papers) consumes this pipeline's output.
   Every fidelity defect here reaches that programme as a wrong answer with no
   error.
-- `graph-gardener-value.md` slice 5 (the gardener idle filler) expects to spend local
+- `graph-gardener-value (me693885)` slice 5 (the gardener idle filler) expects to spend local
   capacity on this pipeline's output; a corrupt extraction makes that spend
   worse than idle.

@@ -1,8 +1,7 @@
 """``mint_background_job`` — the one insert door for system-minted jobs.
 
 Every ``kind='job'`` row carries ``meta.origin``, the scheduling class
-job-scheduling-fairness slice 1 stamps (``docs/backlog/
-job-scheduling-fairness.md`` D1): ``human`` for a logged-in web write,
+job-scheduling-fairness slice 1 stamps (``me691338`` D1): ``human`` for a logged-in web write,
 ``agent`` for an MCP put — a chat agent's put is agent, not human
 (ruled 2026-10-23) — ``recurring`` for a job the dispatch worker mints
 under a todo (``meta.dispatched_from_todo``) and ``background`` for a
@@ -67,7 +66,7 @@ JOB_TERMINAL_STATUSES: tuple[str, ...] = (
 #: ``job_type`` → the ``params`` key carrying its work-size driver —
 #: stamped as ``meta.size = {name, value}`` at mint (gr595539) so the
 #: ``(job_type, meta.size)`` footprint rollup buckets like work together
-#: (``cluster-scheduling.md`` Pillar 3b). A list-valued parameter folds
+#: (``me695459`` Pillar 3b). A list-valued parameter folds
 #: to its length — ``cite_resolve``'s ``ref_ids`` size is how many refs,
 #: not which ones. A type with no single driver stamps nothing and the
 #: rollup groups it under ``(none)``.
@@ -224,7 +223,7 @@ def job_mint_marks(
     the result into the job's ``meta`` before insert.
 
     * ``share_key`` — the fair-share axis the claim order keys on next
-      (``job-scheduling-fairness.md``): a ``run_slice`` chain job's
+      (``me691338``): a ``run_slice`` chain job's
       ``task_recipes`` ``lane_class`` for the ``task_class`` of the
       todo it executes — ``params.todo_id``, not ``parent_id`` — (the
       class itself when the recipe has none or reads ``'none'``), else

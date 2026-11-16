@@ -10,8 +10,7 @@ the query fails, reads return ``None`` (caller falls back to env) and writes
 raise a clean :class:`ValueError` the route surfaces. The meter reads these on
 each status recompute (cached ~15s), so there's no hot-path cost.
 
-**Relationship to :mod:`precis.settings`** (``docs/backlog/db-resident-
-settings.md``, Slice 1): the four keys below (:data:`HOURLY_KEY` /
+**Relationship to :mod:`precis.settings`** (``gr690347``, Slice 1): the four keys below (:data:`HOURLY_KEY` /
 :data:`DAILY_KEY` / :data:`QUOTA_CEILING_KEY` / :data:`RESUME_UNTIL_KEY`) are
 also declared in that module's typed, TTL-cached registry — ``precis.budget
 .meter``/``.quota`` read the caps through it now rather than hand-rolling the

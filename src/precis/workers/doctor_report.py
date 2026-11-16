@@ -22,8 +22,7 @@ tagged ``meta.author='doctor'``. Two halves:
   selection and ``briefing_cast.py``'s health line, and importing FROM
   either of those here would be the wrong direction — this module must
   stay importable by both without a cycle.
-* :func:`convert_needs_a_human` — piece B of ``docs/backlog/doctor-
-  report-and-alert-channel-quality.md``: turns each bullet of the body's
+* :func:`convert_needs_a_human` — piece B of ``me690520``: turns each bullet of the body's
   ``## Needs a human`` section into (or bumps) a ``waiting-for:reto``
   todo, unless an open gripe, alert or todo it names already tracks it,
   and rewrites the section with ``- td<id>: ...`` lines so the
