@@ -145,33 +145,27 @@ owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 
 ### Standing approval (release.auto_deploy)
 
-`release.auto_deploy` (bool, default off, DB-only — no env fallback, so
-a drifted host cannot arm it) is the owner's standing approval for the
-deploy ask. While it is on, the plan tick answers a release-pass
-`approval` node itself once the newest recorded CI verdict on the cut's
-exact sha is green *and* `release.round` names an open round on that
-head sha:
+`release.auto_deploy` (bool, default off, DB-only — no env fallback) is
+standing approval for deployment. When armed at mint, the release pass
+contains no approval node. Its deploy depends on the CI gate and is gated
+by `precis.plans.release::may_release(deploy)`: no release window, no other
+open pass, round or branch, prod not ahead of main, cleared engine reviews,
+and a green verdict on the exact release head. GitHub ancestry and branch
+reads fail closed; an outage holds deployment until the next successful tick.
+The clock is checked at dispatch only. Once running, the script's window
+guard refuses without spending a retry. Malformed windows hold cuts but
+leave deployment to the script's guard.
 
     scripts/prod-precis settings set release.auto_deploy true
     scripts/prod-precis settings set release.auto_deploy false
 
-The answer is an audit comment on the approval node — the node stays,
-it is not removed:
-
-    answer: deploy r<N> (auto-answered under release.auto_deploy; sha
-    <sha12>; range <prev>..<sha12>; CI green run <id> at <ts>; round
-    record r<N> <state>; answered <ts>Z)
-
-It covers every range — migrations, `safe_fetch.py` and harness diffs
-included (me573231: no range inspection). It fails closed and leaves the
-ask for a human when anything is off: the setting off or unreadable, no
-green verdict recorded on the cut's exact sha (a sha prod already covers
-or another sha's green does not count), `release.round` absent,
-unreadable, or naming another release, state or head, and any existing
-`answer:` — a human `hold` is never overwritten. These always still ask
-a human: rollback, superseding a partial rollout, and the exhausted
-release-fix loop — two red fix iterations run unattended, the second red
-files the ruling ask and no third starts by itself.
+With the setting off or unreadable at mint, the manual approval ask stays
+unchanged: answer `deploy r<N>` or `hold`. Turning it off also holds an
+already minted unattended pass. Existing legacy asks retain their answer
+handling and never overwrite a human hold. The standing approval covers
+every range, including migrations and harness diffs (me573231).
+Rollback, superseding a partial rollout and exhausted release-fix loops
+remain human decisions.
 
 ### Red-test waiver (release.red_waiver)
 

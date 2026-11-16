@@ -406,12 +406,14 @@ def _release_pass_ids(store: Any) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _open_pass_id(store: Any) -> int | None:
+def _open_pass_id(store: Any, *, exclude: int | None = None) -> int | None:
     """The oldest ``release-pass``-tagged todo whose STATUS is not
     terminal, else ``None``."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     for rid in _release_pass_ids(store):
+        if rid == exclude:
+            continue
         status = next(
             (str(t.value) for t in store.tags_for(rid) if t.prefix == "STATUS"),
             "open",
@@ -571,7 +573,12 @@ def _rejudge_after_abandon(store: Any, pass_id: int, status: str) -> str | None:
 
 
 def _round_blocker(
-    store: Any, now: datetime, *, dry_run: bool, notes: list[str]
+    store: Any,
+    now: datetime,
+    *,
+    dry_run: bool,
+    notes: list[str],
+    exclude_n: int | None = None,
 ) -> str | None:
     """The shared ``release.round`` record as a blocker line — ``None``
     only for an absent record ("no round"), a closed one (terminal
@@ -608,6 +615,8 @@ def _round_blocker(
     if _release.is_terminal(rec):
         return None
     n = rec.get("n", "?")
+    if n == exclude_n:
+        return None
     pass_ref = _pass_ref(store, rec)
     if pass_ref is not None:
         pass_id, status = pass_ref
@@ -1257,7 +1266,7 @@ def _patch_equivalent_on_main(n: int, sha: str) -> bool:
     return bool(verdicts) and all(line.startswith("-") for line in verdicts)
 
 
-def _in_flight(store: Any, repo: str) -> str | None:
+def _in_flight(store: Any, repo: str, *, exclude_n: int | None = None) -> str | None:
     """The first in-flight ``release/r<N>`` on origin (``release/r<N>``),
     else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`.
     A head that reads in flight stays so unless prod holds it (the
@@ -1278,6 +1287,8 @@ def _in_flight(store: Any, repo: str) -> str | None:
     tags_url = f"{base}/git/matching-refs/tags/deployed/"
     tagged = set(_matching_refs(tags_url, _TAG_RE, _TAG_CAP) or {})
     for n in sorted(heads):
+        if n == exclude_n:
+            continue
         has_tag = n in tagged
         sha = str((heads[n].get("object") or {}).get("sha") or "")
         prod_has_head: bool | None = None
@@ -2732,7 +2743,6 @@ def run_pass(
     now: datetime | None = None,
 ) -> PollResult:
     """One poll pass (module docstring); stops at the first blocker."""
-    from precis import settings
     from precis.plans import templates
 
     now = now or datetime.now(UTC)
@@ -2743,36 +2753,36 @@ def run_pass(
         # The watchdog never blocks a mint: one note, then the pass goes on.
         log.warning("release_poll: stuck watch raised", exc_info=True)
         res.notes.append("stuck watch raised — mint path unaffected")
-    windows = parse_windows(settings.get_str(WINDOWS_SETTING, store=store) or "")
-    if windows is None:
-        res.blocker = f"{WINDOWS_SETTING} is unparsable: nothing minted"
-        return res
-    hit = in_window(now, windows)
-    if hit is not None:
-        _mint_reviewers_only(store, res, now=now, dry_run=dry_run)
-        res.blocker = f"inside the no-release window {hit}Z"
-        return res
-    open_id = _open_pass_id(store)
-    if open_id is not None:
+    ok, blocked = _release.may_release(
+        store,
+        "cut",
+        now=now,
+        dry_run=dry_run,
+        notes=res.notes,
+        checks=("clock", "flight"),
+    )
+    if not ok:
+        if blocked == f"{WINDOWS_SETTING} is unparsable: nothing minted":
+            res.blocker = blocked
+            return res
+        open_id = (
+            _open_pass_id(store) if blocked.startswith("release-pass td") else None
+        )
         _mint_reviewers_only(
             store,
             res,
             now=now,
             dry_run=dry_run,
-            rel=_release.release_of(store, open_id),
+            rel=_release.release_of(store, open_id) if open_id is not None else None,
         )
-        try:
-            note = _cut_hold_ask(store, open_id, now=now, dry_run=dry_run)
-        except Exception:
-            log.warning("release_poll: cut-hold ask raised", exc_info=True)
-            note = "cut-hold ask raised — next tick retries"
-        if note is not None:
-            res.notes.append(note)
-        res.blocker = f"release-pass td{open_id} is open"
-        return res
-    blocked = _round_blocker(store, now, dry_run=dry_run, notes=res.notes)
-    if blocked is not None:
-        _mint_reviewers_only(store, res, now=now, dry_run=dry_run)
+        if open_id is not None:
+            try:
+                note = _cut_hold_ask(store, open_id, now=now, dry_run=dry_run)
+            except Exception:
+                log.warning("release_poll: cut-hold ask raised", exc_info=True)
+                note = "cut-hold ask raised — next tick retries"
+            if note is not None:
+                res.notes.append(note)
         res.blocker = blocked
         return res
     verdicts, notes, fatal, pin, scanned = _engine_verdicts(
@@ -2802,14 +2812,16 @@ def run_pass(
             )
         try:
             ahead = int(cmp_["ahead_by"])
-            behind = int(cmp_["behind_by"])
         except (KeyError, TypeError, ValueError):
             raise pr_class.GitHubUnreadable(
                 f"GET {base}/compare/prod...{pin}: no ahead_by/behind_by"
             ) from None
         status = str(cmp_.get("status") or "unknown")
-        if behind > 0 or status == "diverged":
-            res.blocker = f"prod has commits main lacks ({status})"
+        ok, reason = _release.may_release(
+            store, "cut", repo=res.repo, now=now, compare=cmp_, checks=("head",)
+        )
+        if not ok:
+            res.blocker = reason
             return res
         if ahead <= 0:
             res.blocker = f"main is not ahead of prod ({status})"
@@ -2836,9 +2848,11 @@ def run_pass(
                 f"— they hold the deploy, not the cut "
                 f"({', '.join(v.unit.land for v in uncleared)})"
             )
-        flying = _in_flight(store, res.repo)
-        if flying is not None:
-            res.blocker = f"{flying} is in flight"
+        ok, reason = _release.may_release(
+            store, "cut", repo=res.repo, now=now, checks=("branches",)
+        )
+        if not ok:
+            res.blocker = reason
             return res
     except pr_class.GitHubUnreadable as exc:
         res.blocker = f"GitHub unreadable ({exc}); nothing minted, next tick retries"

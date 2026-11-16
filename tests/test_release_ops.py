@@ -63,6 +63,18 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
+    # These op tests exercise approval, pins and rollout bookkeeping;
+    # shared ancestry and exact-head CI refusal cases live in test_release_gate.
+    monkeypatch.setattr(rc._rp, "_in_flight", lambda *a, **kw: None)
+    monkeypatch.setattr(R, "_newest_sha_verdict", lambda *a: {"verdict": "green"})
+    original_get = P._get_json
+
+    def get(url: str, params: dict[str, Any]) -> Any:
+        if url.endswith("/compare/prod...main"):
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0}
+        return original_get(url, params)
+
+    monkeypatch.setattr(P, "_get_json", get)
     _GIT_LANDS.clear()
     _REL_LANDS.clear()
     monkeypatch.setattr(rc._rp, "_git_lands", lambda: (list(_GIT_LANDS), "5" * 40))

@@ -1657,14 +1657,11 @@ def mint_release_pass(
     and the loop's ``until``. ``poll`` (``ci_verdict_poll``) records the
     GitHub verdict, parking itself while CI runs. The gate and the loop are
     siblings blocked-by the poll, so the loop sees a recorded verdict: green
-    closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
-    that is also the ask Reto answers (``deploy r<N>`` | ``hold``) —
-    minted with the ``ask-user`` tag only while ``release.auto_deploy``
-    is disarmed; armed, the tick's standing approval answers it and a
-    definitive refusal re-tags it
-    (:func:`precis.plans.release.auto_answer_approval`, gr595272).
-    ``deploy`` (``release_deploy``) refuses unless that answer names
-    ``deploy r<N>`` (:func:`precis.plans.release.approval`). ``confirm``
+    closes it empty, red mints a fixer. With ``release.auto_deploy`` off,
+    ``approval`` is an ``answer`` gate and human ask (``deploy r<N>`` |
+    ``hold``). With it on, no approval node is minted: deploy depends on
+    the CI gate directly. Both paths recheck
+    :func:`precis.plans.release.may_release` before deploying. ``confirm``
     (``release_confirm``) then attests the deployed runtime — every live
     worker's heartbeat ``code_sha``, and the web's boot sha when
     ``release.health_url`` is set — before ``scripts/round`` confirms and
@@ -1681,8 +1678,7 @@ def mint_release_pass(
         "blocks": "nothing",
         "context": "release/r<N> is cut by this plan; green CI gates this ask",
     }
-    # gr595272: armed, the standing approval answers the ask — it stays
-    # off the human queue until a definitive refusal re-tags it.
+    # Standing approval skips the ask entirely; dispatch checks the policy.
     human_ask = not _release.auto_deploy_armed(store)
 
     def build(m: _Minter) -> None:
@@ -1727,14 +1723,15 @@ def mint_release_pass(
             {"loop": {"until": gate, "body": "release-fix"}},
             blocked_by=("poll",),
         )
-        approval = m.node(
-            "approval",
-            _release.approval_title("r<N>"),
-            {"gate": {"kind": "answer"}, "ask": ask},
-            body=_release.approval_body("r<N>"),
-            blocked_by=("gate",),
-        )
+        approval = None
         if human_ask:
+            approval = m.node(
+                "approval",
+                _release.approval_title("r<N>"),
+                {"gate": {"kind": "answer"}, "ask": ask},
+                body=_release.approval_body("r<N>"),
+                blocked_by=("gate",),
+            )
             _tag(m, approval, "ask-user")
         deploy = m.node(
             "deploy",
@@ -1742,9 +1739,9 @@ def mint_release_pass(
             _task("release_deploy"),
             body=(
                 "release_deploy runs scripts/release --deploy-only r<N> (pinned), "
-                "only after the approval ask is answered 'deploy r<N>'."
+                "only once the shared release gate allows the deploy."
             ),
-            blocked_by=("approval",),
+            blocked_by=("approval",) if human_ask else ("gate",),
         )
         m.node(
             "confirm",
@@ -1786,7 +1783,8 @@ def mint_release_pass(
         m.store.stamp_ref_meta(mid, {"op": merge_op}, conn=m.conn)
         final = {**ask, "blocks": f"td{deploy}"}
         check_ask_meta({"ask": final})
-        m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
+        if approval is not None:
+            m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
 
     return _run(store, parent_id, build)
 

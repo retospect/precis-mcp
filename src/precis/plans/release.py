@@ -2,7 +2,7 @@
 
 Spec: `me692430` § "4. Release pass, event-driven".
 The ``release-pass`` template (:func:`precis.plans.templates.mint_release_pass`)
-mints cut -> poll -> gate ``tests-green`` -> approval ask -> deploy; the three
+mints cut -> poll -> gate ``tests-green`` -> optional approval ask -> deploy; the three
 mechanical ops (``release_cut``, ``ci_verdict_poll``, ``release_deploy``) share
 what lives here:
 
@@ -56,22 +56,19 @@ what lives here:
   only ``confirmed`` means the release actually rolled out), and
   :func:`live_deploy_job` is the store-wide live ``release_deploy``
   check that blocks the local supersede.
-- **The approval check** (:func:`approval`): the deploy runs only when the
-  approval ask that blocks it carries an ``answer:`` comment naming
-  ``deploy r<N>`` for the release the plan cut. The ``answer`` gate opens on
-  *any* answer (``hold`` included), so this check is what keeps a deploy
-  Reto's call (authority.md: release/deploy are Reto-only). The answer is
-  Reto's own comment, or the tick's under his standing approval
-  (me573231): with ``release.auto_deploy`` on, :func:`auto_answer_approval`
-  posts the ``deploy r<N>`` answer itself once CI is recorded green on the
-  cut's exact sha and ``release.round`` names an open round on that head
-  sha — fail closed on any doubt, an existing answer never overwritten.
-  Armed, the ask mints without the ``ask-user`` tag (gr595272 — the human
-  queue is for what the auto path cannot settle); a definitive refusal —
-  the setting flipped off, or a round record naming another release, a
-  non-open state or another head — re-tags it with one comment naming
-  the same state the auto-answer writes. A second red ``release-fix``
-  loop files its own ruling ask, not this one.
+- **One release gate** (:func:`may_release`) owns the clock, other open
+  passes/rounds, prod/main ancestry, and deploy review/CI checks. The cut
+  fails closed on malformed windows; deploy leaves those to the script's
+  guard. Deploy excludes its own pass, round and branch from in-flight
+  checks. The poll supplies its pinned comparison so a moving main cannot
+  change the cut's scope.
+- **The approval check** (:func:`approval`): manual passes require the
+  blocking ask's ``deploy r<N>`` answer. With ``release.auto_deploy`` on at
+  mint there is no approval node; the deploy depends on the CI gate and
+  rechecks :func:`may_release` at dispatch and launch. Turning the setting
+  off holds an unattended pass. Existing asks still respect a human hold;
+  :func:`auto_answer_approval` supports passes minted before this change.
+
 """
 
 from __future__ import annotations
@@ -79,7 +76,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.plans.gates import (
     CI_VERDICTS_KEY,
@@ -531,16 +528,143 @@ def _approval_asks(store: Store, todo_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def may_release(
+    store: Store,
+    stage: Literal["cut", "deploy"],
+    *,
+    todo_id: int | None = None,
+    repo: str | None = None,
+    now: datetime | None = None,
+    dry_run: bool = False,
+    notes: list[str] | None = None,
+    compare: dict[str, Any] | None = None,
+    checks: tuple[Literal["clock", "flight", "head", "branches", "deploy"], ...] = (
+        "clock",
+        "flight",
+        "head",
+        "branches",
+        "deploy",
+    ),
+) -> tuple[bool, str]:
+    """One release policy for cut and deploy; the deploy excludes its own pass.
+
+    The poll supplies its pinned comparison and runs clock/flight before its
+    scan, then head afterwards. Deploy reads main fresh. Malformed windows
+    hold cuts but leave the deploy script's backup guard in charge. All
+    other unreadable checks refuse, including CI on the exact release head.
+    Reasons remain the poll's blocker lines; callers add their operation text.
+    """
+    from precis import settings
+    from precis.plans import pr_class
+    from precis.workers.job_types import release_poll as rp
+
+    now = now or datetime.now(UTC)
+    try:
+        rel = release_of(store, todo_id) if todo_id is not None else None
+        own = plan_root(store, todo_id) if stage == "deploy" and todo_id else None
+        if "clock" in checks:
+            windows = rp.parse_windows(
+                settings.get_str(rp.WINDOWS_SETTING, store=store) or ""
+            )
+            if windows is None:
+                if stage == "cut":
+                    return False, f"{rp.WINDOWS_SETTING} is unparsable: nothing minted"
+            else:
+                hit = rp.in_window(now, windows)
+                if hit is not None:
+                    return False, f"inside the no-release window {hit}Z"
+        if "flight" in checks:
+            rid = rp._open_pass_id(store, exclude=own)
+            if rid is not None:
+                return False, f"release-pass td{rid} is open"
+            blocked = rp._round_blocker(
+                store,
+                now,
+                dry_run=dry_run,
+                notes=notes if notes is not None else [],
+                exclude_n=(
+                    int(str(rel["rN"])[1:]) if stage == "deploy" and rel else None
+                ),
+            )
+            if blocked is not None:
+                return False, blocked
+        if "head" in checks:
+            repo = pr_class.resolve_repo(
+                store, repo or str((rel or {}).get("repo") or "")
+            )
+            if not repo:
+                return False, "no GitHub owner/repo; next: set release.repo"
+            base = rp._API.format(repo=repo)
+            cmp_ = (
+                compare
+                if compare is not None
+                else pr_class._get_json(f"{base}/compare/prod...main", {})
+            )
+            if not isinstance(cmp_, dict):
+                raise pr_class.GitHubUnreadable(
+                    f"GET {base}/compare/prod...main: expected an object"
+                )
+            try:
+                behind = int(cmp_["behind_by"])
+            except (KeyError, TypeError, ValueError):
+                raise pr_class.GitHubUnreadable(
+                    f"GET {base}/compare/prod...main: no ahead_by/behind_by"
+                ) from None
+            status = str(cmp_.get("status") or "unknown")
+            if behind > 0 or status == "diverged":
+                return False, f"prod has commits main lacks ({status})"
+        if "branches" in checks:
+            repo = pr_class.resolve_repo(
+                store, repo or str((rel or {}).get("repo") or "")
+            )
+            if not repo:
+                return False, "no GitHub owner/repo; next: set release.repo"
+            flying = (
+                rp._in_flight(store, repo, exclude_n=int(str(rel["rN"])[1:]))
+                if stage == "deploy" and rel
+                else rp._in_flight(store, repo)
+            )
+            if flying is not None:
+                return False, f"{flying} is in flight"
+        if stage == "deploy" and "deploy" in checks:
+            if rel is None or todo_id is None:
+                return False, "no cut recorded (meta.release)"
+            held = rp.deploy_review_blockers(store, todo_id)
+            if held:
+                return (
+                    False,
+                    f"{rel['rN']} waits on its engine reviews — {'; '.join(held)}",
+                )
+            sha12 = str(rel.get("sha") or "").lower()[:LANDED_SHA_LEN]
+            verdict = _newest_sha_verdict(store, sha12)
+            if not sha12 or verdict is None or verdict.get("verdict") != "green":
+                return (
+                    False,
+                    f"CI verdict is not green on {sha12 or 'the release head'}",
+                )
+    except pr_class.GitHubUnreadable as exc:
+        return False, f"GitHub unreadable ({exc}); nothing minted, next tick retries"
+    except Exception as exc:
+        return (
+            False,
+            f"release gate unreadable ({type(exc).__name__}); next tick retries",
+        )
+    return True, ""
+
+
 def approval(store: Store, todo_id: int) -> tuple[str | None, str]:
     """``(rN, why)``: ``rN`` is the release the deploy todo ``todo_id`` may
     deploy, or ``None`` with the reason it may not. Approved means: the
-    plan recorded a cut, an approval ask blocks ``todo_id``, and every such
-    ask's newest ``answer:`` comment names ``deploy <rN>`` of that cut."""
+    plan recorded a cut and either standing auto-deploy is armed without
+    an ask, or every blocking approval ask names ``deploy <rN>``. The
+    caller must also enforce :func:`may_release`."""
     rel = release_of(store, todo_id)
     if rel is None:
         return None, f"no cut recorded on td{plan_root(store, todo_id)} (meta.release)"
     rn = str(rel["rN"])
     asks = _approval_asks(store, todo_id)
+    if not asks and auto_deploy_armed(store):
+        return rn, f"approved: {_AUTO_DEPLOY_KEY}"
     if not asks:
         return None, f"no approval ask blocks td{todo_id}; a deploy needs one"
     want = APPROVE_OPTION.format(rn=rn).lower()
@@ -1439,6 +1563,7 @@ __all__ = [
     "ci_verdict_rows",
     "is_terminal",
     "live_deploy_job",
+    "may_release",
     "newest_red_run",
     "parse_cut",
     "parse_deployed",
