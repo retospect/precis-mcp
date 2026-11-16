@@ -8751,6 +8751,73 @@ def test_review_cap_is_the_picked_lanes_rungs(
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
+def test_review_rescue_signs_the_verdict_miss_not_the_launch_line(
+    store: Store,
+) -> None:
+    """gr685880: a reviewer spent at cap exits CLEAN — success writes
+    ``job_summary``, so its newest ``job_event`` is only the submit's
+    launch preamble, and signing it lumped every same-lane no-verdict
+    review into one ``run_slice: launched`` signature gripe. The rescue
+    signs the verdict miss instead."""
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    (_old, (retry, _retry_meta)) = _jobs_under(store, review)
+    # The retry's real on-disk shape: the launch preamble is the whole
+    # ``job_event``, the run's account sits in ``job_summary``.
+    store.chunks.insert_chunks(
+        retry,
+        [
+            ChunkInsert(
+                ord=1,
+                text=(
+                    f"run_slice: launched td{review} on lane devin "
+                    "(model swe-2-high, effort high) pid 42 in /work "
+                    "(mcp token: none)"
+                ),
+                meta={"chunk_kind": "job_event"},
+            ),
+            ChunkInsert(
+                ord=2,
+                text=(
+                    f"run_slice td{review} on lane devin: exit 0.\n"
+                    f"branch slice/{review}: up to date with origin"
+                ),
+                meta={"chunk_kind": "job_summary"},
+            ),
+        ],
+    )
+    _set_job_status(store, retry, "succeeded")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    # The signature gripe names the miss — the launch preamble that used
+    # to be the key is gone from the title, the body and the tag.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'related-to'",
+            (review,),
+        ).fetchall()
+    (gripe,) = [int(r[0]) for r in rows]
+    ref = store.get_ref(kind="gripe", id=gripe)
+    assert ref is not None
+    gripe_body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(gripe))
+    assert "run_slice: launched" not in ref.title
+    assert "run_slice: launched" not in gripe_body
+    assert "no `review:` comment" in ref.title
+    assert "signature key: review job:# left no `review:` comment" in gripe_body
+    # The step says the cap's shape honestly: a clean exit, not a lane
+    # failure, spent it.
+    assert "exited clean" in gripe_body
+    # The node's own rescue evidence comment carries the miss too.
+    (rescue_comment,) = [
+        c for c in _todo_comments(store, review) if c.startswith("rescue: review")
+    ]
+    assert "no `review:` comment" in rescue_comment
+
+
 def test_review_reads_a_glued_handoff(store: Store) -> None:
     """td573578: a ``handoff:`` that glues ``review: FIX — …`` to the
     narration is the verdict (the LAST token in the comment). The fixture

@@ -6819,13 +6819,13 @@ def _step_dispatch(
 # ── (5) hygiene ────────────────────────────────────────────────────
 
 
-def _job_event_text(store: Any, job_id: int) -> str:
-    """The newest ``job_event`` chunk's text (the job's failure reason)."""
+def _job_chunk_text(store: Any, job_id: int, chunk_kind: str) -> str:
+    """The newest ``chunk_kind`` chunk's text on the job."""
     try:
         chunks = [
             c
             for c in store.chunks.list_chunks_for_ref(job_id)
-            if c.chunk_kind == "job_event" and c.text
+            if c.chunk_kind == chunk_kind and c.text
         ]
     except Exception:  # a missing tail must not stop the ask
         log.warning("plan_dispatch: reading job:%d chunks failed", job_id)
@@ -6833,6 +6833,18 @@ def _job_event_text(store: Any, job_id: int) -> str:
     if not chunks:
         return ""
     return str(max(chunks, key=lambda c: (c.ord, c.id)).text).strip()
+
+
+def _job_event_text(store: Any, job_id: int) -> str:
+    """The newest ``job_event`` chunk's text (the job's failure reason)."""
+    return _job_chunk_text(store, job_id, "job_event")
+
+
+def _job_summary_text(store: Any, job_id: int) -> str:
+    """The newest ``job_summary`` chunk's text — the run's own outcome
+    account, written on success where ``job_event`` keeps only the
+    submit's launch preamble."""
+    return _job_chunk_text(store, job_id, "job_summary")
 
 
 def _failure_tail(store: Any, job_id: int, limit: int) -> str:
@@ -7761,6 +7773,33 @@ def _in_rescue(n: _Node) -> bool:
     return any(v.startswith("rescue:") for v in n.open_tags)
 
 
+def _review_miss(store: Any, n: _Node, last: _Node) -> str | None:
+    """The verdict miss a reviewer's succeeded ``last`` attempt was
+    judged on — ``meta.review``'s ``verdict: None`` on this job
+    (``_step_reviews``'s stamp) — as a signature line, or ``None`` for a
+    non-reviewer, a stamp on another job, or a verdict posted since the
+    judging."""
+    seen = n.meta.get("review")
+    if not (
+        _is_reviewer(n)
+        and isinstance(seen, dict)
+        and seen.get("job") == last.id
+        and seen.get("verdict") is None
+    ):
+        return None
+    verdict, raw = _read_verdict(store, n.id, last.created_at)
+    if verdict is not None:
+        # A verdict landed after the judging stamped the miss — never
+        # sign a miss that no longer holds.
+        return None
+    what = (
+        f"a malformed verdict {_first_line(raw)!r}" if raw else "no `review:` comment"
+    )
+    # ``left``, not ``succeeded with``: the miss line IS the signature
+    # key, and ``succeeded``'s ``cceeded`` tail normalizes to ``<sha>``.
+    return f"review job:{last.id} left {what}"
+
+
 def _rescue_node(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node, cap: int, attempts: int
 ) -> None:
@@ -7776,6 +7815,20 @@ def _rescue_node(
     ended = _attempt_jobs(plan, n)
     last = ended[-1] if ended else plan.jobs(n)[-1]
     text = _job_event_text(w.store, last.id)
+    if last.status == "succeeded":
+        # A succeeded attempt records no failure — its newest
+        # ``job_event`` is the submit's launch preamble, and signing
+        # THAT lumps every same-lane silent outcome into one signature
+        # gripe (gr685880: three no-verdict reviewers shared the launch
+        # line). Sign the attempt's own account instead: a verdict-miss
+        # reviewer's miss leads, its ``job_summary`` follows; the
+        # summary alone for any other clean-exit class.
+        miss = _review_miss(w.store, n, last)
+        summary = _job_summary_text(w.store, last.id)
+        if miss is not None:
+            text = "\n".join(x for x in (miss, summary) if x)
+        elif summary:
+            text = summary
     lines = [ln for ln in text.splitlines() if ln.strip()]
     # The signature key's error line is the failure's own first line —
     # skipping the ``run_slice:`` preamble and the ``--- log tail ---``
@@ -7799,6 +7852,12 @@ def _rescue_node(
             f"; the per-node spend cap ${float(spend['cap_usd']):.2f} for a "
             f"paid rung held — ${float(spend.get('usd') or 0):.2f} recorded "
             "spent on the node's job rows"
+        )
+    if last.status == "succeeded":
+        # Say the cap's shape honestly: no lane failure drove it — the
+        # newest attempt exited clean and left nothing to act on.
+        step += (
+            "; the newest attempt exited clean — a deliverable miss, not a lane failure"
         )
     verdict = _verdict_line(text)
     if verdict is None:
