@@ -22,6 +22,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.concept import ConceptHandler
+from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
@@ -35,6 +36,9 @@ from precis.utils.relations import validate_relation
 SEEDED = frozenset(
     {
         "contradicts",
+        "inspired-by",
+        "inspired",
+        "rejected-after",
         "draft-of",
         "plan-of",
         "dossier-of",
@@ -59,6 +63,61 @@ def _links(store: Store, src: int) -> list[tuple[int, str]]:
         (link.dst_ref_id, link.relation)
         for link in store.links_for(src, direction="out")
     ]
+
+
+@pytest.mark.parametrize("source_kind", ["gripe", "todo", "memory", "markdown"])
+@pytest.mark.parametrize("target_kind", ["paper", "web", "memory"])
+@pytest.mark.parametrize("relation", ["inspired-by", "rejected-after"])
+def test_prior_art_endpoints(
+    store: Store, source_kind: str, target_kind: str, relation: str
+) -> None:
+    source = _ref(store, source_kind, "idea", slug="idea")
+    target = _ref(store, target_kind, "prior art", slug="prior-art")
+    assert validate_relation(relation) == relation
+    apply_link_ops(
+        store, source, link=f"{target_kind}:{target}", unlink=None, rel=relation
+    )
+    assert (target, relation) in _links(store, source)
+    if relation == "inspired-by":
+        assert (source, "inspired") in _links(store, target)
+    else:
+        assert _links(store, target) == []
+
+
+def test_gripe_prior_art_link_and_readback(store: Store, hub: Hub) -> None:
+    source = _ref(store, "gripe", "feature idea")
+    target = _ref(store, "paper", "prior art", slug="prior-art")
+    handler = GripeHandler(hub=hub)
+    handler.link(id=source, target=f"pa{target}", rel="inspired-by")
+    assert "inspired-by" in handler.get(id=source).body
+    assert (source, "inspired") in _links(store, target)
+    handler.link(id=source, target=f"pa{target}", rel="inspired-by", mode="remove")
+    assert _links(store, source) == _links(store, target) == []
+
+
+@pytest.mark.parametrize("relation", ["inspired-by", "inspired", "rejected-after"])
+@pytest.mark.parametrize("bad_end", ["source", "target"])
+def test_prior_art_refuses_wrong_kinds(
+    store: Store, relation: str, bad_end: str
+) -> None:
+    src_kind, dst_kind = (
+        ("paper", "todo") if relation == "inspired" else ("todo", "paper")
+    )
+    source = _ref(store, "finding" if bad_end == "source" else src_kind, "source")
+    kind = "finding" if bad_end == "target" else dst_kind
+    target = _ref(store, kind, "target", slug="target")
+    with pytest.raises(BadInput, match="(domain|range)_kinds"):
+        apply_link_ops(
+            store, source, link=f"{kind}:{target}", unlink=None, rel=relation
+        )
+    assert _links(store, source) == []
+
+
+def test_inspired_inverse_write(store: Store) -> None:
+    paper = _ref(store, "paper", "prior art", slug="art")
+    idea = _ref(store, "todo", "idea")
+    apply_link_ops(store, paper, link=f"todo:{idea}", unlink=None, rel="inspired")
+    assert (paper, "inspired-by") in _links(store, idea)
 
 
 # ── AC1: the seeded rows ────────────────────────────────────────────
