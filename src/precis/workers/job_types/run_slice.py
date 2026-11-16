@@ -255,6 +255,7 @@ import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -1286,11 +1287,80 @@ def _defer_land_for_review(
     return note
 
 
-def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
+class _RestoreOutcome(Enum):
+    """The non-tip outcomes of :func:`_restore_reviewed_branch` (gr698949):
+    the verdict hold must tell "origin verifiably holds no reviewed
+    branch" apart from "the pushed state could not be verified or git
+    refused the move" — the first has nothing to hold or lose, the second
+    may heal on a later run."""
+
+    #: The ``ls_remote`` oracle answered and no namespace holds
+    #: ``<branch>`` (never pushed or already deleted), or the tip it holds
+    #: carries nothing beyond ``base`` — provably nothing reviewed exists
+    #: on origin, so the bare verdict close is safe.
+    ABSENT = "absent"
+    #: GitHub could not be read, the tracking-ref fetch failed or landed
+    #: off the oracle's sha, ``merge-base`` could not say, the checkout
+    #: refused, or git raised — the pushed state is unknown or unrestored,
+    #: so the leave-open arm (now capped) applies.
+    UNRESTORABLE = "unrestorable"
+
+
+#: Attempt-free ``preland-hold-unrestored`` repeats on one todo before the
+#: leave-open arm burns a real attempt instead (gr698949): the repeats end
+#: the job ``succeeded``, so ``plan_dispatch``'s ``FREE_RUN_CAP`` (which
+#: walks failed/timed-out jobs only) never bounds them — without a local
+#: count an unrestorable tip relaunches forever, burning nothing (38 runs
+#: on td697701). Mirrors ``plan_dispatch.FREE_RUN_CAP``.
+PRELAND_HOLD_UNRESTORED_CAP = 6
+
+#: The ``_preland_verdict_hold`` leave-open arm's ``meta.attempt_free``
+#: reason — also the run length :func:`_unrestored_free_run` counts.
+PRELAND_HOLD_UNRESTORED = "preland-hold-unrestored"
+
+
+def _unrestored_free_run(store: Any, todo_id: int, job_id: int) -> int:
+    """The consecutive run of ``todo_id``'s jobs stamped
+    ``meta.attempt_free = "preland-hold-unrestored"``, newest first
+    (gr698949): the verdict hold's leave-open repeats. The count rides the
+    job metas of completed runs before this job — the current running job
+    has no attempt-free stamp yet and must not reset the count. The todo's tags carry no attempt-free history."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.meta->>'attempt_free' AS free
+              FROM refs r
+             WHERE r.kind = 'job' AND r.parent_id = %s
+               AND r.ref_id < %s
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      AND t.value IN ('succeeded', 'failed', 'cancelled'))
+             ORDER BY r.ref_id DESC
+            """,
+            (todo_id, job_id),
+        ).fetchall()
+    run = 0
+    for (free,) in rows:
+        if free != PRELAND_HOLD_UNRESTORED:
+            break
+        run += 1
+    return run
+
+
+def _restore_reviewed_branch(
+    tree: Path, branch: str, base: str
+) -> str | _RestoreOutcome:
     """Make ``tree``'s checkout the tip the pre-land review judged —
-    ``origin/<branch>``'s — and return that sha; ``None`` when it
-    cannot be (the pushed state cannot be verified, the remote tip
-    carries no commit ahead of ``base``, or git refused the move). The
+    ``origin/<branch>``'s — and return that sha. When it cannot be, return
+    a :class:`_RestoreOutcome` telling the caller WHY (gr698949):
+    ``ABSENT`` when the ``ls_remote`` oracle VERIFIED origin holds no
+    reviewed branch — no ``<branch>`` in either home (never pushed or
+    already deleted), or a tip that carries nothing beyond ``base`` —
+    there is nothing reviewed to hold and nothing the hold could lose, so
+    the bare verdict close is safe; ``UNRESTORABLE`` when the pushed state
+    could not be verified or git refused the move (the pushed state is
+    unknown, a later run's tree may still hold it). The
     verdict-hold's fallback names THIS run's worktree in
     ``meta.pending_land``, but a recut or cross-host tree reads empty
     while ``origin/<branch>`` still carries the reviewed commits
@@ -1313,7 +1383,7 @@ def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
         env["GIT_TERMINAL_PROMPT"] = "0"
         url = _factory_git_mirror.github_url(slice_root(), env=env)
         if url is None:
-            return None
+            return _RestoreOutcome.UNRESTORABLE
         tip: str | None = None
         src: str | None = None
         for ns in (SLICE_REF_NS, "refs/heads/"):
@@ -1321,15 +1391,17 @@ def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
                 url, (branch,), env=env, namespace=ns
             )
             if remote is None:
-                return None
+                # GitHub cannot be read: the pushed state is unknown.
+                return _RestoreOutcome.UNRESTORABLE
             tip = remote.get(branch)
             if tip is not None:
                 src = f"{ns}{branch}"
                 break
         if tip is None or src is None:
-            # GitHub holds no <branch> in either home — never pushed or
-            # already deleted; nothing reviewed exists to restore.
-            return None
+            # The oracle ANSWERED and GitHub holds no <branch> in either
+            # home — never pushed or already deleted; nothing reviewed
+            # exists to restore or to lose (gr698949).
+            return _RestoreOutcome.ABSENT
         fetch = _git(["fetch", "-q", "origin", f"+{src}:{remote_ref}"], tree)
         got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
         if fetch.returncode != 0 or got != tip:
@@ -1339,11 +1411,16 @@ def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
             # materializes the tip's objects, and its answer is trusted
             # only when the tracking ref lands exactly on the oracle's
             # sha — a ``url.insteadOf`` redirect cannot pass that check.
-            return None
-        if _git(["merge-base", "--is-ancestor", tip, base], tree).returncode != 1:
-            # The remote tip is not ahead of base (or git cannot say):
-            # origin holds nothing reviewed for the land to ship.
-            return None
+            return _RestoreOutcome.UNRESTORABLE
+        ancestor_rc = _git(["merge-base", "--is-ancestor", tip, base], tree).returncode
+        if ancestor_rc == 0:
+            # The remote tip carries nothing beyond base: origin holds
+            # nothing reviewed for the land to ship (gr698949).
+            return _RestoreOutcome.ABSENT
+        if ancestor_rc != 1:
+            # Git cannot say whether the tip is ahead: the pushed state
+            # is unverified.
+            return _RestoreOutcome.UNRESTORABLE
         local = (_git(["rev-parse", ref], tree).stdout or "").strip()
         head = (_git(["symbolic-ref", "-q", "HEAD"], tree).stdout or "").strip()
         if local == tip and head == ref:
@@ -1352,7 +1429,7 @@ def _restore_reviewed_branch(tree: Path, branch: str, base: str) -> str | None:
             return tip
     except (OSError, subprocess.TimeoutExpired, RuntimeError):
         pass
-    return None
+    return _RestoreOutcome.UNRESTORABLE
 
 
 def _preland_verdict_hold(
@@ -1388,7 +1465,16 @@ def _preland_verdict_hold(
     THIS tree's branch first, and this run's
     :func:`_land_params` (pinning this host) take the hold. An
     unrestorable tip leaves the todo open, like the defer-failed arm —
-    the next run's tree may still hold it.
+    the next run's tree may still hold it — but not forever: the
+    repeats are clean-exit successes plan_dispatch's ``FREE_RUN_CAP``
+    never sees, so after :data:`PRELAND_HOLD_UNRESTORED_CAP`
+    attempt-free repeats the arm burns a real attempt and the node's
+    retry cap parks the spin on the coordinator ask (gr698949). A tip
+    the oracle verified ABSENT from origin (never pushed or already
+    deleted, or nothing beyond base) is different: there is nothing
+    reviewed to hold or lose, so the plain verdict close takes over
+    and the tick's dead-chain sweep closes the stale reviewer
+    won't-do (gr698949).
 
     ``meta.preland_defer_failed`` (gr663738) gets the same protection
     the tick's verdict step gives it, on any verdict kind: the stamp
@@ -1417,10 +1503,53 @@ def _preland_verdict_hold(
     if reviewer is None:
         return None
     branch = slice_branch(todo_id)
-    tip = _restore_reviewed_branch(tree, branch, base)
-    if tip is None:
+    restored = _restore_reviewed_branch(tree, branch, base)
+    if isinstance(restored, _RestoreOutcome):
+        if restored is _RestoreOutcome.ABSENT:
+            # gr698949: the oracle VERIFIED origin holds no reviewed
+            # branch (never pushed or already deleted, or carrying
+            # nothing beyond base) — there is nothing to hold and
+            # nothing the hold could lose. The plain verdict close
+            # takes over: the tick's dead-chain sweep closes the stale
+            # reviewer won't-do (its target closed with no `landed:`).
+            _append_comment(
+                ctx.store,
+                todo_id,
+                f"run_slice: `{kind}:` under the live pre-land review "
+                f"td{reviewer}, but origin holds no {branch} in either "
+                "ref home — never pushed or already deleted, so there "
+                f"is nothing reviewed to hold; td{todo_id} takes the "
+                "plain verdict close and the tick closes the stale "
+                f"review td{reviewer} (gr698949).",
+            )
+            return None
+        prior = _unrestored_free_run(ctx.store, todo_id, ctx.ref_id)
+        if prior >= PRELAND_HOLD_UNRESTORED_CAP:
+            # gr698949: the repeats are clean-exit successes, so
+            # plan_dispatch's FREE_RUN_CAP never sees them — after the
+            # cap, the leave-open arm burns a real attempt (the job
+            # carries no ``attempt_free`` and the lease bumps
+            # ``attempt:<n>``), so the node's retry cap finally reaches
+            # the spin and parks it on the coordinator ask.
+            release_todo(ctx.store, todo_id, str(lane) if lane else None)
+            _append_comment(
+                ctx.store,
+                todo_id,
+                f"run_slice: `{kind}:` under the live pre-land review "
+                f"td{reviewer}, but origin/{branch}'s reviewed tip "
+                f"could not be restored here on {prior} consecutive "
+                f"runs — burning an attempt now so the retry cap can "
+                f"reach the spin (gr698949); td{todo_id} back to open.",
+            )
+            return (
+                f"Land: none — `{kind}:` under pre-land review "
+                f"td{reviewer} but origin/{branch}'s tip is "
+                f"unrestorable here after {prior} attempt-free "
+                f"repeats; td{todo_id} back to open, attempt burned "
+                "(gr698949)."
+            )
         unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: "preland-hold-unrestored"})
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: PRELAND_HOLD_UNRESTORED})
         _append_comment(
             ctx.store,
             todo_id,
@@ -1436,6 +1565,7 @@ def _preland_verdict_hold(
             f"unrestorable here; td{todo_id} back to open with no "
             "attempt (gr681208)."
         )
+    tip = restored
     _stamp_branch_files(ctx.store, todo_id, tree)
     params = _land_params(ctx, todo_id, tree, lane, checked)
     # The restored pushed tip — the head the next verdict judges

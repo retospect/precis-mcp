@@ -347,6 +347,17 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         run_slice, "_preland_reviewer", lambda store, todo_id: calls["preland"]
     )
+    # gr698949: the verdict hold's leave-open arm counts its own
+    # ``preland-hold-unrestored`` repeats on the todo's job metas; the
+    # fake store has no pool, so the seam returns
+    # ``calls["unrestored_run"]`` (0 = no prior repeats, the default the
+    # attempt-free tests take; a cap test sets it at/above the cap).
+    calls["unrestored_run"] = 0
+    monkeypatch.setattr(
+        run_slice,
+        "_unrestored_free_run",
+        lambda store, todo_id, job_id: calls["unrestored_run"],
+    )
     # gr681208: the verdict-hold restore trusts the ``ls_remote`` oracle —
     # what GitHub serves — never the tracking ref the fetch just wrote.
     # ``ls_remote`` answers ``remote_tips`` when a test sets it (a
@@ -4105,15 +4116,15 @@ def test_poll_verdict_hold_divergent_local_tip_yields_to_origin(
     assert "STATUS:done" in store.tag_strings(42)
 
 
-def test_poll_verdict_hold_leaves_open_without_a_pushed_tip(
+def test_poll_verdict_hold_absent_branch_takes_the_plain_close(
     seams: dict[str, Any],
 ) -> None:
-    """Nothing restorable — ``origin/slice/42`` names no tip (never
-    pushed, deleted, or the fetch could not read it): the bare verdict
-    still cannot close the build, and holding would land the empty
-    local tip while the land's cleanup can delete unlanded remote work.
-    The lease goes back attempt-free, the todo stays open — the
-    defer-failed arm's ruling."""
+    """gr698949: the oracle ANSWERED and GitHub holds no ``slice/42`` in
+    either ref home (never pushed or already deleted) — verifiably
+    nothing reviewed exists to hold or lose. The bare verdict close was
+    right all along for this case: the build closes done, no
+    ``pending_land`` is stamped, and the tick's dead-chain sweep closes
+    the stale reviewer won't-do."""
     store = _Store()
     store.add_todo(42, "t", body="b")
     ctx, handle = _submit(store, seams)
@@ -4128,22 +4139,53 @@ def test_poll_verdict_hold_leaves_open_without_a_pushed_tip(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     tags = store.tag_strings(42)
-    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "STATUS:done" in tags and "STATUS:open" not in tags
     assert not any(t.startswith("attempt:") for t in tags)
-    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
     assert "pending_land" not in store.refs[42].meta
     assert seams["lands"] == []
-    assert any(
-        "stays open for a run whose tree still holds" in c for c in store.comments(42)
-    )
+    assert any("nothing reviewed to hold" in c for c in store.comments(42))
 
 
-def test_poll_verdict_hold_leaves_open_on_an_empty_pushed_tip(
+def test_poll_verdict_hold_burns_an_attempt_after_unrestored_repeats(
     seams: dict[str, Any],
 ) -> None:
-    """``origin/slice/42`` resolves but is not ahead of base — a pushed
-    branch carrying nothing the review judged: same leave-open ruling,
-    no restore attempted beyond the reads."""
+    """gr698949's cap: the leave-open repeats are clean-exit successes, so
+    plan_dispatch's ``FREE_RUN_CAP`` never sees them — after
+    ``PRELAND_HOLD_UNRESTORED_CAP`` attempt-free repeats the arm burns a
+    real attempt (no ``attempt_free`` stamp, the lease bumps
+    ``attempt:<n>``) so the node's retry cap can reach the spin."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["remote_tips"] = None  # the oracle cannot be read — unrestorable
+    seams["unrestored_run"] = run_slice.PRELAND_HOLD_UNRESTORED_CAP
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "attempt:1" in tags
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
+    assert "pending_land" not in store.refs[42].meta
+    assert seams["lands"] == []
+    assert any("burning an attempt" in c for c in store.comments(42))
+
+
+def test_poll_verdict_hold_tip_not_ahead_of_base_takes_the_plain_close(
+    seams: dict[str, Any],
+) -> None:
+    """``origin/slice/42`` resolves but carries nothing beyond base
+    (``merge-base --is-ancestor`` rc 0) — provably nothing reviewed for
+    the land to ship, the absent ruling (gr698949): the plain verdict
+    close takes over, no restore attempted beyond the reads."""
     store = _Store()
     store.add_todo(42, "t", body="b")
     ctx, handle = _submit(store, seams)
@@ -4161,7 +4203,8 @@ def test_poll_verdict_hold_leaves_open_on_an_empty_pushed_tip(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     tags = store.tag_strings(42)
-    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "STATUS:done" in tags and "STATUS:open" not in tags
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
     assert "pending_land" not in store.refs[42].meta
     git_cmds = [args for args, _cwd in seams["git"]]
     assert not any(c[:1] == ["checkout"] for c in git_cmds)
