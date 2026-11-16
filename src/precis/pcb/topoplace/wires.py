@@ -6161,6 +6161,11 @@ _SHOVE_GROWS = 20
 _SHOVE_VARIANT = "m"
 _SHOVE_BEAM = 4
 _SHOVE_SEEDS = 3
+#: multi-start RNG salt stride — ``seed`` rotates the seeded net-order
+#: shuffles by whole salt blocks so two recovery attempts never draw
+#: the same order (gr635502's track shove); ``seed=0`` reproduces the
+#: original ``Random(s)`` draws bit for bit.
+_SHOVE_SEED_STRIDE = 7919
 #: What a refused net's partial copper does during the phase (s1fix
 #: review F1): ``True`` strips it from the cell when the net's tries
 #: exhaust, so later grows price the freed channel instead of the
@@ -6421,6 +6426,9 @@ class _Shove:
         net_clearance_by_name: Mapping[str, float] | None = None,
         masks: BoardMasks | None = None,
         hv_weight: float = 0.0,
+        seeds: int | None = None,
+        seed: int = 0,
+        budget: int | None = None,
     ) -> None:
         from precis.pcb.rules import NetRules
 
@@ -6459,7 +6467,12 @@ class _Shove:
         self.order = list(order)
         self.order_pos = {k: i for i, k in enumerate(order)}
         self.grows = 0
-        self.budget = _SHOVE_GROWS * len(d.net_pins)
+        # Recovery attempts widen/rotate the phase (gr635502): ``seeds``
+        # multi-start shuffles, ``seed`` their RNG salt, ``budget`` the
+        # grow count the starts share — defaults keep the S2 ruling.
+        self.seeds = _SHOVE_SEEDS if seeds is None else max(0, int(seeds))
+        self.seed = int(seed)
+        self.budget = _SHOVE_GROWS * len(d.net_pins) if budget is None else int(budget)
         self.round_yield: list[tuple[int, ...]] = []
         self.exhaustive_noop = False
         #: net -> 'guard' when the last refused try died in the clearance guard
@@ -6916,21 +6929,23 @@ class _Shove:
         self, st0: _ShoveState, budget: int | None = None
     ) -> tuple[_ShoveState, list[tuple[int, ...]]]:
         """Variant (m): the greedy phase re-run from the post-loop
-        cell under the net order and ``_SHOVE_SEEDS`` shuffles of it —
+        cell under the net order and ``self.seeds`` shuffles of it —
         each start an equal share of the budget — the best final cell
         under failure-set inclusion stays. A strict subset wins, equal sets
         compare crossings/vias/length, and incomparable sets retain the earlier
         incumbent (as does an exact tie)."""
         budget = self.budget if budget is None else budget
-        share = max(1, budget // (_SHOVE_SEEDS + 1))
+        share = max(1, budget // (self.seeds + 1))
         best = st0
         best_metric = self._plan_metric(st0)
         yields: list[tuple[int, ...]] = []
-        for s in range(_SHOVE_SEEDS + 1):
+        for s in range(self.seeds + 1):
             order = (
                 self.order
                 if s == 0
-                else random.Random(s).sample(self.order, len(self.order))
+                else random.Random(self.seed * _SHOVE_SEED_STRIDE + s).sample(
+                    self.order, len(self.order)
+                )
             )
             st, y = self.run_greedy(st0, order, min(budget, self.grows + share))
             yields.append(tuple(y))
@@ -7060,6 +7075,9 @@ def build_wires(
     masks: BoardMasks | None = None,
     hv_weight: float = 0.0,
     negotiate: int = _NEGOTIATE_ITERS,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> Wires:
     """Every net's wire tree on the mesh — spec §2's wires. Returns a
     :class:`Wires`; a component of a net no path can link to the net's
@@ -7089,7 +7107,12 @@ def build_wires(
     worse than the single pass, which is the first candidate
     (td598636). Above
     ``_NEG_ITERS_MAX`` it refuses — the 1.4x present-factor ramp is
-    float-saturated long before that many passes."""
+    float-saturated long before that many passes. ``shove_seeds``,
+    ``shove_seed`` and ``shove_budget`` steer the S2 phase for a
+    failure-driven retry (gr635502): more multi-start shuffles, their
+    RNG salt rotated so a later attempt draws different net orders, and
+    an absolute grow budget replacing the ``_SHOVE_GROWS`` × nets
+    ruling — all ``None``/0 keeps the measured defaults."""
     if int(negotiate) > _NEG_ITERS_MAX:
         raise ValueError(
             f"negotiate={negotiate} exceeds _NEG_ITERS_MAX={_NEG_ITERS_MAX}: "
@@ -7139,6 +7162,14 @@ def build_wires(
     extra: dict[int, list[tuple[int, list[int]]]] = {}
     partners_of: dict[int, list[int]] = {}
     route_order = _net_order(mesh, d, n_layers)
+    if shove_seed:
+        # A nonzero seed rotates the base route order too (gr635502's
+        # seeded re-shove): the retry is a genuinely different pass —
+        # contested channels can seat a different net — not only a
+        # different S2 multi-start draw.
+        route_order = random.Random(shove_seed * _SHOVE_SEED_STRIDE).sample(
+            route_order, len(route_order)
+        )
     rules_full = [
         (*rules_used[k], via_dia[k], via_drill[k]) for k in range(len(d.net_pins))
     ]
@@ -7154,6 +7185,9 @@ def build_wires(
         net_clearance_by_name=net_clearance_by_name,
         masks=masks,
         hv_weight=hv_weight,
+        seeds=shove_seeds,
+        seed=shove_seed,
+        budget=shove_budget,
     )
 
     def preserves_retry(

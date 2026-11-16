@@ -58,7 +58,20 @@ RUN_SCHEMA = "precis.topo-run/9"
 #: 4 — offset drill/slot contacts and siting; analytic pad ring verdicts.
 #: 5 — native analytic fabrication lands and single drill quantization.
 #: 6 — native pad pours, slot caps and analytic electrical contact.
-CODE_VERSION = 6
+#: 7 — the shove report's ``reason`` names its all-fixed / cap-blocked
+#: stop (gr635502): equal inputs can record a different word.
+#: 8 — the route's failure count covers every failed-net mark, so the
+#: failure-driven shove fires on legalise/withdrawn-only failures and
+#: mints their push rows (gr635502): a board that skipped the loop can
+#: route, report and even place differently.
+#: 9 — the route's blocked part axis now drives seeded deeper S2 track
+#: shoves at the same pose and records ``shove_stops``/``track_shove``
+#: (gr635502): equal inputs can produce different copper and records.
+#: 10 — ``track_shove.moved_mm`` counts KEPT plans only, and every
+#: blocked path (first-pass corridor refusal, moving-shove no-improve)
+#: now gets the seeded axis (gr635502 review): equal inputs can route
+#: and record differently.
+CODE_VERSION = 10
 
 _JSON_FILES = ("manifest.json", "elites.json", "pairs.json", "pins.json")
 _TEXT_FILES = ("summary.txt", "placement.svg")
@@ -119,6 +132,25 @@ def manifest_run_hash(m: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(doc, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
+
+
+def shove_row(s: Any) -> dict[str, Any] | None:
+    """One shove report in its recorded shape — ``None`` when the stage
+    never ran. Shared by the place manifest's ``result.shove`` and the
+    route stage's ``meta.topo_run.route.shove`` (gr635502), so both
+    records read the same fields."""
+    if s is None:
+        return None
+    return {
+        "resolved": bool(s.resolved),
+        "rounds": int(s.rounds),
+        "moved_mm": round(float(s.moved_mm), 4),
+        "remaining": len(s.remaining),
+        "noted": len(getattr(s, "noted", ())),
+        "reason": str(s.reason),
+        "mesh_errors": int(s.mesh_errors),
+        "mesh_error": str(s.mesh_error),
+    }
 
 
 def manifest(
@@ -204,20 +236,7 @@ def manifest(
                 if result.legalize is not None
                 else None
             ),
-            "shove": (
-                {
-                    "resolved": bool(result.shove.resolved),
-                    "rounds": int(result.shove.rounds),
-                    "moved_mm": round(float(result.shove.moved_mm), 4),
-                    "remaining": len(result.shove.remaining),
-                    "noted": len(getattr(result.shove, "noted", ())),
-                    "reason": str(result.shove.reason),
-                    "mesh_errors": int(result.shove.mesh_errors),
-                    "mesh_error": str(result.shove.mesh_error),
-                }
-                if result.shove is not None
-                else None
-            ),
+            "shove": shove_row(result.shove),
         },
     }
     if job is not None:
@@ -399,5 +418,6 @@ __all__ = [
     "pairs_json",
     "placement_svg",
     "run_files",
+    "shove_row",
     "write_run",
 ]

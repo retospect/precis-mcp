@@ -134,7 +134,13 @@ class ShoveResult:
     spec's "displacement ≤ 1.05 × LP optimum" bound (a multi-round run
     legitimately exceeds it: later rounds see constraints the first
     linearisation could not). ``reason`` is ""/"infeasible"/"mesh"/
-    "inverted" (a step the backtracker could not save); ``min_tri_area_mm2``
+    "inverted" (a step the backtracker could not save), "all-fixed"
+    (no movable unit while residual or caller-push rows stand —
+    gr635502: an every-part-fixed board ran 0 rounds and said nothing)
+    or "cap-blocked" (rows remained and a mover existed, yet the
+    applied step moved nothing — every unit pinned by its legal box,
+    the ``_CAP_MM`` trust region or the on-board hold);
+    ``min_tri_area_mm2``
     the no-inversion audit — the smallest ACTUAL signed area a
     constrained triangle reached under an applied step. ``mesh_errors``
     counts the ``MeshConflictError`` catches the pass swallowed (a
@@ -909,6 +915,12 @@ def shove_pose(
         if spent == 0:
             lp_optimum = float(res.fun)
         if float(np.abs(step).sum()) <= 1e-9:
+            if m_count:
+                # Rows remained and a mover existed, yet the applied
+                # step moved nothing — every unit pinned by its legal
+                # box, the ``_CAP_MM`` trust region or the on-board
+                # hold (gr635502: this stop used to report "").
+                reason = reason or "cap-blocked"
             break
         # Backtracking on the ACTUAL (quadratic) signed areas: the
         # linearised guard can admit a step that inverts a constrained
@@ -968,6 +980,17 @@ def shove_pose(
         mesh_errors += 1
         mesh_error = mesh_error or str(exc)
         reason = reason or "mesh"
+    if not reason and m_count == 0:
+        # No LP variable ever existed, so nothing could move — when
+        # residual (``remaining``/``noted``) or still-open caller-push
+        # rows stand, that IS the stop reason (gr635502: the all-fixed
+        # board's 0-round shove reported "").
+        push_open = any(
+            sep - (float(n_ax @ (pose[ib, :2] - pose[ia, :2])) - start) > 1e-6
+            for ia, ib, n_ax, sep, start in push_state
+        )
+        if remaining or noted or push_open:
+            reason = "all-fixed"
     return ShoveResult(
         pose=pose,
         # a final mesh refused (pads off the board) reports no residual

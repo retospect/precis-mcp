@@ -5851,6 +5851,9 @@ def _route_design_once(
     hole_clearance_mm: float = 0.0,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local``) shares.
@@ -5878,6 +5881,9 @@ def _route_design_once(
         masks=masks,
         hv_weight=hv_weight,
         legalise_sink=legalise_sink,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     planes = _plane_nets(d, ir)
     if not planes:
@@ -6145,6 +6151,9 @@ def route_design(
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
     pose_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """:func:`_route_design_once` plus the corridor-overflow recovery
     (cleanup-66): a ``CorridorOverflow`` is a legalise input, so the
@@ -6173,6 +6182,9 @@ def route_design(
         hole_clearance_mm=hole_clearance_mm,
         hv_weight=hv_weight,
         legalise_sink=poses,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     first_exc: CorridorOverflow | None = None
     try:
@@ -6229,6 +6241,9 @@ def _route_signals(
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -6299,6 +6314,9 @@ def _route_signals(
         mesh_sink=mesh_sink,
         hv_weight=hv_weight,
         legalise_sink=legalise_sink,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
 
     def _only(nets: set[int]) -> tuple[np.ndarray, ...]:
@@ -7306,6 +7324,9 @@ def _route_head(
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> _RouteWork:
     """The search half of a route pass — mesh → wires → corridor
     refusal → the td569542 legalisation round — returning the live
@@ -7347,6 +7368,9 @@ def _route_head(
         },
         masks=masks,
         hv_weight=hv_weight,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     routed_over = tuple(c for c in wires.overflow if not c.refused)
     if routed_over:
