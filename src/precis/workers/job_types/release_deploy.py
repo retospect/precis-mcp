@@ -34,6 +34,18 @@ on ``meta.release``; the tick mints this job with ``params.target_node`` =
 that host, :func:`validate_submit` refuses any other (or no) node, and
 :func:`submit` refuses a worker whose ``PRECIS_NODE`` or checkout differs.
 
+**Backup window holds the deploy** (gr697664). ``scripts/deploy`` refuses
+inside the nightly backup window ("no host was touched"); a job minted
+there was a guaranteed red that burned the node's retry budget.
+:func:`_refusal` therefore reads the same ``release.no_release_windows``
+setting ``release_poll`` mints under and, at dispatch (not once running),
+refuses while the clock sits inside a window — the tick notes "not
+dispatched" and mints nothing, so the deploy mints once the window ends. A
+guard refusal that still gets through (the clock moved between mint and
+launch) is stamped ``meta.attempt_free = "backup-window"`` in :func:`poll`:
+the plan tick counts no attempt for it. An unparsable window setting
+holds nothing here (the script's own guard still decides).
+
 * :func:`submit` runs ``scripts/release --deploy-only r<N>`` in the same
   checkout the cut ran in (the ``.release-owner`` marker there makes it the
   release's owner). The script never cuts; it refuses unless release/r<N> is
@@ -106,6 +118,42 @@ def wall_seconds() -> float:
     return float(_DEFAULT_WALL_S)
 
 
+#: ``meta.attempt_free`` value of a job the backup-window guard refused:
+#: ``plan_dispatch`` counts no attempt for it (its ``ATTEMPT_FREE_KEY``).
+WINDOW_FREE_REASON = "backup-window"
+
+#: ``run_slice.ATTEMPT_FREE_KEY``, restated (the one-way dependency rule).
+WINDOW_FREE_REASON_KEY = "attempt_free"
+
+#: The deploy script's marker for the window refusal, as against its other
+#: pre-rollout refusals (``_NO_HOST_TOUCHED`` alone also covers those).
+_WINDOW_REFUSAL = "backup-window guard refused"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def window_hold(store: Any) -> str | None:
+    """The hold line while the clock sits inside a
+    ``release.no_release_windows`` window, else ``None`` (also for an
+    unparsable setting — the deploy script's guard still decides)."""
+    from precis import settings
+
+    windows = _rp.parse_windows(
+        settings.get_str(_rp.WINDOWS_SETTING, store=store) or ""
+    )
+    if windows is None:
+        return None
+    hit = _rp.in_window(_utcnow(), windows)
+    if hit is None:
+        return None
+    return (
+        f"{NAME}: held — inside the backup window {hit}Z "
+        f"({_rp.WINDOWS_SETTING}); dispatches once it ends"
+    )
+
+
 def _refusal(
     store: Any, params: dict[str, Any], *, running: bool = False
 ) -> tuple[str | None, str | None]:
@@ -139,6 +187,10 @@ def _refusal(
     held = _rp.deploy_review_blockers(store, todo_id)
     if held:
         return f"{NAME}: {rn} waits on its engine reviews — {'; '.join(held)}", None
+    if not running:
+        hold = window_hold(store)
+        if hold is not None:
+            return hold, None
     return None, rn
 
 
@@ -265,6 +317,9 @@ def poll(ctx: Any, handle: Any) -> bool:
             # release-train T3 review F5: the script refused before any
             # host moved (the backup window, a pin refusal) — the release
             # is not deploying, so it takes fixes again.
+            if _WINDOW_REFUSAL in log_text:
+                # gr697664: a window refusal is no failed attempt.
+                ctx.set_meta(**{WINDOW_FREE_REASON_KEY: WINDOW_FREE_REASON})
             todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
             if isinstance(todo_id, int):
                 ctx.append_chunk(

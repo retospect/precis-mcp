@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_deploy as rd
 from precis.workers.job_types import release_poll as rp
 from tests._script import load_script
 
@@ -188,6 +190,35 @@ def test_on_and_green_answers_then_deploys(store: Store) -> None:
     jobs = _jobs_under(store, mint.ids["deploy"])
     assert len(jobs) == 1, res.notes
     assert jobs[0][1]["job_type"] == "release_deploy"
+
+
+def test_the_deploy_is_held_inside_the_backup_window_then_dispatched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr697664: the approved deploy mints nothing while the clock is inside
+    ``release.no_release_windows`` and mints once the window ends."""
+    mint = _green_pass(store)
+    _open_round(store)
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 3, 30, tzinfo=UTC)
+    )
+    notes: list[str] = []
+    for _ in range(3):
+        notes += pd.run_pass(store).notes
+        if _status(store, mint.ids["approval"]) == "done":
+            break
+    assert R.approval(store, mint.ids["deploy"])[0] == "r7"
+    notes += pd.run_pass(store).notes
+    assert _jobs_under(store, mint.ids["deploy"]) == [], notes
+    assert any("release_deploy not dispatched — " in n and "held" in n for n in notes)
+
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 4, 20, tzinfo=UTC)
+    )
+    pd.run_pass(store)
+    jobs = _jobs_under(store, mint.ids["deploy"])
+    assert [m["job_type"] for _, m in jobs] == ["release_deploy"]
 
 
 def test_dry_run_writes_nothing(store: Store) -> None:

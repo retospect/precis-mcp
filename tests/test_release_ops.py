@@ -341,6 +341,49 @@ def test_deploy_refused_before_the_cut_and_with_the_factory_off(
     assert rc.validate_submit(store, params={}) is not None
 
 
+@pytest.mark.parametrize(
+    ("clock", "held"),
+    [
+        ((3, 30), True),  # inside the default 03:00-04:20Z backup window
+        ((4, 20), False),  # the window is half-open: its end is outside
+        ((12, 0), False),
+    ],
+)
+def test_deploy_dispatch_holds_inside_the_backup_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch, clock: tuple[int, int], held: bool
+) -> None:
+    """gr697664: inside the window the dispatch-time refusal holds the job
+    (the tick mints nothing); outside it the same approved node launches."""
+    mint = _cut(store)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, *clock, tzinfo=UTC)
+    )
+    refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
+    if held:
+        assert refusal is not None and "03:00-04:20Z" in refusal, refusal
+    else:
+        assert refusal is None, refusal
+
+
+def test_deploy_hold_follows_the_window_setting(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 22, 0, tzinfo=UTC)
+    )
+    params = {"todo_id": mint.ids["deploy"]}
+    assert rd.validate_submit(store, params=params) is None
+    psettings.set_setting("release.no_release_windows", "21:30-23:30", store=store)
+    refusal = rd.validate_submit(store, params=params)
+    assert refusal is not None and "21:30-23:30Z" in refusal
+    # An unparsable value holds nothing here: the script's guard decides.
+    psettings.set_setting("release.no_release_windows", "garbage", store=store)
+    assert rd.validate_submit(store, params=params) is None
+
+
 def test_deploy_node_without_an_approval_ask_is_refused(store: Store) -> None:
     mint = _cut(store)
     with store.pool.connection() as conn:

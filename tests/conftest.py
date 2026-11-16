@@ -867,6 +867,21 @@ def _reset_connection_scope() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _release_deploy_clock_outside_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``release_deploy``'s clock to midday UTC (gr697664): its dispatch
+    hold reads the wall clock against ``release.no_release_windows``, so a
+    suite run at 03:30Z would otherwise hold every deploy dispatch a test
+    expects. The hold's own tests override ``_utcnow``."""
+    from datetime import UTC, datetime
+
+    from precis.workers.job_types import release_deploy
+
+    monkeypatch.setattr(
+        release_deploy, "_utcnow", lambda: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_bg_share_ticks() -> Iterator[None]:
     """Zero the per-process background-share tick (td656098) so a claim
     test never lands on the 1-in-10 reserved pick by accumulated count."""

@@ -167,3 +167,47 @@ def test_a_deploy_refused_before_any_host_clears_the_deploy_start(
     assert rd.poll(ctx, {"pid": 1}) is True
     assert ctx.failures
     assert (R.deploy_started(store, deploy) is None) is cleared
+
+
+# ── gr697664: a backup-window refusal burns no retry attempt ──────────
+
+
+@pytest.mark.parametrize(
+    ("log", "attempts"),
+    [
+        (
+            "backup-window guard refused this deploy (see above) — no host was touched.",
+            0,
+        ),
+        ("overlay sync refused this deploy (see above) — no host was touched.", 1),
+        ("rollout failed on worker-b", 1),
+    ],
+)
+def test_a_window_refusal_leaves_the_retry_budget_unchanged(
+    store: Store, monkeypatch: pytest.MonkeyPatch, log: str, attempts: int
+) -> None:
+    from precis.workers._mint import mint_background_job
+
+    mint = _cut(store)
+    deploy = mint.ids["deploy"]
+    with store.tx() as conn:
+        job = mint_background_job(
+            store,
+            conn=conn,
+            job_type="release_deploy",
+            executor="ssh_node",
+            title="release_deploy",
+            params={"todo_id": deploy},
+            parent_id=deploy,
+            status="failed",
+        )
+    monkeypatch.setattr(rd._rc, "finish_run", lambda ctx, handle, name: (1, log))
+    monkeypatch.setattr(rd._rc, "fail_with_tail", lambda ctx, msg, tail: None)
+
+    class _JobCtx(_Ctx):
+        def set_meta(self, **kw: Any) -> None:
+            store.stamp_ref_meta(job.id, kw)
+
+    assert rd.poll(_JobCtx(store, deploy), {"pid": 1}) is True
+    plan = pd._load(store)
+    assert pd._attempts(plan, plan.nodes[deploy]) == attempts
