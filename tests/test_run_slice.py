@@ -2465,35 +2465,71 @@ def test_lane_wait_past_the_cap_fails_attempt_free(
     assert "attempt:1" not in store.tag_strings(42)
 
 
-def test_submit_parks_for_the_free_lane_then_falls_through(
+def test_submit_pick_shares_the_flat_tier_during_the_wait(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr573563: a free lane at its cap parks the build rather than paying
-    — the pick falls through to a subscription lane only once the
-    free-lane wait (``factory.free_lane_wait_min``, default 20 min of
-    ``wait_parks``) has passed, and never lands on codex."""
-    use_lanes(monkeypatch)  # the seams table is claude-sub alone
-    seams["live"] = {"devin": 3}
+    """gr685753 caller regression (review td696537): during the
+    flat-tier wait the pick compares load across free AND subscription
+    lanes — devin 3/8, codex 3/8, kimi 0/8 launches on kimi. The old
+    ``paid_ok=False`` call cut the pick to free lanes first, so every
+    fresh build went to devin."""
+    use_lanes(
+        monkeypatch,
+        Lane("devin", "claude_p", "free-promo", 8, frozenset({"code"})),
+        Lane("codex", "claude_p", "subscription", 8, frozenset({"code"})),
+        Lane("kimi", "claude_p", "subscription", 8, frozenset({"code"})),
+    )
+    seams["live"] = {"devin": 3, "codex": 3}
     store = _Store()
     store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.meta_set["lane"] == "kimi"
+
+
+def test_submit_parks_for_the_flat_tier_then_falls_through_to_metered(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr573563 + gr685753: every fit flat-rate (free or subscription)
+    lane at its cap parks the build rather than paying per-token — the
+    pick falls through to a metered lane only once the flat-tier wait
+    (``factory.free_lane_wait_min``, default 20 min of ``wait_parks``)
+    has passed. A subscription lane with an open slot takes the build
+    inside the wait."""
+    metered = Lane("metered", "claude_p", "metered", 2, frozenset({ANY_CLASS}))
+    use_lanes(monkeypatch, *SEED_LANES, metered)
+    store = _Store()
+    store.add_todo(42, "Build")
+
+    # Devin at its cap but claude-sub open: the build launches on the
+    # subscription lane inside the wait, no park.
+    seams["live"] = {"devin": 3}
+    ctx0, handle = _submit(store, seams)
+    assert handle is not None and ctx0.meta_set["lane"] == "claude-sub"
+
     deferred: list[tuple[Any, str]] = []
 
     def _defer(wake_at: Any, note: str) -> bool:
         deferred.append((wake_at, note))
         return True
 
+    # Every flat-rate lane at its cap: the build waits on a flat slot —
+    # the metered lane frees nothing it can use — and the park names
+    # both the held lanes and the metered fall-through.
+    seams["live"] = {"devin": 3, "claude-sub": 2}
+    launches = len(seams["launch"])
     ctx = _Ctx(store, {"todo_id": 42}, wait_parks=0)
     ctx.defer = _defer
     assert run_slice.submit(ctx, None) is None
     assert deferred and "devin" in deferred[0][1] and "20 min" in deferred[0][1]
-    assert "paid lane" in deferred[0][1]
+    assert "metered lane" in deferred[0][1]
+    assert sorted(ctx.meta_set["lane_wait"]) == ["claude-sub", "devin"]
     assert ctx.failure is None
-    assert seams["launch"] == []
+    assert len(seams["launch"]) == launches
 
-    # Past the wait the pick falls through to the subscription lane.
+    # Past the wait the pick falls through to the metered lane.
     ctx2 = _Ctx(store, {"todo_id": 42}, wait_parks=2)
     handle = run_slice.submit(ctx2, None)
-    assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
+    assert handle is not None and ctx2.meta_set["lane"] == "metered"
 
     # A longer configured wait keeps parking past 20 minutes of parks.
     monkeypatch.setattr(
@@ -2504,6 +2540,14 @@ def test_submit_parks_for_the_free_lane_then_falls_through(
     assert run_slice.submit(ctx3, None) is None
     assert "devin" in deferred[-1][1] and "50 min" in deferred[-1][1]
     assert ctx3.meta_set["wait_parks"] == 3
+
+    # No fit flat lane at all — every tier-0 lane backed off — lets the
+    # metered lane launch inside the wait, the old paid fall-through.
+    until = datetime.now(UTC) + timedelta(minutes=30)
+    seams["backoff"] = {"devin": until, "claude-sub": until}
+    ctx4 = _Ctx(store, {"todo_id": 42}, wait_parks=0)
+    handle = run_slice.submit(ctx4, None)
+    assert handle is not None and ctx4.meta_set["lane"] == "metered"
 
 
 def test_submit_refuses_a_generator_on_a_lane_without_mcp(

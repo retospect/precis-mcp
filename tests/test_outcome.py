@@ -14,7 +14,13 @@ from typing import Any, cast
 import pytest
 
 from precis.plans import outcome
-from precis.plans.lanes import ANY_CLASS, COST_FREE, COST_SUBSCRIPTION, Lane
+from precis.plans.lanes import (
+    ANY_CLASS,
+    COST_FREE,
+    COST_METERED,
+    COST_SUBSCRIPTION,
+    Lane,
+)
 from precis.store import Store
 from precis.workers import run_quality
 
@@ -847,7 +853,7 @@ def test_diverse_pick_respects_caps_backoffs_and_free_first() -> None:
     picked = _lane("picked", models=("m1",), default_model="m1")
     full = _lane("full", models=("m2",), default_model="m2", cap=1)
     backed = _lane("backed", models=("m3",), default_model="m3")
-    paid = _lane("paid", models=("m4",), default_model="m4")
+    paid = _lane("paid", models=("m4",), default_model="m4", cost_class=COST_METERED)
     free = _lane("free", models=("m5",), default_model="m5", cost_class=COST_FREE)
     new_lane, model, _ = outcome.diverse_model_pick(
         None,
@@ -861,9 +867,30 @@ def test_diverse_pick_respects_caps_backoffs_and_free_first() -> None:
         model_pin=None,
         task_class="validate",
     )
-    # The full lane, the backed-off lane and the paid lanes (a fit free
-    # lane exists) are all out of the diverse re-pick.
+    # The full lane, the backed-off lane and the metered lane (a fit
+    # flat-rate lane exists) are all out of the diverse re-pick.
     assert (new_lane.name, model) == ("free", "m5")
+
+    # The hop orders by the shared tier, not cost class (gr685753): an
+    # idle subscription lane beats a busier free one, and a subscription
+    # lane stays in the wait-time pick — only metered is held out.
+    sub = _lane("sub", models=("m6",), default_model="m6", cap=8)
+    free8 = _lane(
+        "free8", models=("m7",), default_model="m7", cost_class=COST_FREE, cap=8
+    )
+    new_lane, model, _ = outcome.diverse_model_pick(
+        None,
+        lane=picked,
+        model="m1",
+        candidates=(picked, sub, free8),
+        counts={"sub": 2, "free8": 3},
+        backoffs=None,
+        paid_ok=False,
+        avoid=frozenset({"m1"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane.name, model) == ("sub", "m6")
 
 
 @pytest.mark.parametrize("why", ["full", "backed"])

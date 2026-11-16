@@ -539,8 +539,10 @@ REGISTRY: dict[str, SettingSpec] = {
             type="int",
             env_var="PRECIS_FACTORY_FREE_LANE_WAIT_MIN",
             default=20,
-            doc="Minutes a run_slice submit parks for a free builder lane "
-            "at its cap before a paid lane may take the pick (gr573563; "
+            doc="Minutes a run_slice submit parks while every fit "
+            "flat-rate (free or subscription) builder lane is at its cap "
+            "before a metered lane may take the pick (gr573563; free and "
+            "subscription share the pick's tier 0 since gr685753, "
             "measured in wait_parks * LANE_FULL_BACKOFF). 0 pays "
             "immediately, a negative value reads as 0.",
         ),

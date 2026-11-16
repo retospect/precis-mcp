@@ -4326,10 +4326,13 @@ def _lane_offers(lane: _lanes.Lane, capability: str) -> bool:
 
 
 def _free_lane_wait_min(store: Any) -> int:
-    """Minutes a submit parks for a free lane at its cap before a paid
-    lane may take the pick — ``factory.free_lane_wait_min``, default 20
-    (gr573563). Unset or unparsable resolves 20; a negative setting is
-    0 (pay immediately)."""
+    """Minutes a submit parks while every fit flat-rate (free or
+    subscription) lane is at its cap before a metered lane may take the
+    pick — ``factory.free_lane_wait_min``, default 20 (gr573563; free
+    and subscription share the pick's tier 0 since gr685753, so the
+    wait holds only the per-token metered lanes out). Unset or
+    unparsable resolves 20; a negative setting is 0 (pay
+    immediately)."""
     from precis import settings
 
     wait = settings.get_int("factory.free_lane_wait_min", store=store)
@@ -4363,7 +4366,7 @@ def _park_lane_full(
     so a later quota park of the same job is never woken as a lane wait. A
     park that follows an early wake (``meta.lane_woken``: the job lost the
     race for the slot) adds the real elapsed seconds to ``meta.early_wait_s``
-    instead of a ``wait_parks`` step, so the cap and the free-lane wait clock
+    instead of a ``wait_parks`` step, so the cap and the lane-wait clock
     keep measuring wall-clock time (:func:`_lane_waited`)."""
     meta = ctx.meta or {}
     parks = int(meta.get("wait_parks") or 0)
@@ -4485,6 +4488,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     counts: dict[str, int] | None = None
     backoffs: dict[str, datetime] | None = None
     table: tuple[_lanes.Lane, ...] = ()
+    pick_table: tuple[_lanes.Lane, ...] = ()
     paid_ok = True
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
@@ -4577,20 +4581,42 @@ def submit(ctx: Any, spec: Any) -> Any:
         }
         table = tuple(ln for ln in table if ln.adapter in host_adapters)
         backoffs = _lanes.lane_backoffs(store)
-        # Free compute first (gr573563): while a fit free lane exists the
-        # pick holds paid lanes out; the build waits on the free lane's
-        # cap and falls through to paid only once wait_parks has covered
+        # Flat compute first (gr573563, gr685753): the pick's tier 0 is
+        # the free AND flat-rate subscription lanes ordered by load, a
+        # metered lane its last resort — while a fit tier-0 lane exists
+        # the build waits on the flat lanes' caps and falls through to
+        # metered only once wait_parks has covered
         # factory.free_lane_wait_min of LANE_FULL_BACKOFF parks.
+        # pick_lane's own paid_ok=False would still cut the fit set to
+        # free-only, so the caller applies the shared tier itself:
+        # metered lanes leave the pick table while a fit tier-0 lane
+        # (enabled, unparked, fit, model-compatible, not backed off —
+        # at-cap ones included, their cap is the point of the wait)
+        # exists; with none at all — a pin only a metered lane runs,
+        # every tier-0 lane backed off — the metered lanes stay in, the
+        # fall-through pick_lane's hold encoded for free lanes.
         wait_min = _free_lane_wait_min(store)
         waited = _lane_waited(ctx.meta or {})
         paid_ok = waited >= timedelta(minutes=wait_min)
+        pick_table = table
+        if not paid_ok and any(
+            ln.enabled
+            and not ln.parked
+            and ln.fits(task_class)
+            and (model_pin is None or ln.accepts_model(model_pin))
+            and ln.name not in backoffs
+            and ln.cost_class != _lanes.COST_METERED
+            for ln in table
+        ):
+            pick_table = tuple(
+                ln for ln in table if ln.cost_class != _lanes.COST_METERED
+            )
         lane = _lanes.pick_lane(
             store,
             task_class,
-            lanes=table,
+            lanes=pick_table,
             model=model_pin,
             backoff=backoffs,
-            paid_ok=paid_ok,
         )
         if lane is None:
             if model_pin and not any(
@@ -4619,27 +4645,28 @@ def submit(ctx: Any, spec: Any) -> Any:
             backed = sorted(set(fit_names) & set(backoffs))
             why = "no enabled lane" if not fit_names else "every fit lane at its cap"
             # The lanes whose freeing slot would let this job launch
-            # (gr611299): fit and not backed off, and while the free-lane
-            # wait runs (not paid_ok) only the free ones — a paid lane
-            # freeing would wake a job that cannot take it.
+            # (gr611299): fit and not backed off, and while the flat-tier
+            # wait runs (not paid_ok) only the free and subscription
+            # ones — a metered lane freeing would wake a job that cannot
+            # take it.
             wake_lanes = [ln for ln in fit_lanes if ln.name not in backoffs]
             if not paid_ok:
-                held_free = [
+                held_flat = [
                     ln.name
                     for ln in fit_lanes
-                    if ln.cost_class == _lanes.COST_FREE and ln.name not in backoffs
+                    if ln.cost_class != _lanes.COST_METERED and ln.name not in backoffs
                 ]
-                if held_free:
-                    wake_lanes = [ln for ln in wake_lanes if ln.name in held_free]
-                held_paid = [
+                if held_flat:
+                    wake_lanes = [ln for ln in wake_lanes if ln.name in held_flat]
+                held_metered = [
                     ln.name
                     for ln in fit_lanes
-                    if ln.cost_class != _lanes.COST_FREE and ln.name not in backoffs
+                    if ln.cost_class == _lanes.COST_METERED and ln.name not in backoffs
                 ]
-                if held_free and held_paid:
+                if held_flat and held_metered:
                     why = (
-                        f"free lane {', '.join(held_free)} at its cap; "
-                        f"a paid lane after {wait_min} min"
+                        f"flat-rate lanes {', '.join(held_flat)} at their caps; "
+                        f"a metered lane after {wait_min} min"
                     )
             if backed:
                 why = f"lanes {', '.join(backed)} backed off after a host refusal"
@@ -4681,7 +4708,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             ctx,
             lane=lane,
             model=model,
-            candidates=table or (lane,),
+            candidates=pick_table or (lane,),
             counts=counts,
             backoffs=backoffs,
             paid_ok=paid_ok,

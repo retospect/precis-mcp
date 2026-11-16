@@ -705,8 +705,9 @@ def diverse_model_pick(
 
     Same-lane alternates win first (the pick's lane still stands, only
     the model moves), then another candidate lane offering a model
-    outside ``avoid`` under ``pick_lane``'s own ordering (cost class,
-    then live count). A ``model_pin`` that repeats a code model is
+    outside ``avoid`` under ``pick_lane``'s own ordering — the shared
+    free/subscription tier by load fraction, a metered lane last
+    (gr685753). A ``model_pin`` that repeats a code model is
     overridden — the constraint is a MUST — but a pinned LANE is a
     contract: it only re-picks its model, never hops.
 
@@ -803,8 +804,8 @@ def diverse_model_pick(
         and live.get(ln.name, 0) < ln.cap
         and _alt(ln) is not None
     ]
-    if not paid_ok and any(ln.cost_class == _lanes.COST_FREE for ln in fit):
-        fit = [ln for ln in fit if ln.cost_class == _lanes.COST_FREE]
+    if not paid_ok and any(ln.cost_class != _lanes.COST_METERED for ln in fit):
+        fit = [ln for ln in fit if ln.cost_class != _lanes.COST_METERED]
     if not fit:
         busy = sorted(
             ln.name
@@ -828,7 +829,8 @@ def diverse_model_pick(
     best = min(
         fit,
         key=lambda ln: (
-            _lanes.COST_ORDER.index(ln.cost_class),
+            1 if ln.cost_class == _lanes.COST_METERED else 0,
+            live.get(ln.name, 0) / max(ln.cap, 1),
             live.get(ln.name, 0),
         ),
     )
