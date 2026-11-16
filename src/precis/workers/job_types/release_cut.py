@@ -393,6 +393,10 @@ def kill(ctx: Any, handle: Any) -> None:
             _rs._signal_group(pgid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            log.warning(
+                "release_cut: kill skipped — permission denied for pgid %d", pgid
+            )
     _undo_handle_tooling(handle)
 
 

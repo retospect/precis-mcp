@@ -2586,8 +2586,13 @@ def test_a_failed_launch_restores_the_tooling(
     assert _g(root, "status", "--porcelain") == ""
 
 
+@pytest.mark.parametrize("permission_denied", [False, True])
 def test_a_kill_restores_the_tooling(
-    store: Store, stale_checkout: dict[str, Any]
+    store: Store,
+    stale_checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    permission_denied: bool,
 ) -> None:
     """A wall-clock kill restores the paths too — a run that never gets
     polled again must not leave its staging behind."""
@@ -2597,7 +2602,19 @@ def test_a_kill_restores_the_tooling(
     handle = rc.submit(ctx, None)
     assert handle is not None
     assert _g(root, "diff", "--cached", "--name-only") != ""
+    signals: list[tuple[int, int]] = []
+    if permission_denied:
+        import os
+
+        def denied(pgid: int, sig: int) -> None:
+            signals.append((pgid, int(sig)))
+            raise PermissionError("foreign process group")
+
+        monkeypatch.setattr(os, "killpg", denied)
     rc.kill(ctx, handle)
+    if permission_denied:
+        assert signals == [(handle["pgid"], 15)]
+        assert f"permission denied for pgid {handle['pgid']}" in caplog.text
     assert _g(root, "status", "--porcelain") == ""
     assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
 

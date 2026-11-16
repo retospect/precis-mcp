@@ -635,6 +635,8 @@ def _signal_gate(handle: dict[str, Any]) -> None:
             _rs._signal_group(pgid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            log.warning("repo_land: kill skipped — permission denied for pgid %d", pgid)
 
 
 def _handle_root(handle: dict[str, Any]) -> Path | None:
