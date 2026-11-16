@@ -429,6 +429,77 @@ def test_devin_installer_gets_no_stdin_and_success_is_the_binary() -> None:
     assert devin["args"]["creates"] == binary
 
 
+# ── bwrap under Ubuntu 24.04's AppArmor userns restriction ────────────
+# codex sandboxes with bwrap, which needs an unprivileged user namespace;
+# with kernel.apparmor_restrict_unprivileged_userns=1 it fails for every
+# user. The role installs an unconfined, userns-only profile on the bwrap
+# binaries and proves the builder user can run bwrap.
+
+_USERNS_GATE = "(_builder_userns_probe.stdout | default('') | trim) == \"1\""
+
+
+def test_bwrap_profile_grants_only_userns_and_covers_the_bwrap_binaries() -> None:
+    text = (_ROLE / "files" / "precis-bwrap").read_text(encoding="utf-8")
+    body = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    assert "userns," in body
+    m = re.search(r"^profile precis-bwrap (\S+) flags=\(unconfined\) \{", text, re.M)
+    assert m, "an unconfined profile named precis-bwrap"
+    attach = m.group(1)
+    assert "usr/bin/bwrap" in attach
+    assert "codex-resources/bwrap" in attach, "codex's vendored bwrap too"
+    rules = [
+        ln for ln in body if ln.endswith(",") and not ln.startswith(("abi", "include"))
+    ]
+    assert rules == ["userns,"], "the profile grants nothing but userns"
+
+
+def test_bwrap_profile_is_installed_only_on_linux_behind_the_sysctl_probe() -> None:
+    main = _tasks()
+    probe = _task(main, "Probe the AppArmor unprivileged-userns restriction")
+    assert probe["when"] == 'os_family == "linux"'
+    assert (
+        probe["ansible.builtin.command"]
+        == "sysctl -n kernel.apparmor_restrict_unprivileged_userns"
+    )
+    assert probe["changed_when"] is False and probe["failed_when"] is False
+    reg = probe["register"]
+    assert reg == "_builder_userns_probe"
+
+    install = _task(main, "Install the bwrap AppArmor profile")
+    c = install["ansible.builtin.copy"]
+    assert c["src"] == "precis-bwrap"
+    assert c["dest"] == "/etc/apparmor.d/precis-bwrap"
+    assert (c["owner"], c["group"], c["mode"]) == ("root", "root", "0644")
+    assert install["become"] is True
+    assert 'os_family == "linux"' in install["when"]
+    assert _USERNS_GATE in install["when"]
+
+    load = _task(main, "Load the bwrap AppArmor profile")
+    assert load["ansible.builtin.command"] == (
+        "apparmor_parser -r /etc/apparmor.d/precis-bwrap"
+    )
+    assert load["become"] is True
+    assert f"{install['register']} is changed" in load["when"]
+    assert 'os_family == "linux"' in load["when"] and _USERNS_GATE in load["when"]
+
+
+def test_bwrap_verify_runs_as_the_builder_user_and_fails_the_play() -> None:
+    verify = _task(_tasks(), "Verify the builder user can run bwrap")
+    assert verify["ansible.builtin.command"] == (
+        "/usr/bin/bwrap --unshare-net --dev-bind / / true"
+    )
+    assert verify["become"] is True
+    assert verify["become_user"] == "{{ precis_builder_user }}"
+    assert verify["args"]["chdir"] == "/tmp"
+    assert "failed_when" not in verify and "ignore_errors" not in verify
+    assert 'os_family == "linux"' in verify["when"]
+    assert _USERNS_GATE in verify["when"]
+
+
 # ── the builder's own heartbeat identity (gr695674) ───────────────────
 # A non-deploy builder user cannot ride the deploy unit's heartbeat: the
 # probe sees a different home (/home/coder is 0700), so <host>'s

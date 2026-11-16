@@ -107,6 +107,57 @@
     append: true
   become: true
 
+# ── bwrap sandbox (Ubuntu 24.04 AppArmor userns restriction) ─────────
+# codex sandboxes every session with bwrap, which needs an unprivileged
+# user namespace. Ubuntu 24.04 sets kernel.apparmor_restrict_unprivileged_
+# userns=1, so bwrap dies with "setting up uid map: Permission denied"
+# for every non-root user and the lane fails each slice in seconds. Ubuntu's
+# documented fix: an unconfined profile that only grants `userns`, attached
+# to the bwrap binaries by path (files/precis-bwrap). Skipped when the
+# sysctl is absent or 0 and on macOS; the verify runs bwrap as the builder
+# user and fails the play, so a lane that cannot sandbox never comes up
+# silently.
+
+- name: Probe the AppArmor unprivileged-userns restriction (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: sysctl -n kernel.apparmor_restrict_unprivileged_userns
+  register: _builder_userns_probe
+  changed_when: false
+  failed_when: false
+
+- name: Install the bwrap AppArmor profile (userns restricted)
+  when:
+    - os_family == "linux"
+    - (_builder_userns_probe.stdout | default('') | trim) == "1"
+  ansible.builtin.copy:
+    src: precis-bwrap
+    dest: /etc/apparmor.d/precis-bwrap
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  register: _builder_bwrap_profile
+
+- name: Load the bwrap AppArmor profile
+  when:
+    - os_family == "linux"
+    - (_builder_userns_probe.stdout | default('') | trim) == "1"
+    - _builder_bwrap_profile is changed
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/precis-bwrap
+  become: true
+  changed_when: true
+
+- name: Verify the builder user can run bwrap with a new net namespace
+  when:
+    - os_family == "linux"
+    - (_builder_userns_probe.stdout | default('') | trim) == "1"
+  ansible.builtin.command: /usr/bin/bwrap --unshare-net --dev-bind / / true
+  args:
+    chdir: /tmp
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  changed_when: false
+
 # ── slice-MCP ssh tunnel ─────────────────────────────────────────────
 # mcp-http's Caddy publishes 127.0.0.1:<port> only, so a remote builder
 # cannot name the server in .mcp.json without also changing the bind —
