@@ -233,7 +233,7 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
 leaderboard · results · series · measures · logbook · pourbaix · status ·
-rubric · served · meta · replay · kinetics-summary · considerations`
+tick-dryrun · rubric · served · meta · replay · kinetics-summary · considerations`
 (quest-specific — `dossier` is deprecated, kept only for
 quests not yet converted) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
@@ -252,6 +252,8 @@ notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
 `next:` names the call for the older page); `view='log'` is the raw
 ref-events ledger, a different
 (generic) thing.
+## Read a quest — status and the next tick
+
 `view='status'` is the one-call orientation read (~1 kB): the lifecycle
 line (striving status · priority · horizon) plus the frontier counts —
 candidates by band and fidelity tier, trusted-per-axis coverage
@@ -259,7 +261,13 @@ candidates by band and fidelity tier, trusted-per-axis coverage
 momentum, the open gaps, the last `quest_tick` coordinator tick (real
 tick activity, `never` while every minted job is still queued), and the
 operator holds in force (`fidelity_restale_cap=0`,
-`compute_lane`/`lit_lane` `off`). It replaces a frontier+gaps+results
+`compute_lane`/`lit_lane` `off`), and a `loop:` line: `lit` means the
+autonomous tick loop is switched on for this deployment, `dark` or `off`
+that it is not (no ticks run), `unknown` that the switch could not be
+read; a quest not active adds `quest is dormant: no loop is minted`.
+`get(kind='quest', id='qu123', view='tick-dryrun')` shows what the next
+tick would see now — no model called, nothing written (the skill-match
+section is left out). It replaces a frontier+gaps+results
 round-trip for "where does this quest stand". `view='rubric'` prints just
 the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).

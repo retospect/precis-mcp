@@ -40,6 +40,7 @@ queue.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -162,6 +163,8 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
 #: ``view='status'`` (gr592666) row caps — the read is a ~1 kB orientation
 #: digest that replaces a frontier+gaps+results round-trip; the full
 #: listings stay at those views.
+log = logging.getLogger(__name__)
+
 _STATUS_AXIS_CAP = 8
 _STATUS_FRONTIER_CAP = 4
 _STATUS_GAP_CAP = 5
@@ -707,6 +710,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "pourbaix",
     "kinetics-summary",
     "status",
+    "tick-dryrun",
     "rubric",
     "served",
     "meta",
@@ -2185,6 +2189,11 @@ class QuestHandler(NumericRefHandler):
         if view == "status" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_status(ref))
+        if view == "tick-dryrun" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(
+                body=self._render_tick_dryrun(ref, budget=_budget_arg(args))
+            )
         if view == "meta" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_meta(ref))
@@ -2417,6 +2426,9 @@ class QuestHandler(NumericRefHandler):
                 else "never"
             )
         )
+        lines.append(self._loop_line(status))
+        if status != "active":
+            lines.append("quest is dormant: no loop is minted")
 
         holds: list[str] = []
 
@@ -2444,6 +2456,52 @@ class QuestHandler(NumericRefHandler):
         if holds:
             lines.append("holds: " + " · ".join(holds))
         return "\n".join(lines)
+
+    def _loop_line(self, status: str) -> str:
+        """``loop: lit|dark|off|unknown`` — the tick-loop switch, read from
+        the same source the precis-status page renders. Armed means switch
+        lit and quest active, not that a loop job runs right now."""
+        from precis.workers.service_config import dark_switch_states
+
+        try:
+            for row in dark_switch_states(self.store):
+                if row["service"] == "quest_loop_reconcile":
+                    return f"loop: {row['state']}"
+        except Exception:
+            log.warning("quest status: loop switch unreadable", exc_info=True)
+        return "loop: unknown"
+
+    def _render_tick_dryrun(self, ref: Ref, *, budget: int) -> str:
+        """``view='tick-dryrun'`` — what the next tick would see: no model
+        call, no write. The skill-injection section is left out (matching
+        it embeds text and may build an index cache)."""
+        from precis.quest.body import resolved_quest_body
+        from precis.quest.frontier import read_only_frontier
+        from precis.quest.roadmap_tick import render_role_report, roadmap_tick
+        from precis.quest.tick import build_tick_prompt
+
+        body = resolved_quest_body(self.store, ref.id)
+        with read_only_frontier():
+            if body == _weave_tick.QUEST_BODY_ROADMAP:
+                from precis.dispatch import Hub
+
+                text = render_role_report(
+                    roadmap_tick(Hub(store=self.store), None, ref.id, dry_run=True)
+                )
+            else:
+                text = build_tick_prompt(
+                    self.store, ref, quest_body=body, inject_skill=False
+                )
+        limit = budget * _VIEW_CHARS_PER_TOKEN
+        if len(text) > limit:
+            text = (
+                text[:limit]
+                + f"\n... (clipped at ~{budget} tokens; args={{'budget': N}})"
+            )
+        return (
+            "dry run: no model called, nothing written "
+            "(skill injection omitted)\n" + text
+        )
 
     def _render_meta(self, ref: Ref) -> str:
         """``view='meta'`` — the patchable meta keys

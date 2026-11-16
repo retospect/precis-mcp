@@ -1021,3 +1021,84 @@ def test_operating_conditions_refusal_names_the_meta_shape() -> None:
         )
     assert exc.value.next is not None
     assert "operating_conditions" in str(exc.value.next)
+
+
+class TestLoopAndTickDryrun:
+    """Loop-armed line on view='status' and the read-only view='tick-dryrun'."""
+
+    def test_status_view_reports_loop_armed(self, store: Any) -> None:
+        from precis.workers.service_config import set_service_prio
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A looped striving"))
+        body = h.get(id=qid, view="status").body
+        assert "loop: dark" in body
+        assert "no loop is minted" not in body
+        set_service_prio(store, "h1", "quest_loop_reconcile", 1)
+        assert "loop: lit" in h.get(id=qid, view="status").body
+        set_service_prio(store, "h1", "quest_loop_reconcile", 0)
+        assert "loop: off" in h.get(id=qid, view="status").body
+        h.tag(id=qid, add=["STATUS:dormant"])
+        assert "no loop is minted" in h.get(id=qid, view="status").body
+
+    def test_tick_dryrun_returns_prompt_without_writes(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.errors import NotFound
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("dry run touched model/skill dispatch")
+
+        monkeypatch.setattr("precis.skill_index.injection.match_skill", boom)
+        monkeypatch.setattr("precis.utils.llm.router.DispatchClient", boom)
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst dryrun"))
+        h.put(id=qid, text="Try Fe–N₄ single-atom sites", entry="hypothesis")
+
+        def counts() -> tuple[int, ...]:
+            with store.pool.connection() as conn:
+                return tuple(
+                    conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                    for t in ("refs", "chunks", "llm_call_log")
+                )
+
+        before = counts()
+        body = h.get(id=qid, view="tick-dryrun").body
+        assert counts() == before
+        assert body.splitlines()[0].startswith("dry run: no model called")
+        assert "A NO→NH₃ catalyst dryrun" in body
+        with pytest.raises(NotFound):
+            h.get(id=999999999, view="tick-dryrun")
+
+    def test_quest_help_lists_tickdryrun(self) -> None:
+        from precis.handlers.quest import _QUEST_CONCRETE_VIEWS
+
+        text = (
+            __import__("pathlib")
+            .Path("src/precis/data/skills/precis-quest-help.md")
+            .read_text(encoding="utf-8")
+        )
+        assert "view='tick-dryrun'" in text
+        assert "tick-dryrun" in _QUEST_CONCRETE_VIEWS
+
+
+def test_read_only_frontier_skips_geom_hash_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from precis.quest import frontier
+
+    stamped: list[Any] = []
+    store = SimpleNamespace(
+        structure_load=lambda _i: (object(), None),
+        stamp_ref_meta=lambda *a, **k: stamped.append(a),
+    )
+    monkeypatch.setattr("precis.structure.canonical.geom_hash_c", lambda _s: "h1")
+    s = SimpleNamespace(id=7, meta={})
+    assert frontier._lazy_geom_hash_c(store, s) == "h1"  # type: ignore[arg-type]
+    assert len(stamped) == 1
+    with frontier.read_only_frontier():
+        s2 = SimpleNamespace(id=8, meta={})
+        assert frontier._lazy_geom_hash_c(store, s2) == "h1"  # type: ignore[arg-type]
+    assert len(stamped) == 1

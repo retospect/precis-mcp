@@ -24,10 +24,12 @@ partial sums), so ``rubric_objectives`` can reference the composite's
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
@@ -39,6 +41,23 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "quest_frontier_read_only", default=False
+)
+
+
+@contextlib.contextmanager
+def read_only_frontier() -> Iterator[None]:
+    """Within this block the frontier assembly never writes: the lazy
+    ``geom_hash_c`` backfill computes the hash but does not stamp it. The
+    tick dry-run view wraps its prompt build in it."""
+    token = _READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _READ_ONLY.reset(token)
+
 
 #: Energy-degeneracy tripwire tolerance (eV) — sub-DFT-noise convergence gap,
 #: see :func:`_flag_energy_twins`.
@@ -2613,7 +2632,8 @@ def _lazy_geom_hash_c(store: Store, s: Any) -> str | None:
         )
         return None
     try:
-        store.stamp_ref_meta(s.id, {"geom_hash_c": chc})
+        if not _READ_ONLY.get():
+            store.stamp_ref_meta(s.id, {"geom_hash_c": chc})
     except Exception:
         log.debug(
             "_flag_geom_duplicates: geom_hash_c stamp failed for %s",

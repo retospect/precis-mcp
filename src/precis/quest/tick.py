@@ -2161,8 +2161,13 @@ def build_tick_prompt(
     review: bool = False,
     narrative_override: str | None = None,
     quest_body: str = QUEST_BODY_MATERIALS,
+    inject_skill: bool = True,
 ) -> str:
     """Assemble the full rolling-context prompt for one tick.
+
+    ``inject_skill=False`` leaves out the skill-injection section: matching
+    it embeds the striving statement and may build the skill index's cache,
+    which a read-only dry run (``view='tick-dryrun'``) must not do.
 
     ``review=True`` builds the **frontier-review** prompt (rung 4c): the senior
     model reviews the accumulated evidence + the Pareto frontier and sets the
@@ -2247,7 +2252,7 @@ def build_tick_prompt(
         literature=literature,
         requested_reads=_requested_reads_section(store, quest),
         bench_runs=_bench_runs_listing(),
-        skill_injection=_skill_injection_section(stmt),
+        skill_injection=_skill_injection_section(stmt) if inject_skill else "",
         entry_types=", ".join(sorted(ENTRY_TYPES)),
         narrative_word_target=narrative_budget.config_from_meta(
             getattr(quest, "meta", None)
