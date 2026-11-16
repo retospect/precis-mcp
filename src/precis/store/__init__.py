@@ -30,6 +30,11 @@ and reason commit together; filesystem moves remain best-effort, keeping
 the old storage path on failure because a database transaction cannot
 roll back a corpus filesystem operation.
 
+Lexical chunk ranks use logarithmic document-length normalization in both
+standalone and fused search. This discounts large chunks with scattered
+matches while retaining strict-AND eligibility and the existing RRF weights;
+multi-query search inherits the same ranking through its lexical legs.
+
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and
 ``modified`` alongside legacy ``recency``. Explicit new names avoid changing

@@ -54,6 +54,10 @@ from precis.store._salience import background_actor_active
 from precis.store._search_cut import fixed_floors_enabled, semantic_fold_distance
 from precis.store.core import StoreCore
 
+#: Divide cover-density rank by 1 + log(document length), so scattered
+#: matches in large chunks do not crowd out focused lexical evidence.
+LEX_RANK_NORMALIZATION = 1
+
 #: Whitelist mapping a background actor's name to its per-actor rotation
 #: column on ``chunks``. The column name is interpolated into selection /
 #: touch SQL (it can't be a bind param), so it MUST come from this dict
@@ -1437,7 +1441,7 @@ class ChunkStore:
         def _sql(tsquery_expr: str) -> str:
             return (
                 f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
-                "       ts_rank_cd(c.tsv, qq.qq) AS rank "
+                f"       ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) AS rank "
                 "FROM chunks c "
                 "JOIN refs r ON r.ref_id = c.ref_id, "
                 f"{tsquery_expr} qq(qq) "
@@ -2076,7 +2080,7 @@ class ChunkStore:
             lex_any_cte = f"""lex_any AS (
                 SELECT c.chunk_id AS cid,
                        row_number() OVER (
-                           ORDER BY ts_rank_cd(c.tsv, oq.oq) DESC, c.chunk_id
+                           ORDER BY ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
                      (SELECT {_OR_TSQUERY}) oq(oq)
@@ -2178,7 +2182,7 @@ class ChunkStore:
                        row_number() OVER (
                            -- chunk_id tiebreak: same determinism fix as
                            -- search_chunks_lexical (rank ties shuffle).
-                           ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC, c.chunk_id
+                           ORDER BY ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
                      websearch_to_tsquery('english', %s) qq(qq)
