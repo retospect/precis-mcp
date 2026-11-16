@@ -10,6 +10,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import plaintext as plaintext_mod
 from precis.handlers.plaintext import PlaintextHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils.plaintext_parse import parse_plaintext
 from tests.hintcheck import assert_hints_round_trip
@@ -1129,3 +1130,92 @@ def test_put_edit_cascades_stale_embedding_away(
         ).fetchone()
     assert new_vector is not None
     assert new_vector != old_vector
+
+
+def _delete_runtime(store: Store, root: Path) -> PrecisRuntime:
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+
+    return PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(
+            store=store,
+            embedder=MockEmbedder(dim=store.embedding_dim()),
+            precis_root=str(root),
+        ),
+    )
+
+
+def test_delete_refusal_hint_uses_args_confirm(store: Store, pt_root: Path) -> None:
+    from precis.tools.command_parser import parse_command
+    from tests.hintcheck import extract_hints
+
+    path = _write(pt_root, "doc.txt", "hello\n")
+    runtime = _delete_runtime(store, pt_root)
+    refusal = runtime.dispatch("delete", {"kind": "plaintext", "id": "doc"})
+    hint = next(h for h in extract_hints(refusal, whole_body=True) if "args=" in h)
+    verb, kwargs = parse_command(hint)
+    assert kwargs["args"] == {"confirm": "delete-file-doc"}
+    result = runtime.dispatch(verb, kwargs)
+    assert "deleted file doc" in result
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("ingested", [False, True])
+def test_delete_file_dry_run_is_noop(
+    store: Store, pt_root: Path, ingested: bool
+) -> None:
+    path = _write(pt_root, "doc.txt", "first\n\nsecond\n")
+    runtime = _delete_runtime(store, pt_root)
+    if ingested:
+        runtime.dispatch("get", {"kind": "plaintext", "id": "doc"})
+    ref = store.get_ref(kind="plaintext", id="doc")
+    events = store.events_for(ref.id) if ref else []
+    result = runtime.dispatch(
+        "delete",
+        {
+            "kind": "plaintext",
+            "id": "doc",
+            "args": {"confirm": "delete-file-doc"},
+            "dry_run": True,
+            "reason": "cleanup",
+        },
+    )
+    if ref:
+        n = store.chunks.count_chunks(ref.id)
+        assert f"would delete file doc and retire ref {ref.id} ({n} chunks)" in result
+        assert store.events_for(ref.id) == events
+    else:
+        assert "no ref was ingested, nothing retired" in result
+    assert path.read_text(encoding="utf-8") == "first\n\nsecond\n"
+    assert store.get_ref(kind="plaintext", id="doc") == ref
+
+
+@pytest.mark.parametrize("ingested", [False, True])
+def test_delete_file_ack_names_ref_state(
+    store: Store, pt_root: Path, ingested: bool
+) -> None:
+    path = _write(pt_root, "doc.txt", "hello\n")
+    runtime = _delete_runtime(store, pt_root)
+    if ingested:
+        runtime.dispatch("get", {"kind": "plaintext", "id": "doc"})
+    ref = store.get_ref(kind="plaintext", id="doc")
+    result = runtime.dispatch(
+        "delete",
+        {
+            "kind": "plaintext",
+            "id": "doc",
+            "args": {"confirm": "delete-file-doc"},
+            "reason": "cleanup",
+        },
+    )
+    if ref:
+        assert f"deleted file doc + retired its plaintext ref id={ref.id}" in result
+        retired = store.get_ref(kind="plaintext", id="doc", include_deleted=True)
+        assert retired is not None and retired.retired_at is not None
+        event = next(e for e in store.events_for(ref.id) if e.event == "deleted")
+        assert event.payload["reason"] == "cleanup"
+    else:
+        assert "deleted file doc (no ref was ingested, nothing retired)" in result
+    assert not path.exists()

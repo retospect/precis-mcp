@@ -180,9 +180,15 @@ run, same as `edit`.
 edit(kind="markdown", id="notes/foo.md", mode="replace", text="")
 ```
 
-`delete` without a selector on a file kind raises `BadInput` — the
-verb refuses to wipe a whole file by accident. Use `edit` with
-`mode='replace'` and an empty body.
+To remove a markdown, plaintext or tex file and retire its ref instead:
+
+```python
+delete(kind='markdown', id='<slug>', args={'confirm': 'delete-file-<slug>'})
+```
+
+Add `dry_run=True` to preview without changing disk or the ref;
+`reason='...'` records why on the retire event. Without confirmation,
+a whole-file delete refuses. The empty-body edit above keeps the file.
 
 ## Delete a single matched span (one citation, one line)
 ## Cut one occurrence of a string from a file

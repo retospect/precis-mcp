@@ -1224,7 +1224,9 @@ class PlaintextHandler(Handler):
             )
         )
 
-    def _delete_file(self, slug: str) -> Response:
+    def _delete_file(
+        self, slug: str, *, dry_run: bool = False, reason: str | None = None
+    ) -> Response:
         """Remove a whole file + its ref.
 
         Symmetry with ``put(mode='create')``: anything the handler
@@ -1268,9 +1270,27 @@ class PlaintextHandler(Handler):
         file_existed = path.exists()
         if not file_existed and ref is None:
             self._raise_file_not_found(slug)
+        if dry_run:
+            if ref is None:
+                return Response(
+                    body=f"would delete file {slug!r} (no ref was ingested, nothing retired)"
+                )
+            n = self.store.chunks.count_chunks(ref.id)
+            return Response(
+                body=f"would delete file {slug!r} and retire ref {ref.id} ({n} chunks)"
+            )
         if ref is not None:
             try:
-                self.store.retire_ref(ref.id)
+                with self.store.tx() as conn:
+                    self.store.retire_ref(ref.id, conn=conn)
+                    if reason and reason.strip():
+                        self.store.append_event(
+                            ref.id,
+                            source="agent",
+                            event="deleted",
+                            payload={"reason": reason.strip()},
+                            conn=conn,
+                        )
             except NotFound:
                 # A concurrent writer retired the ref between our
                 # live resolve and the retire — report the
@@ -1291,7 +1311,7 @@ class PlaintextHandler(Handler):
                     raise Upstream(
                         f"could not remove file {slug!r}: {exc}",
                         next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm='delete-file-{slug}')",
+                        f"args={{'confirm': 'delete-file-{slug}'}})",
                     ) from exc
                 try:
                     restored = self.store.restore_ref(ref.id)
@@ -1315,7 +1335,7 @@ class PlaintextHandler(Handler):
                         f"{self._KIND} ref retire was rolled back — nothing "
                         "was deleted",
                         next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm='delete-file-{slug}')",
+                        f"args={{'confirm': 'delete-file-{slug}'}})",
                     ) from exc
                 # Read-only mount (or a concurrent writer already
                 # restored the ref): the retire is undone or out of
@@ -1332,7 +1352,7 @@ class PlaintextHandler(Handler):
                 "no file under this root (foreign workspace or already gone)"
             )
         else:
-            ack = format_write_result(verb="deleted file", file_slug=slug)
+            ack = f"deleted file {slug!r} (no ref was ingested, nothing retired)"
         return Response(body=ack)
 
     def _put_anchored(
@@ -1584,6 +1604,8 @@ class PlaintextHandler(Handler):
         *,
         id: str | int,
         confirm: str | None = None,
+        dry_run: bool = False,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Delete a paragraph / region, or the whole file.
@@ -1618,10 +1640,15 @@ class PlaintextHandler(Handler):
                         f"delete(kind='{self._KIND}', id='{slug}~SLUG') "
                         "to remove a paragraph, or "
                         f"delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm={expected_confirm!r}) to remove the file"
+                        f"args={{'confirm': {expected_confirm!r}}}) to remove the file"
                     ),
                 )
-            return self._delete_file(slug)
+            return self._delete_file(slug, dry_run=dry_run, reason=reason)
+        if dry_run:
+            raise BadInput(
+                "block delete preview is not supported",
+                next=f"get(kind={self._KIND!r}, id={id!r}) to inspect the region",
+            )
         return self._put_delete(slug, sel)
 
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:

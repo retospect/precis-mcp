@@ -143,7 +143,10 @@ its stored blocks: the overview marks `on disk: no`, and `/raw`
 reconstructs the body by joining the stored blocks on blank lines.
 Writes still need the real file — `edit` and block-level `delete`
 report "not found on disk". A read never retires the ref; only
-`delete(confirm='delete-file-<slug>')` retires it.
+`delete(kind='markdown', id='<slug>', args={'confirm': 'delete-file-<slug>'})`
+removes the file and retires its ref (also plaintext and tex). Add
+`dry_run=True` to preview or `reason='...'` to record why. To keep an
+empty file, use `edit(kind='markdown', id='<slug>', mode='replace', text='')`.
 
 ## How do I create or rewrite a file?
 ## Write to a file (create / append / replace / delete)
