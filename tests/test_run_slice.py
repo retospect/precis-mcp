@@ -2972,6 +2972,90 @@ def test_launch_failure_revokes_the_slice_token(
     assert not (registry / "td42j900").exists()
 
 
+def test_submit_refused_launch_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capacity refusal at launch is the host's, not the build's: no
+    handle, no burned attempt — plan_dispatch re-queues when capacity
+    returns (review td702053)."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("full")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "admission"
+    assert "host at capacity" in (ctx.failure or "")
+    assert seams["launch"] == []
+
+
+def test_launch_goes_through_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pooled store routes the detached launcher through
+    ``admission.spawn`` with the work class's footprint (gr657245)."""
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def fake_spawn(*args: Any, **kwargs: Any) -> int:
+        calls.append((args, kwargs))
+        return 4242
+
+    monkeypatch.setattr(run_slice.admission, "spawn", fake_spawn)
+    log = tmp_path / "run.log"
+    exit_file = tmp_path / "exit"
+    store = types.SimpleNamespace(pool=object())
+    pid = run_slice._launch(
+        ["devin", "-p"],
+        cwd=tmp_path,
+        stdin=None,
+        log=log,
+        exit_file=exit_file,
+        env={"PATH": "/usr/bin"},
+        store=store,
+        work_class="land",
+    )
+    assert pid == 4242
+    ((args, kwargs),) = calls
+    assert args[0] is store
+    assert args[1] == run_slice.admission.local_host()
+    assert args[2] is run_slice._WORK_FOOTPRINTS["land"]
+    assert args[3] == f"{run_slice.admission.local_host()}:{os.getpid()}"
+    assert args[4] == ["devin", "-p"]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["stdin"] is None
+    assert kwargs["log_path"] == log
+    assert kwargs["exit_file"] == exit_file
+    assert kwargs["env"] == {"PATH": "/usr/bin"}
+
+
+def test_launch_without_pooled_store_keeps_the_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fake store without a pool (unit-test doubles) must not engage
+    admission — the legacy unheld launcher runs verbatim."""
+    monkeypatch.setattr(run_slice.admission, "spawn", None)  # would TypeError
+    log = tmp_path / "run.log"
+    exit_file = tmp_path / "exit"
+    store = types.SimpleNamespace()  # no .pool
+    pid = run_slice._launch(
+        ["/bin/sh", "-c", "exit 0"],
+        cwd=tmp_path,
+        stdin=None,
+        log=log,
+        exit_file=exit_file,
+        env={"PATH": "/usr/bin"},
+        store=store,
+    )
+    assert isinstance(pid, int)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not exit_file.exists():
+        time.sleep(0.02)
+    assert exit_file.read_text(encoding="utf-8").strip() == "0"
+
+
 class _Resp:
     status = 200
 

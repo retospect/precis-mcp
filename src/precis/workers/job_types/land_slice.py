@@ -330,6 +330,7 @@ from precis.plans.templates import (
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
+from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
@@ -887,11 +888,15 @@ def _launch(
     exit_file: Path,
     env: dict[str, str],
     pass_fds: tuple[int, ...] = (),
+    store: Any = None,
+    work_class: str = "land",
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
     flock rides one so it is held for the ship's whole life (gr650484).
-    Returns the pid (= the process group)."""
+    With a real ``store`` the launch is admitted first
+    (:func:`admission.spawn`); a full host raises
+    :class:`admission.Refused`. Returns the pid (= the process group)."""
     return _rs._launch(
         argv,
         cwd=cwd,
@@ -900,6 +905,8 @@ def _launch(
         exit_file=exit_file,
         env=env,
         pass_fds=pass_fds,
+        store=store,
+        work_class=work_class,
     )
 
 
@@ -3780,7 +3787,31 @@ def _launch_ship(
                 # finds it held even after this worker dies (gr650484).
                 # Nothing else rides pass_fds: the credential never does.
                 pass_fds=tuple(fd for fd in (ship_fd,) if fd is not None),
+                store=ctx.store,
+                work_class="land",
             )
+        except admission.Refused as exc:
+            # The host cannot fit the gate right now — the wait shape of
+            # _land_busy, not the red path: attempt-free, so the tick
+            # re-mints the land when capacity returns (review td702053).
+            ctx.append_chunk(
+                "job_summary",
+                f"land_slice td{todo_id}: ship launch deferred — host at "
+                f"capacity ({exc}); no ship launched",
+            )
+            _fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"ship launch deferred: {exc}",
+                handoff=(
+                    "land DEFERRED (not red): the worker host could not "
+                    "admit the gate's footprint just now. The tick "
+                    "re-mints the land attempt-free once capacity frees."
+                ),
+                attempt_free="admission",
+            )
+            return None
         except Exception as exc:
             log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
             _fail(
@@ -4557,13 +4588,17 @@ def _launch_verify(
     phase: str,
     run_tree: Path,
     argv: list[str] | None = None,
+    store: Any = None,
 ) -> dict[str, Any] | None:
     """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
     file under the SLICE tree's ``scratch/`` so they outlive a probe
     worktree. ``argv`` replaces the bare id list (the ``deselect``
     phase's ``--selected --deselect <id>…``) while ``ids`` keeps the
     failing ids the phase is about. ``None`` when the launch itself
-    failed — the caller falls back to the ordinary red."""
+    failed — the caller falls back to the ordinary red.
+    :class:`admission.Refused` propagates: the host could not fit the
+    probe's footprint, which defers the land attempt-free at the caller,
+    never charging the branch for the host's capacity (review td702053)."""
     scratch = slice_tree / "scratch"
     log_path = scratch / f"land_verify_{phase}.log"
     exit_path = scratch / f"land_verify_{phase}.exit"
@@ -4584,7 +4619,13 @@ def _launch_verify(
                 "PRECIS_TEST_NPROC": test_nproc(),
                 "PRECIS_GATE_SLOTS": land_gate_slots(),
             },
+            store=store,
+            work_class="verify",
         )
+    except admission.Refused:
+        # The host is full, not the branch red: the caller defers
+        # attempt-free (review td702053).
+        raise
     except Exception as exc:
         log.warning(
             "land_slice: verify launch (%s) failed: %s", phase, exc, exc_info=True
@@ -4613,6 +4654,36 @@ def _launch_verify(
     if ps_identity is not None:
         verify["ps_identity"] = ps_identity
     return verify
+
+
+def _defer_admission_refused(
+    ctx: Any, handle: dict[str, Any], what: str, exc: admission.Refused
+) -> bool:
+    """A verify launch refused for capacity — the wait shape of the ship
+    launch's refusal (:func:`_launch_ship`), not the red path: the job
+    fails attempt-free (``red_class = "admission"``) so the tick re-mints
+    the land when the host frees, and the branch is never charged for the
+    host's moment (review td702053)."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    handle.pop("verify", None)
+    ctx.append_chunk(
+        "job_summary",
+        f"land_slice td{todo_id}: {what} launch deferred — host at capacity ({exc})",
+    )
+    _fail(
+        ctx,
+        todo_id,
+        params.get("lane"),
+        f"{what} launch deferred: {exc}",
+        handoff=(
+            "land DEFERRED (not red): the worker host could not admit the "
+            f"{what} probe's footprint just now. The tick re-mints the land "
+            "attempt-free once capacity frees."
+        ),
+        attempt_free="admission",
+    )
+    return True
 
 
 def _promote_verify(handle: dict[str, Any], verify: dict[str, Any]) -> None:
@@ -4657,7 +4728,9 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
     :func:`run_slice._ensure_worktree` puts the slice trees), so its
     compose project carries the slice prefix and the stack sweep reaps
     it — and run the ids there. The worktree is dropped on every later
-    exit path (:func:`_drop_main_verify`). ``False`` → the ordinary
+    exit path (:func:`_drop_main_verify`), and on a launch refused for
+    capacity too (the caller defers attempt-free; review td702053).
+    ``False`` → the ordinary
     red."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
@@ -4689,9 +4762,20 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
         )
         ctx.set_meta(main_probe=None)
         return False
-    verify = _launch_verify(
-        tree, [str(i) for i in (v.get("ids") or [])], phase="main", run_tree=main_tree
-    )
+    try:
+        verify = _launch_verify(
+            tree,
+            [str(i) for i in (v.get("ids") or [])],
+            phase="main",
+            run_tree=main_tree,
+            store=ctx.store,
+        )
+    except admission.Refused:
+        # Capacity, not evidence: drop the throwaway tree and let the
+        # caller defer attempt-free (review td702053).
+        _git(["worktree", "remove", "--force", str(main_tree)], root)
+        ctx.set_meta(main_probe=None)
+        raise
     if verify is None:
         _git(["worktree", "remove", "--force", str(main_tree)], root)
         ctx.set_meta(main_probe=None)
@@ -4820,7 +4904,9 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
       ``--quick`` — a ``handoff``-style note names the ids on the todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
-    * any launch or probe failure → the ordinary red."""
+    * any launch or probe failure → the ordinary red — except a launch
+      refused for capacity, which defers the land attempt-free (the
+      host's moment, not the branch's; review td702053)."""
     v = handle["verify"]
     exit_code = _rs._read_exit(v)
     if exit_code is None and _process_alive(int(v.get("pid") or 0)):
@@ -4887,8 +4973,11 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # summary shows the named ids failing — anything else is a probe
         # failure and stays the ordinary red.
         if exit_code is not None and _probe_red(v, ids):
-            if _start_main_verify(ctx, handle, v):
-                return False
+            try:
+                if _start_main_verify(ctx, handle, v):
+                    return False
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "main probe", exc)
         return _ordinary_ship_red(ctx, handle)
     if phase == "deselect":
         # The checked selection minus the red-on-main ids (gr598110):
@@ -4956,7 +5045,18 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             "the release gate keeps the suite",
         )
     argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
-    verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
+    try:
+        verify = _launch_verify(
+            tree, ids, phase="deselect", run_tree=tree, argv=argv, store=ctx.store
+        )
+    except admission.Refused as exc:
+        # The finished main probe's throwaway tree goes on every exit
+        # path (its phase is done; the deselect gate never started) —
+        # then the capacity refusal defers attempt-free.
+        for note in _drop_main_verify(v):
+            ctx.append_chunk("job_event", f"land_slice: {note}")
+        ctx.set_meta(main_probe=None)
+        return _defer_admission_refused(ctx, handle, "deselect", exc)
     if verify is None:
         return _ordinary_ship_red(ctx, handle)
     _promote_verify(handle, verify)
@@ -5187,7 +5287,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             and ids
             and len(outside_diff_ids(tree, ids)) == len(ids)
         ):
-            verify = _launch_verify(tree, ids, phase="alone", run_tree=tree)
+            try:
+                verify = _launch_verify(
+                    tree, ids, phase="alone", run_tree=tree, store=ctx.store
+                )
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "verify", exc)
             if verify is not None:
                 _promote_verify(handle, verify)
                 ctx.append_chunk(

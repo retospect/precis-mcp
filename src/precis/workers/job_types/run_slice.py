@@ -275,6 +275,7 @@ from precis.utils.dispatch_score import (
 from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
+from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers.job_types import _lane_decide, _run_features, _slice_park
@@ -942,6 +943,22 @@ def _run(
     )
 
 
+#: Work-class footprints (gr657245): a detached launch admits one of
+#: these on the launching host. A slice build is modest — an agent plus
+#: its tests; the land gate is heavy — ship's checked gate runs pytest
+#: under xdist with container work; the probes are small. Sized so two
+#: slice builds and one land gate coexist on a 32 GiB worker host.
+_WORK_FOOTPRINTS: dict[str, admission.Footprint] = {
+    "slice": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+    "land": admission.Footprint(cpu_milli=6000, mem_mb=12288),
+    "verify": admission.Footprint(cpu_milli=4000, mem_mb=8192),
+    "acceptance": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+    "dep_check": admission.Footprint(cpu_milli=2000, mem_mb=4096, wall_s=30 * 60),
+    "lane_health": admission.Footprint(cpu_milli=1000, mem_mb=2048),
+    "boundary_probe": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+}
+
+
 def _launch(
     argv: list[str],
     *,
@@ -951,6 +968,8 @@ def _launch(
     exit_file: Path,
     env: dict[str, str],
     pass_fds: tuple[int, ...] = (),
+    store: Any = None,
+    work_class: str = "slice",
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
@@ -960,7 +979,30 @@ def _launch(
     gets the per-task memory cap as an rlimit (gr595537 — the slice's
     agent, builds and tests die over the ceiling instead of wedging the
     host into swap; no cap configured ⇒ ``preexec_fn=None``). Returns the
-    process group pid."""
+    process group pid.
+
+    With a ``store`` (a real Store — fakes without a pool keep the legacy
+    unheld path) the launch is admitted first: :func:`admission.spawn`
+    takes the work class's footprint on this host, launches, and babysits
+    the holds for the child's whole life. A full host raises
+    :class:`admission.Refused` — the caller retries attempt-free, never
+    treating capacity as the build's failure (review td702053).
+    """
+    if store is not None and getattr(store, "pool", None) is not None:
+        return admission.spawn(
+            store,
+            admission.local_host(),
+            _WORK_FOOTPRINTS[work_class],
+            f"{admission.local_host()}:{os.getpid()}",
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            log_path=log,
+            exit_file=exit_file,
+            pass_fds=pass_fds,
+            preexec_fn=mem_limit_preexec(),
+        )
     script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
     full_env = {
         **env,
@@ -5331,6 +5373,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             log=log_path,
             exit_file=exit_path,
             env=env,
+            store=store,
+            work_class="slice",
         )
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         identity = _process_identity(pid)
@@ -5378,6 +5422,19 @@ def submit(ctx: Any, spec: Any) -> Any:
         unclaim_todo(ctx.store, todo_id, lane.name)
         ctx.set_meta(**{ATTEMPT_FREE_KEY: "index-lock"})
         ctx.record_failure(f"run_slice: {exc}")
+        return None
+    except admission.Refused as exc:
+        # The host is full, not the build broken: the same give-back as
+        # the lock wait — attempt-free, so plan_dispatch re-queues the
+        # node when capacity returns instead of spending a rung on the
+        # host's moment (review td702053).
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
+        _drop_submit_key(ctx)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "admission"})
+        ctx.record_failure(f"run_slice: launch deferred, host at capacity: {exc}")
         return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
@@ -5724,7 +5781,13 @@ def _devin_acceptance_tests(
                 log=Path(test_handle["log"]),
                 exit_file=Path(test_handle["exit_file"]),
                 env=dict(os.environ),
+                store=ctx.store,
+                work_class="acceptance",
             )
+        except admission.Refused:
+            # The host is full: stay pending — the next poll pass retries
+            # the launch attempt-free, like every other capacity wait.
+            return None
         except OSError as exc:
             return True, f"Devin acceptance tests could not run: {exc}"
         if sys.platform == "darwin":
@@ -6020,7 +6083,11 @@ def _fetch_main(tree: Path, base: str = "origin/main") -> None:
 
 
 def _tests_green_on_main(
-    tree: Path, tests: list[str], base: str = "origin/main"
+    tree: Path,
+    tests: list[str],
+    base: str = "origin/main",
+    *,
+    store: Any = None,
 ) -> bool:
     """``True`` only when every named ``tests/…​.py`` passes in a clean
     detached worktree at ``origin/main`` — the moot fallback's
@@ -6029,31 +6096,47 @@ def _tests_green_on_main(
     there (a release fix's ``base`` is its release branch instead). An
     empty list, a ``worktree add`` that fails or raises
     (td638767), a missing ``uv``, a red run or a timeout is ``False`` —
-    fail closed. The probe tree is always removed."""
+    fail closed. The probe tree is always removed.
+
+    The pytest run is admitted (gr657245) when a ``store`` is at hand:
+    the probe burns real CPU/memory on this host, and a capacity
+    refusal fails the verification closed — an unproven moot is no
+    proof — without touching the job's attempt accounting."""
     if not tests:
         return False
     scratch = Path(tempfile.mkdtemp(prefix="precis-moot-"))
     probe = scratch / "tree"
     uv = os.environ.get("PRECIS_UV_BIN") or "uv"
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=4000,
+        mem_mb=8192,
+        wall_s=_MOOT_TEST_TIMEOUT_S,
+    )
+    holder = f"{host}:{os.getpid()}"
     try:
         add = _git(["worktree", "add", "--detach", str(probe), base], tree)
         if add.returncode != 0:
             return False
         try:
-            proc = _run(
-                [
-                    uv,
-                    "run",
-                    "pytest",
-                    "-q",
-                    "-n0",
-                    "-p",
-                    "no:cacheprovider",
-                    *tests,
-                ],
-                probe,
-                _MOOT_TEST_TIMEOUT_S,
-            )
+            try:
+                with admission.hold(store, host, footprint, holder):
+                    proc = _run(
+                        [
+                            uv,
+                            "run",
+                            "pytest",
+                            "-q",
+                            "-n0",
+                            "-p",
+                            "no:cacheprovider",
+                            *tests,
+                        ],
+                        probe,
+                        _MOOT_TEST_TIMEOUT_S,
+                    )
+            except admission.Refused:
+                return False
         except (OSError, subprocess.TimeoutExpired):
             return False
         return proc.returncode == 0
@@ -6181,7 +6264,7 @@ def _verified_moot(
         if "release-pass" in _open_tag_values(store, root):
             sha = ancestors[0]
             release_proof = True
-        elif _tests_green_on_main(tree, sorted(named_tests), base):
+        elif _tests_green_on_main(tree, sorted(named_tests), base, store=store):
             sha = ancestors[0]
     if sha is None:
         return None

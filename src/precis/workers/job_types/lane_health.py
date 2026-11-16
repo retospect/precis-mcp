@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
+from precis.workers import admission
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import run_slice as _rs
@@ -605,7 +606,15 @@ def submit(ctx: Any, spec: Any) -> Any:
             log=log_path,
             exit_file=exit_file,
             env=_probe_child_env(ctx.store, adapters),
+            store=ctx.store,
+            work_class="lane_health",
         )
+    except admission.Refused as exc:
+        # Host capacity, not a lane verdict: fail soft so the scheduler
+        # retries the probe (gr657245).
+        log.warning("%s: probe launch deferred: %s", NAME, exc)
+        ctx.record_failure(f"{NAME}: probe launch deferred, host at capacity: {exc}")
+        return None
     except Exception as exc:
         log.warning("%s: probe launch failed", NAME, exc_info=True)
         ctx.record_failure(f"{NAME}: probe launch failed: {exc}")

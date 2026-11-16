@@ -5867,6 +5867,106 @@ def test_poll_checked_red_verify_launch_failure_is_ordinary(
     assert "attempt:1" in store.tag_strings(42)
 
 
+def test_poll_checked_red_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verify launch refused for capacity defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when the
+    host frees — capacity is the host's moment, never the branch's red
+    (review td702053)."""
+
+    def boom(*a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the verify footprint")
+
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (pctx.failure or "")
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_main_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The main probe's launch refused for capacity drops the throwaway
+    worktree and defers attempt-free — never the ordinary red."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    real_launch = land_slice._launch
+
+    def refuse_main(argv: list[str], **kw: Any) -> int:
+        if Path(str(kw.get("cwd") or "")).name == "slice-main-td42":
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_main)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
+
+
+def test_deselect_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deselect gate's launch refused for capacity still drops the
+    finished main probe's tree and defers attempt-free — the --quick
+    relaunch waits for the host, not a rebuild."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # main probe launched
+    real_launch = land_slice._launch
+
+    def refuse_deselect(argv: list[str], **kw: Any) -> int:
+        if "--deselect" in argv:
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_deselect)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
+
+
 def test_poll_checked_red_alone_probe_no_tests_is_ordinary(
     seams: dict[str, Any],
 ) -> None:
@@ -6758,6 +6858,28 @@ def test_foreign_slice_land_lock_defers_retryable(
     assert "td=99" in (ctx.failure or "")
     assert ctx.meta_set["attempt_free"] == "infra-land"
     assert ctx.meta_set["red_class"] == "ship-busy"
+
+
+def test_ship_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host that cannot fit the land gate's footprint defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when capacity
+    returns — a capacity refusal never sends a clean branch for rebuild
+    (review td702053)."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the gate footprint")
+
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (ctx.failure or "")
 
 
 def test_own_ship_stamp_is_adopted_not_relaunched(
