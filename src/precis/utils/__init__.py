@@ -67,6 +67,12 @@ empty-hop decision: link edges alone cannot establish an empty first hop.
   :mod:`~precis.utils.container_limits`, :mod:`~precis.utils.optional_deps`
   (lazy-import guards for extras).
 
+Table rows may omit all formula cells, mapping inputs in data-column order
+to match the documented formula example. Full-width inputs remain valid;
+only caller-supplied formula values produce discard notes, so re-evaluating
+stored results stays quiet. ``table_data.normalize_table`` owns expansion
+and note collection for both creation and row insertion.
+
 **Seams.** Most helpers are pure; the DB-touching ones (``db_log_handler``,
 ``rate_limit``, ``handle_registry``) take their connection or store from the
 caller. A generic helper wanted by two or more packages belongs here — look for

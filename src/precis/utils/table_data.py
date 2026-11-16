@@ -226,14 +226,15 @@ def _fill_pos(items: list[dict[str, Any]]) -> None:
         it["pos"] = key_between(prev, nxt)
 
 
-def normalize_table(obj: Any) -> dict[str, Any]:
+def normalize_table(obj: Any, *, notes: list[str] | None = None) -> dict[str, Any]:
     """Validate a caller-supplied table and return the canonical
     ``{header: [...], rows: [[...], ...]}`` shape stored in ``meta.table``.
 
     Header cells are coerced to ``str``; row cells keep their JSON scalar
     type (so ``1.523`` stays a number, not ``"1.523"``). Every row must be
-    the same width as the header. Raises :class:`BadInput` with a
-    copy-ready ``next=`` on any malformed input.
+    the same width as the header, or omit all formula columns (data-column
+    order). Supplied non-null formula cells are reported through notes.
+    Raises :class:`BadInput` with a copy-ready ``next=`` on any malformed input.
 
     ``obj`` may also be a top-level JSON **string** (decoded once via
     ``json.loads`` before the dict validation below) — the reliable string
@@ -297,10 +298,21 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                 next="strip the control character from the header cell",
             )
     width = len(header)
+    formula_indices = {
+        i
+        for i, c in enumerate(
+            cols_raw if isinstance(cols_raw, list) and len(cols_raw) == width else []
+        )
+        if isinstance(c, dict) and c.get("formula")
+    }
+    discarded = 0
     rows: list[list[Scalar]] = []
     for i, row in enumerate(rows_raw):
         if not isinstance(row, list):
             raise BadInput(f"table.rows[{i}] must be a list of cells", next=nxt)
+        if formula_indices and len(row) == width - len(formula_indices):
+            values = iter(row)
+            row = [None if j in formula_indices else next(values) for j in range(width)]
         if len(row) != width:
             raise BadInput(
                 f"table.rows[{i}] has {len(row)} cells, header has {width}",
@@ -319,7 +331,13 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                     "character — only tab, newline and CR are allowed",
                     next="strip the control character from the cell",
                 )
+        discarded += sum(row[j] is not None for j in formula_indices if j < width)
         rows.append(list(row))
+
+    if discarded and notes is not None:
+        notes.append(
+            f"discarded {discarded} supplied non-null formula cell(s); formulas recompute them"
+        )
 
     retired = [str(i) for i in retired_raw]
     for rid in retired:

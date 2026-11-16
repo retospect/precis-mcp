@@ -1325,29 +1325,17 @@ def op_move_row(table: dict[str, Any], ref: Any, at: Any) -> dict[str, Any]:
 
 
 def op_insert_rows(
-    table: dict[str, Any], new_rows: Any, at: Any = None
+    table: dict[str, Any],
+    new_rows: Any,
+    at: Any = None,
+    *,
+    notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """``rows=[[…]]`` + ``at=`` — insert rows (cells in column order);
     ids mint."""
-    columns = table.get("columns") or []
-    width = len(columns)
-    if not isinstance(new_rows, list) or not all(isinstance(r, list) for r in new_rows):
-        raise BadInput(
-            "rows= must be a list of cell lists (column order)",
-            next="rows=[['jlcpcb', 'C1', 100]]",
-        )
-    for i, row in enumerate(new_rows):
-        if len(row) != width:
-            raise BadInput(
-                f"rows[{i}] has {len(row)} cells, table has {width} columns",
-                next="pad missing cells with null",
-            )
-        for cell in row:
-            if not isinstance(cell, str | int | float | bool | type(None)):
-                raise BadInput(
-                    f"rows[{i}] cell {cell!r} is not a JSON scalar",
-                    next="cells are string/number/bool/null",
-                )
+    new_rows = normalize_table(
+        {"columns": table["columns"], "rows": new_rows}, notes=notes
+    )["rows"]
     rowmeta = [dict(r) for r in table.get("rowmeta") or []]
     rows = [list(r) for r in table.get("rows") or []]
     j, prev, nxt = _insert_at(rowmeta, at, what="row")

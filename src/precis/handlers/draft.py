@@ -4684,13 +4684,15 @@ class DraftHandler(Handler):
                 tobj = {**tobj, "rows": rows}
             if footer is not None:
                 tobj = {**tobj, "footer": footer}
-        norm = normalize_table(tobj)
+        input_notes: list[str] = []
+        norm = normalize_table(tobj, notes=input_notes)
         norm, eval_notes = evaluate_table(
             norm,
             # Every formula here is caller-supplied THIS write — a name
             # that resolves to no column refuses (a typo must not land).
             declared={c["id"] for c in norm.get("columns") or [] if c.get("formula")},
         )
+        eval_notes = input_notes + eval_notes
         # caption= wins over the markdown ``**…**`` caption line; an
         # explicit empty caption= clears it.
         cap = md_caption if caption is None else (caption.strip() or None)
@@ -5157,6 +5159,7 @@ class DraftHandler(Handler):
         # compiled strict by evaluate_table (a new/changed formula
         # naming no column refuses; only a stored formula may decay to
         # #REF when its column is dropped by a later edit).
+        input_notes: list[str] = []
         declared: set[str] = set()
         if table is not None:
             tobj: Any = table
@@ -5205,7 +5208,7 @@ class DraftHandler(Handler):
                         dead | {str(i) for i in (tobj.get("retired_ids") or [])}
                     ),
                 }
-            norm = normalize_table(tobj)
+            norm = normalize_table(tobj, notes=input_notes)
             declared.update(
                 c["id"] for c in norm.get("columns") or [] if c.get("formula")
             )
@@ -5456,7 +5459,7 @@ class DraftHandler(Handler):
             if not cur_table:
                 raise no_data_err
             try:
-                norm = op_insert_rows(cur_table, rows, at)
+                norm = op_insert_rows(cur_table, rows, at, notes=input_notes)
             except BadInput as exc:
                 raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             added = [
@@ -5512,6 +5515,7 @@ class DraftHandler(Handler):
         # the reply. Runs BEFORE the base/diff/hash block so the journal
         # and content hash cover the computed cells.
         norm, eval_notes = evaluate_table(norm, declared=declared)
+        eval_notes = input_notes + eval_notes
         eval_tail = (
             "; eval: "
             + "; ".join(eval_notes[:8])

@@ -331,6 +331,11 @@ put(
 )
 ```
 
+Rows may omit all formula columns on create, whole-table replacement, and
+`rows=` append; values then follow data-column order. Full-width rows also
+work: use `null` for formula cells. Supplied non-null formula cells are
+discarded and the reply reports their count.
+
 Formulas reference **column names** (`qty*unit_price`), evaluate per row,
 and are stored internally by column id — renames rewrite nothing.
 Operators: `+ - * / // % **`, comparisons, `and/or/not`, and
