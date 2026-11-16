@@ -1006,7 +1006,7 @@ def test_a_two_layer_board_is_refused_at_import_not_at_route(store) -> None:
         pcb_epro.import_epro(store, _zip(two_layer.encode("utf-8")), slug="epro-2layer")
     msg = str(exc.value)
     assert "2 copper layers" in msg
-    assert "pcb-engine-plan" in msg
+    assert "me692624" in msg
 
 
 def test_a_failure_after_the_design_writes_leaves_no_board(

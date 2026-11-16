@@ -94,7 +94,7 @@
    "R_GS4"
   ],
   "parts": 86,
-  "sha256": "fe10c5edb4cf735bd524c0e42749a9b834c30539ad284592e64246d8a4c26704"
+  "sha256": "319a34af5907cae3e684e84abeef0b203768a77d503e884249a6d359e88cf1ba"
  },
  "nano_usb_pd": {
   "connections": 270,
@@ -145,7 +145,7 @@
    "R_GS4"
   ],
   "parts": 86,
-  "sha256": "fe10c5edb4cf735bd524c0e42749a9b834c30539ad284592e64246d8a4c26704"
+  "sha256": "319a34af5907cae3e684e84abeef0b203768a77d503e884249a6d359e88cf1ba"
  },
  "nano_usb_pd_r2": {
   "connections": 298,
@@ -206,7 +206,7 @@
    "R_PD4"
   ],
   "parts": 103,
-  "sha256": "050e001d04a89b6b4813785512cb39088dde0ce76e64b83a1301d9a774d9e5e5"
+  "sha256": "34398bbf178f770b6a04bba417839856e44eaf51355fd14ec31170eef40f459d"
  },
  "sanity": {
   "connections": 40,

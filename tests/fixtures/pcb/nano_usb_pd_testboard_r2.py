@@ -1,5 +1,5 @@
 """The USB-C PD Nano test board, revision 2 — synthetic place+route
-fixture for ``docs/backlog/pcb-usb-c-pd-nano-testboard.md``. The original
+fixture for ``me695012``. The original
 board (``nano_usb_pd_testboard.py``) stays untouched as the router
 regression fixture; this is the reviewed design.
 
@@ -852,7 +852,7 @@ def _components() -> list[dict[str, Any]]:
 _HS_TODO = (
     "TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, "
     "slice 2) but the P-FET / N-FET parts are not selected or verified "
-    "(docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology)"
+    "(me695012 §Topology)"
 )
 
 
@@ -1289,7 +1289,7 @@ FEATURES: list[dict[str, Any]] = [
 
 def _meta() -> dict[str, Any]:
     return {
-        "spec": "docs/backlog/pcb-usb-c-pd-nano-testboard.md",
+        "spec": "me695012",
         "outline_mm": [BOARD_W_MM, BOARD_H_MM],
         "pd_contract": "STUSB4500 negotiates 20 V; V15/V9/V5 are bucks "
         "from VBUS (one contract, derived rails; fixed PDO set 5/9/15/20)",

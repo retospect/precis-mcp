@@ -1,5 +1,5 @@
 """The USB-C PD Nano test board — synthetic place+route fixture for
-``docs/backlog/pcb-usb-c-pd-nano-testboard.md``.
+``me695012``.
 
 The doc's three design corrections are folded into this netlist, not
 deferred:
@@ -425,7 +425,7 @@ FOOTPRINTS: list[dict[str, Any]] = [
 
 _PROVISIONAL_HS_NOTE = (
     "PROVISIONAL part for the switched high-side outputs — driver topology "
-    "is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); "
+    "is resolved at netlist review (me695012); "
     "this choice is geometry, not validation"
 )
 _SYNTH_NOTE = "synthesized landpattern bound (no catalog part / no authored footprint)"
@@ -766,7 +766,7 @@ _HS_TODO = (
     "TODO(netlist-review): high-side topology is PROVISIONAL — "
     "MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the "
     "brief's high-side requirement at review "
-    "(docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology)"
+    "(me695012 §Topology)"
 )
 
 
@@ -1149,7 +1149,7 @@ FEATURES: list[dict[str, Any]] = [
 
 def _meta() -> dict[str, Any]:
     return {
-        "spec": "docs/backlog/pcb-usb-c-pd-nano-testboard.md",
+        "spec": "me695012",
         "outline_mm": [BOARD_W_MM, BOARD_H_MM],
         "pd_contract": "STUSB4500 negotiates 20 V; V15/V9/V5 are bucks "
         "from VBUS (one contract, derived rails; fixed PDO set 5/9/15/20)",
