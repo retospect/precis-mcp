@@ -1324,6 +1324,13 @@ class SkillHandler(Handler):
                 options=close or None,
                 next=next_lines,
             )
+        if effective_view == "rulings":
+            rulings = parse_frontmatter(text).rulings
+            return Response(
+                body="\n".join(rulings)
+                if rulings
+                else "No rulings stated; flag missing provenance to Reto."
+            )
         if served_via_alias is not None:
             # gr524267: the requested id is a registered alias — name
             # the redirect with the same banner the one-hop uses.
@@ -2649,7 +2656,7 @@ class SkillHandler(Handler):
         # use ``view='toc'`` today (and only when paired with a
         # specific slug); the bare-slug get returns the markdown
         # body, no view kwarg required.
-        return ["toc", "usage"]
+        return ["toc", "usage", "rulings"]
 
     # ── skill ref anchors: usage + open concerns (DB, fail-soft) ───
 

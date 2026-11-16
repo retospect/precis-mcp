@@ -126,6 +126,10 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
+Builder drift reports schedule ``task_class='skill'`` children after land;
+their live-tool checks run on MCP lanes with writes confined to skills and
+skill evals. Skill ``rulings:`` metadata exposes provenance through the
+skill handler's ``rulings`` view.
 Devin builds leave worktree edits for the worker to commit. Available
 acceptance tests supplied before launch gate that commit; absent tests
 fall back to the checked land. Worker commits always retain the lander's

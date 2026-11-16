@@ -55,6 +55,14 @@ Cloud ``devin_task`` appends a pending named-branch handoff contract; no
 consumer fetches or lands that branch yet, and the API executor has no
 local checkout.
 
+Builder ``skills:`` markers create skill-editor children after a successful
+land. A receipt under the source row lock prevents duplicate follow-ups
+when the land tail retries. The ``skill`` task class needs a live MCP lane
+and can write only skills and their evals; both poll and land enforce this
+scope. Governed skills retain their human-only fence. Editors open ruling
+provenance before loosening a rule, so tool drift cannot silently repeal
+human policy.
+
 A ``run_slice`` launch also writes one ``slice_run_features`` row
 (:mod:`precis.workers.job_types._run_features`, gr595544): cheap
 text/graph features plus the pick's lane context, recorded beside the

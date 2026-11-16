@@ -1516,10 +1516,25 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
     A pin-bump node (``meta.pin_bump``, td659522 F7) gets the ``landed:``
     comment but stays open until its record says the gate image carries
     the new engine (``image.ready``): glue blocked by the node must not
-    unblock on the land alone, and ``pin_bump``'s image wait closes it."""
+    unblock on the land alone, and ``pin_bump``'s image wait closes it.
+
+    The dedupe is keyed on the sha, not the newest comment: the
+    skill-edit mint appends its own note after this record on some
+    finishes, so a retried land tail would read a non-``landed:`` newest
+    and stamp a duplicate. A sha-keyed check stays idempotent no matter
+    what notes landed in between (and still writes a real land after a
+    ``nothing new`` note, whose ``landed:`` line names no sha)."""
     wrote: list[str] = []
-    newest = (_newest_comment(store, todo_id) or "").lstrip()
-    if not newest.lower().startswith("landed:"):
+    if sha is not None:
+        already = _landed_comment_sha(store, todo_id) == sha[:9].lower()
+    else:
+        already = (
+            (_newest_comment(store, todo_id) or "")
+            .lstrip()
+            .lower()
+            .startswith("landed:")
+        )
+    if not already:
         note = NO_DIFF_NOTE if sha is None else f"landed: {sha[:9]} — {subject}"
         _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
@@ -2555,6 +2570,23 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store) + governed)
+    allow_only = _rs._skill_allow_only(ctx.store, todo_id)
+    if allow_only is not None:
+        outside = sorted(
+            p
+            for p in paths
+            if not any(_rs.fnmatch.fnmatchcase(p, g) for g in allow_only)
+        )
+        if outside:
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                "skill-editor scope violated",
+                handoff="land FAILED: paths outside skill-editor scope: "
+                + ", ".join(outside),
+            )
+            return None
     pin_why, pin_unreadable = None, False
     if denied:
         denied, pin_why, pin_unreadable = _pin_exempt(
@@ -5318,6 +5350,68 @@ def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
         return "pin: finish FAILED"
 
 
+def _mint_skill_edit(store: Any, todo_id: int, sha: str) -> str:
+    """Mint one follow-up per landed diff, atomically with the source receipt."""
+    from precis.plans.nodes import finish_mint
+
+    chunks = store.chunks.list_chunks_for_ref(todo_id)
+    handoffs = [
+        c.text
+        for c in chunks
+        if c.chunk_kind == "todo_comment" and c.text.startswith("handoff:")
+    ]
+    ids = _rs.skills_named(handoffs[-1] if handoffs else None)
+    if ids is None:
+        return "skills: not stated"
+    if not ids:
+        return "skills: none"
+    plan_tag = _plan_tag(store, todo_id)
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (todo_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"skill-edit source td{todo_id} disappeared")
+        receipts = dict((row[0] or {}).get("skill_edit_jobs") or {})
+        if sha in receipts:
+            return f"skills: follow-up td{receipts[sha]} already minted"
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"Update skills after td{todo_id}",
+            parent_id=todo_id,
+            meta={
+                "task_class": "skill",
+                "op": "run_slice",
+                "skill_ids": list(ids),
+                "landed_sha": sha,
+            },
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system", conn=conn)
+        store.add_tag(ref.id, Tag.open("skill-edit"), set_by="system", conn=conn)
+        store.add_tag(
+            ref.id, Tag.open(plan_tag or f"plan:{ref.id}"), set_by="system", conn=conn
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=f"Read landed diff `git show {sha}` from td{todo_id}.\n"
+                    f"Named skills: {', '.join(ids)}.\nRun each example on the live tool and correct drift. "
+                    "Escalate governs:factory skills and missing rulings to Reto.",
+                    meta={"chunk_kind": "todo_body"},
+                )
+            ],
+            conn=conn,
+        )
+        receipts[sha] = ref.id
+        store.stamp_ref_meta(todo_id, {"skill_edit_jobs": receipts}, conn=conn)
+        finish_mint(store, ref.id, conn=conn)
+    return f"skills: minted td{ref.id} for {', '.join(ids)}"
+
+
 def _landed_finish(
     ctx: Any,
     handle: dict[str, Any],
@@ -5351,6 +5445,19 @@ def _landed_finish(
     landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
+    if sha is not None:
+        try:
+            skill_note = _mint_skill_edit(store, todo_id, sha)
+            summary.append(skill_note)
+            if skill_note == "skills: not stated" and _newest_comment(
+                store, todo_id
+            ) != ("skills: not stated"):
+                _rs._append_comment(store, todo_id, skill_note)
+        except Exception as exc:
+            log.warning(
+                "land_slice: skill-edit mint for td%d failed", todo_id, exc_info=True
+            )
+            summary.append(f"skills: follow-up FAILED ({exc})")
     try:
         pin_note = _pin_finish(store, todo_id, sha)
         if pin_note is not None:

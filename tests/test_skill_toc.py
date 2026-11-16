@@ -483,3 +483,17 @@ def test_chunks_for_toc_unknown_skill_names_the_toc(skill: SkillHandler) -> None
         skill.chunks_for_toc("no-such-skill-xyz")
     assert exc.value.next is not None
     assert "get(kind='skill', id='toc')" in str(exc.value.next)
+
+
+def test_rulings_view_lists_handles(
+    monkeypatch: pytest.MonkeyPatch, skill: SkillHandler
+) -> None:
+    """gr657065: view='rulings' lists the hidden provenance handles."""
+    _install_corpus(
+        monkeypatch, {"sample": _md(front="rulings: [me123, gr456, td789]")}
+    )
+    assert skill.get(id="sample", view="rulings").body.splitlines() == [
+        "me123",
+        "gr456",
+        "td789",
+    ]

@@ -713,3 +713,27 @@ def test_link_to_gate_failed_file_does_not_cascade(tmp_path: Path) -> None:
     r = scan_skill_dir(tmp_path)
     assert {f.slug for f in r.failures} == {"precis-broken"}
     assert {p.slug for p in r.plans} == {"precis-fine"}
+
+
+# ── rulings: provenance front-matter (gr657065) ─────────────────────────
+
+_RULINGS_MD = "---\nflavor: reference\nrulings: [%s]\n---\n# T\nbody\n"
+
+
+@pytest.mark.parametrize("handle", ["bad", "pa123", "mc123"])
+def test_ingest_rejects_malformed_ruling(tmp_path: Path, handle: str) -> None:
+    """A rulings: handle must parse as a memory/gripe/todo handle."""
+    _write(tmp_path, "sample.md", _RULINGS_MD % handle)
+    result = scan_skill_dir(tmp_path)
+    assert not result.plans and "rulings:" in result.failures[0].reason
+
+
+def test_ingest_resolves_ruling_only_with_resolver(tmp_path: Path) -> None:
+    """Grammar gates every scan; live-existence is opt-in for callers
+    with a store — this filesystem gate runs at land time without one."""
+    _write(tmp_path, "sample.md", _RULINGS_MD % "me123")
+    assert not scan_skill_dir(tmp_path).failures
+    assert scan_skill_dir(tmp_path, resolve_ruling=lambda h: False).failures
+    result = scan_skill_dir(tmp_path, resolve_ruling=lambda h: h == "me123")
+    assert not result.failures
+    assert result.plans[0].frontmatter.rulings == ("me123",)

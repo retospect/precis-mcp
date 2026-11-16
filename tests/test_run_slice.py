@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: execs shell script scripts/ship"
 )
 
-from precis.plans import lanes
+from precis.plans import boundary, lanes
 from precis.plans import release as _release_real
 from precis.plans.lanes import (
     ANY_CLASS,
@@ -8176,7 +8176,10 @@ def test_devin_submit_snapshots_only_supplied_tests(
         42,
         "Build",
         body="File set: src/widget.py, tests/test_widget.py",
-        comments=("Acceptance tests: tests/test_latest.py, tests/test_widget.py",),
+        comments=(
+            "brief: the coordinator's declaration rides its own line\n"
+            "Acceptance tests: tests/test_latest.py, tests/test_widget.py",
+        ),
     )
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None and ctx.failure is None
@@ -8495,7 +8498,7 @@ def test_devin_verdict_precedes_real_worker_staging(
 ) -> None:
     """Untracked supplied tests must not hide a no-change verdict in a commit."""
     store = _Store()
-    store.add_todo(42, "Build")
+    store.add_todo(42, "Build", body="Acceptance tests: tests/test_widget.py")
     ctx, handle = _devin_lane_submit(
         store,
         seams,
@@ -8605,7 +8608,11 @@ def test_devin_acceptance_artifacts_survive_worktree_reset(
 ) -> None:
     """Fresh tests come from job params after cleanup, not untracked leftovers."""
     store = _Store()
-    store.add_todo(42, "Build", body="Keep tests/test_existing.py green.")
+    store.add_todo(
+        42,
+        "Build",
+        body="Acceptance tests: tests/test_existing.py, tests/test_widget.py",
+    )
     tree = run_slice.worktrees_dir(run_slice.slice_root()) / run_slice.slice_name(42)
     (tree / "tests").mkdir(parents=True)
     (tree / "tests" / "test_widget.py").write_text(
@@ -13638,3 +13645,111 @@ def test_reviewer_end_to_end_on_a_real_clone(
     assert not tree.exists()
     assert str(tree) not in _rg(root, "worktree", "list")
     assert seams["lands"] == []
+
+
+# ── skill-editor lane (gr657065) ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "skills: precis-get-help, precis-put-help",
+            ("precis-get-help", "precis-put-help"),
+        ),
+        ("skills: none", ()),
+        ("tests: ran", None),
+        ("skills: ../bad", None),
+        ("skills: none, precis-get-help", None),
+        ("skills: precis-get-help, precis-get-help\ntests: ran", ("precis-get-help",)),
+    ],
+)
+def test_skills_marker_parsed(text: str, expected: tuple[str, ...] | None) -> None:
+    assert run_slice.skills_named(text) == expected
+
+
+@pytest.mark.parametrize(
+    "path", ["src/precis/handlers/skill.py", "tests/test_skill.py"]
+)
+def test_skill_class_rejects_non_skill_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+) -> None:
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    why, human = run_slice._deny_reason(
+        tmp_path, (), governed_scan=False, allow_only=run_slice.SKILL_WRITE_PATHS
+    )
+    assert why is not None and "outside skill-editor scope" in why
+    assert not human
+
+
+def test_skill_class_governed_hit_asks_reto(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = "src/precis/data/skills/example.md"
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    monkeypatch.setattr(
+        run_slice._governs, "governed_skill_paths_at_ref", lambda *a, **kw: (path,)
+    )
+    why, human = run_slice._deny_reason(
+        tmp_path, (), allow_only=run_slice.SKILL_WRITE_PATHS
+    )
+    assert why is not None and "Reto" in why
+    assert human == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/precis/data/skills/example.md", "src/precis/data/skill-evals/example.yaml"],
+)
+def test_skill_class_allows_skill_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+) -> None:
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    assert run_slice._deny_reason(
+        tmp_path, (), governed_scan=False, allow_only=run_slice.SKILL_WRITE_PATHS
+    ) == (None, [])
+
+
+def test_skill_brief_names_scope_and_verify_step() -> None:
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Update skills",
+        body="git show abc123",
+        latest=None,
+        lane="claude-sub",
+        model=None,
+        effort="high",
+        task_class="skill",
+    )
+    assert all(path in brief for path in run_slice.SKILL_WRITE_PATHS)
+    for phrase in (
+        "run each example",
+        "live tool",
+        "open its ruling",
+        "Only Reto",
+        "no ruling",
+        "skills: none",
+    ):
+        assert phrase in brief
+
+
+def test_skill_lane_needs_live_mcp() -> None:
+    table = [
+        lanes.Lane(
+            name="x",
+            adapter="codex_exec",
+            credential_pool="test",
+            vendor="openai",
+            models=(),
+            default_model=None,
+            cap=1,
+            task_classes=frozenset({"skill"}),
+            enabled=True,
+        )
+    ]
+    assert boundary.fit_lanes("skill", table) == ()

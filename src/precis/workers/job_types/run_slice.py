@@ -1700,7 +1700,7 @@ def _no_commit_kind(store: Any, todo_id: int) -> str | None:
     ref = store.get_ref(kind="todo", id=todo_id)
     meta = (ref.meta if ref is not None else None) or {}
     cls = str(meta.get("task_class") or _DEFAULT_TASK_CLASS)
-    if cls != _DEFAULT_TASK_CLASS:
+    if cls not in (_DEFAULT_TASK_CLASS, "skill"):
         return f"task_class {cls!r}"
     role = _generate_role(meta)
     if role in _NO_COMMIT_ROLES:
@@ -2799,6 +2799,7 @@ def render_brief(
     base: str = "main",
     profile: _lanes.RepoProfile | None = None,
     review: Mapping[str, Any] | None = None,
+    task_class: str = "code",
 ) -> str:
     """The prompt a slice session starts from. ``base`` is the branch the
     worktree is cut from (``main``, or a release fix's ``release/r<N>``).
@@ -2864,6 +2865,31 @@ def render_brief(
         deny_paths = _lanes.deny_paths_for(None)
     lines += _deny_lines(deny_paths)
     lines += _task_lines(body, latest, target)
+    if task_class == "skill":
+        lines += [
+            "",
+            "## Skill editor",
+            "Only write src/precis/data/skills/** and src/precis/data/skill-evals/**. "
+            "Read the landed code diff and every named skill. Read the live tool and "
+            "run each example call in each touched skill; reuse the extractor in "
+            "tests/test_skill_example_drift.py. Report the literal calls run, their "
+            "results and what you fixed. Edit only what diverges. Never edit a "
+            "governs:factory skill: flag it to Reto.",
+            "Before weakening or deleting a rule, open its ruling from rulings: "
+            "frontmatter (get(kind='skill', id='<skill>', view='rulings')). "
+            "Keep only the rule in visible prose; link its ruling in frontmatter. "
+            "Only Reto may change or drop his say-so rulings (his words and date). "
+            "An incident-born ruling names its gripe and cause: loosen it only "
+            "with evidence the cause is fixed and a regression test guards it. "
+            "Flag a rule with no ruling to Reto; never silently keep or cut it.",
+        ]
+    if not generator:
+        lines += [
+            "",
+            "Your handoff must include `skills: none` or `skills: <id>, <id>` "
+            "naming skills this change makes wrong. Put it before the final tests: "
+            "line. A successful land schedules their skill-editor follow-up.",
+        ]
     if _MIGRATION_PATH_RE.search(
         "\n".join(t for t in (body, latest or "", target or "") if t)
     ):
@@ -4578,6 +4604,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     # vendor outright; the table shrinks, it does not fall back.
     exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
     lane_table = _lanes.load_lanes(store)
+    if task_class == "skill":
+        from precis.plans.boundary import fit_lanes as skill_fit_lanes
+
+        lane_table = skill_fit_lanes(task_class, lane_table)
     # ``params.lane_capability`` — the requirement a factory mint stamps
     # when it cannot hold its pin (factory_rescue._resolve_lane_pin,
     # td610544): the pin becomes a preference and the capability the
@@ -4864,6 +4894,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     mints = _mints_children(store, todo_id)
+    if task_class == "skill" and (not adapter.mcp or profile is not None):
+        ctx.record_failure("run_slice: skill editors require the precis live MCP lane")
+        return None
     if not adapter.mcp and mints:
         # A child-minting generator works through the precis MCP; a lane
         # without one ends with nothing minted. The templates class such
@@ -4995,6 +5028,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         generator=is_generator,
         role=_generate_role(todo.meta),
+        task_class=task_class,
         mcp=use_mcp,
         deny_paths=_slice_deny(store, repo, lane),
         lane_models=lane.models,
@@ -5642,6 +5676,32 @@ def _kill_acceptance(handle: dict[str, Any]) -> None:
                 _signal_group(pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def skills_named(text: str | None) -> tuple[str, ...] | None:
+    """Read the last builder drift marker; None means absent or malformed."""
+    markers = re.findall(r"^skills:\s*([^\n]*)$", text or "", re.MULTILINE)
+    if not markers:
+        return None
+    value = markers[-1].strip()
+    if value == "none":
+        return ()
+    ids = [s.strip() for s in value.split(",")]
+    if not all(re.fullmatch(r"[a-z0-9][a-z0-9-]*", s) and s != "none" for s in ids):
+        return None
+    return tuple(dict.fromkeys(ids))
+
+
+SKILL_WRITE_PATHS = ("src/precis/data/skills/**", "src/precis/data/skill-evals/**")
+
+
+def _skill_allow_only(store: Any, todo_id: int) -> tuple[str, ...] | None:
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return (
+        SKILL_WRITE_PATHS
+        if ref is not None and (ref.meta or {}).get("task_class") == "skill"
+        else None
+    )
 
 
 def tests_ran(text: str | None) -> bool:
@@ -6496,6 +6556,7 @@ def _deny_reason(
     base: str = "origin/main",
     *,
     governed_scan: bool = True,
+    allow_only: tuple[str, ...] | None = None,
 ) -> tuple[str | None, list[str]]:
     """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
@@ -6527,9 +6588,20 @@ def _deny_reason(
         )
     gov_paths = sorted(set(paths) & set(governed))
     hits = deny_violations(paths, deny_paths)
-    if not hits and not gov_paths:
+    outside = (
+        sorted(
+            p for p in paths if not any(fnmatch.fnmatchcase(p, g) for g in allow_only)
+        )
+        if allow_only is not None
+        else []
+    )
+    if not hits and not gov_paths and not outside:
         return None, []
     parts: list[str] = []
+    if outside:
+        parts.append(
+            "touched paths outside skill-editor scope: " + ", ".join(outside[:50])
+        )
     if hits:
         parts.append(
             "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
@@ -7281,6 +7353,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         base,
         # Governed skills are precis files: nothing to scan in another repo.
         governed_scan=not other_repo,
+        allow_only=_skill_allow_only(ctx.store, todo_id),
     )
     # Deny paths and commit lines are session text too (the session names
     # its files and writes its messages): the same scrub applies — redact
@@ -7333,7 +7406,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     worker_tests_ran, test_failure = acceptance
                 if worker_tests_ran and test_failure is None:
                     after_denied, after_human_hits = _deny_reason(
-                        tree, _lanes.deny_paths_for(ctx.store), base
+                        tree,
+                        _lanes.deny_paths_for(ctx.store),
+                        base,
+                        allow_only=_skill_allow_only(ctx.store, todo_id),
                     )
                     if after_denied:
                         test_failure = (

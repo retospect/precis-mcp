@@ -13,9 +13,12 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,7 +27,7 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: the launcher execs /bin/sh"
 )
 
-from precis.plans import lanes
+from precis.plans import lanes, nodes
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
@@ -7326,3 +7329,63 @@ def test_git_in_tree_unparseable_ps_is_unknown(
         ),
     )
     assert land_slice._git_in_tree(tmp_path) is None
+
+
+# ── skill-editor follow-up mint (gr657065) ────────────────────────────
+
+
+class _MintStore:
+    def __init__(self, marker: str) -> None:
+        self.meta: dict[str, Any] = {}
+        self.minted: list[dict[str, Any]] = []
+        self.bodies: list[Any] = []
+        self.chunks = SimpleNamespace(
+            list_chunks_for_ref=lambda _: [
+                SimpleNamespace(
+                    text="handoff: Built.\n" + marker, chunk_kind="todo_comment"
+                )
+            ],
+            insert_chunks=lambda ref_id, chunks, **kw: self.bodies.extend(chunks),
+        )
+
+    @contextmanager
+    def tx(self) -> Iterator[_MintStore]:
+        yield self
+
+    def execute(self, sql: str, args: tuple[Any, ...]) -> _MintStore:
+        assert "FOR UPDATE" in sql
+        return self
+
+    def fetchone(self) -> tuple[dict[str, Any]]:
+        return (self.meta,)
+
+    def insert_ref(self, **kw: Any) -> SimpleNamespace:
+        self.minted.append(kw)
+        return SimpleNamespace(id=99)
+
+    def add_tag(self, *args: Any, **kw: Any) -> None:
+        pass
+
+    def tags_for(self, ref_id: int) -> list[Any]:
+        return []
+
+    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        self.meta.update(updates)
+
+
+def test_land_mints_skill_edit_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    finished: list[int] = []
+    monkeypatch.setattr(nodes, "finish_mint", lambda s, tid, **kw: finished.append(tid))
+    store = _MintStore("skills: precis-get-help, precis-put-help")
+    sha = "a" * 40
+    assert "minted td99" in land_slice._mint_skill_edit(store, 42, sha)
+    assert "already minted" in land_slice._mint_skill_edit(store, 42, sha)
+    assert len(store.minted) == 1 and finished == [99]
+    job = store.minted[0]
+    assert job["parent_id"] == 42 and job["meta"]["task_class"] == "skill"
+    assert job["meta"]["skill_ids"] == ["precis-get-help", "precis-put-help"]
+    assert sha in store.bodies[0].text
+    for marker, note in [("skills: none", "skills: none"), ("", "skills: not stated")]:
+        empty = _MintStore(marker)
+        assert land_slice._mint_skill_edit(empty, 42, sha) == note
+        assert empty.minted == []

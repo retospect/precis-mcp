@@ -276,9 +276,12 @@ def fit_lanes(task_class: str, table: Iterable[_lanes.Lane]) -> tuple[_lanes.Lan
     ``security-review`` slice launches only on
     :data:`SECURITY_LANE_ADAPTERS`, whatever class the account rows
     claim — a vendor lane reviewing the boundary its own builder crossed
-    is no review. Every other class gets the table unchanged."""
+    is no review. Skill editors require a ``claude_p`` lane for live MCP
+    example verification. Other classes get the table unchanged."""
     if task_class == SECURITY_REVIEW:
         return tuple(ln for ln in table if ln.adapter in SECURITY_LANE_ADAPTERS)
+    if task_class == "skill":
+        return tuple(ln for ln in table if ln.adapter == "claude_p")
     return tuple(table)
 
 
