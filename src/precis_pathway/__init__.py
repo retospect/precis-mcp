@@ -34,6 +34,12 @@ blocking runner records when ``subprocess.run`` returns or times out.
 Pathway execution lists are atomically unioned across seed/model jobs;
 diagnostic write failures never discard a compute handle or alter dispatch.
 
+Endpoint minima retain (state, seed, step) identity: adjacent steps may
+relax the same state into different geometries. The runner separates their
+state and barrier estimates before engine analysis, so scores, traps, CHE
+and kinetics consume the same per-minimum network. Energy chooses the
+reference basin; geometry decides membership.
+
 ``results_json``/``graph_json`` are ``autocatpath.pipeline.analyze``'s
 output (>= 0.5.2) verbatim — traps/poisons/selectivity/CHE/``score``
 (>= 0.6.0) — not a local mirror. The aggregate additionally runs the

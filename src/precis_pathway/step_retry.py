@@ -15,8 +15,9 @@ Pieces, all free of store and engine imports so they test without either:
 * :func:`retryable_convergence_blockers` — eligibility: fatal
   ``neb_convergence``/``relax_convergence`` records explicitly cited by an
   unavailable barrier/selectivity quantity; any endpoint-mismatch-class
-  record withholds the whole selection (a basin mismatch needs diagnosis,
-  not a re-roll — never retried here).
+  ``fail``/``marginal`` record withholds the whole selection (a basin
+  finding needs diagnosis, not a re-roll — the gr593139 demoted
+  distinct-minimum record included, never retried here).
 * :func:`plan_step_retries` — one :class:`StepRetry` per eligible record,
   bounded by :func:`max_step_retries` per ``(step, model_index)`` across
   the durable event log, each at a fresh seed never used by this pathway
@@ -91,13 +92,20 @@ def retryable_convergence_blockers(results: dict[str, Any]) -> list[dict[str, An
         return []
     records = [r for r in trust if isinstance(r, dict)]
     for record in records:
+        evidence = record.get("evidence")
+        if (
+            record.get("check") in ("endpoint_identity", "endpoint_agreement")
+            or (
+                isinstance(evidence, dict)
+                and evidence.get("reason") == "endpoint-mismatch"
+            )
+        ) and record.get("verdict") in ("fail", "marginal"):
+            # A basin finding needs diagnosis, not a re-roll — including
+            # the gr593139 demoted distinct-minimum record (marginal),
+            # whose second basin a retry seed could land in either way.
+            return []
         if record.get("verdict") != "fail" or record.get("severity") != "fatal":
             continue
-        evidence = record.get("evidence")
-        if record.get("check") in ("endpoint_identity", "endpoint_agreement") or (
-            isinstance(evidence, dict) and evidence.get("reason") == "endpoint-mismatch"
-        ):
-            return []
 
     cited: set[str] = set()
     for quantity in ("barrier", "selectivity"):

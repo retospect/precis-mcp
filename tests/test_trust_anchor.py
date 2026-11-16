@@ -54,13 +54,24 @@ _SCOPE = trust_gate.route_scope({"route_steps": ["R->A", "A->P"]})
 _FP_LO, _FP_HI = "aaaabbbbcccc", "dddd00001111"
 
 
-def _basin_records(hi_seeds: list[int]) -> list[dict[str, Any]]:
+def _basin_records(
+    hi_seeds: list[int],
+    *,
+    hi_e: dict[int, float] | None = None,
+    spread_seeds: tuple[int, ...] = (),
+) -> list[dict[str, Any]]:
     """endpoint_identity + endpoint_agreement over states R/A/P: the
-    ``hi_seeds`` all land in the SAME higher basin on state A."""
+    ``hi_seeds`` all land in the SAME higher basin on state A (fingerprint
+    ``_FP_HI``, ``hi_e`` overrides their per-seed deltas — unequal values
+    make the second basin disagree inside itself). ``spread_seeds`` land
+    in the BASIN fingerprint but 870 meV high — a same-minimum spread,
+    which keeps failing under gr593139."""
+    hi_e = hi_e or {}
     recs: list[dict[str, Any]] = []
     for st in ("R", "A", "P"):
         for s in (0, 1, 2):
             hi = st == "A" and s in hi_seeds
+            spread = st == "A" and s in spread_seeds
             recs.append(
                 _rec(
                     "endpoint_identity",
@@ -69,21 +80,24 @@ def _basin_records(hi_seeds: list[int]) -> list[dict[str, Any]]:
                     seed=s,
                     state=st,
                     evidence={
-                        "e_eV": -10.0 + (0.87 if hi else 0.0),
+                        "e_eV": -10.0 + (hi_e.get(s, 0.87) if hi or spread else 0.0),
                         "fingerprint": _FP_HI if hi else _FP_LO,
                     },
                 )
             )
         for s in (0, 1, 2):
-            bad = st == "A" and s in hi_seeds
+            hi = st == "A" and s in hi_seeds
+            spread = st == "A" and s in spread_seeds
             recs.append(
                 _rec(
                     "endpoint_agreement",
-                    "fail" if bad else "pass",
+                    "fail" if hi or spread else "pass",
                     seed=s,
                     state=st,
                     evidence={
-                        "delta_meV": 866.9 if bad else 0.0,
+                        "delta_meV": (
+                            round(hi_e.get(s, 0.87) * 1000, 1) if hi or spread else 0.0
+                        ),
                         "tol_eV": 0.05,
                     },
                 )
@@ -222,8 +236,13 @@ def test_struct_neb_anchor_same_rule() -> None:
     assert trust_gate.struct_neb_anchor(bad) is None
 
 
-def _toon_records(hi_seeds: list[int]) -> list[dict[str, Any]]:
-    recs = _basin_records(hi_seeds)
+def _toon_records(
+    hi_seeds: list[int],
+    *,
+    hi_e: dict[int, float] | None = None,
+    spread_seeds: tuple[int, ...] = (),
+) -> list[dict[str, Any]]:
+    recs = _basin_records(hi_seeds, hi_e=hi_e, spread_seeds=spread_seeds)
     for step in ("R->A", "A->P"):
         for s in (0, 1, 2):
             recs.append(_rec("neb_convergence", "pass", seed=s, step=step))
@@ -268,9 +287,13 @@ def test_trust_view_renders_anchor_line() -> None:
 
 
 def test_trust_view_anchor_none_and_family_actions() -> None:
+    """A same-minimum spread (seed 1 in the basin fingerprint, +870 meV)
+    is a REAL endpoint failure under gr593139 — it fails the gate, gets
+    the non-reproducible ``re-place-endpoints`` action, and a detachment
+    fail on top leaves no credit."""
     from precis_pathway.toon_views import trust_toon
 
-    records = _toon_records([1]) + [
+    records = _toon_records([], spread_seeds=(1,)) + [
         _rec("detachment", "fail", seed=1, step="R->A", evidence={})
     ]
     body = trust_toon(_toon_meta(records), pw_handle="pw9")
@@ -281,9 +304,15 @@ def test_trust_view_anchor_none_and_family_actions() -> None:
 
 
 def test_trust_view_creditable_basin_anchor() -> None:
+    """A reproduced second basin that disagrees INSIDE itself (seeds 1,2
+    share one fingerprint at −9.0/−8.8 eV) keeps gating — but the basin
+    reproduction is proven, so the lower basin stays creditable over
+    endpoint_agreement."""
     from precis_pathway.toon_views import trust_toon
 
-    body = trust_toon(_toon_meta(_toon_records([1, 2])), pw_handle="pw9")
+    body = trust_toon(
+        _toon_meta(_toon_records([1, 2], hi_e={1: 1.0, 2: 1.2})), pw_handle="pw9"
+    )
     line = next(ln for ln in body.splitlines() if ln.startswith("anchor:"))
     assert "credited over endpoint_agreement" in line
     assert "lower basin" in line

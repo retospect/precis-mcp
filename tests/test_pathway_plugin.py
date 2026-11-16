@@ -271,12 +271,118 @@ def test_seed_fanout_matches_monolith_run() -> None:
     # monolith does (regression guard — this was silently empty, which is
     # why fan-out pathways rendered "no geometry linked" for every state).
     assert fanout["structures_extxyz"], "fan-out dropped all per-state geometry"
-    assert set(fanout["structures_extxyz"]) == set(monolith["structures_extxyz"])
+    # Both execution paths retain the same relaxed-site minimum entries.
+    assert set(monolith["structures_extxyz"]) == set(fanout["structures_extxyz"])
 
     # and the scalar summary quest.compute.harvest_measures reads matches too
     from precis_pathway._dispatch_common import summarize
 
     assert summarize(fanout) == summarize(monolith)
+
+
+def test_step_only_minimum_reaches_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr593139: a landing unique to step 2 must survive into the score graph."""
+    from autocatpath.pipeline import Results
+    from autocatpath.uncertainty import aggregate
+
+    from precis.utils import trust_gate
+
+    steps = {
+        "NO->NO2": {"reactant": "NO", "product": "NO2", "barrier": 0.4, "delta_e": 0.0},
+        "NO2->NO3": {
+            "reactant": "NO2",
+            "product": "NO3",
+            "barrier": 0.8,
+            "delta_e": -0.5,
+        },
+    }
+    records = [
+        {
+            "check": "endpoint_identity",
+            "id": f"{state}#{step}#s0#endpoint_identity",
+            "verdict": "pass",
+            "severity": "warn",
+            "state": state,
+            "seed": 0,
+            "step": step,
+            "evidence": {"fingerprint": fp, "e_eV": energy},
+        }
+        for state, step, fp, energy in (
+            ("NO", "NO->NO2", "root", -10.0),
+            ("NO2", "NO->NO2", "minimum-a", -10.0),
+            ("NO2", "NO2->NO3", "minimum-b", -9.5),
+            ("NO3", "NO2->NO3", "product", -10.0),
+        )
+    ]
+    units: list[dict[str, Any]] = [
+        {
+            "model_index": 0,
+            "model": "emt",
+            "seed": 0,
+            "partial": {
+                "states": {"NO": -10.0, "NO2": -10.0, "NO3": -10.0},
+                "steps": steps,
+            },
+        }
+    ]
+    results = Results(
+        node_energies={s: aggregate([-10.0], 0.3) for s in ("NO", "NO2", "NO3")},
+        edges=[
+            {
+                "name": name,
+                **{
+                    k: aggregate([v], 0.3) if isinstance(v, float) else v
+                    for k, v in ent.items()
+                },
+            }
+            for name, ent in steps.items()
+        ],
+        pathway=["NO", "NO2", "NO3"],
+        models=["emt"],
+        trust=records,
+    )
+    minima = trust_gate.endpoint_minima(records, (None, set()))
+    assert minima["NO2"]["minimum-a"] == {(0, "NO->NO2"): -10.0}
+    assert minima["NO2"]["minimum-b"] == {(0, "NO2->NO3"): -9.5}
+    _, block, wiring = runner._endpoint_minima_payload(results, units)
+    assert block["barriers"]["NO->NO2"]["m0->m0"]["barrier"] == 0.4
+    assert block["barriers"]["NO2->NO3"]["m1->m0"]["barrier"] == 0.8
+    assert block["states"]["NO2"]["m1"]["state_entry"] == "NO2@m1"
+    unwired = copy.deepcopy(results)
+    runner._wire_minima_results(results, units, wiring, energy_thresh=0.3)
+    assert results.node_energies["NO2@m1"].mean == pytest.approx(-9.5)
+    measured = [e for e in results.edges if e.get("barrier").n]
+    assert [(e["reactant"], e["product"]) for e in measured] == [
+        ("NO", "NO2"),
+        ("NO2@m1", "NO3"),
+    ]
+    cfg = runner.Config.from_dict(_yaml_dict(FANOUT))
+    summary, graph = runner._analysis_payloads(cfg, results)
+    assert "NO2@m1" in summary["nodes"]
+    assert any(n["id"] == "NO2@m1" for n in graph["nodes"])
+    assert "NO2@m1" in str(summary["traps"])
+    assert summary["score"]
+
+    # Exercise the production orchestration too: moving wiring after
+    # _analysis_payloads would leave this score/trap report pooled.
+    monkeypatch.setattr(runner, "run", lambda *a, **k: unwired)
+    monkeypatch.setattr(
+        runner,
+        "_capture_run_units",
+        lambda module: (
+            [
+                {
+                    "model_index": 0,
+                    "partial": {**units[0]["partial"], "seed": 0, "model": "emt"},
+                    "collect": {},
+                }
+            ],
+            lambda: None,
+        ),
+    )
+    artifact = runner.run_pathway(_yaml_dict(FANOUT))
+    for key in ("nodes", "edges", "score", "traps", "selectivity"):
+        assert _json_eq(artifact["results_json"][key], summary[key])
 
 
 def test_endpoint_agreement_records_carry_tol() -> None:

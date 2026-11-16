@@ -686,7 +686,15 @@ def trust_toon(
         head.append(
             toon.dump(
                 erows,
-                schema=["state", "seed", "e_eV", "Δ meV", "fingerprint", "verdict"],
+                schema=[
+                    "state",
+                    "seed",
+                    "e_eV",
+                    "Δ meV",
+                    "min",
+                    "fingerprint",
+                    "verdict",
+                ],
             )
         )
     if folded:

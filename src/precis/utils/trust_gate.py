@@ -98,6 +98,25 @@ _DEFAULT_ENDPOINT_TOL_EV = 0.05
 #: via pooling and no cross-seed pair exists, ``endpoint:union-disagree``
 #: when it disagrees. Harvest, ``view='trust'`` and the drylist share
 #: the one helper.
+#:
+#: Per-minimum judging (gr593139, Reto 2026-11-11): seeds whose relaxed
+#: endpoints differ in GEOMETRY — a different fingerprint — are SEPARATE
+#: minima, not a disagreement: each is its own basin entry (``m0`` =
+#: the lowest-energy minimum — energy is the tie-break only), a barrier
+#: rides the basin minimum, and agreement is judged only among seeds
+#: sharing one. :func:`endpoint_minima` clusters ``endpoint_identity``
+#: records per seed's lowest-energy landing; :func:`distinct_minimum`
+#: names a record whose seed provably sits in a non-basin minimum, and
+#: :func:`distinct_minimum_demotes` adds the agreement half — the seed's
+#: own minimum must also AGREE within ``tol_eV``, judged against that
+#: minimum's own reference (:func:`minimum_landing`). A non-basin minimum
+#: whose seeds span more than tol is a real disagreement, not a basin
+#: split: it keeps gating. ``replay_barrier_gate`` demotes only the
+#: agreeing distinct minima out of the blocked set,
+#: ``endpoint_union_blocker`` spreads energies only within a shared
+#: minimum, and the endpoint table reports "N minima found" where the
+#: old view reported "split". An unfingerprinted record can't prove a
+#: distinct minimum and fails closed exactly as before.
 
 
 def record_engine(rec: dict[str, Any]) -> str | None:
@@ -509,6 +528,168 @@ def sibling_seeds(
     return sibling_evidence(store, meta=meta, exclude_ref_id=exclude_ref_id)[0]
 
 
+def _landing_seed(key: Any) -> int:
+    return key[0] if isinstance(key, tuple) else key
+
+
+def _landing_key(rec: Mapping[str, Any]) -> Any:
+    seed = rec.get("seed")
+    return (seed, rec["step"]) if rec.get("step") else seed
+
+
+def endpoint_minima(
+    records: Iterable[dict[str, Any]],
+    scope: tuple[set[str] | None, set[str]],
+    *,
+    engine: str | None = None,
+    union: Iterable[int] | None = None,
+    model: Any = None,
+) -> dict[Any, dict[Any, dict[Any, float]]]:
+    """Cluster each route state's endpoint minima by geometry fingerprint
+    (gr593139 ruling): ``{state: {fingerprint: {(seed, step): e_eV}}}``.
+    Legacy records without a step retain their integer seed key.
+
+    Each (seed, step) retains its own endpoint landing; only duplicate
+    records for that same landing use the lowest energy. Fingerprints decide minima;
+    energy only picks the reference basin. ``union`` restricts to pooled
+    seed ints (the sibling-union replay); ``model`` restricts to one
+    model's records — the engine groups ``(model, state)``, so the
+    demotion in :func:`replay_barrier_gate` and the mint pass cluster
+    per model, while ``None`` pools every model for the union replay
+    and the display table. Unfingerprinted evidence shares one ``None``
+    bucket — no geometry difference is provable there.
+    """
+    allowed = None if union is None else {int(s) for s in union}
+    picks: dict[Any, dict[Any, tuple[Any, float]]] = {}
+    for r in records:
+        if r.get("check") != "endpoint_identity" or not _on_route(r, scope):
+            continue
+        if model is not None and r.get("model") != model:
+            continue
+        state = r.get("state")
+        if not state or is_stale(r, engine):
+            continue
+        seed = r.get("seed")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            continue
+        if allowed is not None and seed not in allowed:
+            continue
+        ev = r.get("evidence")
+        if not isinstance(ev, dict):
+            continue
+        e = ev.get("e_eV")
+        if not isinstance(e, int | float) or isinstance(e, bool):
+            continue
+        fp = ev.get("fingerprint")
+        landing = (seed, r["step"]) if r.get("step") else seed
+        cur = picks.setdefault(state, {}).get(landing)
+        if cur is None or float(e) < cur[1]:
+            picks[state][landing] = (fp, float(e))
+    out: dict[Any, dict[Any, dict[Any, float]]] = {}
+    for state, per_seed in picks.items():
+        for seed, (fp, e) in per_seed.items():
+            out.setdefault(state, {}).setdefault(fp, {})[seed] = e
+    return out
+
+
+def minimum_basin_fp(groups: dict[Any, dict[Any, float]]) -> Any:
+    """The fingerprint holding a state's lowest-energy minimum — the
+    reference basin; energy is the tie-break only (gr593139)."""
+    return min(groups, key=lambda fp: min(groups[fp].values()), default=None)
+
+
+def distinct_minimum(
+    rec: dict[str, Any], minima: dict[Any, dict[Any, dict[Any, float]]]
+) -> bool:
+    """Whether the record's ``(state, seed)`` provably lands in a
+    NON-basin minimum: the seed's own minimum's fingerprint differs from
+    the state's lowest basin's. Both must resolve to real fingerprints —
+    an unprovable geometry difference fails closed.
+
+    Geometry only. The DEMOTION half additionally requires the minimum's
+    own members to agree within tol — :func:`distinct_minimum_demotes`."""
+    groups = minima.get(rec.get("state"))
+    if not groups or len(groups) < 2:
+        return False
+    basin = minimum_basin_fp(groups)
+    landing = minimum_landing(rec, minima)
+    fp = landing[0] if landing is not None else None
+    return fp is not None and basin is not None and fp != basin
+
+
+def minimum_landing(
+    rec: dict[str, Any], minima: dict[Any, dict[Any, dict[Any, float]]]
+) -> tuple[Any, float] | None:
+    """``(fingerprint, within-minimum delta in eV)`` for the record's
+    ``(state, seed)`` — the seed's landing energy minus its OWN minimum's
+    lowest landing, the reference per-minimum agreement is judged against
+    (gr593139). ``None`` when no fingerprinted group holds the seed —
+    unfingerprinted members share one unprovable bucket and name no
+    minimum."""
+    groups = minima.get(rec.get("state"))
+    if not groups:
+        return None
+    candidates = [
+        (energy, fp, min(members.values()))
+        for fp, members in groups.items()
+        for key, energy in members.items()
+        if fp is not None
+        and (
+            key == _landing_key(rec)
+            if rec.get("step")
+            else _landing_seed(key) == rec.get("seed")
+        )
+    ]
+    if not candidates:
+        return None
+    energy, fp, baseline = min(candidates, key=lambda item: item[0])
+    return fp, energy - baseline
+
+
+def distinct_minimum_demotes(
+    rec: dict[str, Any],
+    minima: dict[Any, dict[Any, dict[Any, float]]],
+    tol_eV: float,
+) -> bool:
+    """Whether an ``endpoint_agreement`` fail demotes under gr593139:
+    the seed provably sits in a non-basin minimum (:func:`distinct_minimum`)
+    whose own members agree — the seed's within-minimum delta is at most
+    ``tol_eV``. A non-basin minimum whose seeds span more than tol is a
+    real within-minimum disagreement (seeds at −9.0 and −8.8 eV sharing
+    one fingerprint hide a 200 meV failure when a −10 eV basin exists):
+    it keeps gating. An unprovable landing fails closed."""
+    if not distinct_minimum(rec, minima):
+        return False
+    landing = minimum_landing(rec, minima)
+    return landing is not None and landing[1] <= tol_eV
+
+
+def minimum_ordinals(records: Iterable[dict[str, Any]]) -> dict[Any, str]:
+    """fingerprint → ``m<k>`` labels for ONE state's identity records:
+    each fingerprint's lowest seen energy orders the minima, so ``m0``
+    is the basin (energy is the tie-break only, gr593139)."""
+    e: dict[Any, float] = {}
+    for r in records:
+        ev = r.get("evidence")
+        if not isinstance(ev, dict):
+            continue
+        v = ev.get("e_eV")
+        if not isinstance(v, int | float) or isinstance(v, bool):
+            continue
+        fp = ev.get("fingerprint")
+        e[fp] = min(e.get(fp, float("inf")), float(v))
+    return {fp: f"m{i}" for i, fp in enumerate(sorted(e, key=lambda fp: e[fp]))}
+
+
+def _minima_note(minima: dict[Any, dict[Any, dict[Any, float]]]) -> str:
+    """``"; N minima found on <states>"`` for states where seeds landed
+    in more than one fingerprint — the ruling's reporting phrase."""
+    multi = {str(st): len(gs) for st, gs in minima.items() if len(gs) > 1}
+    if not multi:
+        return ""
+    return f"; {sum(multi.values())} minima found on {', '.join(sorted(multi))}"
+
+
 def endpoint_union_blocker(
     records: list[dict[str, Any]],
     sibling_identity: list[dict[str, Any]],
@@ -526,52 +707,48 @@ def endpoint_union_blocker(
 
     Reads the pathway's own trust ``records`` plus ``sibling_identity``
     (:func:`sibling_evidence`'s second half, or the drylist's equivalent
-    column), keeps ``endpoint_identity`` records on the route whose
-    ``seed`` is in ``union``, and spreads each state's ``e_eV`` across
-    every contributing seed — one state disagreeing beyond ``tol_eV``
-    fails. Returns ``(blocker, input-text)``:
+    column), clusters the on-route ``endpoint_identity`` records into
+    minima by fingerprint (:func:`endpoint_minima`, gr593139), and
+    spreads ``e_eV`` only among seeds sharing ONE minimum — a seed in a
+    distinct minimum is landscape information, not a disagreement.
+    Returns ``(blocker, input-text)``:
 
-    * ``endpoint:union-disagree`` — a route state's merged energies span
-      wider than ``tol_eV`` (names the worst state and its delta);
+    * ``endpoint:union-disagree`` — seeds sharing a minimum span wider
+      than ``tol_eV`` (names the worst state and its delta);
     * ``endpoint:union-not-run`` — the union reached ≥2 only via pooling
-      (``run`` shorter than 2) and some route state with identity
-      evidence has no cross-seed pair, so agreement is unprovable — the
+      (``run`` shorter than 2) and some route state has no minimum
+      holding a cross-seed pair, so agreement is unprovable — the
       vacuous-pass shape one level up;
-    * ``None`` — the merged evidence agrees (or the run stands on ≥2 own
-      seeds, where the engine's own agreement governs).
+    * ``None`` — every shared minimum agrees (or the run stands on ≥2
+      own seeds, where the engine's own agreement governs); multi-minima
+      states append "N minima found".
     """
-    by_state: dict[Any, dict[int, list[float]]] = {}
-    for r in [*records, *sibling_identity]:
-        if r.get("check") != "endpoint_identity" or not _on_route(r, scope):
-            continue
-        seed = r.get("seed")
-        if not isinstance(seed, int) or isinstance(seed, bool) or seed not in union:
-            continue
-        state = r.get("state")
-        if not state or is_stale(r, engine):
-            continue
-        ev = r.get("evidence")
-        e = ev.get("e_eV") if isinstance(ev, dict) else None
-        if not isinstance(e, int | float) or isinstance(e, bool):
-            continue
-        by_state.setdefault(state, {}).setdefault(seed, []).append(float(e))
+    minima = endpoint_minima(
+        [*records, *sibling_identity], scope, engine=engine, union=union
+    )
     worst: tuple[float, Any] | None = None
-    thin = sorted(str(s) for s, per in by_state.items() if len(per) < 2)
-    for state, per_seed in by_state.items():
-        if len(per_seed) < 2:
-            continue
-        es = [e for vals in per_seed.values() for e in vals]
-        delta = max(es) - min(es)
-        if delta > tol_eV and (worst is None or delta > worst[0]):
-            worst = (delta, state)
+    thin: list[str] = []
+    for state, groups in minima.items():
+        covered = False
+        for per_seed in groups.values():
+            if len({_landing_seed(k) for k in per_seed}) < 2:
+                continue
+            covered = True
+            es = list(per_seed.values())
+            delta = max(es) - min(es)
+            if delta > tol_eV and (worst is None or delta > worst[0]):
+                worst = (delta, state)
+        if not covered:
+            thin.append(str(state))
+    thin.sort()
     if worst is not None:
         delta, state = worst
         return (
             "endpoint:union-disagree",
             f"union replay: {state} endpoints {delta * 1000:g} meV apart "
-            f"across seeds (tol {tol_eV:g} eV)",
+            f"across seeds in one minimum (tol {tol_eV:g} eV){_minima_note(minima)}",
         )
-    if (run is None or len(run) < 2) and (thin or not by_state):
+    if (run is None or len(run) < 2) and (thin or not minima):
         missing = (
             f"no cross-seed pair on {', '.join(thin)}"
             if thin
@@ -579,13 +756,21 @@ def endpoint_union_blocker(
         )
         return (
             "endpoint:union-not-run",
-            f"union replay: {missing} — pooled-seed agreement unprovable",
+            f"union replay: {missing} — pooled-seed agreement "
+            f"unprovable{_minima_note(minima)}",
         )
-    n_states = sum(1 for per in by_state.values() if len(per) >= 2)
+    n_states = sum(
+        1
+        for groups in minima.values()
+        if any(
+            len({_landing_seed(k) for k in per_seed}) >= 2
+            for per_seed in groups.values()
+        )
+    )
     return (
         None,
         f"union replay: {n_states} route states agree across "
-        f"{len(union)} pooled seeds (tol {tol_eV:g} eV)",
+        f"{len(union)} pooled seeds (tol {tol_eV:g} eV){_minima_note(minima)}",
     )
 
 
@@ -610,6 +795,21 @@ def endpoint_tol_ev() -> float:
     return float(ENDPOINT_TOL_EV)
 
 
+def _endpoint_tol_ev(records: Iterable[dict[str, Any]]) -> float:
+    """The tolerance endpoint agreement was judged against: the first
+    stamped ``tol_eV`` on an ``endpoint_agreement`` record (it is what
+    the run was actually judged against), else the engine constant —
+    the value the per-minimum replays share with ``thresholds_from``."""
+    for r in records:
+        if r.get("check") != "endpoint_agreement":
+            continue
+        ev = r.get("evidence")
+        tol = ev.get("tol_eV") if isinstance(ev, dict) else None
+        if isinstance(tol, int | float) and not isinstance(tol, bool):
+            return float(tol)
+    return endpoint_tol_ev()
+
+
 def thresholds_from(
     records: list[dict[str, Any]],
     config: dict[str, Any] | None,
@@ -617,23 +817,21 @@ def thresholds_from(
     """Resolve display thresholds: the ``tol_eV`` stamped on an
     ``endpoint_agreement`` record wins (it is what the run was actually
     judged against); otherwise the engine constant, flagged assumed."""
-    stamped: float | None = None
-    for r in records:
-        if r.get("check") != "endpoint_agreement":
-            continue
-        ev = r.get("evidence")
-        tol = ev.get("tol_eV") if isinstance(ev, dict) else None
-        if isinstance(tol, int | float) and not isinstance(tol, bool):
-            stamped = float(tol)
-            break
+    stamped = any(
+        isinstance(ev := r.get("evidence"), dict)
+        and isinstance(ev.get("tol_eV"), int | float)
+        and not isinstance(ev.get("tol_eV"), bool)
+        for r in records
+        if r.get("check") == "endpoint_agreement"
+    )
     from precis.quest.compute import _TWIN_BARRIER_TOL_EV
     from precis.quest.frontier import _BARRIER_ABSURD_EV
 
     search = (config or {}).get("search") or {}
     thresh = search.get("energy_thresh")
     return Thresholds(
-        endpoint_tol_ev=stamped if stamped is not None else endpoint_tol_ev(),
-        endpoint_tol_stamped=stamped is not None,
+        endpoint_tol_ev=_endpoint_tol_ev(records),
+        endpoint_tol_stamped=stamped,
         absurd_ev=float(_BARRIER_ABSURD_EV),
         twin_tol_ev=float(_TWIN_BARRIER_TOL_EV),
         energy_thresh_ev=(
@@ -687,27 +885,54 @@ def replay_barrier_gate(
     scope: tuple[set[str] | None, set[str]],
     *,
     engine: str | None = None,
+    tol_eV: float | None = None,
 ) -> list[str]:
     """The barrier blocked-set, recomputed from stored records by
     ``autocatpath.pipeline._trust_summary``'s rule: ids of ``fail`` +
     ``severity: fatal`` records on the route, sorted. ``["no_route"]``
     when the route exists but is empty — the engine's own sentinel.
     Records stamped to a different engine version (:func:`is_stale`)
-    never count."""
+    never count.
+
+    gr593139: an ``endpoint_agreement`` fail whose seed provably landed
+    in a DISTINCT minimum that AGREES within itself
+    (:func:`distinct_minimum_demotes` — a different fingerprint than
+    the basin AND a within-minimum spread of at most ``tol_eV``,
+    clustered per model like the engine) is landscape information, not
+    a refusal — it leaves the blocked set. A spread beyond tolerance
+    still blocks, whether it sits in the basin or in a second minimum:
+    seeds sharing one non-basin fingerprint but disagreeing inside it
+    are a within-minimum failure, not a basin split."""
     steps, _nodes = scope
     if steps is not None and not steps:
         return ["no_route"]
-    return sorted(
-        {
-            str(r["id"])
-            for r in records
-            if r.get("verdict") == "fail"
+    tol = tol_eV if tol_eV is not None else _endpoint_tol_ev(records)
+    models = {
+        r.get("model")
+        for r in records
+        if r.get("check") == "endpoint_agreement"
+        and r.get("verdict") == "fail"
+        and r.get("severity") == "fatal"
+    }
+    minima_by_model = {
+        m: endpoint_minima(records, scope, engine=engine, model=m) for m in models
+    }
+    out = []
+    for r in records:
+        if not (
+            r.get("verdict") == "fail"
             and r.get("severity") == "fatal"
             and r.get("id") is not None
             and _on_route(r, scope)
             and not is_stale(r, engine)
-        }
-    )
+        ):
+            continue
+        if r.get("check") == "endpoint_agreement" and distinct_minimum_demotes(
+            r, minima_by_model.get(r.get("model"), {}), tol
+        ):
+            continue
+        out.append(str(r["id"]))
+    return sorted(set(out))
 
 
 #: Evidence keys a record diagnostic renders as MEASURED values, in
@@ -906,6 +1131,7 @@ def _endpoint_input(
     scope: tuple[set[str] | None, set[str]],
     results: dict[str, Any],
     blocked: set[str],
+    minima: dict[Any, dict[Any, dict[Any, float]]],
 ) -> str:
     steps, nodes = scope
     n_states = (
@@ -917,8 +1143,12 @@ def _endpoint_input(
     fails = [
         r for r in recs if r.get("verdict") == "fail" and str(r.get("id")) in blocked
     ]
-    states_split = {r.get("state") for r in fails}
     out = f"{n_states} route states × {n_seeds} seeds"
+    # gr593139: distinct minima are reported as minima, never "split";
+    # whatever still blocks is a same-minimum disagreement.
+    multi = {str(st): len(gs) for st, gs in minima.items() if len(gs) > 1}
+    if multi:
+        out += f"; {sum(multi.values())} minima found on {', '.join(sorted(multi))}"
     if fails:
         worst = max(
             fails,
@@ -926,8 +1156,8 @@ def _endpoint_input(
         )
         delta = (worst.get("evidence") or {}).get("delta_meV")
         out += (
-            f"; {len(states_split)} state{'s' if len(states_split) != 1 else ''} split; worst "
-            f"{worst.get('state')} s{worst.get('seed')} +{delta} meV"
+            f"; worst {worst.get('state')} s{worst.get('seed')} +{delta} meV "
+            "in one minimum"
         )
     return out
 
@@ -1019,7 +1249,13 @@ def gate_rows(
                 _not_run_reason(check, records, scope, results) if not stale else ""
             )
         elif check == "endpoint_agreement":
-            input_ = _endpoint_input(recs, scope, results, blocked)
+            input_ = _endpoint_input(
+                recs,
+                scope,
+                results,
+                blocked,
+                endpoint_minima(live, scope, engine=engine),
+            )
         else:
             input_ = _generic_input(check, recs, scope, blocked)
         if stale:
@@ -1177,7 +1413,16 @@ def endpoint_rows(
     one fingerprint fold into the returned count instead of a row.
     Records stamped to another engine (:func:`is_stale`) render
     ``stale, rerun on current``, and a state touched by staleness never
-    folds into the agree-count."""
+    folds into the agree-count.
+
+    gr593139: each distinct fingerprint is its own minimum entry —
+    the ``min`` column labels it (``m0`` = the lowest basin; energy is
+    the tie-break only) and a seed in a non-basin minimum that agrees
+    within itself renders ``distinct minimum`` rather than ``fail``
+    (its agreement record is demoted under the ruling — landscape
+    information, not a refusal). A non-basin minimum whose seeds span
+    more than tol is a within-minimum disagreement and keeps failing.
+    """
     identity = [
         r
         for r in records
@@ -1191,10 +1436,17 @@ def endpoint_rows(
             agree[(r.get("model"), r.get("state"), r.get("seed"))] = r
             agree.setdefault((None, r.get("state"), r.get("seed")), r)
 
+    tol = _endpoint_tol_ev(records)
+    minima = endpoint_minima(records, scope, engine=engine)
     failing_states = {
         r.get("state")
         for r in agree.values()
-        if r.get("verdict") == "fail" and not is_stale(r, engine)
+        if r.get("verdict") == "fail"
+        and not is_stale(r, engine)
+        and not (
+            (r.get("evidence") or {}).get("distinct_minimum")
+            or distinct_minimum_demotes(r, minima, tol)
+        )
     }
     stale_states = {
         r.get("state") for r in identity + list(agree.values()) if is_stale(r, engine)
@@ -1205,6 +1457,7 @@ def endpoint_rows(
     for r in identity:
         by_state.setdefault(r["state"], []).append(r)
     for state, recs in by_state.items():
+        ordinals = minimum_ordinals(recs)
         fps = {(r.get("evidence") or {}).get("fingerprint") for r in recs}
         if state not in failing_states and state not in stale_states and len(fps) <= 1:
             folded += 1
@@ -1216,18 +1469,31 @@ def endpoint_rows(
             ev = r.get("evidence") or {}
             aev = (a or {}).get("evidence") or {}
             stale = is_stale(r, engine) or (a is not None and is_stale(a, engine))
+            fp = ev.get("fingerprint")
+            verdict = (
+                "stale, rerun on current"
+                if stale
+                else (a or {}).get("verdict", "not compared")
+            )
+            if (
+                not stale
+                and a is not None
+                and a.get("verdict") in ("fail", "marginal")
+                and (
+                    aev.get("distinct_minimum")
+                    or distinct_minimum_demotes(a, minima, tol)
+                )
+            ):
+                verdict = "distinct minimum"
             rows.append(
                 {
                     "state": state,
                     "seed": r.get("seed"),
                     "e_eV": ev.get("e_eV"),
                     "Δ meV": aev.get("delta_meV", "—"),
-                    "fingerprint": ev.get("fingerprint", "?"),
-                    "verdict": (
-                        "stale, rerun on current"
-                        if stale
-                        else (a or {}).get("verdict", "not compared")
-                    ),
+                    "min": ordinals.get(fp, "—"),
+                    "fingerprint": fp or "?",
+                    "verdict": verdict,
                 }
             )
     rows.sort(
@@ -1281,7 +1547,14 @@ def second_basin(
     Returns ``(reproducible, detail, lower_basin_seeds)`` —
     ``lower_basin_seeds`` is the seed set that stayed in the minimum
     basin at every compared failing state (the evidence a lower-basin
-    credit cites); empty when nothing proves it."""
+    credit cites); empty when nothing proves it.
+
+    gr593139: a fail in a provably distinct minimum still COUNTS as a
+    failing state here — the demotion moves it out of the blocked set
+    (``replay_barrier_gate``), but this is the mechanism that judges
+    whether the higher basin REPRODUCED (≥2 seeds sharing one
+    fingerprint), which is what makes the lower basin creditable."""
+    minima = endpoint_minima(records, scope, engine=engine)
     failing = {
         r.get("state")
         for r in records
@@ -1293,30 +1566,14 @@ def second_basin(
     }
     if not failing:
         return False, "no on-route endpoint_agreement failures", set()
-    # state → fingerprint → {seed: e_eV}
-    basins: dict[Any, dict[Any, dict[int, float]]] = {}
-    for r in records:
-        if r.get("check") != "endpoint_identity" or not _on_route(r, scope):
-            continue
-        if r.get("state") not in failing or is_stale(r, engine):
-            continue
-        seed = r.get("seed")
-        ev = r.get("evidence") or {}
-        fp, e = ev.get("fingerprint"), ev.get("e_eV")
-        if (
-            not isinstance(seed, int)
-            or isinstance(seed, bool)
-            or not fp
-            or not isinstance(e, int | float)
-            or isinstance(e, bool)
-        ):
-            continue
-        basins.setdefault(r["state"], {}).setdefault(fp, {})[seed] = float(e)
+    minima = {
+        st: {fp: seeds for fp, seeds in gs.items() if fp} for st, gs in minima.items()
+    }
     reproducible: list[str] = []
     noisy: list[str] = []
     lower: set[int] | None = None
     for state in sorted(str(s) for s in failing):
-        b = basins.get(state) or {}
+        b = minima.get(state) or {}
         min_fp = min(b, key=lambda f: min(b[f].values()), default=None)
         min_seeds = set(b[min_fp]) if min_fp is not None else set()
         lower = min_seeds if lower is None else (lower & min_seeds)
