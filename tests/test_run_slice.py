@@ -1902,6 +1902,9 @@ def test_submit_reaps_a_stale_index_lock_before_the_reuse_checkout(
     assert not lock.exists()
     assert ["checkout", "-f", "slice/42"] in [a for a, _c in seams["git"]]
     assert seams["launch"]
+    reaped = ctx.meta_set["index_lock_reaped"]
+    assert reaped["forced"] is False and reaped["why"] == "stale"
+    assert any("index.lock reaped" in c for c in store.comments(42))
     assert any(
         "run_slice: reaped stale index.lock" in text
         for kind, text in ctx.chunks
@@ -10034,7 +10037,7 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
 
     key = "sk-commit-note-key"
     note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
-    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
@@ -13679,3 +13682,125 @@ def test_commit_for_session_keeps_edits_behind_a_live_lock(
 
     assert note is not None and note.startswith(run_slice.COMMIT_SKIPPED_LOCK)
     assert (tree / run_slice.COMMIT_SKIPPED_MARKER).exists()
+
+
+class _RecCtx(run_slice._NullCtx):
+    """A commit-time ctx recording what :func:`run_slice._record_reap` sets."""
+
+    def __init__(self) -> None:
+        self.meta: dict[str, Any] = {}
+        self.notes: list[str] = []
+        self.store = _Store()
+        self.store.add_todo(1, "t", body="b")
+
+    def set_meta(self, **meta: Any) -> None:
+        self.meta.update(meta)
+
+
+def _tree_with_finished_edits(tmp_path: Path, *, message: bool = True) -> Path:
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    for k, v in (("user.email", "a@b.c"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(tree), "config", k, v], check=True)
+    (tree / "f.txt").write_text("x\n", encoding="utf-8")
+    (tree / "scratch").mkdir()
+    if message:
+        (tree / run_slice.COMMIT_MSG_REL).write_text(
+            "fix(x): y (td1)\n", encoding="utf-8"
+        )
+    return tree
+
+
+def test_commit_time_reap_records_meta_and_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A commit-time reap counts toward the dispatcher's re-formed-lock
+    escalation: job meta and a todo comment, like every other reap."""
+    tree = _tree_with_finished_edits(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - 4000
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
+    ctx = _RecCtx()
+
+    note = run_slice._commit_for_session(tree, 1, ctx=ctx)
+
+    assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+    assert ctx.meta["index_lock_reaped"]["forced"] is False
+    assert any("index.lock reaped" in c for c in ctx.store.comments(1))
+
+
+def test_commit_time_never_kills_a_holder_over_the_hard_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D2: forcing is the reuse submit's; a poll's commit leaves a held
+    lock alone, stamps the edits and signals nothing."""
+    tree = _tree_with_finished_edits(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - run_slice.INDEX_LOCK_HARD_S - 600
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: True)
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
+    killed: list[Any] = []
+    monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
+
+    note = run_slice._commit_for_session(tree, 1, ctx=_RecCtx())
+
+    assert note is not None and note.startswith(run_slice.COMMIT_SKIPPED_LOCK)
+    assert lock.exists() and killed == []
+
+
+def test_salvage_commits_with_the_stored_fallback_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Devin's worker-generated fallback survives the stamp: no
+    ``scratch/commit-msg.txt`` is needed to salvage."""
+    tree = _tree_with_finished_edits(tmp_path, message=False)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
+    first = run_slice._commit_for_session(
+        tree, 1, fallback_message="fix(slice): complete (gr9)\n"
+    )
+    assert first is not None and first.startswith(run_slice.COMMIT_SKIPPED_LOCK)
+    lock.unlink()
+
+    note = run_slice._salvage_skipped_commit(tree, 1)
+
+    assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+    assert not (tree / run_slice.COMMIT_SKIPPED_MARKER).exists()
+    log = subprocess.run(
+        ["git", "-C", str(tree), "log", "-1", "--format=%s"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert log == "fix(slice): complete (gr9)"
+
+
+def test_ensure_worktree_withholds_the_reset_when_salvage_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stamped tree whose edits still cannot be committed is not reset:
+    the finished work stays, the submit waits attempt-free."""
+    root = tmp_path / "root"
+    tree = root / ".claude" / "worktrees" / "slice-td7"
+    tree.mkdir(parents=True)
+    monkeypatch.setattr(run_slice, "_adopt_legacy_branch", lambda r, t: None)
+    monkeypatch.setattr(
+        run_slice, "_salvage_skipped_commit", lambda t, i: "worker commit failed (x)"
+    )
+    reset: list[Any] = []
+    monkeypatch.setattr(
+        run_slice, "_reset_reused_worktree", lambda t, b: reset.append(t)
+    )
+
+    with pytest.raises(run_slice._IndexLockWait) as exc:
+        run_slice._ensure_worktree(root, 7)
+
+    assert exc.value.attempt_free == "index-lock" and reset == []

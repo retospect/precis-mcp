@@ -3097,7 +3097,8 @@ def _lock_holders(lock: Path) -> list[tuple[str, str]] | None:
         return None
     try:
         cp = subprocess.run(
-            [lsof, "-F", "pc", "--", str(lock)],
+            ["lsof", "-F", "pc", "--", str(lock)],
+            executable=lsof,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3140,7 +3141,8 @@ def _proc_cwd(pid: str) -> str | None:
         return None
     try:
         cp = subprocess.run(
-            [lsof, "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            executable=lsof,
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -33,9 +33,14 @@ missed reap is the status quo while a wrong reap races a live writer:
   2. mtime older than STALE_SECONDS — a 0-byte lock a live git still wants
      is filled within a second of creation, so old-and-empty can only be a
      killed writer's;
-  3. no live process holds it open — lsof on macOS and Linux; lsof missing
-     means nothing can be proven, so candidates are REPORTED as kept,
-     never reaped;
+  3. no live *git* process holds it open — lsof on macOS and Linux (found
+     on PATH, else /usr/sbin or /usr/bin: a worker's PATH may lack the
+     former); a non-git holder (the Colima VM's file share keeps handles
+     of locks no git owns) never keeps a lock. lsof missing means nothing
+     can be proven, so candidates are REPORTED as kept, never reaped.
+     This sweep never kills anything; the hard-cap kill of a git that
+     holds a slice tree's lock past 30 min is run_slice's, at reuse
+     (gr684320);
   4. no git process has its cwd inside that worktree — `ps` for this user's
      git/git-* processes, cwd read via /proc/<pid>/cwd with an lsof
      fallback (the same read scripts/lib/session-lock.sh's
