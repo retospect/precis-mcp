@@ -242,7 +242,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    its pre-land review, or landing — is held until that one is on main
    (td603849, widened 2026-11-15 — the ``_started_slices``/
    ``_brief_file_sets`` check; a started build's files are its stamped
-   ``meta.branch_files`` plus its brief's).
+   ``meta.branch_files`` plus its brief's). A build whose ``land_slice``
+   died (newest job failed/cancelled/timed-out, none live) or that
+   carries or sits under a ``rescue:``/``child-failed:`` tag holds no
+   lock (gr701628); ``live_nodes`` counts a held candidate as not live.
    A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
@@ -388,7 +391,8 @@ inside another root's subtree is folded into it. Closed roots are skipped.
 in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
-dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N``; the
+dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N held=N``
+(``held``: candidates the file-overlap hold skipped this pass); the
 actions follow it. A ``release_cut`` node's dispatch refusal (a cut
 held on the tip's reviews) is also one ``job_result`` line and a log
 line, once per change of its text (``meta.cut_refusal_logged`` on the
@@ -1487,6 +1491,8 @@ class PassResult:
     reopened: int = 0
     #: Reviewer verdicts acted on (LAND / FIX / REVERT).
     reviews: int = 0
+    #: Candidates skipped this pass by the file-overlap hold (gr701628).
+    held: int = 0
     #: Why the pass did nothing (another tick held the lock); ``None`` = ran.
     skipped: str | None = None
     notes: list[str] = field(default_factory=list)
@@ -1509,6 +1515,7 @@ class PassResult:
             "dry_run": self.dry_run,
             "reopened": self.reopened,
             "reviews": self.reviews,
+            "held": self.held,
         }
         if self.skipped:
             out["skipped"] = self.skipped
@@ -1523,7 +1530,7 @@ class PassResult:
             f"loops={self.loops_minted}/{self.loops_closed} "
             f"phases={self.phases_closed} dispatched={self.dispatched} "
             f"released={self.released} asks={self.asks} dry_run={self.dry_run} "
-            f"reopened={self.reopened} reviews={self.reviews}"
+            f"reopened={self.reopened} reviews={self.reviews} held={self.held}"
         )
 
     def render(self) -> str:
@@ -4376,7 +4383,9 @@ def _node_live(plan: _Plan, n: _Node) -> bool:
     ``claimed-by:`` tag, or the tick would dispatch it — the
     :func:`_step_dispatch` predicate (open task shape, no hold tag, not
     blocked or paused). A parked node (``ask-user``, ``waiting-for:*``,
-    ``child-failed:*``, paused, blocked, rescue) is not live."""
+    ``child-failed:*``, paused, blocked, rescue) is not live. The
+    file-overlap hold is not read here (it needs the store);
+    :func:`live_nodes` discounts it."""
     if plan.live_job(n) or _claims(n):
         return True
     if n.status != "open" or not _dispatchable(plan, n):
@@ -4384,15 +4393,42 @@ def _node_live(plan: _Plan, n: _Node) -> bool:
     return not (_held_by_registry(plan, n) or plan.blocked(n) or plan.paused(n))
 
 
-def live_nodes(store: Any, roots: list[int]) -> set[int]:
+def live_and_held_nodes(store: Any, roots: list[int]) -> tuple[set[int], set[int]]:
+    """``(live, held)`` under the plan ``roots``: ``live`` the todos that
+    are live (:func:`_node_live`) and not waiting in the file-overlap
+    hold, ``held`` the otherwise-live candidates :func:`_step_dispatch`
+    would skip for a file overlap with a started build
+    (:func:`_overlap_holds`, the same check; ``_started_slices`` computed
+    once per call). The two are disjoint: a held node is waiting on
+    another build's land, not running, and not dead (gr701628). A node
+    with a live job or a claim is running, never held."""
+    if not roots:
+        return set(), set()
+    plan = _load(store, list(roots))
+    live = {n.id for n in plan.todos() if _node_live(plan, n)}
+    idle = [
+        plan.nodes[i]
+        for i in sorted(live)
+        if not plan.live_job(plan.nodes[i]) and not _claims(plan.nodes[i])
+    ]
+    if not idle:
+        return live, set()
+    held = set(_overlap_holds(plan, store, _started_slices(store), idle))
+    return live - held, held
+
+
+def live_nodes(store: Any, roots: list[int], *, count_held: bool = False) -> set[int]:
     """Ids of the todos under the plan ``roots`` that are live
     (:func:`_node_live`) — the one liveness read ``gripe_dispatch``
     shares with the dispatch tick, so a chain it counts as holding a
-    build slot is a chain the tick is running or about to run."""
-    if not roots:
-        return set()
-    plan = _load(store, list(roots))
-    return {n.id for n in plan.todos() if _node_live(plan, n)}
+    build slot is a chain the tick is running or about to run. A
+    candidate waiting in the file-overlap hold is not live (gr701628): it
+    holds no slot until the blocker lands. ``count_held=True`` keeps the
+    held candidates in the set — the stall sweep's read, where a node
+    waiting on another build's land is waiting, not dead
+    (:func:`live_and_held_nodes` returns the two sets apart)."""
+    live, held = live_and_held_nodes(store, roots)
+    return live | held if count_held else live
 
 
 def _plan_root_of(store: Any, ref_id: int) -> int | None:
@@ -6171,13 +6207,23 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     would not have the first. Generators (triage, brief, reviewer)
     commit nothing and never count. One query, not the loaded plan: a
     held build can sit outside the loaded subtrees. A terminal *ruling*
-    on the todo (``_RULING_STATUSES`` — ``won't-do``, ``auto-timeout``)
+    on the todo (``_RULING_STATUSES`` — ``won't-do``, ``auto-timeout``;
+    ``wontfix``/``cancelled`` are not todo statuses)
     ends the hold whatever a stale ``pending_land`` or a still-live job
     says: a dropped plan closing build and reviewer before a verdict
     never clears the stamp (only ``_record_land`` /
     ``_review_back_to_builder`` do), and the work is never landing, so
     it cannot hold overlapping builds forever. ``done`` still counts —
-    its held land may be in flight."""
+    its held land may be in flight.
+
+    A bare ``pending_land`` stamp (no live job) holds only while the
+    land can still come (gr701628): it is dropped when the build's
+    newest ``land_slice`` job died (``failed``/``cancelled``/
+    ``timed-out``) — nothing re-mints it and only ``_record_land`` clears
+    the stamp, so the dead land held the lock forever — or when the build
+    or an ancestor carries a ``rescue:`` or ``child-failed:`` tag (the
+    rescue pass owns it now). A build still in its pre-land review (no
+    land job yet) and one with a live job count as before."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -6192,14 +6238,34 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                           WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
                             AND t.value = ANY(%s))
                  GROUP BY j.parent_id
+            ),
+            land_dead AS (
+                SELECT DISTINCT ON (j.parent_id) j.parent_id,
+                       EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%s)) AS dead
+                  FROM refs j
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
+                   AND j.meta->>'job_type' = 'land_slice'
+                   AND j.parent_id IN (
+                         SELECT p.ref_id FROM refs p
+                          WHERE p.kind = 'todo' AND p.retired_at IS NULL
+                            AND jsonb_typeof(p.meta->%s) = 'object')
+                 ORDER BY j.parent_id, j.ref_id DESC
             )
             SELECT r.ref_id, COALESCE(live.landing, FALSE),
-                   jsonb_typeof(r.meta->%s) = 'object', r.meta->%s
-              FROM refs r LEFT JOIN live ON live.parent_id = r.ref_id
+                   (jsonb_typeof(r.meta->%s) = 'object'
+                    AND NOT COALESCE(land_dead.dead, FALSE)),
+                   r.meta->%s
+              FROM refs r
+              LEFT JOIN live ON live.parent_id = r.ref_id
+              LEFT JOIN land_dead ON land_dead.parent_id = r.ref_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND NOT COALESCE(r.meta ? 'generate', FALSE)
                AND (live.parent_id IS NOT NULL
-                    OR jsonb_typeof(r.meta->%s) = 'object')
+                    OR (jsonb_typeof(r.meta->%s) = 'object'
+                        AND NOT COALESCE(land_dead.dead, FALSE)))
                AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
@@ -6208,6 +6274,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             (
                 [DEFAULT_OP, "land_slice"],
                 sorted(_JOB_TERMINAL),
+                sorted(_JOB_TERMINAL - {"succeeded"}),
+                _templates.PENDING_LAND_KEY,
                 _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
                 _templates.PENDING_LAND_KEY,
@@ -6221,6 +6289,14 @@ def _started_slices(store: Any) -> dict[int, _Started]:
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
         out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
+    if not out:
+        return out
+    # A bare pending_land stamp under a rescue / child-failed tag (own or
+    # an ancestor's) holds no lock (gr701628).
+    for rid in _rescued_ids(
+        store, [i for i, s in out.items() if s.state == "in pre-land review"]
+    ):
+        del out[rid]
     if not out:
         return out
     # The blocker side of the repo check: ``_node_repos``' reach (own
@@ -6262,6 +6338,39 @@ def _started_slices(store: Any) -> dict[int, _Started]:
         )
         for rid, s in out.items()
     }
+
+
+def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
+    """The todos in ``ids`` that carry a ``rescue:`` or ``child-failed:``
+    open tag themselves or on an ancestor — in the store, because a held
+    build can sit outside the loaded plan (:func:`_held_by_registry` is
+    the in-plan read of the same tags)."""
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE up(origin, anc, depth) AS (
+                SELECT ref_id, ref_id, 0
+                  FROM refs WHERE ref_id = ANY(%s)
+                UNION ALL
+                SELECT u.origin, r.parent_id, u.depth + 1
+                  FROM up u JOIN refs r ON r.ref_id = u.anc
+                 WHERE u.anc IS NOT NULL AND u.depth < 25
+            )
+            SELECT DISTINCT u.origin
+              FROM up u
+              JOIN refs r ON r.ref_id = u.anc
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND (starts_with(t.value, 'rescue:')
+                    OR starts_with(t.value, 'child-failed:'))
+            """,
+            (sorted(ids),),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
@@ -6445,6 +6554,53 @@ def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     )
 
 
+def _overlap_holds(
+    plan: _Plan,
+    store: Any,
+    started: dict[int, _Started],
+    candidates: list[_Node],
+) -> dict[int, tuple[int, frozenset[str]]]:
+    """``{candidate id: (blocking started id, shared file keys)}`` — the
+    td603849 file-overlap hold, the one read :func:`_step_dispatch` skips
+    on and :func:`live_nodes` discounts by (gr701628). Only a default-op,
+    non-generator build is held; ``started`` is :func:`_started_slices`;
+    a started build blocks a candidate in the same repo whose brief files
+    intersect the started build's (its stamped ``branch_files`` plus its
+    own brief's). Only started work holds, never another candidate, so
+    two candidates never hold each other. One ``_brief_file_sets`` query
+    for the lot; empty without a started build or a build candidate."""
+    builds = [
+        n
+        for n in candidates
+        if _resolve_op(n)[0] == DEFAULT_OP and not _is_generator(n)
+    ]
+    if not started or not builds:
+        return {}
+    overlap_files = _brief_file_sets(store, list(started) + [n.id for n in builds])
+    held: dict[int, tuple[int, frozenset[str]]] = {}
+    held_sets = {
+        i: (overlap_files.get(i) or frozenset())
+        | _dscore.brief_files("\n".join(s.branch_files))
+        for i, s in started.items()
+    }
+    for n in builds:
+        mine = overlap_files.get(n.id) or frozenset()
+        if not mine:
+            continue
+        repo = _node_repo(plan, n)
+        for hid in sorted(held_sets):
+            # started[hid].repo, not _node_repo on plan.nodes: a held
+            # build can sit outside the loaded subtrees, and skipping
+            # the check then held a same-path build in another repo.
+            if started[hid].repo != repo:
+                continue
+            shared = mine & held_sets[hid]
+            if hid != n.id and shared:
+                held[n.id] = (hid, shared)
+                break
+    return held
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -6471,39 +6627,10 @@ def _step_dispatch(
     # lifts on the next tick. A started build's files are its branch's
     # real diff when it has exited clean once, plus its brief's guess.
     # Lands made from a human worktree are invisible here: those still
-    # meet the rebase brief at land time.
-    builds = [
-        n
-        for n in candidates
-        if _resolve_op(n)[0] == DEFAULT_OP and not _is_generator(n)
-    ]
-    overlap_files = (
-        _brief_file_sets(w.store, list(started) + [n.id for n in builds])
-        if started and builds
-        else {}
-    )
-    held: dict[int, tuple[int, frozenset[str]]] = {}
-    if overlap_files:
-        held_sets = {
-            i: (overlap_files.get(i) or frozenset())
-            | _dscore.brief_files("\n".join(s.branch_files))
-            for i, s in started.items()
-        }
-        for n in builds:
-            mine = overlap_files.get(n.id) or frozenset()
-            if not mine:
-                continue
-            repo = _node_repo(plan, n)
-            for hid in sorted(held_sets):
-                # started[hid].repo, not _node_repo on plan.nodes: a held
-                # build can sit outside the loaded subtrees, and skipping
-                # the check then held a same-path build in another repo.
-                if started[hid].repo != repo:
-                    continue
-                shared = mine & held_sets[hid]
-                if hid != n.id and shared:
-                    held[n.id] = (hid, shared)
-                    break
+    # meet the rebase brief at land time. A started build whose land died
+    # or that sits in rescue holds nothing (gr701628, ``_started_slices``);
+    # the skip is counted in ``res.held`` and shown in the summary line.
+    held = _overlap_holds(plan, w.store, started, candidates)
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text. The
     # filesystem variant failing open is fine here (the run/land gates
@@ -6531,6 +6658,7 @@ def _step_dispatch(
                 res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
                 continue
         if n.id in held:
+            res.held += 1
             hid, shared = held[n.id]
             # Full paths read best; the basename/two-segment keys are
             # the same files again.
@@ -8534,6 +8662,7 @@ __all__ = [
     "SERVICE",
     "SPEC",
     "PassResult",
+    "live_and_held_nodes",
     "live_nodes",
     "load",
     "parse_verdict",

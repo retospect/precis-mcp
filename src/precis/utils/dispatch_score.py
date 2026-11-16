@@ -207,11 +207,14 @@ def score_sql() -> str:
 
 #: A repo-path token a brief names — ``src/precis/workers/gripe_triage.py``,
 #: ``workers/gripe_triage.py::prio_for``, ``tests/test_foo.py``, a bare
-#: ``land_slice.py``. Extensions cover the buildable surfaces.
+#: ``land_slice.py``. Extensions cover the buildable surfaces. The
+#: trailing ``\b`` keeps an extension from matching the head of a longer
+#: word (``github.com`` is not ``github.c``; gr701628) and lets the
+#: alternation backtrack to the longer spelling (``.pyi`` over ``.py``).
 _FILE_RE = re.compile(
     r"[A-Za-z0-9_./-]*[A-Za-z0-9_-]+"
     r"\.(?:py|pyi|sql|sh|bash|yml|yaml|toml|json|j2|ts|tsx|js|jsx|css|html|"
-    r"md|rs|go|mjs|c|h|cc|cpp|tex)"
+    r"md|rs|go|mjs|c|h|cc|cpp|tex)\b"
 )
 _ANCHOR_RE = re.compile(r"::.*$")
 _LEADING_ROOTS = ("./", "src/precis/", "src/")

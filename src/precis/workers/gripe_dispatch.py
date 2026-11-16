@@ -25,9 +25,11 @@ Each fire:
   tag, or doable by ``plan_dispatch``'s own predicate
   (``plan_dispatch.live_nodes``: open, no ``ask-user``, ``waiting-for:*``,
   ``child-failed:*``, ``halt``, ``rescue:`` or ``hold:no-dispatch`` tag on
-  it or an ancestor, not blocked, not paused). A parked build — a rescue
-  ask answered and never re-armed, a spent ladder, ``STATUS:paused``, a
-  child-failed bubble — holds none, so idle build hosts get work. Capacity
+  it or an ancestor, not blocked, not paused, and not waiting in
+  ``plan_dispatch``'s file-overlap hold on a started build). A parked
+  build — a rescue ask answered and never re-armed, a spent ladder,
+  ``STATUS:paused``, a child-failed bubble, a build held behind another
+  build's files (gr701628) — holds none, so idle build hosts get work. Capacity
   = the summed ``cap`` of the enabled lanes that fit the ``code`` task
   class (``plans/lanes.py``). Slots = capacity minus live chains — one
   tick may fill every free build slot. Parked chains are bounded by
@@ -36,7 +38,8 @@ Each fire:
 * **Stall sweep** (:func:`sweep_stalled`, before minting). A parked chain
   with no open ask in its plan is closed once the whole plan has
   stalled: no node under the root is live (a build blocked-by a running
-  review is waiting, not stalled) and nothing has moved on any plan node
+  review, or held behind another build's files, is waiting, not
+  stalled) and nothing has moved on any plan node
   (``updated_at``, tag stamps, jobs) for setting :data:`STALL_HOURS_KEY`
   hours (default 6). The ROOT goes ``STATUS:won't-do`` (``plan_dispatch``'s dead-roots step closes
   the open children, gr612091), with a comment on the root and on the
@@ -311,12 +314,14 @@ class Chain:
     #: Non-terminal :data:`_BUILD_OPS` nodes of the chain (task class code).
     build_ids: tuple[int, ...]
     #: Some build node is live (:func:`precis.workers.job_types.
-    #: plan_dispatch.live_nodes`) and so holds a build slot.
+    #: plan_dispatch.live_nodes`: not parked, not file-overlap held) and
+    #: so holds a build slot.
     live: bool
     #: Every todo of the plan (tagged ``plan:<root>``, root included).
     plan_ids: tuple[int, ...] = ()
-    #: Some node anywhere in the plan is live (:func:`plan_dispatch.
-    #: live_nodes`): the chain is moving, whatever its build is doing.
+    #: Some node anywhere in the plan is live or waiting in the
+    #: file-overlap hold (:func:`plan_dispatch.live_and_held_nodes`): the
+    #: chain is moving, whatever its build is doing.
     plan_live: bool = True
 
 
@@ -406,16 +411,16 @@ def _unlanded_chains(
 def chains(store: Store) -> list[Chain]:
     """Every unlanded chain, each marked live or parked. Liveness is
     ``plan_dispatch``'s own predicate (a live job, a ``claimed-by:`` tag,
-    or a doable node); a load failure reads every chain live — the
+    or a doable node the file-overlap hold is not skipping); a load failure reads every chain live — the
     pre-gr687946 count — so a blip never over-mints."""
     rows = _unlanded_chains(store)
     if not rows:
         return []
-    from precis.workers.job_types.plan_dispatch import live_nodes
+    from precis.workers.job_types.plan_dispatch import live_and_held_nodes
 
     roots = [r[0] for r in rows]
     try:
-        live = live_nodes(store, roots)
+        live, held = live_and_held_nodes(store, roots)
         plans = _plan_nodes(store, roots)
     except Exception:
         log.warning(
@@ -423,6 +428,7 @@ def chains(store: Store) -> list[Chain]:
             exc_info=True,
         )
         live = {b for r in rows for b in r[2]}
+        held = set()
         plans = {}
     return [
         Chain(
@@ -432,7 +438,9 @@ def chains(store: Store) -> list[Chain]:
             bool(live & set(builds)),
             plans.get(root, ()),
             # No plan read means no evidence of a stall: read it moving.
-            root not in plans or bool(live & set(plans[root])),
+            # An overlap-held node is waiting on another build's land,
+            # not stalled: it keeps the plan moving though it holds no slot.
+            root not in plans or bool((live | held) & set(plans[root])),
         )
         for root, gids, builds in rows
     ]
@@ -442,7 +450,7 @@ def open_chain_count(store: Store) -> int:
     """Chains holding a build slot: unlanded chains whose build is live.
 
     A parked build (``ask-user``, ``waiting-for:*``, ``child-failed:*``,
-    paused, blocked, claim-less and job-less) holds no slot — it is
+    paused, blocked, file-overlap held, claim-less and job-less) holds no slot — it is
     bounded by ``factory.gripe_dispatch.max_parked`` and swept by
     :func:`sweep_stalled` instead (gr687946)."""
     return sum(1 for c in chains(store) if c.live)
@@ -560,8 +568,9 @@ def sweep_stalled(
 ) -> list[dict[str, Any]]:
     """Close chains stalled with no human waiting (gr687946).
 
-    A parked chain — build not live, no node of its plan live (a build
-    blocked-by a running review is waiting, not stalled), no open ask in
+    A parked chain — build not live, no node of its plan live or held in
+    the file-overlap hold (a build blocked-by a running review, or
+    waiting on another build's land, is waiting, not stalled), no open ask in
     the plan, and nothing moved on ANY plan node (``updated_at``, tag
     stamps, jobs) for :func:`stall_hours` — has its ROOT set
     ``STATUS:won't-do``; ``plan_dispatch``'s dead-roots step closes the

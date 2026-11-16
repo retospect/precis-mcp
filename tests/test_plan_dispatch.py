@@ -4732,7 +4732,7 @@ def test_done_generator_with_open_child_is_reopened(store: Store) -> None:
     res = pd.run_pass(store, now=datetime.now(UTC))
     assert res.reopened == 1
     assert res.counts()["reopened"] == 1
-    assert res.summary().endswith("dry_run=False reopened=1 reviews=0")
+    assert res.summary().endswith("dry_run=False reopened=1 reviews=0 held=0")
     assert _status(store, gen) == "open"
     # Its dependant stays blocked; the child, not the generator, is dispatched.
     assert _jobs_under(store, after) == []
@@ -6773,7 +6773,7 @@ def test_review_land_closes_the_reviewer(store: Store) -> None:
     review = mint.ids["review"]
     res = pd.run_pass(store)
     assert res.reviews == 1
-    assert res.summary().endswith("reviews=1")
+    assert res.summary().endswith("reviews=1 held=0")
     assert _status(store, review) == "done"
     assert not any(v.startswith("claimed-by:") for v in _open_tags(store, review))
     assert _meta(store, review)["review"]["verdict"] == "LAND"
@@ -9298,6 +9298,170 @@ def test_file_overlap_hold_skips_generators(store: Store) -> None:
         f"td{waiting.ids['task']}: file-overlap hold" in n for n in res.notes
     )
     assert pd._started_slices(store) == {}
+
+
+def _pending_build(store: Store, files: list[str], parent: int | None = None) -> int:
+    """A finished build held for its pre-land review (``pending_land``
+    stamped, no job yet), outside every loaded plan."""
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Pending-land build",
+        meta={"op": "run_slice", "branch_files": files},
+        parent_id=parent,
+    )
+    store.stamp_ref_meta(
+        ref.id, {"pending_land": {"todo_id": ref.id, "branch": f"slice/{ref.id}"}}
+    )
+    return int(ref.id)
+
+
+@pytest.mark.parametrize("dead", ["failed", "cancelled", "timed-out"])
+def test_dead_land_releases_the_file_overlap_hold(store: Store, dead: str) -> None:
+    """gr701628: a pending_land build whose newest ``land_slice`` died and
+    that has no live land job holds no overlap lock — only ``_record_land``
+    clears the stamp, and nothing re-mints the land, so it held forever."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    assert pd._started_slices(store)[build].state == "in pre-land review"
+    _slice_job(store, build, "land_slice", dead)
+    assert build not in pd._started_slices(store)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+    # A land re-minted behind the dead one is live work again.
+    _slice_job(store, build, "land_slice", "running")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_started_slices_keeps_a_running_land_and_a_pre_land_review(
+    store: Store,
+) -> None:
+    """gr701628: the dead-land release is narrow — a queued or running
+    land job, a pending_land build with no land job yet (its review is
+    still open) and a newest land that succeeded all still hold."""
+    landing = _pending_build(store, ["src/precis/a.py"])
+    _slice_job(store, landing, "land_slice", "failed")
+    _slice_job(store, landing, "land_slice", "running")
+    queued = _pending_build(store, ["src/precis/b.py"])
+    _slice_job(store, queued, "land_slice", "queued")
+    review = _pending_build(store, ["src/precis/c.py"])
+    landed = _pending_build(store, ["src/precis/d.py"])
+    _slice_job(store, landed, "land_slice", "succeeded")
+    started = pd._started_slices(store)
+    assert {i: started[i].state for i in (landing, queued, review, landed)} == {
+        landing: "landing",
+        queued: "landing",
+        review: "in pre-land review",
+        landed: "in pre-land review",
+    }
+
+
+@pytest.mark.parametrize("tag", ["rescue:land", "child-failed:run_slice"])
+@pytest.mark.parametrize("where", ["self", "ancestor"])
+def test_rescue_or_child_failed_pending_build_holds_no_overlap_lock(
+    store: Store, tag: str, where: str
+) -> None:
+    """gr701628: a pending_land build carrying — or sitting under — a
+    ``rescue:`` or ``child-failed:`` tag belongs to the rescue pass and
+    holds nothing; an untagged sibling in the same state still does."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="phase", meta={}, parent_id=None
+    )
+    sick = _pending_build(store, ["src/precis/a.py"], parent=phase.id)
+    store.add_tag(sick if where == "self" else phase.id, Tag.open(tag), set_by="system")
+    healthy = _pending_build(store, ["src/precis/b.py"])
+    started = pd._started_slices(store)
+    assert sick not in started
+    assert started[healthy].state == "in pre-land review"
+
+
+def test_rescue_does_not_release_a_live_land(store: Store) -> None:
+    """The tag release is for the bare stamp only: a build with a running
+    land job still holds, rescue tag or not."""
+    build = _pending_build(store, ["src/precis/a.py"])
+    _slice_job(store, build, "land_slice", "running")
+    store.add_tag(build, Tag.open("rescue:land"), set_by="system")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_brief_files_needs_a_word_boundary_after_the_extension() -> None:
+    """gr701628: ``github.com`` is a host, not ``github.c``; real file
+    names — ``check.yml``, ``src/x.py``, ``a/b.pyi`` — still match."""
+    from precis.utils import dispatch_score as ds
+
+    assert ds.brief_files("see https://github.com/x/y and docs.mdx") == frozenset()
+    keys = ds.brief_files("Edit check.yml and src/x.py, then a/b.pyi.")
+    assert {"check.yml", "x.py", "b.pyi", "a/b.pyi"} <= keys
+    assert "github.c" not in ds.brief_files("github.com check.yml")
+    assert ds.brief_files("run src/x.py::main") == frozenset({"x.py"})
+
+
+def test_live_nodes_discounts_an_overlap_held_candidate(store: Store) -> None:
+    """gr701628: ``live_nodes`` (gripe_dispatch's slot count) agrees with
+    the dispatch tick — a candidate the file-overlap hold skips is not live;
+    an unheld one is, and the hold lifts with the blocker."""
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    held = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    free = _file_plan(store, "Fix tests/test_something_else.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 1
+    live = pd.live_nodes(store, [held.root_id, free.root_id])
+    assert held.ids["task"] not in live
+    assert free.ids["task"] in live
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE kind = 'job'")
+    assert held.ids["task"] in pd.live_nodes(store, [held.root_id])
+
+
+def test_summary_counts_the_overlap_held_candidates(store: Store) -> None:
+    """gr701628: the summary line shows how many candidates the file-overlap
+    hold skipped this pass, so the hold is visible in the dispatch log."""
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    _file_plan(store, "Fix src/precis/workers/run_slice.py as well")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 2
+    assert res.summary().endswith("held=2")
+    assert res.counts()["held"] == 2
+
+
+def test_overlap_held_chain_holds_no_slot_but_is_never_swept_as_stalled(
+    store: Store,
+) -> None:
+    """gr701628: a chain whose only open build waits in the file-overlap
+    hold holds no gripe_dispatch slot (``Chain.live`` false) yet reads as
+    moving (``plan_live``): it waits on another build's land, so
+    ``sweep_stalled`` leaves it alone however long the plan sat untouched.
+    Once the blocker is gone the same idle chain is stalled and swept."""
+    from precis.workers import gripe_dispatch as gd
+
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    held = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    gid = int(insert_gripe(store, "the held fix", status="fixing").id)
+    store.add_link(src_ref_id=held.root_id, dst_ref_id=gid, relation="related-to")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET updated_at = now() - interval '48 hours'")
+        conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
+
+    (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert held.ids["task"] in chain.build_ids
+    assert (chain.live, chain.plan_live) == (False, True)
+    assert gd._idle_hours(store, chain.plan_ids) >= 2 * gd.stall_hours(store)
+    assert gd.sweep_stalled(store, [chain]) == []
+    assert _status(store, held.root_id) != "won't-do"
+
+    # Control: parked for another reason (no overlap hold), the same idle
+    # plan is stalled and swept.
+    store.add_tag(held.ids["task"], Tag.open("hold:no-dispatch"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
+    (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert (chain.live, chain.plan_live) == (False, False)
+    assert [r["root"] for r in gd.sweep_stalled(store, [chain])] == [held.root_id]
+    assert _status(store, held.root_id) == "won't-do"
 
 
 def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
