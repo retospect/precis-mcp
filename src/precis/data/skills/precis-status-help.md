@@ -23,7 +23,11 @@ is talking to. One call returns these sections:
 executes and where it came from — `image_sha`, git branch, dirty flag,
 last release tag, `source_path`, `source_drift`, build time + `build_age`,
 then one `⚠ WARN` line per staleness finding),
-**Runtime** (hostname, python, pid, cwd, uptime, and
+**Runtime** (hostname, python, pid, cwd, uptime,
+`dispatch_slots` — the tool-call dispatch ceiling: `limit` slots, how many
+are `in_flight`, how many calls are `queued` waiting, `refused_1h` (calls
+refused unrun in the last hour after waiting `queue_wait_s` for a slot —
+see "The server refused my call" below), and
 `tool_calls_1h` + `tool_latency_1h <verb>/<kind>` (p50/p95 of the slowest
 verb/kind pairs over the last hour, this process only), `md_vector_warmup`
 when the `md` kind is registered, which reads
@@ -235,6 +239,22 @@ One row per dark-switched service: `state` is `lit` (a row
 with priority >= 1), `off` (priority 0) or `dark` (no row: nobody has set a
 priority, so it is not running; not a fault). `setting` lists the
 controlling `host=priority` rows.
+
+## The server refused my call as busy — `the server is busy` / `retry_after_s`
+
+A call that waits for a dispatch slot past `queue_wait_s` is refused
+**before it ran**: `the server is busy: this <verb> waited Ns for a free
+worker slot and was NOT run — nothing was written`. `NOT run` is the
+guarantee — no write landed, no partial work happened, so retrying is
+safe. The refusal carries `retry_after_s=<int>`: wait that many seconds,
+then retry the same call. Retrying sooner just re-queues behind the same
+held slots; several agents refused at once each wait their own
+`retry_after_s` beat rather than stampeding back together.
+
+The **Runtime** row `dispatch_slots` shows whether the ceiling is still
+bound: `limit` is the slot count, `in_flight`/`queued` the live load, and
+`refused_1h` how many calls were turned away in the last hour. A `refused_1h`
+that keeps climbing on a server that otherwise answers is worth a gripe.
 
 ## See also
 

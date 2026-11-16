@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -333,6 +334,51 @@ def test_offload_sync_queue_wait_refuses_unrun_with_health_hint(
         monkeypatch.setattr(server, "_tool_semaphore", None)
     assert out.startswith("[error:Upstream]"), out
     assert "NOT run" in out and "precis-status-help" in out
+    assert ran == []
+
+
+def test_offload_sync_queue_wait_refusal_carries_retry_after(
+    monkeypatch: Any,
+) -> None:
+    """gr677857: the busy refusal hands the caller a back-off —
+    ``retry_after_s=<int>`` clamped to 5..30 s — so a dozen refused
+    agents wait a computed beat instead of stampeding back at once. The
+    rest of the contract is unchanged: the call was NOT run, nothing was
+    written."""
+    monkeypatch.setenv("PRECIS_MCP_TOOL_CONCURRENCY", "1")
+    monkeypatch.setenv("PRECIS_MCP_QUEUE_WAIT_S", "0.2")
+    monkeypatch.setattr(server, "_tool_semaphore", None)
+    release = threading.Event()
+    ran: list[str] = []
+
+    def hold() -> str:
+        release.wait(5)
+        return "held"
+
+    def write() -> str:
+        ran.append("write")
+        return "ok"
+
+    held = server._offload_sync(hold)
+    queued = server._offload_sync(write)
+
+    async def _run() -> str:
+        task = asyncio.create_task(held())
+        await asyncio.sleep(0.05)
+        try:
+            return str(await queued())
+        finally:
+            release.set()
+            await task
+
+    try:
+        out = asyncio.run(_run())
+    finally:
+        monkeypatch.setattr(server, "_tool_semaphore", None)
+    assert "NOT run" in out
+    match = re.search(r"retry_after_s=(\d+)", out)
+    assert match is not None, out
+    assert 5 <= int(match.group(1)) <= 30
     assert ran == []
 
 

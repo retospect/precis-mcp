@@ -406,8 +406,11 @@ _DEFAULT_TOOL_CONCURRENCY = 4
 #: calls, a queued call used to wait silently until the client gave up with
 #: "server isn't responding", leaving a write in doubt (it later ran or was
 #: dropped on cancel). A refusal before the body starts is unambiguous:
-#: nothing was written, and the text says how to check health. ``0``
-#: disables the bound.
+#: nothing was written, and the text says how to check health — plus a
+#: ``retry_after_s`` back-off (gr677857: a wave of refused agents used to
+#: have nothing to wait on but a guess). Each refusal is stamped in
+#: ``calllat`` so ``precis-status``'s ``dispatch_slots`` row can show the
+#: ceiling binding. ``0`` disables the bound.
 #:
 #: Post-land forensics on the incident itself (td649481): gr648196's two
 #: timed-out calls never reached dispatch — neither left a ``tool_calls``
@@ -436,8 +439,24 @@ class _FairSemaphore:
     """
 
     def __init__(self, limit: int) -> None:
+        self._limit = limit
         self._free = limit
         self._waiters: dict[object, collections.deque[anyio.Event]] = {}
+
+    @property
+    def limit(self) -> int:
+        """The permit count this semaphore was built with."""
+        return self._limit
+
+    def queued(self) -> int:
+        """Calls currently waiting for a permit.
+
+        Written by the event-loop thread, read by ``precis-status`` from a
+        worker thread: the count can be a beat stale and the dict scan
+        can — rarely — lose the iteration race; the status seam treats a
+        failure as "row unavailable", never a crash.
+        """
+        return sum(len(q) for q in self._waiters.values())
 
     async def acquire(self, key: object) -> None:
         """Take a permit for ``key``, waiting for its round-robin turn."""
@@ -508,12 +527,19 @@ def _queue_wait_limit_s() -> float | None:
 
 
 def _queue_timeout_message(verb: str, waited_s: float) -> str:
-    """The refusal for a call that never got a dispatch slot."""
+    """The refusal for a call that never got a dispatch slot.
+
+    ``retry_after_s`` is the back-off the caller asked for in gr677857 —
+    the median recent call duration clamped to 5..30 s
+    (:func:`calllat.retry_after_s`), so a dozen agents refused together
+    wait a computed beat instead of stampeding back at once.
+    """
     return (
         f"[error:Upstream] the server is busy: this {verb} waited "
         f"{waited_s:.0f}s for a free worker slot and was NOT run — "
         "nothing was written\n"
-        "  next: retry the call in a minute; "
+        f"  next: retry the call after retry_after_s={calllat.retry_after_s()} "
+        "seconds; "
         "get(kind='skill', id='precis-status-help') shows server health; "
         "if it keeps failing, file a gripe naming it"
     )
@@ -778,6 +804,7 @@ def _offload_sync(
                 wait_ms=waited * 1000,
                 size=None,
             )
+            calllat.record_refusal()
             return _queue_timeout_message(verb, waited)
         except BaseException as exc:
             # A caller that gives up *while queued* is the other half of
