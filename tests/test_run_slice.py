@@ -8499,30 +8499,94 @@ def test_devin_acceptance_yields_and_resumes_after_restart(
     assert len([c for c in store.comments(42) if c.startswith("handoff:")]) == 1
 
 
-@pytest.mark.parametrize("alive", [True, False])
-def test_devin_acceptance_missing_receipt_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alive: bool
-) -> None:
-    handle: dict[str, Any] = {
+def _acceptance_handle(tmp_path: Path, **extra: Any) -> dict[str, Any]:
+    return {
+        "acceptance_tests": [],
         "acceptance_handle": {
             "pid": 4343,
             "started": 0,
             "exit_file": str(tmp_path / "missing.exit"),
-        }
+            **extra,
+        },
     }
-    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: alive)
-    monkeypatch.setattr(run_slice.time, "time", lambda: 4000 if alive else 1)
+
+
+def test_devin_acceptance_vanished_without_receipt_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _acceptance_handle(tmp_path)
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: False)
+    monkeypatch.setattr(run_slice.time, "time", lambda: 1)
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
-    handle["acceptance_tests"] = []
-    outcome = run_slice._devin_acceptance_tests(tmp_path, handle, None)
+    outcome = run_slice._devin_acceptance_tests(tmp_path, handle, _Ctx(_Store(), {}))
     assert outcome is not None and outcome[0] is True
-    assert outcome[1] is not None
-    assert ("timed out" if alive else "vanished") in outcome[1]
-    assert signals == ([(4343, signal.SIGKILL)] if alive else [])
+    assert outcome[1] is not None and "vanished" in outcome[1]
+    assert signals == []
 
 
-def test_slice_kill_stops_detached_acceptance(
+def test_devin_acceptance_timeout_terms_then_kills_later_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr697931: TERM first (the trap removes the compose project), SIGKILL
+    only on a later pass once the grace has passed and the group answers."""
+    handle = _acceptance_handle(tmp_path)
+    clock = [4000.0]
+    monkeypatch.setattr(run_slice.time, "time", lambda: clock[0])
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    ctx = _Ctx(_Store(), {})
+    assert run_slice._devin_acceptance_tests(tmp_path, handle, ctx) is None
+    assert signals == [(4343, signal.SIGTERM)]
+    assert handle["acceptance_handle"]["term_at"] == 4000.0
+    assert ctx.meta_set["compute_handle"] is handle
+    clock[0] += 5  # inside the grace: no second signal
+    assert run_slice._devin_acceptance_tests(tmp_path, handle, ctx) is None
+    assert signals == [(4343, signal.SIGTERM)]
+    clock[0] += run_slice._BUDGET_TERM_GRACE_S
+    assert run_slice._devin_acceptance_tests(tmp_path, handle, ctx) is None
+    assert signals[-1] == (4343, signal.SIGKILL)
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: False)
+    outcome = run_slice._devin_acceptance_tests(tmp_path, handle, ctx)
+    assert outcome is not None and "timed out" in (outcome[1] or "")
+
+
+def test_devin_acceptance_term_exit_receipt_waits_for_group_survivors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A TERM'ed wrapper writes its receipt while members linger: a timed-out
+    run reads as timed out, and escalates against the leaderless group."""
+    handle = _acceptance_handle(tmp_path, term_at=100.0)
+    Path(handle["acceptance_handle"]["exit_file"]).write_text("143\n", encoding="utf-8")
+    monkeypatch.setattr(run_slice.time, "time", lambda: 100.0 + 31)
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    ctx = _Ctx(_Store(), {})
+    assert run_slice._devin_acceptance_tests(tmp_path, handle, ctx) is None
+    assert signals == [(4343, signal.SIGKILL)]
+
+
+def test_kill_acceptance_skips_a_recycled_leader_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = {
+        "acceptance_handle": {"pid": 4343, "boot_id": "b", "start_time": 1},
+    }
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
+    monkeypatch.setattr(run_slice, "_process_identity", lambda _p: ("b", 2))
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    assert run_slice._kill_acceptance(handle) is True
+    assert signals == []
+    # Leader gone (no /proc identity) but the group answers: still ours.
+    monkeypatch.setattr(run_slice, "_process_identity", lambda _p: None)
+    assert run_slice._kill_acceptance(handle) is False
+    assert signals == [(4343, signal.SIGTERM)]
+
+
+def test_slice_kill_terms_detached_acceptance_without_persisting(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = _Store()
@@ -8533,8 +8597,46 @@ def test_slice_kill_stops_detached_acceptance(
     monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    ctx.meta_set.clear()
     run_slice.kill(ctx, handle)
-    assert signals[0] == (4343, signal.SIGKILL)
+    assert (4343, signal.SIGTERM) in signals
+    assert "compute_handle" not in ctx.meta_set  # deadline hook holds the row lock
+
+
+def test_poll_early_end_holds_until_acceptance_group_is_gone(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr697931: a job ending (non-zero exit) over a running acceptance
+    group stays pending after the TERM and escalates on a later pass."""
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    handle["acceptance_handle"] = {
+        "pid": 4343,
+        "started": 0,
+        "exit_file": str(Path(handle["exit_file"]).parent / "acc.exit"),
+    }
+    clock = [1000.0]
+    monkeypatch.setattr(run_slice.time, "time", lambda: clock[0])
+    alive = {"acc": True}
+    monkeypatch.setattr(
+        run_slice,
+        "_session_alive",
+        lambda h: alive["acc"] if h.get("pid") == 4343 else False,
+    )
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
+    _finish(handle, 1, "boom\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None
+    assert signals == [(4343, signal.SIGTERM)]
+    clock[0] += run_slice._BUDGET_TERM_GRACE_S
+    assert run_slice.poll(pctx, handle) is False
+    assert signals[-1] == (4343, signal.SIGKILL)
+    alive["acc"] = False
+    assert run_slice.poll(pctx, handle) is True
 
 
 def test_devin_fallback_commit_names_the_fixed_gripe(

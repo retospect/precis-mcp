@@ -5792,13 +5792,26 @@ def _devin_acceptance_tests(
             return True, f"Devin acceptance tests could not run: {exc}"
         if sys.platform == "darwin":
             test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
+        else:
+            identity = _process_identity(test_handle["pid"])
+            if identity is not None:
+                test_handle["boot_id"], test_handle["start_time"] = identity
         handle["acceptance_handle"] = test_handle
         ctx.set_meta(compute_handle=handle)
     code = _read_exit(test_handle)
+    if test_handle.get("term_at") or (
+        code is None
+        and time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S
+    ):
+        # Timed out: TERM first so scripts/test's trap removes its compose
+        # project, SIGKILL on a later pass while the group still answers
+        # (gr697931). The receipt a TERM'ed run writes is not a result.
+        gone = _kill_acceptance(handle)
+        ctx.set_meta(compute_handle=handle)
+        if not gone:
+            return None
+        return True, "Devin acceptance tests timed out"
     if code is None:
-        if time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S:
-            _kill_acceptance(handle)
-            return True, "Devin acceptance tests timed out"
         if _session_alive(test_handle):
             return None
         # The run may have written its receipt between the read above and
@@ -5812,16 +5825,74 @@ def _devin_acceptance_tests(
     return True, None
 
 
-def _kill_acceptance(handle: dict[str, Any]) -> None:
-    """Stop only the detached acceptance group; never wait in a worker pass."""
+def _acceptance_leader_foreign(test_handle: dict[str, Any]) -> bool:
+    """``True`` when the recorded leader pid is alive as a DIFFERENT
+    process (recycled pid): its boot_id/start ticks (Linux) or ``ps``
+    start time (Darwin) no longer match. A gone leader is not foreign —
+    the group's survivors are still ours, and a group id cannot be
+    recycled while a member lives."""
+    pid = int(test_handle.get("pid") or 0)
+    if pid <= 1:
+        return False
+    expected = test_handle.get("ps_identity")
+    if expected:
+        seen = _darwin_process_identity(pid)
+        return seen is not None and seen != expected
+    if "boot_id" in test_handle:
+        seen_id = _process_identity(pid)
+        return seen_id is not None and seen_id != (
+            test_handle.get("boot_id"),
+            test_handle.get("start_time"),
+        )
+    return False
+
+
+def _kill_acceptance(handle: dict[str, Any]) -> bool:
+    """One escalation step against the detached acceptance group; never
+    waits. SIGTERM first (scripts/test's trap removes its compose project
+    and test-db container), SIGKILL on a later pass once
+    :data:`_BUDGET_TERM_GRACE_S` has passed with the group still
+    answering. Liveness is the group's, not the leader's — a TERM can end
+    the wrapper while members linger. Returns ``True`` when nothing is
+    left to signal. Stamps ``term_at`` on the handle; it does no
+    persistence, so the deadline hook in :func:`kill` (which runs under
+    the job row lock) stays free of store writes — a poll pass saves it."""
     test_handle = handle.get("acceptance_handle")
-    if isinstance(test_handle, dict) and _session_alive(test_handle):
-        try:
-            pgid = _handle_pgid(test_handle)
-            if pgid:
-                _signal_group(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    if not isinstance(test_handle, dict):
+        return True
+    pgid = _handle_pgid(test_handle)
+    if (
+        not pgid
+        or _acceptance_leader_foreign(test_handle)
+        or not _session_alive(test_handle)
+    ):
+        return True
+    term_at = test_handle.get("term_at")
+    try:
+        if not isinstance(term_at, (int, float)):
+            _signal_group(pgid, signal.SIGTERM)
+            test_handle["term_at"] = time.time()
+        elif time.time() - term_at >= _BUDGET_TERM_GRACE_S:
+            _signal_group(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass  # undelivered: the next pass retries
+    return False
+
+
+def _hold_acceptance(ctx: Any, handle: dict[str, Any]) -> bool:
+    """``True`` while a detached acceptance group the job is ending over
+    (or that a TERM already went to) still has to be stopped: the poll
+    stays pending so a later pass can escalate to SIGKILL."""
+    test_handle = handle.get("acceptance_handle")
+    if not isinstance(test_handle, dict):
+        return False
+    if _read_exit(test_handle) is not None and not test_handle.get("term_at"):
+        return False
+    gone = _kill_acceptance(handle)
+    ctx.set_meta(compute_handle=handle)
+    return not gone
 
 
 def skills_named(text: str | None) -> tuple[str, ...] | None:
@@ -7375,8 +7446,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     if done and isinstance(handle, dict):
         acceptance = handle.get("acceptance_handle")
         if isinstance(acceptance, dict) and _read_exit(acceptance) is None:
-            # A deny-path violation or vanished tree can end the job while
-            # its detached tests still run. Do not leave that group behind.
+            # Last resort for an end the holds above did not see: one TERM
+            # (never a bare SIGKILL — the trap must run).
             _kill_acceptance(handle)
     if done and isinstance(handle, dict) and isinstance(handle.get("review"), dict):
         _drop_review_tree(handle)
@@ -7430,6 +7501,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or _budget_bound(ctx) > 0
         ):
             return False
+    if (vanished or exit_code != 0) and _hold_acceptance(ctx, handle):
+        return False
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
@@ -7525,6 +7598,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     # its files and writes its messages): the same scrub applies — redact
     # the known values; when a value could not be re-read, the entries
     # that could carry it drop.
+    if (denied or is_error or budget_note is not None) and _hold_acceptance(
+        ctx, handle
+    ):
+        return False
     if pairs:
         denied = _redact(denied, pairs) if denied else denied
         human_hits = [_redact(hit, pairs) for hit in human_hits]
@@ -8441,7 +8518,6 @@ def kill(ctx: Any, handle: Any) -> None:
     _drop_submit_key(ctx)
     if not isinstance(handle, dict):
         return
-    _kill_acceptance(handle)
     grant = _handle_grant(handle)
     if grant is not None:
         params = (getattr(ctx, "meta", None) or {}).get("params") or {}
@@ -8450,12 +8526,21 @@ def kill(ctx: Any, handle: Any) -> None:
         except Exception:  # pragma: no cover — the signal still goes
             log.warning("run_slice: slice-token revoke on kill failed")
     pgid = _handle_pgid(handle)
-    if not pgid:
-        return
+    if pgid:
+        try:
+            _signal_group(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    _kill_acceptance_safely(handle)
+
+
+def _kill_acceptance_safely(handle: dict[str, Any]) -> None:
+    """The acceptance TERM after the session's own kill: a failure here
+    must never abort it."""
     try:
-        _signal_group(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+        _kill_acceptance(handle)
+    except Exception:  # pragma: no cover — the session kill already went
+        log.warning("run_slice: acceptance kill failed", exc_info=True)
 
 
 __all__ = [
