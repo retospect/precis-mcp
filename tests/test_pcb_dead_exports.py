@@ -674,11 +674,22 @@ def _scan_tree(tree: ast.Module) -> _FileScan:
 #: instead pays the parse cost O(files) ONCE (first anchor a given
 #: pytest-xdist worker handles) and every anchor after that is a dict
 #: lookup — the difference between a ~2 minute run and a ~10 second one.
+#: Keep only PCB-relevant indexes: xdist workers each retain their own cache,
+#: and indexing every unrelated production module multiplies that memory cost.
 @functools.cache
 def _file_index(path_str: str) -> _FileScan | None:
+    path = Path(path_str)
     try:
-        tree = ast.parse(Path(path_str).read_text(encoding="utf-8", errors="ignore"))
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
     except (SyntaxError, UnicodeDecodeError, OSError):
+        return None
+    # Outside the defining package, the caller predicate requires a PCB
+    # import binding. Inspect imports before building the much larger load
+    # index; keep lazy imports and aliases through the same whole-tree scan.
+    if not path.is_relative_to(_PCB_DIR) and not any(
+        dotted == "precis.pcb" or dotted.startswith("precis.pcb.")
+        for dotted in _all_imports(tree).values()
+    ):
         return None
     return _scan_tree(tree)
 
@@ -1132,6 +1143,32 @@ def test_known_unwired_list_has_no_stale_entries() -> None:
 
 def _scan_source(source: str) -> _FileScan:
     return _scan_tree(ast.parse(textwrap.dedent(source)))
+
+
+def test_file_index_discards_unrelated_modules(tmp_path: Path) -> None:
+    path = tmp_path / "unrelated.py"
+    path.write_text(
+        "from other import drc\ndrc.vias_in_courtyard_count()\n", encoding="utf-8"
+    )
+    assert _file_index(str(path)) is None
+
+
+def test_file_index_keeps_lazy_aliased_pcb_imports(tmp_path: Path) -> None:
+    path = tmp_path / "caller.py"
+    path.write_text(
+        "def check():\n"
+        "    from precis.pcb.drc import vias_in_courtyard_count as count\n"
+        "    return count()\n",
+        encoding="utf-8",
+    )
+    indexed = _file_index(str(path))
+    assert indexed is not None
+    assert _is_production_caller_scan(
+        *indexed,
+        leaf="vias_in_courtyard_count",
+        target_module="precis.pcb.drc",
+        acceptable={"precis.pcb.drc", "precis.pcb.drc.vias_in_courtyard_count"},
+    )
 
 
 @pytest.mark.parametrize(
