@@ -18,6 +18,7 @@ import pytest
 
 from precis.identity import (
     PLACEHOLDER_TITLE,
+    doi_twins,
     is_placeholder_title,
     make_cite_key,
     make_content_hash,
@@ -783,3 +784,16 @@ class TestPlaceholderTitle:
         assert not is_placeholder_title("Attention Is All You Need")
         # Close, but a real (if odd) title - the check is exact, not fuzzy.
         assert not is_placeholder_title("(no title) - a memoir")
+
+
+def test_doi_twins_wiley() -> None:
+    from precis.ingest.provenance import validate_doi
+
+    assert doi_twins("10.1002/anie.5660280") == ["10.1002/ange.5660280"]
+    assert doi_twins("https://doi.org/10.1002/ANGE.5660280") == ["10.1002/anie.5660280"]
+    assert doi_twins("10.1002/anie.202012345") == ["10.1002/ange.202012345"]
+    assert doi_twins("10.1002/ange.202012345") == ["10.1002/anie.202012345"]
+    assert doi_twins("10.1002/adma.202012345") == []
+    assert doi_twins("10.1/anie.1") == []
+    assert doi_twins(None) == []
+    assert validate_doi("10.1002/anie.5660280") == "10.1002/anie.5660280"

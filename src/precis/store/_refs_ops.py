@@ -1041,6 +1041,7 @@ class RefsMixin:
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
+            doi_twins,
             make_cite_key,
             normalize_doi,
         )
@@ -1065,6 +1066,30 @@ class RefsMixin:
                 ).fetchone()
                 if row is not None:
                     return int(row[0]), False
+
+            # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
+            # collapses onto the twin's ref and registers the requested
+            # DOI there as a second doi row.
+            for id_kind, id_value in norm:
+                if id_kind != "doi":
+                    continue
+                for twin in doi_twins(id_value):
+                    row = c.execute(
+                        "SELECT pi.ref_id FROM ref_identifiers pi "
+                        "JOIN refs r ON r.ref_id = pi.ref_id "
+                        "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
+                        "AND r.retired_at IS NULL "
+                        "ORDER BY pi.ref_id LIMIT 1",
+                        (twin,),
+                    ).fetchone()
+                    if row is not None:
+                        c.execute(
+                            "INSERT INTO ref_identifiers "
+                            "(id_kind, id_value, ref_id, source) "
+                            "VALUES ('doi', %s, %s, %s) ON CONFLICT DO NOTHING",
+                            (id_value, row[0], set_by),
+                        )
+                        return int(row[0]), False
 
             # Title-only fuzzy guard (dup-of-held prevention). With no
             # external identifier to collapse on, a stub for a paper we

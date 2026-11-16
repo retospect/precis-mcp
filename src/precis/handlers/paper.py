@@ -2080,6 +2080,22 @@ class PaperHandler(Handler):
                 if pair not in identifiers:
                     identifiers.append(pair)
 
+        twin_doi_of: int | None = None
+        for _k, _v in identifiers:
+            if _k != "doi":
+                continue
+            from precis.identity import doi_twins
+
+            if self.store.find_ref_by_identifier("doi", _v, kind="paper") is not None:
+                break
+            for _twin in doi_twins(_v):
+                twin_doi_of = self.store.find_ref_by_identifier(
+                    "doi", _twin, kind="paper"
+                )
+                if twin_doi_of is not None:
+                    break
+            break
+
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
                 identifiers=identifiers,
@@ -2246,6 +2262,8 @@ class PaperHandler(Handler):
             )
             s2_state = "S2 unavailable" if s2_down else "S2 has no record"
             parts.append(f"(identifier verified via {reg_label} — {s2_state})")
+        if twin_doi_of is not None and not created and twin_doi_of == ref_id:
+            parts.append(f"(twin DOI of pa{ref_id}, nothing minted)")
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:

@@ -194,6 +194,47 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert "get(id=" in second.body
 
 
+def test_acquire_wiley_twin_doi_collapses(handler: PaperHandler, store: Store) -> None:
+    # The twin collapse must also hold when the anie twin is an
+    # already-HELD paper (pdf present): the ange acquire collapses onto
+    # it, registers the second DOI there, and must not pin it (nothing
+    # left to fetch).
+    held_ref = store.insert_ref(kind="paper", slug="angew1966", title="Held Angew")
+    held = held_ref.id
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', '10.1002/anie.5660280', %s, 'test')",
+            (held,),
+        )
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/stub')",
+            ("c" * 64, "c" * 64),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, prio = NULL, "
+            "meta = meta - 'prio_by' WHERE ref_id = %s",
+            ("c" * 64, held),
+        )
+        conn.commit()
+    r = handler.acquire(identifier="doi:10.1002/ange.5660280")
+    assert _ref_id(r.body) == held
+    assert "already tracked" in r.body
+    assert f"twin DOI of pa{held}, nothing minted" in r.body
+    assert "pinned" not in r.body
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/anie.5660280", kind="paper")
+        == held
+    )
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/ange.5660280", kind="paper")
+        == held
+    )
+    prio, prio_by, _ = _fetch_pin(store, held)
+    assert (prio, prio_by) == (None, None)
+
+
 def test_acquire_pmcid_mints_stub(handler: PaperHandler, store: Store) -> None:
     """gr663681: ``pmcid:`` identifiers queue a stub — the gripe's
     PMC-only reference could not be put at all."""
