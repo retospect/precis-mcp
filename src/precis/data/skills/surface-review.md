@@ -47,7 +47,8 @@ The territory is already well-populated — this pass's job is to put
   one turns a complete enumeration into a ranked filter and the count
   silently drops. Not `tags=['STATUS:open']`: that is the literal untriaged
   cohort, which auto-triage keeps empty.
-- The backlog `INDEX.md`, the surface family: `mcp-surface-economy`,
+- the spec graph's surface family (`search(kind='memory', tags=['spec:*'],
+  view='toc')`): `mcp-surface-economy`,
   `capability-discovery-on-a-sprawling-surface`, `vocab-compaction`,
   `token-review-hook-gaps`, `llm-prompt-surface-audit`,
   `tick-tool-lists-and-discovery-reflex`, `skill-eval-executed-runner`;
@@ -131,10 +132,9 @@ what shipped, what was filed>"`. That line (in
 `~/.cache/precis/surface-review.log`) is the cadence clock —
 `scripts/surface-review` reads it.
 
-Re-read the `friction-reflection-enable` spec in the graph and say in
-the stamp note whether leaving `PRECIS_FRICTION_REFLECT` off is still the
-right call. It is the one lever that would turn this retrospective into a
-continuous feed.
+Re-read gr690545 and say in the stamp note whether leaving
+`PRECIS_FRICTION_REFLECT` off is still the right call. It is the one lever
+that would turn this retrospective into a continuous feed.
 
 Then ship the in-session fixes with `/go`.
 

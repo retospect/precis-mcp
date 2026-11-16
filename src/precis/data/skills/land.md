@@ -195,8 +195,9 @@ when no subagent runtime exists.
    a latent bug, an incomplete fix, a message-only mitigation of a real root
    cause — **not** a feature extension or a nice-to-have.
    - **Persist first — it must survive compaction.** Before anything else,
-     record every harvested residual durably: a `todo` or `gripe` row
-     and/or `kind='todo'` / `gripe` rows. Free-text residuals get
+     record every harvested residual durably: `kind='todo'` / `gripe`
+     rows, or a section on the owning graph spec if it is design-sized.
+     Free-text residuals get
      summarized away on the next auto-compaction; persisted ones don't. The
      persisted list — not your memory — is the source of truth for the loop
      below, so it keeps working after the harness self-compacts.

@@ -41,8 +41,8 @@ or map to your runtime's equivalent; Kimi maps commands via `/skill:<name>`.
 2. **Spec.** For anything architectural, multi-file, ambiguous, or where more
    than one reasonable approach exists — write it down before coding. The
    spec lives in **graph memory**: a spec root plus section nodes under the
-   Specifications hub, with execution state on its plan todo
-   ([[precis-spec-help]] has the shapes, the writer procedure and the
+   Specifications hub (me568215), with execution state on its plan todo
+   (ruling me568168; [[precis-spec-help]] has the shapes, the writer procedure and the
    slicing). A small item — an idea or a one-paragraph annoyance — is a
    gripe instead. Put the plan on the plan todo when the work will span
    more than one session, so it survives compaction. Whether a spec is even
@@ -77,7 +77,8 @@ or map to your runtime's equivalent; Kimi maps commands via `/skill:<name>`.
 5. **Ship.** `[[land]]` (ship only) or `[[go]]` (ship + deploy). On ship, fold
    surviving truth into the owning package docstring and **retire the built
    spec section**, superseded by the code handle that now carries it (the
-   verdicts are [[docs-triage]]'s). **Both commands already own the next two
+   verdicts are [[docs-triage]]'s; repo-dev contract `docs/README.md` §Spec
+   lifecycle). **Both commands already own the next two
    stages internally** — do not spawn `reviewer` or `issue-closer` yourself
    before calling one of them:
    - **Code review** is size/risk-gated inside `[[land]]`/`[[go]]` (their own

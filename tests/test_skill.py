@@ -29,7 +29,12 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
-from precis.handlers.skill import _REPO_DEV_SKILLS, SkillHandler
+from precis.handlers.skill import (
+    _SKILL_SLUG_ALIASES,
+    SkillHandler,
+    _get_skill_graph,
+    _list_skills,
+)
 from precis.runtime.core import PrecisRuntime
 
 
@@ -265,17 +270,22 @@ def test_repo_dev_skill_notfound_names_the_file(
     assert any(".claude/skills/fake-dev-skill/SKILL.md" in h for h in hints)
 
 
-def test_repo_dev_skills_constant_matches_checkout() -> None:
-    """``_REPO_DEV_SKILLS`` names exactly the repo's ``.claude/skills``
-    dirs — the fallback for deployments with no repo mount; a new
-    repo-dev skill must land here or its hint rots."""
+def test_repo_dev_skills_guard_covers_checkout_dirs() -> None:
+    """td657071: every ``.claude/skills`` dir name resolves — to a
+    ``governs: factory`` served slug, or through a migration alias to
+    any served skill — so the NotFound hint never points at a file
+    whose skill went nowhere (gr563570's pin, rebased on the tag)."""
     root = Path(__file__).resolve().parents[1]
     dirs = {
         p.name
         for p in (root / ".claude" / "skills").iterdir()
         if p.is_dir() and (p / "SKILL.md").is_file()
     }
-    assert dirs == set(_REPO_DEV_SKILLS)
+    steering = set(_get_skill_graph().by_tag("governs:factory"))
+    served = set(_list_skills())
+    for d in dirs:
+        target = _SKILL_SLUG_ALIASES.get(d, d)
+        assert d in steering or target in served, d
 
 
 def test_non_repo_dev_slug_gets_no_file_hint(skill: SkillHandler) -> None:

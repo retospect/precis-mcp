@@ -61,8 +61,10 @@ them to start step 3.
 
 Dispatch one `Explore` agent per pillar in one message, each with the
 pillar's end-state paragraph verbatim and this brief: enumerate the
-spec roots and open slices relevant to the pillar (handle, status, prio, threaded or
-not, spec/slice/small, one-line intent), list the runtime surface that
+spec roots and open slices relevant to the pillar
+(`search(kind='memory', tags=['spec:*'], view='toc')`, then the plan
+todos) plus the gripes nothing specs yet — handle, status, prio, threaded
+or not, spec/slice/small, one-line intent — list the runtime surface that
 exists (skills, kinds, paths), and list the gaps between the end state
 and any filed item, citing the closest existing item for each. Plus one
 agent for gripes: open gripes versus every `gr<id>` in

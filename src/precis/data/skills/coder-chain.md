@@ -79,8 +79,9 @@ report.
 ## Loop rules
 
 - After each round, log one line to the user: `round <n>: <status> — <summary>`.
-- **Commit after each round**, before starting the next: `git add -u && git
-  commit`. Rounds are the only natural checkpoint a chain has — the coders are
+- **Commit after each round**, before starting the next, as two plain calls:
+  `git add -u`, then `git commit -F <file>` (message written with the Write
+  tool). Rounds are the only natural checkpoint a chain has — the coders are
   forbidden to touch git, and `scripts/ship` (the workflow's usual commit) must
   not run mid-chain, so without this an 8-round build has zero commits ahead
   and one bad edit loses all of it. It is not a ship: no gate, no push, no

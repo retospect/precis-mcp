@@ -351,31 +351,12 @@ _SKILL_SLUG_ALIASES: dict[str, str] = {
 }
 
 
-#: Repo-dev skill directory names under ``.claude/skills/`` — harness
-#: skills for developing this repo, so a NotFound for one names the
-#: file to read instead of the catalogue (gr563570). Test-guarded
-#: against the checkout's ``.claude/skills`` dirs; at runtime the
-#: handler unions this with the live dirs of the configured worktrees'
-#: checkouts, so a deployment without a repo mount still hints the
-#: common ones. gr657064: the twelve names also shipped as real corpus
-#: skills — a served name wins (the hint only fires on NotFound), so the
-#: set covers the unmigrated/stale case until td657071's trim runs.
-_REPO_DEV_SKILLS = frozenset(
-    {
-        "backup-restore-drill",
-        "boss-design",
-        "bug",
-        "coder-chain",
-        "differentiation",
-        "docs-triage",
-        "flow",
-        "gripe-fleet",
-        "quiet-output",
-        "reconsolidate",
-        "remember",
-        "se-design",
-    }
-)
+#: td657071: the pre-migration ``_REPO_DEV_SKILLS`` constant is gone —
+#: the steering set is derived at call time from the served
+#: ``governs: factory`` tag axis (``_repo_dev_skill_names``), so a new
+#: factory skill needs no code-side pin. The worktree dir-scan stays
+#: as the fallback for a checkout whose local skills were never
+#: migrated (gr563570).
 
 
 def _slug_with_aliases(slug: str) -> str:
@@ -1689,11 +1670,11 @@ class SkillHandler(Handler):
         return corpus
 
     def _repo_dev_skill_names(self) -> frozenset[str]:
-        """Directory names under ``.claude/skills/`` across the checkouts
-        this server can see — the main checkout plus every registered
-        worktree — unioned with :data:`_REPO_DEV_SKILLS` so a deployment
-        without a repo mount still names the common ones (gr563570)."""
-        names = set(_REPO_DEV_SKILLS)
+        """Factory-steering skill names — the served ``governs: factory``
+        tag set (td657071: post-trim the axis is authoritative), unioned
+        with the ``.claude/skills`` dirs of the checkouts this server
+        can see so a never-migrated checkout still hints (gr563570)."""
+        names = set(_get_skill_graph().by_tag("governs:factory"))
         wts = self.worktrees
         if wts is not None:
             listing, _gone = wts.listing()
@@ -1710,18 +1691,40 @@ class SkillHandler(Handler):
                     continue
         return frozenset(names)
 
+    def _repo_dev_skill_file(self, slug: str) -> str:
+        """The checkout-relative local file for ``slug`` — the first of
+        the three agent-local spellings (``.claude/skills``,
+        ``.claude/commands``, ``.devin/workflows``) present in a
+        visible checkout, defaulting to the ``.claude/skills`` path
+        the hint always printed (gr563570)."""
+        candidates = (
+            f".claude/skills/{slug}/SKILL.md",
+            f".claude/commands/{slug}.md",
+            f".devin/workflows/{slug}.md",
+        )
+        wts = self.worktrees
+        if wts is not None:
+            listing, _gone = wts.listing()
+            checkouts = [wts.main, *(wt.path for wt in listing.values())]
+            for checkout in checkouts:
+                for rel in candidates:
+                    if (checkout / rel).is_file():
+                        return rel
+        return candidates[0]
+
     def _repo_dev_skill_next(self, slug: str) -> str | None:
         """A `next` line naming the repo-dev skill's file, or None.
 
-        Repo-dev skills (``.claude/skills/<name>/SKILL.md``) configure
-        the agent harness, not the product — a NotFound for one should
-        point at the file instead of the skill catalogue (gr563570:
-        ~13 calls/day, mostly codex clients asking for ``bug``)."""
+        Post-td657071 the names come from the served ``governs: factory``
+        set plus the checkout dir-scan (``_repo_dev_skill_names``); the
+        hinted file is post-trim a bootstrap stub pointing at the served
+        skill (gr563570's hint, kept for the never-migrated straggler)."""
         if slug not in self._repo_dev_skill_names():
             return None
         return (
             f"'{slug}' is a repo-dev skill, not a product skill — "
-            f"read .claude/skills/{slug}/SKILL.md in the repo checkout"
+            f"read {self._repo_dev_skill_file(slug)} in the repo "
+            "checkout (a stub pointing at the served skill)"
         )
 
     def _render_worktree_index(self, alias: str) -> Response:

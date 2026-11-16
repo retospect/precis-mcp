@@ -105,6 +105,12 @@ rel='specialises')`; the hub nodes are the children of `tn559460`, one
 per memory hub plus Projects & quests for nicknames. A rename makes the
 old name an alias; a retired term is deleted.
 
+## A spec is not a memory fact
+
+Specifications live under the Specifications hub me568215 (programme roots,
+then spec roots); write one with [[precis-spec-help]], not this recipe
+(gr568183).
+
 ## With evidence edit, on suspicion gripe
 
 A recalled node is wonky, inconsistent or unclear → first file

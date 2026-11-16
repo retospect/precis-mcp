@@ -22,7 +22,8 @@ Work lives in **two different substrates** — do not merge them into one
 flat list; that merge is the trap this view exists to avoid. Optional
 focus: `$ARGUMENTS`.
 
-- **Repo dev work** — the spec graph + the `gripe` bug tracker. About
+- **Repo dev work** — the spec graph (spec roots and their plan todos
+  under the Specifications hub `me568215`) + the `gripe` bug tracker. About
   *this codebase / product*: MCP-surface bugs, features, infra fixes. You
   act on them by **editing code in a worktree → [[go]]**. "Inert" here
   means: real, but no one is building it yet.
@@ -245,9 +246,12 @@ Live state at invocation:
    `doctor_tick` transcripts.
 
    Where the stream lives: every server-side agentic run opens a
-   `kind='agentlog'` run-attribution record, but it carries only the
-   assembled **input** prompt plus run telemetry — a catalog, not a
-   transcript store. The full **output** stream — every tool call/result,
+   `kind='agentlog'` run-attribution record
+   (`precis/agentlog.py::open_log`; `plan_tick`, `quest_tick` and `dream`
+   all do), but it carries only the assembled **input** prompt
+   (`meta.prompt`) plus small run telemetry (`meta.status`/`meta.result`,
+   stamped at finalize) — a catalog, not a transcript store; don't mine
+   it directly. The full **output** stream — every tool call/result,
    where `[error:...]` shapes live — is captured for `plan_tick` alone,
    stamped on its own `kind='job'` ref as `meta.transcript`
    (`workers/executors/claude_inproc.py`'s `_run_plan_tick`; capped 1 MiB,
@@ -256,7 +260,9 @@ Live state at invocation:
    condensed per-tick digest plus raw output as `meta.transcript_raw` on
    failure (same cap/GC, `quest/tick.py::_persist_job_transcript`) — its
    rows appear in the query but carry digests, not a tool-call stream.
-   `dream`, `cad` and `structure` keep nothing minable. So `agentlog`
+   `dream` dispatches straight to the LLM and discards the raw stream;
+   `cad`/`structure` propose keep only a truncated snippet in a
+   `job_event` chunk on parse failure — nothing minable. So `agentlog`
    outnumbering transcript-bearing `job` refs is expected, not a sign you
    are querying the wrong table. Every `[error:...]` in a transcript is
    the LLM getting a verb wrong — a fix waiting in a skill or the MCP

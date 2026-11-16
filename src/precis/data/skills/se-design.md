@@ -44,6 +44,9 @@ nominal planes — mathematical opening, no fillet geometry. The op grammar
 and per-primitive support live in [[precis-se-help]]; the rules to
 remember here:
 
+- `box:w50mmd100mmh65mmrd3mm` rounds EVERY edge and corner of the box to
+  3 mm; `cyl`/`cone`/`hex`/`ngon`/`frustum`/`pyramid` take `rd` too,
+  `sphere`/`torus` refuse (no-op), `chamfer` can't carry it.
 - `rd < ½·min(dimension)` (parse-time refusal); bounding dims unchanged;
   cones lose their sharp apex to a sphere cap.
 - Rounded nodes route the whole design through the sampled-field backend

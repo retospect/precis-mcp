@@ -21,14 +21,19 @@ truth moves into code + the owning package docstring, but nobody retires
 the section — so it lingers, gets READ as open work, and rots. Cure:
 **retire-default** ("rest in git and the revision trail for the
 archaeologists"). The live graph is the present. Specifications are hubs of
-linked memory nodes under the Specifications hub, not files: the format and
-the prune and retirement passes are [[precis-spec-help]].
+linked memory nodes under the Specifications hub (me568215), not files (Reto
+2026-11-05, me568168): the format and the prune and retirement passes are
+[[precis-spec-help]].
 
 ## Start here
 
 The repo's own linters are advisory (they never delete and never fail a
 build); they surface candidates and you apply the judgment they can't. The
 spec inventory is generated, so nothing is hand-maintained:
+
+Repo-dev: `scripts/memory-lint` (stale current-state prose, orphans, expiry)
+and `scripts/backlog-lint` (the residual thread files); the
+ship contract is `docs/README.md` §Spec lifecycle.
 
 ```python
 search(kind="memory", tags=["spec:*"], view="toc")   # every spec root
@@ -69,8 +74,13 @@ delete(kind="memory", id="<id>", args={"superseded_by": "python:main::<qualname>
   decisions stay too, as `absorbed`.
 - **Open** — keep. Compact if bloated (bar below).
 
-Before retiring, read the node's ring with `extent='fisheye+1hop'`, so no
-live spec, plan or gripe points at a node about to go.
+Before retiring, re-scan for stragglers and read the node's ring with
+`get(kind='memory', id='<id>', extent='fisheye+1hop')`, so no live spec,
+plan or gripe points at a node about to go; fix every surviving reference.
+
+```bash
+grep -rn "me<N>" . --exclude-dir=.git    # repo-dev: handle refs in files
+```
 
 ## The compaction bar
 

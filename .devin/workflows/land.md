@@ -2,29 +2,18 @@
 description: End-of-session wrap-up — commit WIP, sync onto main, gate on GitHub CI (scripts/ship --remote), squash-merge to main, mark the open round. Ship-only; /go also deploys.
 ---
 
-The procedure is the precis skill `land` (`get(kind='skill', id='land')`; in
-the checkout `src/precis/data/skills/land.md`) — read it and follow it. It is
-the single source; this file only maps what differs for Devin, so the two
-cannot drift apart again.
+<!-- precis-stub: land -->
 
-## Devin differences
+# land
 
-- **No subagents.** Where the procedure dispatches an agent (risky-diff
-  `reviewer`, background `issue-closer`), do the review yourself before
-  shipping and skip the issue-closer; list what it would have closed in your
-  summary.
-- **Run ship in the background with output to a log**, never piped:
-  ```
-  scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
-  ```
-  The remote gate takes ~90 min green. A pipe reports the filter's status,
-  so a red gate would read as exit 0.
-- **Prod writes.** Filing a `gripe`/`todo` through the precis MCP writes
-  PROD — only with the user's explicit go-ahead.
+This skill lives in the precis corpus. Before any task work, read it
+and follow it:
 
-## After a green land: mark the round
+    get(kind='skill', id='land')
 
-If `scripts/round status` shows an open round, mark it from this tree:
-`scripts/round in <sha>` (or `none`, or `eta <text>`). The mark is your
-status report; message the coordinator only for a question, blocker or
-decision.
+Search precis skills (`search(kind='skill', q='<goal>')`) before
+starting any other task.
+
+MCP down: stop the task. Retry the connection with growing waits
+(1, 2, 4, 8 minutes, then every 15) and resume when it answers. Do
+not work the task without skills.

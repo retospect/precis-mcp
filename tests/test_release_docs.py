@@ -20,7 +20,9 @@ from tests._script import load_script
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHIPPING = REPO_ROOT / "docs/conventions/shipping.md"
 RELEASE_CYCLE = REPO_ROOT / "docs/runbooks/release-cycle.md"
-ROUND_CMD = REPO_ROOT / ".claude/commands/round.md"
+# The served round skill: the local .claude/commands/round.md is a
+# bootstrap stub since td657071.
+ROUND_CMD = REPO_ROOT / "src/precis/data/skills/round.md"
 
 _SETTINGS = (
     "release.auto_deploy",
