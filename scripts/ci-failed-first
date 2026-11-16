@@ -15,7 +15,10 @@ ones the local lanes missed, often runner-specific (2-vCPU, pg17 client).
 
 Anything off-normal prints ``failed_ids=`` (empty), which sends the run
 straight to the full matrix: no prior red, a shard that timed out before
-its upload, more than CAP failed ids, or any gh/API failure.
+its upload, more than CAP failed ids, or any gh/API failure. One
+candidate run's shard zips download concurrently (ZIP_WORKERS) — serial
+round-trips per zip made this step a minute-plus inside the release
+gate's plan job (gr702666).
 """
 
 from __future__ import annotations
@@ -28,12 +31,14 @@ import subprocess
 import sys
 import urllib.parse
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from xml.etree import ElementTree
 
 CAP = 200
 RUN_CANDIDATES = 5  # newest failed runs to try for a complete junit set
 ART = re.compile(r"^junit-(\d+)-(\d+)$")
+ZIP_WORKERS = 5  # concurrent shard-zips per candidate run (gr702666)
 
 
 def _gh(*args: str, timeout: int = 60) -> str | None:
@@ -154,30 +159,44 @@ def _xml_from_artifact(repo: str, art_id: int) -> str | None:
         return None
 
 
+def _xmls_from_artifacts(repo: str, arts: dict[str, int], n: int) -> list[str] | None:
+    """All n shard zips of one run, downloaded concurrently (bounded at
+    ZIP_WORKERS): the serial round-trip per zip made this step a
+    minute-plus inside the release gate's plan job (gr702666). None when
+    any zip is unreadable — a hole is a hole, whatever caused it."""
+    with ThreadPoolExecutor(max_workers=ZIP_WORKERS) as pool:
+        xmls = list(
+            pool.map(
+                lambda k: _xml_from_artifact(repo, arts[f"junit-{n}-{k}"]),
+                range(1, n + 1),
+            )
+        )
+    if any(xml is None for xml in xmls):
+        return None
+    return [xml for xml in xmls if xml is not None]
+
+
 def failed_ids(repo: str, branch: str, root: Path) -> list[str]:
     for run_id in _failed_runs(repo, branch):
         arts = _artifacts(repo, run_id)
         n = complete_shard_count(list(arts))
         if n is None:
             continue  # a shard timed out or its artifact expired: not usable
+        xmls = _xmls_from_artifacts(repo, arts, n)
+        if xmls is None:
+            continue  # a zip unreadable mid-set: as incomplete as a hole
         ids: list[str] = []
         seen: set[str] = set()
-        ok = True
-        for k in range(1, n + 1):
-            xml = _xml_from_artifact(repo, arts[f"junit-{n}-{k}"])
-            if xml is None:
-                ok = False
-                break
+        for xml in xmls:
             for nid in node_ids(xml, root):
                 if nid not in seen:
                     seen.add(nid)
                     ids.append(nid)
-        if ok:
-            print(
-                f"failed-first: run {run_id} donated {len(ids)} failed node ids",
-                file=sys.stderr,
-            )
-            return ids
+        print(
+            f"failed-first: run {run_id} donated {len(ids)} failed node ids",
+            file=sys.stderr,
+        )
+        return ids
     return []
 
 

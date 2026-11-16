@@ -1,6 +1,29 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
-"""The ship gate's test-linux shard count: fixed 10 (Reto 2026-10-23 —
-"10 is fine, we don't need 40. But no fewer"; me692603).
+"""The ship gate's test-linux shard count: derived from the account's
+runner pool, not a bare literal (gr702666); evaluates to 10 today.
+
+The count is the largest N whose cohabitation budgets all fit the
+account's concurrent-job cap (GitHub Pro: 40 standard-runner jobs — a
+named setting below, not an API lookup):
+
+- two concurrent gates plus both soaks plus main's check lane:
+  scripts/ship caps in-flight ci/* gates at 2 and a release gate can
+  overlap them, each gate blocks on GATE_FIXED_JOBS + N jobs, each soak
+  runs at most SOAK_PARALLEL legs, and main's lane takes MAIN_LANE_JOBS
+  (slim plan+lint, or the 4-job docs lane):
+      2 * (GATE_FIXED_JOBS + N) + 2 * SOAK_PARALLEL + MAIN_LANE_JOBS
+- the nightly full matrix beside one gate: its non-matrix jobs are
+  NIGHTLY_FIXED_JOBS, its test-linux legs are capped at
+  NIGHTLY_MATRIX_PARALLEL in flight, and one gate blocks at
+  GATE_FIXED_JOBS + N:
+      min(2N, NIGHTLY_MATRIX_PARALLEL) + NIGHTLY_FIXED_JOBS
+          + GATE_FIXED_JOBS + N
+
+Both budgets bind at N = 10 (two-gates-plus-main gives 10, nightly 11);
+the floor is Reto 2026-10-23: "10 is fine, we don't need 40. But no
+fewer" (me692603). A wider count is bought only by raising the account
+cap or dropping a cohabitant — and the workflow's own job-budget comment
+must be re-done in that same change.
 
 Prints ``n=<N>``, ``list=<[1..N]>`` and ``shard_files={"1": […], …}`` for
 $GITHUB_OUTPUT. check.yml's `plan` job runs it once per run; the shard
@@ -15,9 +38,9 @@ inspection; it is the same file-level partition conftest's --shard applies
 copy of this script beside a lib/ dir).
 
 Not 6 or 8: measured shards ran 32-40 min (6) and 32-36 min (8) of the 40 min
-timeout, no headroom. Not the load-based 12 of gr492653 either: a 10-shard
-gate is 12 jobs, so three fit the 40-job Pro cap; every shard repeats its
-setup, so wider gates raise job-minutes per landing ~35% for little wall.
+timeout, no headroom. Not the load-based 12 of gr492653 either: every shard
+repeats its setup, so wider gates raise job-minutes per landing ~35% for
+little wall (e94cfe674, reverted 94df07003).
 
 FORCE_SHARDS (the workflow_dispatch `shards` input) still overrides for
 measuring another width; the floor is SHARDS.
@@ -37,7 +60,49 @@ import subprocess
 import sys
 from pathlib import Path
 
-SHARDS = 10
+#: Reto 2026-10-23: "10 is fine, we don't need 40. But no fewer"
+#: (me692603) — the derivation below cannot go below this.
+SHARDS_FLOOR = 10
+#: The account's GitHub standard-runner concurrency (GitHub Pro: 40
+#: concurrent jobs). Not exposed by any API; a named setting.
+ACCOUNT_CONCURRENT_JOBS = 40
+#: Blocking jobs of one gate besides the shards: `plan` + `lint`.
+GATE_FIXED_JOBS = 2
+#: One gate's soak runs at most this many legs at once (check.yml's
+#: test-linux max-parallel on the gate shape).
+SOAK_PARALLEL = 5
+#: Main's check lane can run beside a gate: the slim lane is plan+lint,
+#: a docs-only push takes the 4-job docs lane instead — size for both.
+MAIN_LANE_JOBS = 2 + 4
+#: scripts/ship caps concurrent ci/* gates at two; a release gate can
+#: overlap them, so two gates is the sizing case.
+CONCURRENT_GATES = 2
+#: The nightly's non-matrix jobs (plan + lint + coverage-db + the four
+#: test-other legs) and the in-flight cap on its test-linux matrix.
+NIGHTLY_FIXED_JOBS = 7
+NIGHTLY_MATRIX_PARALLEL = 20
+
+
+def derived_shards() -> int:
+    """The largest N satisfying every cohabitation budget, floored at
+    SHARDS_FLOOR (the budgets' constants are the module docstring's
+    arithmetic, in code so tests can pin them)."""
+    two_gates_main = (
+        ACCOUNT_CONCURRENT_JOBS - MAIN_LANE_JOBS
+    ) // CONCURRENT_GATES - GATE_FIXED_JOBS - SOAK_PARALLEL
+    nightly_gate = max(
+        n
+        for n in range(1, ACCOUNT_CONCURRENT_JOBS)
+        if min(2 * n, NIGHTLY_MATRIX_PARALLEL)
+        + NIGHTLY_FIXED_JOBS
+        + GATE_FIXED_JOBS
+        + n
+        <= ACCOUNT_CONCURRENT_JOBS
+    )
+    return max(SHARDS_FLOOR, min(two_gates_main, nightly_gate))
+
+
+SHARDS = derived_shards()
 ROOT = Path(__file__).resolve().parents[1]
 _SP = runpy.run_path(str(Path(__file__).resolve().parent / "lib" / "shard_partition.py"))
 load_pins = _SP["load_pins"]

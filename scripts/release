@@ -61,7 +61,10 @@ Steps, in order:
   5. `round cut --sha S` (its stdout, incl. `late:` and `fleet say`, passes
      through). Losing a race to a sibling cut goes back to 3.
   6. Poll `round gate --json` until the candidate equals the release head.
-     Early red comes from the head's check-runs (sha-keyed REST `gh api`, never
+     On green, a best-effort gate-time line (plan / slowest gate-fast
+     shard / created->last shard, from the run's check-run stamps) rides
+     the verdict print so wall-clock regressions show at the moment they
+     land (gr702666). Early red comes from the head's check-runs (sha-keyed REST `gh api`, never
      `gh run list`: stale cache, see scripts/last-gated-main-sha): a completed
      `lint` / `failed-first` / `test-linux*` / `gate-fast*` run that is not
      success/skipped/neutral exits 2
@@ -381,6 +384,97 @@ def _check_run_rows(head: str) -> tuple[list[list[str]], int] | bool:
     if current_run:
         rows = [r for r in rows if _row_run_id(r) in (0, current_run)]
     return rows, current_run
+
+
+#: The check-run fields the gate-time line needs (gr702666): name and
+#: both stamps, plus the job urls for current-run scoping — check-runs
+#: are sha-keyed and span runs, so the same rule as _check_run_rows
+#: applies before any number is believed.
+_GATE_TIME_JQ = (
+    '.check_runs[] | [.name, .started_at, (.completed_at // ""),'
+    ' (.details_url // ""), (.html_url // "")] | @tsv'
+)
+
+
+def _summarize_gate_time(rows: list[list[str]]) -> str:
+    """``plan Xm, slowest shard Ym, created->last shard Zm`` from timed
+    check-run rows already scoped to one run — the wall-clock split the
+    release gate's regressions show as (gr702666: a release gate's plan
+    job alone took 5.5 min, then the slowest of 10 gate-fast shards set
+    the total). '' when any input is missing: half a line is worse than
+    none, and the verdict line stands alone."""
+
+    def stamp(value: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    begun: list[datetime] = []
+    plan_seconds: float | None = None
+    leg_ends: list[datetime] = []
+    slowest_leg = 0.0
+    for r in rows:
+        if len(r) < 5:
+            continue
+        start = stamp(r[1])
+        end = stamp(r[2]) if r[2] else None
+        if start is not None:
+            begun.append(start)
+        if r[0] == "plan":
+            if start is not None and end is not None:
+                plan_seconds = (end - start).total_seconds()
+        elif r[0].startswith("gate-fast"):
+            if start is not None and end is not None:
+                leg_ends.append(end)
+                slowest_leg = max(slowest_leg, (end - start).total_seconds())
+    if not begun or plan_seconds is None or not leg_ends:
+        return ""
+    total_seconds = (max(leg_ends) - min(begun)).total_seconds()
+    return (
+        f"plan {plan_seconds / 60:.1f}m, "
+        f"slowest shard {slowest_leg / 60:.1f}m, "
+        f"created->last shard {total_seconds / 60:.1f}m"
+    )
+
+
+def _gate_time_line(head: str) -> str:
+    """The gate-time line for wait_ci's green verdict — best-effort, ''
+    when gh or the stamps are unreadable. The earliest check-run start
+    stands in for the run's ``created``: on the gate shape every leg
+    queues behind `plan`, so `plan` starts first by construction."""
+    try:
+        cp = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs",
+                "--paginate",
+                "--jq",
+                _GATE_TIME_JQ,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if cp.returncode != 0:
+        return ""
+    rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") >= 4]
+    run_id = _regate_run_id(head)
+    if not run_id.isdigit():
+        run_id = str(max((_row_run_id(r) for r in rows), default=0))
+    if run_id.isdigit() and int(run_id):
+        rows = [r for r in rows if _row_run_id(r) in (0, int(run_id))]
+    summary = _summarize_gate_time(rows)
+    if not summary:
+        return ""
+    scope = f" (run {run_id})" if run_id.isdigit() and int(run_id) else ""
+    return f"gate time{scope}: {summary}"
 
 
 def _latest_bad(rows: list[list[str]], keep: Any) -> list[list[str]]:
@@ -1465,6 +1559,9 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
                 )
                 return 0  # no soak note: the head's CI was red
             say(f"CI green on {branch} at {head[:9]}")
+            gate_time = _gate_time_line(head)
+            if gate_time:
+                say(gate_time)
             note_ci_verdict(head, "green", _regate_run_id(head))
             note_soak(head)
             return 0

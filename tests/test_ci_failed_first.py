@@ -129,6 +129,37 @@ def test_failed_ids_walks_newest_red_run(
     assert "runs/1002/artifacts" in calls[1]  # newest tried first, has a hole
 
 
+def test_failed_ids_falls_through_when_a_zip_is_unreadable(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete artifact set with one unreadable zip is as incomplete
+    as a hole: the candidate run is skipped and the next one donates
+    (gr702666 made the downloads concurrent; the fall-through semantics
+    must not change)."""
+
+    def fake_gh(*args: str, timeout: int = 60) -> str | None:
+        if "runs?branch=" in args[0]:
+            return "1002\n1001"
+        if "runs/1002/artifacts" in args[0]:
+            return "1\tjunit-2-1\n2\tjunit-2-2"
+        if "runs/1001/artifacts" in args[0]:
+            return "9\tjunit-2-1\n8\tjunit-2-2"
+        return None
+
+    dup = JUNIT.replace("test_bad", "test_bad_dup")
+    zips = {1: _zip(JUNIT), 2: None, 9: _zip(JUNIT), 8: _zip(dup)}
+    monkeypatch.setattr(_MOD, "_gh", fake_gh)
+    monkeypatch.setattr(
+        _MOD, "_gh_zip", lambda path, timeout=120: zips.get(int(path.rsplit("/", 2)[1]))
+    )
+    ids = _MOD.failed_ids("o/r", "release/r9", root)
+    assert sorted(ids) == [
+        "tests/test_foo.py::TestThing::test_err[p 1]",
+        "tests/test_foo.py::test_bad",
+        "tests/test_foo.py::test_bad_dup",
+    ]
+
+
 def test_failed_ids_empty_without_a_red_run(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

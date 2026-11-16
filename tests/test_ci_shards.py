@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -54,10 +55,41 @@ _PLAN = _plan()
 COUNTS = (_PLAN.SHARDS,)
 
 
-def test_shard_count_is_fixed_10() -> None:
-    """Fixed 10 for every shard run (Reto 2026-10-23: "no fewer" — the
-    release-train spec's job-budget arithmetic assumes it)."""
-    assert _PLAN.SHARDS == 10
+def test_shard_count_is_derived_from_the_pool() -> None:
+    """gr702666: the count is a setting derived from the account's
+    concurrent-job cap minus the cohabitation headroom, not a bare
+    literal; Reto's 2026-10-23 "no fewer" (me692603) is the floor. Both
+    budgets must hold at the derived count and the two-gates-plus-main
+    one must break one shard above it, so a cap change moves the count
+    instead of silently starving a cohabitant (check.yml's job-budget
+    comment pins the same arithmetic from the workflow side)."""
+    plan = _PLAN
+    n = plan.SHARDS
+    assert n == 10
+    # two gates + both soaks + main's check lane fit the account cap
+    assert (
+        plan.CONCURRENT_GATES * (plan.GATE_FIXED_JOBS + n)
+        + plan.CONCURRENT_GATES * plan.SOAK_PARALLEL
+        + plan.MAIN_LANE_JOBS
+        <= plan.ACCOUNT_CONCURRENT_JOBS
+    )
+    # ... and one shard more breaks that budget (the binding one today)
+    assert (
+        plan.CONCURRENT_GATES * (plan.GATE_FIXED_JOBS + n + 1)
+        + plan.CONCURRENT_GATES * plan.SOAK_PARALLEL
+        + plan.MAIN_LANE_JOBS
+        > plan.ACCOUNT_CONCURRENT_JOBS
+    )
+    # the nightly cohabiting with one gate fits too
+    assert (
+        min(2 * n, plan.NIGHTLY_MATRIX_PARALLEL)
+        + plan.NIGHTLY_FIXED_JOBS
+        + plan.GATE_FIXED_JOBS
+        + n
+        <= plan.ACCOUNT_CONCURRENT_JOBS
+    )
+    # the ruling's floor stands even if the derivation were loosened
+    assert n >= plan.SHARDS_FLOOR
 
 
 @pytest.mark.parametrize(
@@ -538,6 +570,32 @@ def test_weights_table_balances_within_tolerance() -> None:
         assert max(load) <= mean * 1.05, (
             f"n={n} predicted max {max(load):.0f}s vs mean {mean:.0f}s — "
             "regenerate tests/shard_weights.json (scripts/shard-weights)"
+        )
+
+
+def test_recorded_weights_are_recent() -> None:
+    """gr702666: the shards balance against RECORDED durations; a stale
+    table silently stops predicting — r331's release gate ran gate-fast
+    shards from 12 to >25 minutes on a table self-balanced within 5% of
+    its own embedded seconds. The coordinator refits weekly
+    (scripts/gate-fast-refit --junit <green-run junit dir> --weights
+    <same dir> --write); the gate goes red one missed week after the
+    last refit, naming the recovery."""
+    max_age = timedelta(days=14)
+    now = datetime.now(UTC)
+    for name, stamp_keys in (
+        ("tests/shard_weights.json", ("generated_from", "at")),
+        ("tests/gate_fast.json", ("generated_at",)),
+    ):
+        data = json.loads((REPO / name).read_text(encoding="utf-8"))
+        value = data
+        for key in stamp_keys:
+            value = value[key]
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        age = now - stamp
+        assert age <= max_age, (
+            f"{name} is {age.days}d old — regenerate it (scripts/gate-fast-refit "
+            "--junit <green-run junit dir> --weights <same dir> --write)"
         )
 
 

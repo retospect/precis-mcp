@@ -254,6 +254,7 @@ def test_terminal_red_cleared_next_poll_records_only_green(
     checks = iter([red, None])
     monkeypatch.setattr(mod, "ci_red", lambda sha: next(checks))
     monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "4242")
+    monkeypatch.setattr(mod, "_gate_time_line", lambda sha: "")
     monkeypatch.setattr(mod.time, "sleep", lambda delay: None)
     verdicts: list[tuple[str, str, str]] = []
     monkeypatch.setattr(mod, "note_ci_verdict", lambda *args: verdicts.append(args))

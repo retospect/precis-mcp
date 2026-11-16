@@ -1502,6 +1502,76 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
     return mod
 
 
+#: Timed check-run rows as scripts/release's _GATE_TIME_JQ emits them.
+_GATE_TIME_ROWS = [
+    ["plan", "2026-11-15T21:20:11Z", "2026-11-15T21:21:05Z", "u", "u"],
+    ["lint", "2026-11-15T21:20:12Z", "2026-11-15T21:24:00Z", "u", "u"],
+    ["gate-fast (3.13, 1)", "2026-11-15T21:25:45Z", "2026-11-15T21:37:45Z", "u", "u"],
+    ["gate-fast (3.13, 2)", "2026-11-15T21:25:45Z", "2026-11-15T21:41:15Z", "u", "u"],
+]
+
+
+def test_gate_time_summary_minutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    # plan 54 s; legs 12 m / 15.5 m; total 21:04.
+    assert mod._summarize_gate_time(_GATE_TIME_ROWS) == (
+        "plan 0.9m, slowest shard 15.5m, created->last shard 21.1m"
+    )
+
+
+def test_gate_time_summary_ignores_running_legs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shard still in progress carries no completed_at; the line is
+    computed from the finished legs only (it prints on green, when every
+    leg has finished, but must not crash on an in-progress row)."""
+    mod = _load_release(tmp_path, monkeypatch)
+    rows = [
+        ["plan", "2026-11-15T21:20:11Z", "2026-11-15T21:21:05Z", "u", "u"],
+        ["gate-fast (3.13, 1)", "2026-11-15T21:25:45Z", "", "u", "u"],
+        [
+            "gate-fast (3.13, 2)",
+            "2026-11-15T21:25:45Z",
+            "2026-11-15T21:41:15Z",
+            "u",
+            "u",
+        ],
+    ]
+    assert mod._summarize_gate_time(rows) == (
+        "plan 0.9m, slowest shard 15.5m, created->last shard 21.1m"
+    )
+
+
+def test_gate_time_summary_degrades_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Half a line is worse than none: without the plan row, the
+    gate-fast legs, or parseable stamps there is no line."""
+    mod = _load_release(tmp_path, monkeypatch)
+    no_plan = [r for r in _GATE_TIME_ROWS if r[0] != "plan"]
+    assert mod._summarize_gate_time(no_plan) == ""
+    no_legs = [r for r in _GATE_TIME_ROWS if not r[0].startswith("gate-fast")]
+    assert mod._summarize_gate_time(no_legs) == ""
+    bad = [["plan", "not-a-stamp", "2026-11-15T21:21:05Z", "u", "u"]]
+    assert mod._summarize_gate_time(bad) == ""
+
+
+def test_gate_time_line_empty_when_gh_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+
+    def failing(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 1, "", "boom")
+
+    monkeypatch.setattr(mod.subprocess, "run", failing)
+    assert mod._gate_time_line("1" * 40) == ""
+
+
 def test_completed_non_green_run_fails_fast_with_queued_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1827,6 +1897,7 @@ def test_wait_ci_records_the_verdict_with_range_and_run_id(
     monkeypatch.setattr(mod, "gate_facts", lambda: facts)
     monkeypatch.setattr(mod, "rev", lambda name: prod)
     monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    monkeypatch.setattr(mod, "_gate_time_line", lambda sha: "")
     monkeypatch.setattr(
         mod, "ci_red", lambda h: {"jobs": ["lint"], "urls": [], "run_id": "666"}
     )
@@ -1939,12 +2010,46 @@ def test_wait_ci_green_path_is_unchanged_when_not_waived(
     }
     monkeypatch.setattr(mod, "gate_facts", lambda: facts)
     monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    monkeypatch.setattr(mod, "_gate_time_line", lambda sha: "")
     seen: list[tuple[Any, ...]] = []
     monkeypatch.setattr(mod, "note_ci_verdict", lambda *a: seen.append(a))
     monkeypatch.setattr(mod, "note_soak", lambda *a: None)
     args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
     assert mod.wait_ci("release/r1", args) == 0
     assert seen == [(head, "green", "555")]
+
+
+def test_wait_ci_prints_the_gate_time_line_on_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr702666: the green verdict carries the wall-clock split — plan /
+    slowest gate-fast shard / created->last shard — so a regression in
+    any of them shows at the moment the release goes green."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    facts = {
+        "release_head": head,
+        "release_branch": "release/r1",
+        "candidate": head,
+        "candidate_state": "found",
+    }
+    monkeypatch.setattr(mod, "gate_facts", lambda: facts)
+    monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    monkeypatch.setattr(
+        mod,
+        "_gate_time_line",
+        lambda sha: (
+            "gate time (run 555): plan 0.9m, slowest shard 15.5m, "
+            "created->last shard 21.1m"
+        ),
+    )
+    monkeypatch.setattr(mod, "note_ci_verdict", lambda *a: None)
+    monkeypatch.setattr(mod, "note_soak", lambda *a: None)
+    args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
+    assert mod.wait_ci("release/r1", args) == 0
+    out = capsys.readouterr().out
+    assert "CI green on release/r1" in out
+    assert "gate time (run 555): plan 0.9m, slowest shard 15.5m" in out
 
 
 @pytest.mark.parametrize("verdict", ["green", "red"])
@@ -1965,6 +2070,7 @@ def test_wait_ci_notes_soak_on_green_and_red(
     monkeypatch.setattr(mod, "gate_facts", lambda: facts)
     monkeypatch.setattr(mod, "rev", lambda name: "9" * 40)
     monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    monkeypatch.setattr(mod, "_gate_time_line", lambda sha: "")
     red = {"jobs": ["gate-fast (3.13, 1)"], "urls": [], "run_id": "666"}
     monkeypatch.setattr(mod, "ci_red", lambda h: red)
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)

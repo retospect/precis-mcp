@@ -279,12 +279,14 @@ def main(argv: list[str] | None = None) -> int:
         grouped = sw["runs"]([str(args.weights)])
         times = sw["file_seconds"](grouped)
         if times:
-            pinned, load = sw["pack"](times, 10)
-            tables = {"10": pinned}
-            print(
-                f"weights n=10: predicted {[round(x,1) for x in load]}",
-                file=sys.stderr,
-            )
+            tables: dict[str, dict[str, int]] = {}
+            for n in sw["NS"]:
+                pinned, load = sw["pack"](times, n)
+                tables[str(n)] = pinned
+                print(
+                    f"weights n={n}: predicted {[round(x, 1) for x in load]}",
+                    file=sys.stderr,
+                )
             payload = {
                 "tables": tables,
                 "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
