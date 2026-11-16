@@ -81,6 +81,7 @@ Mechanics: [[precis-python-help]], [[precis-md-help]].
 - Bug intake → the checkout's `bug` skill; masked root cause → `root-cause`; a durable fact learned → `remember`.
 - Todos, asks, work views: [[precis-work-help]]; gripe verbs: [[precis-gripe-help]]; the fleet loop: [[precis-gripe-loop-help]].
 - What this deployment pins or disables: [[precis-session-context-help]]; verbs and kinds: [[precis-overview]].
+- Asking Reto (ruling 2026-11-11, gr572704): act, then report. Ask only before something destructive, outward-facing or over $25 (`docs/conventions/thresholds.md`), and never ask him to type what a session can run. A question says what the thing is, what each answer changes and your pick; handles follow the description, never replace it. In voice, name things speakably ("the Miller paper") and keep the handle recoverable from the transcript.
 
 ## See also
 
