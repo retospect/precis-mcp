@@ -1165,6 +1165,32 @@ def test_mint_repo_pin_refuses_a_profile_without_a_pinner(
         mint_repo_pin(store, root, "catpath", release=rel)
 
 
+def test_mint_repo_pin_refuses_glue_at_or_above_the_root(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A glue todo that IS the batch root or an ancestor of it holds the pin
+    through the dispatcher's ancestor walk — the pin waits on itself and
+    the batch never starts (gr687055). The standalone door refuses it like
+    ``mint_repo_batch``'s named ∩ above check."""
+    from precis.plans import templates as T
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+    top = id_of(handler.put(text="Above the batch.").body)
+    mid = id_of(handler.put(text="In between.", parent_id=top).body)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Batch", {"auto_close": True})
+
+    root = T._run(store, mid, build).root_id
+    task = T.mint_plan_task(store, root, "Slice", "x")
+    rel = T.mint_repo_release(store, root, "catpath", blocked_by=[task])
+
+    for glue in (root, mid, top):
+        with pytest.raises(BadInput, match="wait on itself"):
+            T.mint_repo_pin(store, root, "catpath", release=rel, glue=[glue])
+
+
 # -- second-repo batch and its put(mode='plan') door (td659522 step 5 R5) -----
 
 
@@ -1498,6 +1524,62 @@ def test_mint_repo_batch_refuses_to_lift_a_hold_or_build_a_deadlock(
     finish_mint(store, last)
     refused("is the last child of", [last])
     assert plan_root != held_node
+
+
+def test_mint_repo_batch_refuses_a_slice_held_through_a_done_land_held_blocker(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_inherited_hold`` mirrors the dispatcher's land-held read
+    (``_Plan._land_held``, gr687055): a ``done`` blocker still holds its
+    dependants while ``meta.pending_land`` or a ``preland_defer_failed``
+    keeps its build off main, and a done reviewer still holds while its
+    targets carry the stamp. Adopting a slice out from under the blocked
+    ancestor would free it before the code it needs is on main."""
+    from precis.plans import templates as T
+    from precis.store.types import Tag
+
+    store = handler.hub.store
+    _pinner(monkeypatch)
+
+    def close_done(tid: int) -> None:
+        store.add_tag(
+            tid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+
+    def refused(sid: int) -> None:
+        with pytest.raises(BadInput, match="land is still held"):
+            T.mint_repo_batch(store, repo="catpath", slices=[sid])
+
+    # meta.pending_land on the done blocker (a held pre-land review land)
+    wave, (sid,) = _hand_slices(handler, n=1)
+    held = id_of(handler.put(text="Done, land held.").body)
+    close_done(held)
+    store.stamp_ref_meta(held, {T.PENDING_LAND_KEY: {"todo_id": held}})
+    store.add_link(src_ref_id=wave, dst_ref_id=held, relation="blocked-by")
+    refused(sid)
+
+    # meta.preland_defer_failed on the done blocker (a lost push)
+    wave, (sid,) = _hand_slices(handler, n=1)
+    failed = id_of(handler.put(text="Done, defer failed.").body)
+    close_done(failed)
+    store.stamp_ref_meta(failed, {T.PRELAND_DEFER_FAILED_KEY: True})
+    store.add_link(src_ref_id=wave, dst_ref_id=failed, relation="blocked-by")
+    refused(sid)
+
+    # a done reviewer whose target's land is still held
+    wave, (sid,) = _hand_slices(handler, n=1)
+    target = id_of(handler.put(text="Done, land held.").body)
+    close_done(target)
+    store.stamp_ref_meta(target, {T.PENDING_LAND_KEY: {"todo_id": target}})
+    reviewer = id_of(
+        handler.put(
+            text="review",
+            meta={"generate": {"role": "reviewer", "from": f"td{target}"}},
+        ).body
+    )
+    close_done(reviewer)
+    store.add_link(src_ref_id=wave, dst_ref_id=reviewer, relation="blocked-by")
+    refused(sid)
 
 
 def test_a_pin_bump_resolves_only_the_gripes_its_slices_fix(

@@ -588,8 +588,10 @@ def mint_repo_pin(
 
     Refuses a repo without a profile naming a ``pinner``, the default repo, a
     ``release`` that is not this repo's release node directly under
-    ``plan_root``, and a ``glue`` todo that is missing or sits directly under
-    ``plan_root`` (td659522 step 4 R7)."""
+    ``plan_root``, and a ``glue`` todo that is missing, sits directly under
+    ``plan_root``, or is ``plan_root`` or an ancestor of it — the glue→pin
+    ``blocked-by`` edge would hold the pin through the dispatcher's own
+    ancestor walk and deadlock it (td659522 step 4 R7, gr687055)."""
     profile = _lanes.repo_profile(repo)
     if repo == _lanes.DEFAULT_REPO or profile is None or profile.pinner is None:
         raise BadInput(
@@ -608,11 +610,21 @@ def mint_repo_pin(
             f"repo-pin: td{release} is not the {repo} release node under td{plan_root}",
             next="pass release=<the id mint_repo_release returned for this root>",
         )
+    above: set[int] = set()
+    if glue:
+        with store.tx() as conn:
+            above = {plan_root, *_ancestors(conn, plan_root)}
     for gid in glue:
         ref = store.get_ref(kind="todo", id=gid)
         if ref is None or ref.parent_id == plan_root:
             raise BadInput(
                 f"repo-pin: glue td{gid} is missing or sits under td{plan_root}",
+                next="name live glue todos that stay outside the batch root",
+            )
+        if gid in above:
+            raise BadInput(
+                f"repo-pin: glue td{gid} is td{plan_root} or an ancestor of "
+                "it; the pin would wait on itself",
                 next="name live glue todos that stay outside the batch root",
             )
 
@@ -681,10 +693,15 @@ def _ancestors(conn: Any, todo_id: int) -> list[int]:
 
 def _inherited_hold(store: Store, conn: Any, todo_id: int) -> str | None:
     """A hold ``todo_id`` gets from an ancestor today and would lose by moving
-    out from under it: a parking tag, ``STATUS:paused``, or an open
+    out from under it: a parking tag, ``STATUS:paused``, or a live
     ``blocked-by`` target (the dispatcher reads all three up the parent
-    chain). ``None`` when no ancestor holds it."""
-    from precis.todo import TERMINAL_TODO_STATUSES
+    chain). A terminal target still holds while its land is held —
+    ``meta.pending_land``, a ``preland_defer_failed`` on a ``done`` target,
+    or a reviewer whose targets carry the stamp — the same flag
+    ``plan_dispatch._load`` resolves and ``_Plan._land_held`` honours: the
+    dependant's worktree must cut from a main carrying that build
+    (gr659981, gr663738, gr687055). ``None`` when no ancestor holds it."""
+    from precis.todo import BLOCKER_TERMINAL_STATUSES
 
     for aid in _ancestors(conn, todo_id):
         tags = store.tags_for(aid)
@@ -693,14 +710,64 @@ def _inherited_hold(store: Store, conn: Any, todo_id: int) -> str | None:
             return f"td{aid} carries {parked}"
         if _status(tags) == "paused":
             return f"td{aid} is paused"
-        for (bid,) in conn.execute(
-            "SELECT l.dst_ref_id FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id "
-            "WHERE l.src_ref_id = %s AND l.relation = 'blocked-by' "
-            "AND b.retired_at IS NULL ORDER BY l.dst_ref_id",
+        for bid, status, land_held in conn.execute(
+            """
+            SELECT l.dst_ref_id,
+                   (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                     LIMIT 1),
+                   (
+                     jsonb_typeof(b.meta->'pending_land') = 'object'
+                     OR (b.meta->>'preland_defer_failed' IS NOT NULL
+                         AND EXISTS (
+                           SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                            WHERE rt2.ref_id = b.ref_id
+                              AND t2.namespace = 'STATUS' AND t2.value = 'done'))
+                     OR (
+                       b.meta->'generate'->>'role' = 'reviewer'
+                       AND EXISTS (
+                         SELECT 1
+                           FROM refs t
+                          WHERE t.retired_at IS NULL
+                            AND t.kind = 'todo'
+                            AND jsonb_typeof(t.meta->'pending_land') = 'object'
+                            AND (
+                              (
+                                t.ref_id::text = substring(
+                                  b.meta->'generate'->>'from'
+                                  from '^[[:space:]]*td([0-9]+)[[:space:]]*$')
+                                AND NOT EXISTS (
+                                  SELECT 1 FROM refs c
+                                   WHERE c.parent_id = t.ref_id
+                                     AND c.retired_at IS NULL
+                                     AND c.kind = 'todo'
+                                     AND NOT COALESCE(c.meta ? 'ask', FALSE)
+                                )
+                              )
+                              OR (
+                                t.parent_id::text = substring(
+                                  b.meta->'generate'->>'from'
+                                  from '^[[:space:]]*td([0-9]+)[[:space:]]*$')
+                                AND NOT COALESCE(t.meta ? 'ask', FALSE)
+                              )
+                            )
+                       )
+                     )
+                   ) AS land_held
+              FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = %s AND l.relation = 'blocked-by'
+               AND b.retired_at IS NULL
+             ORDER BY l.dst_ref_id
+            """,
             (aid,),
         ).fetchall():
-            if _status(store.tags_for(int(bid))) not in TERMINAL_TODO_STATUSES:
-                return f"td{aid} is blocked-by {bid}, which is still open"
+            if str(status or "open") not in BLOCKER_TERMINAL_STATUSES:
+                return f"td{aid} is blocked-by td{bid}, which is still open"
+            if land_held:
+                return (
+                    f"td{aid} is blocked-by td{bid}, which is done but "
+                    "its land is still held"
+                )
     return None
 
 
@@ -819,7 +886,9 @@ def _adopt_slice(store: Store, conn: Any, todo_id: int, root: int) -> None:
     )
     store.set_parent(todo_id, root, conn=conn)
     conn.execute(
-        "UPDATE refs SET meta = meta - 'llm_tier' WHERE ref_id = %s", (todo_id,)
+        "UPDATE refs SET meta = meta - 'llm_tier', updated_at = now() "
+        "WHERE ref_id = %s",
+        (todo_id,),
     )
 
 
