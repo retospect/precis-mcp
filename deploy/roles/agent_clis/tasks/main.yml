@@ -39,6 +39,10 @@
       {{ '--strict' if (agent_cli_strict | bool) else '' }}
       --config-json {{ agent_cli_config | to_json | quote }}
     executable: python3
+    # A readable cwd for agent_cli_user: on macOS the play's cwd is the
+    # connecting account's home (0750), which a builder user like coder
+    # cannot enter, and npm dies with `EACCES: process.cwd failed`.
+    chdir: /tmp
   become: true
   become_user: "{{ agent_cli_user }}"
   register: agent_cli_out
