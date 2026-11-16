@@ -20,10 +20,14 @@ Each fire:
   node of a :data:`_BUILD_OPS` type under the root, non-terminal, whose
   ``task_class`` resolves to ``code``. A chain parked on the sha-in-prod
   gate, on validate or on the non-blocking review holds no slot
-  (gr584410). Capacity = the summed ``cap`` of the enabled lanes that
-  fit the ``code`` task class (``plans/lanes.py``). Slots = capacity
-  minus held slots — one tick may fill every free build slot, and a
-  chain whose build never lands holds its slot.
+  (gr584410), and neither does a build node parked on a stay-away tag
+  or ``STATUS:paused`` — a dead chain frees its slot instead of holding
+  it silently (gr687946), with the claim gate's own carve-out: a stale
+  ``child-failed:`` bubble behind a retry the live plan still owns is
+  runnable work, not a park. Capacity = the summed ``cap`` of the
+  enabled lanes that fit the ``code`` task class (``plans/lanes.py``).
+  Slots = capacity minus held slots — one tick may fill every free
+  build slot, and a chain whose build never lands holds its slot.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
@@ -113,6 +117,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
+from precis.workers._mint import JOB_TERMINAL_STATUSES
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
@@ -160,13 +165,41 @@ _BUILD_OPS: tuple[str, ...] = ("run_slice", "land_slice")
 _PARKED_TAGS: tuple[str, ...] = _DOABLE_EXCLUSION_TAGS + ("rescue:",)
 
 
-def _parked_clause(tag_alias: str) -> str:
+def _parked_clause(tag_alias: str, node_alias: str, root_alias: str) -> str:
     """SQL OR-clause matching :data:`_PARKED_TAGS` — the bare/prefix
     convention of ``_doable_exclusion_clause``, minus its claimed-by
-    lease arm (a claimed node is being worked, not parked)."""
+    lease arm (a claimed node is being worked, not parked).
+
+    The ``child-failed:`` arm mirrors the ``parent_not_paused`` gate's
+    gr687946 carve-out (review td688389): the tag parks ``node_alias``
+    only when no LIVE (non-terminal) job under it is a retry the same
+    plan minted after the named failure — ``meta.plan_root`` naming
+    ``root_alias`` (the outer query already proves that root live) and
+    a ref_id past the tag's numeric suffix (safe parse: a non-numeric
+    hand tag frees nothing). A claimable retry behind a stale or
+    late-landing bubble is runnable work, not a park: the chain still
+    holds its slot. Carries ONE extra ``%s`` param slot — the bound
+    terminal-job-status array."""
     parts: list[str] = []
     for t in _PARKED_TAGS:
-        if t.endswith(":"):
+        if t == "child-failed:":
+            parts.append(
+                f"({tag_alias}.value LIKE '{t}%%' AND NOT EXISTS ("
+                "SELECT 1 FROM refs j "
+                f"WHERE j.parent_id = {node_alias}.ref_id "
+                "AND j.kind = 'job' AND j.retired_at IS NULL "
+                f"AND j.meta->>'plan_root' = {root_alias}.ref_id::text "
+                "AND COALESCE(NULLIF(substring("
+                f"{tag_alias}.value from '^child-failed:([0-9]+)$'), ''"
+                ")::bigint < j.ref_id, false) "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM ref_tags jrt JOIN tags jt "
+                "ON jt.tag_id = jrt.tag_id "
+                "WHERE jrt.ref_id = j.ref_id "
+                "AND jt.namespace = 'STATUS' "
+                "AND jt.value = ANY(%s))))"
+            )
+        elif t.endswith(":"):
             parts.append(f"{tag_alias}.value LIKE '{t}%%'")
         else:
             parts.append(f"{tag_alias}.value = '{t}'")
@@ -292,7 +325,10 @@ def open_chain_count(store: Store) -> int:
     may run on for hours without holding a lane slot (gr584410). A
     build node parked on a :data:`_PARKED_TAGS` tag or ``STATUS:paused``
     claims nothing either — a dead chain frees its slot instead of
-    holding it silently (gr687946)."""
+    holding it silently (gr687946). The ``child-failed:`` arm carries
+    the claim gate's own carve-out (review td688389): a live job the
+    same plan minted after the named failure means the retry is
+    runnable, not parked — the chain keeps its slot."""
     with store.pool.connection() as conn:
         row = conn.execute(
             f"""
@@ -326,7 +362,7 @@ def open_chain_count(store: Store) -> int:
                                                 JOIN tags pk ON pk.tag_id = pkt.tag_id
                                                WHERE pkt.ref_id = bn.ref_id
                                                  AND pk.namespace = 'OPEN'
-                                                 AND {_parked_clause("pk")}))
+                                                 AND {_parked_clause("pk", "bn", "r")}))
             """,
             (
                 list(_TERMINAL_STATUSES),
@@ -336,6 +372,7 @@ def open_chain_count(store: Store) -> int:
                 # Terminal OR paused: a paused build claims no lane, so
                 # its chain holds no slot either.
                 sorted(TERMINAL_TODO_STATUSES | {"paused"}),
+                list(JOB_TERMINAL_STATUSES),
             ),
         ).fetchone()
     return int(row[0]) if row else 0

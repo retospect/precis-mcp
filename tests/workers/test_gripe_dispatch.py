@@ -539,6 +539,113 @@ def test_paused_build_frees_the_slot(
     assert _roots_for(store, b)
 
 
+def test_claimable_plan_retry_behind_a_stale_bubble_holds_the_slot(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr687946 review (td688389): the parked-tag count mirrors the
+    claim gate's carve-out — a ``child-failed:`` tag naming an OLDER
+    sibling does not park a build node whose queued retry the live plan
+    owns (``meta.plan_root`` naming the chain's root). A runnable chain
+    keeps its slot; freeing it let gripe_dispatch over-mint."""
+    from precis.workers._mint import mint_background_job
+
+    codex, _sub = two_lanes
+    use_lanes(monkeypatch, codex)  # capacity 1
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=2)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    [root] = _roots_for(store, a)
+    build = _build_node(store, root)
+    assert gd.open_chain_count(store) == 1
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
+
+    # The first attempt failed; the bubble tag lands AFTER the plan's
+    # retry already sits queued (the late-landing ordering the gate
+    # exempts) — the chain is alive and must still hold its slot.
+    with store.tx() as conn:
+        failed = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="devin_api",
+            title="attempt 1",
+            params={},
+            parent_id=build,
+            status="failed",
+            meta_extra={"plan_root": root},
+        )
+        retry = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="devin_api",
+            title="attempt 2",
+            params={},
+            parent_id=build,
+            meta_extra={"plan_root": root},
+        )
+    store.add_tag(build, Tag.open(f"child-failed:{int(failed.id)}"), set_by="system")
+    assert gd.open_chain_count(store) == 1
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # still full
+
+    # A tag naming a NEWER sibling is not stale — no live retry sits
+    # behind it, so the node really is parked and frees the slot.
+    store.add_tag(
+        build,
+        Tag.open(f"child-failed:{int(retry.id) + 100}"),
+        set_by="system",
+    )
+    assert gd.open_chain_count(store) == 0
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert _roots_for(store, b)
+
+
+def test_unowned_job_behind_a_stale_bubble_frees_the_slot(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr687946 review (td688389): the carve-out belongs to the plan's
+    own retries — a queued job with no ``meta.plan_root`` under the
+    tagged node stays gated, so the chain is parked and frees its slot."""
+    from precis.workers._mint import mint_background_job
+
+    codex, _sub = two_lanes
+    use_lanes(monkeypatch, codex)  # capacity 1
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=2)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    [root] = _roots_for(store, a)
+    build = _build_node(store, root)
+    assert gd.open_chain_count(store) == 1
+
+    with store.tx() as conn:
+        failed = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="devin_api",
+            title="attempt 1",
+            params={},
+            parent_id=build,
+            status="failed",
+            meta_extra={"plan_root": root},
+        )
+        mint_background_job(  # a job the plan never minted
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="devin_api",
+            title="stray",
+            params={},
+            parent_id=build,
+        )
+    store.add_tag(build, Tag.open(f"child-failed:{int(failed.id)}"), set_by="system")
+    assert gd.open_chain_count(store) == 0
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert _roots_for(store, b)
+
+
 def test_factory_off_mints_nothing(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
