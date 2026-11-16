@@ -24,11 +24,12 @@ owner-agnostic — reusable by any rolling-context rewrite), `trap_check`
 network carries a stale-engine measure, a swapped endpoint and an absurd
 barrier beside one control, ticked N times and scored on the frontier
 gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
-cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop itself is the
+cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
 Package-level invariants (detail lives on the named module):
 
+- **Operational commits advance ticks.**
 - **Environment objectives preserve missing evidence.**
   ``environment_optimizer`` evaluates one stored point without solving or
   stamping: the five eV terms, physical/trust mask and bottleneck J. Rates

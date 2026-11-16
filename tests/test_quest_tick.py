@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+import pytest
 
 from precis.bench import raw as bench_raw
 from precis.dispatch import Hub
@@ -3283,6 +3284,51 @@ class TestCommitReRepromptLadder:
             for b in store.chunks.list_chunks_for_ref(qid)
             if b.chunk_kind == "quest_log"
         ]
+
+    @pytest.mark.parametrize("on_ladder", [False, True])
+    def test_operational_commit_resets_stall_without_escalation(
+        self, store: Any, monkeypatch: Any, on_ladder: bool
+    ) -> None:
+        """gr573805: accepted operational progress satisfies either commit path."""
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "Compute scout")
+        progress = {"commits": [{"kind": "ask", "text": "Credit ask queued"}]}
+        monkeypatch.setenv("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "1")
+        disp, reqs = _sequenced_dispatch(
+            [self._EMPTY, progress] if on_ladder else [progress]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True)
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        assert len(reqs) == (2 if on_ladder else 1)
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref is not None
+        assert ref.meta.get("ticks_since_experiment") == 0
+        assert any("commit [ask]" in (b.text or "") for b in self._logs(store, qid))
+
+    def test_malformed_commits_preserve_other_actions_and_do_not_count_as_progress(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr573805: dropping a malformed channel must preserve the payload."""
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "Compute scout")
+        disp, reqs = _sequenced_dispatch(
+            [
+                {
+                    "commits": "bad",
+                    "logbook": [{"text": "Lead checked", "entry_type": "observation"}],
+                }
+            ]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True)
+        assert out.status == "succeeded"
+        assert len(reqs) == 1
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref is not None
+        assert ref.meta.get("ticks_since_experiment") == 1
+        texts = [b.text or "" for b in self._logs(store, qid)]
+        assert any("Lead checked" in text for text in texts)
+        assert any("commits: dropped 1 malformed" in text for text in texts)
 
     def test_first_dry_tick_advances_counter_without_a_commit_reprompt(
         self, store: Any, monkeypatch: Any
