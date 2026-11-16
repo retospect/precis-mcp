@@ -411,3 +411,16 @@ class TestFlowErrors:
             },
         )
         assert "kind='job' only" in body
+
+
+def test_count_group_by_origin_class(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _gripe(store, "origin-class:human")
+    _gripe(store, "origin-class:self-improvement")
+    body = runtime_with_store.dispatch(
+        "search",
+        {"kind": "gripe", "view": "count", "args": {"group_by": "tag:origin-class"}},
+    )
+    assert "human" in body
+    assert "self-improvement" in body

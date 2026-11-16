@@ -2240,6 +2240,27 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        from precis.utils.gripe_origin_class import classify_origin
+
+        pairs = conn.execute(
+            "SELECT t.namespace, t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s",
+            (g.ref_id,),
+        ).fetchall()
+        origin_tags = [
+            f"{ns}:{value}" if ns not in {"OPEN", "FLAG"} else value
+            for ns, value in pairs
+        ]
+        if not any(t.startswith("origin-class:") for t in origin_tags):
+            origin_class = classify_origin(origin_tags, g.title)
+            if origin_class:
+                store.add_tag(
+                    g.ref_id,
+                    Tag.open(f"origin-class:{origin_class}"),
+                    set_by="system",
+                    conn=conn,
+                )
+
         # gr657257: a memory gripe names a live memory — it becomes
         # ``project:memory`` (the gardener's queue, never the coder wave)
         # and links the memory ``raises-concern-about`` so the open

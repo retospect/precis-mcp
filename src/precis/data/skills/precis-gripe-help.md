@@ -970,3 +970,19 @@ link or comment the recovery note onto the surviving ref instead.
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds
 - [[precis-todo-help]] — promote a gripe to a todo
+
+## Origin classification
+
+Filings and triage infer the open tag `origin-class:human`,
+`origin-class:self-improvement` or `origin-class:specification` from explicit
+filing tags, then the first line. Known human writer context also counts.
+Unknown provenance stays untagged. An existing origin-class tag is preserved;
+use `tag` to remove the old value and add a corrected one.
+
+Filter with `search(kind="gripe", tags=["origin-class:human"])`;
+count with `search(kind="gripe", view="count",
+args={"group_by": "tag:origin-class"})`.
+
+`precis gripe origin-backfill --status done` reports counts and unclassified
+handles without writes. Review the report, then pass `--apply` to stamp
+classifiable rows. Existing classifications remain untouched.

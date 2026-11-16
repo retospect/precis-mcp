@@ -684,7 +684,7 @@ class GripeHandler(NumericRefHandler):
     # chip — the tag that groups the queue. ``size:``, ``theme:``,
     # ``flood`` and the ``+N more`` tail were most of a 100-row page's
     # bytes and none of its grouping signal.
-    list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:",)
+    list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:", "origin-class:")
     # An overflowing list also names its ``cluster:`` groups (base class).
     facet_axis: ClassVar[str | None] = "cluster"
 
@@ -995,6 +995,17 @@ class GripeHandler(NumericRefHandler):
         # gr508686). Runs here so create and comment paths share it —
         # the comment path's tag leg re-aliases harmlessly on the
         # already-canonical list.
+        if id is None:
+            from precis.filing_origin import current_filed_by
+            from precis.utils.gripe_origin_class import classify_origin
+
+            origin_class = classify_origin(
+                tags or (), text or "", current_filed_by(self.store.pool)
+            )
+            if origin_class and not any(
+                t.startswith("origin-class:") for t in (tags or ())
+            ):
+                tags = [*(tags or []), f"origin-class:{origin_class}"]
         tags, readings = alias_prio_tags(tags)
         tags, status_readings = alias_status_tags(tags, kind=self.kind)
         readings += status_readings

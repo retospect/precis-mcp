@@ -543,6 +543,20 @@ class TestTick:
         assert "project:precis" in _open_tag_values(store, gid)
         assert not any(c.startswith("project:") for c in _comments(store, gid))
 
+    @pytest.mark.parametrize("override", [False, True])
+    def test_triage_stamps_origin_class(self, store: Store, override: bool) -> None:
+        _light(store)
+        gid = _gripe(store, "quest-need: missing capability")
+        if override:
+            store.add_tag(gid, Tag.open("origin-class:human"), set_by="agent")
+        _run(store, llm=_llm({"verdicts": [_verdict(gid)]}))
+        origins = {
+            t for t in _open_tag_values(store, gid) if t.startswith("origin-class:")
+        }
+        assert origins == {
+            "origin-class:human" if override else "origin-class:self-improvement"
+        }
+
     def test_writes_tags_prio_status_and_clears_lease(self, store: Store) -> None:
         gid = _gripe(store, "router pours fail", age_days=7, body="it pours")
         _light(store)

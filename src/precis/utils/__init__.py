@@ -73,6 +73,11 @@ only caller-supplied formula values produce discard notes, so re-evaluating
 stored results stays quiet. ``table_data.normalize_table`` owns expansion
 and note collection for both creation and row insertion.
 
+Gripe provenance uses ``gripe_origin_class.classify_origin`` at intake, triage
+and operator backfill. A single deterministic rule set preserves explicit
+classifications and leaves unknown origins empty rather than guessing from
+an agent identity.
+
 **Seams.** Most helpers are pure; the DB-touching ones (``db_log_handler``,
 ``rate_limit``, ``handle_registry``) take their connection or store from the
 caller. A generic helper wanted by two or more packages belongs here — look for
