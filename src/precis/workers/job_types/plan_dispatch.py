@@ -4359,6 +4359,42 @@ def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
 
 
+def _held_by_registry(plan: _Plan, n: _Node) -> bool:
+    """Any shared doable-exclusion tag (``child-failed:`` included, unlike
+    :func:`_excluded`) or ``rescue:`` on ``n`` or an ancestor."""
+    held = (*_DOABLE_EXCLUSION_TAGS, "rescue:")
+    for node in (n, *plan.ancestors(n)):
+        for value in node.open_tags:
+            for t in held:
+                if (t.endswith(":") and value.startswith(t)) or value == t:
+                    return True
+    return False
+
+
+def _node_live(plan: _Plan, n: _Node) -> bool:
+    """Whether ``n`` is work in motion: a non-terminal child job or a
+    ``claimed-by:`` tag, or the tick would dispatch it — the
+    :func:`_step_dispatch` predicate (open task shape, no hold tag, not
+    blocked or paused). A parked node (``ask-user``, ``waiting-for:*``,
+    ``child-failed:*``, paused, blocked, rescue) is not live."""
+    if plan.live_job(n) or _claims(n):
+        return True
+    if n.status != "open" or not _dispatchable(plan, n):
+        return False
+    return not (_held_by_registry(plan, n) or plan.blocked(n) or plan.paused(n))
+
+
+def live_nodes(store: Any, roots: list[int]) -> set[int]:
+    """Ids of the todos under the plan ``roots`` that are live
+    (:func:`_node_live`) — the one liveness read ``gripe_dispatch``
+    shares with the dispatch tick, so a chain it counts as holding a
+    build slot is a chain the tick is running or about to run."""
+    if not roots:
+        return set()
+    plan = _load(store, list(roots))
+    return {n.id for n in plan.todos() if _node_live(plan, n)}
+
+
 def _plan_root_of(store: Any, ref_id: int) -> int | None:
     """The live plan root ``ref_id`` sits under (itself included), or
     ``None`` outside a live plan: the highest live ancestor carrying the
@@ -8439,6 +8475,7 @@ __all__ = [
     "SERVICE",
     "SPEC",
     "PassResult",
+    "live_nodes",
     "load",
     "parse_verdict",
     "read_only_reason",

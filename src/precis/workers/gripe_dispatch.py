@@ -15,15 +15,35 @@ is an enablement and rides Reto's go, not a code change.
 
 Each fire:
 
-* **Supply.** Open chains = live plan roots ``related-to`` a gripe whose
-  STATUS is not terminal **and whose build has not landed**: an ``op``
-  node of a :data:`_BUILD_OPS` type under the root, non-terminal, whose
-  ``task_class`` resolves to ``code``. A chain parked on the sha-in-prod
-  gate, on validate or on the non-blocking review holds no slot
-  (gr584410). Capacity = the summed ``cap`` of the enabled lanes that
-  fit the ``code`` task class (``plans/lanes.py``). Slots = capacity
-  minus held slots — one tick may fill every free build slot, and a
-  chain whose build never lands holds its slot.
+* **Supply.** Unlanded chains = live plan roots ``related-to`` a gripe
+  whose STATUS is not terminal **and whose build has not landed**: an
+  ``op`` node of a :data:`_BUILD_OPS` type under the root, non-terminal,
+  whose ``task_class`` resolves to ``code``. A chain parked on the
+  sha-in-prod gate, on validate or on the non-blocking review holds no
+  slot (gr584410). Of the unlanded chains only those whose build is
+  **live** hold a slot (gr687946): a non-terminal job, a ``claimed-by:``
+  tag, or doable by ``plan_dispatch``'s own predicate
+  (``plan_dispatch.live_nodes``: open, no ``ask-user``, ``waiting-for:*``,
+  ``child-failed:*``, ``halt``, ``rescue:`` or ``hold:no-dispatch`` tag on
+  it or an ancestor, not blocked, not paused). A parked build — a rescue
+  ask answered and never re-armed, a spent ladder, ``STATUS:paused``, a
+  child-failed bubble — holds none, so idle build hosts get work. Capacity
+  = the summed ``cap`` of the enabled lanes that fit the ``code`` task
+  class (``plans/lanes.py``). Slots = capacity minus live chains — one
+  tick may fill every free build slot. Parked chains are bounded by
+  setting :data:`MAX_PARKED_KEY` (default 2 x capacity): at the cap the
+  pass mints nothing (release-waiver chains excepted) and logs why.
+* **Stall sweep** (:func:`sweep_stalled`, before minting). A parked chain
+  with no open ask in its plan is closed once the whole plan has
+  stalled: no node under the root is live (a build blocked-by a running
+  review is waiting, not stalled) and nothing has moved on any plan node
+  (``updated_at``, tag stamps, jobs) for setting :data:`STALL_HOURS_KEY`
+  hours (default 6). The ROOT goes ``STATUS:won't-do`` (``plan_dispatch``'s dead-roots step closes
+  the open children, gr612091), with a comment on the root and on the
+  gripe giving the state found and its age. The gripe's open tag
+  ``chain-stalls:<n>`` counts closures; at the second stall it also gets
+  ``hold:no-dispatch`` and a comment that it needs a re-brief, so it is
+  not re-minted in a loop. At most :data:`_STALL_BATCH` closures a pass.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
@@ -213,6 +233,18 @@ TRUST_KEY = "factory.gripe_trust"
 #: ``filer`` keeps the Claude Code / human / ``ci.sig`` rule.
 TRUST_ALL = "all"
 TRUST_FILER = "filer"
+#: Registry key of the parked-chain cap (:func:`max_parked`).
+MAX_PARKED_KEY = "factory.gripe_dispatch.max_parked"
+#: Registry key and default of the stall window (:func:`stall_hours`).
+STALL_HOURS_KEY = "factory.gripe_dispatch.stall_hours"
+DEFAULT_STALL_HOURS = 6
+#: Stalled chains closed per pass.
+_STALL_BATCH = 10
+#: Open tag counting a gripe's stalled-and-closed chains
+#: (``chain-stalls:<n>``); the second stall also holds the gripe.
+STALL_TAG_PREFIX = "chain-stalls:"
+#: Stalls after which a gripe needs a re-brief, not another mint.
+_STALL_HOLD_AT = 2
 
 
 def gripe_trust(store: Store) -> str:
@@ -270,20 +302,79 @@ def lane_capacity(
     return sum(ln.cap for ln in table if ln.enabled and ln.fits(_BUILD_TASK_CLASS))
 
 
-def open_chain_count(store: Store) -> int:
-    """Live plan roots ``related-to`` a gripe still holding a build slot.
+@dataclass(frozen=True, slots=True)
+class Chain:
+    """A live plan root ``related-to`` a gripe whose build is unlanded."""
 
-    A chain holds a slot only while its build is unlanded: an ``op``
-    node of a :data:`_BUILD_OPS` type under the root (every plan node
-    carries the ``plan:<root>`` tag) whose ``meta.task_class`` resolves
-    to :data:`_BUILD_TASK_CLASS` — unset reads ``code``, as
-    ``plan_dispatch`` resolves it — and whose STATUS is not terminal.
-    Once the build has landed the chain tail (gate, validate, review)
-    may run on for hours without holding a lane slot (gr584410)."""
+    root_id: int
+    gripe_ids: tuple[int, ...]
+    #: Non-terminal :data:`_BUILD_OPS` nodes of the chain (task class code).
+    build_ids: tuple[int, ...]
+    #: Some build node is live (:func:`precis.workers.job_types.
+    #: plan_dispatch.live_nodes`) and so holds a build slot.
+    live: bool
+    #: Every todo of the plan (tagged ``plan:<root>``, root included).
+    plan_ids: tuple[int, ...] = ()
+    #: Some node anywhere in the plan is live (:func:`plan_dispatch.
+    #: live_nodes`): the chain is moving, whatever its build is doing.
+    plan_live: bool = True
+
+
+def _plan_nodes(store: Store, roots: list[int]) -> dict[int, tuple[int, ...]]:
+    """``{root: every live todo tagged plan:<root>}``."""
     with store.pool.connection() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             """
-            SELECT count(DISTINCT r.ref_id)
+            SELECT r.ref_id, n.ref_id
+              FROM refs r
+              JOIN tags p ON p.namespace = 'OPEN' AND p.value = 'plan:' || r.ref_id
+              JOIN ref_tags pt ON pt.tag_id = p.tag_id
+              JOIN refs n ON n.ref_id = pt.ref_id
+             WHERE r.ref_id = ANY(%s)
+               AND n.kind = 'todo' AND n.retired_at IS NULL
+             ORDER BY r.ref_id, n.ref_id
+            """,
+            (roots,),
+        ).fetchall()
+    out: dict[int, list[int]] = {}
+    for root, node in rows:
+        out.setdefault(int(root), []).append(int(node))
+    return {k: tuple(v) for k, v in out.items()}
+
+
+def _unlanded_chains(
+    store: Store,
+) -> list[tuple[int, tuple[int, ...], tuple[int, ...]]]:
+    """``(root, gripes, build nodes)`` of every live plan root
+    ``related-to`` a gripe, with its non-terminal build nodes.
+
+    A chain is unlanded while an ``op`` node of a :data:`_BUILD_OPS` type
+    under the root (every plan node carries the ``plan:<root>`` tag)
+    whose ``meta.task_class`` resolves to :data:`_BUILD_TASK_CLASS` —
+    unset reads ``code``, as ``plan_dispatch`` resolves it — has a
+    STATUS that is not terminal. Once the build has landed the chain
+    tail (gate, validate, review) may run on for hours without holding
+    a lane slot (gr584410)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id,
+                   array_agg(DISTINCT g.ref_id),
+                   (SELECT array_agg(bn.ref_id ORDER BY bn.ref_id)
+                      FROM refs bn
+                      JOIN ref_tags bpt ON bpt.ref_id = bn.ref_id
+                      JOIN tags bp ON bp.tag_id = bpt.tag_id
+                                 AND bp.namespace = 'OPEN'
+                                 AND bp.value = 'plan:' || r.ref_id
+                     WHERE bn.kind = 'todo' AND bn.retired_at IS NULL
+                       AND COALESCE(bn.meta->'op'->>'type', bn.meta->>'op')
+                           = ANY(%s)
+                       AND COALESCE(bn.meta->>'task_class', %s) = %s
+                       AND NOT EXISTS (SELECT 1 FROM ref_tags bst
+                                         JOIN tags bs ON bs.tag_id = bst.tag_id
+                                        WHERE bst.ref_id = bn.ref_id
+                                          AND bs.namespace = 'STATUS'
+                                          AND bs.value = ANY(%s)))
               FROM refs r
               JOIN links l ON l.src_ref_id = r.ref_id AND l.relation = 'related-to'
               JOIN refs g ON g.ref_id = l.dst_ref_id AND g.kind = 'gripe'
@@ -294,31 +385,268 @@ def open_chain_count(store: Store) -> int:
                AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
                                 WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
                                   AND s.value = ANY(%s))
-               AND EXISTS (SELECT 1
-                             FROM refs bn
-                             JOIN ref_tags bpt ON bpt.ref_id = bn.ref_id
-                             JOIN tags bp ON bp.tag_id = bpt.tag_id
-                                        AND bp.namespace = 'OPEN'
-                                        AND bp.value = 'plan:' || r.ref_id
-                            WHERE bn.kind = 'todo' AND bn.retired_at IS NULL
-                              AND COALESCE(bn.meta->'op'->>'type', bn.meta->>'op')
-                                  = ANY(%s)
-                              AND COALESCE(bn.meta->>'task_class', %s) = %s
-                              AND NOT EXISTS (SELECT 1 FROM ref_tags bst
-                                                JOIN tags bs ON bs.tag_id = bst.tag_id
-                                               WHERE bst.ref_id = bn.ref_id
-                                                 AND bs.namespace = 'STATUS'
-                                                 AND bs.value = ANY(%s)))
+             GROUP BY r.ref_id
+             ORDER BY r.ref_id
             """,
             (
-                list(_TERMINAL_STATUSES),
                 list(_BUILD_OPS),
                 _BUILD_TASK_CLASS,
                 _BUILD_TASK_CLASS,
                 sorted(TERMINAL_TODO_STATUSES),
+                list(_TERMINAL_STATUSES),
             ),
+        ).fetchall()
+    return [
+        (int(r[0]), tuple(int(x) for x in r[1]), tuple(int(x) for x in r[2]))
+        for r in rows
+        if r[2]
+    ]
+
+
+def chains(store: Store) -> list[Chain]:
+    """Every unlanded chain, each marked live or parked. Liveness is
+    ``plan_dispatch``'s own predicate (a live job, a ``claimed-by:`` tag,
+    or a doable node); a load failure reads every chain live — the
+    pre-gr687946 count — so a blip never over-mints."""
+    rows = _unlanded_chains(store)
+    if not rows:
+        return []
+    from precis.workers.job_types.plan_dispatch import live_nodes
+
+    roots = [r[0] for r in rows]
+    try:
+        live = live_nodes(store, roots)
+        plans = _plan_nodes(store, roots)
+    except Exception:
+        log.warning(
+            "gripe_dispatch: build liveness read failed; counting every chain live",
+            exc_info=True,
+        )
+        live = {b for r in rows for b in r[2]}
+        plans = {}
+    return [
+        Chain(
+            root,
+            gids,
+            builds,
+            bool(live & set(builds)),
+            plans.get(root, ()),
+            # No plan read means no evidence of a stall: read it moving.
+            root not in plans or bool(live & set(plans[root])),
+        )
+        for root, gids, builds in rows
+    ]
+
+
+def open_chain_count(store: Store) -> int:
+    """Chains holding a build slot: unlanded chains whose build is live.
+
+    A parked build (``ask-user``, ``waiting-for:*``, ``child-failed:*``,
+    paused, blocked, claim-less and job-less) holds no slot — it is
+    bounded by ``factory.gripe_dispatch.max_parked`` and swept by
+    :func:`sweep_stalled` instead (gr687946)."""
+    return sum(1 for c in chains(store) if c.live)
+
+
+def parked_chain_count(store: Store) -> int:
+    """Unlanded chains whose build is not live."""
+    return sum(1 for c in chains(store) if not c.live)
+
+
+def max_parked(store: Store, capacity: int) -> int:
+    """``factory.gripe_dispatch.max_parked``; unset or below 1 reads
+    2 x ``capacity``."""
+    raw = psettings.get_int(MAX_PARKED_KEY, store=store)
+    return raw if raw is not None and raw >= 1 else 2 * capacity
+
+
+def stall_hours(store: Store) -> int:
+    """``factory.gripe_dispatch.stall_hours``; unset or below 1 reads
+    :data:`DEFAULT_STALL_HOURS`."""
+    raw = psettings.get_int(STALL_HOURS_KEY, store=store)
+    return raw if raw is not None and raw >= 1 else DEFAULT_STALL_HOURS
+
+
+def _idle_hours(store: Store, node_ids: tuple[int, ...]) -> float:
+    """Hours since anything moved on ``node_ids`` (the whole plan): a
+    node's ``updated_at``, any tag stamp on it (a STATUS or hold tag), or
+    a job under it."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH nodes AS (SELECT ref_id, updated_at FROM refs WHERE ref_id = ANY(%s))
+            SELECT extract(epoch FROM now() - max(g)) / 3600.0 FROM (
+                SELECT updated_at AS g FROM nodes
+                UNION ALL
+                SELECT rt.created_at FROM nodes
+                  JOIN ref_tags rt ON rt.ref_id = nodes.ref_id
+                UNION ALL
+                SELECT j.updated_at FROM refs j
+                  JOIN nodes ON j.parent_id = nodes.ref_id
+                 WHERE j.kind = 'job'
+            ) a
+            """,
+            (list(node_ids),),
         ).fetchone()
-    return int(row[0]) if row else 0
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def _open_ask(store: Store, root_id: int) -> bool:
+    """A non-terminal ask todo (``ask-user`` tag or ``meta.ask``) sits in
+    the plan: a human may be waiting, so the chain is not stalled."""
+    with store.pool.connection() as conn:
+        return (
+            conn.execute(
+                """
+                SELECT 1 FROM refs a
+                  JOIN ref_tags pt ON pt.ref_id = a.ref_id
+                  JOIN tags p ON p.tag_id = pt.tag_id
+                             AND p.namespace = 'OPEN' AND p.value = %s
+                 WHERE a.kind = 'todo' AND a.retired_at IS NULL
+                   AND (jsonb_typeof(a.meta->'ask') = 'object'
+                        OR EXISTS (SELECT 1 FROM ref_tags xt
+                                     JOIN tags x ON x.tag_id = xt.tag_id
+                                    WHERE xt.ref_id = a.ref_id
+                                      AND x.namespace = 'OPEN'
+                                      AND x.value LIKE 'ask-user%%'))
+                   AND NOT EXISTS (SELECT 1 FROM ref_tags st
+                                     JOIN tags s ON s.tag_id = st.tag_id
+                                    WHERE st.ref_id = a.ref_id
+                                      AND s.namespace = 'STATUS'
+                                      AND s.value = ANY(%s))
+                 LIMIT 1
+                """,
+                (f"plan:{root_id}", sorted(TERMINAL_TODO_STATUSES)),
+            ).fetchone()
+            is not None
+        )
+
+
+def _stall_count(store: Store, gripe_id: int) -> tuple[int, list[str]]:
+    """The gripe's ``chain-stalls:<n>`` count and the tag values held."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'OPEN' AND t.value LIKE %s",
+            (gripe_id, STALL_TAG_PREFIX + "%"),
+        ).fetchall()
+    values = [str(r[0]) for r in rows]
+    count = 0
+    for v in values:
+        tail = v[len(STALL_TAG_PREFIX) :]
+        if tail.isdigit():
+            count = max(count, int(tail))
+    return count, values
+
+
+def _comment_todo(store: Store, todo_id: int, text: str) -> None:
+    """A worker-stamped ``todo_comment`` on a plan root."""
+    existing = store.chunks.list_chunks_for_ref(todo_id)
+    ord_ = max((int(c.ord) for c in existing), default=0) + 1
+    store.chunks.insert_chunks(
+        todo_id,
+        [
+            ChunkInsert(
+                ord=ord_,
+                text=text,
+                meta={"chunk_kind": "todo_comment", **worker_comment_meta()},
+            )
+        ],
+    )
+
+
+def sweep_stalled(
+    store: Store, parked: list[Chain], *, limit: int = _STALL_BATCH
+) -> list[dict[str, Any]]:
+    """Close chains stalled with no human waiting (gr687946).
+
+    A parked chain — build not live, no node of its plan live (a build
+    blocked-by a running review is waiting, not stalled), no open ask in
+    the plan, and nothing moved on ANY plan node (``updated_at``, tag
+    stamps, jobs) for :func:`stall_hours` — has its ROOT set
+    ``STATUS:won't-do``; ``plan_dispatch``'s dead-roots step closes the
+    open children (gr612091), and the gripe, its link now to a closed
+    todo, re-enters :func:`candidates`. Each gripe carries
+    ``chain-stalls:<n>`` (replaced per closure); the second stall also
+    tags it ``hold:no-dispatch`` and says it needs a re-brief, so a
+    gripe the builders cannot land is not re-minted in a loop. At most
+    ``limit`` chains close per pass, idlest first. Returns one dict per
+    closure: ``root``, ``gripes``, ``idle_hours``, ``stalls``."""
+    hours = stall_hours(store)
+    due: list[tuple[float, Chain]] = []
+    for c in parked:
+        try:
+            # Stalled is a property of the whole plan: nothing live in
+            # it (an upstream review or brief the build is blocked-by
+            # may legitimately run long), nothing touched for the window.
+            if c.plan_live or not c.plan_ids:
+                continue
+            idle = _idle_hours(store, c.plan_ids)
+            if idle >= hours and not _open_ask(store, c.root_id):
+                due.append((idle, c))
+        except Exception:
+            log.warning(
+                "gripe_dispatch: stall check on td%d failed", c.root_id, exc_info=True
+            )
+    due.sort(key=lambda x: (-x[0], x[1].root_id))
+    closed: list[dict[str, Any]] = []
+    for idle, c in due[:limit]:
+        try:
+            closed.append(_close_stalled(store, c, idle, hours))
+        except Exception:
+            log.warning(
+                "gripe_dispatch: closing stalled td%d failed", c.root_id, exc_info=True
+            )
+    if closed:
+        log.info(
+            "gripe_dispatch: closed %d stalled chain(s): %s",
+            len(closed),
+            ", ".join(f"td{z['root']}" for z in closed),
+        )
+    return closed
+
+
+def _close_stalled(store: Store, c: Chain, idle: float, hours: int) -> dict[str, Any]:
+    found = (
+        f"build node(s) {', '.join(f'td{b}' for b in c.build_ids)} not live "
+        f"(no live job, claim or doable state) and no live node in the plan, "
+        f"plan untouched for {idle:.1f} h (window {hours} h), no open ask"
+    )
+    store.add_tag(
+        c.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    _comment_todo(
+        store,
+        c.root_id,
+        f"gripe_dispatch: stalled chain closed won't-do — {found}. "
+        "plan_dispatch closes the open children; the gripe may re-enter dispatch.",
+    )
+    stalls = 0
+    for gid in c.gripe_ids:
+        prev, held = _stall_count(store, gid)
+        stalls = prev + 1
+        for v in held:
+            store.remove_tag(gid, Tag.open(v))
+        store.add_tag(gid, Tag.open(f"{STALL_TAG_PREFIX}{stalls}"), set_by="system")
+        note = (
+            f"dispatch: closed stalled chain td{c.root_id} — {found} (stall {stalls})."
+        )
+        if stalls >= _STALL_HOLD_AT:
+            store.add_tag(gid, Tag.open("hold:no-dispatch"), set_by="system")
+            note += (
+                f" Second stall: `hold:no-dispatch` set — gr{gid} needs a "
+                "re-brief; remove the tag to return it to dispatch."
+            )
+        _append_comment(store, gid, note)
+    return {
+        "root": c.root_id,
+        "gripes": list(c.gripe_ids),
+        "idle_hours": round(idle, 1),
+        "stalls": stalls,
+    }
 
 
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
@@ -435,8 +763,23 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
             extra={"read_only": reason},
         )
     capacity = lane_capacity(store)
-    open_chains = open_chain_count(store)
+    census = chains(store)
+    # gr687946: close stalled chains first — their gripes re-enter below.
+    stalled = sweep_stalled(store, [c for c in census if not c.live])
+    swept = {int(z["root"]) for z in stalled}
+    open_chains = sum(1 for c in census if c.live)
+    parked = sum(1 for c in census if not c.live and c.root_id not in swept)
+    cap_parked = max_parked(store, capacity)
     slots = max(capacity - open_chains, 0)
+    parked_full = parked >= cap_parked
+    if parked_full:
+        log.info(
+            "gripe_dispatch: parked=%d reached %s=%d — minting no new chains "
+            "(waiver chains excepted) until the parked ones are swept or ruled",
+            parked,
+            MAX_PARKED_KEY,
+            cap_parked,
+        )
     _note_unsupported_projects(store)
     # A broken build (release-waiver gripe) mints at once and ahead of the
     # slot count: no settle delay, no slot needed — its chain claims in the
@@ -447,11 +790,18 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     slots = max(slots - len(waivers), 0)
     picks = [
         *waivers,
-        *_candidate_picks(store, slots, supported_projects=True, waiver=False),
+        *(
+            []
+            if parked_full
+            else _candidate_picks(store, slots, supported_projects=True, waiver=False)
+        ),
     ]
     extra: dict[str, Any] = {
         "lane_capacity": capacity,
         "open_chains": open_chains,
+        "parked": parked,
+        "max_parked": cap_parked,
+        "stalled": stalled,
         "slots": slots,
         "waivers": [w.gripe_id for w in waivers],
         "minted": [],
@@ -534,9 +884,10 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
                 "gripe_dispatch: comment on gr%d failed", c.gripe_id, exc_info=True
             )
     log.info(
-        "gripe_dispatch: capacity=%d open=%d slots=%d minted=%d failed=%d",
+        "gripe_dispatch: capacity=%d open=%d parked=%d slots=%d minted=%d failed=%d",
         capacity,
         open_chains,
+        parked,
         slots,
         ok,
         failed,
@@ -765,11 +1116,15 @@ __all__ = [
     "SERVICE_NAME",
     "TRUST_KEY",
     "WAIVER_TAG_PREFIX",
+    "Chain",
     "DispatchPick",
     "candidates",
+    "chains",
     "gripe_dispatch_enabled",
     "gripe_trust",
     "lane_capacity",
     "open_chain_count",
+    "parked_chain_count",
     "run_gripe_dispatch_pass",
+    "sweep_stalled",
 ]

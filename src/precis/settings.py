@@ -586,6 +586,30 @@ REGISTRY: dict[str, SettingSpec] = {
             "reads as 'filer'.",
         ),
         SettingSpec(
+            key="factory.gripe_dispatch.max_parked",
+            type="int",
+            env_var=None,
+            default=None,
+            doc="DB-only. Cap on gripe fix chains whose build is parked "
+            "(no live job, not doable: paused, blocked, ask-user, "
+            "waiting-for:*, child-failed:*) in the gripe_dispatch intake "
+            "(precis.workers.gripe_dispatch). Parked chains hold no build "
+            "slot, so this bounds how many may pile up: at the cap the "
+            "pass mints nothing and logs why. Unset reads 2 x the summed "
+            "lane capacity of the code class.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.stall_hours",
+            type="int",
+            env_var=None,
+            default=6,
+            doc="DB-only. Hours a gripe fix chain's build may sit parked "
+            "(not live, no open ask-user todo in the plan) before the "
+            "gripe_dispatch pass closes the chain's root won't-do and "
+            "counts a stall on the gripe (chain-stalls:<n>; the second "
+            "stall adds hold:no-dispatch).",
+        ),
+        SettingSpec(
             key="asks_triage.tier",
             type="str",
             env_var="PRECIS_ASKS_TRIAGE_TIER",
