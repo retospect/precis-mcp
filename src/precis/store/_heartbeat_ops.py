@@ -193,6 +193,8 @@ class HeartbeatMixin:
         serving_retractions_total: float | None = None,
         swap_in_pages_total: float | None = None,
         mem_used_pct: float | None = None,
+        cpu_used_pct: float | None = None,
+        gpu_util_pct: float | None = None,
         retention_days: float = 14.0,
     ) -> None:
         """Append one beat to ``host_heartbeat_log`` and prune the window.
@@ -208,7 +210,9 @@ class HeartbeatMixin:
         no serving endpoint answering or isn't on Linux — a host that never
         serves writes them absent every beat. ``mem_used_pct`` (gr592932,
         migration 0295) is the host memory-utilisation sample: NULL on a
-        platform the probe can't read.
+        platform the probe can't read. ``cpu_used_pct``/``gpu_util_pct``
+        (gr592809, migration 0333) are the CPU and per-card-mean GPU
+        utilisation samples: NULL when unmeasured or no card reported.
         """
         if retention_days <= 0:
             return
@@ -219,8 +223,9 @@ class HeartbeatMixin:
                     "(host, ts, temp_c, load1, load5, load15, "
                     "serving_running, serving_queued, serving_kv_usage, "
                     "serving_retractions_total, swap_in_pages_total, "
-                    "mem_used_pct) "
-                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "mem_used_pct, cpu_used_pct, gpu_util_pct) "
+                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s)",
                     (
                         host,
                         temp_c,
@@ -233,6 +238,8 @@ class HeartbeatMixin:
                         serving_retractions_total,
                         swap_in_pages_total,
                         mem_used_pct,
+                        cpu_used_pct,
+                        gpu_util_pct,
                     ),
                 )
                 conn.execute(
@@ -283,9 +290,11 @@ class HeartbeatMixin:
 
         One dict per (hour, host) in the trailing ``hours`` window:
         ``{"hr", "host", "beats", "load1_avg", "load1_max", "temp_max",
-        "mem_avg", "mem_max"}``, ordered by hour then host — the CPU and
-        memory halves of ``precis stats --utilization``. ``mem_*`` are
-        NULL until migration 0295's column has been populated by a beat.
+        "mem_avg", "mem_max", "cpu_avg", "gpu_avg"}``, ordered by hour
+        then host — the CPU/memory/GPU halves of ``precis stats
+        --utilization``. ``mem_*`` are NULL until migration 0295's column
+        has been populated by a beat; ``cpu_avg``/``gpu_avg`` likewise for
+        migration 0333's columns.
         """
         sql = (
             "SELECT date_trunc('hour', ts) AS hr, host, "
@@ -294,7 +303,9 @@ class HeartbeatMixin:
             "       max(load1) AS load1_max, "
             "       max(temp_c) AS temp_max, "
             "       avg(mem_used_pct) AS mem_avg, "
-            "       max(mem_used_pct) AS mem_max "
+            "       max(mem_used_pct) AS mem_max, "
+            "       avg(cpu_used_pct) AS cpu_avg, "
+            "       avg(gpu_util_pct) AS gpu_avg "
             "FROM host_heartbeat_log "
             "WHERE ts > now() - (%s || ' hours')::interval "
             "GROUP BY 1, 2 ORDER BY 1, 2"
@@ -311,9 +322,37 @@ class HeartbeatMixin:
                 "temp_max": float(r[5]) if r[5] is not None else None,
                 "mem_avg": float(r[6]) if r[6] is not None else None,
                 "mem_max": float(r[7]) if r[7] is not None else None,
+                "cpu_avg": float(r[8]) if r[8] is not None else None,
+                "gpu_avg": float(r[9]) if r[9] is not None else None,
             }
             for r in rows
         ]
+
+    def heartbeat_means(
+        self, host: str, *, hours: float = 24.0
+    ) -> dict[str, float | None]:
+        """Window means of the per-beat utilisation samples for ONE host.
+
+        ``{"cpu_used_pct", "gpu_util_pct", "mem_used_pct"}`` — each the
+        ``avg`` over the trailing ``hours`` window's beats, NULL when no
+        beat in the window carried a sample. The read behind the machine
+        ref's "util 1h/24h mean" overlay (gr592809) and the fleet gpu
+        view's 24 h column.
+        """
+        sql = (
+            "SELECT avg(cpu_used_pct), avg(gpu_util_pct), avg(mem_used_pct) "
+            "FROM host_heartbeat_log "
+            "WHERE host = %s AND ts > now() - (%s || ' hours')::interval"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (host, str(hours))).fetchone()
+        if row is None:
+            return {"cpu_used_pct": None, "gpu_util_pct": None, "mem_used_pct": None}
+        return {
+            "cpu_used_pct": float(row[0]) if row[0] is not None else None,
+            "gpu_util_pct": float(row[1]) if row[1] is not None else None,
+            "mem_used_pct": float(row[2]) if row[2] is not None else None,
+        }
 
 
 __all__ = ["HeartbeatMixin", "HostHeartbeat"]

@@ -7,6 +7,8 @@ schema fixture.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.store import Store
 
 
@@ -270,6 +272,64 @@ def test_heartbeat_history_mem_column_and_rollup(store: Store) -> None:
     assert len(rows) == 1
     assert rows[0]["mem_avg"] == 60.0
     assert rows[0]["mem_max"] == 80.0
+
+
+# ── gr592809: CPU/GPU utilisation columns + heartbeat_means window ────────
+
+
+def test_heartbeat_history_cpu_gpu_columns(store: Store) -> None:
+    """gr592809: the utilisation samples land verbatim and stay NULL when
+    not collected (a beat that sampled nothing)."""
+    store.record_heartbeat_history("birch-util", cpu_used_pct=12.5, gpu_util_pct=33.0)
+    store.record_heartbeat_history("birch-noutil", load1=0.5)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT cpu_used_pct, gpu_util_pct FROM host_heartbeat_log "
+            "WHERE host = 'birch-util'"
+        ).fetchone()
+        noutil = conn.execute(
+            "SELECT cpu_used_pct, gpu_util_pct FROM host_heartbeat_log "
+            "WHERE host = 'birch-noutil'"
+        ).fetchone()
+    assert row == (12.5, 33.0)
+    assert noutil == (None, None)
+
+
+def test_heartbeat_means_window(store: Store) -> None:
+    """The 1h/24h means read only beats inside the window — a row older
+    than the window must not drag the average up."""
+    store.record_heartbeat_history(
+        "birch-means", cpu_used_pct=10.0, gpu_util_pct=20.0, mem_used_pct=30.0
+    )
+    store.record_heartbeat_history(
+        "birch-means", cpu_used_pct=30.0, gpu_util_pct=60.0, mem_used_pct=90.0
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat_log "
+            "(host, ts, cpu_used_pct, gpu_util_pct, mem_used_pct) "
+            "VALUES ('birch-means', now() - interval '48 hours', "
+            "90.0, 90.0, 90.0)"
+        )
+        conn.commit()
+    means = store.heartbeat_means("birch-means", hours=24)
+    assert means == {"cpu_used_pct": 20.0, "gpu_util_pct": 40.0, "mem_used_pct": 60.0}
+    # A wide enough window folds the 48 h-old row back in.
+    means_all = store.heartbeat_means("birch-means", hours=72)
+    assert means_all["cpu_used_pct"] == pytest.approx(130.0 / 3)
+    assert means_all["gpu_util_pct"] == pytest.approx(170.0 / 3)
+    assert means_all["mem_used_pct"] == pytest.approx(210.0 / 3)
+
+
+def test_heartbeat_means_no_samples(store: Store) -> None:
+    """A host with beats but no utilisation sample reads all-NULL, never
+    an error or a fabricated 0."""
+    store.record_heartbeat_history("birch-empty", load1=0.5)
+    assert store.heartbeat_means("birch-empty", hours=24) == {
+        "cpu_used_pct": None,
+        "gpu_util_pct": None,
+        "mem_used_pct": None,
+    }
 
 
 def test_set_host_retired_stamps_and_clears(store: Store) -> None:

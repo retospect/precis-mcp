@@ -19,6 +19,19 @@ machines are alive and is any hot" source. ``host`` is
 ``PRECIS_HOST_NAME`` or ``socket.gethostname()``, matching the DB log
 handler's identity so heartbeat and ``worker_logs`` rows agree.
 
+Each beat also samples host utilisation (gr592809): CPU % from
+``/proc/stat`` deltas (Linux) / ``top`` (macOS) and, on hosts with
+``nvidia-smi``, per-card GPU utilisation + memory
+(``meta.gpu_stats = [{index, name, util_pct, mem_used_mib,
+mem_total_mib}]``; the card mean logs into
+``host_heartbeat_log.gpu_util_pct`` alongside ``cpu_used_pct``,
+migration 0333). Unreadable fields store null; no ``nvidia-smi`` stores
+no key. And it maintains the machine census: a beat from an unseen,
+non-retired host creates its ``ma_<host>`` machine ref (gr592809 slice
+b — via :func:`precis.utils.machine_ref.ensure_machine_ref`), so
+``put(kind='machine', mode='sync')`` is a manual refresh, not a
+prerequisite.
+
 Temperature is best-effort, priority order:
 
 1. ``PRECIS_TEMP_CMD`` — shell command, first float in stdout parsed as
@@ -284,6 +297,57 @@ def collect_mem_used_pct() -> float | None:
     except Exception:
         log.warning("heartbeat: mem utilisation probe failed", exc_info=True)
         return None
+
+
+def collect_cpu_used_pct() -> float | None:
+    """Best-effort host CPU utilisation percent (0–100), else ``None``.
+
+    The CPU half of the per-beat utilisation sample (gr592809) — logged
+    into ``host_heartbeat_log.cpu_used_pct``. Never fails the report,
+    same contract as :func:`collect_loads`.
+    """
+    try:
+        from precis.workers.capability_probe import cpu_used_pct
+
+        return cpu_used_pct()
+    except Exception:
+        log.warning("heartbeat: cpu utilisation probe failed", exc_info=True)
+        return None
+
+
+def collect_gpu_stats() -> list[dict[str, Any]] | None:
+    """Best-effort per-card GPU utilisation/memory sample, else ``None``.
+
+    The GPU half of the per-beat utilisation sample (gr592809) —
+    ``[{'index', 'name', 'util_pct', 'mem_used_mib', 'mem_total_mib'}]``
+    per NVIDIA card, recorded verbatim into ``host_heartbeat.meta.
+    gpu_stats``; the card mean of ``util_pct`` is what
+    ``host_heartbeat_log.gpu_util_pct`` logs. ``None`` when there is no
+    ``nvidia-smi`` or the query failed — the beat then stores no
+    ``gpu_stats`` key at all (a Mac is not a GPU-less error).
+    """
+    try:
+        from precis.workers.capability_probe import gpu_stats
+
+        return gpu_stats()
+    except Exception:
+        log.warning("heartbeat: gpu stats probe failed", exc_info=True)
+        return None
+
+
+def gpu_util_mean(gpu_stats: list[dict[str, Any]] | None) -> float | None:
+    """The card mean of a :func:`collect_gpu_stats` sample's ``util_pct``.
+
+    Cards that answered ``[N/A]`` (unified-memory) are excluded; ``None``
+    when no card reported — the log column stays NULL rather than
+    averaging in a fabricated zero.
+    """
+    if not gpu_stats:
+        return None
+    utils = [g["util_pct"] for g in gpu_stats if g.get("util_pct") is not None]
+    if not utils:
+        return None
+    return round(sum(utils) / len(utils), 1)
 
 
 def collect_mem_free_mb() -> int | None:
@@ -1096,6 +1160,9 @@ def _collect_and_upsert(
     """
     load1, load5, load15 = collect_loads()
     mem_used_pct = collect_mem_used_pct()
+    cpu_used_pct = collect_cpu_used_pct()
+    gpu_stats = collect_gpu_stats()
+    gpu_util_pct = gpu_util_mean(gpu_stats)
     temp_c = read_temp_c()
     meta: dict[str, Any] = {
         "platform": platform.system(),
@@ -1160,6 +1227,15 @@ def _collect_and_upsert(
     # series host_heartbeat_log.mem_used_pct keeps per beat.
     if mem_used_pct is not None:
         meta["mem_used_pct"] = mem_used_pct
+    # Host CPU + per-card GPU utilisation (gr592809): the latest-snapshot
+    # views of the series host_heartbeat_log.cpu_used_pct / gpu_util_pct
+    # keep per beat. The per-card GPU list rides along verbatim — the
+    # machine ref's get renders it card by card; absent (no nvidia-smi /
+    # query failed) means no key, never an empty list.
+    if cpu_used_pct is not None:
+        meta["cpu_used_pct"] = cpu_used_pct
+    if gpu_stats:
+        meta["gpu_stats"] = gpu_stats
 
     # Footprint admission's live headroom (td655172): the measured
     # admittable free numbers the claim cross-checks footprint
@@ -1198,6 +1274,19 @@ def _collect_and_upsert(
     if serving:
         meta["serving"] = dict(serving)
 
+    # gr592809 slice b: maintain the machine census from the beat itself
+    # — an unseen, non-retired host gains its ma_<host> ref with no
+    # manual put(mode='sync'). BEFORE the snapshot upsert: the upsert
+    # clears a returning host's retirement marker, and the marker is
+    # exactly what must suppress the ref. Best-effort: a ref hiccup must
+    # never fail the liveness write.
+    try:
+        from precis.utils.machine_ref import ensure_machine_ref
+
+        ensure_machine_ref(store, host, ephemeral=ephemeral)
+    except Exception:
+        log.warning("heartbeat: machine-ref auto-create failed", exc_info=True)
+
     store.record_heartbeat(
         host,
         temp_c=temp_c,
@@ -1206,9 +1295,11 @@ def _collect_and_upsert(
         load15=load15,
         meta=meta,
     )
-    # Append-only utilization history (host_heartbeat_log, migration 0113)
-    # — the time-series behind ``precis stats --utilization``. Best-effort:
-    # a history hiccup must never fail the liveness UPSERT above.
+    # Append-only utilization history (host_heartbeat_log, migration 0113;
+    # cpu/gpu columns 0333) — the time-series behind ``precis stats
+    # --utilization`` and the machine ref's 1h/24h utilisation means.
+    # Best-effort: a history hiccup must never fail the liveness UPSERT
+    # above.
     try:
         store.record_heartbeat_history(
             host,
@@ -1217,6 +1308,8 @@ def _collect_and_upsert(
             load5=load5,
             load15=load15,
             mem_used_pct=mem_used_pct,
+            cpu_used_pct=cpu_used_pct,
+            gpu_util_pct=gpu_util_pct,
             retention_days=_history_retention_days(),
             **serving,
         )
@@ -1544,9 +1637,12 @@ def _resolve_process_name_for_boot() -> str | None:
 __all__ = [
     "advertise_boot_id_now",
     "collect_and_report",
+    "collect_cpu_used_pct",
+    "collect_gpu_stats",
     "collect_loads",
     "collect_top_cpu",
     "current_boot_id",
+    "gpu_util_mean",
     "mint_boot_id",
     "nas_attestation_entry",
     "read_temp_c",

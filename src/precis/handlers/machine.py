@@ -8,12 +8,16 @@ Slice 1 shape (the ruling's spec):
 * One slug-addressed ref per host, public id ``ma_<host>``. The ref's
   ``meta`` holds **stable facts only** — ``host``, ``platform``,
   ``release``, ``role``, ``gpu`` — mirrored into a ``card_combined``
-  chunk (ord=-1) so the ref embeds and searches.
+  chunk (ord=-1) so the ref embeds and searches. Slug addressing and the
+  card text live in :mod:`precis.utils.machine_ref` (the heartbeat
+  reporter auto-creates refs from there; workers may not import
+  handlers).
 * ``get`` overlays **live state read at request time** from
   ``host_heartbeat`` (migration 0017, written by
-  :mod:`precis.workers.heartbeat`): load average, CPU temperature and
-  last-seen UTC. Those fields are **never** written into the ref body,
-  chunks or embeddings — the graph doesn't churn on a one-minute
+  :mod:`precis.workers.heartbeat`): load average, CPU temperature,
+  per-card GPU utilisation/memory and the 1 h/24 h utilisation means,
+  and last-seen UTC. Those fields are **never** written into the ref
+  body, chunks or embeddings — the graph doesn't churn on a one-minute
   collector. A host with no heartbeat row shows ``no heartbeat``,
   **never** "down" (a daemon-free host is a real state, not a failure).
 * ``search`` filters by ``platform`` / ``role`` (case-insensitive
@@ -35,12 +39,21 @@ Slice 1 shape (the ruling's spec):
   and stale (>60 min) beats are excluded; live non-attestors show as
   a note, never counted (gr623769).
   The same ``code_sha`` / units facts overlay the single-host ``get``.
-* ``put(kind='machine', mode='sync')`` upserts one ref per host in
-  ``host_heartbeat`` (plus any extra ``hosts=[...]`` named in args — a
-  daemon-free host that never beats still gets a ref). There is no
+* ``view='gpu'`` (gr592809 slice c) — the fleet GPU line for the weekly
+  report: per GPU host, the card count (live heartbeat ``gpu_stats``,
+  else the ``resource_slots`` capacity), the 24 h mean GPU utilisation
+  from ``host_heartbeat_log``, and GPU seed slots in use / capacity
+  from ``resource_slots``.
+* Refs auto-create on heartbeat (gr592809 slice b):
+  :func:`precis.utils.machine_ref.ensure_machine_ref` mints ``ma_<host>``
+  on the first beat from an unseen, non-retired, non-ephemeral host —
+  no manual step. ``put(kind='machine', mode='sync')`` remains the
+  hand-refresh: it upserts one ref per host in ``host_heartbeat`` (plus
+  any extra ``hosts=[...]`` named in args — a daemon-free host that
+  never beats still gets a ref), syncing ``platform``/``release``
+  facts while preserving hand-set ``role``/``gpu``. There is no
   deploy-inventory reader in the tree to source more hosts from, so
-  heartbeat plus ``hosts=`` is the whole census. **Run by hand only** —
-  nothing wires it to a cadence, hook or worker pass.
+  heartbeat plus ``hosts=`` is the whole census.
 * ``put(kind='machine', id='<host|ma_<host>>', args={platform, role,
   gpu})`` is the manual upsert for one ref — the door for facts the
   collector can't see (GPU model, role).
@@ -54,7 +67,6 @@ service_config, worker lanes) is slice 2 — see
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -78,6 +90,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.machine_ref import FACT_KEYS, card_text, host_for, slug_for
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 #: A host is ``live`` while its heartbeat is this fresh — the same 600 s
@@ -87,31 +100,7 @@ from precis.utils.slug_ref import resolve_live_slug_ref
 #: ``stale``; with no row at all it is ``no heartbeat``.
 _LIVE_AFTER_S = 600
 
-_SLUG_BAD = re.compile(r"[^a-z0-9._-]+")
 _SLUG_PREFIX = "ma_"
-
-#: meta keys a manual put / sync may carry — the stable facts the ref
-#: body is allowed to hold (gr549585 ruling: platform, role, GPU; host
-#: is identity; release rides with platform as collector-reported).
-_FACT_KEYS = ("platform", "release", "role", "gpu")
-
-
-def slug_for(host: str) -> str:
-    """``<host>`` → ``ma_<host>`` — the machine ref's public id.
-
-    Lowercase, one sanitising pass over anything outside
-    ``[a-z0-9._-]`` so a heartbeat-reported hostname lands a clean slug.
-    Returns ``""`` for an empty/unsalvageable host — callers treat that
-    as a bad input, never mint.
-    """
-    norm = _SLUG_BAD.sub("-", host.strip().lower()).strip("-.")
-    return f"{_SLUG_PREFIX}{norm}" if norm else ""
-
-
-def host_for(id: str) -> str:
-    """``ma_<host>`` or a bare ``<host>`` → the bare host name."""
-    s = id.strip()
-    return s[len(_SLUG_PREFIX) :] if s.startswith(_SLUG_PREFIX) else s
 
 
 def status_of(hb: HostHeartbeat | None, *, now: datetime) -> str:
@@ -184,25 +173,37 @@ def _units_label(worker_units: dict[str, Any] | None) -> str:
     )
 
 
+def _gpu_card_lines(gpu_stats: Any) -> list[str]:
+    """One ``gpu <i>: <name> — util <p>%, mem <used>/<total> MiB`` line per
+    card of the heartbeat's live ``gpu_stats`` sample (gr592809).
+
+    A card that answered ``[N/A]`` for a field renders ``n/a`` there —
+    unified-memory cards have no MiB counters, and a fabricated 0 would
+    read as an idle card. Malformed entries (not a dict) are skipped."""
+    if not isinstance(gpu_stats, list):
+        return []
+    lines = []
+    for g in gpu_stats:
+        if not isinstance(g, dict):
+            continue
+        util = g.get("util_pct")
+        used = g.get("mem_used_mib")
+        total = g.get("mem_total_mib")
+        util_s = f"{util:.0f}%" if isinstance(util, (int, float)) else "n/a"
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)):
+            mem_s = f"{int(used)}/{int(total)} MiB"
+        else:
+            mem_s = "n/a"
+        lines.append(
+            f"gpu {g.get('index', '?')}: {g.get('name', '?')} — util {util_s}, mem {mem_s}"
+        )
+    return lines
+
+
 def _ts_z(ts: datetime) -> str:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
     return ts.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _card_text(host: str, meta: dict[str, Any]) -> str:
-    """The embedded card — stable facts ONLY.
-
-    Live fields (load, temp_c, last-seen) must never reach this text:
-    it lands in ``chunks`` and ``chunk_embeddings``, where a one-minute
-    collector would churn the graph. Facts come from ``meta`` alone.
-    """
-    lines = [f"machine {host}"]
-    for k in _FACT_KEYS:
-        v = meta.get(k)
-        if v not in (None, ""):
-            lines.append(f"{k}: {v}")
-    return "\n".join(lines)
 
 
 def _mh(ref_id: int) -> str:
@@ -223,14 +224,19 @@ class MachineHandler(Handler):
             "A host in the fleet — one ref per machine, id 'ma_<host>'. "
             "The ref body holds stable facts only (platform, role, GPU); "
             "get(kind='machine', id='ma_<host>') overlays live load, CPU "
-            "temperature and last-seen read at request time from "
+            "temperature, per-card GPU utilisation/memory and the 1h/24h "
+            "utilisation means, all read at request time from "
             "host_heartbeat — 'no heartbeat' (never 'down') when the host "
-            "has no row. search(kind='machine') filters by platform=, "
+            "has no row. Refs auto-create on a host's first heartbeat; "
+            "put(kind='machine', mode='sync') is the manual census "
+            "refresh, or put(kind='machine', id='<host>', "
+            "args={'platform':…,'role':…,'gpu':…}) for one. "
+            "search(kind='machine') filters by platform=, "
             "role= and status= ('live'|'stale'|'no heartbeat'); "
-            "unfiltered lists all. Refs are created/refreshed by "
-            "put(kind='machine', mode='sync'), run by hand, or "
-            "put(kind='machine', id='<host>', args={'platform':…,"
-            "'role':…,'gpu':…}) for one. "
+            "unfiltered lists all. "
+            "get(kind='machine', view='gpu') is the fleet GPU line — per "
+            "GPU host: cards, 24h mean GPU utilisation, GPU seed slots "
+            "in use / capacity. "
             "get(kind='machine', view='daemons') reads the release daemon "
             "cohort — each attestor's heartbeat code_sha (last-beating "
             "process's boot version) plus per-process sha/beat evidence "
@@ -247,7 +253,7 @@ class MachineHandler(Handler):
         is_numeric=False,
         id_required=False,
         modes=("sync",),
-        views=("daemons", "links"),
+        views=("daemons", "gpu", "links"),
     )
 
     kind: ClassVar[str] = "machine"
@@ -281,12 +287,20 @@ class MachineHandler(Handler):
                         next="get(kind='machine', view='daemons')",
                     )
                 return self._daemons_view()
+            if view == "gpu":
+                if q is not None:
+                    raise BadInput(
+                        "view='gpu' takes no q= — it is the whole fleet's GPU line",
+                        next="get(kind='machine', view='gpu')",
+                    )
+                return self._gpu_view()
             if view is not None and not is_eye_view(view):
                 raise BadInput(
                     f"kind='machine' has no view {view!r} without id=",
                     next="get(kind='machine', view='daemons') reads the "
-                    "release daemon cohort; search(kind='machine') lists "
-                    "all; get(kind='machine', id='ma_<host>') reads one",
+                    "release daemon cohort; view='gpu' the fleet GPU "
+                    "line; search(kind='machine') lists all; "
+                    "get(kind='machine', id='ma_<host>') reads one",
                 )
             return self.search(q=q)
         if isinstance(id, list):
@@ -303,6 +317,14 @@ class MachineHandler(Handler):
                     next="get(kind='machine', view='daemons'); "
                     "get(kind='machine', id='ma_<host>') shows one host's "
                     "code_sha",
+                )
+            if view == "gpu":
+                raise BadInput(
+                    "machine view='gpu' takes no id= — it reads the whole "
+                    "fleet's GPU line",
+                    next="get(kind='machine', view='gpu'); "
+                    "get(kind='machine', id='ma_<host>') shows one host's "
+                    "per-card utilisation",
                 )
             if view != "links":
                 raise BadInput(
@@ -443,7 +465,71 @@ class MachineHandler(Handler):
         )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["daemons", "links"]
+        return ["daemons", "gpu", "links"]
+
+    # ── view='gpu' — the fleet GPU line (gr592809 slice c) ─────────────
+
+    def _gpu_view(self) -> Response:
+        """The weekly report's fleet GPU line: per GPU host — the card
+        count, the 24 h mean GPU utilisation from ``host_heartbeat_log``,
+        and GPU seed slots in use / capacity from ``resource_slots``.
+
+        A ref counts as a GPU host when its latest heartbeat carries
+        ``gpu_stats`` or a ``resource_slots`` ``gpu`` row exists for the
+        host (a Mac with neither is not listed, not shown as zero-GPU).
+        Card count reads the live heartbeat first — the probe one
+        ``--query-gpu`` away — falling back to the slot capacity the
+        capability probe seeded."""
+        hbs = self._heartbeat_map()
+        gpu_slots = {
+            s.host: s for s in self.store.all_resource_slots() if s.resource == "gpu"
+        }
+        rows: list[dict[str, Any]] = []
+        for ref in self.store.list_refs(kind=self.kind, limit=5000):
+            meta = ref.meta or {}
+            host = str(meta.get("host") or host_for(ref.slug or ""))
+            hb = hbs.get(host)
+            stats = hb.meta.get("gpu_stats") if hb is not None else None
+            slot = gpu_slots.get(host)
+            if not stats and slot is None:
+                continue
+            if stats:
+                gpu_count: str = str(len(stats))
+            else:
+                gpu_count = str(slot.capacity) if slot is not None else "—"
+            means = self.store.heartbeat_means(host, hours=24)
+            util = means["gpu_util_pct"]
+            rows.append(
+                {
+                    "machine": slug_for(host),
+                    "gpus": gpu_count,
+                    "gpu_util_24h": f"{util:.0f}%" if util is not None else "—",
+                    "seed_slots": (
+                        f"{slot.capacity - slot.free}/{slot.capacity}" if slot else "—"
+                    ),
+                }
+            )
+        lines = [f"# fleet GPU line — {len(rows)} GPU host(s)"]
+        if not rows:
+            lines.append(
+                "none — no machine ref has a heartbeat gpu_stats sample or "
+                "a resource_slots gpu row yet; the utilisation columns fill "
+                "as hosts with nvidia-smi beat (gr592809)"
+            )
+            return Response(body="\n".join(lines))
+        lines.append(
+            render_agent_table(
+                rows,
+                schema=["machine", "gpus", "gpu_util_24h", "seed_slots"],
+            )
+        )
+        lines.append(
+            "gpus: live heartbeat gpu_stats card count (else the "
+            "resource_slots capacity) · gpu_util_24h: mean of the per-beat "
+            "card-mean utilisation over 24 h · seed_slots: GPU slots in use "
+            "/ capacity from resource_slots"
+        )
+        return Response(body="\n".join(lines))
 
     # ── view='daemons' — the release daemon cohort (gr627361) ────────
 
@@ -709,10 +795,10 @@ class MachineHandler(Handler):
             )
         meta_patch: dict[str, Any] = {"host": host}
         for k, v in (facts or {}).items():
-            if k not in _FACT_KEYS:
+            if k not in FACT_KEYS:
                 raise BadInput(
                     f"machine meta has no fact {k!r}",
-                    next=f"facts are {list(_FACT_KEYS)} — stable facts "
+                    next=f"facts are {list(FACT_KEYS)} — stable facts "
                     "only; load/temperature live in host_heartbeat",
                 )
             # ``meta || patch`` can't delete a key — skip Nones so a
@@ -721,7 +807,7 @@ class MachineHandler(Handler):
                 meta_patch[k] = v
         existing = self.store.get_ref(kind=self.kind, id=slug)
         base_meta = (existing.meta or {}) if existing is not None else {}
-        card = _card_text(host, {**base_meta, **meta_patch})
+        card = card_text(host, {**base_meta, **meta_patch})
         # embedding stays NULL — the embed worker's fill_embeddings pass
         # claims it; ingest paths never embed inline (invariants).
         card_block = ChunkInsert(
@@ -789,12 +875,34 @@ class MachineHandler(Handler):
     def _heartbeat_map(self) -> dict[str, HostHeartbeat]:
         return {hb.host: hb for hb in self.store.recent_heartbeats()}
 
+    def _util_means_line(self, host: str) -> str | None:
+        """The ``util 1h/24h mean: cpu a%, gpu b%`` overlay line, or None
+        when the window has no utilisation sample at all (nothing to
+        show beats a line of n/as)."""
+        means_1h = self.store.heartbeat_means(host, hours=1)
+        means_24h = self.store.heartbeat_means(host, hours=24)
+        values = (
+            means_1h["cpu_used_pct"],
+            means_24h["cpu_used_pct"],
+            means_1h["gpu_util_pct"],
+            means_24h["gpu_util_pct"],
+        )
+        if all(v is None for v in values):
+            return None
+
+        def _pct(v: float | None) -> str:
+            return f"{v:.0f}%" if v is not None else "n/a"
+
+        cpu = f"{_pct(means_1h['cpu_used_pct'])}/{_pct(means_24h['cpu_used_pct'])}"
+        gpu = f"{_pct(means_1h['gpu_util_pct'])}/{_pct(means_24h['gpu_util_pct'])}"
+        return f"util 1h/24h mean: cpu {cpu}, gpu {gpu}"
+
     def _render_one(self, ref: Ref, hb: HostHeartbeat | None) -> str:
         meta = ref.meta or {}
         host = str(meta.get("host") or host_for(ref.slug or ""))
         now = datetime.now(UTC)
         lines = [f"# {ref.slug} — {host}  ({_mh(ref.id)})"]
-        for k in _FACT_KEYS:
+        for k in FACT_KEYS:
             v = meta.get(k)
             if v not in (None, ""):
                 lines.append(f"{k}: {v}")
@@ -818,6 +926,13 @@ class MachineHandler(Handler):
             lines.append(
                 f"temp_c: {f'{hb.temp_c:.1f}' if hb.temp_c is not None else 'n/a (no sensor)'}"
             )
+            # gr592809: per-card GPU utilisation/memory (live sample) and
+            # the 1 h/24 h means of the per-beat utilisation series.
+            for g in _gpu_card_lines(hb.meta.get("gpu_stats")):
+                lines.append(g)
+            means_line = self._util_means_line(host)
+            if means_line is not None:
+                lines.append(means_line)
             # Boot-version evidence (gr627361): code_sha is the serving
             # process's actual boot version; worker_units is installed
             # metadata — never read one as the other.

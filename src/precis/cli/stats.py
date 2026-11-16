@@ -73,6 +73,8 @@ _CPU_UTILIZATION_SCHEMA: list[str] = [
     "temp_max",
     "mem_avg",
     "mem_max",
+    "cpu_avg",
+    "gpu_avg",
 ]
 _LLM_UTILIZATION_SCHEMA: list[str] = ["hr", "calls", "busy_pct", "cost_usd", "errors"]
 _LLM_GAPS_SCHEMA: list[str] = ["gap_ended_at", "gap_minutes"]
@@ -454,10 +456,12 @@ def _query_argument_caveats(store: Store) -> list[dict[str, Any]]:
 
 
 def _query_cpu_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
-    """Per-host hourly load/temp rollup from ``host_heartbeat_log``.
+    """Per-host hourly load/temp/memory/CPU/GPU rollup from ``host_heartbeat_log``.
 
     Empty until the fleet's heartbeat pass has run with migration 0113
     applied — the table fills at one row per host per minute from then on.
+    ``cpu_avg``/``gpu_avg`` stay NULL until migration 0333's columns are
+    populated by a beat that sampled utilisation (gr592809).
     """
     rows = store.heartbeat_history(hours=hours)
     return [
@@ -474,6 +478,8 @@ def _query_cpu_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
             "temp_max": round(r["temp_max"], 1) if r["temp_max"] is not None else None,
             "mem_avg": round(r["mem_avg"], 1) if r["mem_avg"] is not None else None,
             "mem_max": round(r["mem_max"], 1) if r["mem_max"] is not None else None,
+            "cpu_avg": round(r["cpu_avg"], 1) if r["cpu_avg"] is not None else None,
+            "gpu_avg": round(r["gpu_avg"], 1) if r["gpu_avg"] is not None else None,
         }
         for r in rows
     ]

@@ -6,6 +6,8 @@ in-process timestamp, honoring ``PRECIS_HEARTBEAT_INTERVAL_SECONDS``.
 
 from __future__ import annotations
 
+import subprocess
+
 from precis import settings as psettings
 from precis.workers import activity
 from precis.workers import heartbeat as hb
@@ -300,3 +302,90 @@ def test_beat_without_process_name_omits_per_process_sha(store, monkeypatch) -> 
     meta = rows["test-host-sha-2"].meta
     assert meta["code_sha"] == "e" * 40
     assert "code_sha_by_process" not in meta
+
+
+# ── gr592809: per-beat CPU + GPU utilisation sample ─────────────────────
+
+
+_STATS_QUERY = "--query-gpu=index,name,utilization.gpu,memory.used,memory.total"
+
+_FAKE_NVIDIA_SMI_CSV = (
+    "0, NVIDIA GB10, 35, 4000, 8000\n1, NVIDIA GB10, [N/A], [N/A], 8192\n"
+)
+
+
+def _fake_nvidia_smi_run(argv, **_kw):
+    """A canned nvidia-smi: two GB10 cards, card 1 answering [N/A] for
+    utilisation and used-memory (the unified-memory shape) — everything
+    else the pass might shell out to fails (absent)."""
+    cmd = [str(a) for a in argv]
+    joined = " ".join(cmd)
+    if cmd and cmd[0] == "nvidia-smi":
+        if _STATS_QUERY in joined:
+            out = _FAKE_NVIDIA_SMI_CSV
+        elif "--query-gpu=memory.free" in joined:
+            out = "4000\n7000\n"
+        elif "--query-gpu=memory.total" in joined:
+            out = "8000\n8192\n"
+        else:  # -L and anything else
+            out = "GPU 0: NVIDIA GB10\nGPU 1: NVIDIA GB10\n"
+    else:
+        out = ""
+    return subprocess.CompletedProcess(cmd, 0, out, "")
+
+
+class _FakeSubprocess:
+    SubprocessError = subprocess.SubprocessError
+    CompletedProcess = subprocess.CompletedProcess
+
+    @staticmethod
+    def run(argv, **kw):
+        return _fake_nvidia_smi_run(argv, **kw)
+
+
+class _FakeShutil:
+    @staticmethod
+    def which(cmd):
+        return "/usr/bin/nvidia-smi" if cmd == "nvidia-smi" else None
+
+
+def test_gpu_stats_and_cpu_pct_logged(store, monkeypatch) -> None:
+    """gr592809 slice 1: a beat on a host with nvidia-smi records
+    ``meta.gpu_stats`` per card and logs the card-mean ``gpu_util_pct``
+    plus the CPU sample into ``host_heartbeat_log``; ``[N/A]`` fields
+    store NULL, never a fabricated 0."""
+    from precis.workers import capability_probe
+
+    _reset_throttle(monkeypatch)
+    monkeypatch.setattr(capability_probe, "subprocess", _FakeSubprocess)
+    monkeypatch.setattr(capability_probe, "shutil", _FakeShutil)
+
+    r = hb.run_heartbeat_pass(store, host="gpu-host-1")
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    stats = rows["gpu-host-1"].meta["gpu_stats"]
+    assert stats[0] == {
+        "index": 0,
+        "name": "NVIDIA GB10",
+        "util_pct": 35.0,
+        "mem_used_mib": 4000.0,
+        "mem_total_mib": 8000.0,
+    }
+    # [N/A] fields store null; the card itself stays in the list.
+    assert stats[1]["index"] == 1
+    assert stats[1]["util_pct"] is None
+    assert stats[1]["mem_used_mib"] is None
+    assert stats[1]["mem_total_mib"] == 8192.0
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT cpu_used_pct, gpu_util_pct FROM host_heartbeat_log "
+            "WHERE host = 'gpu-host-1'"
+        ).fetchone()
+    assert row is not None
+    # The card mean excludes the [N/A] card rather than averaging in 0.
+    assert row[1] == 35.0
+    # cpu_used_pct is the real /proc/stat probe in this container: any
+    # in-range reading proves the column carries the sample.
+    assert row[0] is not None and 0.0 <= row[0] <= 100.0

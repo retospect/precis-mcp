@@ -27,8 +27,11 @@ hard-codes the service list.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +41,7 @@ import urllib.request
 from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import PurePosixPath
+from typing import Any
 
 from precis.embedder_wire import PATH_READY
 from precis.plans import lanes
@@ -1001,6 +1005,166 @@ def vram_free_mb() -> int | None:
     return max(0, max(cards) - vram_reserve_mb())
 
 
+_GPU_STATS_FIELDS = ("index", "name", "utilization.gpu", "memory.used", "memory.total")
+
+
+def _parse_gpu_stats_line(fields: list[str]) -> dict[str, Any] | None:
+    """One ``--query-gpu`` CSV row → a ``gpu_stats`` entry.
+
+    ``[N/A]`` or unparseable numeric fields store ``None`` — unified-memory
+    cards answer ``[N/A]`` for the memory counters, and a card that can't
+    report a field must not vanish from the list (its neighbours still
+    report). A row with fewer columns than queried fields is malformed and
+    drops.
+    """
+    if len(fields) < 5:
+        return None
+
+    def num(raw: str) -> float | None:
+        raw = raw.strip()
+        if raw == "[N/A]":
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    return {
+        "index": int(num(fields[0]) or 0),
+        "name": fields[1].strip(),
+        "util_pct": num(fields[2]),
+        "mem_used_mib": num(fields[3]),
+        "mem_total_mib": num(fields[4]),
+    }
+
+
+def gpu_stats() -> list[dict[str, Any]] | None:
+    """Per-card ``[{'index', 'name', 'util_pct', 'mem_used_mib',
+    'mem_total_mib'}]``, in ``nvidia-smi`` index order.
+
+    The live utilisation sample gr592809's heartbeat records per beat —
+    the capability probe already shells out to ``nvidia-smi -L`` to size
+    GPU seed slots (``_probe_gpu``), so utilisation and memory are one
+    ``--query-gpu`` away. ``None`` = no ``nvidia-smi`` or the query
+    failed (the heartbeat then stores no ``gpu_stats`` key, same
+    absent-vs-unknown grain as the VRAM probes); a returned list is the
+    cards that answered, with ``None`` per unreadable field (unified-
+    memory cards report ``[N/A]`` for the memory counters).
+    """
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-gpu={','.join(_GPU_STATS_FIELDS)}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning(
+            "capability_probe: nvidia-smi gpu stats query failed", exc_info=True
+        )
+        return None
+    if res.returncode != 0:
+        log.warning(
+            "capability_probe: nvidia-smi gpu stats query exited %d", res.returncode
+        )
+        return None
+    stats = []
+    for fields in csv.reader(io.StringIO(res.stdout)):
+        entry = _parse_gpu_stats_line(list(fields))
+        if entry is not None:
+            stats.append(entry)
+    return stats
+
+
+def _linux_cpu_used_pct(sample_seconds: float = 0.2) -> float | None:
+    """Host CPU busy percentage (0–100) from two ``/proc/stat`` samples.
+
+    ``(busy delta) / (total delta)`` over a short sleep — a single
+    ``/proc/stat`` read only gives lifetime averages. ``iowait`` counts
+    as idle, the convention ``htop``/``vmstat`` use. ``None`` when
+    ``/proc/stat`` is unreadable (non-Linux, restricted sandbox).
+    """
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            first = fh.readline().split()
+    except OSError:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    try:
+        vals1 = [int(v) for v in first[1:8]]
+    except ValueError:
+        return None
+    time.sleep(sample_seconds)
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            second = fh.readline().split()
+        vals2 = [int(v) for v in second[1:8]]
+    except (OSError, ValueError):
+        return None
+    idle1 = vals1[3] + vals1[4]  # idle + iowait
+    idle2 = vals2[3] + vals2[4]
+    total_delta = sum(vals2) - sum(vals1)
+    idle_delta = idle2 - idle1
+    if total_delta <= 0:
+        return None
+    busy = 100.0 * (1.0 - idle_delta / total_delta)
+    return round(min(100.0, max(0.0, busy)), 1)
+
+
+def _macos_cpu_used_pct() -> float | None:
+    """Host CPU busy percentage (user + sys) from ``top``'s SECOND sample.
+
+    ``top -l 2``'s first sample is the lifetime average, the second is
+    the interval reading — the last ``CPU usage:`` line is the live one.
+    Bounded by a timeout; any failure degrades to ``None`` (the probe is
+    best-effort, never liveness-critical).
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        res = subprocess.run(
+            ["top", "-l", "2", "-n", "0"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    usages = re.findall(r"CPU usage:\s*([\d.]+)%\s*user,\s*([\d.]+)%\s*sys", res.stdout)
+    if not usages:
+        return None
+    user, system = usages[-1]
+    return round(float(user) + float(system), 1)
+
+
+def cpu_used_pct() -> float | None:
+    """This host's CPU utilisation percent (0–100), or ``None``.
+
+    The CPU half of the per-beat utilisation sample (gr592809), logged
+    into ``host_heartbeat_log.cpu_used_pct``. Linux reads ``/proc/stat``
+    deltas; macOS parses ``top``'s second sample. ``None`` on a platform
+    the probe can't read — never fails the report, same contract as
+    :func:`mem_used_pct`.
+    """
+    pct = _linux_cpu_used_pct()
+    if pct is None:
+        pct = _macos_cpu_used_pct()
+    return pct
+
+
 #: Where this process's cgroup v2 membership and the unified hierarchy live
 #: (module constants so tests can point them at a fixture tree).
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
@@ -1126,6 +1290,8 @@ __all__ = [
     "capability_vocabulary",
     "claude_auth_present",
     "claude_bin_present",
+    "cpu_used_pct",
+    "gpu_stats",
     "mem_capacity",
     "mem_free_mb",
     "mem_reserve_mb",

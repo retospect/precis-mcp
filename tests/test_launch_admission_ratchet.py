@@ -82,6 +82,7 @@ PROBES: dict[str, str] = {
     "kill": "signal delivery",
     "sysctl": "kernel parameter read",
     "memory_pressure": "macOS memory-pressure read",
+    "top": "macOS CPU-utilisation sample (one bounded -l 2 read)",
     "nvidia-smi": "GPU state query or reset",
     "systemctl": "unit state query/restart; the unit is a declared daemon",
     "security": "macOS keychain item read",

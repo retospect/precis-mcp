@@ -409,3 +409,112 @@ def test_args_hosts_reach_sync_over_mcp_put(mounted_runtime, store: Store) -> No
     assert "sync" in out
     assert store.get_ref(kind="machine", id="ma_alpha") is not None
     assert store.get_ref(kind="machine", id="ma_gamma") is not None
+
+
+# ── gr592809: GPU overlay, utilisation means, auto-create, view='gpu' ─────
+
+_GPU_STATS = [
+    {
+        "index": 0,
+        "name": "NVIDIA GB10",
+        "util_pct": 35.0,
+        "mem_used_mib": 4200.0,
+        "mem_total_mib": 16384.0,
+    },
+    {
+        "index": 1,
+        "name": "NVIDIA GB10",
+        "util_pct": None,
+        "mem_used_mib": None,
+        "mem_total_mib": 16384.0,
+    },
+]
+
+
+def test_render_gpu_and_means(h: MachineHandler, store: Store) -> None:
+    """get overlays the live per-card GPU sample and the 1h/24h means of
+    the utilisation series; [N/A] fields render n/a, not a fabricated 0."""
+    store.record_heartbeat("alpha", meta={"gpu_stats": _GPU_STATS})
+    store.record_heartbeat_history("alpha", cpu_used_pct=10.0, gpu_util_pct=30.0)
+    h.put(id="alpha", platform="Linux")
+
+    body = h.get(id="ma_alpha").body
+    assert "gpu 0: NVIDIA GB10 — util 35%, mem 4200/16384 MiB" in body
+    assert "gpu 1: NVIDIA GB10 — util n/a, mem n/a" in body
+    # Both windows hold the single planted beat, so both means read it.
+    assert "util 1h/24h mean: cpu 10%/10%, gpu 30%/30%" in body
+
+
+def test_render_omits_means_line_without_samples(
+    h: MachineHandler, store: Store
+) -> None:
+    """A host whose beats never sampled utilisation shows no means line —
+    a row of n/as reads as noise next to 'no sample'."""
+    store.record_heartbeat("alpha", load1=0.5)
+    h.put(id="alpha", platform="Linux")
+    body = h.get(id="ma_alpha").body
+    assert "util 1h/24h mean" not in body
+    assert "gpu 0" not in body
+
+
+def test_heartbeat_autocreates_ref(store: Store, monkeypatch) -> None:
+    """gr592809 slice b: a beat from an unseen host mints its ma_<host>
+    ref — no put(kind='machine', mode='sync') needed."""
+    from precis.workers import heartbeat as hb
+
+    monkeypatch.setattr(hb, "_last_beat_monotonic", None)
+    hb.run_heartbeat_pass(store, host="newhost-1")
+
+    ref = store.get_ref(kind="machine", id="ma_newhost-1")
+    assert ref is not None
+    assert (ref.meta or {}).get("host") == "newhost-1"
+
+
+def test_heartbeat_autocreate_skips_retired_host(store: Store, monkeypatch) -> None:
+    """The retirement marker suppresses the auto-create. Read BEFORE the
+    beat's upsert (which clears the marker — a returning host is not
+    retired), so the ref reappears on the host's SECOND beat back, not
+    its first."""
+    from precis.workers import heartbeat as hb
+
+    store.record_heartbeat("retired-1", load1=1.0)
+    store.set_host_retired("retired-1", retired=True)
+
+    monkeypatch.setattr(hb, "_last_beat_monotonic", None)
+    hb.run_heartbeat_pass(store, host="retired-1")
+    assert store.get_ref(kind="machine", id="ma_retired-1") is None
+
+    monkeypatch.setattr(hb, "_last_beat_monotonic", None)
+    hb.run_heartbeat_pass(store, host="retired-1")
+    assert store.get_ref(kind="machine", id="ma_retired-1") is not None
+
+
+def test_view_gpu_fleet_line(h: MachineHandler, store: Store) -> None:
+    """gr592809 slice c: the fleet line — per GPU host the card count,
+    the 24 h mean GPU utilisation and GPU seed slots in use / capacity.
+    A host with no GPU evidence at all is not listed."""
+    store.record_heartbeat("alpha", meta={"gpu_stats": _GPU_STATS})
+    store.record_heartbeat_history("alpha", gpu_util_pct=40.0)
+    store.sync_host_resource_slots("alpha", {"gpu": 2})
+    h.put(id="alpha", platform="Linux")
+    h.put(id="beta", platform="Darwin")
+
+    body = h.get(view="gpu").body
+    assert "1 GPU host(s)" in body
+    assert "ma_alpha" in body
+    assert "40%" in body
+    assert "0/2" in body  # both seed slots free
+    assert "ma_beta" not in body
+
+    # A consumed slot reads as in-use; a missing utilisation window as —.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slots SET free = 1 "
+            "WHERE host = 'alpha' AND resource = 'gpu'"
+        )
+        conn.commit()
+    body = h.get(view="gpu").body
+    assert "1/2" in body
+
+    with pytest.raises(BadInput):
+        h.get(view="gpu", q="alpha")
