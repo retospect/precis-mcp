@@ -166,6 +166,56 @@ def test_unknown_top_level_key_is_not_silently_dropped(mcp_runtime: None) -> Non
     assert "zzz_bogus" in out
 
 
+@pytest.mark.parametrize("verb", ["delete", "get", "link", "tag"])
+def test_unknown_top_level_key_refuses_on_non_slim_verb(
+    verb: str, mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr693011: FastMCP's arg model drops undeclared keys
+    (``extra='ignore'``), so an unknown kwarg used to vanish before any
+    of our code ran — ``link(..., dry_run=True)`` wrote the edge for
+    real. Non-slim verbs keep extras through validation now, and the
+    strict wrapper refuses them as BadInput before dispatch."""
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError(f"{verb} undeclared kwarg reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    out = _call(verb, {"kind": "todo", "id": 1, "zzz_bogus": 1})
+    assert "[error:BadInput]" in out, out
+    assert "unexpected keyword argument 'zzz_bogus'" in out
+
+
+def test_link_dry_run_refuses_and_writes_no_edge(
+    mcp_runtime: None, store: Store
+) -> None:
+    """gr693011's exact call: ``dry_run=`` is not a link kwarg — it must
+    refuse loudly, never preview-drop into a real write."""
+    src = store.insert_ref(kind="todo", slug=None, title="zzq dry-run src")
+    dst = store.insert_ref(kind="todo", slug=None, title="zzq dry-run dst")
+    out = _call(
+        "link",
+        {
+            "kind": "todo",
+            "id": src.id,
+            "target": f"todo:{dst.id}",
+            "rel": "related-to",
+            "dry_run": True,
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "dry_run" in out
+    assert store.links_for(src.id) == []
+
+
+def test_link_alias_hint_survives_strict_wrapper(mcp_runtime: None) -> None:
+    """``to=`` still gets the ``target=`` did-you-mean hint — the strict
+    wrapper renders the same envelope the command profile does
+    (gr338670)."""
+    out = _call("link", {"kind": "todo", "id": 1, "to": "todo:2"})
+    assert "[error:BadInput]" in out, out
+    assert "target=" in out
+
+
 def test_unknown_args_key_lists_typed_accepted_keys(mcp_runtime: None) -> None:
     out = _call("put", {"kind": "gripe", "text": "x", "args": {"zzz_bogus": 1}})
     assert "[error:BadInput]" in out, out

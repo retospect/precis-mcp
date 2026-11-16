@@ -92,7 +92,7 @@ import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
@@ -1322,6 +1322,67 @@ def _kwarg_alias_hint(verb: str, exc: TypeError) -> str | None:
     return f"did you mean {alias}=? {verb}() has no {m.group(1)!r} kwarg"
 
 
+def _verb_typeerror_result(
+    verb: str, exc: TypeError, *, hint: str | None = None
+) -> Any:
+    """Render a verb-call ``TypeError`` as the ``[error:BadInput]`` envelope.
+
+    Shared by the command profile's ``precis`` and the typed profile's
+    strict-extras wrapper (:func:`_strict_wire_verb`, gr693011): both
+    *bind* the call against the verb's signature and pass only a bind
+    failure here — a ``TypeError`` raised inside the verb itself
+    propagates as the fault it is. The message shape (``verb(...):
+    <typeerror>`` plus a ``next:`` pointer, with a "did you mean" alias
+    hint when the bad kwarg is a known synonym) is identical in both
+    profiles. ``hint`` overrides the default ``precis-<verb>-help``
+    pointer for surfaces with no per-verb skill (the command profile's
+    ``precis`` tool).
+    """
+    from precis.errors import BadInput
+    from precis.tools import core as _tools_core
+
+    if hint is None:
+        hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
+    alias_hint = _kwarg_alias_hint(verb, exc)
+    if alias_hint is not None:
+        hint = f"{alias_hint}; {hint}"
+    body = _tools_core._get_runtime().render_error(
+        BadInput(f"{verb}(...): {exc}", next=hint)
+    )
+    return _tools_core._validation_error(body)
+
+
+def _strict_wire_verb(
+    verb: str, func: Callable[..., Any], *, hint: str | None = None
+) -> Callable[..., Any]:
+    """Wrap a non-slim verb so an undeclared wire kwarg refuses, not drops.
+
+    FastMCP's argument model drops undeclared keys (``extra='ignore'``),
+    so a kwarg the verb never declared used to vanish before our code
+    ran — gr693011: ``link(..., dry_run=True)`` silently wrote the edge
+    for real. :func:`~precis.tools.mcp_slim.allow_extra_arguments`
+    keeps extras through validation, so they reach ``func``'s fixed
+    signature as a ``TypeError``, rendered here as the same
+    ``[error:BadInput]`` envelope the command profile produces for the
+    same call. Slim verbs fold extras into ``args=`` (the legacy
+    top-level-kwarg compat path) and skip this wrapper.
+    """
+
+    @functools.wraps(func)
+    def strict(**kwargs: Any) -> Any:
+        # Bind before invoking, same as ``precis``: a signature mismatch
+        # (undeclared wire kwarg) is BadInput, but a TypeError raised
+        # inside the verb is a real fault and must propagate.
+        try:
+            inspect.signature(func).bind(**kwargs)
+        except TypeError as exc:
+            return _verb_typeerror_result(verb, exc, hint=hint)
+        return func(**kwargs)
+
+    cast(Any, strict).__signature__ = inspect.signature(func, eval_str=True)
+    return strict
+
+
 # Kept terse (~150-200 tokens): the whole point of the command profile
 # is a frozen, tiny standing schema. Teaches the call syntax, the
 # text= escape hatch for large bodies, and the two discovery
@@ -1400,14 +1461,15 @@ def precis(
     if "ctx" in TOOL_REGISTRY[verb]["signature"].parameters:
         kwargs["ctx"] = ctx
 
+    # Bind before invoking: only a signature mismatch (an undeclared
+    # kwarg, gr693011) is a caller-input BadInput. A TypeError raised
+    # inside the verb itself is a real fault and must propagate, not be
+    # misreported as [error:BadInput].
     try:
-        return func(**kwargs)
+        TOOL_REGISTRY[verb]["signature"].bind(**kwargs)
     except TypeError as e:
-        hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
-        alias_hint = _kwarg_alias_hint(verb, e)
-        if alias_hint is not None:
-            hint = f"{alias_hint}; {hint}"
-        return _bad_input(f"{verb}(...): {e}", hint=hint)
+        return _verb_typeerror_result(verb, e)
+    return func(**kwargs)
 
 
 def _install_command_profile() -> None:
@@ -1420,8 +1482,23 @@ def _install_command_profile() -> None:
     ``precis`` stays a plain sync function so
     ``tests/test_mcp_put_edit_kwarg_doors.py`` and friends can keep
     calling it directly, synchronously, without going through FastMCP.
+    ``precis`` gets the same strict-extras treatment the typed verbs get
+    in :func:`_register_tools_from_registry` (gr693011) — an undeclared
+    top-level kwarg (``dry_run=True`` beside ``command=``) must refuse,
+    not vanish while ``command=`` still executes its write.
     """
-    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(_offload_sync(precis))
+    from precis.tools.mcp_slim import allow_extra_arguments
+
+    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(
+        _offload_sync(
+            _strict_wire_verb(
+                "precis", precis, hint=f"call must look like {_COMMAND_EXAMPLE}"
+            )
+        )
+    )
+    registered = mcp._tool_manager.get_tool("precis")
+    if registered is not None:
+        allow_extra_arguments(registered)
 
 
 def _verb_description(fn: Callable[..., Any]) -> str:
@@ -1457,8 +1534,11 @@ def _register_tools_from_registry() -> None:
     for tool_name, tool_info in TOOL_REGISTRY.items():
         # put/edit/search advertise a slim core schema (kind-specific
         # kwargs ride ``args=``); the CLI and the command profile keep
-        # calling the full TOOL_REGISTRY function.
-        func = slim.get(tool_name, tool_info["func"])
+        # calling the full TOOL_REGISTRY function. Every other verb gets
+        # the strict-extras wrapper: an undeclared wire kwarg refuses
+        # with BadInput instead of vanishing inside FastMCP's arg model
+        # (gr693011: ``link(..., dry_run=True)`` wrote the edge for real).
+        func = slim.get(tool_name) or _strict_wire_verb(tool_name, tool_info["func"])
         # Register the tool function with FastMCP — wrapped by
         # ``_offload_sync`` (gr330541) so it dispatches off the event-loop
         # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
@@ -1470,7 +1550,10 @@ def _register_tools_from_registry() -> None:
             **_TOOL_KW,
         )(_offload_sync(func))
         registered = mcp._tool_manager.get_tool(tool_name)
-        if tool_name in slim and registered is not None:
+        if registered is not None:
+            # Keep undeclared keys through arg validation on every verb:
+            # slim verbs fold them into ``args=`` with a deprecation
+            # note; strict verbs refuse them.
             allow_extra_arguments(registered)
 
         # Apply special schema constraints for edit tool
