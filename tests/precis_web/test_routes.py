@@ -6952,6 +6952,45 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     assert 'action="/asks/14634/answer"' in resp.text
 
 
+def test_needs_you_every_item_has_fisheye_link(client, runtime, monkeypatch) -> None:
+    """gr595061: answerable asks, folded rows and papers expose their context."""
+    from precis.todo.asks_view import AskRow, AsksModel
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    model = AsksModel(
+        rows=(
+            AskRow(
+                klass="decision",
+                kind="gripe",
+                ref_id=88,
+                handle="gr88",
+                title="Ruling on lane rule",
+                reasons=("needs:ruling",),
+            ),
+        )
+    )
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    for handle in ("td14634", "gr88"):
+        assert f'href="/eye/{handle}"' in resp.text
+    paper_rows = 0
+    for paper in runtime.store.papers:
+        title_pos = resp.text.find(f'href="/papers/{paper.id}?triage=1"')
+        if title_pos < 0:
+            continue
+        row = resp.text[
+            resp.text.rindex("<li", 0, title_pos) : resp.text.index("</li>", title_pos)
+        ]
+        assert f'href="/eye/pa{paper.id}"' in row
+        assert ">fisheye</a>" in row
+        paper_rows += 1
+    assert paper_rows > 0
+
+
 @pytest.mark.parametrize("path", ["/asks", "/needs-you"])
 def test_queue_items_show_filed_and_updated_times(
     client, runtime, monkeypatch, path

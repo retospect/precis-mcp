@@ -45,6 +45,8 @@
       {% endif %}
       {# The source object this ask is about — the todo itself, hover-previewable. #}
       {{ a.source_link }}
+      <a href="/eye/{{ row_handle }}" class="shrink-0 text-xs text-info-strong hover:underline"
+         title="Explore {{ row_handle }} and its graph neighbourhood">fisheye</a>
       {# X — dismiss the ask: close the todo (won't-do) and drop it
          from the queue without answering. stopPropagation keeps the
          click from also folding the row (the work page's summary-bound
