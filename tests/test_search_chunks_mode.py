@@ -209,6 +209,63 @@ def test_verbatim_memory_scoped_via_include_ref_ids(store: Store) -> None:
     assert [r.id for _b, r, _s in hits] == [ref.id]
 
 
+def test_verbatim_memory_kinds_list_sort_recency_keeps_backstop(store: Store) -> None:
+    """gr688850: ``search(kind='memory', mode='verbatim', sort='recency')``
+    routes through the source-search primitive, which hands the chunk
+    store ``kinds=['memory']`` (list) instead of the singular ``kind``.
+    The verbatim substring backstop must apply to that spelling too —
+    otherwise a term KeyBERT never stored (``.tex``, a LaTeX token)
+    matches nothing, silently dropping every hit the same call without
+    ``sort=`` finds. A single-element ``['memory']`` list probes the same
+    ``refs_kind_idx`` path as the singular kind, so the bounded-scan
+    ruling carries over; mixed kind lists stay containment-only."""
+    tag = uuid4().hex[:8]
+    sentence = f"the {tag} draft builds the {tag}.tex supplement nightly"
+    ref = store.insert_ref(kind="memory", slug=None, title=f"rec {tag}")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=sentence, embedding=None)],
+    )
+    with store.pool.connection() as conn:
+        # KeyBERT never stored the LaTeX token — only the substring
+        # backstop can find it.
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE ref_id = %s",
+            (["unrelated", "labels"], ref.id),
+        )
+        conn.commit()
+
+    term = f"{tag}.tex"
+    assert store.chunks.search_chunks(q=term, mode="verbatim", kind="memory")
+
+    via_kinds = store.chunks.search_chunks_across_kinds(
+        kinds=["memory"],
+        q=term,
+        mode="verbatim",
+        sort="recency",
+        limit=10,
+    )
+    assert [r.id for _b, r, _s in via_kinds] == [ref.id]
+
+    total = store.chunks.count_chunks_keywords(terms=term.split(), kinds=["memory"])
+    assert total == 1
+
+    # A mixed kind list reopens the unbounded paper corpus — the
+    # backstop stays off there (gr518172 ruling unchanged).
+    paper = store.insert_ref(kind="paper", slug=f"pk{tag}", title="paper")
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text=sentence, embedding=None)]
+    )
+    mixed = store.chunks.search_chunks_across_kinds(
+        kinds=["memory", "paper"],
+        q=term,
+        mode="verbatim",
+        sort="recency",
+        limit=10,
+    )
+    assert [r.id for _b, r, _s in mixed] == []
+
+
 def test_count_chunks_keywords_mirrors_search_chunks_keywords_predicate(
     store: Store,
 ) -> None:

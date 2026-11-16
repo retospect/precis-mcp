@@ -741,25 +741,39 @@ def _ilike_contains(term: str) -> str:
 
 
 def _verbatim_backstop(
-    scope_ref_id: Any, include_ref_ids: Any, kind: str | None
+    scope_ref_id: Any,
+    include_ref_ids: Any,
+    kind: str | None,
+    kinds: list[str] | None = None,
 ) -> bool:
     """Whether the ``mode='verbatim'`` scan is bounded enough to afford
     the phrase-substring backstop (see :func:`_verbatim_pred`).
 
     True for a single-ref scope or an explicit ref-id set, and for the
-    agent-authored memory corpus (``kind='memory'``): the join filters
-    ``refs`` via ``refs_kind_idx`` and probes ``chunks_ref_id_idx``, so
-    the ILIKE leg evaluates only memory-chunk text, never the
-    multi-million-row paper corpus. gr662452: verbatim search is the
-    dedup check the remember/search-first recipes trust, and an exact
-    sentence fails ``keywords @>`` whenever KeyBERT never stored one of
-    its words (stopwords, LaTeX tokens) — a miss then mints duplicates.
-    A memory body is one ``memory_body`` chunk, so a phrase found in the
-    body is always wholly inside that chunk's text. Multi-kind
-    ``kinds=`` filters are never bounded this way (a paper member would
-    reopen the seq-scan), so only the singular ``kind`` counts.
+    agent-authored memory corpus (``kind='memory'``, gr662452): the join
+    filters ``refs`` via ``refs_kind_idx`` and probes
+    ``chunks_ref_id_idx``, so the ILIKE leg evaluates only memory-chunk
+    text, never the multi-million-row paper corpus. gr662452: verbatim
+    search is the dedup check the remember/search-first recipes trust,
+    and an exact sentence fails ``keywords @>`` whenever KeyBERT never
+    stored one of its words (stopwords, LaTeX tokens) — a miss then
+    mints duplicates. A memory body is one ``memory_body`` chunk, so a
+    phrase found in the body is always wholly inside that chunk's text.
+    Multi-kind ``kinds=`` filters are never bounded this way (a paper
+    member would reopen the seq-scan), so a mixed list never counts —
+    but a single-element ``['memory']`` list compiles to the same
+    ``refs_kind_idx`` probe as the singular spelling, and the
+    source-search route (``sort='recency'``, gr688850) hands the memory
+    corpus in exactly that shape: without the backstop a verbatim
+    ``sort='recency'`` memory search silently drops every hit the
+    un-sorted singular call finds.
     """
-    return scope_ref_id is not None or include_ref_ids is not None or kind == "memory"
+    return (
+        scope_ref_id is not None
+        or include_ref_ids is not None
+        or kind == "memory"
+        or list(kinds or ()) == ["memory"]
+    )
 
 
 def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
@@ -1164,7 +1178,7 @@ class ChunkStore:
             return 0
         pred, pred_params = _verbatim_pred(
             norm,
-            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind, kinds),
         )
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
@@ -1537,7 +1551,7 @@ class ChunkStore:
             return []
         pred, pred_params = _verbatim_pred(
             norm,
-            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind, kinds),
         )
         clauses = [
             "r.retired_at IS NULL",
