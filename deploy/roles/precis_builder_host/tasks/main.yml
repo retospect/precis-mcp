@@ -197,6 +197,19 @@
 # FOR UPDATE SKIP LOCKED arbitrates, and the executor pool counts by
 # lease_host so `claim.executor_cap.ssh_node.<heartbeat host>` bounds
 # this host's slice+compute total.
+#
+# A managed (non-deploy) builder user adds `--only heartbeat` and its own
+# identity (gr695674): it cannot ride the deploy unit's <host>
+# resource_slots rows — its probes see a different home, so two
+# heartbeat passes under one name would flap every row each pass
+# (retract-on-absent) and deploy-run lanes would place against lane
+# binaries they cannot exec. PRECIS_HOST_NAME = precis_builder_slots_host
+# (<host>-<user>) makes the heartbeat's resource_slots key, the claim's
+# default_host/lease_host and the per-host cap key all land on the same
+# name; PRECIS_NODE = the same name keeps the claim-gate's target_node
+# match and _pin_to_submitting_node consistent, so a minted land_slice
+# routes back to the host that holds the worktree. A `deploy` builder
+# stays on the host's own heartbeat — same user, same home.
 
 - name: render + load the builder worker unit
   ansible.builtin.import_role:
@@ -217,7 +230,8 @@
     # slice. Same shape as 43's compute lane.
     service_unit_kill_mode: process
     service_unit_exec: >-
-      {{ precis_builder_venv }}/bin/precis worker --only job_ssh_node
+      {{ precis_builder_venv }}/bin/precis worker
+      --only job_ssh_node{{ ' --only heartbeat' if (precis_builder_manage_user | bool) else '' }}
       --batch-size {{ precis_builder_batch_size }}
       --idle-seconds {{ precis_builder_idle_seconds }}
     # Env parity with 20g's slices lane for every job_type this worker
@@ -274,6 +288,11 @@
          | combine(
              {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
              if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
+           )
+         | combine(
+             {'PRECIS_HOST_NAME': precis_builder_slots_host,
+              'PRECIS_NODE': precis_builder_slots_host}
+             if (precis_builder_manage_user | bool) else {}
            ) }}
 
 # Code-refresh bounce (mirrors 43). `precis_deploy_changed` is set only

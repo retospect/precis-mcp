@@ -35,7 +35,10 @@
 # PER-HOST SIZING. `claim.executor_cap.ssh_node.<heartbeat host>` via
 # the claim-setting door (put kind='job' mode='setting') — the spec
 # (me691785) carries the formula and the exact
-# coordinator lines. No cap key → the code default 8 applies.
+# coordinator lines. No cap key → the code default 8 applies. A managed
+# non-deploy builder user heartbeats under `<host>-<user>` (the role's
+# precis_builder_slots_host, gr695674), so its cap key — and any
+# target_node pin — follows that name, not the bare host.
 #
 # IN THE REDEPLOY FLOW. redeploy-precis.yml imports this play right after
 # 43, untagged (role scoping cannot skip it), so a release refreshes

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import jinja2
+import pytest
 import yaml
 
 _DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
@@ -362,3 +363,115 @@ def test_builder_user_gets_a_user_npm_prefix_and_a_first_devin_install() -> None
     assert "https://cli.devin.ai/install.sh" in devin["ansible.builtin.shell"]
     assert devin["timeout"] > 0
     assert "failed_when" not in devin and "ignore_errors" not in devin
+
+
+# ── the builder's own heartbeat identity (gr695674) ───────────────────
+# A non-deploy builder user cannot ride the deploy unit's heartbeat: the
+# probe sees a different home (/home/coder is 0700), so <host>'s
+# resource_slots rows carry none of the builder's tokens and run_slice
+# never places. Sharing the name is not an option either — two heartbeat
+# passes under one host would retract each other's tokens every cycle.
+# The unit therefore runs `heartbeat` itself under <host>-<user>, the
+# same key the ssh_node claim reads (reserve_host == PRECIS_HOST_NAME).
+
+
+def _exec(**ctx: Any) -> str:
+    task = _task(_tasks(), "render + load the builder worker unit")
+    return _eval(task["vars"]["service_unit_exec"], **ctx)
+
+
+def _slots_host(**ctx: Any) -> str:
+    return _eval(_defaults()["precis_builder_slots_host"], **ctx)
+
+
+def test_slots_host_is_the_inventory_name_plus_the_user() -> None:
+    assert (
+        _slots_host(
+            precis_builder_user="coder",
+            precis_shared_env={},
+            inventory_hostname="maple",
+        )
+        == "maple-coder"
+    )
+    # An overlay PRECIS_HOST_NAME is the heartbeat's real base — the
+    # builder's identity follows it, never the bare inventory name.
+    assert (
+        _slots_host(
+            precis_builder_user="coder",
+            precis_shared_env={"PRECIS_HOST_NAME": "maple2"},
+            inventory_hostname="maple",
+        )
+        == "maple2-coder"
+    )
+
+
+def test_managed_builder_heartbeats_under_its_own_host_name() -> None:
+    """On a Linux host with precis_builder_user != deploy the unit runs
+    the heartbeat pass and advertises under <host>-<user> — the key the
+    claim's resource_slots read uses."""
+    env = _unit_env(
+        os_family="linux",
+        precis_builder_home="/home/coder",
+        precis_builder_manage_user=True,
+        precis_builder_slots_host="maple-coder",
+    )
+    assert env["PRECIS_HOST_NAME"] == "maple-coder"
+    assert env["PRECIS_NODE"] == "maple-coder", (
+        "the claim-gate/target_node identity matches the slots host so a "
+        "minted land_slice routes back to the worktree's host"
+    )
+    argv = _exec(
+        precis_builder_venv="/opt/precis/venv",
+        precis_builder_manage_user=True,
+        precis_builder_batch_size=4,
+        precis_builder_idle_seconds=5,
+    ).split()
+    assert "--only" in argv and "heartbeat" in argv
+    assert argv.count("--only") == 2
+
+
+def test_deploy_builder_keeps_the_host_heartbeat_and_plain_exec() -> None:
+    """Deploy parity: no identity keys, no second heartbeat — the host's
+    own heartbeat already probes the same home."""
+    env = _unit_env(os_family="linux", precis_builder_home="/home/deploy")
+    assert "PRECIS_HOST_NAME" not in env
+    assert "PRECIS_NODE" not in env
+    argv = _exec(
+        precis_builder_venv="/opt/precis/venv",
+        precis_builder_manage_user=False,
+        precis_builder_batch_size=4,
+        precis_builder_idle_seconds=5,
+    ).split()
+    assert "heartbeat" not in argv
+    assert argv == [
+        "/opt/precis/venv/bin/precis",
+        "worker",
+        "--only",
+        "job_ssh_node",
+        "--batch-size",
+        "4",
+        "--idle-seconds",
+        "5",
+    ]
+
+
+def test_the_slots_key_is_the_one_the_ssh_node_claim_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same PRECIS_HOST_NAME drives both ends of gr695674: the
+    heartbeat writes resource_slots[<name>] and claim_executor_jobs'
+    default_host (liveness.reserve_host) reads advertised[<name>] — so
+    tokens the builder's own probes find land exactly where
+    _placement_ok looks."""
+    from precis import liveness
+    from precis.workers.executors._common import _placement_ok
+
+    monkeypatch.setenv("PRECIS_HOST_NAME", "maple-coder")
+    host = liveness.reserve_host()
+    assert host == "maple-coder"
+    advertised = {"maple-coder": {"repo_checkout", "devin_bin", "git"}}
+    meta = {"job_type": "run_slice", "params": {}, "adapter": "devin_tree"}
+    assert _placement_ok(meta, advertised, host)
+    # The pre-fix shape: only <host> advertised (deploy's heartbeat, blind
+    # to the builder's home) — the same job stays queued.
+    assert not _placement_ok(meta, {"maple": set()}, host)

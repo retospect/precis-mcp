@@ -66,6 +66,24 @@ precis_builder_mcp_port: 8765
 # lands in the MCP host's deploy authorized_keys via delegate_to.
 precis_builder_tunnel_key: "{{ precis_builder_home }}/.ssh/precis_builder_tunnel_ed25519"
 
+# The fleet identity a MANAGED (non-deploy) builder user advertises and
+# claims under (gr695674): <host>-<user>, e.g. <builder-host>-coder. The
+# placement gate reads resource_slots[host] rows the heartbeat pass
+# writes, and the
+# claim's default_host / lease_host / executor-cap key all derive from the
+# same name — so the builder must NOT share the deploy unit's <host> rows:
+# its probes see a different home, two heartbeat passes under one name
+# would retract each other's tokens every cycle, and deploy-run lanes
+# would place against lane bins they cannot exec. The builder unit instead
+# runs `heartbeat` itself under this name (PRECIS_HOST_NAME), and
+# PRECIS_NODE pins to it likewise so a minted land_slice routes back to
+# the worktree's host. <host> is the heartbeat's own base — an overlay
+# PRECIS_HOST_NAME when set, else the inventory name. The per-host cap key
+# follows it: claim.executor_cap.ssh_node.<host>-<user>. Only rendered
+# when precis_builder_manage_user — a `deploy` builder rides the host's
+# own heartbeat, whose probes already see the same home.
+precis_builder_slots_host: "{{ ((precis_shared_env | default({})).PRECIS_HOST_NAME | default(inventory_hostname)) ~ '-' ~ precis_builder_user }}"
+
 # Slice worker unit knobs. --batch-size bounds NEW claims per tick, not
 # concurrency — the running pool is `claim.executor_cap.ssh_node[.<host>]`
 # (code default 8; the coordinator sets per-host values through the
