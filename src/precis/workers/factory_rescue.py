@@ -1066,7 +1066,8 @@ def _no_dispatch_hold(plan: Any, n: Any) -> str | None:
 
 def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     """The td603849 file-overlap hold's reason while a started, unlanded
-    build in the same repo touches a file this build's brief names —
+    build in the same repo touches a file this build's brief names (the
+    same repo-relative path; ``dispatch_score.shared_files``) —
     ``_step_dispatch`` refuses the mint until the blocker is on main.
     Same inputs as the dispatch step's ``held`` computation, evaluated
     for this one candidate: only ``run_slice`` tasks wait (generators
@@ -1090,9 +1091,10 @@ def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
         s = started[hid]
         if s.repo != repo:
             continue
-        shared = mine & (
+        shared = _dscore.shared_files(
+            mine,
             (files.get(hid) or frozenset())
-            | _dscore.brief_files("\n".join(s.branch_files))
+            | _dscore.brief_files("\n".join(s.branch_files)),
         )
         if not shared:
             continue

@@ -9170,6 +9170,60 @@ def test_file_overlap_hold_reads_a_held_builds_branch_files(store: Store) -> Non
     ) in notes
 
 
+def _overlap_note(store: Store, task: int) -> bool:
+    """Whether the dry-run tick holds ``task`` for a file overlap."""
+    res = pd.run_pass(store, dry_run=True)
+    return any(n.startswith(f"td{task}: file-overlap hold") for n in res.notes)
+
+
+def test_file_overlap_hold_matches_the_same_full_path(store: Store) -> None:
+    """gr701628 follow-up: a brief naming the started build's branch file
+    by its full repo path is held."""
+    blocker = _pending_build(store, ["src/precis/workers/job_types/land_slice.py"])
+    waiting = _file_plan(store, "Edit src/precis/workers/job_types/land_slice.py")
+    assert _overlap_note(store, waiting.ids["task"])
+    assert pd._started_slices(store)[blocker].branch_files
+
+
+def test_file_overlap_hold_resolves_an_unambiguous_suffix(store: Store) -> None:
+    """A brief's shorter suffix — ``job_types/land_slice.py`` or a bare
+    ``land_slice.py`` — holds when exactly one branch file ends with it."""
+    _pending_build(store, ["src/precis/workers/job_types/land_slice.py"])
+    suffix = _file_plan(store, "Edit job_types/land_slice.py")
+    bare = _file_plan(store, "Edit land_slice.py")
+    assert _overlap_note(store, suffix.ids["task"])
+    assert _overlap_note(store, bare.ids["task"])
+
+
+def test_file_overlap_hold_ignores_the_same_basename_elsewhere(
+    store: Store,
+) -> None:
+    """Two builds touching different ``dispatch.py`` / ``test_x.py`` files
+    do not wait on each other, though the basename (and last two
+    segments, for the tests) agree."""
+    _pending_build(
+        store,
+        ["src/precis/a/dispatch.py", "tests/a/test_x.py", "src/precis/a/b/conftest.py"],
+    )
+    other = _file_plan(
+        store,
+        "Edit src/precis/b/dispatch.py, tests/b/test_x.py and "
+        "src/precis/c/b/conftest.py",
+    )
+    assert not _overlap_note(store, other.ids["task"])
+
+
+def test_file_overlap_hold_ignores_an_ambiguous_basename(store: Store) -> None:
+    """A bare ``__init__.py`` names several of the started build's files
+    and none in particular — it holds nothing; a bare name the started
+    build does not touch holds nothing either."""
+    _pending_build(store, ["src/precis/a/__init__.py", "src/precis/b/__init__.py"])
+    ambiguous = _file_plan(store, "Edit __init__.py")
+    untouched = _file_plan(store, "Edit conftest.py")
+    assert not _overlap_note(store, ambiguous.ids["task"])
+    assert not _overlap_note(store, untouched.ids["task"])
+
+
 def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
     store: Store,
 ) -> None:
@@ -9448,7 +9502,7 @@ def test_brief_files_needs_a_word_boundary_after_the_extension() -> None:
 
     assert ds.brief_files("see https://github.com/x/y and docs.mdx") == frozenset()
     keys = ds.brief_files("Edit check.yml and src/x.py, then a/b.pyi.")
-    assert {"check.yml", "x.py", "b.pyi", "a/b.pyi"} <= keys
+    assert keys == frozenset({"check.yml", "x.py", "a/b.pyi"})
     assert "github.c" not in ds.brief_files("github.com check.yml")
     assert ds.brief_files("run src/x.py::main") == frozenset({"x.py"})
 

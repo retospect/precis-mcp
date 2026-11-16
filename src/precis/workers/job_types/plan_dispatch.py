@@ -242,7 +242,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    its pre-land review, or landing — is held until that one is on main
    (td603849, widened 2026-11-15 — the ``_started_slices``/
    ``_brief_file_sets`` check; a started build's files are its stamped
-   ``meta.branch_files`` plus its brief's). A build whose ``land_slice``
+   ``meta.branch_files`` plus its brief's). "Overlaps" means the same
+   repo-relative path: a brief's shorter suffix (``land_slice.py``,
+   ``job_types/land_slice.py``) resolves only when exactly one of the
+   started build's paths ends with it, so two builds touching different
+   ``dispatch.py`` or ``__init__.py`` files do not wait on each other. A build whose ``land_slice``
    died (newest job failed/cancelled/timed-out, none live) or that
    carries or sits under a ``rescue:``/``child-failed:`` tag holds no
    lock (gr701628); the dead-land drop reads only a failure of the
@@ -6393,9 +6397,11 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
 
 
 def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
-    """``{todo id: file keys}`` from each todo's body chunks plus its
-    ``brief:``/``handoff:`` comments — one query for the handful of ids
-    the overlap check needs."""
+    """``{todo id: normalised file paths}`` the todo's body chunks plus
+    its ``brief:``/``handoff:`` comments name (one path per token, as
+    written — no basename or last-two-segment keys; see
+    :func:`~precis.utils.dispatch_score.brief_files`) — one query for the
+    handful of ids the overlap check needs."""
     if not ids:
         return {}
     with store.pool.connection() as conn:
@@ -6583,11 +6589,17 @@ def _overlap_holds(
     td603849 file-overlap hold, the one read :func:`_step_dispatch` skips
     on and :func:`live_nodes` discounts by (gr701628). Only a default-op,
     non-generator build is held; ``started`` is :func:`_started_slices`;
-    a started build blocks a candidate in the same repo whose brief files
-    intersect the started build's (its stamped ``branch_files`` plus its
-    own brief's). Only started work holds, never another candidate, so
-    two candidates never hold each other. One ``_brief_file_sets`` query
-    for the lot; empty without a started build or a build candidate."""
+    a started build blocks a candidate in the same repo when a file the
+    candidate's brief names is the same repo-relative path as one the
+    started build touches (its stamped ``branch_files`` plus its own
+    brief's; :func:`~precis.utils.dispatch_score.shared_files`). A brief
+    that names a file by a shorter suffix counts only when exactly one of
+    the started build's paths ends with it — the same basename in two
+    directories, or an ambiguous ``__init__.py``, holds nothing; a real
+    conflict still rebuilds at land. Only started work holds, never
+    another candidate, so two candidates never hold each other. One
+    ``_brief_file_sets`` query for the lot; empty without a started
+    build or a build candidate."""
     builds = [
         n
         for n in candidates
@@ -6613,7 +6625,7 @@ def _overlap_holds(
             # the check then held a same-path build in another repo.
             if started[hid].repo != repo:
                 continue
-            shared = mine & held_sets[hid]
+            shared = _dscore.shared_files(mine, held_sets[hid])
             if hid != n.id and shared:
                 held[n.id] = (hid, shared)
                 break
@@ -6679,8 +6691,8 @@ def _step_dispatch(
         if n.id in held:
             res.held += 1
             hid, shared = held[n.id]
-            # Full paths read best; the basename/two-segment keys are
-            # the same files again.
+            # ``shared`` holds resolved full paths only; list a
+            # directory-qualified one ahead of a root-level file.
             named = sorted(p for p in shared if "/" in p) or sorted(shared)
             res.notes.append(
                 f"td{n.id}: file-overlap hold — waits on td{hid} "

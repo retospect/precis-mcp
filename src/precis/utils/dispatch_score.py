@@ -221,15 +221,15 @@ _LEADING_ROOTS = ("./", "src/precis/", "src/")
 
 
 def brief_files(text: str) -> frozenset[str]:
-    """The file set a brief or gripe report names, normalised for
-    overlap comparison.
+    """The file set a brief or gripe report names — one normalised path
+    per token (``src/precis/x/y.py`` and ``./x/y.py`` both give
+    ``x/y.py``; a bare ``y.py`` stays ``y.py``).
 
-    Every token yields up to three keys — the full normalised path, its
-    last two segments, and its basename — so ``src/precis/x/y.py``,
-    ``x/y.py`` and ``y.py`` all meet on a shared key. Over-matching is
-    the safe direction: a false overlap only delays a candidate behind
-    an in-flight land; a missed one rebuilds the td603849 land
-    conflict."""
+    A token is a path as written, minus the ``src/precis/``/``src/``
+    root: a short suffix is not widened to its basename or last two
+    segments, because matching on those held two builds that touched
+    different ``dispatch.py``/``__init__.py`` files on each other.
+    :func:`shared_files` decides whether two sets name the same file."""
     keys: set[str] = set()
     for raw in _FILE_RE.findall(text or ""):
         path = _ANCHOR_RE.sub("", raw).strip("./")
@@ -237,14 +237,34 @@ def brief_files(text: str) -> frozenset[str]:
             if path.startswith(root):
                 path = path[len(root) :]
                 break
-        if not path:
-            continue
-        keys.add(path)
-        parts = path.split("/")
-        if len(parts) >= 2:
-            keys.add("/".join(parts[-2:]))
-        keys.add(parts[-1])
+        if path:
+            keys.add(path)
     return frozenset(keys)
+
+
+def shared_files(mine: frozenset[str], theirs: frozenset[str]) -> frozenset[str]:
+    """The files of ``theirs`` that a candidate's :func:`brief_files` set
+    ``mine`` names — the td603849 overlap test, same repo-relative path
+    only (gr701628 follow-up).
+
+    A key of ``mine`` equal to a path of ``theirs`` matches. Otherwise
+    it is a path suffix (``job_types/land_slice.py``, a bare
+    ``land_slice.py``) and resolves only when exactly one path of
+    ``theirs`` is that suffix after a ``/``; a suffix that fits several
+    paths (``__init__.py`` under two packages) or none holds nothing.
+    The result holds the resolved ``theirs`` paths. Cost is
+    ``len(mine) * len(theirs)`` string tests on a per-tick path, both
+    sets a handful of files."""
+    shared: set[str] = set()
+    for key in mine:
+        if key in theirs:
+            shared.add(key)
+            continue
+        tail = "/" + key
+        hits = [p for p in theirs if p.endswith(tail)]
+        if len(hits) == 1:
+            shared.add(hits[0])
+    return frozenset(shared)
 
 
 __all__ = [
@@ -266,4 +286,5 @@ __all__ = [
     "prio_multiplier",
     "recommended_rung",
     "score_sql",
+    "shared_files",
 ]
