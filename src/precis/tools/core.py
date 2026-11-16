@@ -2890,8 +2890,8 @@ def delete(
     # numeric-ref kinds: why it goes — a 'deleted' ref_events row so a
     # later get()'s Gone names the survivor ('merged into meNNN').
     reason: str | None = None,
-    # memory: preview prose mentions, name any-kind successor, or explicitly
-    # leave successor-less mentions for the gardener. Other kinds are unchanged.
+    # memory/finding: preview memory prose mentions, name any-kind successor,
+    # or explicitly leave successor-less mentions for the gardener.
     dry_run: bool | None = None,
     superseded_by: str | None = None,
     force: bool | None = None,

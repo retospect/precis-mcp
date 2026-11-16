@@ -109,12 +109,12 @@ from precis.handlers import (
     _finding_judgments,
     _finding_nanopub,
 )
+from precis.handlers._audited_retirement import AuditedRetirementHandler
 from precis.handlers._finding_common import (
     cap_finding_title,
     fetch_ref_any_kind,
     multi_article_advisory,
 )
-from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -227,7 +227,7 @@ def _evidence_target_handle(tgt: str) -> str:
     return tgt
 
 
-class FindingHandler(NumericRefHandler):
+class FindingHandler(AuditedRetirementHandler):
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(

@@ -1,4 +1,4 @@
-"""Handlers — one adapter per kind (~70 kinds).
+"""Handlers — kind adapters.
 
 Modules implement :class:`precis.protocol.Handler`, declare verbs via
 :class:`precis.protocol.KindSpec` and register with :class:`precis.dispatch.Hub`
@@ -8,6 +8,7 @@ Staged (URL-backed draft) findings preserve a URL and verbatim quote
 without fetching; paper import promotes only a source-and-quote match to
 the ordinary chase (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
+Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root

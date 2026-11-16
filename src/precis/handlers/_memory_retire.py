@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from psycopg import Connection
 
 from precis.graph.garden.candidates import memory_handle_mentions
+from precis.utils.handle_registry import format_handle
 
 MENTION_REPORT_CAP = 25
 _HEADING = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -109,19 +110,22 @@ def _mention(ref_id: int, body: str, handle: str) -> Mention | None:
     return historical
 
 
-def scan_mentions(conn: Connection, ref_id: int) -> MentionReport:
+def scan_mentions(
+    conn: Connection, ref_id: int, *, kind: str = "memory"
+) -> MentionReport:
     """One indexed query, streamed and capped; only live memory_body text.
 
     ``to_tsquery`` on the stored ``tsv`` nominates candidates — exact
-    whole-lexeme hits for ``me<N>`` and its one- and two-leading-zero
-    forms — so the scan is complete at any corpus size; the shared Python
+    whole-lexeme hits for the target record handle and its one- and
+    two-leading-zero forms — so the scan is complete at any corpus size; the shared Python
     detector predicate verifies each candidate. Aggregating all live body
     chunks preserves history-section context. Known gap: a handle glued
     inside a dotted or slashed compound token (``docs/me<N>``,
     ``me<N>.md``, a URL path) is one lexeme and is never nominated.
     """
-    handle = f"me{ref_id}"
-    terms = " | ".join(f"me{'0' * zeros}{ref_id}" for zeros in range(3))
+    handle = format_handle(kind, ref_id)
+    prefix = handle[:2]
+    terms = " | ".join(f"{prefix}{'0' * zeros}{ref_id}" for zeros in range(3))
     mentions: list[Mention] = []
     total = blocking = 0
     with conn.cursor(name=f"memory_retire_{ref_id}") as cursor:
