@@ -1571,3 +1571,34 @@ def test_first_attempt_witness_failures_enter_the_shove(cell, monkeypatch):
     (st,) = cells
     assert st.keys[1] == (1, 1), "the first-attempt 2D bigon must not look clean"
     assert st.partners[1] == [0]
+
+
+def test_guard_plans_the_unchanged_state_once_per_candidate_set(cell, monkeypatch):
+    """Two candidates of one state share its before-guard and its plan."""
+    shove, st, emitted = _guard_branch_cell(cell, monkeypatch, already_guarded=True)
+    planned = []
+
+    def counting(state, paths, *, shaped=False):
+        planned.append(state)
+        return emitted(state, paths, shaped=shaped)
+
+    monkeypatch.delattr(shove, "_plan")
+    monkeypatch.setattr(shove, "_plan_uncached", counting)
+    first, second = dataclasses.replace(st), dataclasses.replace(st)
+    assert shove._preserves_guard(st, first, {0})
+    assert shove._preserves_guard(st, second, {0})
+    assert sum(s is st for s in planned) == 1
+    assert sum(s is first for s in planned) == 1
+    assert sum(s is second for s in planned) == 1
+
+    # Bypass the before-guard memo to exercise the shaped-plan memo alone.
+    before = [b.branch for bl in st.builts.values() for b in bl]
+    shove._guarded(st, before, {1})
+    assert sum(s is st for s in planned) == 1
+
+    # Remove shaped plans: the before-guard memo must still avoid replanning.
+    shove._shaped_plans.clear()
+    third = dataclasses.replace(st)
+    assert shove._preserves_guard(st, third, {0})
+    assert sum(s is st for s in planned) == 1
+    assert sum(s is third for s in planned) == 1

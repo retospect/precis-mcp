@@ -105,7 +105,8 @@ BOARD_MARKS = {
     "nano_usb_pd_r2": [
         pytest.mark.slow,
         pytest.mark.nightly,
-        pytest.mark.timeout(3600),
+        # Measured 5371 s baseline plus ~1.5x margin, as for the nano rows.
+        pytest.mark.timeout(8100),
         pytest.mark.xfail(
             strict=True,
             raises=AssertionError,

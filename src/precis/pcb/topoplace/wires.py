@@ -6439,6 +6439,16 @@ class _Shove:
         self.rules = rules
         self.masks = masks
         self.hv_weight = hv_weight
+        # Per-state memos (the state object is held so its id stays unique):
+        # every candidate of one ``_tries`` call re-judges the same unchanged
+        # state, and replanning it dominates the shove phase.
+        self._shaped_plans: dict[
+            int, tuple[_ShoveState, tuple[int, ...], RoutePlan]
+        ] = {}
+        self._before_guards: dict[
+            tuple[int, frozenset[int]],
+            tuple[_ShoveState, tuple[int, ...], dict[int, set[WirePath]]],
+        ] = {}
         self.net_rules = {
             (str(d.net_name[k]) if k < len(d.net_name) else str(k)): NetRules(
                 track_width_mm=r[0],
@@ -6663,7 +6673,16 @@ class _Shove:
         if not others:
             return True
         before = [b.branch for bl in st.builts.values() for b in bl]
-        previous = self._guarded(st, before, others)
+        key = (id(st), frozenset(others))
+        ident = (id(self.d), *map(id, before))
+        hit = self._before_guards.get(key)
+        if hit is not None and hit[0] is st and hit[1] == ident:
+            previous = hit[2]
+        else:
+            previous = self._guarded(st, before, others)
+            if len(self._before_guards) >= 16:
+                self._before_guards.clear()
+            self._before_guards[key] = (st, ident, previous)
         return all(after[n] <= previous.get(n, set()) for n in others)
 
     def _guarded(
@@ -6981,6 +7000,21 @@ class _Shove:
         self, st: _ShoveState, branches: list[WirePath], *, shaped: bool = False
     ) -> RoutePlan:
         """Plan a cell with its growth rules, optionally through emit shaping."""
+        if shaped:
+            ident = (id(self.d), *map(id, branches))
+            hit = self._shaped_plans.get(id(st))
+            if hit is not None and hit[0] is st and hit[1] == ident:
+                return hit[2]
+            plan = self._plan_uncached(st, branches, shaped=True)
+            if len(self._shaped_plans) >= 16:
+                self._shaped_plans.clear()
+            self._shaped_plans[id(st)] = (st, ident, plan)
+            return plan
+        return self._plan_uncached(st, branches, shaped=False)
+
+    def _plan_uncached(
+        self, st: _ShoveState, branches: list[WirePath], *, shaped: bool
+    ) -> RoutePlan:
         from precis.pcb.topoplace.realise import (
             _emit_shapes,
             _spoke_offsets,
