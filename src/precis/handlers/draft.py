@@ -2607,11 +2607,21 @@ class DraftHandler(Handler):
             figure_meta={"render_pending": True},
         )
         self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
+        if recipe.get("kind") == "pathway_profile":
+            source_ref = self.store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+            assert source_ref is not None
+            self.store.add_link(
+                src_ref_id=ref_id,
+                src_pos=self.store.drafts.chunk_ord_map(ref_id)[chunk.chunk_id],
+                dst_ref_id=source_ref.id,
+                relation="derived-from",
+                set_by="agent",
+            )
         self.sync_draft_links(ref_id)
         self._attribute_touch([chunk.chunk_id])
         return Response(
             body=(
-                f"added structure view figure {chunk.dc} to {slug} ({prov}); "
+                f"added view figure {chunk.dc} to {slug} ({prov}); "
                 "image renders on first export/view — render pending"
             )
             + _draft_lint.caption_number_hint(str(caption), "figure")
@@ -2633,6 +2643,19 @@ class DraftHandler(Handler):
             raise BadInput("meta['view'] must be an object", next=nxt)
         kind, _, src_slug = str(view.get("source") or "").partition(":")
         src_slug = src_slug.strip()
+        if kind == "pathway":
+            from precis.render.figure import pathway_recipe
+
+            try:
+                recipe = pathway_recipe(src_slug, view)
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            if self.store.get_ref(kind="pathway", id=recipe["source"]["slug"]) is None:
+                raise NotFound(
+                    f"pathway {src_slug!r} not found",
+                    next="search(kind='pathway', q='<topic>') then use a live slug",
+                )
+            return recipe, f"pathway:{src_slug}"
         if kind not in ("structure", "se") or not src_slug:
             raise BadInput(
                 "meta['view']['source'] must be 'structure:<slug>' or 'se:<design>'",

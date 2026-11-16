@@ -35,6 +35,32 @@ lane, and calling it from a process without that provider gets `NotFound`
 with a `kind 'pathway' routes through host(s): …` hint — expected off-host,
 not a bug; retry from a host that has it.
 
+## Declutter profiles and embed pathway figures
+
+```python
+get(kind="pathway", id="<slug>", view="profile",
+    args={"route_only": True, "hide_supply": True, "kinetics": True})
+get(kind="pathway", id="<slug>", view="mermaid",
+    args={"route_only": True, "top_n_barriers": 5, "hide_supply": True})
+```
+
+`route_only` keeps the shortest productive route; route selection traverses
+supply bridges before display pruning. `hide_supply` removes those edges and
+isolated states. `top_n_barriers` keeps N largest selected reaction barriers.
+`label_threshold_eV` suppresses smaller barrier labels. Profile `kinetics`
+defaults true: stored TOF (log10), method, trust, T and gas table accompany
+Ea and uncertainty, without solving again. Missing records say "kinetics not
+solved". The highlighted largest route barrier is not a solved degree of
+rate control. `U` shifts the profile using recorded `n_H`; kinetics remains at
+its stored environment.
+
+A draft figure accepts `meta={'view': {'source': 'pathway:<slug>#profile',
+'route_only': True, 'kinetics': True}}`; omit the suffix for profile or use
+`#graph` for the network. The same pruning, `label_threshold_eV`, `U` and
+`size=[width,height]` (inches, each 1–24) options control lazy PNG rendering.
+Source edits invalidate it; Refresh preserves its recipe. Full call and
+provenance details: `precis-draft-rich-content-help`.
+
 ## Find existing pathways / list what has been run
 
 A bare get lists the most recently updated pathways with their slugs, the

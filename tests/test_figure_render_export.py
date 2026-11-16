@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import docx
+import pytest
 
 from precis.dispatch import Hub
 from precis.export.docx import export_docx
 from precis.handlers.draft import _PLACEHOLDER_PNG, DraftHandler
 from precis.handlers.todo import TodoHandler
+from precis.store import Store
 
 # A valid 2x1 PNG (differs from the 1x1 placeholder), written by the recipe
 # so the test needs no matplotlib.
@@ -27,6 +30,61 @@ _GOOD_SRC = (
     "       + chunk(b'IEND', b''))\n"
     "open(out, 'wb').write(png)\n"
 )
+
+
+def test_pathway_source_renders_lazily(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.errors import NotFound
+    from precis.render.figure import ensure_rendered, needs_render
+
+    store = hub.live_store
+    source = store.insert_ref(
+        kind="pathway", slug="source-path", title="Path", meta={"graph": {}}
+    )
+    _ref, old = _pending_figure(hub, _GOOD_SRC)
+    handler = DraftHandler(hub=hub)
+    handler.put(
+        id="g",
+        chunk_kind="figure",
+        text="Pathway figure",
+        meta={"view": {"source": "pathway:source-path"}},
+        at={"last": True},
+    )
+    fig = next(
+        c
+        for c in store.drafts.reading_order(old.ref_id)
+        if c.chunk_kind == "figure" and c.chunk_id != old.chunk_id
+    )
+    assert fig.meta["figure"]["render_pending"]
+    assert fig.meta["render"]["options"]["kinetics"] is True
+
+    def render(
+        store_arg: Store, ref_arg: Any, **options: Any
+    ) -> tuple[bytes, dict[str, Any]]:
+        assert ref_arg.id == source.id
+        assert options == {"view": "profile", "kinetics": True}
+        return _PLACEHOLDER_PNG, {
+            "schema": 1,
+            "source": {"kind": "pathway", "ref_id": source.id},
+            "rows": [],
+        }
+
+    monkeypatch.setattr("precis.quest.figures.pathway_profile_figure", render)
+    assert ensure_rendered(store, fig) is None
+    fresh = store.drafts.get_draft_chunk(fig.dc)
+    assert fresh is not None
+    assert not needs_render(store, fresh)
+    assert fresh.meta["figure"]["data_package"]["source"]["ref_id"] == source.id
+    store.stamp_ref_meta(source.id, {"changed": True})
+    assert needs_render(store, fresh)
+    with pytest.raises(NotFound):
+        handler.put(
+            id="g",
+            chunk_kind="figure",
+            text="Missing",
+            meta={"view": {"source": "pathway:missing-source"}},
+        )
 
 
 def _pending_figure(hub: Hub, src: str):

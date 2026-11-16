@@ -386,6 +386,8 @@ def render_figure_chunk(
     or a render failure, so a caller (the render pass / export barrier) can
     bubble the reason without crashing the worker."""
     recipe = store.drafts.figure_render_recipe(figure_chunk_id)
+    if recipe is not None and recipe.get("kind") == "pathway_profile":
+        return _render_pathway_chunk(store, figure_chunk_id, recipe)
     if recipe is not None and recipe.get("kind") == "view":
         return _render_view_chunk(store, figure_chunk_id, recipe)
     bundle = store.drafts.figure_render_bundle(figure_chunk_id)
@@ -420,6 +422,10 @@ def needs_render(store: Any, chunk: Any) -> bool:
         return True
     if not isinstance(meta.get("render"), dict):
         return False
+    if meta["render"].get("kind") == "pathway_profile":
+        recipe = meta["render"]
+        ref = store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+        return ref is not None and recipe.get("cached_key") != pathway_key(ref, recipe)
     if meta["render"].get("kind") == "view":
         return _view_fresh(store, meta) is _STALE
     bundle = store.drafts.figure_render_bundle(chunk.chunk_id)
@@ -495,3 +501,60 @@ def ensure_rendered(store: Any, chunk: Any) -> str | None:
         return _failure_message(outcome.error, outcome.detail)
     store.drafts.clear_render_pending(chunk.chunk_id)
     return None
+
+
+def pathway_recipe(source: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Canonical lazy pathway recipe; kinetics defaults on even for source-only puts."""
+    from precis.utils.pathway_figure import OPTIONS, figure_options
+
+    slug, _, view = source.partition("#")
+    if not slug or view not in ("", "profile", "graph"):
+        raise ValueError("pathway source must be <slug>[#profile|#graph]")
+    unknown = set(options) - OPTIONS - {"source"}
+    if unknown:
+        raise ValueError(f"unknown pathway figure options: {sorted(unknown)}")
+    return {
+        "kind": "pathway_profile",
+        "source": {"kind": "pathway", "slug": slug},
+        "view": view or "profile",
+        "options": {"kinetics": True, **figure_options(options)},
+    }
+
+
+def pathway_key(ref: Any, recipe: dict[str, Any]) -> str:
+    """Hash stored source data, recipe and renderer version; no solver or timestamp dependency."""
+    inputs = {
+        "version": 1,
+        "ref": ref.id,
+        "title": ref.title,
+        "meta": ref.meta,
+        "view": recipe["view"],
+        "options": recipe["options"],
+    }
+    return hashlib.sha256(
+        json.dumps(inputs, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _render_pathway_chunk(
+    store: Any, chunk_id: int, recipe: dict[str, Any]
+) -> RenderOutcome:
+    from precis.quest.figures import pathway_profile_figure
+
+    ref = store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+    if ref is None:
+        return RenderOutcome(
+            ok=False, error="no-source", detail="pathway source no longer exists"
+        )
+    key = pathway_key(ref, recipe)
+    try:
+        png, snapshot = pathway_profile_figure(
+            store, ref, view=recipe["view"], **recipe["options"]
+        )
+    except Exception as exc:
+        return RenderOutcome(ok=False, error="view-error", detail=str(exc))
+    with store.tx() as conn:
+        store.drafts.upsert_chunk_blob(chunk_id, png, RENDER_MIME, conn=conn)
+        store.drafts.stamp_figure_data_package(chunk_id, snapshot, conn=conn)
+    store.drafts.stamp_render_fields(chunk_id, {"cached_key": key})
+    return RenderOutcome(ok=True, cached_key=key)

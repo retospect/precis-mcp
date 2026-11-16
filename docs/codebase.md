@@ -220,6 +220,10 @@ Pathway environment points cross MCP reads, explicit re-solves and web links
 through `src/precis_pathway/environment.py::Environment`; stored-result lookup
 reuses `src/precis/quest/environment_basis.py::environment_basis` without
 loading the compute engine or scheduling work.
+Draft pathway figures store a lazy recipe in `meta.render`; export and web
+refresh share `src/precis/render/figure.py::render_figure_chunk`. Selection
+options live in `precis.utils.pathway_figure`, and the quest renderer freezes
+stored energies and kinetics alongside the PNG without running a solve.
 
 ## Package map
 

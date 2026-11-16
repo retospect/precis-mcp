@@ -4021,6 +4021,15 @@ async def refresh_figure_data_package(
         return _error(
             "Figure not found", f"no figure chunk {handle!r} in this draft", 404
         )
+    recipe = store.drafts.figure_render_recipe(chunk.chunk_id)
+    if recipe is not None and recipe.get("kind") == "pathway_profile":
+        from precis.render.figure import render_figure_chunk
+
+        outcome = await asyncio.to_thread(render_figure_chunk, store, chunk.chunk_id)
+        if not outcome.ok:
+            return _error("Refresh failed", outcome.detail or str(outcome.error), 409)
+        store.drafts.clear_render_pending(chunk.chunk_id)
+        return RedirectResponse(url=back, status_code=303)
     snapshot = collect_entry(chunk)
     if snapshot is None:
         return _error(

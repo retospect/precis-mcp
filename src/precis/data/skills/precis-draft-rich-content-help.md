@@ -9,6 +9,7 @@ answers:
   - how do I attach an image to a draft chunk, and who owns clearance for a third-party figure?
   - how do I turn a data table into a rendered graph in a draft?
   - how do I render a structure or se block as a figure in a draft?
+  - how do I embed a pathway energy profile with kinetics in a draft?
   - how do I edit one cell of a table chunk without rewriting the whole grid?
   - how do I add a calculated column, footer total, or column stats to a draft table?
 applies-to: put/edit (kind='draft')
@@ -166,6 +167,37 @@ chunk handle — `[dc<id>]` renders as the target's label+number
 ("fig. 2", "table 1", capitalised at a sentence start) — never hard-code
 a number: the assigned one shifts when a sibling figure/table is added,
 moved or removed.
+
+## Figure from a pathway
+
+Use a stored pathway directly; no copied energies or Python recipe needed:
+
+```python
+put(kind="draft", id="report", chunk_kind="figure",
+    text="Main-route energy profile and stored kinetics.",
+    meta={"view": {"source": "pathway:<slug>#profile",
+                   "route_only": True, "hide_supply": True,
+                   "kinetics": True, "size": [8, 5]}})
+```
+
+`pathway:<slug>` defaults to `#profile`; `#graph` draws the network.
+The PNG renders lazily on export or first image read. Source edits invalidate
+the cache; Refresh uses the stored recipe, including its graph/profile choice.
+The figure carries a frozen data package and a `derived-from` source link.
+
+Options: `route_only` selects the shortest productive route (supply bridges
+participate before pruning); `hide_supply` removes supply edges and isolated
+states; `top_n_barriers=N` retains the N largest selected reaction barriers.
+`label_threshold_eV` suppresses smaller barrier labels. `U` shifts states with
+recorded `n_H` at V vs RHE; missing `n_H` remains unshifted. `size=[width,height]`
+uses inches, each 1–24. Boolean options default false except `kinetics=True`.
+
+Profile peaks show Ea and stored uncertainty, highlighting the largest route
+barrier. The annotation reads stored log10 TOF, method, trust, temperature and
+gas pressures; absent solves say "kinetics not solved". Rendering never runs
+the solver. Kinetics stays at its recorded environment when `U` shifts the
+profile; the two condition tables can differ. See `precis-pathway-help` for
+decluttered text views and kinetics reads.
 
 ## Code blocks
 
