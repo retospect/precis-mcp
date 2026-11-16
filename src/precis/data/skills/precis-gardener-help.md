@@ -7,6 +7,9 @@ answers:
   - what is memory gardening / the graph gardener?
   - what is the graph_garden job and what does it change?
   - where do gardener merge/split/relink/prune/tag proposals land?
+  - how do I list pending gardener proposals over MCP?
+  - how do I reject a gardener proposal over MCP?
+  - how do I tell whether the gardener is on?
   - what should I do when I meet a gardener proposal?
   - what is a polysemy finding and when does it trigger a split proposal?
   - why did two sibling taxa get a merge proposal?
@@ -122,6 +125,26 @@ doors close that gap:
   merge id. `args={'retired': True}` spells the same opt-in. A merged
   paper's re-homed cite key resolves to the survivor — address the
   tombstone by its `pa<id>` handle, which the merges list prints.
+
+## Pending proposals and rejections over MCP
+
+`get(kind='job', id='/garden/proposals', args={'action': 'merge',
+'limit': 20})` lists the proposals still awaiting a verdict: per row the
+review id, action, target handle, a `stale` flag when the target moved
+since the proposal, title, rationale, and any consumer hold with its
+next step. `action` and `limit` are optional.
+
+`put(kind='job', mode='garden-reject', args={'review_id': <id>,
+'reason': '<why>'})` closes one pending proposal: the terminal
+`rejected` row records your reason and actor, and the key stays decided
+while the target is unchanged. Rejecting an `apply_error` or
+`unresolved` hold instead re-opens the key — that is the retry door
+once the held error is fixed. There is no MCP apply or undo: they
+repoint the live graph and stay operator-held.
+
+`get(kind='job', id='/garden')` reports `gardener: on|dark` plus
+`cooling: yes|no` — whether a `service_config` row lights the pass and
+whether a dry-run streak has cooled it.
 
 ## The machine-edge write rule
 

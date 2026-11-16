@@ -602,6 +602,41 @@ def pending_proposals(
     return out
 
 
+def proposal_holds(store: Store, review_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Consumer holds on ``review_ids``, keyed by proposal id.
+
+    A hold is the consumer's non-terminal ``garden_review`` note
+    (``actor='garden-consumer'``, ``verdict='proposed'``) carrying
+    ``held``/``why``/``apply`` — why the proposal waits on a human and
+    what the follow-up is. The newest hold per proposal wins; notes that
+    fail to parse or name a different ``proposal`` are skipped. Shared by
+    the CLI's proposals/reject commands and the MCP
+    ``/garden/proposals`` view + ``mode='garden-reject'`` door."""
+    from precis.graph.garden.consumer import CONSUMER_ACTOR
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT p.review_id, h.note FROM reviews p JOIN reviews h "
+            "ON h.target_kind = p.target_kind AND h.target_id = p.target_id "
+            "WHERE p.review_id = ANY(%s) AND h.actor = %s AND h.note LIKE %s "
+            "ORDER BY h.review_id DESC",
+            (review_ids, CONSUMER_ACTOR, '%"garden_review"%'),
+        ).fetchall()
+    holds: dict[int, dict[str, Any]] = {}
+    for review_id, note in rows:
+        try:
+            hold = json.loads(note).get("garden_review")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if (
+            isinstance(hold, dict)
+            and hold.get("proposal") == review_id
+            and hold.get("held")
+        ):
+            holds.setdefault(review_id, hold)
+    return holds
+
+
 @dataclass(frozen=True, slots=True)
 class MergeLedgerEntry:
     """One fold of the merge-action slice of the garden ledger
@@ -790,6 +825,7 @@ __all__ = [
     "memory_successor_refusal",
     "merge_ledger",
     "pending_proposals",
+    "proposal_holds",
     "proposal_key_pending",
     "record_rejection",
     "resolve_proposal",

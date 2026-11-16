@@ -21,7 +21,8 @@ status: active
 
 Lifecycle operations on a `kind='job'` ref once it exists: the
 `tag`-driven cancel, mint-time `prio=`/`origin=` scheduling,
-`mode='retarget'`/`'setting'`/`'extend'`/`'wake'`/`'retry'` modes,
+`mode='retarget'`/`'setting'`/`'extend'`/`'wake'`/`'retry'`/
+`'garden-reject'` modes,
 sweeper guards, and the full `STATUS:` vocabulary including
 `waiting_ask_user`. Submit shapes live in [[precis-job-help]];
 reading the queue in [[precis-job-find-help]].

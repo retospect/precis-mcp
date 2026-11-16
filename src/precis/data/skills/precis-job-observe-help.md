@@ -122,6 +122,11 @@ timestamp works, as does `/garden?since=7d`.
 These are dated ledger events, not current pending counts: an
 approved proposal keeps its original event; held consumer rows are
 separated from proposed; sampled reviewer actors are excluded. Read-only.
+The same call reports `gardener: on|dark` and `cooling: yes|no`. For the
+pending queue itself — review id, action, target, stale flag, hold and
+next step per proposal — use
+`get(kind='job', id='/garden/proposals', args={'action': 'merge',
+'limit': 20})` ([[precis-gardener-help]]).
 
 ## Is the external rate limiter pacing a provider?
 

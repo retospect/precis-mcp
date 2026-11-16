@@ -13,6 +13,9 @@ See ``precis-job-help`` for the agent-facing surface and
 queue: the append-only ledger keeps a proposal after its terminal verdict.
 Consumer holds are separate from proposals; the last run is the latest
 non-skipped graph_garden job with recorded results in the same window.
+``/garden/proposals`` is the pending queue itself and
+``put(mode='garden-reject')`` the agent's rejection door (gr681311);
+apply and undo stay operator-held because they repoint the live graph.
 """
 
 from __future__ import annotations
@@ -629,6 +632,37 @@ _EXTEND_NEXT = (
     "(narrow with args={'job_type': '<type>'})"
 )
 
+# ── id='/garden/proposals' + put(mode='garden-reject') — the pending
+# garden queue over MCP (gr681311) ────────────────────────────────────
+#: The action filter's vocabulary — the same choices
+#: ``precis garden proposals --action`` declares.
+_GARDEN_PROPOSAL_ACTIONS: frozenset[str] = frozenset(
+    {
+        "merge",
+        "split",
+        "relink",
+        "prune",
+        "tag",
+        "rewrite",
+        "supersede",
+        "retire",
+        "compact",
+    }
+)
+
+#: Default row cap for ``/garden/proposals``; 200 matches the CLI's
+#: ``--limit`` ceiling.
+_GARDEN_PROPOSALS_DEFAULT_LIMIT = 20
+_GARDEN_PROPOSALS_MAX_LIMIT = 200
+
+_GARDEN_REJECT_NEXT = (
+    "put(kind='job', mode='garden-reject', args={'review_id': N, 'reason': '<why>'})"
+)
+
+_GARDEN_PROPOSALS_NEXT = (
+    "get(kind='job', id='/garden/proposals', args={'action': 'merge', 'limit': 20})"
+)
+
 
 def _extend_seconds(value: Any) -> int:
     """The ``seconds`` knob: an int 1..:data:`_EXTEND_MAX_SECONDS`
@@ -1055,10 +1089,11 @@ class JobHandler(NumericRefHandler):
         # queued-pin move (put(id=N, mode='retarget')) and the audited
         # claim.* override door (put(mode='setting')), and immediate
         # wake of a time-parked job (put(mode='wake')), plus the audited
-        # wall/deadline extension (put(mode='extend'), gr625303); every
-        # other value is rejected (gr343755 — a real vocabulary, not the
-        # "every mode= rejected" `()` shape).
-        modes=("retry", "retarget", "setting", "wake", "extend"),
+        # wall/deadline extension (put(mode='extend'), gr625303) and the
+        # garden-proposal rejection door (put(mode='garden-reject'),
+        # gr681311); every other value is rejected (gr343755 — a real
+        # vocabulary, not the "every mode= rejected" `()` shape).
+        modes=("retry", "retarget", "setting", "wake", "extend", "garden-reject"),
     )
 
     kind: ClassVar[str] = "job"
@@ -1113,6 +1148,7 @@ class JobHandler(NumericRefHandler):
             "claim",
             "garden",
             "garden/merges",
+            "garden/proposals",
             "secrets",
             "facts",
         )
@@ -1148,6 +1184,9 @@ class JobHandler(NumericRefHandler):
         # instead of the final structure. Declared for the args= gate.
         point: str | None = None,
         frames: bool | str | None = None,
+        # ``/garden/proposals``'s action filter (gr681311):
+        # ``args={'action': 'merge'}``. Declared for the args= gate.
+        action: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``/logs`` takes its filters from the id's query string; a
@@ -1170,10 +1209,11 @@ class JobHandler(NumericRefHandler):
         if isinstance(id, str) and id.partition("?")[0] in (
             "/garden",
             "/garden/merges",
+            "/garden/proposals",
         ):
-            merges_view = id.partition("?")[0] == "/garden/merges"
-            gate_path = "/garden/merges" if merges_view else "/garden"
-            unsupported = set(logs_args) - {"since"}
+            gate_path = id.partition("?")[0]
+            proposals_view = gate_path == "/garden/proposals"
+            unsupported = set(logs_args) - ({"limit"} if proposals_view else {"since"})
             unsupported.update(
                 k
                 for k, v in {
@@ -1187,16 +1227,31 @@ class JobHandler(NumericRefHandler):
                 }.items()
                 if v is not None
             )
+            if not proposals_view and action is not None:
+                unsupported.add("action")
             if unsupported:
                 raise BadInput(
                     f"{sorted(unsupported)} don't apply to {gate_path}",
-                    next=(f"get(kind='job', id='{gate_path}', args={{'since': '7d'}})"),
+                    next=(
+                        _GARDEN_PROPOSALS_NEXT
+                        if proposals_view
+                        else f"get(kind='job', id='{gate_path}', args={{'since': '7d'}})"
+                    ),
                 )
-            if merges_view:
+            if proposals_view:
+                return self._render_garden_proposals_view(
+                    id.partition("?")[2], action=action, limit=limit
+                )
+            if gate_path == "/garden/merges":
                 return self._render_garden_merges_view(
                     id.partition("?")[2], since=since
                 )
             return self._render_garden_view(id.partition("?")[2], since=since)
+        if action is not None:
+            raise BadInput(
+                "action= only applies to get(kind='job', id='/garden/proposals')",
+                next=_GARDEN_PROPOSALS_NEXT,
+            )
         if isinstance(id, str) and _is_logs_path(id):
             extra = {k: str(v) for k, v in logs_args.items()}
             if q is not None:
@@ -1317,6 +1372,8 @@ class JobHandler(NumericRefHandler):
             return self._render_garden_view(view.partition("?")[2])
         if view == "garden/merges" or view.startswith("garden/merges?"):
             return self._render_garden_merges_view(view.partition("?")[2])
+        if view == "garden/proposals" or view.startswith("garden/proposals?"):
+            return self._render_garden_proposals_view(view.partition("?")[2])
         if view == "secrets" or view.startswith("secrets?"):
             return self._render_secrets_view(view.partition("?")[2])
         if view == "facts" or view.startswith("facts?"):
@@ -1376,8 +1433,12 @@ class JobHandler(NumericRefHandler):
                 if isinstance(review, dict) and review.get("held"):
                     bucket = "held-for-human"
             counts[bucket] += int(n)
+        from precis.graph.garden.service import cooling_active, graph_garden_enabled
+
         lines = [
             f"# garden reviews since {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            f"gardener: {'on' if graph_garden_enabled(self.store) else 'dark'}",
+            f"cooling: {'yes' if cooling_active(self.store) else 'no'}",
             "actors: graph-garden, garden-consumer",
             f"proposed: {counts['proposed']}",
             f"approved: {counts['approved']}",
@@ -1507,6 +1568,96 @@ class JobHandler(NumericRefHandler):
         if not entries:
             lines.append("no merge proposals in the window")
         return Response(body="\n".join(lines), result_count=len(entries))
+
+    def _render_garden_proposals_view(
+        self,
+        query_string: str,
+        *,
+        action: str | None = None,
+        limit: str | int | None = None,
+    ) -> Response:
+        """``/garden/proposals`` — the pending-proposal queue (gr681311).
+
+        The same rows ``precis garden proposals`` prints:
+        :func:`pending_proposals` plus the consumer holds
+        :func:`proposal_holds` reads — per row the review id, action,
+        target handle, a ``stale`` flag when the target drifted past the
+        proposed sha, title, rationale and the hold's next step.
+        ``action`` narrows to one action kind; ``limit`` caps the rows.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if set(params) - {"action", "limit"}:
+            raise BadInput(
+                "unknown /garden/proposals filter",
+                next=_GARDEN_PROPOSALS_NEXT,
+            )
+        raw_action = params.get("action", action)
+        if raw_action is not None and str(raw_action) not in _GARDEN_PROPOSAL_ACTIONS:
+            raise BadInput(
+                f"unknown /garden/proposals action {raw_action!r}",
+                options=sorted(_GARDEN_PROPOSAL_ACTIONS),
+                next=_GARDEN_PROPOSALS_NEXT,
+            )
+        raw_limit = params.get(
+            "limit", limit if limit is not None else _GARDEN_PROPOSALS_DEFAULT_LIMIT
+        )
+        try:
+            cap = int(str(raw_limit))
+        except (TypeError, ValueError):
+            cap = 0
+        if not 1 <= cap <= _GARDEN_PROPOSALS_MAX_LIMIT:
+            raise BadInput(
+                f"/garden/proposals limit must be an int 1.."
+                f"{_GARDEN_PROPOSALS_MAX_LIMIT}, got {raw_limit!r}",
+                next=_GARDEN_PROPOSALS_NEXT,
+            )
+        from precis.graph.garden.proposals import pending_proposals, proposal_holds
+
+        rows = pending_proposals(
+            self.store,
+            action=None if raw_action is None else str(raw_action),
+            limit=cap,
+        )
+        if not rows:
+            return Response(body="no pending garden proposals", result_count=0)
+        holds = proposal_holds(self.store, [p.review_id for p in rows])
+        ref_ids = [p.target_id for p in rows if p.target_kind == "ref"]
+        kind_of: dict[int, str] = (
+            {
+                r.id: r.kind
+                for r in self.store.fetch_refs_by_ids(
+                    ref_ids, include_deleted=True
+                ).values()
+            }
+            if ref_ids
+            else {}
+        )
+
+        def _target(p: Any) -> str:
+            kind = (
+                kind_of.get(p.target_id, p.target_kind)
+                if p.target_kind == "ref"
+                else p.target_kind
+            )
+            return (
+                handle_registry.try_format(kind, p.target_id)
+                or f"{p.target_kind}:{p.target_id}"
+            )
+
+        header = f"# pending garden proposals — {len(rows)}"
+        if raw_action is not None:
+            header += f" (action={raw_action})"
+        lines = [header]
+        for p in rows:
+            stale = "" if p.current else "  [stale: target changed]"
+            lines.append(f"review {p.review_id}: {p.action} {_target(p)}{stale}")
+            lines.append(f"    {p.title} — {p.rationale}")
+            if hold := holds.get(p.review_id):
+                lines.append(f"    held: {hold['held']} — {hold.get('why', '')}")
+                if hold.get("apply"):
+                    lines.append(f"    next: {hold['apply']}")
+        lines.append(f"reject: {_GARDEN_REJECT_NEXT}")
+        return Response(body="\n".join(lines), result_count=len(rows))
 
     def _render_secrets_view(self, query_string: str) -> Response:
         """``id='/secrets'`` — the stored credential-check counts (gr592971).
@@ -3388,9 +3539,10 @@ class JobHandler(NumericRefHandler):
         placement: str | None = None,
         prio: int | None = None,
         origin: str | None = None,
-        # mode='setting' / 'wake' / 'extend' args: audited operator
-        # actions. Declared (not read off ``**_kw``) so the args=
-        # extras gate passes them; validated against their modes below.
+        # mode='setting' / 'wake' / 'extend' / 'garden-reject' args:
+        # audited operator/agent actions. Declared (not read off
+        # ``**_kw``) so the args= extras gate passes them; validated
+        # against their modes below.
         key: str | None = None,
         value: Any = None,
         reason: str | None = None,
@@ -3398,6 +3550,7 @@ class JobHandler(NumericRefHandler):
         force: bool | str | None = None,
         seconds: int | str | None = None,
         under: str | int | None = None,
+        review_id: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -3428,15 +3581,32 @@ class JobHandler(NumericRefHandler):
                 "key=/value=/unset= only apply to put(mode='setting')",
                 next=_CLAIM_SETTING_NEXT,
             )
-        if reason is not None and mode not in ("setting", "wake", "extend"):
+        if reason is not None and mode not in (
+            "setting",
+            "wake",
+            "extend",
+            "garden-reject",
+        ):
             raise BadInput(
                 "reason= only applies to put(mode='setting'), "
-                "put(mode='wake') or put(mode='extend')",
-                next="use reason= with mode='setting', mode='wake' or mode='extend'",
+                "put(mode='wake'), put(mode='extend') or "
+                "put(mode='garden-reject')",
+                next="use reason= with mode='setting', mode='wake', "
+                "mode='extend' or mode='garden-reject'",
             )
-        if mode in ("retry", "retarget", "setting", "wake", "extend") and (
-            prio is not None or origin is not None
-        ):
+        if review_id is not None and mode != "garden-reject":
+            raise BadInput(
+                "review_id= only applies to put(mode='garden-reject')",
+                next=_GARDEN_REJECT_NEXT,
+            )
+        if mode in (
+            "retry",
+            "retarget",
+            "setting",
+            "wake",
+            "extend",
+            "garden-reject",
+        ) and (prio is not None or origin is not None):
             raise BadInput(
                 f"prio=/origin= are mint-time stamps; put(mode={mode!r}) "
                 "does not mint a row",
@@ -3515,6 +3685,27 @@ class JobHandler(NumericRefHandler):
                 value=value,
                 reason=reason,
                 unset=unset,
+            )
+        if mode == "garden-reject":
+            return self._put_garden_reject(
+                review_id=review_id,
+                reason=reason,
+                id=id,
+                text=text,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                job_type=job_type,
+                executor=executor,
+                params=params,
+                idem_key=idem_key,
+                requires=requires,
+                parent_id=parent_id,
+                model=model,
+                select=select,
+                placement=placement,
             )
         if id is not None:
             raise BadInput(
@@ -4196,6 +4387,72 @@ class JobHandler(NumericRefHandler):
                 "get(kind='job', id='/claim')"
             )
         )
+
+    def _put_garden_reject(
+        self, *, review_id: Any, reason: Any, **_kw: Any
+    ) -> Response:
+        """Reject one pending garden proposal over MCP (gr681311).
+
+        ``put(kind='job', mode='garden-reject', args={'review_id': N,
+        'reason': '<why>'})`` — the agent-facing door the CLI's
+        ``precis garden reject`` owns for operators: appends the
+        terminal ``rejected`` review row
+        (:func:`resolve_proposal`) with the caller's actor and reason,
+        and keeps the CLI's retryable marker when the proposal sits on
+        an ``apply_error``/``unresolved`` consumer hold (rejecting there
+        re-opens the key for a fresh proposal once the error is fixed).
+        Mints no job row — every mint kwarg is refused. The write is one
+        append-only ``reviews`` row and nothing else; apply and undo
+        stay operator-held because they repoint the live graph.
+        """
+        stray = sorted(k for k, v in _kw.items() if v is not None)
+        if stray:
+            raise BadInput(
+                f"mode='garden-reject' mints no job row — {stray} don't "
+                "apply; it takes only args={'review_id', 'reason'}",
+                next=_GARDEN_REJECT_NEXT,
+            )
+        rid: int | None = None
+        if isinstance(review_id, str) and review_id.strip().isdigit():
+            rid = int(review_id.strip())
+        elif isinstance(review_id, int) and not isinstance(review_id, bool):
+            rid = review_id
+        if rid is None:
+            raise BadInput(
+                "mode='garden-reject' requires args={'review_id': N} — "
+                "the pending proposal's review id",
+                next=_GARDEN_REJECT_NEXT,
+            )
+        reason_s = reason.strip() if isinstance(reason, str) else ""
+        if not reason_s:
+            raise BadInput(
+                "mode='garden-reject' requires args={'reason': '<why>'}; "
+                "it is recorded on the rejection row",
+                next=_GARDEN_REJECT_NEXT,
+            )
+        from precis.graph.garden.proposals import proposal_holds, resolve_proposal
+        from precis.store.revision_context import current_revision_context
+
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
+        hold = proposal_holds(self.store, [rid]).get(rid, {})
+        extra: dict[str, Any] = {"why": reason_s}
+        if hold.get("held") in {"apply_error", "unresolved"}:
+            extra.update({"reason": hold["held"], "retryable": True})
+        row = resolve_proposal(
+            self.store, rid, actor=actor, verdict="rejected", extra=extra
+        )
+        if row is None:
+            raise NotFound(
+                f"no pending garden proposal review_id={rid}",
+                next="get(kind='job', id='/garden/proposals')",
+            )
+        suffix = (
+            " — retryable after the held issue is fixed"
+            if extra.get("retryable")
+            else ""
+        )
+        return Response(body=f"rejected proposal {rid}{suffix}")
 
     def _retarget_job(
         self,
