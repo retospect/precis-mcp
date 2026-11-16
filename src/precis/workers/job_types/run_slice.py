@@ -14,7 +14,8 @@ that holds the lane's credentials with ``params.target_node``):
   ``brief:``/``handoff:`` comment + the adapter's finishing instruction —
   after a failed attempt the newest ``brief:`` wins over the dead
   session's builder ``handoff:`` but never over a lander handoff,
-  gr571311),
+  gr571311; a reviewer node's own ``handoff: review:`` verdict is never
+  the next run's brief, gr680813),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
   (a pinned lane at its cap parks the job like a full pick does) —
@@ -3053,7 +3054,19 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     ahead-branch route's rebuild check never fired, so the rejected
     branch routed back into the same open review unbuilt (gr674785
     review, td675373). A dead session's handoff yields to whichever of
-    those steers is newest."""
+    those steers is newest.
+
+    gr680813: on a reviewer node an unmarked ``handoff: review: …``
+    comment is the node's own verdict — its last run's final message,
+    not a steer for the next run. Fed back as the brief, a re-released
+    pre-land reviewer repeated it on findings the pushed rebuild
+    already fixed (td677548 re-judged resolved lines to attempt:3).
+    The tick's marked hand-back lands on the builder todo, never here,
+    so every unmarked ``handoff: review:`` a reviewer carries is its
+    own output and drops out of the scan."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = ref.meta if ref is not None else None
+    reviewer = node_kind(meta) == "generator" and _generate_role(meta) == "reviewer"
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
@@ -3068,6 +3081,12 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
         text = str(c.text or "").lstrip()
         lowered = text.lower()
         if not lowered.startswith(_BRIEF_PREFIXES):
+            continue
+        if (
+            reviewer
+            and lowered.startswith(_REVIEW_HANDBACK_PREFIX)
+            and not _outranks_brief(text)
+        ):
             continue
         if int(c.ord) > latest_ord:
             latest, latest_ord = text, int(c.ord)

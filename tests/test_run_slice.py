@@ -1179,6 +1179,60 @@ def test_brief_parts_keeps_review_handback_over_brief() -> None:
     assert latest == handback
 
 
+def test_brief_parts_drops_reviewer_own_verdict() -> None:
+    """gr680813: a re-released pre-land reviewer was briefed with its own
+    previous verdict — the poll posts the session's last message as
+    ``handoff: review: …`` — and repeated it on findings the pushed
+    rebuild already fixed (td677548, attempt:3). On a reviewer node the
+    unmarked ``handoff: review:`` is the node's own output, never the
+    next run's brief — the tick's marked hand-back lands on the builder
+    todo, where it still steers (gr684815)."""
+    reviewer_meta = {
+        "generate": {"role": "reviewer", "from": "td42"},
+        "task_class": "review",
+        "preland_review": True,
+    }
+    verdict = "handoff: review: FIX — docs/backlog/x.md names stale pointers"
+    store = _Store()
+    store.add_todo(
+        77,
+        "Review td42 pre-land",
+        body="Read the branch diff.",
+        comments=("brief: judge the branch as pushed", verdict),
+        meta=reviewer_meta,
+    )
+    _body, latest = run_slice._brief_parts(store, 77)
+    assert latest == "brief: judge the branch as pushed"
+    # No brief at all: the verdict drops instead of briefing the re-run.
+    store.add_todo(
+        78,
+        "Review td42 pre-land",
+        body="Read the branch diff.",
+        comments=(verdict,),
+        meta=reviewer_meta,
+    )
+    _body, latest = run_slice._brief_parts(store, 78)
+    assert latest is None
+    # The same unmarked comment on a builder todo still wins by recency —
+    # ``_review_revert``'s ``reverted by td<N>`` hand-back is one, and it
+    # IS the requeued build's instruction.
+    store.add_todo(
+        43,
+        "Build the widget",
+        body="Do X.",
+        comments=(
+            "brief: a coordinator note",
+            "handoff: review: REVERT — broke the gate\n\n(review td77; "
+            "reverted by td9 — rebuild after it lands)",
+        ),
+    )
+    _body, latest = run_slice._brief_parts(store, 43)
+    assert latest == (
+        "handoff: review: REVERT — broke the gate\n\n(review td77; "
+        "reverted by td9 — rebuild after it lands)"
+    )
+
+
 def test_generator_brief_creates_children_and_never_lands(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
