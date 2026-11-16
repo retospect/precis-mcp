@@ -63,6 +63,9 @@ def test_try_move_commit_matches_full_recompute_1000_moves() -> None:
 @pytest.mark.nightly(
     reason="31 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
+@pytest.mark.no_cov(
+    reason="the assert IS the wall clock: coverage-db traced the flow lane at 81/s under the 100/s floor (gr701510, run 43879167068) — tracer overhead plus -n4 contention, not a proxy regression; the trace-free nightly legs still run it and enforce both floors"
+)
 def test_proxy_throughput_floor_and_printed_rate() -> None:
     """Proxy evals/s on the 100-part synthetic, printed every run —
     hard floor 500/s (spec's CI floor; target ≥2000/s on the dev Mac).

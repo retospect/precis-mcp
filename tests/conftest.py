@@ -782,7 +782,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "no_cov: cannot run under the coverage tracer (a native crash or "
-        "OOM that takes the xdist worker down with it — gr543576). Only "
+        "OOM that takes the xdist worker down with it — gr543576; or a "
+        "wall-clock throughput assert the tracer invalidates — gr701510). Only "
         "check.yml's coverage-db job deselects it (-m 'not no_cov'); every "
         "other lane, the nightly full shape included, still runs it.",
     )
