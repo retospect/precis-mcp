@@ -18,6 +18,8 @@ scope: write
 
 # precis-edit-help — anchored region edits across file kinds
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 `edit` rewrites a region of an existing file. The grammar is identical
 across `markdown`, `plaintext`, `tex`, and `python`; only the
 post-edit validation differs.

@@ -16,6 +16,8 @@ kinds: tex
 
 # precis-tex-help — `.tex` files, section-aware
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 For shared address grammar, write modes, and root config, read
 `precis-files-help` first. This skill covers what's tex-specific:
 section-aware blocks, the recursive `/toc`, and literal-source edits

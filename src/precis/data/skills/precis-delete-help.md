@@ -17,6 +17,8 @@ scope: write
 
 # precis-delete-help — remove a ref or a selector region
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 `delete` removes content two ways. Numeric-ref kinds soft-delete:
 the row hides from list/search but is recoverable. File kinds
 require a selector and rewrite the file without the addressed

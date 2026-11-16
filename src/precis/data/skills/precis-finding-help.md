@@ -441,10 +441,11 @@ contract, the `pub_id`/dedup semantics, evidence attach, and the
 living-citation pin grammar (`[fi<id>>pa5,pc293]`, `[fi<id>+pa5]`):
 [[precis-taproot-mint-help]] and [[precis-taproot-help]].
 
-## Use a finding's placeholder in a hand-maintained `.tex`/`.md` file
+## Export finding citations to standalone files
 
-This is the standalone `precis resolve` CLI, for hand-maintained
-`.tex`/`.md` files — it cites by base32 `[<pub_id>]`. It does not apply
+Keep project claims in linked memories or a bound draft first. Compile/export
+only when requested. This is the standalone `precis resolve` CLI for explicit
+`.tex`/`.md` exports — it cites by base32 `[<pub_id>]`. It does not apply
 inside a `kind='draft'` document, where you cite a finding by its
 `[fi<id>]` handle instead (see `precis-draft-help`); the two surfaces
 don't interoperate.

@@ -76,3 +76,28 @@ on the board or to the coordinator.
 4. Gripe + meta-gripe every gap.
 5. Delete the directory. Report what is left and why (only files whose
    home is a pending gap gripe, kept in `scratch/`).
+
+## Move a project's files into the mesh
+
+Migrate on touch; do not launch a migration wave for unrelated projects.
+For example, `projects/nox2nh3_auto/catalyst_landscape.tex` is an import
+source, not a new project's content home.
+
+1. Search `search(kind='memory', tags=['project:<slug>'], view='index')`.
+   Reuse the project's hub; create one only when absent, following
+   [[precis-memory-help]]. Inventory the source files and record provenance.
+2. Read the source through its enabled file kind for this explicit import.
+   Split its claims into section memories with project tags and one
+   `part-of` link to the hub. Search before each put to avoid duplicates.
+   Preserve equations, tables, scope and unresolved questions. Use a draft
+   for document structure rather than a monolithic memory.
+3. Replace TeX `\ref` navigation with links to the imported section handles.
+   Resolve citation placeholders to evidence links; keep unresolved citations
+   as open evidence links/questions, never fabricate a source or settled claim.
+4. Read back every section and the hub's navigation. Check coverage against
+   the original, including citations and cross-references, before retirement.
+5. Mark the file as superseded by the hub handle and retire its file ref only
+   after verification and any required owner approval. Preserve the original
+   export for provenance if needed; do not destroy the only source copy.
+   Future work follows the hub. `meta.workspace` remains the export home;
+   compile/export from the draft only when an artifact is requested.

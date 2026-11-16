@@ -2,7 +2,7 @@
 id: precis-workspace-help
 family: se
 title: precis — build an se design with a workspace script (out.run → import)
-summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then the import_workspace edit op lands it in a design. The out.* API verbatim (block/instance/connect/ray), every manifest key, atomic vs macro geometry forms, the cad DSL frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no binding/BOM keys — design-owned).
+summary: the script loop for building an se design — precis_geom (pg/pga) + out.run writes scratch/out/<run> (manifest.json + trace.json + blocks/), then the import_workspace edit op lands it in a design. The out.* API, manifest keys, geometry forms and CAD frame conventions (cyl base z=0 axis +z, box centred in x/y, rot = Rz·Ry·Rx, polar about the node's z), the t_ template-name convention, the trace asks, and what the manifest cannot yet say (no binding/BOM keys — design-owned).
 answers:
   - how do I build a macro mechanical design by script workspace?
   - what do out.run / o.block / o.instance / o.connect / o.ray write to the manifest?
@@ -19,6 +19,8 @@ kinds: [se, cad]
 ---
 
 # precis-workspace-help — build a design by script
+
+Project prose: [[precis-memory-help]]. Files import/export artifacts.
 
 Build a mechanical design by script workspace: one Python script
 builds the geometry, `precis_geom.out` writes a run directory, and

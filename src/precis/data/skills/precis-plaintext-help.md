@@ -15,6 +15,8 @@ status: active
 
 # precis-plaintext-help — `.txt` and `.log` files
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 Unstructured prose: notes, log captures, pasted fragments. No
 headings, no fenced code, no tables. For shared address grammar,
 two-track addressing, and write modes, see `precis-files-help`.

@@ -196,22 +196,26 @@ put(
 Citation is the verifier's output kind. See `precis-citation-help`
 for the verifier loop and the named-kwarg shape.
 
-## Create a markdown file under PRECIS_ROOT
-## Drop a new note file on disk
-## How do I make a new .md file?
+## Write project content in the mesh
+
+Search the project hub before creating content:
 
 ```python
-put(
-    kind="markdown",
-    mode="create",
-    id="notes/proj-fbproj.md",
-    text="# fbproj — project notes\n\n## Goals\n- ...\n",
-)
+search(kind="memory", tags=["project:<slug>"], view="index")
+put(kind="memory", text="<one claim and its evidence>",
+    tags=["project:<slug>"], link="memory:<hub>", rel="part-of")
 ```
 
-`mode='create'` is required for file kinds and is the only accepted
-mode on `put`. `id=` is the path under `PRECIS_ROOT`. Append, insert,
-replace, and find-replace live on `edit`.
+Read back the returned handle and the hub's navigation links. For a bound
+document, edit its draft chunks instead; compile/export only when requested.
+`meta.workspace` names the export home, not the source of project prose.
+See [[precis-memory-help]], [[precis-draft-help]] and [[precis-files-help]].
+
+## Export a markdown file explicitly
+
+After reading the authoritative memory or draft, an explicit file export uses
+`put(kind='markdown', mode='create', id='exports/project.md', text='<export>')`.
+File kinds require `mode='create'`; subsequent artifact edits use `edit`.
 
 ## Create a plaintext, tex, or python file
 ## Drop a new .txt, .tex, or source file

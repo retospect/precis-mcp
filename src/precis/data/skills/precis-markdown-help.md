@@ -16,6 +16,8 @@ status: active
 
 # precis-markdown-help — `.md` chunk grammar and recipes
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 Markdown files under `PRECIS_ROOT`. Read `precis-files-help` for the
 shared address grammar, write modes, and two-track addressing. This
 skill covers markdown-specific behaviour: chunk kinds, available
