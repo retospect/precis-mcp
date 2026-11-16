@@ -83,6 +83,19 @@ Capabilities distinguish explicit full MCP access (including writes and shared
 services) from learning-only connections. User identity does not create
 per-document ACLs for the shared corpus.
 
+`mcp_identity` also stores the third bearer class (gr595554): client
+capability tokens (`precis_cap_`), per-consumer credentials on
+`web_user_capability_tokens` — digest-only, labelled, minted and revoked at
+`/account`. A presented token stamps a `CapabilityIdentity` (a consumer, never
+a personal `Principal`) gated at the request boundary and again in dispatch by
+its own scopes: `read` (the whole get/search surface), `read:<kind>`,
+`write:<kind>`, and `feed`. The podcast `?t=` credential folded into the
+class: feed mints are `feed`-scoped rows (`precis_feed_` prefix on new tokens,
+legacy bare digests still authenticate), so `/podcast/*` keeps URL carriage
+while MCP keeps `Authorization: Bearer` only. Dispatch re-judges the allow-list
+on the final kind after every rewrite: converted `pa<id>` handles and a
+retired memory's successor (`md`, `python`, another kind) alike.
+
 Exact-handle write substitution uses one-hour ``read_receipts`` keyed on the
 authenticated credential, surviving transport restarts. Unauthenticated MCP
 receipts and hint suppression remain in process memory. Opt-in

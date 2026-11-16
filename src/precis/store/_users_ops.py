@@ -25,6 +25,7 @@ from psycopg import Connection
 from psycopg.errors import UniqueViolation
 
 from precis.users import (
+    FEED_TOKEN_LABEL,
     PasswordRecord,
     WebUser,
     normalize_discord_user_id,
@@ -36,8 +37,11 @@ _USER_COLS = (
     "id, login, abbrev, full_name, email, disabled_at, "
     "last_login_at, created_at, updated_at, "
     # Presence, never the digest: callers decide whether a podcast link
-    # exists, and nothing outside this module needs the hash itself.
-    "(feed_token_sha256 IS NOT NULL) AS has_feed_token, orcid, discord_user_id"
+    # exists — a live feed-scoped capability token (gr595554) — and
+    # nothing outside this module needs the hash itself.
+    "EXISTS (SELECT 1 FROM web_user_capability_tokens ft"
+    " WHERE ft.user_id = web_users.id AND ft.revoked_at IS NULL"
+    " AND 'feed' = ANY(ft.scopes)) AS has_feed_token, orcid, discord_user_id"
 )
 
 
@@ -169,12 +173,19 @@ class WebUsersMixin:
     def get_web_user_by_feed_token(self, digest: str) -> WebUser | None:
         """Resolve a ``/podcast?t=`` credential by its SHA-256 digest.
 
-        Enabled accounts only: disabling a user must kill their feed with
-        the same keystroke it kills their login.
+        The credential is a feed-scoped row in ``web_user_capability_tokens``
+        (gr595554 — the class the feed token folded into); the digest alone
+        authenticates, whatever the raw token's prefix — a legacy bare feed
+        token, a ``precis_feed_`` mint or a ``precis_cap_`` with the feed
+        scope. Enabled accounts only: disabling a user must kill their feed
+        with the same keystroke it kills their login.
         """
         sql = (
             f"SELECT {_USER_COLS} FROM web_users "
-            "WHERE feed_token_sha256 = %s AND disabled_at IS NULL"
+            "WHERE disabled_at IS NULL AND EXISTS ("
+            "SELECT 1 FROM web_user_capability_tokens ft"
+            " WHERE ft.user_id = web_users.id AND ft.token_sha256 = %s"
+            " AND ft.revoked_at IS NULL AND 'feed' = ANY(ft.scopes))"
         )
         with self.pool.connection() as conn:
             row = conn.execute(sql, (digest,)).fetchone()
@@ -312,16 +323,35 @@ class WebUsersMixin:
         return bool(cur.rowcount)
 
     def set_web_user_feed_token(self, login: str, digest: str | None) -> bool:
-        """Store (or clear) the podcast token digest. Rotating overwrites,
-        so the previous feed URL stops working immediately."""
-        sql = (
-            "UPDATE web_users SET feed_token_sha256 = %s, updated_at = now() "
-            "WHERE login = %s"
-        )
+        """Store (or clear) the podcast token digest — a feed-scoped row
+        in ``web_user_capability_tokens`` (gr595554). Rotating revokes
+        every live feed credential the user has (a ``precis_cap_`` feed
+        token minted at /account included), so the previous feed URL
+        stops working immediately; ``digest=None`` revokes without
+        minting."""
         with self.pool.connection() as conn:
             with conn.transaction():
-                cur = conn.execute(sql, (digest, normalize_login(login)))
-        return bool(cur.rowcount)
+                row = conn.execute(
+                    "SELECT id FROM web_users WHERE login = %s",
+                    (normalize_login(login),),
+                ).fetchone()
+                if row is None:
+                    return False
+                user_id = int(row[0])
+                conn.execute(
+                    "UPDATE web_user_capability_tokens SET revoked_at = now()"
+                    " WHERE user_id = %s AND 'feed' = ANY(scopes)"
+                    " AND revoked_at IS NULL",
+                    (user_id,),
+                )
+                if digest is not None:
+                    conn.execute(
+                        "INSERT INTO web_user_capability_tokens"
+                        " (user_id, label, token_sha256, scopes)"
+                        " VALUES (%s, %s, %s, %s)",
+                        (user_id, FEED_TOKEN_LABEL, digest, ["feed"]),
+                    )
+        return True
 
     def delete_web_user(self, login: str) -> bool:
         with self.pool.connection() as conn:

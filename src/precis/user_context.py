@@ -13,6 +13,10 @@ to its current legacy revision actor before
 checking scope, preserving revocation and attribution without claiming
 that an agent's writes were typed by a human. Trusted in-process web routes
 may bind an account directly without entering the MCP scope gate.
+Client capability tokens (gr595554) never enter this module: the bearer
+gate stamps a :class:`~precis.mcp_identity.CapabilityIdentity` on the
+request scope — a consumer, not a person — and dispatch gates the call on
+that stamp without binding a :class:`Principal`.
 """
 
 from __future__ import annotations

@@ -23,6 +23,7 @@ import contextlib
 import json
 import logging
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis import principal, serve_ledger
@@ -32,6 +33,7 @@ from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
 from precis.user_context import current_principal, user_actor_scope
 
 if TYPE_CHECKING:
+    from precis.errors import Denied
     from precis.runtime import PrecisRuntime
 
 # Conditional imports for MCP types (not available in all environments)
@@ -429,15 +431,17 @@ def _dispatch_as_user(
                 key: value for key, value in payload.items() if value is not None
             }
             _require_personal_scope(verb, filtered)
+            _require_capability_scope(verb, filtered, ctx)
             _require_slice_grant_scope(verb, filtered, ctx)
             # Bind the per-call image sink so a handler's Response.images
             # (the figure render check's PNG, gr592765) reach the wire
             # as ImageContent blocks — ``dispatch_with_status`` itself
             # stays text-only for CLI/in-process callers.
-            from precis.runtime.dispatch import _RESPONSE_IMAGES
+            from precis.runtime.dispatch import _KIND_GATE, _RESPONSE_IMAGES
 
             images: list[Any] = []
             _img_token = _RESPONSE_IMAGES.set(images)
+            _gate_token = _KIND_GATE.set(_capability_kind_gate(ctx))
             try:
                 body, is_error = runtime.dispatch_with_status(
                     verb,
@@ -446,6 +450,7 @@ def _dispatch_as_user(
                     and private_kind_of(payload) is None,
                 )
             finally:
+                _KIND_GATE.reset(_gate_token)
                 _RESPONSE_IMAGES.reset(_img_token)
         if is_error:
             result: _ToolReturn = CallToolResult(
@@ -562,6 +567,100 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
             f"personal MCP tokens permit {kinds} calls, {helps} and whoami only",
             next=f"{calls}; {reads}; get(kind='profile', id='me')",
         )
+
+
+def _capability_refusal(cap: Any, verb: str, payload: dict[str, Any]) -> Denied | None:
+    """Judge ``(verb, payload)`` against a capability stamp's allow-list —
+    ``None`` inside it, the :class:`Denied` to raise or render otherwise.
+
+    Shared by the dispatch backstop (:func:`_require_capability_scope`,
+    post-normalization) and the request boundary
+    (``server._capability_request_refusal``, pre-normalization), so a
+    slim-verb ``args=`` shape and its flattened form judge identically.
+    A stamp that isn't a
+    :class:`~precis.mcp_identity.CapabilityIdentity` fails closed — no
+    mint could have written it.
+    """
+    from precis.errors import Denied
+    from precis.mcp_identity import CapabilityIdentity, capability_call_allowed
+
+    if not isinstance(cap, CapabilityIdentity):
+        return Denied(
+            "invalid capability token stamp",
+            next="authenticate with a capability token minted at /account",
+        )
+    raw_kind = payload.get("kind") if isinstance(payload, dict) else None
+    kinds = (
+        {k.strip() for k in str(raw_kind).split(",") if k.strip()}
+        if raw_kind is not None
+        else None
+    )
+    if kinds is not None and not kinds:
+        kinds = None
+    if kinds:
+        # Judge the canonical kind the handler will see: a ``dr`` handle
+        # code is ``draft`` by dispatch time, so the allow-list names
+        # resolved kinds only. Expansion failure keeps the raw name —
+        # unknown kinds fail closed either way.
+        try:
+            expand = _get_runtime()._expand_kind_code
+            kinds = {expand(k) for k in kinds}
+        except Exception:
+            pass
+    if capability_call_allowed(cap.scopes, verb, kinds):
+        return None
+    return Denied(
+        f"capability token {cap.label!r} does not permit this call",
+        next="its allow-list is "
+        + ",".join(cap.scopes)
+        + " — mint a broader token at /account or stay inside it",
+    )
+
+
+def _require_capability_scope(
+    verb: str, payload: dict[str, Any], ctx: Context | None
+) -> None:
+    """Refuse calls outside a capability token's own kinds/verbs allow-list.
+
+    The stamp is a validated consumer identity (gr595554), never a
+    personal principal — a token minted for ``read`` reaches the whole
+    ``get``/``search`` surface, ``read:<kind>``/``write:<kind>`` narrow
+    or widen per kind, and ``feed`` grants no MCP verb at all. Every
+    kind the call names must be covered; a call naming no kind is the
+    whole surface and only ``read`` covers it.
+    """
+    from precis.mcp_identity import SCOPE_CAPABILITY
+
+    cap = _asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return
+    denied = _capability_refusal(cap, verb, payload)
+    if denied is not None:
+        raise denied
+
+
+def _capability_kind_gate(
+    ctx: Context | None,
+) -> Callable[[str, dict[str, Any]], None] | None:
+    """The runtime's post-resolution recheck for a capability stamp.
+
+    Handle routing can rewrite ``kind=`` after the request-boundary and
+    :func:`_require_capability_scope` checks (a converted ``pa<id>``
+    handle resolves to its new kind), so the runtime calls this with the
+    resolved ``args`` before invoking a handler.
+    """
+    from precis.mcp_identity import SCOPE_CAPABILITY
+
+    cap = _asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return None
+
+    def gate(verb: str, args: dict[str, Any]) -> None:
+        denied = _capability_refusal(cap, verb, args)
+        if denied is not None:
+            raise denied
+
+    return gate
 
 
 def _require_slice_grant_scope(
@@ -939,7 +1038,12 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     ``worker:<source>`` in-process stamp.
     """
     from precis import slice_tokens
-    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID
+    from precis.mcp_identity import (
+        SCOPE_CAPABILITY,
+        SCOPE_OAUTH_IDENTITY,
+        SCOPE_TOKEN_ID,
+        CapabilityIdentity,
+    )
     from precis.oauth.store import OAuthIdentity
 
     scope = _asgi_scope(ctx)
@@ -965,6 +1069,9 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     token_id = scope.get(SCOPE_TOKEN_ID)
     if type(token_id) is int and token_id > 0:
         return f"personal:{token_id}"
+    cap = scope.get(SCOPE_CAPABILITY)
+    if isinstance(cap, CapabilityIdentity):
+        return f"cap:{cap.token_id}"
     return None
 
 

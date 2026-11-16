@@ -38,7 +38,7 @@ import textwrap
 import time
 import urllib.error
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -138,6 +138,15 @@ _VERBS: tuple[Verb, ...] = _ALL_VERBS
 #: (``None``) on every in-process caller, where binary has no consumer.
 _RESPONSE_IMAGES: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar(
     "precis_response_images", default=None
+)
+
+#: Post-resolution kind gate. The MCP tool layer binds a callable
+#: ``(verb, args)`` that raises when the call, *after* handle routing has
+#: rewritten ``args['kind']`` (a converted ``pa<id>`` handle becomes its
+#: new kind), leaves a capability token's allow-list. ``None`` on every
+#: in-process caller.
+_KIND_GATE: contextvars.ContextVar[Callable[[str, dict[str, Any]], None] | None] = (
+    contextvars.ContextVar("precis_kind_gate", default=None)
 )
 
 #: Top-level ``tools/core.py`` verb kwargs whose declared default is
@@ -3215,9 +3224,18 @@ class DispatchMixin(RuntimeShape):
         # grammar already used by ``link=`` / ``unlink=``.
         if verb == "delete":
             self._refuse_superseded_delete(args)
+        pre_kind = args.get("kind")
         self._maybe_split_prefixed_id(args, verb=verb)
+        gate = _KIND_GATE.get()
+        if gate is not None and pre_kind is not None and args.get("kind") != pre_kind:
+            gate(verb, args)
         if verb == "get" and not _wants_retired_view(args):
+            pre_redirect = (args.get("kind"), args.get("id"))
             self._redirect_retired_memory(args)
+            # A tombstone's successor can live in another kind (md, python,
+            # a converted handle): re-judge the capability allow-list on it.
+            if gate is not None and (args.get("kind"), args.get("id")) != pre_redirect:
+                gate(verb, args)
         redirect_note = args.pop("_memory_redirect_note", None)
         response = self._dispatch_resolved_kind(verb, args)
         if redirect_note is not None:

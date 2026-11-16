@@ -129,6 +129,64 @@
   {% endif %}
 </div>
 
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Client capability tokens</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-fg-subtle mb-3">
+    A capability token authenticates a consumer, not you — a chat connector
+    (for example claude.ai), a feed reader. Its scope is its own allow-list:
+    <code>read</code> (the whole get/search surface — the default),
+    <code>read:kind</code> or <code>write:kind</code> for one kind, and
+    <code>feed</code> for the podcast <code>?t=</code> credential. MCP clients
+    send it as the bearer token; feed apps embed it in the URL. Shown once.
+  </p>
+  {% if new_cap_token %}
+  <label for="new-cap-token" class="block text-xs font-medium text-fg-muted mb-1">Copy this token now</label>
+  <input id="new-cap-token" readonly value="{{ new_cap_token }}" autocomplete="off"
+         placeholder="New client capability token" aria-describedby="new-cap-token-help"
+         onclick="this.select()"
+         class="w-full rounded border border-success-strong bg-success-subtle px-2 py-1 text-xs font-mono text-fg-secondary" />
+  <p id="new-cap-token-help" class="mt-1 mb-3 text-xs text-fg-subtle">Paste it into the client's bearer-token field (a claude.ai custom connector takes it under Request headers as Authorization). It will not be shown again.</p>
+  {% endif %}
+  <form method="post" action="/account/capability-tokens" class="flex items-end gap-2 mb-1">
+    <div>
+      <label for="cap-token-label" class="block text-xs text-fg-muted mb-1">Consumer label</label>
+      <input id="cap-token-label" name="label" required maxlength="100" placeholder="claude.ai chat"
+             aria-describedby="cap-token-label-help" autocomplete="off"
+             class="rounded border border-line px-2 py-1 text-sm" />
+    </div>
+    <div>
+      <label for="cap-token-scopes" class="block text-xs text-fg-muted mb-1">Scopes</label>
+      <input id="cap-token-scopes" name="scopes" maxlength="200" placeholder="read"
+             aria-describedby="cap-token-scopes-help" autocomplete="off"
+             class="rounded border border-line px-2 py-1 text-sm font-mono" />
+    </div>
+    <button type="submit" class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5 hover:bg-info-solid-strong">Create token</button>
+  </form>
+  <p id="cap-token-scopes-help" class="mb-1 text-xs text-fg-subtle">Comma-separated; blank means <code>read</code>. Example: <code>read,write:memory</code> or <code>feed</code>.</p>
+  <p id="cap-token-label-help" class="mb-3 text-xs text-fg-subtle">Name the consumer using this token so you can identify it later.</p>
+  {% if cap_tokens %}
+  <ul class="space-y-2">
+    {% for token in cap_tokens %}
+    <li class="flex items-center gap-3 text-xs text-fg-subtle">
+      <span class="font-medium text-fg-secondary">{{ token.label }}</span>
+      <span class="font-mono">{{ token.scopes|join(',') }}</span>
+      <span>{{ token.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+      {% if token.revoked_at %}
+      <span>Revoked</span>
+      {% else %}
+      <form method="post" action="/account/capability-tokens/revoke" class="ml-auto">
+        <input type="hidden" name="token_id" value="{{ token.id }}" />
+        <button type="submit" class="text-danger hover:underline">Revoke</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-xs text-fg-faint">No capability tokens yet.</p>
+  {% endif %}
+</div>
+
 {# ── password ────────────────────────────────────────────────────── #}
 <h2 class="text-sm font-semibold text-fg-secondary mb-2">Change password</h2>
 <div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">

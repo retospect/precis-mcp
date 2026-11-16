@@ -32,6 +32,9 @@ context cap, respecting ``fold=False`` and explicit part reads.
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.
+Capability kind gates also span SDK resource and prompt handlers because
+these modalities call runtime dispatch without passing through the tools.
+The binding resets on success and failure so it cannot leak to another call.
 Retired memory redirects drop view, extent and q when the successor is
 another kind, with a receipt: memory read options can break that reader.
 
