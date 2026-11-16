@@ -1544,7 +1544,10 @@ def test_stall_closure_rechecks_after_census(
     assert result.extra["stalled"] == []
     assert _status(store, root) != "won't-do"
     assert not any(t.startswith(gd.STALL_TAG_PREFIX) for t in _open_tags(store, gripe))
-    assert len(_roots_for(store, gripe)) == 1
+    if change != "closed":
+        # A root that closed on its own frees the gripe, so the same pass
+        # may mint it a fresh chain; only the other races must not.
+        assert len(_roots_for(store, gripe)) == 1
 
 
 def test_stall_closure_skips_while_plan_tick_holds_lock(store: Store) -> None:
