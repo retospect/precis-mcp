@@ -499,6 +499,36 @@ def test_put_book_stub_stores_supplied_authors(
     assert "stored 2 supplied authors" in response.body
 
 
+def test_put_s2_verified_stub_writes_byline(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr689211: S2 authors seed both the cite key and stored byline."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Resolved Paper",
+            "year": 2018,
+            "authors": [{"name": "Jane Clark"}, {"name": "John Smith"}],
+            "journal": "Test Journal",
+        },
+    )
+    response = handler.put(doi="10.1/s2-byline")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.slug == "clark18"
+    assert ref.authors is not None
+    assert [a["name"] for a in ref.authors] == ["Jane Clark", "John Smith"]
+    assert _meta(store, rid)["journal"] == "Test Journal"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT source FROM paper_authors WHERE ref_id = %s ORDER BY position",
+            (rid,),
+        ).fetchall()
+    assert rows == [("s2",), ("s2",)]
+
+
 def test_put_supplied_authors_override_registry_on_fresh_stub(
     handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

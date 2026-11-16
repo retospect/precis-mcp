@@ -22,6 +22,8 @@ edit.
 Stub puts accept caller-supplied authors through the existing byline writer.
 They seed the cite key and populate ``paper_authors`` on a fresh mint; a
 deduplication hit keeps its byline and names the explicit metadata-edit call.
+S2 verification also persists its byline and journal on fresh stubs: the
+stub upsert uses authors for cite keys without writing the byline itself.
 
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
@@ -2122,6 +2124,22 @@ class PaperHandler(Handler):
                     conn.execute(
                         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                         (Jsonb(patch), ref_id),
+                    )
+                if meta:
+                    # The upsert only uses authors to choose the cite key.
+                    # Persist the verified S2 byline before workers can fetch
+                    # the body and take this paper out of the stub queue.
+                    s2_patch: dict[str, Any] = {}
+                    journal = meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        s2_patch["journal"] = journal.strip()
+                    self.store.update_paper_fields(
+                        ref_id,
+                        authors=meta.get("authors") or None,
+                        meta_patch=s2_patch,
+                        source="acquire:s2",
+                        authors_source="s2",
+                        conn=conn,
                     )
                 if registry_meta is not None:
                     # A registry-resolved stub is verified — carry the
