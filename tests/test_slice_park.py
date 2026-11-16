@@ -214,11 +214,10 @@ def test_an_ordinary_retry_resumes_from_the_last_real_commit(rig: _Rig) -> None:
     assert notes == [f"resumed from {tip}"]
 
 
-def test_no_saved_ref_cuts_from_origin_main(rig: _Rig) -> None:
-    notes: list[str] = []
-    b_tree = run_slice._ensure_worktree(rig.b, TD, keep_wip=True, notes=notes)
-    assert _rg(b_tree, "rev-parse", "HEAD") == rig.main
-    assert notes == []
+def test_parked_resume_without_a_saved_ref_refuses(rig: _Rig) -> None:
+    with pytest.raises(RuntimeError, match="resume on the saving host"):
+        run_slice._ensure_worktree(rig.b, TD, keep_wip=True)
+    assert not (run_slice.worktrees_dir(rig.b) / run_slice.slice_name(TD)).exists()
 
 
 def test_resume_on_the_same_host_keeps_the_wip_commit(rig: _Rig) -> None:
@@ -375,3 +374,80 @@ def test_untracked_secret_named_files_never_ride_the_snapshot(
     files = _rg(tree, "show", "--name-only", "--format=", rec["head"]).split()
     assert name not in files and "new.txt" in files
     assert (tree / name).exists()  # the worktree itself is untouched
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_deleted_credential_in_history_withholds_push(rig: _Rig, dirty: bool) -> None:
+    tree = run_slice._ensure_worktree(rig.a, TD)
+    _commit(tree, "leaked.txt", "ghp_" + "A" * 36)
+    _rg(tree, "rm", "leaked.txt")
+    _rg(tree, "commit", "-qm", "remove credential")
+    if dirty:
+        (tree / "work.txt").write_text("unfinished", encoding="utf-8")
+    rec = _slice_park.save_work(tree, TD, "ask")
+    assert rec is not None and rec["push"].startswith("withheld:")
+    assert rig.origin_ref(_slice_park.saved_ref(TD)) is None
+
+
+@pytest.mark.parametrize("existing_tree", [False, True])
+def test_unavailable_snapshot_refuses_without_cleaning(
+    rig: _Rig, existing_tree: bool
+) -> None:
+    tree, _tip = _tree_with_work(rig)
+    rec = _slice_park.save_work(tree, TD, "older snapshot")
+    assert rec is not None
+    if existing_tree:
+        target = run_slice._ensure_worktree(rig.b, TD)
+        (target / "precious.txt").write_text("unsaved", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unavailable"):
+        run_slice._ensure_worktree(rig.b, TD, keep_wip=True, saved_head="f" * 40)
+    if existing_tree:
+        assert (target / "precious.txt").read_text(encoding="utf-8") == "unsaved"
+
+
+def test_same_host_without_tree_recovers_unpushed_snapshot(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree, _tip = _tree_with_work(rig)
+    monkeypatch.setattr(_slice_park, "_push", lambda *_a: "FAILED (down)")
+    rec = _slice_park.save_work(tree, TD, "ask")
+    assert rec is not None
+    _rg(rig.a, "worktree", "remove", "--force", str(tree))
+    _rg(rig.a, "branch", "-D", run_slice.slice_branch(TD))
+    restored = run_slice._ensure_worktree(
+        rig.a, TD, keep_wip=True, saved_head=rec["head"]
+    )
+    assert _rg(restored, "rev-parse", "HEAD") == rec["head"]
+
+
+@pytest.mark.parametrize("push_note", ["FAILED (down)", "withheld: secret-scan 1 hits"])
+def test_cross_host_resume_refuses_unpublished_snapshot(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch, push_note: str
+) -> None:
+    tree, _tip = _tree_with_work(rig)
+    monkeypatch.setattr(_slice_park, "_push", lambda *_a: push_note)
+    rec = _slice_park.save_work(tree, TD, "ask")
+    assert rec is not None
+    with pytest.raises(RuntimeError, match="resume on the saving host"):
+        run_slice._ensure_worktree(rig.b, TD, keep_wip=True, saved_head=rec["head"])
+    assert not (run_slice.worktrees_dir(rig.b) / run_slice.slice_name(TD)).exists()
+
+
+def test_scan_failure_withholds_push(rig: _Rig) -> None:
+    tree = run_slice._ensure_worktree(rig.a, TD)
+    tip = _commit(tree, "work.txt")
+    assert _slice_park.secret_hits(tree, "missing-base", tip) > 0
+
+
+def test_deleted_credential_on_merged_branch_withholds_push(rig: _Rig) -> None:
+    tree = run_slice._ensure_worktree(rig.a, TD)
+    _rg(tree, "checkout", "-qb", "side")
+    _commit(tree, "leaked.txt", "ghp_" + "A" * 36)
+    _rg(tree, "rm", "leaked.txt")
+    _rg(tree, "commit", "-qm", "remove credential")
+    _rg(tree, "checkout", run_slice.slice_branch(TD))
+    _commit(tree, "work.txt")
+    _rg(tree, "merge", "--no-ff", "-m", "merge side", "side")
+    rec = _slice_park.save_work(tree, TD, "ask")
+    assert rec is not None and rec["push"].startswith("withheld:")
+    assert rig.origin_ref(_slice_park.saved_ref(TD)) is None

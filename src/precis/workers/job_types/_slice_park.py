@@ -112,21 +112,34 @@ def _out_raw(proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def secret_hits(tree: Path, base: str, sha: str) -> int:
-    """Credential-shaped findings in the lines ``sha`` adds over ``base`` —
+    """Credential-shaped findings across every commit published over ``base`` —
     the repo's own scan (:func:`precis.utils.secret_scan.find_secrets`, the
     single pattern source ``scripts/ship``'s secret scan reads). An
-    unreadable diff counts as a hit: nothing unscanned is pushed."""
+    unreadable history counts as a hit: nothing unscanned is pushed.
+    Per-parent patches include merged history and credentials deleted before
+    the final snapshot; a net diff would miss those public objects."""
     from precis.utils.secret_scan import find_secrets
 
-    diff = _rs()._git(["diff", "--no-color", "-U0", base, sha], tree)
+    diff = _rs()._git(
+        [
+            "log",
+            "--full-history",
+            "--root",
+            "-m",
+            "-p",
+            "--text",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "-U0",
+            "--format=%B",
+            f"{base}..{sha}",
+        ],
+        tree,
+    )
     if diff.returncode != 0:
         return 1
-    added = "\n".join(
-        ln[1:]
-        for ln in (diff.stdout or "").splitlines()
-        if ln.startswith("+") and not ln.startswith("+++")
-    )
-    return len(find_secrets(added))
+    return len(find_secrets(diff.stdout or ""))
 
 
 def _snapshot_commit(tree: Path, todo_id: int, reason: str) -> str | None:

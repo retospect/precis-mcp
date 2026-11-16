@@ -3814,8 +3814,9 @@ def _ensure_worktree(
     also moves a reused local tree's branch onto the snapshot
     (``saved_head`` is ``meta.parked.head``, found locally when the same
     host saved it); an ordinary retry resumes from the last real commit.
-    Committed work is never reset away. ``start_over`` (the closing answer
-    said so) first drops the local tree and branch and origin's saved ref,
+    An unavailable recorded snapshot refuses launch before cleanup; only an
+    explicit start-over may discard it. Committed work is never reset away.
+    ``start_over`` (the closing answer said so) first drops the local tree and branch and origin's saved ref,
     and cuts from ``origin/<base>``. ``notes`` collects what happened
     (``resumed from <sha>``) for the job's events."""
     tree = worktrees_dir(root) / slice_name(todo_id)
@@ -3824,6 +3825,22 @@ def _ensure_worktree(
     _adopt_legacy_branch(root, todo_id)
     if start_over:
         note.extend(_slice_park.drop_saved(root, todo_id))
+    # Resolve before any destructive cleanup: a withheld/failed push must
+    # never turn a parked resume into a fresh build or use an older ref.
+    parked_tip = None
+    if keep_wip and not start_over:
+        if saved_head and _slice_park._HEX40.fullmatch(saved_head):
+            have = _git(["cat-file", "-e", f"{saved_head}^{{commit}}"], root)
+            if have.returncode == 0:
+                parked_tip = saved_head
+        if parked_tip is None:
+            parked_tip = _slice_park.fetch_saved(root, todo_id)
+        if parked_tip is None or (saved_head and parked_tip != saved_head):
+            raise RuntimeError(
+                f"parked snapshot {saved_head or todo_id} is unavailable; "
+                "resume on the saving host or explicitly start over"
+            )
+        saved_head = parked_tip
     if tree.exists():
         _reset_reused_worktree(tree, branch)
         if keep_wip and not start_over:
@@ -3841,7 +3858,7 @@ def _ensure_worktree(
     saved = (
         None
         if start_over or _branch_exists(root, branch)
-        else _slice_park.resume_tip(root, todo_id, keep_wip=keep_wip)
+        else parked_tip or _slice_park.resume_tip(root, todo_id, keep_wip=keep_wip)
     )
     add = _git(
         ["worktree", "add", "-b", branch, str(tree), saved or f"origin/{base}"], root

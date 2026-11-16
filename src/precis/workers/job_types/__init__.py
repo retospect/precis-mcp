@@ -30,6 +30,11 @@ removing body/hash/event evidence or calling a provider/model.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
+Park snapshots scan every unpublished commit, because even credentials
+deleted at the tip become fetchable when history is pushed. Parked resumes
+require the recorded snapshot before cleanup; unavailable saves must resume
+on their saving host or receive an explicit start-over.
+
 ``run_slice`` delegates CLI argv, stdin and output parsing to
 ``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
 Devin hand off through their final output, and all three pass the same
