@@ -1492,3 +1492,73 @@ def test_recent_upstream_activity_shields_a_parked_build(
         )
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.extra["stalled"] == [] and _status(store, root) != "won't-do"
+
+
+@pytest.mark.parametrize("change", ["rearm", "dispatch", "activity", "ask", "closed"])
+def test_stall_closure_rechecks_after_census(
+    store: Store, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from precis.workers._mint import mint_background_job
+
+    _one_lane(monkeypatch)
+    _light(store)
+    gripe = _gripe(store, "race")
+    root, build = _chain_for(store, gripe)
+    _park(store, build, "waiting-for:coordinator")
+    _age_node(store, build, 8)
+    close = gd._close_stalled
+
+    def changed_before_close(
+        store: Store, chain: gd.Chain, idle: float, hours: int
+    ) -> dict[str, Any] | None:
+        if change == "rearm":
+            store.remove_tag(build, Tag.open("waiting-for:coordinator"))
+        elif change == "dispatch":
+            with store.tx() as conn:
+                mint_background_job(
+                    store,
+                    conn=conn,
+                    job_type="run_slice",
+                    executor="ssh_node",
+                    title="run_slice",
+                    params={"todo_id": build},
+                    parent_id=build,
+                    status="queued",
+                )
+        elif change == "activity":
+            store.add_tag(root, Tag.open("recent-activity"), set_by="system")
+        elif change == "ask":
+            _ask_in_plan(store, root)
+            _age_node(store, build, 8)  # Ask alone protects even an old plan.
+        else:
+            store.add_tag(
+                root,
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        return close(store, chain, idle, hours)
+
+    monkeypatch.setattr(gd, "_close_stalled", changed_before_close)
+    result = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert result.extra["stalled"] == []
+    assert _status(store, root) != "won't-do"
+    assert not any(t.startswith(gd.STALL_TAG_PREFIX) for t in _open_tags(store, gripe))
+    assert len(_roots_for(store, gripe)) == 1
+
+
+def test_stall_closure_skips_while_plan_tick_holds_lock(store: Store) -> None:
+    from precis.store.advisory import try_xact_advisory_lock
+    from precis.workers.job_types.plan_dispatch import TICK_LOCK_KEY
+
+    gripe = _gripe(store, "locked")
+    root, build = _chain_for(store, gripe)
+    _park(store, build, "paused")
+    _age_node(store, build, 8)
+    parked = gd.chains(store)
+    assert store.dsn is not None
+    with try_xact_advisory_lock(store.dsn, TICK_LOCK_KEY) as got:
+        assert got
+        assert gd.sweep_stalled(store, parked) == []
+    assert _status(store, root) == "open"
+    assert gd.sweep_stalled(store, parked)[0]["root"] == root

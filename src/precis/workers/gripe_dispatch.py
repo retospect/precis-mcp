@@ -601,7 +601,9 @@ def sweep_stalled(
     closed: list[dict[str, Any]] = []
     for idle, c in due[:limit]:
         try:
-            closed.append(_close_stalled(store, c, idle, hours))
+            result = _close_stalled(store, c, idle, hours)
+            if result is not None:
+                closed.append(result)
         except Exception:
             log.warning(
                 "gripe_dispatch: closing stalled td%d failed", c.root_id, exc_info=True
@@ -615,7 +617,36 @@ def sweep_stalled(
     return closed
 
 
-def _close_stalled(store: Store, c: Chain, idle: float, hours: int) -> dict[str, Any]:
+def _close_stalled(
+    store: Store, c: Chain, idle: float, hours: int
+) -> dict[str, Any] | None:
+    from precis.store.advisory import try_xact_advisory_lock
+    from precis.workers.job_types.plan_dispatch import (
+        TICK_LOCK_IDLE_TIMEOUT,
+        TICK_LOCK_KEY,
+    )
+
+    # The census is only a shortlist. A tick can re-arm or dispatch the
+    # plan before we get here; exclude ticks through the closure writes.
+    if store.dsn is None:
+        return None
+    with try_xact_advisory_lock(
+        store.dsn, TICK_LOCK_KEY, idle_timeout=TICK_LOCK_IDLE_TIMEOUT
+    ) as got:
+        if not got:
+            return None
+        current = next((x for x in chains(store) if x.root_id == c.root_id), None)
+        if current is None or current.live or current.plan_live or not current.plan_ids:
+            return None
+        fresh_idle = _idle_hours(store, current.plan_ids)
+        if fresh_idle < hours or _open_ask(store, current.root_id):
+            return None
+        return _write_stalled_closure(store, current, fresh_idle, hours)
+
+
+def _write_stalled_closure(
+    store: Store, c: Chain, idle: float, hours: int
+) -> dict[str, Any]:
     found = (
         f"build node(s) {', '.join(f'td{b}' for b in c.build_ids)} not live "
         f"(no live job, claim or doable state) and no live node in the plan, "
