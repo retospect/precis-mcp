@@ -28,7 +28,10 @@ def glyph_suspected(meta: Any) -> bool:
 def glyph_caveat(meta: Any) -> str:
     """One-line caveat for a glyph-suspected paper (``""`` when clean).
 
-    Names the suspect fonts / modes only when the record carries them.
+    Names the suspect fonts / modes / sign damage only when the record
+    carries them. A sign-damage-only record (gr685717 — lost minus signs,
+    mangled ±) gets its own lead sentence; a record carrying font evidence
+    keeps the Greek/μ wording with the sign damage noted in the detail.
     """
     if not glyph_suspected(meta):
         return ""
@@ -40,9 +43,22 @@ def glyph_caveat(meta: Any) -> str:
     modes = [str(m) for m in (rec.get("modes") or [])]
     if modes:
         detail.append("modes: " + ", ".join(modes))
+    sign_rec = rec.get("sign_damage")
+    sign_damage = isinstance(sign_rec, dict) and sign_rec.get("detected") is True
+    if sign_damage:
+        detail.append("sign damage: minus/±")
     suffix = f" ({'; '.join(detail)})" if detail else ""
-    return (
-        "Text extraction may have dropped or substituted Greek/μ "
-        f"characters in this paper{suffix}. Check numbers and units against "
-        "the PDF before quoting."
-    )
+    if fonts or modes:
+        lead = (
+            "Text extraction may have dropped or substituted Greek/μ "
+            "characters in this paper"
+        )
+    elif sign_damage:
+        lead = (
+            "Text extraction may have dropped minus signs or ± characters in this paper"
+        )
+    else:
+        lead = (
+            "Text extraction may have dropped or substituted characters in this paper"
+        )
+    return f"{lead}{suffix}. Check numbers and units against the PDF before quoting."

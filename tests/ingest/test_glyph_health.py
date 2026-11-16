@@ -20,8 +20,12 @@ from precis.ingest.glyph_health import (
     count_greek_chars,
     count_micron_words_without_micro_sign,
     count_orphan_single_char_spans,
+    count_pm_mojibake,
+    count_pm_signs,
+    count_sign_equivalents,
     count_stray_space_units,
     count_symbol_chars,
+    detect_sign_damage,
     has_positive_tell,
     is_adv_family,
     summarize,
@@ -130,6 +134,82 @@ class TestStraySpaceUnits:
 
     def test_ignores_compact_unit(self) -> None:
         assert count_stray_space_units("1 V/mm is correct") == 0
+
+
+# ── Sign damage (gr685717) ────────────────────────────────────────────
+
+
+class TestSignCounts:
+    def test_u2212_counts(self) -> None:
+        assert count_sign_equivalents("\u22120.5 V and \u22121.2 eV") == 2
+
+    def test_ascii_minus_before_number_counts(self) -> None:
+        # Marker texify rewrites U+2212 as ASCII hyphen-minus; the
+        # comparison must treat it as a surviving sign.
+        assert count_sign_equivalents("at -0.5 V and $-1.2$ eV") == 2
+
+    def test_ranges_do_not_count(self) -> None:
+        # Range typography ("1-2", "10-15", "0.5-1.0") is not a sign.
+        assert count_sign_equivalents("pp. 1-2 and 10-15, range 0.5-1.0") == 0
+
+    def test_hyphen_in_word_does_not_count(self) -> None:
+        assert count_sign_equivalents("Z-scheme photocatalysis") == 0
+
+    def test_pm_counts(self) -> None:
+        assert count_pm_signs("93.19 ± 1.99% and 14 ± 2 mA") == 2
+
+    def test_pm_mojibake_counts(self) -> None:
+        # "Â±" (UTF-8 read as latin-1) — spelled with escapes so an editor
+        # can't "fix" the fixture.
+        assert count_pm_mojibake("93.19 \u00c2\u00b1 1.99%") == 1
+        assert count_pm_mojibake("93.19 \u00c3\u0082\u00b1 1.99%") == 1
+        assert count_pm_mojibake("93.19 ± 1.99%") == 0
+
+
+class TestDetectSignDamage:
+    def test_minus_loss_detected(self) -> None:
+        # pa678941's shape: potentials and adsorption energies arrive
+        # without their minus sign.
+        raw = " ".join(f"\u2212{0.1 * i:.1f} V" for i in range(1, 9))
+        ext = " ".join(f"{0.1 * i:.1f} V" for i in range(1, 9))
+        rec = detect_sign_damage(raw, ext)
+        assert rec["detected"] is True
+        assert rec["minus_raw"] == 8
+        assert rec["minus_extracted"] == 0
+
+    def test_ascii_minus_survival_not_flagged(self) -> None:
+        # Texify rewrites U+2212 to ASCII "-": the sign survived, no flag.
+        raw = " ".join(f"\u2212{0.1 * i:.1f} V" for i in range(1, 9))
+        ext = " ".join(f"-{0.1 * i:.1f} V" for i in range(1, 9))
+        assert detect_sign_damage(raw, ext)["detected"] is False
+
+    def test_few_signs_never_flag(self) -> None:
+        # Below the absolute minimum the detector stays silent — a paper
+        # that genuinely carries a handful of signs must not flag.
+        raw = "\u22120.5 V and \u22121.2 eV"
+        assert detect_sign_damage(raw, "0.5 V and 1.2 eV")["detected"] is False
+
+    def test_pm_loss_detected(self) -> None:
+        raw = "yields of 93.19 ± 1.99% and 87.5 ± 2.1% and 90 ± 3%"
+        ext = "yields of 93.19 and 87.5 and 90"
+        assert detect_sign_damage(raw, ext)["detected"] is True
+
+    def test_pm_mojibake_detected_at_one(self) -> None:
+        # gr685717's headline value, mangled: one mojibake ± is enough.
+        raw = "FE of 93.19 ± 1.99% was achieved"
+        ext = "FE of 93.19 \u00c2\u00b1 1.99% was achieved"
+        rec = detect_sign_damage(raw, ext)
+        assert rec["detected"] is True
+        assert rec["pm_mojibake"] == 1
+
+    def test_no_text_layer_no_flag(self) -> None:
+        # Scanned PDF: nothing to compare against.
+        assert detect_sign_damage("", "0.5 V, no signs here")["detected"] is False
+
+    def test_clean_extraction_not_flagged(self) -> None:
+        raw = "at \u22120.5 V, \u22121.2 eV, 93.19 ± 1.99% and ranges 1-2"
+        ext = raw
+        assert detect_sign_damage(raw, ext)["detected"] is False
 
 
 class TestPositiveTell:
