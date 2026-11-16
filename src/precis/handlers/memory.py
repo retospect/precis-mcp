@@ -1583,7 +1583,9 @@ class MemoryHandler(NumericRefHandler):
         )
         return render_agent_table(rows, schema=["section", "size", "title"])
 
-    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
+    ) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.
 
         Same body as a single ``get``, minus a ``Next:`` trailer per memory;
@@ -4175,7 +4177,9 @@ class MemoryHandler(NumericRefHandler):
                 )
         return "\n".join(out)
 
-    def _render_hits_table(self, refs: list[Ref]) -> str:
+    def _render_hits_table(
+        self, refs: list[Ref], *, row_tag_prefixes: tuple[str, ...] | None = None
+    ) -> str:
         """List view: ``refs.title`` is now a real title, so show it verbatim
         as the summary and count the body words hidden behind the id.
 
@@ -4836,6 +4840,7 @@ class MemoryHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         query_vec: list[float] | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> list[SearchHit]:
         """Cross-kind stream: the same domain ``SPACE:`` default as
         ``search`` (gr572723) — a domain-bound connection's wildcard
@@ -4857,6 +4862,7 @@ class MemoryHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             query_vec=query_vec,
+            row_tag_prefixes=row_tag_prefixes,
         )
 
     def _rerank_fused(

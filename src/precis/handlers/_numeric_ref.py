@@ -40,6 +40,11 @@ shared list/count SQL excludes terminal tags before paging and reports
 their exact hidden count. Rows expose real state from a bulk tag read;
 alerts retain alert-state tags. Closing/tag cleanup belongs to the write
 owner, never to a browse request.
+
+Row tag-prefix overrides travel as call arguments because handler instances
+serve concurrent requests. Batch summaries reuse their bulk tag read and
+append selected open-tag chips only when requested, preserving the compact
+default and the existing lifecycle fields.
 """
 
 from __future__ import annotations
@@ -1126,6 +1131,7 @@ class NumericRefHandler(Handler):
         depth: int | str | None = None,
         limit: int | str | None = None,
         cursor: str | None = None,
+        tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
         if (closed_since is not None or closed_until is not None) and not (
@@ -1164,7 +1170,7 @@ class NumericRefHandler(Handler):
                 ),
             )
         if isinstance(id, list):
-            return self._get_batch(id, view=view)
+            return self._get_batch(id, view=view, tag_prefixes=tag_prefixes)
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
@@ -1352,6 +1358,23 @@ class NumericRefHandler(Handler):
 
     # ── search ─────────────────────────────────────────────────────
 
+    def _parse_tag_prefixes(self, value: Any = ...) -> tuple[str, ...] | None:
+        """Resolve the optional open-tag row selection once per request."""
+        if value is ...:
+            return self.list_row_tag_prefixes
+        if not isinstance(value, str) or not value.strip():
+            raise BadInput(
+                "tag_prefixes must be a non-empty comma-separated string",
+                next="use args={'tag_prefixes': 'thread,fix,reto'}",
+            )
+        parts = [part.strip().removesuffix(":") for part in value.split(",")]
+        if not all(parts):
+            raise BadInput(
+                "tag_prefixes must name non-empty prefixes",
+                next="use args={'tag_prefixes': 'thread,fix,reto'}",
+            )
+        return tuple(dict.fromkeys(part + ":" for part in parts))
+
     def search(
         self,
         *,
@@ -1407,11 +1430,13 @@ class NumericRefHandler(Handler):
         # (gr543639), flattened to a kwarg like every other args= key.
         # Base refuses (:meth:`_fold_project_arg`); gripe overrides it.
         project: str | None = None,
+        tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
         # Fold the ``q='*'`` match-all spelling before any view dispatch
         # (gr538071) — the shared helper's docstring says why. One door
         # for every numeric-ref kind that funnels through this search.
+        row_tag_prefixes = self._parse_tag_prefixes(tag_prefixes)
         q = fold_match_all_q(q)
         # ``view='ids'`` renders the same filtered set as one bare handle
         # per line — compact enough that a full page never mid-elides
@@ -1595,6 +1620,7 @@ class NumericRefHandler(Handler):
             ):
                 return self._list_by_tags(
                     normalized_tags or [],
+                    row_tag_prefixes=row_tag_prefixes,
                     page_size=page_size,
                     note=status_note,
                     offset=offset,
@@ -1623,6 +1649,7 @@ class NumericRefHandler(Handler):
             if link is not None and str(link).strip():
                 return self._list_by_link(
                     link,
+                    row_tag_prefixes=row_tag_prefixes,
                     page_size=page_size,
                     note=status_note,
                     offset=offset,
@@ -1654,6 +1681,7 @@ class NumericRefHandler(Handler):
         # body/comment chunks grouped by ref rather than ``ref.title``.
         if self.search_body_chunks:
             return self._search_body_chunks(
+                row_tag_prefixes=row_tag_prefixes,
                 q=q,
                 tags=normalized_tags,
                 page_size=page_size,
@@ -1765,9 +1793,11 @@ class NumericRefHandler(Handler):
             query=q,
         )
         table = (
-            self._id_lines(hit_refs, titles=compact == "list")
+            self._id_lines(
+                hit_refs, titles=compact == "list", row_tag_prefixes=row_tag_prefixes
+            )
             if compact
-            else self._render_hits_table(hit_refs)
+            else self._render_hits_table(hit_refs, row_tag_prefixes=row_tag_prefixes)
         )
         trunc = self._tag_truncation_note(
             normalized_tags, matched_total=total, q=q, exclude_tags=excluded or None
@@ -2508,7 +2538,13 @@ class NumericRefHandler(Handler):
         )
         return sorted(merged)
 
-    def _id_lines(self, refs: list[Ref], *, titles: bool = False) -> str:
+    def _id_lines(
+        self,
+        refs: list[Ref],
+        *,
+        titles: bool = False,
+        row_tag_prefixes: tuple[str, ...] | None = None,
+    ) -> str:
         """``view='ids'``/``view='list'`` body: one line per ref.
 
         Compact on purpose (gr514477): a full page of these never
@@ -2522,7 +2558,9 @@ class NumericRefHandler(Handler):
             tag_chips.chips_bulk(
                 self.store,
                 {int(r.id): self.kind for r in refs},
-                keep=self.list_row_tag_prefixes,
+                keep=row_tag_prefixes
+                if row_tag_prefixes is not None
+                else self.list_row_tag_prefixes,
             )
             if titles
             else {}
@@ -2595,6 +2633,7 @@ class NumericRefHandler(Handler):
         closed_after: datetime | None = None,
         closed_before: datetime | None = None,
         closed_values: list[str] | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -2747,9 +2786,11 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(
-            self._id_lines(refs, titles=compact == "list")
+            self._id_lines(
+                refs, titles=compact == "list", row_tag_prefixes=row_tag_prefixes
+            )
             if compact
-            else self._render_hits_table(refs)
+            else self._render_hits_table(refs, row_tag_prefixes=row_tag_prefixes)
         )
         if pages > 1:
             # Name the total and the page count so a short page can't be
@@ -2923,6 +2964,7 @@ class NumericRefHandler(Handler):
         compact: str | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
@@ -3006,9 +3048,11 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(
-            self._id_lines(page_rows, titles=compact == "list")
+            self._id_lines(
+                page_rows, titles=compact == "list", row_tag_prefixes=row_tag_prefixes
+            )
             if compact
-            else self._render_hits_table(page_rows)
+            else self._render_hits_table(page_rows, row_tag_prefixes=row_tag_prefixes)
         )
         return Response(
             body="\n".join(parts),
@@ -3131,6 +3175,7 @@ class NumericRefHandler(Handler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         query_vec: list[float] | None = None,
+        tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level hybrid search returned as ``SearchHit``s.
@@ -3156,10 +3201,12 @@ class NumericRefHandler(Handler):
         this path paying its own remote ``embed_one`` inside the
         deadline-bounded fan-out.
         """
+        row_tag_prefixes = self._parse_tag_prefixes(tag_prefixes)
         if not (q and q.strip()):
             return []
         if self.search_body_chunks:
             return self._body_search_hits(
+                row_tag_prefixes=row_tag_prefixes,
                 q=q,
                 tags=tags,
                 page_size=page_size,
@@ -3198,7 +3245,9 @@ class NumericRefHandler(Handler):
         chip_map = tag_chips.chips_bulk(
             self.store,
             {int(ref.id): self.kind for ref in refs},
-            keep=self.list_row_tag_prefixes,
+            keep=row_tag_prefixes
+            if row_tag_prefixes is not None
+            else self.list_row_tag_prefixes,
         )
         if not chip_map:
             return hits
@@ -3392,6 +3441,7 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
         compact: str | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref.
 
@@ -3526,14 +3576,18 @@ class NumericRefHandler(Handler):
             lines.append(facets)
         if compact:
             id_lines = self._id_lines(
-                [ref for _, ref, _ in shown], titles=compact == "list"
+                [ref for _, ref, _ in shown],
+                titles=compact == "list",
+                row_tag_prefixes=row_tag_prefixes,
             )
             lines.extend(id_lines.splitlines())
         else:
             chip_map = tag_chips.chips_bulk(
                 self.store,
                 {int(ref.id): self.kind for _, ref, _ in [*shown, *weak]},
-                keep=self.list_row_tag_prefixes,
+                keep=row_tag_prefixes
+                if row_tag_prefixes is not None
+                else self.list_row_tag_prefixes,
             )
             sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in shown])
 
@@ -3620,6 +3674,7 @@ class NumericRefHandler(Handler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         query_vec: list[float] | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> list[SearchHit]:
         """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge.
 
@@ -3654,7 +3709,9 @@ class NumericRefHandler(Handler):
         chip_map = tag_chips.chips_bulk(
             self.store,
             {int(ref.id): self.kind for _, ref, _ in ordered},
-            keep=self.list_row_tag_prefixes,
+            keep=row_tag_prefixes
+            if row_tag_prefixes is not None
+            else self.list_row_tag_prefixes,
         )
         sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in ordered])
         return [
@@ -4829,7 +4886,9 @@ class NumericRefHandler(Handler):
 
     # ── batch forms (``id=[...]``) ─────────────────────────────────
 
-    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
+    ) -> Response:
         """``get(id=[...])``: one summary block per id, in the order given.
 
         Summary-shaped by default — each block is the handle, the
@@ -4840,6 +4899,7 @@ class NumericRefHandler(Handler):
         the kind's own single-id view over the batch — see
         :meth:`_get_batch_view`.
         """
+        prefixes = self._parse_tag_prefixes(tag_prefixes)
         ref_ids = self._coerce_ids(ids)
         # ``title``/``index`` name what the summary form already is (one
         # handle + first-line block per id); agents guess them on a batch
@@ -4853,6 +4913,19 @@ class NumericRefHandler(Handler):
         tag_rows = self.store.ref_tags_bulk(live)
         link_counts = self.store.count_links_for_refs(live)
         sizes = self.store.chunks.body_byte_counts(live)
+        chip_map = (
+            tag_chips.chips_bulk(
+                self.store,
+                {rid: self.kind for rid in live},
+                keep=prefixes,
+                tagged={
+                    rid: [(ns, val) for ns, val in pairs if ns == "OPEN"]
+                    for rid, pairs in tag_rows.items()
+                },
+            )
+            if tag_prefixes is not ...
+            else {}
+        )
         blocks: list[str] = []
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
@@ -4864,6 +4937,8 @@ class NumericRefHandler(Handler):
                 blocks.append(f"{handle}  deleted")
                 continue
             bits = [handle]
+            if chips := chip_map.get(rid):
+                bits.append(chips)
             for ns, val in tag_rows.get(rid, []):
                 if ns != "OPEN":
                     bits.append(f"{ns}:{val}")
@@ -5369,7 +5444,9 @@ class NumericRefHandler(Handler):
         """
         return {"age": str(max(0, (now - ref.updated_at).days))}
 
-    def _render_hits_table(self, refs: list[Ref]) -> str:
+    def _render_hits_table(
+        self, refs: list[Ref], *, row_tag_prefixes: tuple[str, ...] | None = None
+    ) -> str:
         """Render a list of refs as a single TOON table.
 
         Columns: ``id | status? | tags? | summary | remaining_words |
@@ -5423,7 +5500,9 @@ class NumericRefHandler(Handler):
         chip_map = tag_chips.chips_bulk(
             self.store,
             {int(r.id): self.kind for r in refs},
-            keep=self.list_row_tag_prefixes,
+            keep=row_tag_prefixes
+            if row_tag_prefixes is not None
+            else self.list_row_tag_prefixes,
             tagged=chip_rows,
         )
         any_chips = bool(chip_map)

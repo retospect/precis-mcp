@@ -251,6 +251,11 @@ triage reads that need the title, not just the id:
 search(kind="gripe", tags=["STATUS:open"], view="list", page_size=100)
 ```
 
+Search rows default to `cluster:` chips. Choose open-tag prefixes with
+`args={'tag_prefixes': 'thread,fix,reto'}` on table or `view='list'`
+searches. The same argument appends those chips to default batch
+`get(id=[...])` summaries; omission keeps the existing summary.
+
 `args={'id_min': N}` / `args={'id_max': M}` bound any search to a
 ref-id range — a lone bound is legal — so "open gripes filed since
 gr514000" is `args={'id_min': 514000}`. The range applies on the

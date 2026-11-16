@@ -896,3 +896,16 @@ def test_edit_id_list_refused_on_file_kind(store: Store, tmp_path: Path) -> None
     assert "call edit once per id" in body
     assert "edit(kind='markdown', id='a'" in body
     assert "# A" in (tmp_path / "a.md").read_text(encoding="utf-8")
+
+
+def test_batch_tag_prefixes(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 2)
+    for rid in ids:
+        for tag in ("thread:x", "fix:code", "cluster:y"):
+            handler.store.add_tag(rid, Tag.open(tag), set_by="system")
+    assert "[thread:x]" not in handler.get(id=_batch(*ids)).body
+    body = handler.get(id=_batch(*ids), tag_prefixes="thread,fix").body
+    assert body.count("[thread:x]") == 2
+    assert body.count("[fix:code]") == 2
+    assert "[cluster:y]" not in body
+    assert "[thread:x]" not in handler.get(id=_batch(*ids)).body
