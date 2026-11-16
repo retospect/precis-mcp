@@ -39,10 +39,11 @@
       {{ '--strict' if (agent_cli_strict | bool) else '' }}
       --config-json {{ agent_cli_config | to_json | quote }}
     executable: python3
-    # A readable cwd for agent_cli_user: on macOS the play's cwd is the
+    # agent_cli_user's own home as cwd: on macOS the play's cwd is the
     # connecting account's home (0750), which a builder user like coder
-    # cannot enter, and npm dies with `EACCES: process.cwd failed`.
-    chdir: /tmp
+    # cannot enter, and npm dies with `EACCES: process.cwd failed`. The
+    # user's home (not shared /tmp) is private to it and always readable.
+    chdir: "{{ ('/Users/' if os_family == 'darwin' else '/home/') ~ agent_cli_user }}"
   become: true
   become_user: "{{ agent_cli_user }}"
   register: agent_cli_out
