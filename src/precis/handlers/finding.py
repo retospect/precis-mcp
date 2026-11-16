@@ -2079,6 +2079,8 @@ class FindingHandler(NumericRefHandler):
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         refine: str | None = None,
+        reopen: bool | str | None = None,
+        supersede: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
@@ -2116,6 +2118,10 @@ class FindingHandler(NumericRefHandler):
         (:func:`precis.workers.hub_refine.refine_hub_now`) and reports the
         pass counters; the attempt lease and regrounding gates apply.
 
+        ``reopen=True`` / ``supersede=True`` (with ``reason=``) are the audited
+        nanopub doors — see :func:`precis.handlers._finding_edit.edit`.
+        Signing stays human.
+
         ``id=[...]`` (``batch_ids``) applies the same edit to every id in
         one transaction — :meth:`_edit_batch` (gr514482).
         """
@@ -2140,6 +2146,8 @@ class FindingHandler(NumericRefHandler):
                 meta=meta,
                 dry_run=dry_run,
                 refine=refine,
+                reopen=reopen,
+                supersede=supersede,
                 **_kw,
             )
         if refine is not None:
@@ -2160,6 +2168,8 @@ class FindingHandler(NumericRefHandler):
                     motivation,
                     reason,
                     meta,
+                    reopen,
+                    supersede,
                 )
             ) or (match is not None and match != "unique"):
                 raise BadInput(
@@ -2189,6 +2199,8 @@ class FindingHandler(NumericRefHandler):
             reason=reason,
             meta=meta,
             dry_run=dry_run,
+            reopen=reopen,
+            supersede=supersede,
         )
         # A prose door (body rewrite ``text=`` or hub retitle ``title=``)
         # re-resolves mention autolinks against the new text — removed

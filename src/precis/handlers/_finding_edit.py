@@ -49,6 +49,12 @@ _FROZEN_NEXT = (
 )
 
 
+def _truthy(v: bool | str | None) -> bool:
+    return v is True or (
+        isinstance(v, str) and v.strip().lower() in ("true", "1", "yes")
+    )
+
+
 def edit(
     store: Store,
     *,
@@ -71,6 +77,8 @@ def edit(
     reason: str | None = None,
     meta: dict[str, Any] | None = None,
     dry_run: bool | str | None = None,
+    reopen: bool | str | None = None,
+    supersede: bool | str | None = None,
 ) -> Response:
     """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
     retitle a ``TAPROOT:claim`` hub, record an author's
@@ -233,6 +241,19 @@ def edit(
     An unsigned review is reopened atomically because its grounding froze
     the old prose; signed/anchored/published content refuses correction here.
 
+    **Nanopub doors** (audited; signing stays human). ``reason=`` is required:
+
+        edit(kind='finding', id='fi<N>', reopen=True, reason='<why>')
+        edit(kind='finding', id='fi<N>', supersede=True, reason='<why>')
+
+    ``reopen`` flips a ``reviewed``/``signed`` publish row back to
+    ``candidate`` and records ``publish_reopened`` (voided trusty URI /
+    artifact id) in the same transaction; ``anchored`` refuses naming
+    ``supersede``. ``supersede`` stages a successor for an anchored,
+    unpublished row (``publish_superseded``). A claim published externally
+    (:func:`precis.nanopub.state.is_published_externally`) refuses both —
+    a human runs ``precis nanopub retract``.
+
     Only the body edit and the ``meta={'scope': …}`` door support
     ``dry_run`` (see above); every other op rejects it.
     """
@@ -262,6 +283,16 @@ def edit(
     body_edit = mode == "replace" or (
         mode in (None, "find-replace") and (anchors_given or text is not None)
     )
+    nanopub_door = None
+    if _truthy(reopen):
+        nanopub_door = "reopen"
+    if _truthy(supersede):
+        if nanopub_door:
+            raise BadInput(
+                "pass one of reopen=True / supersede=True, not both",
+                next="edit(kind='finding', id='fi<N>', reopen=True, reason='<why>')",
+            )
+        nanopub_door = "supersede"
     given = [
         name
         for name, value in (
@@ -271,6 +302,8 @@ def edit(
         )
         if value is not None
     ]
+    if nanopub_door:
+        given.append(nanopub_door)
     sharpening = testable_by is not None or motivation is not None
     if sharpening:
         given.append("testable_by/motivation")
@@ -302,6 +335,38 @@ def edit(
     is_self_pick = (
         isinstance(pick_candidate, str) and pick_candidate.strip().lower() == "self"
     )
+    if nanopub_door is not None and len(exclusive) == 1:
+        if id is None:
+            raise BadInput(
+                f"edit(kind='finding', {nanopub_door}=True) requires id='fi<N>'",
+                next=f"edit(kind='finding', id='fi<N>', {nanopub_door}=True, "
+                "reason='<why>')",
+            )
+        if dry_run:
+            raise BadInput(
+                f"edit(kind='finding', {nanopub_door}=True) does not support "
+                "dry_run — omit it to apply",
+                next=f"edit(kind='finding', id='fi<N>', {nanopub_door}=True, "
+                "reason='<why>')",
+            )
+        if reason is None or not reason.strip():
+            raise BadInput(
+                f"edit(kind='finding', {nanopub_door}=True) requires a "
+                "non-empty reason= — it is the audit trail",
+                next=f"edit(kind='finding', id='fi<N>', {nanopub_door}=True, "
+                "reason='<why>')",
+            )
+        from precis.nanopub import supersede as door
+
+        ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=id)
+        row = (door.reopen if nanopub_door == "reopen" else door.supersede)(
+            store, ref_id, reason=reason
+        )
+        verb = "reopened" if nanopub_door == "reopen" else "staged successor for"
+        return Response(
+            body=f"{verb} fi{ref_id}: publish row {row.id} is now "
+            f"{row.state!r}. Review and signing stay human."
+        )
     if reason is not None and not is_self_pick and not body_edit:
         raise BadInput(
             "edit(kind='finding') reason= applies to pick_candidate='self' "

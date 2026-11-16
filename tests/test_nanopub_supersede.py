@@ -90,7 +90,7 @@ def _persisted(store: Any, old: Any) -> tuple[Any, ...]:
 def test_atomic_staging_preserves_predecessor_and_proof(store: Any) -> None:
     old = _old(store)
     before = _persisted(store, old)
-    successor = supersede(store, old.claim_ref_id, interactive=True)
+    successor = supersede(store, old.claim_ref_id, reason="r")
     after = _persisted(store, old)
     assert after[0] == [(old.id, "superseded"), (successor.id, "candidate")]
     assert after[1] == [(old.id, successor.id)]
@@ -176,12 +176,12 @@ def test_refuses_unsafe_predecessor(store: Any, posture: str) -> None:
 def test_noninteractive_and_missing_refuse(store: Any) -> None:
     old = _old(store)
     before = _persisted(store, old)
-    with pytest.raises(PermissionError):
-        supersede(store, old.claim_ref_id)
+    with pytest.raises(BadInput, match="reason"):
+        supersede(store, old.claim_ref_id, reason=" ")
     with pytest.raises(BadInput, match="no publish row"):
         store.nanopub_supersede(-1)
     with pytest.raises(BadInput, match="no live publish row"):
-        supersede(store, -1, interactive=True)
+        supersede(store, -1, reason="r")
     assert _persisted(store, old) == before
 
 
@@ -377,7 +377,9 @@ def test_cli_parser_and_real_local_staging(store: Any, capsys: Any) -> None:
     parser = argparse.ArgumentParser()
     cli.add_parser(parser.add_subparsers(dest="command"))
     old = _old(store)
-    args = parser.parse_args(["nanopub", "supersede", f"fi{old.claim_ref_id}"])
+    args = parser.parse_args(
+        ["nanopub", "supersede", f"fi{old.claim_ref_id}", "--reason", "why"]
+    )
     cli._supersede(args, store)
     assert "review and sign separately" in capsys.readouterr().out
     assert store.nanopub_publish_row(old.claim_ref_id).state == "candidate"
@@ -515,3 +517,82 @@ def test_generic_transition_refuses_superseded(store: Any) -> None:
         store.nanopub_transition(old.id, to_state="superseded", expect=("anchored",))
     assert _persisted(store, old) == before
     assert store.nanopub_publish_row_by_id(old.id).state == "anchored"
+
+
+class _Door:
+    def __init__(self, store: Any) -> None:
+        self.store = store
+
+    def edit(self, **kw: Any) -> Any:
+        from precis.handlers import _finding_edit
+
+        return _finding_edit.edit(self.store, kind="finding", **kw)
+
+
+def _handler(store: Any) -> Any:
+    return _Door(store)
+
+
+def test_edit_reopen_door_audits_and_refuses_anchored(store: Any) -> None:
+    hub = seed_ref(store, title="Synthetic claim.", kind="finding")
+    row = store.nanopub_create_publish_row(hub)
+    row = _anchor(store, row)
+    handler = _handler(store)
+    with pytest.raises(BadInput, match="supersede"):
+        handler.edit(id=f"fi{hub}", reopen=True, reason="why")
+    with pytest.raises(BadInput, match="reason"):
+        handler.edit(id=f"fi{hub}", reopen=True)
+    # Roll the anchored row back to a signed one to exercise the open door.
+    hub2 = seed_ref(store, title="Second claim.", kind="finding")
+    r2 = store.nanopub_create_publish_row(hub2)
+    assert store.nanopub_approve(
+        r2.id,
+        approved_title="Second claim.",
+        claim_sha="ab" * 32,
+        aida_uri="http://purl.org/aida/Second.",
+        grounding={"passages": []},
+    )
+    uri = "https://w3id.org/np/RA" + f"{r2.id:043d}"
+    art = store.nanopub_insert_artifact(
+        publish_id=r2.id,
+        claim_ref_id=hub2,
+        artifact_type="claim",
+        trig_bytes=b"# s",
+        trusty_uri=uri,
+        aida_uri="http://purl.org/aida/Second.",
+        claim_sha="ab" * 32,
+        signer="test:signer",
+        key_fingerprint="fp",
+        dois=[],
+    )
+    assert store.nanopub_record_signed(
+        r2.id, trusty_uri=uri, artifact_id=art, dependency_codes={}
+    )
+    handler.edit(id=f"fi{hub2}", reopen=True, reason="stale evidence")
+    assert store.nanopub_publish_row(hub2).state == "candidate"
+    events = [e for e in store.events_for(hub2) if e.event == "publish_reopened"]
+    assert len(events) == 1
+    assert events[0].payload["trusty_uri"] == uri
+    assert events[0].payload["artifact_id"] == art
+    assert events[0].payload["reason"] == "stale evidence"
+
+
+def test_edit_supersede_door_needs_no_tty(store: Any) -> None:
+    old = _old(store)
+    hub = old.claim_ref_id
+    handler = _handler(store)
+    handler.edit(id=f"fi{hub}", supersede=True, reason="reworded")
+    assert store.nanopub_publish_row_by_id(old.id).state == "superseded"
+    assert store.nanopub_publish_row(hub).state == "candidate"
+    assert any(e.event == "publish_superseded" for e in store.events_for(hub))
+    # Published externally: refused for both doors.
+    pub = _old(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE nanopub_publish SET state = 'published', published_at = now() "
+            "WHERE id = %s",
+            (pub.id,),
+        )
+    for door in ("supersede", "reopen"):
+        with pytest.raises(BadInput, match="published"):
+            handler.edit(id=f"fi{pub.claim_ref_id}", reason="x", **{door: True})

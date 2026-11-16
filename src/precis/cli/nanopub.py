@@ -135,6 +135,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_reopen = s.add_parser("reopen", help="Flip a pre-anchor row back to candidate.")
     p_reopen.add_argument("hub")
+    p_reopen.add_argument("--reason", required=True, help="Audit-trail reason.")
 
     p_supersede = s.add_parser(
         "supersede",
@@ -142,6 +143,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description="Stage a successor for an anchored, unpublished hub; no signing or network.",
     )
     p_supersede.add_argument("hub", help="fi<id> or bare ref id.")
+    p_supersede.add_argument("--reason", required=True, help="Audit-trail reason.")
 
     p_reconcile = s.add_parser(
         "reconcile",
@@ -496,22 +498,21 @@ def _sign(args: argparse.Namespace, store) -> None:
 
 
 def _reopen(args: argparse.Namespace, store) -> None:
-    hub_id = _hub_id(args.hub)
-    row = store.nanopub_publish_row(hub_id)
-    if row is None:
-        print("no live publish row")
+    from precis.errors import BadInput
+    from precis.nanopub.supersede import reopen
+
+    try:
+        row = reopen(store, _hub_id(args.hub), reason=args.reason)
+    except BadInput as exc:
+        print(str(exc))
         sys.exit(1)
-    if store.nanopub_reopen(row.id):
-        print(f"reopened publish row {row.id} → candidate")
-    else:
-        print(f"row {row.id} is {row.state!r} — only reviewed/signed reopen")
-        sys.exit(1)
+    print(f"reopened publish row {row.id} → candidate")
 
 
 def _supersede(args: argparse.Namespace, store) -> None:
     from precis.nanopub.supersede import supersede
 
-    row = supersede(store, _hub_id(args.hub), interactive=True)
+    row = supersede(store, _hub_id(args.hub), reason=args.reason)
     print(
         f"staged successor publish row {row.id} for fi{row.claim_ref_id} → candidate; "
         "review and sign separately"

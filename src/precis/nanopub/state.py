@@ -96,3 +96,22 @@ def frozen_rung(state: str | None) -> str:
     if state in ("publishing", "published"):
         return FROZEN_PUBLISHED
     return FROZEN_NONE
+
+
+def is_published_externally(
+    state: str | None,
+    published_at: object | None = None,
+    registry_url: str | None = None,
+) -> bool:
+    """Whether the claim has left the local store (the machine-door boundary).
+
+    True once the registry POST is in flight or done: state ``publishing`` /
+    ``published``, or ``published_at`` / ``registry_url`` set. An anchored,
+    unpublished claim is still internal. Agent doors (reopen, supersede) and
+    the CLI share this one definition.
+    """
+    return (
+        state in ("publishing", "published")
+        or published_at is not None
+        or bool(registry_url)
+    )

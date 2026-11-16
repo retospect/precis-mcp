@@ -16,14 +16,27 @@ INSERTs a new proof row, never rewrites the pending one).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+
+
+@contextmanager
+def _use_conn(pool: Any, conn: Connection | None) -> Iterator[Connection]:
+    """The caller's open transaction, else a one-shot pooled connection."""
+    if conn is not None:
+        yield conn
+    else:
+        with pool.connection() as c:
+            yield c
+
 
 #: Publish states with no live claim on the hub — the partial unique
 #: index `nanopub_publish_one_live_per_hub` excludes exactly these.
@@ -203,14 +216,28 @@ class NanopubMixin:
 
     # ── publish rows ─────────────────────────────────────────────────
 
-    def nanopub_publish_row(self, claim_ref_id: int) -> PublishRow | None:
-        """The hub's live (non-terminal) publish row, or ``None``."""
-        with self.pool.connection() as conn:
-            row = conn.execute(
-                f"SELECT {_PUBLISH_COLS} FROM nanopub_publish "
-                "WHERE claim_ref_id = %s AND state != ALL(%s)",
-                (claim_ref_id, list(TERMINAL_STATES)),
-            ).fetchone()
+    def nanopub_publish_row(
+        self,
+        claim_ref_id: int,
+        *,
+        conn: Connection | None = None,
+        for_update: bool = False,
+    ) -> PublishRow | None:
+        """The hub's live (non-terminal) publish row, or ``None``.
+
+        ``conn=`` joins the caller's transaction; ``for_update`` locks the
+        row so an audit read-then-flip cannot race another writer."""
+        sql = (
+            f"SELECT {_PUBLISH_COLS} FROM nanopub_publish "
+            "WHERE claim_ref_id = %s AND state != ALL(%s)"
+            + (" FOR UPDATE" if for_update else "")
+        )
+        params = (claim_ref_id, list(TERMINAL_STATES))
+        if conn is not None:
+            row = conn.execute(sql, params).fetchone()
+        else:
+            with self.pool.connection() as c:
+                row = c.execute(sql, params).fetchone()
         return _row_to_publish(row) if row else None
 
     def nanopub_publish_row_by_id(self, row_id: int) -> PublishRow | None:
@@ -300,14 +327,18 @@ class NanopubMixin:
                 )
         return _row_to_publish(row)
 
-    def nanopub_supersede(self, row_id: int) -> PublishRow:
+    def nanopub_supersede(
+        self, row_id: int, *, conn: Connection | None = None
+    ) -> PublishRow:
         """Atomically replace an anchored, unpublished row with a candidate.
 
         The local state changes; frozen bytes/fields and OTS proofs never do.
         The caller supplies an exact predecessor id, so a racing invocation
         cannot accidentally supersede the winner's newly staged successor.
+        ``conn=`` joins the caller's transaction (the audited door writes its
+        ``ref_events`` row in the same one).
         """
-        with self.pool.connection() as conn:
+        with _use_conn(self.pool, conn) as conn:
             hub = conn.execute(
                 "SELECT claim_ref_id FROM nanopub_publish WHERE id = %s", (row_id,)
             ).fetchone()
@@ -526,12 +557,13 @@ class NanopubMixin:
             )
             return cur.rowcount == 1
 
-    def nanopub_reopen(self, row_id: int) -> bool:
+    def nanopub_reopen(self, row_id: int, *, conn: Connection | None = None) -> bool:
         """Drift/edit reopen: flip a pre-anchor row (``reviewed`` or
         ``signed``) back to ``candidate``, discarding the frozen fields.
         The signed artifact row (if any) stays — append-only — but the
-        publish row no longer points at it."""
-        with self.pool.connection() as conn:
+        publish row no longer points at it. ``conn=`` joins the caller's
+        transaction."""
+        with _use_conn(self.pool, conn) as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET state = 'candidate', "
                 "approved_title = NULL, claim_sha = NULL, aida_uri = NULL, "

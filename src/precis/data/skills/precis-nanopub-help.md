@@ -166,7 +166,15 @@ id='fi<N>', args={'testable_by': …})` (and/or `'motivation': …`) patches the
 envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor
-nanopublication; this edit door refuses.
+nanopublication; this edit door refuses. Two audited doors, both needing
+`reason=` (signing stays human):
+`edit(kind='finding', id='fi<N>', args={'reopen': True, 'reason': …})` voids a
+`reviewed`/`signed` row back to `candidate` (the voided trusty URI lands on a
+`publish_reopened` event), and `args={'supersede': True, 'reason': …}` stages a
+successor for an anchored, unpublished claim (`publish_superseded`). `reopen`
+of an anchored claim refuses and names supersede; a claim published externally
+(publishing/published, `published_at` or `registry_url` set) refuses both —
+a human runs `precis nanopub retract`.
 
 ## Report and definition types
 
