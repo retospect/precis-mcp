@@ -27,6 +27,10 @@ operator or another job_type from ``put(kind='job', job_type=
 ``params.memory_target`` opts into one revision-pinned memory work order
 (:mod:`precis.workers.memory_embed`). Ordinary jobs retain their claim order;
 targeted jobs never fall back to draining unrelated chunks.
+
+Writes lock surviving chunks only for the short persistence transaction:
+body replacement during embedding must skip the vanished chunk without
+aborting its batch peers. Retry-local counters count only committed writes.
 """
 
 from __future__ import annotations
@@ -190,7 +194,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
         limit = min(limit, len(target["chunks"]))
     else:
         handler = EmbedHandler(embedder)
-    processed = ok_total = failed_total = 0
+    processed = ok_total = failed_total = skipped_total = 0
 
     while processed < limit:
         # job_inproc's lease (PRECIS_JOB_INPROC_LEASE_S, default 1800s)
@@ -244,15 +248,34 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
             )
             return None
 
-        def _write_batch(rows: Any = rows, results: Any = results) -> None:
+        def _write_batch(
+            rows: Any = rows, results: Any = results
+        ) -> tuple[int, int, int]:
+            ok = failed = skipped = 0
             with ctx.store.pool.connection() as conn:
+                # Hold the FK's parent keys through commit. A plain existence
+                # probe leaves a deletion window before write_failed's INSERT.
+                surviving = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT chunk_id FROM chunks WHERE chunk_id = ANY(%s) "
+                        "ORDER BY chunk_id FOR KEY SHARE",
+                        ([r.chunk_id for r in rows],),
+                    ).fetchall()
+                }
                 for row, payload in zip(rows, results, strict=True):
+                    if row.chunk_id not in surviving:
+                        skipped += 1
+                        continue
                     if isinstance(payload, Exception):
                         handler.write_failed(conn, row.chunk_id, repr(payload))
+                        failed += 1
                     else:
                         handler.write_ok(conn, row.chunk_id, payload)
+                        ok += 1
                 handler.release_claims(conn, [r.chunk_id for r in rows])
                 conn.commit()
+            return ok, failed, skipped
 
         # The chunk_embeddings insert takes FOR KEY SHARE on the claimed
         # chunks row — under prod's lock_timeout=5s that collides with a
@@ -262,7 +285,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
         # re-runs _write_batch in a fresh transaction each attempt and only
         # reraises once the budget is spent.
         try:
-            retry_locked(_write_batch, label="embed_batch write")
+            ok, failed, skipped = retry_locked(_write_batch, label="embed_batch write")
         except (LockNotAvailable, DeadlockDetected) as exc:
             ctx.record_failure(
                 f"embed_batch: write blocked by lock contention after "
@@ -270,8 +293,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
                 failure_class="infra",
             )
             return None
-        ok_total += sum(1 for p in results if not isinstance(p, Exception))
-        failed_total += sum(1 for p in results if isinstance(p, Exception))
+        ok_total += ok
+        failed_total += failed
+        skipped_total += skipped
         processed += len(rows)
 
     if isinstance(handler, TargetedMemoryEmbedHandler):
@@ -297,11 +321,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
     )
     ctx.append_chunk(
         "job_summary",
-        f"embedded {ok_total} chunk(s) ({failed_total} failed) — "
+        f"embedded {ok_total} chunk(s) ({failed_total} failed, {skipped_total} skipped) — "
         f"queue_remaining≈{remaining.count} (counted {age_min}m ago)",
     )
     # Read by job_inproc's per-job log line (``embedded=N``); nothing persists it.
-    return {"embedded": ok_total, "failed": failed_total}
+    return {"embedded": ok_total, "failed": failed_total, "skipped": skipped_total}
 
 
 def _run(*_a: Any, **_k: Any) -> Any:
