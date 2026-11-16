@@ -278,3 +278,20 @@ def test_unscoped_count_mirrors_the_or_retry(store: Store) -> None:
     count retries OR-ed corpus-wide."""
     _seed(store, embedded=False)
     assert store.chunks.count_chunks_lexical(q=_Q, kind="paper") == 2
+
+
+def test_scoped_operator_query_does_not_claim_per_term_retry(store: Store) -> None:
+    """gr681469: a ``-term`` query never OR-retries, so the empty answer
+    must not claim every term was retried individually."""
+    ref_id, _chunk_ids = _seed(store, embedded=False)
+    scope = handle_registry.format_handle("paper", ref_id)
+    body = (
+        _handler(store)
+        .search(q="AMOC -strengthening weakening", scope=scope, mode="lexical")
+        .body
+    )
+    assert "no paper blocks match" in body
+    assert "every query term was already retried individually" not in body
+    assert "terms were not retried individually" in body
+    assert "no blocks matched this query" in body
+    assert "no term matched" not in body

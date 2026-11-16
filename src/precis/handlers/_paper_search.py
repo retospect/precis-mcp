@@ -53,6 +53,7 @@ from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Tag
+from precis.store._chunks_ops import _TSQUERY_OP_RE
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
@@ -1720,15 +1721,28 @@ class PaperSearchResultRenderer:
                 )
             else:
                 if result.scope:
-                    # Under a single-paper scope the legs already retried
-                    # every term OR-ed (gr510534), so "widen the net"
-                    # means different terms, not more of the same page.
-                    body += (
-                        f"\n\nscope={result.scope!r} is a single paper — "
-                        "every query term was already retried individually "
-                        "and none matched; try different terms, or drop "
-                        "scope= to search the whole corpus."
-                    )
+                    if _TSQUERY_OP_RE.search(q) is None and len(q.split()) >= 2:
+                        # Under a single-paper scope the legs already
+                        # retried every term OR-ed (gr510534), so "widen
+                        # the net" means different terms, not more of
+                        # the same page.
+                        body += (
+                            f"\n\nscope={result.scope!r} is a single paper — "
+                            "every query term was already retried individually "
+                            "and none matched; try different terms, or drop "
+                            "scope= to search the whole corpus."
+                        )
+                    elif _TSQUERY_OP_RE.search(q) is not None:
+                        # No retry ran (gr681469): a leading '-' reads as
+                        # websearch negation and a '"' as a phrase, so the
+                        # OR retry stays off to keep the operator's intent.
+                        body += (
+                            f"\n\nscope={result.scope!r} is a single paper — "
+                            "no blocks matched this query. A '-term' reads "
+                            "as exclusion and a quoted phrase as exact, so "
+                            "terms were not retried individually; drop the "
+                            "'-'/quotes (write NH, not -NH) to retry per term."
+                        )
                 body += render_next_section(
                     [
                         (
