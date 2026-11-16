@@ -176,10 +176,16 @@ def test_fan_out_deadline_names_stragglers_and_keeps_fast_kinds(
         return []
 
     _patch_invoke(monkeypatch, rt, fake)
-    t0 = time.perf_counter()
-    out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
-    elapsed = time.perf_counter() - t0
-    release.set()
+    # gr700451: earlier calls can leave stragglers holding shared workers.
+    # Give each kind a worker so this tests the deadline, not pool contention.
+    with ThreadPoolExecutor(max_workers=len(kinds)) as pool:
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+        try:
+            t0 = time.perf_counter()
+            out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+            elapsed = time.perf_counter() - t0
+        finally:
+            release.set()
     assert elapsed < budget(2.0)
     assert isinstance(out[kinds[0]], TimeoutError)
     assert out[kinds[1]] == [] and out[kinds[2]] == []
