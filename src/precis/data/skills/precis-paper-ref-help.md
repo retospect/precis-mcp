@@ -62,10 +62,10 @@ share the same `refs` machinery.
 | export a ref's full state (undo) | `get(id=…, view='ops')` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
-| upload a local PDF | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
+| upload a local PDF (needs a client that can POST a file) | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
-| attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
+| attach a legal PDF (no HTTP client needed — the worker fetches) | `put(id=…, args={'pdf_url': '<url>'})` |
 | declare a record as SI | `args={'supplement_of': '<parent>'}` — the SI section in [[precis-paper-help]] |
 
 ## See a paper's full byline with identity links
@@ -481,9 +481,10 @@ it returns a signed `GET /files/pdf/<sha>?t=<token>` URL (sha, byte
 size and page count, expiry, and the `curl` line), never the bytes.
 The link is reusable until it expires — `args={'ttl_s': N}` (default
 600 s, cap 3600 s). A ref with no PDF refuses and points at
-`pdf_url`. When the reply's first line says the link is path-only,
-the server's web origin is not configured: prepend the origin yourself
-if you have it, else report it.
+`pdf_url`. When the deployment's web origin is unset the view refuses
+naming the missing setting (`PRECIS_WEB_BASE_URL`) — an operator fix
+(`precis secret set PRECIS_WEB_BASE_URL` or /secrets), not something
+the caller can route around.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 
@@ -529,13 +530,24 @@ folded body yourself. The folded paper keeps the URL as `meta.source_url`.
 
 No legal copy to fetch at all — every leg of the daily fetch failed
 (no open version, publisher 403, body-less markup)? Re-queueing does
-nothing: get the PDF from the person and upload it. Mint a single-use
-link, POST the file to it, then attach the sha256 the POST answers:
+nothing: get the PDF from the person. Two routes, picked by what your
+client can do:
+
+- **No HTTP client that can POST a file** (a chat client, say): have
+  the person host the file anywhere they can serve a URL, and attach
+  it with `pdf_url` (above) — the worker fetches it. Nothing else is
+  needed from you.
+- **A client that can POST a file**: mint a single-use upload link,
+  POST the file to it, then attach the sha256 the POST answers:
 
 ```python
 put(kind="paper", id="smith2023", args={"pdf_upload_link": True})
 put(kind="paper", id="smith2023", args={"pdf_upload": "<sha256>", "reason": "person supplied the PDF"})
 ```
+
+Both doors refuse naming the missing setting when the deployment's
+web origin is unset (`PRECIS_WEB_BASE_URL`) — an operator fix, not a
+caller route; the `pdf_url` route above works meanwhile.
 
 The same identity gate as `pdf_url` applies before the file folds in.
 The link works for a paper that still needs a PDF or a body (sha-less

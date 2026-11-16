@@ -14,7 +14,7 @@ from typing import Any
 
 from precis import file_links
 from precis import secrets as vault
-from precis.errors import BadInput
+from precis.errors import BadInput, Unsupported
 from precis.response import Response
 from precis.store import Ref, Store
 from precis.utils import handle_registry
@@ -43,7 +43,11 @@ def pdf_overview_line(store: Store, ref: Ref) -> str:
 def render_pdf_link(
     store: Store, ref: Ref, args: dict[str, Any] | None = None
 ) -> Response:
-    """Mint a reusable, short-lived link; PDF bytes never ride an MCP result."""
+    """Mint a reusable, short-lived link; PDF bytes never ride an MCP result.
+
+    gr681313: an unset web origin is a refusal naming the missing
+    deployment setting — never a path-only link the caller can't use.
+    """
     handle = handle_registry.format_handle(ref.kind, ref.id)
     sha = ref.pdf_sha256
     if not sha:
@@ -61,23 +65,25 @@ def render_pdf_link(
             f"args['ttl_s'] must be seconds, got {ttl_raw!r}",
             next=f"get(kind='{ref.kind}', id='{handle}', view='pdf_link')",
         ) from None
-    token = file_links.mint("get", sha, ref.id, ttl_s, store=store)
-    exp = file_links.parse(token).exp
-    path = f"/files/pdf/{sha}?t={token}"
     base = (vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=store) or "").rstrip(
         "/"
     )
-    url = f"{base}{path}" if base else path
+    if not base:
+        raise Unsupported(
+            "PRECIS_WEB_BASE_URL is not set — the deployment's web origin "
+            f"is unset, so {handle}'s pdf_link would come back path-only "
+            "and unfetchable",
+            next="operator: set the web origin with `precis secret set "
+            "PRECIS_WEB_BASE_URL <origin>` or on /secrets, then retry "
+            f"get(kind='{ref.kind}', id='{handle}', view='pdf_link')",
+        )
+    token = file_links.mint("get", sha, ref.id, ttl_s, store=store)
+    exp = file_links.parse(token).exp
+    path = f"/files/pdf/{sha}?t={token}"
+    url = f"{base}{path}"
     size, pages = _pdf_size_and_pages(store, sha)
     expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines: list[str] = []
-    if not base:
-        lines.append(
-            "PRECIS_WEB_BASE_URL is not set — the link below is "
-            "path-only; prepend the precis_web origin to fetch it "
-            "(the operator sets it with `precis secret set "
-            "PRECIS_WEB_BASE_URL` or on /secrets)."
-        )
     stem = ref.slug or handle
     lines += [
         f"# {handle} — PDF download link",

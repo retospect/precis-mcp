@@ -57,7 +57,7 @@ def test_pdf_link_is_declared_and_download_token_verifies(
 ) -> None:
     monkeypatch.setenv("PRECIS_FILE_LINK_KEY", "pres-pdf-link-test-key")
     monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
-    monkeypatch.delenv("PRECIS_WEB_BASE_URL", raising=False)
+    monkeypatch.setenv("PRECIS_WEB_BASE_URL", "https://web.example/")
     ref_id = _seed(store, with_pdf=True)
     handler = PresentationHandler(hub=Hub(store=store))
     assert "pdf_link" in handler.accepted_views()
@@ -73,7 +73,7 @@ def test_pdf_link_is_declared_and_download_token_verifies(
 
     assert not is_error, body
     url = next(line[5:] for line in body.splitlines() if line.startswith("url: "))
-    assert url.startswith(f"/files/pdf/{_SHA}?t=")
+    assert url.startswith(f"https://web.example/files/pdf/{_SHA}?t=")
     claims = file_links.verify(url.split("?t=", 1)[1], op="get", sha=_SHA, store=store)
     assert claims.ref_id == ref_id
     assert f"# pr{ref_id} — PDF download link" in body

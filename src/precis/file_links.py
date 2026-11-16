@@ -34,8 +34,10 @@ FILE_LINK_SECRET = "PRECIS_FILE_LINK_KEY"
 
 #: Operator-set public origin the minted URLs are joined onto (env →
 #: file → vault via ``get_secret`` — Q3 of the spec: the vault, not
-#: container env). Unset → the view returns the path alone and says so;
-#: no origin literal can live in this repo (it is public).
+#: container env). Unset → ``pdf_link`` / ``pdf_upload_link`` refuse
+#: naming it (gr681313); the other link views (page_image, the se/batch
+#: upload doors) still return the path alone and say so. No origin
+#: literal can live in this repo (it is public).
 WEB_BASE_URL_SECRET = "PRECIS_WEB_BASE_URL"
 
 #: Token ops. ``get`` is the slice-3 download; ``put`` is reserved for

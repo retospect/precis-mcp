@@ -1370,23 +1370,24 @@ class PaperHandler(Handler):
                 "get(kind='paper', id=...) to check its state",
             )
         _uploads.require_uploads_dir()
-        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
-        exp = file_links.parse(token).exp
-        path = f"/files/upload/{ref_id}?t={token}"
         base = (
             vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
         ).rstrip("/")
-        url = f"{base}{path}" if base else path
-        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lines: list[str] = []
         if not base:
-            lines.append(
-                "PRECIS_WEB_BASE_URL is not set — the link below is "
-                "path-only; prepend the precis_web origin to POST to it "
-                "(the operator sets it with `precis secret set "
-                "PRECIS_WEB_BASE_URL` or on /secrets)."
+            raise Unsupported(
+                "PRECIS_WEB_BASE_URL is not set — the deployment's web "
+                "origin is unset, so the upload link would come back "
+                "path-only and nothing could POST to it (gr681313)",
+                next="operator: set the web origin with `precis secret set "
+                "PRECIS_WEB_BASE_URL <origin>` or on /secrets, then retry "
+                f"{example}",
             )
-        lines += [
+        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
+        exp = file_links.parse(token).exp
+        path = f"/files/upload/{ref_id}?t={token}"
+        url = f"{base}{path}"
+        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines: list[str] = [
             f"# {slug} — PDF upload link",
             f"url: {url}",
             f"expires: {expires} (single use — one upload per link)",
