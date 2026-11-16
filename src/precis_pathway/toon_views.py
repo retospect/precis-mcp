@@ -384,7 +384,7 @@ def trust_toon(
     """The barrier trust gate, replayed from stored trust records
     (``trust_schema`` 1-2): one row per gating check with its input,
     threshold and verdict, then the per-state/per-seed endpoint table.
-    The verdict line quotes the stored ``trust_summary.barrier`` and
+    The PASS/WARN/FAIL verdict respects stored barrier refusals and
     re-derives the blocked set from the records via
     :mod:`precis.utils.trust_gate` — a disagreement between the two says
     the stored summary no longer matches its records. A check that
@@ -594,6 +594,19 @@ def trust_toon(
         )
     if verdict == "PASS" and ea_row is not None and ea_row["verdict"] == "not-run":
         verdict += f" (vacuous: endpoint agreement not run — {ea_row['input']})"
+    assurance, assurance_reasons = trust_gate.barrier_assurance(
+        rows,
+        trusted=verdict.startswith("PASS"),
+        records=records,
+        scope=scope,
+        engine=engine,
+    )
+    strict_verdict = verdict
+    if seed_lookup_failed or available is False or union_blk is not None:
+        assurance = "FAIL"
+    verdict = strict_verdict if assurance == "PASS" else assurance
+    if assurance == "WARN":
+        verdict += " ≈ " + ", ".join(assurance_reasons)
     replay = (
         "replay agrees with stored trust_summary"
         if sorted(stored_blocked) == record_blocked

@@ -150,7 +150,7 @@ def test_trust_view_renders_gate_rows_and_verdict(
 
     r = h.get(id="trust-rows", view="trust")
     assert "gate ·" in r.body
-    assert "verdict: BLOCKED" in r.body
+    assert "verdict: FAIL" in r.body
     assert "seeds:1-independent" in r.body
     assert "replay agrees with stored trust_summary" in r.body
     assert "detachment" in r.body

@@ -54,18 +54,17 @@ Package-level invariants (detail lives on the named module):
   (``compute``; dossier-owned-by-process).
 - **Seed budgets preserve full-network search.** Defaults, caps, runner margins
   and retry eligibility: ``compute._autocatpath_wall_seconds`` (gr614723).
-- **Untrusted measures don't rank — but they stay visible.** A pathway with
-  NEB-not-converged / adsorbate-detached warnings, a nonphysical barrier
-  (> ``compute._BARRIER_ABSURD_EV``), a symmetry-twin pair whose barriers
-  disagree (same ``geom_hash_c``+tier, Δ > ``compute._TWIN_BARRIER_TOL_EV``
-  — both sides untrusted), or a kinetics solve whose
-  guard bracket disagrees / TOF is non-finite (``kinetics_trusted``), is
-  excluded from the
-  confirmed frontier and can never graduate (``compute._pathway_quality`` →
-  ``frontier`` → ``graduate``), but its measured values surface as a
-  **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,
-  untrusted keys + reasons named, own Pareto rank) in the tick prompt, text
-  view, and web scatter, so the loop is never blind to its own measurements.
+- **Barrier assurance separates ranking from strict credit.** PASS keeps
+  the strict gate; WARN needs converged, saddle-verified evidence and permits
+  only one independent seed, stale engine or BEP estimates. WARN ranks with
+  an approximation marker and reasons, but cannot graduate. The frontier
+  retains independent PASS-only and PASS+WARN Pareto sets. Physical failures
+  and missing verification remain FAIL and cannot rank, even when the
+  diagnostic provisional band retains their raw values.
+  The magnitude ceiling (``compute._BARRIER_ABSURD_EV``), symmetry-twin
+  disagreement (``compute._TWIN_BARRIER_TOL_EV``), and kinetics validity
+  (``kinetics_trusted``) remain independent guards. Diagnostic values stay
+  visible through ``frontier.ProvisionalCandidate`` in tick/text/web views.
   Seeded pathway runs record ``requested_seeds`` at dispatch and accumulate
   ``executed_seeds`` only after child launch, including later failures.
   Trust verdicts show both lists and flag dispatch mismatches, while the

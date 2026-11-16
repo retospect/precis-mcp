@@ -148,6 +148,14 @@ def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Fig
             linewidths=1.5,
             zorder=3,
         )
+        if p.get("assurance") == "WARN":
+            ax.annotate(
+                "≈ " + str(p.get("assurance_note", "WARN")),
+                (p["x"], p["y"]),
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=6,
+            )
 
     # "Which way is better" suffix (optunacy-style) — reuses the SAME
     # scatter.x_better/y_better `better_arrow_for` already computed onto the
@@ -258,6 +266,8 @@ def build_pareto_snapshot(
         "on_frontier",
         "converged",
         "trusted",
+        "assurance",
+        "assurance_reasons",
         "tier",
         "barrier",
         "energy",
@@ -292,6 +302,8 @@ def build_pareto_snapshot(
             "on_frontier": p["on_frontier"],
             "converged": p["converged"],
             "trusted": all(gate_vals) if gate_vals else None,
+            "assurance": flags.get("barrier_assurance"),
+            "assurance_reasons": flags.get("barrier_assurance_reasons") or [],
             "tier": flags.get("barrier_fidelity") or flags.get("tier"),
             "barrier": measures.get("barrier"),
             "energy": measures.get("energy"),

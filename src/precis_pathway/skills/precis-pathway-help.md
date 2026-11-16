@@ -576,7 +576,7 @@ or enqueue the suggested calls.
   The `engine staleness` row compares the pathway's stamped engine against
   the env-or-pinned current version — the same check the harvest's seed
   gate demotes on: an OLDER stamp fails with `engine:stale` in `blocked_by`
-  (BLOCKED — a newer stamp is not stale), and the pathway re-measures on
+  (see assurance tiers below), and the pathway re-measures on
   the current engine when the quest opted into the tier ladder
   (`fidelity_restale_cap` > 0, frontier or top provisional band only),
   while a pathway with no engine stamp reads `not-run`. The seed-independence row
@@ -736,3 +736,16 @@ above don't change — only what you can put in the config.
   standing optimization campaign on the todo tree.
 - [[precis-structure-help]] — the atomistic structures behind each
   intermediate.
+
+## Barrier assurance tiers
+
+The trust verdict is PASS, WARN or FAIL. PASS retains the strict gate.
+WARN requires converged, saddle-verified evidence and permits only a single
+seed, stale engine or BEP estimate; it ranks with `≈` and its reason.
+FAIL includes unconverged NEB, absurd magnitude, endpoint split, detachment
+and wrong binder, and never ranks. A failed sibling lookup or stored barrier
+refusal remains FAIL. A vacuous endpoint check remains labelled on PASS.
+Quest frontiers show PASS-only and PASS+WARN Pareto bands side by side;
+leaderboards carry those membership columns and the assurance reason in
+`quality`. Carry the `≈` marker and reason into reports of WARN numbers;
+do not report numbers from FAIL rows.
