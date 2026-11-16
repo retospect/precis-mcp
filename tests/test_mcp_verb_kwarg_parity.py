@@ -207,6 +207,10 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # params not worth schema weight in every agent's tools/list.
         ("job", "put", "seconds"),
         ("job", "put", "under"),
+        # mode='garden-reject' (td697991): review_id= rides args= by design,
+        # ``args={'review_id': N, 'reason': …}`` (precis-gardener-help); one
+        # operator door, not worth schema weight in every tools/list.
+        ("job", "put", "review_id"),
         # -- put: llm catalog mint (the whole variant-precise surface) ---
         ("llm", "put", "capability"),
         ("llm", "put", "model_id"),
