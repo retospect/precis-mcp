@@ -194,7 +194,10 @@
       </template>
       <template x-for="(t, i) in tags" :key="t">
         <span class="inline-flex items-center gap-1 rounded bg-accent-muted px-2 py-1 text-accent-deep">
-          <span x-text="t"></span>
+          {# The hidden input carries the filter spelling; the chip shows
+             the readable one — a stored lowercase axis filters as
+             ``=ns:value`` but displays ``ns:value`` (gr636493). #}
+          <span x-text="t.replace(/^=/, '')"></span>
           <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
           <input type="hidden" name="tag" :value="t" />
         </span>
@@ -586,9 +589,15 @@
             </form>
             {% elif a.type == 'post' %}
             {# Generic inline POST (gr664410) — the presenter names the
-               route (/todo/{id}/retry|stop|start); hidden fields ride
-               along so the endpoint's redirect lands where it should. #}
-            <form method="post" action="{{ a.url }}" class="inline">
+               route (/todo/{id}/retry|stop|start, /tags/delete); hidden
+               fields ride along so the endpoint's redirect lands where
+               it should, and a.confirm arms a browser confirm() for
+               destructive posts. The message is JSON-serialized (tojson
+               inside a single-quoted attribute) — a raw single-quote
+               interpolation would let an apostrophe-bearing tag value
+               break the JS string (td697200). #}
+            <form method="post" action="{{ a.url }}" class="inline"
+                  {% if a.confirm %}onsubmit='return confirm({{ a.confirm | tojson }})'{% endif %}>
               {% for fk, fv in (a.fields or {}).items() %}<input type="hidden" name="{{ fk }}" value="{{ fv }}">{% endfor %}
               <button class="{{ a.cls or 'text-info-strong' }} hover:underline" title="{{ a.title }}">{{ a.label }}</button>
             </form>
@@ -619,6 +628,22 @@
   </li>
   {% endfor %}
 </ul>
+{% endmacro %}
+
+{% macro tag_strip(chips) %}
+{# "Matching tags" strip (gr636493): when ``tag`` shares the kind
+   selection, the top matching tags sit above the ref rows as chips —
+   each links to the drive scoped to refs carrying it. #}
+{% if chips %}
+<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs" aria-label="Matching tags">
+  <span class="text-fg-faint">matching tags:</span>
+  {% for c in chips %}
+  <a href="{{ c.href }}"
+     class="rounded px-1.5 py-0.5 bg-accent-subtle text-accent-strong hover:bg-accent-muted"
+     >{{ c.label }}{% if c.n is not none %} ·{{ c.n }}{% endif %}</a>
+  {% endfor %}
+</div>
+{% endif %}
 {% endmacro %}
 
 {% macro pager() %}
@@ -767,6 +792,7 @@
         </form>
       </div>
       {% endif %}
+      {{ tag_strip(matching_tags) }}
       {% if not rows %}
       <p class="text-sm text-fg-subtle">
         No matches for <span class="font-medium text-fg-secondary">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
@@ -830,6 +856,7 @@
         <a href="/drive" class="ml-1 text-info hover:underline">clear scope ×</a>
       </p>
       {% endif %}
+      {{ tag_strip(matching_tags) }}
       {% if recent %}
         {# The total, up top — "12 of 12" vs "30 of 4,318" is the whole point
            of paging a stub queue. This count is exact (a plain filtered refs

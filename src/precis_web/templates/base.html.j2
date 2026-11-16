@@ -77,8 +77,10 @@
              restructure) — their routes redirect, so no tab needed.
              ToDo joined them (gr664410): the dashboard list is the
              Drive ``queue=doable`` preset under Browse, and the
-             ``/todo`` workbench stays per-item. #}
-          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('design','Design','/design')] %}
+             ``/todo`` workbench stays per-item. Tags joined them
+             (gr636493): the leaderboard is the Drive ``k=tag`` view —
+             ``/tags`` and ``/tags/refs`` both redirect. #}
+          {% set tabs = [('drive','Drive','/drive'), ('design','Design','/design')] %}
           {# g-chord shortcuts (static/shortcuts.js): one per nav anchor, unique. #}
           {% set _sc = {'drive': 'g d', 'todos': 'g t', 'drafts': 'g r', 'papers': 'g p', 'status': 'g s'} %}
           {% for key, label, href in tabs %}

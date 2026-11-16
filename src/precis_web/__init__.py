@@ -90,7 +90,7 @@ PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
-(Drive, Tags, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
+(Drive, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
 preset the retired ToDo tab's dashboard list became, gr664410 — the
 ``/todo/{id}`` workbench stays per-item — Schedules, Clusters,
 Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,

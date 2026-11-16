@@ -11,9 +11,10 @@ not this slice.
 
 The query-independent helpers below (``_DEFAULT_SOURCE_KINDS``,
 ``_parse_date``, ``_run_search``, ``_recent_rows``, ``_folder_options``,
-``_tag_filter_string``, ``_PAGE_SIZE``) are unit-tested directly and
-imported by ``routes/drive.py`` as the reusable engine — kept here
-rather than duplicated.
+``_PAGE_SIZE``) are unit-tested directly and imported by
+``routes/drive.py`` as the reusable engine — kept here rather than
+duplicated. The tag-filter spelling itself lives with the filter
+parser: :func:`precis.store._tag_filter.tag_filter_string`.
 """
 
 from __future__ import annotations
@@ -28,8 +29,9 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from precis.handlers._paper_search import _representative_block_for_ref
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._tag_filter import tag_filter_string
 from precis_web.deps import get_store
-from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row
+from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row, tag_display_label
 from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 if TYPE_CHECKING:
@@ -37,13 +39,6 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/items", tags=["items"])
 log = logging.getLogger(__name__)
-
-
-def _tag_filter_string(ns: str, value: str) -> str:
-    """Canonical tag-filter string for the search verb — ``OPEN`` tags are
-    bare, closed axes are ``NAMESPACE:value`` (what ``build_tag_filter``
-    parses)."""
-    return value if ns == "OPEN" else f"{ns}:{value}"
 
 
 #: Default kind set when the query doesn't name any — the block-searchable
@@ -580,7 +575,7 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     rows = await asyncio.to_thread(store.suggest_tags, q, limit=10)
     return JSONResponse(
         [
-            {"label": _tag_filter_string(ns, val), "tag": _tag_filter_string(ns, val)}
+            {"label": tag_display_label(ns, val), "tag": tag_filter_string(ns, val)}
             for ns, val, _n in rows
         ]
     )

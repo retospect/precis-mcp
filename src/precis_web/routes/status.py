@@ -254,7 +254,9 @@ def _synthetic_insights_count(store: Store) -> int:
     """How many ``tier:synthetic-insight`` memories exist total.
 
     Used as the badge on the "Recent dreams" panel link to the
-    full insights view at /tags/refs?namespace=tier&value=synthetic-insight.
+    full insights view — ``/tags/refs?namespace=tier&value=
+    synthetic-insight``, which redirects into the drive's ``tag=``
+    facet (gr636493).
     """
     with _connect(store) as conn:
         row = conn.execute(

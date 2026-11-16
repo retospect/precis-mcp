@@ -52,9 +52,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis.handlers._query_identifier import resolve_query_identifier
 from precis.store._stub_predicate import NO_OA_MIN_PASSES
+from precis.store._tag_filter import tag_filter_string
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
-from precis_web.item_view import artifact_kinds, display_title, presenter_for
+from precis_web.item_view import (
+    artifact_kinds,
+    display_title,
+    presenter_for,
+    tag_display_label,
+)
 from precis_web.ref_urls import ref_url
 from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
 from precis_web.routes.flags import (
@@ -71,10 +77,10 @@ from precis_web.routes.items import (
     _parse_date,
     _recent_rows,
     _run_search,
-    _tag_filter_string,
 )
 from precis_web.routes.items import tags_suggest as _tags_suggest
 from precis_web.routes.papers_needed import _KIND_DROPZONES, _watch_dir_from_plist
+from precis_web.routes.tags import _PROTECTED_NAMESPACES
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -220,8 +226,8 @@ def _qualifier_completions(store: Store, word: str) -> list[dict[str, str]]:
         if name == "tag":
             return [
                 {
-                    "name": _tag_filter_string(ns, val),
-                    "insert": f"tag:{_tag_filter_string(ns, val)}",
+                    "name": tag_display_label(ns, val),
+                    "insert": f"tag:{tag_filter_string(ns, val)}",
                     "desc": f"tag filter — {n} refs",
                 }
                 for ns, val, n in store.suggest_tags(word[4:], limit=10)
@@ -677,7 +683,13 @@ def _tag_rows(
     Each link pins ``ref_kinds`` as explicit ``k=`` params: the landing
     resolves the ``items_kinds`` cookie when the URL names no ``k=``, so
     a bare ``?tag=`` link would re-list tags (a saved ``k=tag``) instead
-    of the refs the tag matches."""
+    of the refs the tag matches.
+
+    Rows carry the cluster-wide tag delete (``POST /tags/delete``) for
+    every namespace outside ``_PROTECTED_NAMESPACES`` — the action set
+    the retired ``/tags`` leaderboard offered, so the redirect loses
+    no capability. The form's ``back`` is stamped by the caller once
+    ``return_to`` exists."""
     offset = (page - 1) * _PAGE_SIZE
     if q:
         found = store.suggest_tags(q, limit=offset + _PAGE_SIZE + 1)
@@ -689,7 +701,23 @@ def _tag_rows(
     kind_params = [("k", kk) for kk in ref_kinds]
     rows: list[dict[str, Any]] = []
     for ns, value, n in found[:_PAGE_SIZE]:
-        flt = _tag_filter_string(ns, value)
+        flt = tag_filter_string(ns, value)
+        actions: list[dict[str, Any]] = []
+        if ns not in _PROTECTED_NAMESPACES:
+            actions.append(
+                {
+                    "type": "post",
+                    "url": "/tags/delete",
+                    "fields": {"namespace": ns, "value": value},
+                    "label": "delete",
+                    "cls": "text-danger-strong",
+                    "title": f"Delete tag {ns}:{value} everywhere",
+                    "confirm": (
+                        f"Delete {ns}:{value} from every ref? "
+                        "This cannot easily be undone."
+                    ),
+                }
+            )
         rows.append(
             {
                 "id": None,
@@ -698,7 +726,7 @@ def _tag_rows(
                 "open_url": "/drive?" + urlencode([("tag", flt), *kind_params]),
                 "preview": f"{n} ref{'' if n == 1 else 's'}",
                 "thumbnail": None,
-                "actions": [],
+                "actions": actions,
                 "created_at": None,
                 "updated_at": None,
                 "state": [],
@@ -712,6 +740,43 @@ def _tag_rows(
             }
         )
     return rows, has_next
+
+
+#: Chips in the "matching tags" strip above the ref rows when ``tag``
+#: shares the kind selection — a preview of the roster, not a second
+#: listing; the full set stays one click away at ``k=tag``.
+_TAG_STRIP_SIZE = 12
+
+
+def _tag_chips(store: Any, q: str, ref_kinds: list[str]) -> list[dict[str, Any]]:
+    """The mixed-kind "matching tags" strip (gr636493): the top
+    ``_TAG_STRIP_SIZE`` tags — usage order, or the ``q`` substring
+    matches — as chips linking to the drive scoped to refs carrying
+    that tag. Kinds pin exactly like ``_tag_rows`` so a saved
+    ``k=tag`` cookie can't bounce the click back to the tag listing.
+    An "all tags →" tail chip points at the full ``k=tag`` roster
+    when the strip truncates."""
+    if q:
+        found = store.suggest_tags(q, limit=_TAG_STRIP_SIZE + 1)
+    else:
+        found = store.list_all_tags(page=1, page_size=_TAG_STRIP_SIZE + 1)
+    chips = [
+        {
+            "label": f"{ns}:{value}",
+            "n": n,
+            "href": "/drive?"
+            + urlencode(
+                [
+                    ("tag", tag_filter_string(ns, value)),
+                    *[("k", kk) for kk in ref_kinds],
+                ]
+            ),
+        }
+        for ns, value, n in found[:_TAG_STRIP_SIZE]
+    ]
+    if len(found) > _TAG_STRIP_SIZE:
+        chips.append({"label": "all tags →", "n": None, "href": "/drive?k=tag"})
+    return chips
 
 
 def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
@@ -1420,9 +1485,13 @@ async def index(
             )
             total_exact = True
 
+    # Mixed selection (``tag`` plus ref kinds): a compact "matching
+    # tags" chip strip above the ref rows, not rows interleaved into
+    # the list — the strip previews the top of the roster and defers
+    # to ``k=tag`` for the rest (gr636493).
+    matching_tags: list[dict[str, Any]] = []
     if want_tags and not tag_only and page == 1:
-        tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1, ref_kinds)
-        (rows if q else recent).extend(tag_rows)
+        matching_tags = await asyncio.to_thread(_tag_chips, store, q, ref_kinds)
 
     # The manual-retrieval section under the stub queue: the cooled no-OA
     # bucket as a buy-list (DOI, title, year, cites; newest request first),
@@ -1442,6 +1511,14 @@ async def index(
     return_to = request.url.path + (
         f"?{request.url.query}" if request.url.query else ""
     )
+
+    # Tag-row deletes post to ``/tags/delete`` (routes/tags.py): stamp
+    # the ``back`` now that ``return_to`` exists so the bounce lands on
+    # this filtered view, not the plain ``k=tag`` listing.
+    for tag_row in [*rows, *recent]:
+        if tag_row["kind"] == "tag":
+            for action in tag_row["actions"]:
+                action["fields"]["back"] = return_to
 
     # Pager links preserve every filter, only ``page`` changes. ``submitted``
     # rides along only when this request was one: paging a deep-linked scope
@@ -1669,6 +1746,7 @@ async def index(
             "unmatched_doi": unmatched_doi,
             "rows": rows,
             "recent": recent,
+            "matching_tags": matching_tags,
             "result_total": result_total,
             "manual_rows": manual_rows,
             "manual_total": manual_total,

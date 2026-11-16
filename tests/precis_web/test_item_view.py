@@ -333,7 +333,10 @@ def test_display_tags_encodes_label_and_pins_ref_kinds() -> None:
     assert chips == [
         {
             "label": "topic:a&b #1",
-            "href": "/drive?tag=topic%3Aa%26b+%231&k=paper&k=draft",
+            # A lowercase axis spells the ``=ns:value`` exact escape —
+            # plain ``ns:value`` would filter the OPEN/FLAG pair and
+            # match nothing (gr636493).
+            "href": "/drive?tag=%3Dtopic%3Aa%26b+%231&k=paper&k=draft",
         },
         {
             "label": "free tag",
