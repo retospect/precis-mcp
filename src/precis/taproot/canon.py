@@ -1609,6 +1609,7 @@ def judge_candidates(
     judge_fn: Callable[[str, str], Verdict] = dedup_judge,
     *,
     max_workers: int = JUDGE_MAX_WORKERS,
+    on_retry: Callable[[], None] | None = None,
 ) -> list[tuple[MergeCandidate, Verdict]]:
     """Run ``judge_fn(sentence, cand.claim)`` for every candidate
     concurrently and return ``(candidate, verdict)`` pairs in candidate
@@ -1621,11 +1622,14 @@ def judge_candidates(
     task runs in its own copy of the caller's :mod:`contextvars` context so
     the router still sees the caller's session / tick attribution. An
     exception from any judgment propagates, as the serial loop did.
+    ``on_retry`` observes each scheduled retry, including concurrent calls.
     """
 
     def judge_once(claim: str) -> Verdict:
         v = judge_fn(sentence, claim)
         if v["verdict"] == "error":
+            if on_retry is not None:
+                on_retry()
             log.warning(
                 "taproot: dedup judgment errored, retrying once: %s", v["rationale"]
             )
@@ -1764,16 +1768,20 @@ def judge_containment(
     judge_fn: Callable[[str, str], ContainmentVerdict] = containment_judge,
     *,
     max_workers: int = JUDGE_MAX_WORKERS,
+    on_retry: Callable[[], None] | None = None,
 ) -> list[tuple[MergeCandidate, ContainmentVerdict]]:
     """Run ``judge_fn(sentence, cand.claim)`` per candidate concurrently, one
     retry on ``error`` (as :func:`judge_candidates`); candidate order kept.
     A candidate still errored after the retry raises :class:`Upstream` —
     an unjudged neighbour must not read as "different" and mint a duplicate.
+    ``on_retry`` observes each scheduled retry, including concurrent calls.
     """
 
     def once(claim: str) -> ContainmentVerdict:
         v = judge_fn(sentence, claim)
         if v["verdict"] == "error":
+            if on_retry is not None:
+                on_retry()
             v = judge_fn(sentence, claim)
         return v
 

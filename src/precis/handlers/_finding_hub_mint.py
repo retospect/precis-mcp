@@ -83,7 +83,14 @@ cascade — a caller that can't afford the embedder should say so with
 ``block_fn``/``judge_fn``/``merge_confirm_fn`` are injectable (mirrors
 :func:`~precis.taproot.directed.directed_mint`) so a test can stub the
 cascade without a model or embedder — see
-``tests/test_finding_hub_mint.py``.
+``tests/test_finding_hub_mint.py``. Every attempt logs one INFO
+``finding.mint phases`` record, including refusals and failures. Wall seconds
+include failed calls: block includes ANN and passage retrieval; judge is dedup;
+place includes merge confirmation; containment is the bounded second stage;
+mint includes identity convergence and writes. Candidate counts describe the
+merged first-stage set and bounded containment set; ``judge_retries`` counts
+actual scheduled retries across both stages, never repeated claim wording.
+Skipped phases are zero. Containment concurrency awaits production measurements.
 
 The response never carries ``pub_id=`` (docs/backlog/read-for-question-
 loop.md slice 2): the column stays (it's ``mint_hub``'s own race-
@@ -95,9 +102,12 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from threading import Lock
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from precis.embedder import EmbedderUnavailable
@@ -221,9 +231,59 @@ def _multi_article_advisories(store: Store, supporters: list[dict[str, Any]]) ->
     return out
 
 
-def _put_hub(
+class _PhaseTimer:
+    """Elapsed wall seconds, including failures; retries count scheduling events.
+
+    Candidates are the merged ANN/passage hubs offered to stage one and the
+    bounded subset offered to containment. Skipped phases stay zero. Keep the
+    stages serial until a day of production measurements supports changing them.
+    """
+
+    def __init__(self) -> None:
+        self.seconds = dict.fromkeys(
+            ("block", "judge", "place", "containment", "mint"), 0.0
+        )
+        self.candidates = 0
+        self.containment_candidates = 0
+        self.judge_retries = 0
+        self._lock = Lock()
+
+    def retry(self) -> None:
+        with self._lock:
+            self.judge_retries += 1
+
+    @contextmanager
+    def phase(self, name: str) -> Iterator[None]:
+        start = perf_counter()
+        try:
+            yield
+        finally:
+            self.seconds[name] += perf_counter() - start
+
+
+def _put_hub(store: Store, **kwargs: Any) -> Response:
+    timer = _PhaseTimer()
+    try:
+        return _put_hub_cascade(store, timer=timer, **kwargs)
+    finally:
+        log.info(
+            "finding.mint phases block=%.3f judge=%.3f place=%.3f "
+            "containment=%.3f mint=%.3f candidates=%d "
+            "containment_candidates=%d judge_retries=%d",
+            *(
+                timer.seconds[key]
+                for key in ("block", "judge", "place", "containment", "mint")
+            ),
+            timer.candidates,
+            timer.containment_candidates,
+            timer.judge_retries,
+        )
+
+
+def _put_hub_cascade(
     store: Store,
     *,
+    timer: _PhaseTimer,
     sentence: str,
     scope: dict[str, Any],
     supporters: list[dict[str, Any]],
@@ -242,25 +302,27 @@ def _put_hub(
 
     if mode == "attach":
         assert attach_to is not None
-        return _attach_by_choice(
-            store,
-            claim,
-            attach_to,
-            supporters,
-            set_by=set_by,
-            extra_meta=extra_meta,
-            from_memory=from_memory,
-        )
+        with timer.phase("mint"):
+            return _attach_by_choice(
+                store,
+                claim,
+                attach_to,
+                supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+                from_memory=from_memory,
+            )
 
     if mode == "off":
-        result = authoring.seed_claim_hub(
-            store,
-            sentence=sentence,
-            scope=scope,
-            supporters=supporters,
-            set_by=set_by,
-            extra_meta=extra_meta,
-        )
+        with timer.phase("mint"):
+            result = authoring.seed_claim_hub(
+                store,
+                sentence=sentence,
+                scope=scope,
+                supporters=supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+            )
         return Response(body=_mint_response_body(result, sentence) + "\ndedup skipped")
 
     if embedder is None:
@@ -271,29 +333,37 @@ def _put_hub(
         )
 
     try:
-        candidates = block_fn(claim, store, embedder)
+        with timer.phase("block"):
+            candidates = block_fn(claim, store, embedder)
     except (EmbedderUnavailable, Upstream) as exc:
         raise _dedup_unavailable_upstream(exc) from exc
     # An identical (sentence, scope) re-put converges onto its own hub before
     # any same-passage / containment logic runs: an idempotent re-put is never
     # refused, even when the hub has no embedding yet (a same-passage sibling
     # would otherwise be judged against itself).
-    converged = _converge_identical(
-        store,
-        claim,
-        supporters,
-        set_by=set_by,
-        extra_meta=extra_meta,
-        from_memory=from_memory,
-    )
+    with timer.phase("mint"):
+        converged = _converge_identical(
+            store,
+            claim,
+            supporters,
+            set_by=set_by,
+            extra_meta=extra_meta,
+            from_memory=from_memory,
+        )
     if converged is not None:
         return converged
-    passage_hubs = _same_passage_neighbours(store, supporters)
-    by_id = {c.hub_ref_id: c for c in candidates}
-    merged = list(candidates) + [c for c in passage_hubs if c.hub_ref_id not in by_id]
+    with timer.phase("block"):
+        passage_hubs = _same_passage_neighbours(store, supporters)
+        by_id = {c.hub_ref_id: c for c in candidates}
+        merged = list(candidates) + [
+            c for c in passage_hubs if c.hub_ref_id not in by_id
+        ]
+    timer.candidates = len(merged)
     try:
-        judged = judge_candidates(sentence, merged, judge_fn)
-        placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+        with timer.phase("judge"):
+            judged = judge_candidates(sentence, merged, judge_fn, on_retry=timer.retry)
+        with timer.phase("place"):
+            placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
     except Upstream as exc:
         # dedup='force' is the documented escape from a judge outage (the
         # stage-two handler's precedent, gr639349): the candidates are
@@ -323,9 +393,14 @@ def _put_hub(
 
     if placement.action == "new":
         try:
-            hit = _containment_hit(
-                sentence, merged, {c.hub_ref_id for c in passage_hubs}, containment_fn
-            )
+            with timer.phase("containment"):
+                hit = _containment_hit(
+                    sentence,
+                    merged,
+                    {c.hub_ref_id for c in passage_hubs},
+                    containment_fn,
+                    timer=timer,
+                )
         except Upstream as exc:
             # dedup='force' is the documented escape from a judge outage
             # (the Upstream's next=): mint, and record that it went unjudged.
@@ -362,23 +437,31 @@ def _put_hub(
             extra_meta = {**(extra_meta or {}), "dedup_override": stamped}
 
     if placement.action == "attach":
-        return _attach_to_existing(
-            store,
-            claim,
-            placement,
-            judged,
-            supporters,
-            set_by=set_by,
-            extra_meta=extra_meta,
-            from_memory=from_memory,
-        )
+        with timer.phase("mint"):
+            return _attach_to_existing(
+                store,
+                claim,
+                placement,
+                judged,
+                supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+                from_memory=from_memory,
+            )
     if placement.action == "needs_review":
-        return _mint_with_review_todo(
+        with timer.phase("mint"):
+            return _mint_with_review_todo(
+                store,
+                claim,
+                placement,
+                supporters,
+                set_by=set_by,
+                extra_meta=extra_meta,
+            )
+    with timer.phase("mint"):
+        return _mint_new(
             store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
         )
-    return _mint_new(
-        store, claim, placement, supporters, set_by=set_by, extra_meta=extra_meta
-    )
 
 
 # ── near-duplicate refusal (docs/backlog/hub-mint-gate-fixes.md section 3) ──
@@ -504,6 +587,8 @@ def _containment_hit(
     merged: list[MergeCandidate],
     passage_ids: set[int],
     containment_fn: ContainmentFn,
+    *,
+    timer: _PhaseTimer | None = None,
 ) -> tuple[MergeCandidate, ContainmentVerdict] | None:
     """Second, bounded judge when the dedup cascade said ``new``: up to
     :data:`CONTAINMENT_MAX_CANDIDATES` ANN neighbours under
@@ -519,7 +604,11 @@ def _containment_hit(
         key=lambda c: c.distance,
     )[:CONTAINMENT_MAX_CANDIDATES]
     cands = near + [c for c in merged if c.hub_ref_id in passage_ids]
-    for cand, v in judge_containment(sentence, cands, containment_fn):
+    if timer is not None:
+        timer.containment_candidates = len(cands)
+    for cand, v in judge_containment(
+        sentence, cands, containment_fn, on_retry=timer.retry if timer else None
+    ):
         if v["verdict"] != "different":
             return cand, v
     return None

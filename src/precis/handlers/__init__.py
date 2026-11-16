@@ -7,6 +7,7 @@ sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 Staged (URL-backed draft) findings preserve a URL and verbatim quote
 without fetching; paper import promotes only a source-and-quote match to
 the ordinary chase (:mod:`precis.finding_drafts`).
+Hub-mint concurrency awaits production timing measurements.
 Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
