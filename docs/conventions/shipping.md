@@ -41,6 +41,31 @@ carries the `hold:no-autoclose` tag (a plain tag, applied with
 names it plainly, gripe-validate skips it and posts a `shipped in r<N>`
 note instead of `STATUS:done`.
 
+**Declare coupled commits when a change must ship whole or not at all**
+(gr687874, Reto 2026-11-15: "commit A requires B" is a release-cutting
+restriction). Add a trailer to the commit message; ship preserves the
+trailer block verbatim through the squash (gr517803), and `scripts/release`
+reads the trailers on main's first-parent line at cut time:
+
+- `Change-Set: <id> [<n>]` — every commit carrying the same one-token
+  `<id>` is one set of `<n>` members (n defaults to 2; write the count for
+  a bigger set). Every member carries the trailer — that is the explicit
+  membership. A release carries all n members or none: a set with fewer
+  than n members on main is *incomplete* and never ships alone.
+- `Requires: <sha>` — the commit requires commit `<sha>` (7-40 hex,
+  resolvable in the repo). A release carries both or neither; a `<sha>`
+  already on origin/prod satisfies the pairing.
+
+The cut, not the land, is constrained. A pinned cut that would split a
+landed set (Requires is checked in both directions — a cut at B with A
+above it, A requiring B, holds) refuses with a `holding: ` line: a
+classified wait, attempt-free, and the next cut re-targets to origin/main's
+tip where the set ships whole. An incomplete set moves the cut below its
+oldest landed member — shipping none of it — or holds when the cut is the
+tip (a pipelined cut can take only the tip) or the move would leave nothing
+shippable. An unreadable history holds too; the cut never proceeds
+unchecked.
+
 After a landing, `scripts/ship` comments `landed <sha> on main` on each
 gripe the landed commit fixes. On a deploy, `scripts/release` comments
 `deployed r<N> (<sha>); runtime confirmation pending` on each gripe fixed by

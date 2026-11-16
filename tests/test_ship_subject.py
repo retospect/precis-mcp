@@ -576,3 +576,50 @@ def test_ship_does_not_merge_stderr_into_message() -> None:
     for line in src.splitlines():
         if "ship_resolve_msg" in line and "$(" in line:
             assert "2>&1" not in line, line
+
+
+def test_mint_trailers_keeps_requires_and_change_set() -> None:
+    """gr687874: the release-cut pairing trailers survive the squash mint
+    next to Gate: and Co-Authored-By, on a message with a trailer block."""
+    msg = "fix(a): x\n\nWhy: y.\n\nRequires: td123\nChange-Set: x\n"
+    r = _fn(
+        "ship_mint_trailers",
+        msg,
+        "Gate: lint only",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: lint only\nRequires: td123\nChange-Set: x\n"
+        "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+
+
+def test_mint_trailers_keeps_requires_on_explicit_message() -> None:
+    """The explicit -m path: a message ending in a Requires: trailer."""
+    r = _fn(
+        "ship_mint_trailers",
+        "fix(a): x\n\nRequires: td123",
+        "Gate: g",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: g\nRequires: td123\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+
+
+def test_multi_commit_branch_carries_requires_and_change_set(tmp_path: Path) -> None:
+    repo = _repo(
+        tmp_path,
+        [
+            "fix(a): one\n\nRequires: td123\n",
+            "fix(a): two\n\nChange-Set: x\n",
+        ],
+    )
+    r = _resolve(repo)
+    assert r.returncode == 0, r.stderr
+    assert "Requires: td123" in r.stdout.splitlines()
+    assert "Change-Set: x" in r.stdout.splitlines()
+    m = _fn("ship_mint_trailers", r.stdout, "", "")
+    assert sorted(m.stdout.splitlines()) == ["Change-Set: x", "Requires: td123"]
