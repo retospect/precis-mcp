@@ -661,9 +661,8 @@ def _placement_hints(
     if len(body) > _VERBATIM_CAP:
         lines.append(
             (
-                f"edit(kind='memory', id='{me}', mode='replace', text='<summary>')",
-                f"fisheye shows {_VERBATIM_CAP} of {len(body)} chars — split into "
-                "a summary node + part-of detail nodes",
+                "get(kind='skill', id='how-to-split-memory')",
+                f"Memory too large ({len(body)} > {_VERBATIM_CAP} goal).",
             )
         )
     if not any(v.startswith("section:") for v in values):

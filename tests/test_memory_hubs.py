@@ -167,8 +167,11 @@ def test_edit_hints_and_quiet_cases(hub: Hub) -> None:
     calls = [c for c, _d in link_hints(handler, node)]
     assert calls == [f"tag(kind='memory', id='{_h(node)}', add=['section:threads'])"]
     out = handler.edit(id=node, mode="replace", text="z" * (_VERBATIM_CAP + 10)).body
-    assert f"fisheye shows {_VERBATIM_CAP} of {_VERBATIM_CAP + 10} chars" in out
-    assert "summary node + part-of detail nodes" in out
+    assert f"Memory too large ({_VERBATIM_CAP + 10} > {_VERBATIM_CAP} goal)." in out
+    assert "get(kind='skill', id='how-to-split-memory')" in out
+    assert "text='<summary>'" not in out
+    out = handler.edit(id=node, mode="replace", text="z" * _VERBATIM_CAP).body
+    assert "Memory too large" not in out
 
 
 @pytest.mark.parametrize(

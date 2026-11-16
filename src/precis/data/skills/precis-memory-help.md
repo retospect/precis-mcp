@@ -752,8 +752,8 @@ A summary node that grows past 8 children becomes a sub-hub (`section:index`), s
 `get(kind="memory", id="me3", extent="fisheye+1hop")` on a hub lists every
 member on one line (handle, title, hook) — no cap. Other relation groups
 show 8 neighbours. The fisheye shows only the first 4000 characters of a
-body: past that, write a summary node and put the detail in `part-of`
-nodes.
+body: past that, follow [[how-to-split-memory]] to make it terser or
+preserve the detail in linked nodes before trimming the original.
 
 Search inside one hub or summary node with
 `search(kind="memory", q="pump", args={"under": "me3"})`; add
