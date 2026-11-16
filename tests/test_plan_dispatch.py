@@ -9336,6 +9336,60 @@ def test_dead_land_releases_the_file_overlap_hold(store: Store, dead: str) -> No
     assert pd._started_slices(store)[build].state == "landing"
 
 
+def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
+    store: Store,
+) -> None:
+    """review td701778: the dead-land release is scoped to the current
+    build attempt. A failed land leaves the failed job as the newest
+    ``land_slice``; the rebuild's fresh ``pending_land`` stamps a new
+    ``head``, and that historical failure must not release the
+    file-overlap hold during the rebuilt branch's pre-land review —
+    only a dead land OF THE CURRENT head releases it."""
+    head_a = "a1" * 20
+    head_b = "b2" * 20
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "head": head_a,
+            }
+        },
+    )
+    # Attempt 1: the review LANDed and the minted land died — with no
+    # rebuild behind it, the dead land of the standing stamp releases
+    # the hold (gr701628).
+    _slice_job(
+        store, build, "land_slice", "failed", params={"todo_id": build, "head": head_a}
+    )
+    assert build not in pd._started_slices(store)
+    # The rebuild exits clean; the defer re-stamps pending_land with the
+    # new pushed tip. The historical dead land is still the newest
+    # land_slice job, but it judged the previous attempt's head.
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "head": head_b,
+            }
+        },
+    )
+    started = pd._started_slices(store)
+    assert started[build].state == "in pre-land review"
+    _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 1
+    # The review re-LANDs; when THAT land dies, the hold releases.
+    _slice_job(
+        store, build, "land_slice", "failed", params={"todo_id": build, "head": head_b}
+    )
+    assert build not in pd._started_slices(store)
+
+
 def test_started_slices_keeps_a_running_land_and_a_pre_land_review(
     store: Store,
 ) -> None:

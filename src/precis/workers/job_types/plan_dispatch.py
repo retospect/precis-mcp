@@ -245,7 +245,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.branch_files`` plus its brief's). A build whose ``land_slice``
    died (newest job failed/cancelled/timed-out, none live) or that
    carries or sits under a ``rescue:``/``child-failed:`` tag holds no
-   lock (gr701628); ``live_nodes`` counts a held candidate as not live.
+   lock (gr701628); the dead-land drop reads only a failure of the
+   stamp's own ``head`` — a rebuild's fresh ``pending_land`` outlives the
+   historical dead job (td701778). ``live_nodes`` counts a held
+   candidate as not live.
    A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
@@ -6222,8 +6225,17 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     ``timed-out``) — nothing re-mints it and only ``_record_land`` clears
     the stamp, so the dead land held the lock forever — or when the build
     or an ancestor carries a ``rescue:`` or ``child-failed:`` tag (the
-    rescue pass owns it now). A build still in its pre-land review (no
-    land job yet) and one with a live job count as before."""
+    rescue pass owns it now). The dead-land drop is scoped to the current
+    build attempt (review td701778): the dying job carries the ``head``
+    it was minted from (the stamp's pushed tip at mint time), and only a
+    dead land OF THE CURRENT STAMP's head drops the hold — after a
+    failed land the rebuild re-stamps a fresh ``pending_land`` with the
+    new head while the historical dead job is still the newest one, and
+    that stale failure must not release the hold during the rebuilt
+    branch's pre-land review. Heads absent on both sides (a defer that
+    could not resolve its tip) count as one attempt, the pre-scope read.
+    A build still in its pre-land review (no land job yet) and one with
+    a live job count as before."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -6244,7 +6256,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                        EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
-                            AND t.value = ANY(%s)) AS dead
+                            AND t.value = ANY(%s)) AS dead,
+                       j.meta->'params'->>'head' AS job_head
                   FROM refs j
                  WHERE j.kind = 'job' AND j.retired_at IS NULL
                    AND j.meta->>'job_type' = 'land_slice'
@@ -6256,7 +6269,9 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             )
             SELECT r.ref_id, COALESCE(live.landing, FALSE),
                    (jsonb_typeof(r.meta->%s) = 'object'
-                    AND NOT COALESCE(land_dead.dead, FALSE)),
+                    AND NOT (COALESCE(land_dead.dead, FALSE)
+                             AND land_dead.job_head IS NOT DISTINCT FROM
+                                 (r.meta->%s->>'head'))),
                    r.meta->%s
               FROM refs r
               LEFT JOIN live ON live.parent_id = r.ref_id
@@ -6265,7 +6280,9 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                AND NOT COALESCE(r.meta ? 'generate', FALSE)
                AND (live.parent_id IS NOT NULL
                     OR (jsonb_typeof(r.meta->%s) = 'object'
-                        AND NOT COALESCE(land_dead.dead, FALSE)))
+                        AND NOT (COALESCE(land_dead.dead, FALSE)
+                                 AND land_dead.job_head IS NOT DISTINCT FROM
+                                     (r.meta->%s->>'head'))))
                AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
@@ -6277,7 +6294,9 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                 sorted(_JOB_TERMINAL - {"succeeded"}),
                 _templates.PENDING_LAND_KEY,
                 _templates.PENDING_LAND_KEY,
+                _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
+                _templates.PENDING_LAND_KEY,
                 _templates.PENDING_LAND_KEY,
                 sorted(_RULING_STATUSES),
             ),
