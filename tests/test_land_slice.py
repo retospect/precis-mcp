@@ -7326,3 +7326,59 @@ def test_git_in_tree_unparseable_ps_is_unknown(
         ),
     )
     assert land_slice._git_in_tree(tmp_path) is None
+
+
+def _old_lock(tmp_path: Path) -> Path:
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 600)
+    os.utime(lock, (old, old))
+    return lock
+
+
+def _fake_lsof(tmp_path: Path, body: str) -> Path:
+    bin_ = tmp_path / "fakebin" / "lsof"
+    bin_.parent.mkdir()
+    bin_.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    bin_.chmod(0o755)
+    return bin_
+
+
+def test_lsof_missing_from_path_uses_the_system_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320: a worker PATH without /usr/sbin still finds lsof, so an
+    old 0-byte lock nobody holds is judged stale."""
+    lock = _old_lock(tmp_path)
+    fake = _fake_lsof(tmp_path, "exit 1")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(land_slice, "_LSOF_FALLBACKS", (str(fake),))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    state, _j, why, _o = land_slice._index_lock_judge(lock, tmp_path)
+    assert (state, why) == ("stale", "")
+
+
+def test_no_lsof_anywhere_keeps_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = _old_lock(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(land_slice, "_LSOF_FALLBACKS", (str(tmp_path / "none"),))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    state, _j, why, _o = land_slice._index_lock_judge(lock, tmp_path)
+    assert (state, why) == ("live", "lsof-missing")
+
+
+def test_non_git_holder_does_not_keep_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Colima VM's file share holds the handle: recorded, not obeyed."""
+    lock = _old_lock(tmp_path)
+    fake = _fake_lsof(tmp_path, "printf 'p4242\\ncVirtualMachine\\n'")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(land_slice, "_LSOF_FALLBACKS", (str(fake),))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    state, _j, why, other = land_slice._index_lock_judge(lock, tmp_path)
+    assert (state, why) == ("stale", "")
+    assert other == [("4242", "VirtualMachine")]
+    assert land_slice._index_lock_state(lock, tmp_path)[0] == "stale"

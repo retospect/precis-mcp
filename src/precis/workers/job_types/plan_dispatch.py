@@ -4653,7 +4653,84 @@ def _free_done(plan: _Plan, n: _Node) -> str | None:
     :data:`FREE_RUN_CAP` — what :func:`_capped` turns into the
     coordinator ask — or ``None`` while under the cap (gr662077)."""
     reason, run = _free_run(plan, n)
-    return reason if reason is not None and run >= FREE_RUN_CAP else None
+    if reason == INDEX_LOCK_WAIT_KEY:
+        # gr684320 D4: a plain wait clears itself (backoff tops out at
+        # the reaper's hard cap); only a failed reap or a re-forming
+        # lock asks.
+        reason = None
+    elif reason == INDEX_LOCK_STUCK_KEY:
+        return reason if run >= INDEX_LOCK_STUCK_CAP else None
+    if reason is not None and run >= FREE_RUN_CAP:
+        return reason
+    if len(_index_lock_reaps(plan, n)) >= INDEX_LOCK_REAP_CAP:
+        return INDEX_LOCK_REFORMED_KEY
+    return None
+
+
+#: gr684320 — ``attempt_free`` reasons of a held slice-tree ``index.lock``.
+INDEX_LOCK_WAIT_KEY = "index-lock"
+INDEX_LOCK_STUCK_KEY = "index-lock-stuck"
+#: Synthetic signature: the reaper fired this many times on one node.
+INDEX_LOCK_REFORMED_KEY = "index-lock-reformed"
+INDEX_LOCK_STUCK_CAP = 2
+INDEX_LOCK_REAP_CAP = 3
+#: Prefix of an ask context :func:`_step_index_lock_asks` closes itself.
+INDEX_LOCK_ASK_CONTEXT = "attempt_free 'index-lock'"
+
+
+def _index_lock_reaps(plan: _Plan, n: _Node) -> list[dict[str, Any]]:
+    """The ``meta.index_lock_reaped`` records of ``n``'s jobs since its
+    re-arm floor, oldest first."""
+    floor = _rearm_floor(n)
+    out: list[dict[str, Any]] = []
+    for j in plan.jobs(n):
+        if floor is not None and j.id <= floor:
+            continue
+        rec = j.meta.get("index_lock_reaped")
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _index_lock_ask_detail(plan: _Plan, n: _Node, sig: str) -> str:
+    """The ask body's evidence for an index-lock signature."""
+    if sig == INDEX_LOCK_REFORMED_KEY:
+        lines = [
+            f"- age {r.get('age_s')}s, kept as '{r.get('why')}', holders: "
+            f"{'; '.join(str(h) for h in (r.get('holders') or [])) or 'none'}"
+            for r in _index_lock_reaps(plan, n)
+        ]
+        return "Each reap:\n" + "\n".join(lines)
+    for j in reversed(plan.jobs(n)):
+        meta = j.meta.get("index_lock")
+        if isinstance(meta, dict):
+            return f"The job's index_lock meta: {meta}"
+    return ""
+
+
+def _step_index_lock_asks(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """gr684320 (c): an open coordinator ask whose context starts
+    ``attempt_free 'index-lock'`` is closed ``acknowledged`` by the tick —
+    the reaper clears the lock itself, no human needs to. :func:`_step_rearm`
+    then gives the node its fresh budget."""
+    for m in plan.nodes.values():
+        if _closed(m) or not _is_ask_node(m):
+            continue
+        ask = m.meta.get("ask")
+        ctx = str(ask.get("context") or "") if isinstance(ask, dict) else ""
+        if not ctx.startswith(INDEX_LOCK_ASK_CONTEXT):
+            continue
+        if w.dry_run:
+            res.notes.append(f"td{m.id}: would close the index-lock ask")
+            continue
+        w.comment(
+            m,
+            "answer: acknowledged — the index.lock reaper (gr684320) clears "
+            "a held slice-tree lock itself; the node re-arms with a fresh "
+            "retry budget.",
+        )
+        w.set_status(m, "done")
+        res.notes.append(f"td{m.id}: index-lock ask closed acknowledged")
 
 
 def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
@@ -8298,7 +8375,9 @@ def _step_hygiene(
                 plan,
                 n,
                 title=(
-                    f"td{n.id}: '{free_sig}' failure x{FREE_RUN_CAP} "
+                    f"td{n.id}: index.lock re-formed x{INDEX_LOCK_REAP_CAP}"
+                    if free_sig == INDEX_LOCK_REFORMED_KEY
+                    else f"td{n.id}: '{free_sig}' failure x{FREE_RUN_CAP} "
                     "in a row — a coordinator call"
                 ),
                 body=(
@@ -8312,9 +8391,13 @@ def _step_hygiene(
                     "the slice worktree, a lane that never frees, a "
                     "dead rerun path — or drop the node. Closing this "
                     f"ask `acknowledged` re-arms td{n.id} with a fresh "
-                    "retry budget."
+                    "retry budget. " + _index_lock_ask_detail(plan, n, free_sig)
                 ),
-                context=(f"attempt_free '{free_sig}' x{FREE_RUN_CAP} consecutive"),
+                context=(
+                    f"attempt_free '{free_sig}' x{FREE_RUN_CAP} consecutive"
+                    if free_sig != INDEX_LOCK_REFORMED_KEY
+                    else f"index.lock re-formed x{INDEX_LOCK_REAP_CAP}"
+                ),
                 now=now,
                 block_node=True,
             )
@@ -8422,6 +8505,7 @@ def run_pass(
         _step_loops(store, plan, w, res, now)
         _step_reviews(store, plan, w, res, now, lane_table, rules)
         _step_reopen(plan, w, res)
+        _step_index_lock_asks(plan, w, res)
         _step_rearm(plan, w, res)
         _step_verdicts(store, plan, w, res)
         _step_moot(store, plan, w, res)

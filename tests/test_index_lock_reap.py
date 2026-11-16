@@ -356,16 +356,18 @@ def test_non_empty_old_lock_is_kept(lock_repo: dict[str, Path], tmp_path: Path) 
     assert "would reap" not in result.stdout
 
 
-def test_lock_held_open_is_kept(lock_repo: dict[str, Path], tmp_path: Path) -> None:
-    """Old + empty but a live process still holds the fd — the writer may
-    be mid-fill, so the lsof check must outrank size+age."""
+def test_lock_held_by_non_git_is_still_reaped(
+    lock_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr684320 D3: a non-git holder (the Colima VM's file share) never
+    keeps a lock; only a git does (see the live-git test)."""
     lock = _make_stale(_admin_lock(lock_repo, "A"))
     env = _reap_env(tmp_path)
     fd = os.open(lock, os.O_RDONLY)
     try:
         result = _run_reaper(lock_repo["primary"], env)
-        assert lock.exists()
-        assert "would reap" not in result.stdout
+        assert lock.exists()  # report-only
+        assert _would_reap(lock).search(result.stdout), result.stdout
     finally:
         os.close(fd)
 
@@ -460,6 +462,7 @@ def test_missing_lsof_reports_and_keeps(
         assert real, f"{tool} must exist for this test"
         (bindir / tool).symlink_to(real)
     env = _test_env(path=str(bindir))
+    env["PRECIS_REAP_LSOF_FALLBACKS"] = str(tmp_path / "nowhere")
     result = _run_reaper(lock_repo["primary"], env)
     assert lock.exists()
     assert "lsof" in result.stdout, result.stdout

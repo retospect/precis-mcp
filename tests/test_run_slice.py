@@ -13574,3 +13574,108 @@ def test_reviewer_end_to_end_on_a_real_clone(
     assert not tree.exists()
     assert str(tree) not in _rg(root, "worktree", "list")
     assert seams["lands"] == []
+
+
+def test_submit_force_reaps_a_lock_a_non_git_holder_pins(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320: an over-the-cap lock still judged live is removed at
+    reuse; with no git holder nothing is signalled."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=run_slice.INDEX_LOCK_HARD_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: None)
+    killed: list[Any] = []
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree: [])
+    monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert not lock.exists() and killed == []
+    reaped = ctx.meta_set["index_lock_reaped"]
+    assert reaped["forced"] is True and reaped["holders"] == []
+
+
+def test_submit_force_reap_kills_a_git_holder(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=run_slice.INDEX_LOCK_HARD_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    procs = [(99999, "01:00:00", "git add -A")]
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree: procs)
+    killed: list[Any] = []
+    monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and not lock.exists()
+    assert killed == [procs]
+    assert "git add -A" in ctx.meta_set["index_lock_reaped"]["holders"][0]
+
+
+def test_submit_waits_on_a_live_git_under_the_cap(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and lock.exists()
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert ctx.meta_set["index_lock"]["why"] == "git-in-tree"
+
+
+def test_commit_for_session_reaps_a_stale_lock_and_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 slice 3: ``git add`` meeting a 0-byte stale lock reaps it
+    and the session's edits still get committed."""
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    for k, v in (("user.email", "a@b.c"), ("user.name", "t")):
+        subprocess.run(["git", "-C", str(tree), "config", k, v], check=True)
+    (tree / "f.txt").write_text("x\n", encoding="utf-8")
+    (tree / "scratch").mkdir()
+    (tree / run_slice.COMMIT_MSG_REL).write_text("fix(x): y (td1)\n", encoding="utf-8")
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - 4000
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
+
+    note = run_slice._commit_for_session(tree, 1)
+
+    assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+    assert not lock.exists()
+
+
+def test_commit_for_session_keeps_edits_behind_a_live_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    (tree / "f.txt").write_text("x\n", encoding="utf-8")
+    (tree / "scratch").mkdir()
+    (tree / run_slice.COMMIT_MSG_REL).write_text("fix(x): y (td1)\n", encoding="utf-8")
+    (tree / ".git" / "index.lock").write_bytes(b"")
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
+
+    note = run_slice._commit_for_session(tree, 1)
+
+    assert note is not None and note.startswith(run_slice.COMMIT_SKIPPED_LOCK)
+    assert (tree / run_slice.COMMIT_SKIPPED_MARKER).exists()

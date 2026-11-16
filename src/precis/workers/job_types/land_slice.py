@@ -2833,7 +2833,7 @@ def _classify_land_lock(
             "why": f"the land lock is held by a live pid {pid} ({who})",
         }
     holders = _lock_holders(gitdir / LAND_LOCK_FILE) or []
-    holding = ", ".join(holders) if holders else "no live holder listed"
+    holding = ", ".join(p for p, _c in holders) if holders else "no live holder listed"
     state = (
         f"stamped pid {pid} is dead"
         if pid is not None
@@ -2992,6 +2992,55 @@ def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
+def _index_lock_judge(
+    lock: Path, checkout: Path
+) -> tuple[str, os.stat_result | None, str, list[tuple[str, str]]]:
+    """``(state, judged, why, ignored)`` — :func:`_index_lock_state` plus
+    why a lock was kept: ``young | git-in-tree | held-by-git |
+    lsof-missing | lsof-error | ps-error | git-cwd-unreadable`` (``""``
+    when stale or absent). ``ignored`` lists the non-git ``(pid, command)``
+    holders seen: recorded, never obeyed (D3 — the Colima VM's file share
+    holds the handle of a lock no git owns)."""
+    try:
+        st = lock.stat()
+    except OSError:
+        return "absent", None, "", []
+    if time.time() - st.st_mtime < index_lock_stale_s():
+        return "live", st, "young", []
+    tree_git = _git_in_tree(checkout)
+    if tree_git is not False:
+        return "live", st, "git-in-tree" if tree_git else _tree_doubt(), []
+    holders = _lock_holders(lock)
+    if holders is None:
+        return "live", st, "lsof-missing" if _lsof_bin() is None else "lsof-error", []
+    git = [h for h in holders if _is_git_comm(h[1])]
+    other = [h for h in holders if not _is_git_comm(h[1])]
+    if git:
+        return "live", st, "held-by-git", other
+    return "stale", st, "", other
+
+
+def _tree_doubt() -> str:
+    """Why :func:`_git_in_tree` answered ``None``: the ps scan failed, or
+    a live git's cwd could not be read."""
+    try:
+        cp = subprocess.run(
+            ["ps", "-U", str(os.getuid()), "-o", "pid=,comm="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "ps-error"
+    return (
+        "ps-error"
+        if cp.returncode != 0 or not cp.stdout.strip()
+        else ("git-cwd-unreadable")
+    )
+
+
 def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result | None]:
     """``(state, judged)``: ``state`` is ``"absent" | "stale" | "live"``
     and ``judged`` the stat the judgement ran on (``None`` when absent).
@@ -2999,11 +3048,12 @@ def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result |
     that was judged can ever be removed — never a replacement that
     raced in after it. ``"stale"`` only on positive evidence — the same
     keep-on-doubt rule scripts/reap-index-locks runs: mtime older than
-    :func:`index_lock_stale_s`, no process holds the file open
+    :func:`index_lock_stale_s`, no *git* process holds the file open
     (:func:`_held_open` answered ``False``), and no live git has its cwd
     inside ``checkout`` (:func:`_git_in_tree` answered ``False``). A
     young lock, one lsof or ps cannot judge, or one with a live git in
-    the tree is ``"live"`` — waited on, never removed."""
+    the tree is ``"live"`` — waited on, never removed. The reason a lock
+    is kept is :func:`_index_lock_judge`'s third field."""
     try:
         st = lock.stat()
     except OSError:
@@ -3017,15 +3067,37 @@ def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result |
     return "stale", st
 
 
-def _lock_holders(lock: Path) -> list[str] | None:
-    """The pids holding ``lock`` open (lsof), or ``None`` when lsof
-    cannot answer — missing, dead, timed out, or stderr. lsof exits 1
-    on an ordinary "nothing holds it": that is ``[]``, not a failure."""
-    if shutil.which("lsof") is None:
+def _lsof_bin() -> str | None:
+    """lsof's path: ``PATH`` first, else the macOS/Linux system dirs — a
+    worker's PATH often lacks ``/usr/sbin`` (gr684320)."""
+    found = shutil.which("lsof")
+    if found:
+        return found
+    for cand in _LSOF_FALLBACKS:
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+_LSOF_FALLBACKS = ("/usr/sbin/lsof", "/usr/bin/lsof")
+
+
+def _is_git_comm(comm: str) -> bool:
+    base = os.path.basename(comm.strip())
+    return base == "git" or base.startswith("git-")
+
+
+def _lock_holders(lock: Path) -> list[tuple[str, str]] | None:
+    """The ``(pid, command)`` pairs holding ``lock`` open (lsof), or
+    ``None`` when lsof cannot answer — missing, dead, timed out, or
+    stderr. lsof exits 1 on an ordinary "nothing holds it": that is
+    ``[]``, not a failure."""
+    lsof = _lsof_bin()
+    if lsof is None:
         return None
     try:
         cp = subprocess.run(
-            ["lsof", "-t", "--", str(lock)],
+            [lsof, "-F", "pc", "--", str(lock)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3036,15 +3108,25 @@ def _lock_holders(lock: Path) -> list[str] | None:
         return None
     if cp.stderr.strip():
         return None
-    return [p for p in cp.stdout.split() if p]
+    out: list[tuple[str, str]] = []
+    pid = ""
+    for ln in cp.stdout.splitlines():
+        if ln.startswith("p"):
+            pid = ln[1:]
+            out.append((pid, ""))
+        elif ln.startswith("c") and out:
+            out[-1] = (out[-1][0], ln[1:])
+    return out
 
 
 def _held_open(lock: Path) -> bool | None:
-    """``True``/``False``/``None`` for "a live process has ``lock``
-    open" — :func:`_lock_holders` with the pid list dropped. ``None``
-    keeps the lock on doubt."""
+    """``True``/``False``/``None`` for "a live *git* has ``lock`` open" —
+    :func:`_lock_holders` filtered to git processes (D3: a non-git holder
+    never keeps a lock). ``None`` keeps the lock on doubt."""
     holders = _lock_holders(lock)
-    return None if holders is None else bool(holders)
+    if holders is None:
+        return None
+    return any(_is_git_comm(c) for _p, c in holders)
 
 
 def _proc_cwd(pid: str) -> str | None:
@@ -3053,11 +3135,12 @@ def _proc_cwd(pid: str) -> str | None:
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         pass
-    if shutil.which("lsof") is None:
+    lsof = _lsof_bin()
+    if lsof is None:
         return None
     try:
         cp = subprocess.run(
-            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            [lsof, "-a", "-p", pid, "-d", "cwd", "-Fn"],
             capture_output=True,
             text=True,
             encoding="utf-8",

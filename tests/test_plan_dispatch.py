@@ -1352,12 +1352,14 @@ def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
-def _index_lock_job(store: Store, task: int) -> int:
+def _index_lock_job(
+    store: Store, task: int, reason: str = "index-lock", **extra: Any
+) -> int:
     return _failed_job(
         store,
         task,
         "run_slice: index.lock is kept — a live git holds it",
-        meta={"attempt_free": "index-lock"},
+        meta={"attempt_free": reason, **extra},
     )
 
 
@@ -1424,12 +1426,12 @@ def test_identical_free_failures_cap_to_a_coordinator_ask(
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     for _ in range(pd.FREE_RUN_CAP):
-        _index_lock_job(store, task)
+        _index_lock_job(store, task, "lane-wait")
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (0, 1)
     (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
     ask_ref = store.get_ref(kind="todo", id=ask)
-    assert ask_ref is not None and "index-lock" in str(ask_ref.title)
+    assert ask_ref is not None and "lane-wait" in str(ask_ref.title)
     assert "ask-coordinator" in _open_tags(store, ask)
     assert _blocked_by_ids(store, task) == [ask]
     # Parked: nothing mints while the ask sits open.
@@ -1439,6 +1441,68 @@ def test_identical_free_failures_cap_to_a_coordinator_ask(
     _answer_ask(store, ask, "acknowledged")
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_plain_index_lock_waits_mint_no_ask(store: Store) -> None:
+    """gr684320 D4: a plain index-lock wait clears itself — never an ask."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(8):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+
+
+def test_stuck_index_lock_asks_at_two(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
+        _index_lock_job(
+            store, task, "index-lock-stuck", index_lock={"age_s": 4000, "why": "x"}
+        )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+
+
+def test_reformed_index_lock_parks_the_node(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.INDEX_LOCK_REAP_CAP):
+        _index_lock_job(
+            store,
+            task,
+            "other",
+            index_lock_reaped={
+                "age_s": 2000,
+                "why": "held-by-git",
+                "holders": ["1 00:30 git add"],
+            },
+        )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and "re-formed x3" in str(ask_ref.title)
+
+
+def test_old_index_lock_ask_closes_itself(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
+        _index_lock_job(store, task, "index-lock-stuck")
+    pd.run_pass(store)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    store.stamp_ref_meta(
+        ask,
+        {
+            "ask": {
+                **_meta(store, ask)["ask"],
+                "context": "attempt_free 'index-lock' x6",
+            }
+        },
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
 
 
 @pytest.mark.parametrize("no_lanes", [False, True])
