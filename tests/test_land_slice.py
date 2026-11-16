@@ -5371,12 +5371,37 @@ def test_kill_pushes_the_slice_branch_to_origin(
         return "ok"
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    # The fake ship pgid (5151) is a real id on the runner: never signal it.
+    monkeypatch.setattr(land_slice._rs, "_signal_group", lambda pgid, sig: None)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     ctx = _Ctx(store, _params(seams))
     land_slice.kill(ctx, handle)
     assert pushed == [(str(seams["tree"]), "slice/42")]
+
+
+def test_kill_skips_a_pgid_owned_by_another_user(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reused pgid owned by another user (EPERM) is skipped, not raised:
+    the branch push still runs (r331's red gate, a real 5151 on the runner)."""
+    pushed: list[str] = []
+
+    def eperm(pgid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    def fake_push(tree: Path, branch: str) -> str:
+        pushed.append(branch)
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    monkeypatch.setattr(land_slice._rs, "_signal_group", eperm)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    land_slice.kill(_Ctx(store, _params(seams)), handle)
+    assert pushed == ["slice/42"]
 
 
 # ── outside-diff reds verified before charging (gr573347 b) ────────

@@ -278,33 +278,30 @@ fix loop is in [[precis-gripe-loop-help]].
 ## How does a gripe reach a build lane by itself?
 ## What does the gripe_dispatch pass mint, and which gripes does it skip?
 
-The `gripe_dispatch` worker pass (every 10 minutes, dark until
-`service_config` lights it for a host) mints one `gripe-fix-direct`
-chain per free code-lane slot (summed cap of the enabled `code` lanes,
-minus chains whose build is live: a parked build -- ask-user,
-waiting-for, child-failed, paused -- holds no slot, and a chain parked
-with nothing moving for `factory.gripe_dispatch.stall_hours` (6) and
-no open ask is closed won't-do; the second such stall tags the gripe
-`hold:no-dispatch` for a re-brief). The build carries the
-gripe text verbatim and picks its lane at dispatch (cheapest fit, free
-before paid); the land writes `resolved: <sha>` on the gripe.
-It picks the hottest `prio` then the oldest among gripes that are `open`
-or `triaged`, tagged `fix:` code/skill/docs/web/mcp (a `code` build),
-15+ minutes past the latest `STATUS:triaged` or fix tag, with no live
-todo `related-to` them. Setting `factory.gripe_trust`: `all` (default)
-takes any filer; `filer` only Claude Code, human or ci_watch filers.
-A `release-waiver:r<N>` gripe is a broken build: minted at once, first.
-A `hold:no-autoclose` gripe never enters a lane. Keep a gripe out with any of `fix:reto`,
-`reto:ask`, `disagreement`, `flood`, or
+The `gripe_dispatch` pass (every 10 min; dark until `service_config`
+lights its host) mints one `gripe-fix-direct` chain per free
+code-lane slot: the enabled `code` lanes' summed cap minus live builds.
+A parked build (ask-user, waiting-for, child-failed, paused) holds no
+slot; a chain idle `factory.gripe_dispatch.stall_hours` (6) with no ask
+closes won't-do, and a second stall adds `hold:no-dispatch`. The build
+carries the gripe text verbatim and picks its lane at dispatch (cheapest
+fit, free first); the land writes `resolved: <sha>` on the gripe.
+It picks the hottest `prio`, then the oldest, of `open`/`triaged`
+gripes tagged `fix:` code/skill/docs/web/mcp, 15+ min past the latest
+triage or fix tag, with no live `related-to` todo (a hand-minted chain
+counts). `factory.gripe_trust`: `all` (default)
+takes any filer, `filer` only Claude Code, human or ci_watch. A
+`release-waiver:r<N>` gripe (a broken build) mints at once, first; a
+`hold:no-autoclose` one never enters a lane. Keep a gripe out with
+`fix:reto`, `reto:ask`, `disagreement`, `flood`, or
 
 ```python
 tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 ```
 
-A hand-minted chain also counts (the `related-to` link is the marker).
-Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
-A `project:` tag must name a landable project (`precis`, the default;
-`precis-mcp`, `dark-factory`); others get a `dispatch: skipped unsupported project:` comment, no slot.
+Each mint comments `dispatch: minted gripe-fix-direct td<root>`.
+A `project:` tag must name a landable project (`precis`, default;
+`precis-mcp`, `dark-factory`), else `dispatch: skipped unsupported project:`, no slot.
 
 ## What does a rescue:<class> tag mean?
 ## How do I read the rescue queue?
