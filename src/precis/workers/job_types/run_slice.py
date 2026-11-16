@@ -5499,7 +5499,9 @@ def _commit_for_session(
 
 def _acceptance_paths(body: str, latest: str | None) -> list[str]:
     """The slice's worker-run acceptance tests, harvested from the node
-    body and its latest comment (gr661597): a release-fix cluster brief
+    body and its latest comment, only on explicit Acceptance tests: or
+    File set: lines. Prose can quote symptom paths, not test requests
+    (gr689446). A release-fix cluster brief
     names the sibling clusters other fix nodes own after
     ``ci_red_digest.OTHER_CLUSTERS_MARKER`` — text from the marker on is
     another node's scope, not this slice's."""
@@ -5508,7 +5510,14 @@ def _acceptance_paths(body: str, latest: str | None) -> list[str]:
     text = "\n".join(
         part.split(_crd.OTHER_CLUSTERS_MARKER, 1)[0] for part in (body, latest or "")
     )
-    return sorted(set(_MOOT_TEST_RE.findall(text)))
+    declarations = re.findall(
+        r"^[ \t]*(?:Acceptance tests|File set):[ \t]*(.*)$",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    return sorted(
+        {path for line in declarations for path in _MOOT_TEST_RE.findall(line)}
+    )
 
 
 def _acceptance_artifacts_rejection(value: Any) -> str | None:
@@ -5592,7 +5601,7 @@ def _devin_acceptance_tests(
         Path(test_handle["exit_file"]).unlink(missing_ok=True)
         try:
             test_handle["pid"] = _launch(
-                ["scripts/test", *paths],
+                ["scripts/test", *paths, "-m", "not nightly"],
                 cwd=tree,
                 stdin=None,
                 log=Path(test_handle["log"]),

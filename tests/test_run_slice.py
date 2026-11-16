@@ -8160,7 +8160,7 @@ def _devin_test_task(store: _Store) -> Path:
     tests = tree / "tests"
     tests.mkdir(parents=True, exist_ok=True)
     (tests / "test_widget.py").write_text("# supplied regression\n", encoding="utf-8")
-    store.add_todo(42, "Build", body="Pass the supplied tests/test_widget.py.")
+    store.add_todo(42, "Build", body="Acceptance tests: tests/test_widget.py")
     return tree
 
 
@@ -8175,8 +8175,8 @@ def test_devin_submit_snapshots_only_supplied_tests(
     store.add_todo(
         42,
         "Build",
-        body="Pass tests/test_widget.py.",
-        comments=("handoff: use tests/test_latest.py and tests/test_widget.py.",),
+        body="File set: src/widget.py, tests/test_widget.py",
+        comments=("Acceptance tests: tests/test_latest.py, tests/test_widget.py",),
     )
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None and ctx.failure is None
@@ -8196,6 +8196,7 @@ def test_acceptance_paths_skip_sibling_clusters() -> None:
     not this slice's acceptance tests."""
     latest = (
         "brief: release r7 is red at c0ffee111 (range 999..c0f), run 31\n"
+        "Acceptance tests: tests/test_a.py\n"
         "cluster 1/3: tests/test_a.py — fix only these failing ids: "
         "tests/test_a.py::test_one. The other clusters are fixed in "
         "parallel by their own nodes — leave them alone: "
@@ -8207,10 +8208,26 @@ def test_acceptance_paths_skip_sibling_clusters() -> None:
     assert run_slice._acceptance_paths("Fix the failures it names.", latest) == [
         "tests/test_a.py"
     ]
-    # No marker: the harvest is exactly as before — every path counts.
-    assert run_slice._acceptance_paths(
-        "fix tests/test_a.py", "handoff: also tests/test_b.py"
-    ) == ["tests/test_a.py", "tests/test_b.py"]
+    # Prose paths are symptoms, never implicit acceptance declarations.
+    assert (
+        run_slice._acceptance_paths(
+            "fix tests/test_a.py", "handoff: also tests/test_b.py"
+        )
+        == []
+    )
+
+
+def test_acceptance_paths_only_explicit_lines() -> None:
+    body = (
+        "Quoted report: tests/test_symptom.py froze dispatch.\n"
+        "> Acceptance tests: tests/test_quoted.py\n"
+        "File set: src/widget.py, tests/test_widget.py\n"
+        "Acceptance tests: tests/test_nested/test_other.py, tests/test_widget.py\n"
+    )
+    assert run_slice._acceptance_paths(body, "handoff: tests/test_unrelated.py") == [
+        "tests/test_nested/test_other.py",
+        "tests/test_widget.py",
+    ]
 
 
 @pytest.mark.parametrize("setting,enabled", [(None, False), ("0", False), ("1", True)])
@@ -8260,7 +8277,9 @@ def test_devin_harness_tests_then_commits_and_lands_checked(
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
-    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert seams["run"] == [
+        (["scripts/test", "tests/test_widget.py", "-m", "not nightly"], tree)
+    ]
     assert len([a for a, _cwd in seams["git"] if a[:1] == ["commit"]]) == 1
     assert seams["commit_text"].startswith("fix(")
     assert "td42" in seams["commit_text"]
@@ -8366,7 +8385,7 @@ def test_devin_acceptance_yields_and_resumes_after_restart(
     launches: list[dict[str, Any]] = []
 
     def launch(argv: list[str], **kwargs: Any) -> int:
-        assert argv == ["scripts/test", "tests/test_widget.py"]
+        assert argv == ["scripts/test", "tests/test_widget.py", "-m", "not nightly"]
         launches.append(kwargs)
         return 4343
 
@@ -8531,7 +8550,9 @@ def test_devin_harness_records_explicit_no_change(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
     assert "STATUS:done" in store.tag_strings(42)
-    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert seams["run"] == [
+        (["scripts/test", "tests/test_widget.py", "-m", "not nightly"], tree)
+    ]
     assert seams["lands"] == []
     assert not any(a[:1] == ["commit"] for a, _cwd in seams["git"])
 

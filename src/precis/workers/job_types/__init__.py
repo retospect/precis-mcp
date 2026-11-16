@@ -41,7 +41,10 @@ default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because cache/temp write
 scopes and Docker under Seatbelt remain unverified.
 The coordinator supplies acceptance tests before launch: new files ride
 ``params.acceptance_tests`` as path-to-source artifacts installed after
-worktree cleanup; checked-in paths come from the body/latest brief.
+worktree cleanup; checked-in paths come only from explicit Acceptance tests:
+or File set: lines in the body/latest brief, so quoted symptom paths do
+not become acceptance requests. Acceptance runs exclude nightly tests,
+matching the regular check gate.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot
