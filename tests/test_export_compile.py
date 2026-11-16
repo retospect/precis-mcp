@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
+import pytest
+
+from precis.export import compile as compile_mod
 from precis.export.compile import compile_pdf
 
 
@@ -102,3 +106,32 @@ def test_zero_byte_pdf_is_not_servable(monkeypatch, tmp_path: Path) -> None:
     res = compile_pdf(_project(tmp_path))
     assert not res.ok
     assert res.pdf is None
+
+
+@pytest.mark.parametrize(
+    ("environment_timeout", "explicit_timeout", "expected_timeout"),
+    [(None, None, 300), ("420", None, 420), ("420", 60, 60)],
+)
+def test_compile_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    environment_timeout: str | None,
+    explicit_timeout: int | None,
+    expected_timeout: int,
+) -> None:
+    """gr684953: large drafts get five minutes; overrides still win."""
+    monkeypatch.delenv("PRECIS_LATEXMK_TIMEOUT_S", raising=False)
+    if environment_timeout is not None:
+        monkeypatch.setenv("PRECIS_LATEXMK_TIMEOUT_S", environment_timeout)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["timeout"] == expected_timeout
+        raise subprocess.TimeoutExpired(cmd="latexmk", timeout=expected_timeout)
+
+    monkeypatch.setattr(compile_mod.subprocess, "run", run)
+    result = compile_pdf(_project(tmp_path), timeout_s=explicit_timeout)
+    assert not result.ok
+    assert result.pdf is None
+    assert result.returncode == -1
+    assert result.log_tail == f"latexmk timed out after {expected_timeout}s"

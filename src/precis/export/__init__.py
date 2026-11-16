@@ -2,6 +2,9 @@
 
 The packaged preamble loads ``fontspec``, so PDF compilation and the CLI's
 manual compile hint use LuaLaTeX (``latexmk -lualatex``).
+PDF exports allow five minutes by default for large drafts and their
+bibliography/glossary passes (gr684953); ``PRECIS_LATEXMK_TIMEOUT_S`` or
+an explicit compile timeout can override that budget.
 
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published

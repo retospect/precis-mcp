@@ -58,9 +58,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 
 def _compile_timeout_s() -> int:
     """Compile deadline for a send. Book-scale sends (nano-computer: ~460
-    pages, a 737-entry biber run) legitimately need minutes — the shared
-    ``PRECIS_LATEXMK_TIMEOUT_S`` default (120s, sized for compile_guard's
-    lock-holding inline compile) times them out. Own knob, still bounded."""
+    pages, a 737-entry biber run) legitimately need minutes — more than
+    ``compile_pdf``'s 300s default or compile_guard's 120s (sized for its
+    lock-holding inline compile), both set by ``PRECIS_LATEXMK_TIMEOUT_S``.
+    Own knob, still bounded."""
     return int(os.environ.get("PRECIS_RM_COMPILE_TIMEOUT_S", "600"))
 
 
