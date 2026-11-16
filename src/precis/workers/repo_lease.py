@@ -65,6 +65,25 @@ STALE_AFTER_S = 900
 #: Newest rows scanned per job type (live_deploy_job's shape).
 _SCAN_LIMIT = 50
 
+#: The candidate-row statement, lifted out of :func:`_rows` so tests can
+#: EXPLAIN the exact text the lease scan issues (gr685472). The partial
+#: index ``refs_job_repo_lease_idx`` (migration 0331) only applies while
+#: this WHERE clause implies its predicate — the ``meta ? 'repo_lease'``
+#: line is the clause the index keys on (the ``->> 'repo'`` comparisons
+#: that follow cannot prove it), so edit one, keep the other in step.
+#: The lease-key names are literals, not params: a bound parameter is
+#: opaque to the partial-index implication check.
+_CANDIDATE_SQL = """
+SELECT j.ref_id, j.meta FROM refs j
+ WHERE j.kind = 'job' AND j.retired_at IS NULL
+   AND j.meta ->> 'job_type' = %s
+   AND (j.meta ? 'repo_lease' OR j.meta ? 'repo_lease_wanted')
+   AND (j.meta -> 'repo_lease' ->> 'repo' = %s
+        OR j.meta -> 'repo_lease_wanted' ->> 'repo' = %s)
+ ORDER BY j.ref_id DESC
+ LIMIT %s
+"""
+
 _ALERT_SOURCE = RULES_BY_ID["repo_lease/stale-holder:{repo}/{job_id}"].rule
 
 
@@ -180,15 +199,7 @@ def _rows(
     found: dict[int, dict[str, Any]] = {}
     for jt in JOB_TYPES:
         for jid, meta in conn.execute(
-            """
-            SELECT j.ref_id, j.meta FROM refs j
-             WHERE j.kind = 'job' AND j.retired_at IS NULL
-               AND j.meta ->> 'job_type' = %s
-               AND (j.meta -> %s ->> 'repo' = %s OR j.meta -> %s ->> 'repo' = %s)
-             ORDER BY j.ref_id DESC
-             LIMIT %s
-            """,
-            (jt, LEASE_KEY, repo, WANT_KEY, repo, _SCAN_LIMIT),
+            _CANDIDATE_SQL, (jt, repo, repo, _SCAN_LIMIT)
         ).fetchall():
             found[int(jid)] = meta or {}
     if job_id is not None and job_id not in found:

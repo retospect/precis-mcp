@@ -312,3 +312,62 @@ def test_stale_wanter_does_not_block_a_land_and_is_alerted(store: Store) -> None
     assert rl.acquire(store, REPO, job_id=land, kind="land") is None
     assert _alert_count(store) == 1
     assert rl.WANT_KEY in _meta(store, rel)  # wants are not evicted
+
+
+@pytest.mark.db
+def test_rows_plan_uses_lease_index(store: Store) -> None:
+    """EXPLAIN of the scan's own statement picks ``refs_job_repo_lease_idx``.
+
+    Prod's plan (gr685472) walked all ~224k job rows through
+    ``refs_ref_id_kind_key`` with the lease predicates as a filter — the
+    partial index starts from the handful of rows still carrying a lease
+    or want key. On a tiny test table the planner could still prefer a
+    seq scan or the generic ``refs_kind_idx``, so both alternatives are
+    forbidden rather than weakening the assert.
+    """
+    a = _job(store)
+    assert rl.acquire(store, REPO, job_id=a, kind="land") is None
+    _job(store)
+    with store.pool.connection() as conn:
+        conn.execute("ANALYZE refs")
+        conn.execute("SET LOCAL enable_seqscan = off")
+        conn.execute("SET LOCAL enable_bitmapscan = off")
+        for jt in rl.JOB_TYPES:
+            plan = "\n".join(
+                str(r[0])
+                for r in conn.execute(
+                    "EXPLAIN " + rl._CANDIDATE_SQL,
+                    (jt, REPO, REPO, rl._SCAN_LIMIT),
+                ).fetchall()
+            )
+            assert "refs_job_repo_lease_idx" in plan, plan
+            assert "refs_kind_idx" not in plan, plan
+            assert "refs_ref_id_kind_key" not in plan, plan
+
+
+@pytest.mark.db
+def test_lease_index_predicate_matches(store: Store) -> None:
+    """The index predicate is the statement's WHERE, kept in step.
+
+    The planner only uses a partial index when the query's WHERE implies
+    its predicate; an edit to ``_CANDIDATE_SQL`` that drops the
+    ``meta ? 'repo_lease'`` clause breaks that implication and turns the
+    index dead weight, so the applied predicate is pinned
+    clause-for-clause here.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT i.indisvalid, pg_get_expr(i.indpred, i.indrelid) "
+            "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relname = 'refs_job_repo_lease_idx'"
+        ).fetchone()
+    assert row is not None, "refs_job_repo_lease_idx missing — migration not applied"
+    valid, pred = row
+    assert valid
+    for fragment in (
+        "kind = 'job'::text",
+        "retired_at IS NULL",
+        "'repo_lease'::text",
+        "'repo_lease_wanted'::text",
+    ):
+        assert fragment in pred, pred

@@ -425,3 +425,55 @@ def test_live_deploy_job(store: Store) -> None:
     gone = _deploy_job(store)
     store.retire_ref(gone)
     assert plans_release.live_deploy_job(store) is False
+
+
+def test_live_deploy_job_plan_uses_partial_index(store: Store) -> None:
+    """EXPLAIN of the check's own statement picks
+    ``refs_job_release_deploy_idx``.
+
+    The newest-50 ``release_deploy`` read had the gr685472 shape — a
+    full walk of the job rows; the partial index starts from the handful
+    of rows ever stamped with that job_type. On a tiny test table the
+    planner could still prefer a seq scan or ``refs_kind_idx``, so both
+    alternatives are forbidden rather than weakening the assert.
+    """
+    _deploy_job(store)
+    _deploy_job(store, job_type="release_cut")
+    with store.pool.connection() as conn:
+        conn.execute("ANALYZE refs")
+        conn.execute("SET LOCAL enable_seqscan = off")
+        conn.execute("SET LOCAL enable_bitmapscan = off")
+        plan = "\n".join(
+            str(r[0])
+            for r in conn.execute(
+                "EXPLAIN " + plans_release._LIVE_DEPLOY_JOB_SQL
+            ).fetchall()
+        )
+    assert "refs_job_release_deploy_idx" in plan, plan
+    assert "refs_kind_idx" not in plan, plan
+    assert "refs_ref_id_kind_key" not in plan, plan
+
+
+def test_release_deploy_index_predicate_matches(store: Store) -> None:
+    """The index predicate is the statement's WHERE, kept in step — the
+    planner only uses a partial index when the query implies it, so an
+    edit to ``_LIVE_DEPLOY_JOB_SQL`` that breaks the implication turns
+    the index dead weight."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT i.indisvalid, pg_get_expr(i.indpred, i.indrelid) "
+            "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relname = 'refs_job_release_deploy_idx'"
+        ).fetchone()
+    assert row is not None, (
+        "refs_job_release_deploy_idx missing — migration not applied"
+    )
+    valid, pred = row
+    assert valid
+    for fragment in (
+        "kind = 'job'::text",
+        "retired_at IS NULL",
+        "job_type",
+        "release_deploy",
+    ):
+        assert fragment in pred, pred

@@ -1273,6 +1273,22 @@ def round_confirmed(row: dict[str, Any] | None, n: int) -> bool:
     )
 
 
+#: The live ``release_deploy`` lookup, lifted out of
+#: :func:`live_deploy_job` so tests can EXPLAIN the exact text issued
+#: (gr685472 — this shape walked every job row). The partial index
+#: ``refs_job_release_deploy_idx`` (migration 0331) only applies while
+#: this WHERE clause implies its predicate, so edit one, keep the other
+#: in step; ``'release_deploy'`` stays a literal — a bound parameter is
+#: opaque to the implication check.
+_LIVE_DEPLOY_JOB_SQL = """
+SELECT j.ref_id FROM refs j
+ WHERE j.kind = 'job' AND j.retired_at IS NULL
+   AND j.meta ->> 'job_type' = 'release_deploy'
+ ORDER BY j.ref_id DESC
+ LIMIT 50
+"""
+
+
 def live_deploy_job(store: Store) -> bool:
     """A non-terminal ``release_deploy`` job anywhere in the store — its
     own ``deployed`` write may still land, so a stale local record must
@@ -1282,15 +1298,7 @@ def live_deploy_job(store: Store) -> bool:
     from precis.workers._mint import JOB_TERMINAL_STATUSES
 
     with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT j.ref_id FROM refs j
-             WHERE j.kind = 'job' AND j.retired_at IS NULL
-               AND j.meta ->> 'job_type' = 'release_deploy'
-             ORDER BY j.ref_id DESC
-             LIMIT 50
-            """
-        ).fetchall()
+        rows = conn.execute(_LIVE_DEPLOY_JOB_SQL).fetchall()
     for (jid,) in rows:
         status = next(
             (str(t.value) for t in store.tags_for(int(jid)) if t.prefix == "STATUS"),
