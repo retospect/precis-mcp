@@ -641,6 +641,39 @@ def test_routing_comment_does_not_reroute(store: Store, two_lanes: Any) -> None:
     assert [m["gripe"] for m in res.extra["minted"]] == [gid]
 
 
+def test_route_builder_tag_skips_the_deny_path_route(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr685970: ``route:builder`` is the coordinator's read-the-report
+    override — the gripe mints its chain although its report asks to
+    write a deny path (the mint/write gates still guard real writes)."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "add a --remote flag to scripts/ship",
+        tags=("fix:code", gd.ROUTE_BUILDER_TAG),
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+
+
+def test_route_builder_tag_keeps_the_graph_only_route(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr685970: the override skips the deny-path leg only — a
+    prod-graph-only report still has no repo diff for a builder."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "gr630346 me123456 td999",
+        tags=("fix:code", gd.ROUTE_BUILDER_TAG),
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    (routed,) = res.extra["routed"]
+    assert routed["gripe"] == gid
+
+
 def test_graph_only_report_routes_to_the_coordinator(
     store: Store, two_lanes: Any
 ) -> None:

@@ -76,13 +76,19 @@ Each fire:
   (``executors/_common._CLASS_RANK_CASE``), ahead of ordinary builds.
   The hold tags and a live linked todo still apply.
 * **Coordinator route** (gr645163, Reto 2026-11-12 "escalate to next
-  model"): a picked gripe whose report names a deny path or is
+  model"): a picked gripe whose report asks to write a deny path or is
   prod-graph only mints no chain — work no builder lane may write skips
   the builders (:mod:`precis.plans.route`, the same classifier
-  ``plan_dispatch._step_dispatch`` runs on each todo's brief). One
+  ``plan_dispatch._step_dispatch`` runs on each todo's brief; a bare
+  mention of a deny path does not route, gr685970). One
   ``ask-coordinator`` ask carries the report for the coordinator — the
   ruling's "with the diff/brief attached" — and the gripe holds
-  ``hold:no-dispatch``; removing the tag returns it to dispatch.
+  ``hold:no-dispatch``; removing the tag returns it to dispatch. A
+  gripe tagged :data:`ROUTE_BUILDER_TAG` (``route:builder``) skips the
+  deny-path leg of the route — the coordinator's read-the-report
+  override for an incidental mention; a graph-only report still routes,
+  and the mint/write gates downstream still refuse a build that
+  actually writes a deny path (gr645524).
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -194,6 +200,13 @@ _WAIVER_SQL = (
 )
 #: Waiver gripes minted per fire, over and above the lane slots.
 _WAIVER_BATCH = 5
+#: Open tag a coordinator sets on a gripe after reading its report
+#: (gr685970): the deny-path mention is incidental — the gripe skips
+#: the deny-path coordinator route and mints its chain. It is NOT a
+#: hold: it must stay out of :data:`HOLD_TAGS` so the gripe remains a
+#: candidate. The mint/write gates downstream still refuse a build that
+#: actually writes a deny path (gr645524).
+ROUTE_BUILDER_TAG = "route:builder"
 #: Registry key of the filer-trust switch (:func:`gripe_trust`).
 TRUST_KEY = "factory.gripe_trust"
 #: ``factory.gripe_trust`` values: ``all`` skips the filer check,
@@ -449,14 +462,18 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # own posture (the mint gates fail closed downstream).
     deny = _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
     for c in picks:
-        # gr645163: work no builder lane may write — the report names a
-        # deny path, or the fix is prod-graph only — skips the chain and
-        # files the one coordinator ask with the report attached. A
-        # classifier blip must not lose the mint, so it fails open.
+        # gr645163: work no builder lane may write — the report asks to
+        # write a deny path, or the fix is prod-graph only — skips the
+        # chain and files the one coordinator ask with the report
+        # attached. A classifier blip must not lose the mint, so it
+        # fails open.
         report = ""
         try:
             report = _route_report(store, c)
-            routed = _route.coordinator_route(report, deny)
+            # gr685970: ``route:builder`` skips the deny-path leg only
+            # (an empty deny set) — a graph-only report still routes.
+            deny_set = () if _route_override(store, c.gripe_id) else deny
+            routed = _route.coordinator_route(report, deny_set)
         except Exception:
             log.warning(
                 "gripe_dispatch: route check on gr%d failed; minting anyway",
@@ -527,6 +544,22 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     return BatchResult(
         handler=SERVICE_NAME, claimed=len(picks), ok=ok, failed=failed, extra=extra
     )
+
+
+def _route_override(store: Store, gripe_id: int) -> bool:
+    """True when the gripe carries :data:`ROUTE_BUILDER_TAG` — the
+    coordinator's read-the-report override that skips the deny-path
+    route (gr685970)."""
+    with store.pool.connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = 'OPEN' "
+                "AND t.value = %s LIMIT 1",
+                (gripe_id, ROUTE_BUILDER_TAG),
+            ).fetchone()
+            is not None
+        )
 
 
 def _route_report(store: Store, pick: DispatchPick) -> str:
@@ -728,6 +761,7 @@ def _rescue_intake(
 __all__ = [
     "FIX_CLASS_TAGS",
     "HOLD_TAGS",
+    "ROUTE_BUILDER_TAG",
     "SERVICE_NAME",
     "TRUST_KEY",
     "WAIVER_TAG_PREFIX",

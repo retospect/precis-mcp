@@ -539,6 +539,142 @@ def test_run_invocation_evidence_and_checkout_never_route(text: str) -> None:
     assert route.coordinator_route(text, _ALL_DENY) is None
 
 
+# --- gr685970: write-intent routing -------------------------------------
+#
+# The four gripes that routed on a prose mention alone (asks td677375,
+# td680452, td680555, td685658, 2026-11-14/15): each names a deny path as
+# an example, a mechanism or an out-of-scope note — never as the write
+# target — and stalled on hold:no-dispatch. Fixtures paraphrase their
+# reports (the prod bodies are not in the tree).
+
+#: gr574149 (a paraphrase, not the report's verbatim text — the prod
+#: body is not in the tree): ``scripts/release`` is the example of a
+#: script too large for the python kind — the fix is in
+#: ``python_index``.
+_GR574149 = """\
+python_index drops the big drivers: the python kind finds no symbol in them
+
+Observed: `search(kind='python', q='release_cut')` returns nothing — the
+python_index chunker skips files over its line cap, so the release-round
+script `scripts/release` (about 700 lines of bash) yields no symbols.
+The fix is in `src/precis/ingest/python_index.py`'s cap, not the script.
+"""
+
+#: gr681901 (paraphrase — not verbatim): the Docker test runner
+#: (``scripts/test``) is the mechanism a fix node's acceptance needs —
+#: named as the constraint, not the edit.
+_GR681901 = """\
+factory: a fix node whose acceptance needs the Docker test runner must
+not land on a sandbox that cannot run it
+
+Want:
+1. The mint marks a fix node whose acceptance needs the Docker test
+   runner (`scripts/test` inside the container harness).
+2. Such a node must not land on a sandbox that cannot run it; the fix
+   is in `plans/release` and `plan_dispatch.py`.
+"""
+
+#: gr606462 (paraphrase — not verbatim): the runner running the eval
+#: YAML is the behaviour being reported; the spec puts that integration
+#: out of scope.
+_GR606462 = """\
+skill evals: the test runner runs the eval YAML as acceptance — spec says out of scope
+
+`scripts/test` runs `src/precis/data/skill-evals/<skill>.yaml` as a
+skill's acceptance while the spec comment in
+`src/precis/plans/templates.py` puts that integration out of scope.
+Fix: the runner and its tests — `scripts/skill-eval` and
+`tests/test_skill_evals.py`.
+"""
+
+#: gr613096 (paraphrase — not verbatim): the agent-remit edits are
+#: explicitly out of scope; the buildable slices are the skill files.
+_GR613096 = """\
+agent remits drifted from the slice prompts: refresh the skill files
+
+The buildable slices are the skill files under `src/precis/data/skills/`
+and their tests.
+
+Out of scope: the agent-remit edits under `.claude/agents/**` — the
+spec marks those a human step.
+"""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [_GR574149, _GR681901, _GR606462, _GR613096],
+)
+def test_mention_only_reports_never_route(text: str) -> None:
+    """gr685970: the four reports that stalled on hold:no-dispatch —
+    their deny paths are examples, mechanisms or out-of-scope notes,
+    not requested writes."""
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a spec write-target line names the path
+        "Seam: `src/precis/plans/route.py` and `scripts/ship`",
+        "Anchors: `scripts/ship::main`; the gate check needs a flag.",
+        "Files: `src/precis/workers/gripe_dispatch.py`, `scripts/ship`",
+        "- Targets: `scripts/ship`, `scripts/test`",
+        # a list the write-target label introduces
+        "Files:\n- `src/precis/workers/gripe_dispatch.py`\n- `scripts/ship`\n\nDone.",
+        "Files: `src/precis/a.py`,\n    `scripts/ship`\n\nDone.",
+        # the defect's subject — a gripe about the path is the ask for it
+        "`scripts/round open` refuses the next cut.",
+        "Symptom: `scripts/ship` cannot land a branch.",
+        "`scripts/ship` is broken on harness diffs.",
+        # the path is asked for in prose with an edit verb
+        "the fix is in `scripts/lib/lock-holder.sh`",
+        "the new rule lives in `src/precis/plans/lanes.py`",
+    ],
+)
+def test_write_intent_deny_path_routes(text: str) -> None:
+    why = route.coordinator_route(text, (*_ALL_DENY, "scripts/round"))
+    assert why is not None and why.startswith("names deny path")
+
+
+def test_loose_write_verb_still_routes_and_route_builder_releases() -> None:
+    """gr685970's accepted trade-off: :data:`route._WRITE_VERBS` keeps
+    loose words (``make``, ``review``, ``inspect``, ``live``, ``go``,
+    ``split``), so a mention like "make sure ``scripts/ship`` …" still
+    reads as a requested write and routes — the coordinator's
+    ``route:builder`` tag is the release for it (gripe_dispatch passes
+    an empty deny set; tests/workers/test_gripe_dispatch.py pins the
+    tag itself)."""
+    text = "make sure `scripts/ship` runs the whole gate before the land"
+    assert route.coordinator_route(text, _DENY) is not None
+    # ``route:builder`` on the gripe: the deny leg sees an empty set.
+    assert route.coordinator_route(text, ()) is None
+
+
+def test_route_reason_quotes_the_matching_sentence() -> None:
+    """gr685970 want 3: the reviewer sees why the route fired."""
+    why = route.coordinator_route("fix the widget; edit `scripts/ship` too", _DENY)
+    assert why is not None
+    assert 'in "edit `scripts/ship` too"' in why
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a passive demand names the actor's limitation, not the edit
+        "`scripts/release` cannot be indexed by the python kind; fix "
+        "`src/precis/ingest/python_index.py`.",
+        # a test-fixture path is data, not the denied file
+        "add a fixture at `tests/fixtures/deploy/inventory-prod/hosts.yml` "
+        "for the deny-check test",
+        "the fixture `tests/data/.mcp.json` seeds the parser test",
+        # the fix lives elsewhere; the path is an example
+        "the parser drops `scripts/ship` calls — the fix is in the parser",
+    ],
+)
+def test_mention_shapes_never_route(text: str) -> None:
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
 @pytest.mark.parametrize(
     ("text", "path"),
     [

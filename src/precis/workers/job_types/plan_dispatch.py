@@ -190,12 +190,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    A ``run_slice`` class with no enabled offering is blocked on one
    coordinator ask before any job is minted (gr611305). So is a
    ``run_slice`` leaf whose judged text — its body and newest
-   ``brief:`` — names a deny path or is prod-graph only:
+   ``brief:`` — asks to write a deny path or is prod-graph only:
    work no builder lane may write skips the ladder and files one
    ``ask-coordinator`` ask with the brief attached (gr645163, Reto's
    2026-11-12 "escalate to next model" ruling — td643078/td638980's
    won't-do stalls and gr630346/gr630611's no-commit runs were this
-   class). Generators never classify: they read source text, and a
+   class). The deny-path leg is write intent, not mention (gr685970 —
+   the shared :func:`precis.plans.route.coordinator_route` classifier):
+   a bare mention, a test-fixture path or an ``Out of scope`` line does
+   not route. Generators never classify: they read source text, and a
    gripe or diff may name deny paths legitimately. A ``handoff:``
    never classifies either — it reports the attempt, and a denied
    run's own deny-path line is the event, not the target. The
@@ -6320,11 +6323,12 @@ def _block_route(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node, why: str, text: str
 ) -> None:
     """Hold one run_slice-bound node on a coordinator ask — the mint-time
-    route of gr645163: a brief no builder lane may run (it names a deny
-    path, or the fix is prod-graph only) mints no job and burns no
-    build; the ``blocked-by`` edge keeps later passes from re-minting or
-    re-asking. The ask's body carries the brief itself — the ruling's
-    "with the diff/brief attached"."""
+    route of gr645163: a brief no builder lane may run (it asks to write
+    a deny path, or the fix is prod-graph only — gr685970) mints no job
+    and burns no build; the ``blocked-by`` edge keeps later passes from
+    re-minting or re-asking. The ask's body carries the brief itself —
+    the ruling's "with the diff/brief attached", and ``why`` quotes the
+    sentence the route fired on."""
     now = datetime.now(UTC)
     if w.dry_run:
         # Mirror the hold so hygiene cannot report a second ask this pass.
@@ -6346,8 +6350,8 @@ def _block_route(
                 "td643078/td638980 stalls). Land it by hand, mint a "
                 "builder outside the factory's deny rules, or drop the "
                 f"node; closing this ask `acknowledged` re-arms td{n.id} "
-                "and it routes again while the text still names a denied "
-                "path.\n\n---\n\n" + text.strip()[:4000]
+                "and it routes again while the text still asks to write "
+                "a denied path.\n\n---\n\n" + text.strip()[:4000]
             ),
             context=why,
             now=now,
@@ -6562,11 +6566,11 @@ def _step_dispatch(
                 _block_lane_gap(plan, w, res, n, gap)
                 continue
             # gr645163 (Reto 2026-11-12, "escalate to next model"): work
-            # no builder lane may write — the judged text names a deny
-            # path, or the fix is prod-graph only — skips the builders
-            # and files one coordinator ask at mint. Generators never
-            # classify: they read source text, and a gripe or diff may
-            # name deny paths legitimately.
+            # no builder lane may write — the judged text asks to write a
+            # deny path (gr685970), or the fix is prod-graph only — skips
+            # the builders and files one coordinator ask at mint.
+            # Generators never classify: they read source text, and a
+            # gripe or diff may name deny paths legitimately.
             if node_kind(n.meta) != "generator":
                 body, brief = _route_text(w.store, n)
                 routed = _route.coordinator_route(body, node_deny, brief=brief)

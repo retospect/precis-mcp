@@ -20,9 +20,20 @@ Two signals:
 
 - ``deny-path named`` — a path-shaped token in the text matches the
   resolved deny set (:func:`precis.plans.lanes.deny_paths_for`,
-  ``STRICT_DENY`` by default). Any path-shaped token counts, backticks
-  and code spans included: a plain-prose mention of ``scripts/ship`` is
-  the td643078 shape. Case folds like the lane's own write check
+  ``STRICT_DENY`` by default) AND counts as write intent (gr685970):
+  the match sits on a spec write-target line (``Seam:``/``Anchors:``/
+  ``Files:``/``File set:``/``Targets:``), in the same sentence as an
+  edit verb (``edit``/``change``/``write``/``touch``/``rename``/…,
+  :data:`_WRITE_VERBS`), or heads its sentence as the defect's subject
+  with a defective or demanded predicate (``scripts/round open refuses
+  the next cut``, ``scripts/ship cannot land a branch``,
+  ``scripts/test accepts --foo`` — a gripe about the path IS the edit
+  request, gr639737; a passive demand like ``scripts/release cannot be
+  indexed`` names the actor's limitation, not the edit). A bare mention
+  — a path cited as an example or mechanism, a test-fixture path, or a
+  line under ``Out of scope`` — never routes: mention-only reports
+  stalled four valid gripes on ``hold:no-dispatch``. Case folds like
+  the lane's own write check
   (``human_only_hits``: the slice hosts' filesystems fold case). Two
   narrowings (td647606): a brief with a ``File set:`` line is judged on
   that write set alone, and a harness path run as a command
@@ -69,9 +80,8 @@ Two signals:
     release``, still a hit. (This is the router only: the write gates
     keep ``.claude/**`` fully denied.)
 
-  The rule is negative on purpose: a positive "edit verb or label" rule
-  would drop reports whose subject is the broken file with no verb at
-  all (gr639737's ``scripts/round open refuses …``).
+  The ``dispatch: routes to the coordinator`` comment and the ask quote
+  the matched sentence so the reviewer sees why the route fired.
 - ``graph-only`` — every non-empty token is a well-formed graph handle
   (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
   vocabulary or grammar glue, and at least one handle appears. A
@@ -126,8 +136,12 @@ _LAND_MECHANISM = (
 
 #: A routing reason quoted back (an ask body or title, a pasted routing
 #: comment): it names the deny path that routed the work, not a target.
+#: The optional ``in "…"`` tail is the matched-sentence quote (gr685970)
+#: — it must go with the reason or the quoted sentence re-classifies.
 _ROUTE_REASON = re.compile(
-    r"\bnames deny path `[^`\n]*`(?: \(matched `[^`\n]*`\))?", re.IGNORECASE
+    r"\bnames deny path `[^`\n]*`(?: \(matched `[^`\n]*`\))?"
+    r"(?: in \"[^\"\n]*\")?",
+    re.IGNORECASE,
 )
 
 #: A paragraph that is a note ABOUT the work's routing, not the work
@@ -235,6 +249,9 @@ _INTENT_START = re.compile(
 #: their paragraphs are dropped even from a report without intent labels.
 _CITATION_LABELS = (
     r"Evidence|Related|See also|Cross-checked|Checked|Cites|Refs?|References"
+    # ``Out of scope``/``Non-goal`` paragraphs (gr685970): they name what
+    # the fix must NOT touch — a deny path on one is a non-target.
+    r"|Out of scope|Non-goals?"
 )
 _EVIDENCE_START = re.compile(
     rf"^(?:#{{1,6}}\s+)?\*{{0,2}}(?:Symptom|Route|Seen|{_CITATION_LABELS})\b"
@@ -482,14 +499,450 @@ def _cue_words(text: str) -> list[str]:
     return [w for w in (w.strip(_CUE_WRAP).lower() for w in text.split()) if w]
 
 
-def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | None:
-    """``(token, glob)`` of the first path-shaped token matching a deny
-    glob, ``None`` when none does — case-folded like the lane's write
-    check. Tokens are judged as whole paths, so ``gr645163`` or
-    ``plan_dispatch`` prose never reads as a ``scripts/*`` hit. A
-    negated or cited mention (:func:`_discounted`) is no hit, and a path
-    through ``.claude/worktrees/<tree>/`` is judged by the repo-relative
-    remainder alone (:data:`_CHECKOUT_PATH`)."""
+#: A line that DECLARES write targets (gr685970): a spec's
+#: ``Seam:``/``Anchors:``/``Files:`` line or a ``File set:``-style
+#: listing — a deny path on one is the requested edit.
+_WRITE_LINE = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?"
+    r"(?:seam|anchors?|files?|file\s*(?:set|list)|targets?|write\s*set)\s*:",
+    re.IGNORECASE,
+)
+
+#: The verbs that make a deny-path mention a requested write (gr685970):
+#: the gripe's set (edit, change, add to, write, touch, rename), the
+#: :data:`_EDIT_VERBS` paraphrases (with their past forms — ``… test.yml
+#: updated``), and the request verbs real reports use (``repair``/
+#: ``adjust``/``make``/``rotate``/``refresh``/``audit``…). Removal verbs
+#: (``drop``/``remove``/``delete``) stay out: they double as defect
+#: descriptions (``the parser drops scripts/ship calls``) and the
+#: gripe's rule is precision-first — a coordinator's ``route:builder``
+#: releases a denied-target report the wording hides. A verb word right
+#: after a determiner is a noun (``a fix node``, ``the change``), not a
+#: cue (:data:`_DETERMINERS`); the location assertion those nouns still
+#: make — ``the fix is in X`` — is intent via :data:`_FIX_LOCATION`.
+_WRITE_VERBS = frozenset(
+    _EDIT_VERB_WORDS.split()
+    + [
+        "edited",
+        "changed",
+        "modified",
+        "updated",
+        "patched",
+        "fixed",
+        "replaced",
+        "added",
+        "touched",
+        "amended",
+        "rewritten",
+        "rewrote",
+        "writes",
+        "writing",
+        "written",
+        "write",
+        "rename",
+        "renames",
+        "renaming",
+        "renamed",
+        "move",
+        "moves",
+        "moved",
+        "moving",
+        "rotate",
+        "rotates",
+        "rotated",
+        "rotating",
+        "refresh",
+        "refreshes",
+        "refreshed",
+        "refreshing",
+        "adjust",
+        "adjusts",
+        "adjusted",
+        "adjusting",
+        "repair",
+        "repairs",
+        "repaired",
+        "repairing",
+        "make",
+        "makes",
+        "made",
+        "making",
+        "extend",
+        "extends",
+        "extended",
+        "refactor",
+        "refactors",
+        "refactored",
+        "merge",
+        "merges",
+        "merged",
+        "split",
+        "splits",
+        "split",
+        "enumerate",
+        "enumerates",
+        "audit",
+        "audits",
+        "inspect",
+        "inspects",
+        "review",
+        "reviews",
+        "live",
+        "lives",
+        "lived",
+        "belong",
+        "belongs",
+        "belonged",
+        "go",
+        "goes",
+        "went",
+    ]
+)
+
+#: A write-verb word right after one of these is a noun, not a cue
+#: (gr685970): ``a fix node``, ``the change``, ``its update``.
+_DETERMINERS = frozenset(
+    [
+        "the",
+        "a",
+        "an",
+        "this",
+        "that",
+        "these",
+        "those",
+        "its",
+        "their",
+        "our",
+        "his",
+        "her",
+        "my",
+        "your",
+        "each",
+        "every",
+        "no",
+        "any",
+        "one",
+    ]
+)
+
+#: A fix-location assertion (gr685970): ``the fix is in X``,
+#: ``a change to X``, ``it lands in X`` — the path after the phrase is
+#: the asserted write target. A negated one (``the fix is not in X``)
+#: asserts the opposite: the match is skipped.
+_FIX_LOCATION = re.compile(
+    r"\b(?:fix|change|patch|edit|update|it(?:'s)?)\s+"
+    r"(?:(?:is|was|'s|goes|lands|lives|belongs|sits|isn't)\s+)?"
+    r"(?:not\s+)?"
+    r"(?:in|to|for|on|of|inside|within)\b",
+    re.IGNORECASE,
+)
+
+#: Where a write-intent sentence ends (gr685970): like
+#: :data:`_CLAUSE_BREAK` minus the comma and the opening paren — a write
+#: instruction and the path it edits often share one comma-joined
+#: clause, and a parenthesised path still belongs to its sentence.
+_SENTENCE_BREAK = re.compile(
+    r"[;!?\n—–]|(?<![Cc]f)\.(?=\s|$)|\b(?:but|instead|rather)\b",
+    re.IGNORECASE,
+)
+
+#: What may precede a sentence-initial path: a bullet or number, a
+#: ``Label:`` field name (``Symptom: scripts/ship cannot …``) and
+#: determiners — after those the path is the sentence's subject.
+_SUBJECT_HEAD = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?"
+    r"(?:[A-Za-z][\w' -]{0,40}:\s+)?"
+    r"(?:(?:the|a|an|this|that|these|those|its|their|our|his|her)\s+)*"
+    r"[`'\"*_]*$",
+    re.IGNORECASE,
+)
+
+#: The predicates that make a sentence-initial deny path a requested
+#: fix (gr685970): the path's own action is defective
+#: (``scripts/round open refuses the next cut``), or the sentence asks a
+#: capability of it (``scripts/test accepts --foo``,
+#: ``scripts/ship should refuse a dirty tree``) or denies it one
+#: (``scripts/ship cannot land a branch``). A passive demand —
+#: ``scripts/release cannot be indexed`` — names the actor's
+#: limitation, not an edit of the path.
+_DEFECT_VERBS = frozenset(
+    [
+        "refuse",
+        "refuses",
+        "fail",
+        "fails",
+        "failed",
+        "failing",
+        "crash",
+        "crashes",
+        "crashed",
+        "hang",
+        "hangs",
+        "hung",
+        "break",
+        "breaks",
+        "broke",
+        "misread",
+        "misreads",
+        "drop",
+        "drops",
+        "reject",
+        "rejects",
+        "swallow",
+        "swallows",
+        "swallowed",
+        "mangle",
+        "mangles",
+        "mangled",
+        "truncate",
+        "truncates",
+        "corrupt",
+        "corrupts",
+        "overwrite",
+        "overwrites",
+        "die",
+        "dies",
+        "panic",
+        "panics",
+        "panicked",
+        "error",
+        "errors",
+        "exit",
+        "exits",
+        "loop",
+        "loops",
+        "leak",
+        "leaks",
+        "lose",
+        "loses",
+        "skip",
+        "skips",
+        "ignore",
+        "ignores",
+        "misfire",
+        "misfires",
+        "stall",
+        "stalls",
+        "stalled",
+        "regress",
+        "regresses",
+        "eat",
+        "eats",
+        "misbehave",
+        "misbehaves",
+        "duplicate",
+        "duplicates",
+        "garble",
+        "garbles",
+    ]
+)
+_DEMAND_WORDS = frozenset(
+    [
+        "should",
+        "must",
+        "ought",
+        "need",
+        "needs",
+        "want",
+        "wants",
+        "cannot",
+        "can't",
+        "couldn't",
+        "won't",
+        "doesn't",
+        "don't",
+        "didn't",
+        "never",
+        "expect",
+        "expects",
+        "expected",
+        "lack",
+        "lacks",
+        "miss",
+        "misses",
+        "accept",
+        "accepts",
+        "support",
+        "supports",
+        "handle",
+        "handles",
+        "take",
+        "takes",
+        "allow",
+        "allows",
+    ]
+)
+#: After a demand word these mark the passive — the actor is elsewhere.
+_PASSIVE_WORDS = frozenset(["be", "been", "being", "get", "getting", "gotten"])
+_DEFECT_ADJ = frozenset(
+    ["broken", "buggy", "stale", "wrong", "dead", "flaky", "busted"]
+)
+_COPULA = frozenset(
+    ["is", "are", "was", "were", "seems", "looks", "stays", "remains", "keeps"]
+)
+#: Negative copulas — a demanded capability phrased as its absence
+#: (``scripts/ship isn't landing``).
+_NEG_COPULA = frozenset(["isn't", "aren't", "wasn't", "weren't"])
+
+#: Leading path segments of a test-fixture tree (gr685970): under one a
+#: deny-looking suffix (``tests/fixtures/deploy/inventory-x/hosts.yml``)
+#: is fixture data, not the denied file — the ``*/glob`` fallback does
+#: not apply to it.
+_FIXTURE_DIRS = frozenset({"test", "tests", "fixture", "fixtures"})
+
+
+def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """The ``(start, end)`` span of the sentence containing
+    ``text[start:end]`` (:data:`_SENTENCE_BREAK` bounded) — the unit the
+    write-intent checks and the quoted reason share."""
+    ss = 0
+    for m in _SENTENCE_BREAK.finditer(text):
+        if m.end() > start:
+            break
+        ss = m.end()
+    nxt = _SENTENCE_BREAK.search(text, end)
+    return ss, nxt.start() if nxt is not None else len(text)
+
+
+def _demanded_or_defective(tail: list[str]) -> bool:
+    """True when the words after a sentence-initial path predicate a
+    defect or a demanded/denied capability of it (:data:`_DEFECT_VERBS`,
+    :data:`_DEMAND_WORDS`, copula + :data:`_DEFECT_ADJ`) — and False for
+    a passive demand (``cannot be indexed``: the actor is elsewhere)."""
+    for i, w in enumerate(tail[:8]):
+        if w in _DEFECT_VERBS:
+            return True
+        if w in _DEMAND_WORDS:
+            if tail[i + 1 : i + 2] and tail[i + 1] in _PASSIVE_WORDS:
+                continue
+            return True
+        if w in _NEG_COPULA:
+            # ``X isn't indexed`` — a participle after a negative copula
+            # is the passive (the actor is elsewhere); ``X isn't
+            # landing`` is X failing on its own.
+            nxt = tail[i + 1 : i + 2]
+            if nxt and (nxt[0] in _PASSIVE_WORDS or nxt[0].endswith(("ed", "en"))):
+                continue
+            return True
+        if w in _COPULA and any(a in _DEFECT_ADJ for a in tail[i + 1 : i + 3]):
+            return True
+    return False
+
+
+#: The previous sentence's last words merge into a wrapped instruction's
+#: verb scan: it ends in a comma, a colon (``update these files:`` + a
+#: fence of paths) or a connector — ``adjust the gate in\nscripts/ship``
+#: is one instruction across the wrap.
+_CONTINUATION_WORDS = frozenset(
+    [
+        "in",
+        "into",
+        "to",
+        "of",
+        "from",
+        "for",
+        "with",
+        "on",
+        "at",
+        "and",
+        "or",
+        "a",
+        "an",
+        "the",
+        "its",
+        "their",
+        "our",
+    ]
+)
+
+
+def _continuation_head(text: str, ss: int) -> list[str]:
+    """The preceding sentence's words when it dangles into this one
+    (:data:`_CONTINUATION_WORDS`) — else ``[]``."""
+    before = text[:ss].rstrip()
+    if not before:
+        return []
+    if before.endswith((",", ":")):
+        return _cue_words(before)
+    words = _cue_words(before)
+    return words if words and words[-1] in _CONTINUATION_WORDS else []
+
+
+def _in_write_list(text: str, ls: int) -> bool:
+    """True when the line starting at ``ls`` closes a list a
+    :data:`_WRITE_LINE` label introduces (``Files:\\n- scripts/ship``,
+    or a comma-wrapped ``Files: a.py,\\n    scripts/ship``): bullet
+    items and comma-continuations climb to the intro line."""
+    pos = ls
+    for _ in range(40):
+        nl = pos - 1  # the ``\n`` ending the previous line
+        if nl <= 0:
+            return False
+        prev_start = text.rfind("\n", 0, nl) + 1
+        prev = text[prev_start:nl]
+        if not prev.strip():
+            return False
+        if _WRITE_LINE.match(prev):
+            return True
+        if re.match(r"^\s*(?:[-*+]|\d+[.)])\s", prev) or prev.rstrip().endswith(","):
+            pos = prev_start
+            continue
+        return False
+    return False
+
+
+def _write_intent(text: str, start: int, end: int, span: tuple[int, int]) -> bool:
+    """True when the path token at ``text[start:end]`` is a requested
+    write target (gr685970): on a spec write-target line or a list one
+    introduces (:data:`_WRITE_LINE`, :func:`_in_write_list`), in its
+    sentence with an edit verb (:data:`_WRITE_VERBS`, wrap continuations
+    merged by :func:`_continuation_head`), or heading the sentence as
+    the defect's subject (:func:`_demanded_or_defective`)."""
+    ss, se = span
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    line = text[ls : le if le >= 0 else len(text)]
+    if _WRITE_LINE.match(line):
+        return True
+    # An indented or bulleted line can sit inside a list a write-target
+    # label introduces; a flush-left prose line cannot.
+    if re.match(r"^\s|^\s*(?:[-*+]|\d+[.)])\s", line) and _in_write_list(text, ls):
+        return True
+    words = _continuation_head(text, ss) + _cue_words(text[ss:se])
+    # A leading ``Label:`` (``Fix:``, ``Want:``…) is the report's field
+    # name, not a verb in the sentence — stripping it keeps a bare
+    # mention under the label from inheriting its "fix".
+    if words and re.fullmatch(r"[a-z][a-z -]*:", words[0]):
+        words = words[1:]
+    verbs = [
+        w
+        for i, w in enumerate(words)
+        if w in _WRITE_VERBS and not (i and words[i - 1] in _DETERMINERS)
+    ]
+    if verbs:
+        return True
+    for m in _FIX_LOCATION.finditer(text[ss:se]):
+        if "not" not in m.group(0).lower().split() and m.end() <= start - ss:
+            return True
+    if not _SUBJECT_HEAD.match(text[ss:start]):
+        return False
+    return _demanded_or_defective(_cue_words(text[end:se]))
+
+
+def deny_path_hit(
+    text: str, deny_paths: Iterable[str], *, write_intent: bool = True
+) -> tuple[str, str, str] | None:
+    """``(token, glob, sentence)`` of the first path-shaped token
+    matching a deny glob, ``None`` when none does — case-folded like the
+    lane's write check. Tokens are judged as whole paths, so
+    ``gr645163`` or ``plan_dispatch`` prose never reads as a
+    ``scripts/*`` hit. A negated or cited mention
+    (:func:`_discounted`) is no hit, a path through
+    ``.claude/worktrees/<tree>/`` is judged by the repo-relative
+    remainder alone (:data:`_CHECKOUT_PATH`), and — unless
+    ``write_intent`` is off (a declared ``File set:`` write set, whose
+    every entry is a target by declaration) — only a token that counts
+    as write intent (:func:`_write_intent`) routes (gr685970)."""
     globs = tuple(dict.fromkeys(g.lower() for g in deny_paths))
     for m in _PATH_TOKEN.finditer(text):
         if _discounted(text, m.start(), m.end()):
@@ -503,17 +956,29 @@ def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | Non
         token = shown.lower()
         if token.startswith("./"):
             token = token[2:]
+        fixture = token.split("/", 1)[0] in _FIXTURE_DIRS
         hit = next(
             (
                 g
                 for g in globs
                 if fnmatch.fnmatchcase(token, g)
-                or ("/" in token and fnmatch.fnmatchcase(token, "*/" + g))
+                or (
+                    "/" in token
+                    and not fixture
+                    and fnmatch.fnmatchcase(token, "*/" + g)
+                )
             ),
             None,
         )
         if hit is not None:
-            return shown, hit
+            # The token may carry the sentence's closing ``.`` — the
+            # end search starts at ``shown``'s end, not the match's, so
+            # the sentence does not bleed into the next one.
+            tend = m.start() + len(m.group(0).rstrip("."))
+            span = _sentence_span(text, m.start(), tend)
+            if write_intent and not _write_intent(text, m.start(), tend, span):
+                continue
+            return shown, hit, " ".join(text[span[0] : span[1]].split())
     return None
 
 
@@ -619,10 +1084,13 @@ def coordinator_route(
             if file_set
             else _change_intent(_RUN_LIST.sub(" ", _RUN_INVOCATION.sub(" ", body)))
         )
-        hit = deny_path_hit(judged, deny)
+        # A declared write set is intent by definition; other text wants
+        # an edit cue (gr685970).
+        hit = deny_path_hit(judged, deny, write_intent=file_set is None)
         if hit is not None:
-            token, glob = hit
-            return f"names deny path `{token}` (matched `{glob}`)"
+            token, glob, sentence = hit
+            quote = sentence.replace('"', "'")[:160]
+            return f'names deny path `{token}` (matched `{glob}`) in "{quote}"'
     if graph_only("\n\n".join(parts)):
         return "prod-graph only — no repo diff exists for a builder to write"
     return None
