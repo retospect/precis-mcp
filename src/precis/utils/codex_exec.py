@@ -184,9 +184,15 @@ def codex_bin_present() -> bool:
     thin PATH) else ``codex`` on PATH. An explicit path must be an
     executable file — the same read
     :func:`precis.workers.job_types._slice_adapters.adapter_bin_present`
-    applies, so a non-executable override neither advertises
-    ``codex_bin`` nor leaves a codex lane pickable (gr676054). Mirrors
-    :func:`precis.workers.capability_probe._probe_claude_bin`."""
+    applies, so a non-executable override never leaves a codex lane
+    pickable (gr676054).
+
+    Binary presence ONLY — this mirrors
+    :func:`precis.workers.capability_probe._probe_claude_bin`, the other
+    bare binary probe. The ``codex_bin`` capability token is
+    :func:`precis.workers.capability_probe._probe_codex_lane`, which
+    additionally requires :func:`codex_login_present`: an installed but
+    unlogged-in CLI advertises no lane (gr701455)."""
     configured = resolve_codex_binary()
     return bool(
         shutil.which(configured)

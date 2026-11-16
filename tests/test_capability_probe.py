@@ -488,6 +488,92 @@ def test_probe_claude_config_stored_auth(monkeypatch: pytest.MonkeyPatch) -> Non
     assert cap._probe_claude_config() == 0
 
 
+# ── lane tokens advertise binary AND login (gr701455) ─────────────────────
+
+
+def test_probe_claude_lane_needs_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr701455: a lane token is advertised only when the CLI is installed
+    AND authenticated — agent-cli-update can land the binary before the
+    vendor login, and every session placed there died on a 401."""
+    monkeypatch.setattr(cap, "_probe_claude_bin", lambda: 1)
+    monkeypatch.setattr(cap, "claude_auth_present", lambda: False)
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kw: None)
+    assert cap._probe_claude_lane() == 0
+    monkeypatch.setattr(cap, "claude_auth_present", lambda: True)
+    assert cap._probe_claude_lane() == 1
+    monkeypatch.setattr(cap, "_probe_claude_bin", lambda: 0)
+    assert cap._probe_claude_lane() == 0  # no binary: absent regardless
+
+
+def test_probe_claude_lane_accepts_api_key_only_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The router's rung gate accepts ANTHROPIC_API_KEY (env or vault) as
+    the billed fallback, so the advertised token must too — an API-key-only
+    host keeps advertising claude work it can actually run."""
+    monkeypatch.setattr(cap, "_probe_claude_bin", lambda: 1)
+    monkeypatch.setattr(cap, "claude_auth_present", lambda: False)
+    monkeypatch.setattr(
+        "precis.secrets.get_secret",
+        lambda name, **kw: "sk-test" if name == "ANTHROPIC_API_KEY" else None,
+    )
+    assert cap._probe_claude_lane() == 1
+
+
+def test_probe_codex_lane_needs_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap, "codex_bin_present", lambda: True)
+    monkeypatch.setattr(cap, "codex_login_present", lambda: False)
+    assert cap._probe_codex_lane() == 0
+    monkeypatch.setattr(cap, "codex_login_present", lambda: True)
+    assert cap._probe_codex_lane() == 1
+    monkeypatch.setattr(cap, "codex_bin_present", lambda: False)
+    assert cap._probe_codex_lane() == 0  # no binary: absent regardless
+
+
+def test_lane_tokens_are_the_advertised_probes() -> None:
+    """The capability rows the scheduler reads come from the login-gated
+    lane probes, not the bare binary probes."""
+    assert cap._PROBES["claude_bin"] is cap._probe_claude_lane
+    assert cap._PROBES["codex_bin"] is cap._probe_codex_lane
+
+
+def test_probe_builder_uses_login_gated_lane_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``builder`` floor gates unpinned run_slice placement — an
+    installed-but-unlogged-in claude/codex must not satisfy it, or the
+    pick lands on a lane that 401s every session (gr701455)."""
+    monkeypatch.setattr(cap, "_probe_claude_lane", lambda: 0)
+    monkeypatch.setattr(cap, "_probe_codex_lane", lambda: 0)
+    monkeypatch.setattr(cap, "_probe_kimi_bin", lambda: 0)
+    monkeypatch.setattr(cap, "_probe_devin_bin", lambda: 0)
+    assert cap._probe_builder() == 0
+    monkeypatch.setattr(cap, "_probe_codex_lane", lambda: 1)
+    assert cap._probe_builder() == 1
+
+
+def test_stored_claude_auth_uses_cli_login_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The login arm of the auth probe is the CLI's own answer, not a
+    ``~/.claude`` directory listing — the directory outlives the login
+    (gr701455)."""
+    stub = tmp_path / "claude"
+    stub.write_text("#!/bin/sh\necho 'Logged in as builder'\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", str(stub))
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kw: None)
+    cap._bust_claude_login_probe()
+    assert cap._stored_claude_auth() is True
+    stub.write_text("#!/bin/sh\necho 'Not logged in' >&2; exit 1\n", encoding="utf-8")
+    cap._bust_claude_login_probe()
+    assert cap._stored_claude_auth() is False
+    # A probe that cannot judge (the CLI errors) must not advertise.
+    stub.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+    cap._bust_claude_login_probe()
+    assert cap._stored_claude_auth() is False
+
+
 def test_probe_host_resources_swallows_probe_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -71,6 +71,16 @@ compute with slot reservation, empty PROVIDES — gated by
 `REQUIRES=frozenset()` since the real work happens in spawned
 children — the job_type's `dispatch` does the work in slices and
 parks at `STATUS:waiting_*` between them).
+
+The lane tokens are login-gated, not just binary-gated (gr701455):
+`claude_bin` advertises only when the CLI is installed AND a
+credential resolves — `claude auth status` ok, or the
+`CLAUDE_CODE_OAUTH_TOKEN` vault value / an `ANTHROPIC_API_KEY` present;
+`codex_bin` only when `codex login status` reports a ChatGPT
+subscription login. A host with the CLI installed but not logged in
+keeps claude-requiring jobs queued instead of claiming them and 401ing
+every session. Check a host by hand: `claude auth status` /
+`codex login status`.
 Job_types pair with a compatible executor at submit; see the table
 in `precis-job-help`.
 

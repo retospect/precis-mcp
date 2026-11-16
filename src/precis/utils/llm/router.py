@@ -3400,8 +3400,9 @@ def _claude_credential_absent(rung: Rung) -> str | None:
     the OAuth token, so ``ANTHROPIC_API_KEY`` is the only credential left —
     the same resolution ``claude_p._bare_auth_env`` (env → vault) performs
     before it raises. Non-bare reuses the heartbeat's ``claude_config_mount``
-    probe (env token → vault → ``~/.claude`` login) plus the API key, which
-    ``prefer_oauth_over_api_key`` falls back to when no token resolves.
+    probe (env token → vault → a login ``claude auth status`` confirms)
+    plus the API key, which ``prefer_oauth_over_api_key`` falls back to
+    when no token resolves.
     """
     from precis import secrets as _secrets
     from precis.utils.claude_oauth import API_KEY_VAR, ENV_VAR
@@ -3416,7 +3417,7 @@ def _claude_credential_absent(rung: Rung) -> str | None:
         return None
     return (
         "no claude credential resolves on this host "
-        f"({ENV_VAR} env/vault, {API_KEY_VAR}, or a ~/.claude login)"
+        f"({ENV_VAR} env/vault, {API_KEY_VAR}, or a login `claude auth status` confirms)"
     )
 
 

@@ -8156,7 +8156,8 @@ def _path_with_stub_claude(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _no_claude_creds(monkeypatch: pytest.MonkeyPatch) -> None:
     """No claude credential resolves anywhere: no env vars, no vault, no
-    ``~/.claude`` login — both legs of the credential probe deny."""
+    CLI login (`claude auth status`) — both legs of the credential probe
+    deny."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -8259,8 +8260,9 @@ def test_route_claude_rung_kept_on_capable_host(
 def test_route_prunes_claude_rung_when_no_credential(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Binary present but no OAuth token, API key, vault or ~/.claude login —
-    the rung can't authenticate, so it's skipped rather than 401ing per call."""
+    """Binary present but no OAuth token, API key, vault or CLI login
+    (`claude auth status`) — the rung can't authenticate, so it's skipped
+    rather than 401ing per call."""
     _path_with_stub_claude(tmp_path, monkeypatch)
     _no_claude_creds(monkeypatch)
 

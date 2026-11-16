@@ -113,6 +113,7 @@ src/precis/utils/codex_exec.py::_run_codex 1
 src/precis/utils/compile_guard.py::check_workspace_compiles 1
 src/precis/utils/stall_capture.py::maybe_capture 1
 src/precis/utils/tex_llm_fix.py::_run_chktex 1
+src/precis/workers/capability_probe.py::_probe_claude_login_status 1
 src/precis/workers/child_compute.py::run_in_child 1
 src/precis/workers/conditions.py::_restart_worker_cmd 1
 src/precis/workers/conditions.py::_run_restart 1

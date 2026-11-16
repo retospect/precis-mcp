@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -96,7 +97,11 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 #: for (gr676054): no ServiceSpec declares them statically —
 #: ``placement_requires`` substitutes the picked/pinned adapter's token
 #: for the ``builder`` floor — but the heartbeat must still probe them
-#: so each host advertises the lane subset it carries.
+#: so each host advertises the lane subset it carries. Since gr701455
+#: the claude/codex tokens are LOGIN-gated, not just binary-gated: a CLI
+#: an agent-cli-update installed before the vendor login advertised a
+#: lane whose every session died on a 401, so the token stands only when
+#: the binary is present AND the CLI confirms a login/credential.
 LANE_BIN_TOKENS = frozenset({"claude_bin", "codex_bin", "kimi_bin", "devin_bin"})
 
 
@@ -313,8 +318,13 @@ def _probe_git() -> int:
     return 1 if shutil.which("git") else 0
 
 
+def _claude_binary() -> str:
+    """The claude binary path — ``PRECIS_CLAUDE_BIN`` or ``claude``."""
+    return os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
+
+
 def _probe_claude_bin() -> int:
-    """The ``claude`` CLI the agent lanes exec — ``PRECIS_CLAUDE_BIN`` (a
+    """The ``claude`` binary the agent lanes exec — ``PRECIS_CLAUDE_BIN`` (a
     name on PATH or an absolute path, the same override
     ``utils/claude_agent`` honors; a launchd daemon's PATH often misses
     it, so the full path is the escape hatch — mirrors
@@ -322,8 +332,12 @@ def _probe_claude_bin() -> int:
     path must be an executable file — the same read
     :func:`_slice_adapters.adapter_bin_present` applies, so the
     advertised ``claude_bin`` token never outruns what a lane pick can
-    exec (gr676054)."""
-    configured = os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
+    exec (gr676054).
+
+    Binary presence ONLY — the ``claude_bin`` capability token layers a
+    credential check on top (:func:`_probe_claude_lane`): an installed
+    but unauthenticated CLI advertises nothing (gr701455)."""
+    configured = _claude_binary()
     if shutil.which(configured) or (
         os.path.isabs(configured)
         and os.path.isfile(configured)
@@ -342,14 +356,74 @@ def _probe_clones_dir() -> int:
     return 1 if os.environ.get("PRECIS_FIX_WORK_DIR") else 0
 
 
+#: ``claude auth status`` verdict, cached this long — a heartbeat cycle
+#: shouldn't spawn a probe subprocess per beat (mirrors ``codex_exec``'s
+#: ``_LOGIN_PROBE_TTL_S``).
+_CLAUDE_LOGIN_TTL_S = 60.0
+_claude_login_lock = threading.Lock()
+_claude_login_cache: tuple[float, bool] | None = None
+
+
+def _probe_claude_login_status(binary: str, *, timeout_s: float = 15.0) -> bool:
+    """One ``claude auth status`` subprocess → ``True`` on a logged-in answer.
+
+    The CLI's own credential check (the claude analogue of
+    ``codex login status``). A ``~/.claude`` directory can sit on disk
+    with no live login — gr701455's shape: agent-cli-update installed the
+    CLI before the vendor login — so the directory alone no longer counts;
+    only the CLI's own answer does. A non-zero exit (logged out) or an
+    error/timeout answers ``False``: a probe that can't tell must not
+    advertise the capability. Extracted as the test seam."""
+    try:
+        res = subprocess.run(
+            [binary, "auth", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if res.returncode != 0:
+        return False
+    out = f"{res.stdout}\n{res.stderr}".lower()
+    return "not logged in" not in out and "logged out" not in out
+
+
+def _claude_login_present() -> bool:
+    """Whether THIS host has the ``claude`` CLI logged in, per
+    ``claude auth status`` — TTL-cached so a dispatch hot path pays one
+    probe a minute, not a subprocess per call. Binary probe first (a
+    missing binary is never logged in)."""
+    if _probe_claude_bin() != 1:
+        return False
+    now = time.monotonic()
+    with _claude_login_lock:
+        global _claude_login_cache
+        if _claude_login_cache is not None and _claude_login_cache[0] > now:
+            return _claude_login_cache[1]
+        ok = _probe_claude_login_status(_claude_binary())
+        _claude_login_cache = (now + _CLAUDE_LOGIN_TTL_S, ok)
+        return ok
+
+
+def _bust_claude_login_probe() -> None:
+    """Drop the cached login verdict — the next read re-probes. Tests (and
+    an operator who just ran ``claude login``) call this."""
+    global _claude_login_cache
+    with _claude_login_lock:
+        _claude_login_cache = None
+
+
 def _stored_claude_auth() -> bool:
     """The non-env auth arms a daemon-spawned ``claude -p`` can resolve:
     the vaulted OAuth token (``ensure_oauth_token``'s env → ``vault.reveal``
-    → bootstrap-file order, via ``get_secret``) or an interactive
-    ``~/.claude`` login state. Extracted as the test seam (mirrors
-    :func:`_embedder_ready`). ``get_secret`` is best-effort and never
-    raises in practice; a raised import-time error degrades to the
-    login-dir check rather than failing the heartbeat."""
+    → bootstrap-file order, via ``get_secret``) or an interactive login
+    the CLI itself confirms via ``claude auth status``. Extracted as the
+    test seam (mirrors :func:`_embedder_ready`). ``get_secret`` is
+    best-effort and never raises in practice; a raised import-time error
+    degrades to the CLI-status check rather than failing the heartbeat."""
     try:
         from precis import secrets as _secrets
         from precis.utils.claude_oauth import ENV_VAR as _oauth_var
@@ -358,14 +432,14 @@ def _stored_claude_auth() -> bool:
             return True
     except Exception:
         log.warning("capability_probe: claude oauth vault lookup raised", exc_info=True)
-    return os.path.isdir(os.path.expanduser("~/.claude"))
+    return _claude_login_present()
 
 
 def _probe_claude_config() -> int:
     """Auth/config state for ``claude -p`` — the ``claude_config_mount``
     token: the ``CLAUDE_CODE_OAUTH_TOKEN`` env, the vault/bootstrap token,
-    or an interactive ``~/.claude`` login. Presence, not correctness: a
-    stale keychain still advertises (the run path surfaces the 401)."""
+    or a login ``claude auth status`` confirms. Presence, not correctness:
+    a stale login still advertises (the run path surfaces the 401)."""
     from precis.utils.claude_oauth import ENV_VAR
 
     if os.environ.get(ENV_VAR):
@@ -465,28 +539,58 @@ def _probe_latexmk() -> int:
 
 
 def claude_bin_present() -> bool:
-    """Public read of the ``claude_bin`` probe — whether THIS host can exec
-    ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
+    """Public read of the binary half of the ``claude_bin`` probe —
+    whether THIS host can exec ``claude`` (``PRECIS_CLAUDE_BIN`` or
+    ``claude`` on PATH), regardless of login state. The LLM router's
     rung gate reuses it so a host the capability advertisement marks
-    claude-less skips the same transports at dispatch."""
+    claude-less skips the same transports at dispatch (it checks the
+    credential separately); the advertised capability token is
+    :func:`_probe_claude_lane`, which layers the credential check on
+    top (gr701455)."""
     return _probe_claude_bin() == 1
 
 
 def claude_auth_present() -> bool:
     """Public read of the ``claude_config_mount`` probe — whether a
     non-``--bare`` ``claude -p`` can resolve a credential here (env token,
-    vault/bootstrap token, or an interactive ``~/.claude`` login). Presence,
-    not correctness: a stale login still reports True (the run path surfaces
-    the 401)."""
+    vault/bootstrap token, or a login ``claude auth status`` confirms).
+    Presence, not correctness: a stale login still reports True (the run
+    path surfaces the 401)."""
     return _probe_claude_config() == 1
 
 
+def claude_credential_present() -> bool:
+    """Whether ANY claude credential resolves on THIS host — the
+    :func:`claude_auth_present` arms (OAuth env/vault token, CLI login)
+    or an ``ANTHROPIC_API_KEY`` (env or vault), the billed fallback
+    ``prefer_oauth_over_api_key`` falls back to. Presence, not
+    correctness. The same union the LLM router's rung gate accepts
+    (:func:`precis.utils.llm.router._claude_credential_absent`), so a
+    host the ``claude_bin`` token lets through never fails the run gate's
+    credential check it would have passed (gr701455)."""
+    if claude_auth_present():
+        return True
+    try:
+        from precis import secrets as _secrets
+        from precis.utils.claude_oauth import API_KEY_VAR
+
+        return bool(_secrets.get_secret(API_KEY_VAR))
+    except Exception:
+        log.warning(
+            "capability_probe: claude api-key vault lookup raised", exc_info=True
+        )
+        return False
+
+
 def codex_bin_present() -> bool:
-    """Public read of the ``codex_exec`` lane's binary probe — whether THIS
-    host can exec ``codex`` (``PRECIS_CODEX_BIN`` or ``codex`` on PATH).
-    Delegates to :mod:`precis.utils.codex_exec` (the transport owns the
-    binary/env names); the LLM router's rung gate reads it so a codex-less
-    host skips the rung at dispatch (gr543830)."""
+    """Public read of the ``codex_exec`` lane's BINARY probe — whether
+    THIS host can exec ``codex`` (``PRECIS_CODEX_BIN`` or ``codex`` on
+    PATH), regardless of login state. Delegates to
+    :mod:`precis.utils.codex_exec` (the transport owns the binary/env
+    names); the LLM router's rung gate reads it so a codex-less host
+    skips the rung at dispatch (gr543830, checking the login separately).
+    The advertised capability token is :func:`_probe_codex_lane`, which
+    layers :func:`codex_login_present` on top (gr701455)."""
     from precis.utils.codex_exec import codex_bin_present as _probe
 
     return _probe()
@@ -518,8 +622,31 @@ def _probe_adapter_bin(adapter: str) -> int:
 
 def _probe_codex_bin() -> int:
     """The ``codex_exec`` lane's binary (``PRECIS_CODEX_BIN`` or ``codex``
-    on PATH) — the ``codex_bin`` token."""
+    on PATH) — binary presence ONLY; the ``codex_bin`` capability token
+    layers a login check on top (:func:`_probe_codex_lane`)."""
     return 1 if codex_bin_present() else 0
+
+
+def _probe_codex_lane() -> int:
+    """The ``codex_bin`` lane token — the codex binary AND a ChatGPT
+    subscription login (gr701455: ``codex login status`` must confirm —
+    agent-cli-update can install the CLI before the vendor login, and
+    every session placed on such a host died on a 401 within seconds,
+    spending the node's retry budget)."""
+    if not _probe_codex_bin():
+        return 0
+    return 1 if codex_login_present() else 0
+
+
+def _probe_claude_lane() -> int:
+    """The ``claude_bin`` lane token — the claude binary AND a resolvable
+    credential (gr701455, same incident as :func:`_probe_codex_lane`).
+    The credential arm accepts an ``ANTHROPIC_API_KEY`` as well as the
+    OAuth/login arms — the router's rung gate bills it as the fallback, so
+    an API-key-only host can run the lane and must keep advertising."""
+    if _probe_claude_bin() != 1:
+        return 0
+    return 1 if claude_credential_present() else 0
 
 
 def _probe_kimi_bin() -> int:
@@ -535,10 +662,15 @@ def _probe_devin_bin() -> int:
 def _probe_builder() -> int:
     """The ``builder`` token — at least one slice-lane binary on this
     host: the unpinned ``run_slice`` placement floor (gr676054). The
-    pick then filters to the adapters actually present."""
+    pick then filters to the adapters actually present. The
+    claude/codex entries are the LOGIN-gated lane probes
+    (:func:`_probe_claude_lane` / :func:`_probe_codex_lane`), not the
+    bare binary probes — an installed-but-unlogged-in CLI must not
+    satisfy the floor, or the pick lands on a lane that 401s every
+    session (gr701455)."""
     for probe in (
-        _probe_claude_bin,
-        _probe_codex_bin,
+        _probe_claude_lane,
+        _probe_codex_lane,
         _probe_kimi_bin,
         _probe_devin_bin,
     ):
@@ -573,8 +705,8 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "tts": _probe_tts,
     "embedder": _probe_embedder,
     "git": _probe_git,
-    "claude_bin": _probe_claude_bin,
-    "codex_bin": _probe_codex_bin,
+    "claude_bin": _probe_claude_lane,
+    "codex_bin": _probe_codex_lane,
     "kimi_bin": _probe_kimi_bin,
     "devin_bin": _probe_devin_bin,
     "builder": _probe_builder,
@@ -1126,6 +1258,7 @@ __all__ = [
     "capability_vocabulary",
     "claude_auth_present",
     "claude_bin_present",
+    "claude_credential_present",
     "mem_capacity",
     "mem_free_mb",
     "mem_reserve_mb",

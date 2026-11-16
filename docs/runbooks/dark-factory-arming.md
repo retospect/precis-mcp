@@ -577,7 +577,16 @@ The probes, re-run every heartbeat:
   every factory land queued "no host advertises repo_checkout", gr570787).
 - `claude_bin`: `claude` on the worker's `PATH`, or `PRECIS_CLAUDE_BIN`
   set to a name on `PATH` or an absolute path (a launchd `PATH` often
-  misses it).
+  misses it) — AND a credential the run path can resolve: the
+  `CLAUDE_CODE_OAUTH_TOKEN` env or vault value, an `ANTHROPIC_API_KEY`
+  (env or vault), or a login `claude auth status` confirms (gr701455:
+  the binary alone is not the token — a CLI installed by an
+  agent-cli-update before the vendor login advertised a lane whose every
+  session died on a 401). Check a host by hand with `claude auth status`.
+- `codex_bin`: the same binary resolution for `codex` (`codex` on
+  `PATH` / `PRECIS_CODEX_BIN`) AND a ChatGPT subscription login —
+  `codex login status` must answer `Logged in using ChatGPT` (an
+  API-key-only login is the billed path and does not advertise the lane).
 - `git`: `git` on the worker's `PATH`.
 
 Set the env vars in the worker's service environment and restart it; the
