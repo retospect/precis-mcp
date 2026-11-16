@@ -164,7 +164,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    Langevin MD run ('md', struct_md job) and the audited harvest
     #    trust-stamp correction ('trust', gr592893) — every other value
     #    is rejected -----------------------------------------------
-    ("structure", "put"): ("rerun", "neb", "md", "trust"),
+    ("structure", "put"): ("rerun", "neb", "md", "analyze", "trust"),
     # -- put: job's recognised modes are the retry surface
     #    (put(id=N, mode='retry')), the queued-pin move (mode='retarget')
     #    and the audited claim.* override door (mode='setting', gr556919);
