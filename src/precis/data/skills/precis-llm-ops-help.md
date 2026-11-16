@@ -75,7 +75,8 @@ rate-limit window is exhausted. `get(kind='llm', id='/pools')` is the
 live view; nothing LLM-backed runs until the window rolls or the cap is raised.
 A related per-host check: `quota_check:auth/<host>:claude-oauth` fires
 when a host's Claude OAuth credential is expired or unreadable; agent
-ticks on that host fail until it is renewed.
+ticks on that host fail until an operator replaces the vault token
+`CLAUDE_CODE_OAUTH_TOKEN` (see the alert's triage line).
 
 ## Why is background Claude work paused? Pool pacing
 
