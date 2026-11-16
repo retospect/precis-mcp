@@ -533,8 +533,15 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
     @contextmanager
     def spy(self: Any, timeout: float | None = None) -> Iterator[Any]:
         with orig(self, timeout=timeout) as conn:
-            yield conn
-        returned.append(conn)
+            try:
+                yield conn
+            finally:
+                # Record on the exception path too: a probe whose slice is
+                # spent raises through the body (its supported fail-open),
+                # and the pool still takes the connection back — gr700452
+                # had the bare final assert any() flake red on exactly this
+                # (the append after a plain yield never ran).
+                returned.append(conn)
 
     monkeypatch.setattr(PrecisPool, "connection", spy)
 
