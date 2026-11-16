@@ -10,14 +10,27 @@ pre-fix route. Seconds cover local.route (including placement); boards
 were built first. Boards were measured concurrently in separate local
 processes.
 
+Seconds re-measured 2026-11-16 on td686226 (sampling profiler on, load
+~40-65, all boards concurrent; sanity/blinky_led/usbc_attiny/esp32c3
+ran first, then nano, nano_usb_pd and r2 together). Results are
+unchanged; the speedup is CopperIndex.blocked_points pruning its
+(points x discs) distance matrix to the discs in reach, which was 16%
+of r2's CPU samples (6930/43985) and is now 2.8% (1260/44468). r2 still
+does not finish inside 3500 s. Its profile (44468 samples at 50 ms)
+puts build_wires at 88% (_grow_net 68%), CopperIndex.blocked_points at
+32% (mostly STRtree.query, 4693 samples at the leaf) and
+crossings.resolve_crossings at 2.8% (1262): the td678692 hang stack in
+resolve_crossings was a snapshot, not the cost; the cost is the wire
+growth's clearance queries.
+
 board           routable  routed  failed  drc_errors  seconds  cause
-sanity                20      20       0           0    4.644  complete
-blinky_led             1       1       0           0    0.617  complete; 1 dangling
-usbc_attiny            8       6       2          14   30.400  3V3/GND legalise spacing; no walled-off pins
-esp32c3               11       9       2           3  238.900  GND/VCC3V3 legalise spacing (no shove withdrawal)
-nano                  64      61       3          87 2396.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
-nano_usb_pd           64      61       3          87 2449.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
-nano_usb_pd_r2        72      41      31          60 5371.000  signal + power nets (pre-fix 44/72, DRC 64)
+sanity                20      20       0           0   12.200  complete
+blinky_led             1       1       0           0    0.600  complete; 1 dangling
+usbc_attiny            8       6       2          14   29.500  3V3/GND legalise spacing; no walled-off pins
+esp32c3               11       9       2           3  102.100  GND/VCC3V3 legalise spacing (no shove withdrawal)
+nano                  64      61       3          87 1495.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
+nano_usb_pd           64      61       3          87 1487.000  GND legalise+via; V5 withdrawn by shove (crossing; blocked by GND); VBUS withdrawn by shove (no-via-site)
+nano_usb_pd_r2        72      41      31          60  >3500.0  signal + power nets (pre-fix 44/72, DRC 64); unfinished at 3500 s
 
 For usbc_attiny, routable counts authored nets with at least two pins.
 Through main 99de0fedb its placement overflowed the GND corridor and the
