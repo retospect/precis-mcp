@@ -573,19 +573,18 @@ class IntrospectionMixin(RuntimeShape):
             f"AND {where}"
         )
         with self.store.pool.connection() as conn:
-            open_rows = conn.execute(
-                "SELECT date_trunc(%s, r.created_at AT TIME ZONE 'UTC'), "
-                "count(*) FROM refs r "
-                f"WHERE {where}{opens_window} GROUP BY 1 ORDER BY 1",
-                [bucket, *params, *window_params],
-            ).fetchall()
-            close_rows = conn.execute(
-                "SELECT date_trunc(%s, rt.created_at AT TIME ZONE 'UTC'), "
-                "count(DISTINCT r.ref_id) "
-                f"FROM refs r {terminal_sql}{closes_window} "
-                "GROUP BY 1 ORDER BY 1",
-                [bucket, sorted(closed), *params, *window_params],
-            ).fetchall()
+            from precis.reports.activity import flow_buckets
+
+            open_rows, close_rows = flow_buckets(
+                conn,
+                bucket=bucket,
+                where=where,
+                params=params,
+                closed=sorted(closed),
+                opens_window=opens_window,
+                closes_window=closes_window,
+                window_params=window_params,
+            )
             ttc = conn.execute(
                 "SELECT count(DISTINCT r.ref_id), "
                 "percentile_cont(0.5) WITHIN GROUP (ORDER BY "

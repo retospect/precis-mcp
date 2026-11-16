@@ -42,7 +42,17 @@ Agent and internal job types; the compute and sandbox types are in
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `money_refresh`     | `claude_inproc` | Refresh the `fx_rates` / `price_index` caches from the ECB and World Bank (deterministic; driven by a weekly recurring todo — minted by ops, never by hand) |
 | `draft_export`      | `job_inproc` (default; `claude_inproc` opt-in) | Compile a draft to PDF/DOCX — deterministic, no LLM; claims only on hosts advertising `latexmk`, and serializes per draft slug on a pg advisory lock |
+| `weekly_report` | `job_inproc` | Deterministic factory tables: jobs, gripe flow and origin/goal, releases, land outcomes, active quest ticks/sims, current open-gripe ages, and main commits. Params: `since`, `until` (UTC, half-open; defaults to the last seven days), optional paired `draft` slug and `section` heading handle (`dc<id>`). Returns tables as the job summary; with a destination replaces only direct table children, preserving prose and nested sections. |
 | `elsevier_abstract_backfill` | `claude_inproc` | Re-arm an operator-confirmed Elsevier preview cohort for re-fetch (stamps the existing `markup_refetch`/`oa_requeued` pins; bodies, hashes and events stay until a validated replacement ingests). Params: explicit `ref_ids`, `expected_count` (must equal `len(ref_ids)`), `dry_run` (default `true`). No provider or model call; never derives the cohort from body length. |
+
+The `weekly_report` scheduler is off by default; ask a human operator to
+configure the cadence and optional checkout/draft destination. It reports the
+previous complete UTC Monday-to-Monday week. Only `main` history is counted;
+absent/unreadable Git reports `git unavailable`.
+Gripe closures use current terminal tags, matching `flow`;
+job counts show current state of jobs created in the window. Open gripe ages
+are a current snapshot. Quest ticks count distinct numbered tick events,
+including repeated coordinator resumes only once per tick.
 
 ## Campaign, deferred and external-agent job_types
 

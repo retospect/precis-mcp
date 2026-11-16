@@ -1069,6 +1069,7 @@ def _reset_plugin_cache() -> None:
 #: merely built a GripeHandler then reached the router unbound). Keep
 #: in sync with the ``get_job_type`` dispatch chain.
 _BUILTIN_JOB_TYPES: tuple[str, ...] = (
+    "weekly_report",
     "fix_gripe",
     "plan_tick",
     "doctor_tick",
@@ -1285,6 +1286,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         # failure signature (me580555). Plugin dispatch under job_inproc,
         # armed by a recurring todo (see its docstring).
         from precis.workers.job_types.ci_watch import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "weekly_report":
+        from precis.workers.job_types.weekly_report import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

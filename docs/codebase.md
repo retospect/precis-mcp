@@ -126,6 +126,11 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
+`reports.weekly` collects factory tables for the deterministic `weekly_report`
+job. It shares gripe closure clocks with the flow view and replaces direct
+draft-section table children atomically, preserving authored prose. Its weekly
+scheduler cadence is opt-in; Git history requires a configured checkout.
+
 Builder drift reports schedule ``task_class='skill'`` children after land;
 their live-tool checks run on MCP lanes with writes confined to skills and
 skill evals. Skill ``rulings:`` metadata exposes provenance through the
