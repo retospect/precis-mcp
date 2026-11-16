@@ -222,9 +222,19 @@ def _race(store: Any, hub: int, call: Any) -> list[Any]:
         return outcomes
 
 
-def test_competing_supersede_has_one_winner(store: Any) -> None:
+@pytest.mark.parametrize("agent_door", [False, True])
+def test_competing_supersede_has_one_winner(store: Any, agent_door: bool) -> None:
+    """Both doors must take the hub lock before locking any publish row."""
     old = _old(store)
-    outcomes = _race(store, old.claim_ref_id, lambda: store.nanopub_supersede(old.id))
+    outcomes = _race(
+        store,
+        old.claim_ref_id,
+        lambda: (
+            supersede(store, old.claim_ref_id, reason="concurrent review")
+            if agent_door
+            else store.nanopub_supersede(old.id)
+        ),
+    )
     winners = [row for row in outcomes if not isinstance(row, Exception)]
     assert len(winners) == 1
     after = _persisted(store, old)

@@ -26,6 +26,12 @@ def supersede(store: Store, hub_ref_id: int, *, reason: str) -> PublishRow:
     if not reason or not reason.strip():
         raise BadInput("supersede needs a non-empty reason (the audit trail)")
     with store.tx() as conn:
+        # Staging always locks refs before publish rows. Taking the publish
+        # lock first would deadlock with create_publish_row or another stager.
+        conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+            (hub_ref_id,),
+        )
         old = store.nanopub_publish_row(hub_ref_id, conn=conn, for_update=True)
         if old is None:
             raise BadInput(f"hub fi{hub_ref_id} has no live publish row")

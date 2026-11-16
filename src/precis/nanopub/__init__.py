@@ -39,7 +39,7 @@ Slices 1-3 — local, reversible:
 - :mod:`.mint` — freeze-at-review + mint+sign pipeline; signs the
   artifact, not the claim (reword => new claim identity, re-sign => new
   artifact identity only).
-- :mod:`.supersede` — interactive local successor staging for anchored,
+- :mod:`.supersede` — audited agent/CLI successor staging for anchored,
   unpublished hubs. The explicit publish-row relationship (0207) survives
   discard/restage independently of disposable grounding; it supplies
   ``npx:supersedes`` in pubinfo and enforces the predecessor's signing key.
@@ -51,8 +51,9 @@ Slices 1-3 — local, reversible:
   second short transaction commits publishing->published. A definite 4xx
   releases the row back to anchored; anything ambiguous stays ``publishing``
   for ``precis nanopub reconcile``. ``publishing`` rows refuse supersede,
-  restage, discard, reopen and re-publish. Signed and published supersession
-  and retraction remain separate follow-ups.
+  restage, discard, reopen and re-publish. Reviewed/signed rows can reopen
+  with an audit of the voided signature; signing remains human-only.
+  Published supersession and retraction remain separate follow-ups.
 - :mod:`.freshness` — sign-time ``grounding-stale`` gate: supporting
   evidence linked after approve froze the grounding (``frozen_at`` in the
   envelope) blocks sign unless confirmed.

@@ -45,7 +45,9 @@ _STATUS_TRACING = "tracing"
 #: (:class:`precis.taproot.hub.HubFrozenError`).
 _FROZEN_NEXT = (
     "the hub has signed nanopub bytes, so its identity is frozen — "
-    "supersede the nanopub (a human door) and edit the successor instead"
+    "edit(kind='finding', id='fi<N>', args={'reopen': True, 'reason': '<why>'}) "
+    "before anchoring, or args={'supersede': True, 'reason': '<why>'} for an "
+    "anchored, unpublished claim; published claims need a human retract"
 )
 
 
