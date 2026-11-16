@@ -1927,6 +1927,21 @@ class SearchMixin(RuntimeShape):
             )
         else:
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
+        # gr592952: a date-windowed search dates its rows — each row header
+        # ends with the ref's created date, so the window is verifiable
+        # per row instead of an unlabeled filter the caller must trust.
+        created_by_ref: dict[int, str] = {}
+        if since is not None or until is not None:
+            for _b, r, _s in results:
+                rid = getattr(r, "id", None)
+                cat = getattr(r, "created_at", None)
+                if rid is not None and cat is not None:
+                    created_by_ref[int(rid)] = cat.date().isoformat()
+
+        def _row_suffix(hit: Any) -> str:
+            d = created_by_ref.get(hit.ref_id) if hit.ref_id is not None else None
+            return f" · created {d}" if d else ""
+
         response = merge_and_render(
             [hits],
             # The pinned card is a page row, not an extra — it fills
@@ -1937,6 +1952,7 @@ class SearchMixin(RuntimeShape):
             header_noun="match",
             mode="rrf",
             empty_body=empty_body,
+            row_suffix_for=_row_suffix if created_by_ref else None,
         )
         # gr503440: the date-ordered render had no "N of K" cue — the
         # store over-fetches a relevance-qualified pool past top_k and

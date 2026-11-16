@@ -720,6 +720,11 @@ def run_search_step(
                 dst_ref_id=quest_id,
                 relation="serves",
                 set_by="agent",
+                # gr592952: the edge carries the query that found the
+                # candidate — the weekly "what literature arrived" read
+                # (view='literature') reports the lit-search query per
+                # linked ref from this meta, no logbook parse needed.
+                meta={"found_by": query},
             )
             store.add_tag(rid, quest_tag, set_by="system")
             existing.add(rid)

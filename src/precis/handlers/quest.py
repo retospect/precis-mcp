@@ -704,6 +704,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "series",
     "measures",
     "logbook",
+    "literature",
     "pourbaix",
     "kinetics-summary",
     "status",
@@ -900,6 +901,33 @@ def _view_args_line(*, trusted: bool, sort: tuple[str, str] | None) -> str | Non
 #: near 14 kB — well under the 24 kB transport cap; ``args={'limit': N}``
 #: re-sizes and the trailer's ``next:`` names the older page.
 _LOGBOOK_PAGE = 50
+
+#: ``view='literature'`` page size (gr592952) — arrival rows are one line
+#: each (~110 B), so 100 rows stay well under the transport cap; the
+#: trailer's ``next:`` carries the resolved window + offset.
+_LITERATURE_PAGE = 100
+
+#: ``args={'kind': …}`` values ``view='literature'`` accepts — the
+#: literature-bearing serving kinds; absent means every kind.
+_LITERATURE_KINDS: tuple[str, ...] = ("paper", "finding")
+
+#: The ``lit-search: "<query>" → …`` preamble on a lit-search logbook line
+#: — view='literature' parses the query back out for edges minted before
+#: ``meta.found_by`` (gr592952).
+_LIT_SEARCH_QUERY_RE = re.compile(r'^lit-search: "(.*)" →')
+
+
+def _literature_offset(value: Any) -> int:
+    """``args['offset']`` for ``view='literature'`` paging — >= 0."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise BadInput(
+            f"args={{'offset': {value!r}}}: offset must be an integer >= 0",
+            next="get(kind='quest', id=N, view='literature', args={'offset': 0})",
+        )
+    return value
+
 
 #: Compact relative ``since=``/``until=`` — ``30m``/``12h``/``7d``/``2w`` —
 #: read as "<n> <unit> ago" off now (gr537834); anything else defers to
@@ -1114,6 +1142,12 @@ class QuestHandler(NumericRefHandler):
                 # view='logbook' text filter (gr592279) — kept out of the
                 # top-level q= kwarg, which is find-in-ref's door.
                 "q",
+                # view='logbook' signal filter (gr592952) — keeps only
+                # entries whose meta carries that signal (e.g. lit-search).
+                "signal",
+                # view='literature' arrival listing (gr592952): the window,
+                # the ref-kind filter and the paging offset.
+                "kind",
                 # candidate-view trust filter + measure sort (gr592277)
                 "trusted",
                 "sort",
@@ -2165,6 +2199,9 @@ class QuestHandler(NumericRefHandler):
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref, args))
+        if view == "literature" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_literature(ref, args))
         if view == "pourbaix" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
@@ -3156,6 +3193,11 @@ class QuestHandler(NumericRefHandler):
         entries *matching* a query — the same ranked retrieval
         ``search(kind='quest', scope='qu<N>', q='…')`` runs, windowed the
         same way and rendered with each entry's ``ql<cid>`` handle.
+
+        ``args={'signal': '…'}`` (gr592952) keeps only entries whose meta
+        carries that ``signal`` value — e.g. ``'lit-search'`` windows the
+        lit-search lines out of a crowded notebook. It composes with
+        ``since``/``until``/``limit`` and the same paging.
         """
         args = args if isinstance(args, dict) else {}
         q_raw = args.get("q")
@@ -3164,6 +3206,13 @@ class QuestHandler(NumericRefHandler):
             raise BadInput(
                 "args={'q': …} on view='logbook' is empty",
                 next="args={'q': 'words to find'} — or drop it for the paged listing",
+            )
+        signal_raw = args.get("signal")
+        signal = str(signal_raw).strip() if signal_raw is not None else ""
+        if signal_raw is not None and not signal:
+            raise BadInput(
+                "args={'signal': …} on view='logbook' is empty",
+                next="args={'signal': 'lit-search'} — or drop it for all entries",
             )
         now = datetime.now(UTC)
         since_dt = _logbook_bound(args.get("since"), "since", now=now)
@@ -3182,12 +3231,16 @@ class QuestHandler(NumericRefHandler):
             )
 
         window = [b for b in entries if _in_window(b)]
+        if signal:
+            window = [b for b in window if (b.meta or {}).get("signal") == signal]
         lines = self._render_header(ref, tags, entries)
         spec: list[str] = []
         if since_dt is not None:
             spec.append(f"since {_iso_z(since_dt)}")
         if until_dt is not None:
             spec.append(f"until {_iso_z(until_dt)}")
+        if signal:
+            spec.append(f"signal {signal}")
         spec.append(f"limit {limit}")
         if q_text:
             in_window = {b.id for b in window}
@@ -3231,6 +3284,8 @@ class QuestHandler(NumericRefHandler):
                 # would drift under the reader.
                 call_args.append(f"'since': '{_iso_z(since_dt)}'")
             call_args.append(f"'until': '{_iso_z(_utc_aware(shown[0].created_at))}'")
+            if signal:
+                call_args.append(f"'signal': {signal!r}")
             if "limit" in args:
                 call_args.append(f"'limit': {limit}")
             lines.append(
@@ -3252,6 +3307,122 @@ class QuestHandler(NumericRefHandler):
         return pourbaix_map.render_quest_maps(
             ref, pourbaix_map.quest_maps(self.store, ref)
         )
+
+    def _render_literature(self, ref: Ref, args: dict[str, Any] | None) -> str:
+        """`view='literature'` — what arrived in this quest's service inside
+        a window (gr592952): the inbound ``serves`` links whose
+        ``links.created_at`` falls in ``[since, until)`` (``until``
+        exclusive), newest first — the weekly "what literature arrived"
+        read that ``view='links'`` (no ages) and the logbook (no per-ref
+        door) couldn't answer.
+
+        ``args={'since': …, 'until': …}`` take an ISO timestamp or a
+        compact ``'7d'`` duration (either bound optional); ``args={'kind':
+        'paper'|'finding'}`` narrows the serving ref's kind. Each row shows
+        the handle, kind, title (60 chars), ``linked_at`` (UTC), the ref's
+        own ``created_at`` and ``found_by`` — the lit-search query that
+        surfaced it: the edge's ``meta.found_by`` when present (edges
+        linked since gr592952), else the newest ``signal: lit-search``
+        logbook line naming the ref's handle, else ``-``. The summary line
+        counts how many of the linked refs were *newly acquired* in the
+        window (ref ``created_at`` inside it).
+
+        Paged :data:`_LITERATURE_PAGE` rows; when the window holds more,
+        the trailer's ``next:`` repeats the resolved bounds (never the
+        caller's relative spelling, which would re-anchor) plus the offset.
+        """
+        args = args if isinstance(args, dict) else {}
+        now = datetime.now(UTC)
+        since_dt = _logbook_bound(args.get("since"), "since", now=now)
+        until_dt = _logbook_bound(args.get("until"), "until", now=now)
+        kind_raw = args.get("kind")
+        kinds: tuple[str, ...] | None = None
+        if kind_raw is not None:
+            kind = str(kind_raw).strip().lower()
+            if kind not in _LITERATURE_KINDS:
+                raise BadInput(
+                    f"args={{'kind': {kind_raw!r}}}: view='literature' "
+                    f"accepts {sorted(_LITERATURE_KINDS)}",
+                    next="get(kind='quest', id=N, view='literature') "
+                    "— or drop kind for every kind",
+                )
+            kinds = (kind,)
+        offset = _literature_offset(args.get("offset"))
+
+        rows = self.store.serves_links_in_window(
+            ref.id, since_dt, until_dt, kinds=kinds
+        )
+        lit_lines = [
+            (b.text, (b.meta or {}).get("signal")) for b in self._log_entries(ref.id)
+        ]
+
+        def _found_by(link: Any, served: Ref) -> str:
+            found = (link.meta or {}).get("found_by")
+            if isinstance(found, str) and found.strip():
+                return found.strip()
+            handle = (
+                handle_registry.try_format(served.kind, served.id)
+                or f"{served.kind}:{served.id}"
+            )
+            # Fallback for edges minted before meta.found_by: the newest
+            # lit-search logbook line naming this ref's handle carries the
+            # query in its `lit-search: "<query>" → …` preamble.
+            for text, signal in reversed(lit_lines):
+                if signal == "lit-search" and handle in text:
+                    m = _LIT_SEARCH_QUERY_RE.match(text.strip())
+                    if m is not None:
+                        return m.group(1)
+            return "-"
+
+        def _in_acquired_window(served: Ref) -> bool:
+            ts = _utc_aware(served.created_at)
+            return (since_dt is None or ts >= since_dt) and (
+                until_dt is None or ts < until_dt
+            )
+
+        acquired = sum(1 for _ln, served in rows if _in_acquired_window(served))
+        lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]
+        spec: list[str] = []
+        if since_dt is not None:
+            spec.append(f"since {_iso_z(since_dt)}")
+        if until_dt is not None:
+            spec.append(f"until {_iso_z(until_dt)}")
+        if kinds is not None:
+            spec.append(f"kind {kinds[0]}")
+        spec.append("newest first")
+        lines.append(
+            f"\nliterature: {len(rows)} linked, {acquired} of them "
+            f"newly acquired in the window · {' · '.join(spec)}"
+        )
+        page = rows[offset : offset + _LITERATURE_PAGE]
+        for link, served in page:
+            handle = (
+                handle_registry.try_format(served.kind, served.id)
+                or f"{served.kind}:{served.id}"
+            )
+            title = (served.title or "").splitlines()[0][:60]
+            lines.append(
+                f"- {handle} · {served.kind} · {title} · "
+                f"linked {_iso_z(link.created_at)} · "
+                f"created {_utc_aware(served.created_at).date().isoformat()} · "
+                f'found by "{_found_by(link, served)}"'
+            )
+        remaining = len(rows) - offset - len(page)
+        if remaining > 0:
+            call_args: list[str] = []
+            if since_dt is not None:
+                call_args.append(f"'since': '{_iso_z(since_dt)}'")
+            if until_dt is not None:
+                call_args.append(f"'until': '{_iso_z(until_dt)}'")
+            if kinds is not None:
+                call_args.append(f"'kind': {kinds[0]!r}")
+            call_args.append(f"'offset': {offset + _LITERATURE_PAGE}")
+            lines.append(
+                f"\nnext: get(kind='quest', id={ref.id}, view='literature', "
+                f"args={{{', '.join(call_args)}}}) — {remaining} more "
+                f"linked ref{'s' if remaining != 1 else ''} in the window"
+            )
+        return "\n".join(lines)
 
     def _render_tree(
         self, ref: Ref, *, depth: int = 0, visited: set[int] | None = None

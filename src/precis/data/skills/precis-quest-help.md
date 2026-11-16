@@ -215,9 +215,9 @@ get(
     args={"since": "7d", "limit": 20}
 )  # bounded window: ISO or relative ('7d','12h','2w') since=/until=, entry limit
 get(
-    kind="quest", id=7, view="logbook",
-    args={"q": "trusted anchor"}
-)  # ranked matching entries (ql handles), composes with since=/until=/limit
+    kind="quest", id=7, view="logbook", args={"q": "anchor"}
+)  # ranked matching entries (ql handles); args={"signal": "lit-search"}
+# keeps only entries whose meta carries that signal — same window + paging
 search(kind="quest", q="trusted anchor", scope="qu7")  # same retrieval
 # rendered as a hit list — also args={"within": "qu7"}
 get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
@@ -232,7 +232,8 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
-leaderboard · results · series · measures · logbook · pourbaix · status ·
+leaderboard · results · series · measures · logbook · literature ·
+pourbaix · status ·
 rubric · served · meta · replay · kinetics-summary · considerations`
 (quest-specific — `dossier` is deprecated, kept only for
 quests not yet converted) plus the generic
@@ -249,9 +250,16 @@ A *deed* is not a view — it is the milestone-typed slice of the log. Bare
 quest with thousands); `view='logbook'` is the append-only
 notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
 'until': '2026-10-01', 'limit': 100}` bounds the window, and each page's
-`next:` names the call for the older page); `view='log'` is the raw
+`next:` names the call for the older page); `args={'q': …}` ranks the
+matching entries, `args={'signal': …}` keeps only entries with that meta
+signal (the tick's lit-search lines carry `signal: lit-search`) — both
+inside the same window and paging;
+`view='log'` is the raw
 ref-events ledger, a different
 (generic) thing.
+
+## Read a quest — status, rubric, raw
+
 `view='status'` is the one-call orientation read (~1 kB): the lifecycle
 line (striving status · priority · horizon) plus the frontier counts —
 candidates by band and fidelity tier, trusted-per-axis coverage
@@ -284,6 +292,34 @@ All of this is on the web too: `/refs/quest/<id>` is a dedicated hub
 dashboard (header + momentum/tote, the graph neighbourhood + logbook
 tail, frontier/gaps panels, servers-lite) — readable without calling
 `get(view=…)`.
+
+## What literature arrived — `view='literature'`
+
+`view='literature'` answers "what literature arrived for this quest this
+week": the inbound `serves` links whose link timestamp falls inside
+`args={'since': …, 'until': …}` (`until` exclusive, ISO or `'7d'`-style),
+newest first — the window sits on the *link* (when the ref entered the
+quest's service), so a paper minted last year but linked yesterday is an
+arrival too.
+
+```python
+get(kind="quest", id=7, view="literature", args={"since": "7d"})
+get(
+    kind="quest", id=7, view="literature",
+    args={"since": "2026-11-01", "until": "2026-11-08", "kind": "paper"},
+)  # args={"kind": "paper"|"finding"} narrows the serving ref's kind
+```
+
+One dated row per arrival: handle, kind, title, `linked_at` (UTC), the
+ref's own `created_at`, and `found by "<query>"` — the lit-search query
+that surfaced it (the edge's `found_by` meta, else the matching
+`signal: lit-search` logbook line, else `-`). The summary counts how
+many arrivals were *newly acquired* (the ref itself minted) inside the
+window. Rows page at 100; when the window holds more, the trailer's
+`next:` repeats the resolved bounds plus an offset — never a silent cut.
+A date-windowed `search(…)` likewise dates its rows: each row header
+ends with ` · created YYYY-MM-DD`, so a `since=`/`until=` filter is
+verifiable per row.
 
 ## Read a quest's numbers — results, frontier, series, measures
 

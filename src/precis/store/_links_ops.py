@@ -1754,6 +1754,54 @@ class LinksMixin:
             out.append(_row_to_link(r))
         return out
 
+    def serves_links_in_window(
+        self,
+        quest_id: int,
+        since: datetime | None,
+        until: datetime | None,
+        *,
+        kinds: tuple[str, ...] | list[str] | None = None,
+    ) -> list[tuple[Link, Ref]]:
+        """Inbound ``serves`` edges on ``quest_id`` whose ``links.created_at``
+        falls in ``[since, until)`` (``until`` exclusive, either bound
+        optional), each paired with its (live) serving ref — newest link
+        first.
+
+        The store read behind ``view='literature'`` (gr592952): the weekly
+        "what literature arrived" report needs the arrival window on the
+        EDGE (when the ref entered the quest's service), not the ref's own
+        creation — a paper minted last year linked yesterday is an arrival
+        too. ``kinds`` narrows the serving ref's kind (``paper`` /
+        ``finding``); retired refs are skipped. The full set comes back —
+        the handler pages the render.
+        """
+        clauses = ["l.dst_ref_id = %s", "l.relation = 'serves'", "r.retired_at IS NULL"]
+        params: list[Any] = [quest_id]
+        if kinds:
+            clauses.append("r.kind = ANY(%s)")
+            params.append(list(kinds))
+        if since is not None:
+            clauses.append("l.created_at >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("l.created_at < %s")
+            params.append(until)
+        sql = (
+            f"SELECT {_LINK_SELECT_PROJ}, {_REFS_COLS_ALIASED} "
+            f"{_LINK_SELECT_FROM} JOIN refs r ON r.ref_id = l.src_ref_id "
+            f"WHERE {' AND '.join(clauses)} "
+            # link_id tie-break: created_at alone is nondeterministic for
+            # links minted in one transaction (now() is txn-frozen) —
+            # same reason as links_for's ORDER BY.
+            "ORDER BY l.created_at DESC, l.link_id DESC"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        # The join projects the 11 link columns (mirroring
+        # :data:`_LINK_SELECT_PROJ`) then the 33 ref columns
+        # (:data:`_REFS_COLS_ALIASED`); slice per mapper's layout.
+        return [(_row_to_link(r[:11]), _row_to_ref(r[11:])) for r in rows]
+
     def neighbourhood(
         self,
         kind: str,

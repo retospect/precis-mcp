@@ -838,3 +838,23 @@ def test_metadata_less_hit_is_not_linked(store: Any) -> None:
     assert f"pa{bare} (no title/abstract)" in log
     # Cheap triage is not a judgment: no considered verdict was written.
     assert store.links_for(quest, direction="out", relation="considered") == []
+
+
+def test_link_meta_carries_query(store: Any) -> None:
+    """gr592952 slice 1: the serves edge minted by a lit-search carries
+    ``meta.found_by`` — the query text that surfaced the candidate — so
+    the view='literature' arrival listing can name the finding query
+    without parsing the logbook."""
+    quest = store.insert_ref(kind="quest", slug=None, title="the striving").id
+    paper = store.insert_ref(kind="paper", slug="found-one", title="A title").id
+
+    qsearch.run_search_step(
+        store,
+        quest,
+        ["perovskite water splitting"],
+        search_fn=lambda _s, _q, _ex: [(paper, 0.9)],
+    )
+
+    edges = store.links_for(quest, direction="in", relation="serves")
+    assert [ln.src_ref_id for ln in edges] == [paper]
+    assert edges[0].meta.get("found_by") == "perovskite water splitting"

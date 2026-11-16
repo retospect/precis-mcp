@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -359,6 +360,7 @@ def merge_and_render(
     empty_body: str | None = None,
     output_shape: _OutputShape = "markdown",
     link_summary: dict[int, dict[tuple[str, str], int]] | None = None,
+    row_suffix_for: Callable[[SearchHit], str] | None = None,
 ) -> Response:
     """Merge ranked ``SearchHit`` streams into a single rendered Response.
 
@@ -396,6 +398,10 @@ def merge_and_render(
             used only by the ``output_shape="toon"`` renderer to
             populate the ``links`` column.  Ignored by the markdown
             and keywords shapes.
+        row_suffix_for: Optional per-hit suffix appended to the row's
+            ``## N.`` header line (e.g. ``" · created 2026-11-14"`` —
+            the dated source-search window, gr592952). ``None`` (the
+            default) leaves every row byte-identical to before.
 
     Returns:
         ``Response`` whose body is the rendered merge.  Cost is
@@ -453,7 +459,8 @@ def merge_and_render(
         lines.append(_render_keywords_table(rendered))
     else:
         for i, hit in enumerate(rendered, 1):
-            lines.append(_render_hit(i, hit, show_label=show_label))
+            suffix = row_suffix_for(hit) if row_suffix_for is not None else ""
+            lines.append(_render_hit(i, hit, show_label=show_label, suffix=suffix))
     return Response(
         body="\n".join(lines),
         result_count=len(rendered),
@@ -792,7 +799,9 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
     return render_agent_table(rows, schema=schema)
 
 
-def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
+def _render_hit(
+    rank: int, hit: SearchHit, *, show_label: bool, suffix: str = ""
+) -> str:
     label = ""
     if show_label:
         marker = hit.reach or hit.kind
@@ -804,7 +813,7 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     tag_suffix = f"  {hit.tags}" if hit.tags else ""
     size = _size_cell(hit.n_bytes or 0)
     size_suffix = f" · {size}" if size else ""
-    parts = [f"\n## {rank}. {ident}{label}{tag_suffix}{size_suffix}"]
+    parts = [f"\n## {rank}. {ident}{label}{tag_suffix}{size_suffix}{suffix}"]
     if hit.title:
         # Display clip only — ``hit.title`` itself stays whole for
         # title-phrase ranking and TOON summaries; a title that is the

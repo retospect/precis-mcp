@@ -226,6 +226,90 @@ class TestLogbookViewQ:
             h.get(id=qid, view="logbook", args={"q": "  "})
 
 
+class TestLogbookSignalFilter:
+    """gr592952 slice 2: ``args={'signal': …}`` on view='logbook' keeps
+    only entries whose meta carries that signal — the lit-search lines
+    out of a crowded notebook — inside the since/until window."""
+
+    def _quest_with_signals(self, store: Any) -> tuple[Any, int]:
+        from precis.quest.logbook import append_entry
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest with mixed signals"))
+        h.put(id=qid, text="an ordinary observation", entry="observation")
+        append_entry(
+            store,
+            qid,
+            text='lit-search: "NO NH3 Pd" → linked 1 source(s): pa1',
+            entry_type="result",
+            by="agent",
+            extra_meta={"signal": "lit-search"},
+        )
+        append_entry(
+            store,
+            qid,
+            text='lit-search: "perovskite" → nothing new linked',
+            entry_type="observation",
+            by="agent",
+            extra_meta={"signal": "lit-search"},
+        )
+        return h, qid
+
+    def test_signal_filter_windows_lit_search_lines(self, store: Any) -> None:
+        h, qid = self._quest_with_signals(store)
+        body = h.get(id=qid, view="logbook", args={"signal": "lit-search"}).body
+        assert "signal lit-search" in body
+        assert 'lit-search: "NO NH3 Pd"' in body
+        assert 'lit-search: "perovskite"' in body
+        assert "an ordinary observation" not in body
+
+    def test_signal_filter_composes_with_since_window(self, store: Any) -> None:
+        h, qid = self._quest_with_signals(store)
+        # age the first lit-search line out of a '1h' window
+        cids = _ql_ids(store, qid)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET created_at = created_at - interval '2 days' "
+                "WHERE chunk_id = %s",
+                (cids[1],),
+            )
+            conn.commit()
+        body = h.get(
+            id=qid, view="logbook", args={"signal": "lit-search", "since": "1h"}
+        ).body
+        assert 'lit-search: "perovskite"' in body
+        assert 'lit-search: "NO NH3 Pd"' not in body
+        assert "an ordinary observation" not in body
+
+    def test_signal_filter_paging_next_page(self, store: Any) -> None:
+        from precis.quest.logbook import append_entry
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest with many lit-search lines"))
+        for i in range(3):
+            append_entry(
+                store,
+                qid,
+                text=f'lit-search: "q{i}" → nothing new linked',
+                entry_type="observation",
+                by="agent",
+                extra_meta={"signal": "lit-search"},
+            )
+        h.put(id=qid, text="a plain note", entry="note")
+        body = h.get(
+            id=qid, view="logbook", args={"signal": "lit-search", "limit": 2}
+        ).body
+        assert '"q2"' in body and '"q1"' in body
+        assert '"q0"' not in body
+        assert "next:" in body
+        assert "signal" in body.split("next:")[1]
+
+    def test_signal_empty_refused(self, store: Any) -> None:
+        h, qid = self._quest_with_signals(store)
+        with pytest.raises(BadInput, match="is empty"):
+            h.get(id=qid, view="logbook", args={"signal": "  "})
+
+
 # ── tool boundary ─────────────────────────────────────────────────
 #
 # td626940: the get() tool's args= reserved-key gate rejected the
