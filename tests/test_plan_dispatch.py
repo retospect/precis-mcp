@@ -6426,10 +6426,13 @@ def _reviewed_landed(store: Store, verdict: str) -> T.PlanMint:
     return mint
 
 
-def _reviewed_pending(store: Store, verdict: str) -> T.PlanMint:
+def _reviewed_pending(
+    store: Store, verdict: str, head: str | None = None
+) -> T.PlanMint:
     """The pre-land shape (gr570506): the build's clean exit pushed its
     branch, stamped ``meta.pending_land`` and closed done; the review
-    session ran, posted ``verdict`` and left its claim."""
+    session ran, posted ``verdict`` and left its claim. ``head`` is the
+    pushed tip ``run_slice`` stamps in the params (gr688058)."""
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
@@ -6448,6 +6451,7 @@ def _reviewed_pending(store: Store, verdict: str) -> T.PlanMint:
                 "worktree": f"/tmp/slice-td{build}",
                 "branch": f"slice/{build}",
                 "lane": "claude-sub",
+                **({"head": head} if head else {}),
             }
         },
     )
@@ -7091,16 +7095,22 @@ def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
 
 
 def _rebuild_and_review(
-    store: Store, build: int, review: int, verdict: str
+    store: Store, build: int, review: int, verdict: str, head: str | None = None
 ) -> pd.PassResult:
     """One more pre-land cycle after a send-back: the reopened build's
-    newest ``run_slice`` ends clean and defers its land again, the
-    released reviewer runs and posts ``verdict``; returns the pass that
-    read it."""
+    newest ``run_slice`` ends clean and defers its land again (``head``
+    the pushed tip it stamps, gr688058), the released reviewer runs and
+    posts ``verdict``; returns the pass that read it."""
     _set_job_status(store, _run_slice_jobs(store, build)[-1], "succeeded")
     store.stamp_ref_meta(
         build,
-        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                **({"head": head} if head else {}),
+            }
+        },
     )
     _mark_done(store, build)
     pd.run_pass(store)
@@ -7132,30 +7142,37 @@ def test_preland_fix_handback_outranks_an_older_brief(store: Store) -> None:
 
 
 def test_preland_fix_rounds_cap_asks_the_coordinator(store: Store) -> None:
-    """gr684815: every pre-land send-back re-arms the builder's retry
-    budget, so nothing bounded the build→review loop. At
-    ``PRELAND_FIX_CAP`` verdicts in a row the tick mints no rebuild: the
-    build is held on one coordinator ask, and the count clears so the
-    answer buys a fresh one."""
+    """gr684815, gr688058: every pre-land send-back re-arms the builder's
+    retry budget, so the loop needs a bound — but the cap is the
+    backstop, not the stop. While every verdict is a new finding the
+    rounds run to ``PRELAND_FIX_CAP``, and only then does the build hold
+    on one coordinator ask, the count clearing so the answer buys a
+    fresh one."""
     mint = _reviewed_pending(store, "review: FIX — finding one")
     build, review = mint.ids["build"], mint.ids["review"]
     pd.run_pass(store)
-    _rebuild_and_review(store, build, review, "review: FIX — finding two")
-    assert _meta(store, build)["preland_fix_rounds"]["count"] == 2
-    assert _blocked_by_ids(store, build) == []
+    for i in range(2, pd.PRELAND_FIX_CAP):
+        res = _rebuild_and_review(store, build, review, f"review: FIX — finding {i}")
+        assert res.asks == 0
+        assert _meta(store, build)["preland_fix_rounds"]["count"] == i
+        assert _blocked_by_ids(store, build) == []
     before = len(_run_slice_jobs(store, build))
 
-    res = _rebuild_and_review(store, build, review, "review: FIX — finding three")
+    res = _rebuild_and_review(
+        store, build, review, f"review: FIX — finding {pd.PRELAND_FIX_CAP}"
+    )
     assert res.asks == 1
     (ask,) = _blocked_by_ids(store, build)
     assert "ask-coordinator" in _open_tags(store, ask)
-    assert "finding three" in "\n".join(
+    assert f"finding {pd.PRELAND_FIX_CAP}" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
     # The finding is still handed back and the build reopened — but no
     # rebuild job mints while the ask stands.
     assert _status(store, build) == "open"
-    assert any("finding three" in c for c in _todo_comments(store, build))
+    assert any(
+        f"finding {pd.PRELAND_FIX_CAP}" in c for c in _todo_comments(store, build)
+    )
     assert len(_run_slice_jobs(store, build)) == before
     assert _meta(store, build).get("preland_fix_rounds") is None
     assert _status(store, review) == "open"
@@ -7180,6 +7197,322 @@ def test_preland_same_finding_twice_asks_the_coordinator(store: Store) -> None:
     (ask,) = _blocked_by_ids(store, build)
     assert "ask-coordinator" in _open_tags(store, ask)
     assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_distinct_findings_on_new_heads_keep_rebuilding(
+    store: Store,
+) -> None:
+    """gr688058: three FIX verdicts in a row, each a NEW finding on a
+    fresh verified head — the loop is converging, not stuck: no ask
+    fires, the next rebuild mints, and the hand-back carries only the
+    newest finding."""
+    h1, h2, h3, h4 = "1" * 40, "2" * 40, "3" * 40, "4" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h2}"
+        "\n\nanchors: b.py::g",
+        head=h2,
+    )
+    assert res.asks == 0
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — c.py::h returns early; verified head {h3}\n\nanchors: c.py::h",
+        head=h3,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 3
+    assert _blocked_by_ids(store, build) == []
+    # The third verdict minted the FOURTH run: the initial job plus one
+    # rebuild per send-back.
+    assert len(_run_slice_jobs(store, build)) == 4
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — d.py::i leaks the handle; verified head {h4}"
+        "\n\nanchors: d.py::i",
+        head=h4,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 4
+    handbacks = [
+        c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
+    ]
+    assert "d.py::i" in handbacks[-1] and "c.py::h" not in handbacks[-1]
+
+
+def test_preland_fix_on_an_unchanged_head_asks_the_coordinator(
+    store: Store,
+) -> None:
+    """gr688058 (a): the pushed tip the second verdict judges is the
+    first's — the rebuild pushed nothing new, so the builder is not
+    acting on the finding. The loop stops on the second verdict, not
+    the cap."""
+    h = "5" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h}",
+        head=h,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    before = len(_run_slice_jobs(store, build))
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h}",
+        head=h,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "unchanged head" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+    pd.run_pass(store)
+    assert len(_run_slice_jobs(store, build)) == before
+
+
+def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
+    store: Store,
+) -> None:
+    """gr688058 (b): the head the verdict names is not the pushed tip —
+    the reviewer read a stale branch, so its finding is not the
+    branch's state. The tick stops for the coordinator rather than
+    rebuilding against a phantom."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h1}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
+    """gr688058 (c): the newest finding's ``anchors:`` line names the
+    same ``file::function`` — substantially the last one's again even
+    on new prose and a fresh verified head — so the ask comes at the
+    second round."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f still returns early on empty input; "
+        f"verified head {h2}\n\nanchors: a.py::f",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "same pre-land FIX twice" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_last_anchors_line_is_the_whole_anchor_set(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): the stamp's anchors are exactly what the
+    verdict's LAST ``anchors:`` line names — lowercased — so an earlier
+    ``anchors:`` line and every prose ``file::function`` cite are
+    ignored."""
+    h1 = "1" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f is fixed; b.py::g drops the guard; "
+        f"verified head {h1}\n\nanchors: a.py::f\n\nanchors: B.py::G",
+        head=h1,
+    )
+    build = mint.ids["build"]
+    pd.run_pass(store)
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == ["b.py::g"]
+
+
+def test_preland_no_anchors_line_never_repeats_a_prose_cite(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): a verdict without an ``anchors:`` line
+    anchors nothing — the stamp's set is empty and even the same prose
+    ``file::function`` twice running on advancing heads is not the same
+    finding: the converging loop keeps rebuilding."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == []
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f still returns early on empty input; verified head {h2}",
+        head=h2,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == []
+    assert _blocked_by_ids(store, build) == []
+    # The second verdict minted a THIRD run: the initial job plus one
+    # rebuild per send-back.
+    assert len(_run_slice_jobs(store, build)) == 3
+
+
+def test_preland_resolved_prose_cites_stay_off_the_anchors(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): a verdict citing the last round's anchor
+    only to declare it resolved — ``a.py::f is fixed; b.py::g still
+    fails`` — names a new finding when its ``anchors:`` line carries
+    the active set alone; the line's anchor repeating next round IS
+    the repeat the ask names, whatever the prose says."""
+    h1, h2, h3 = "1" * 40, "2" * 40, "3" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    # a.py::f is re-cited in prose — as resolved — but only b.py::g
+    # lands on the line: a new finding, not the repeat.
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f is fixed; b.py::g still fails; "
+        f"verified head {h2}\n\nanchors: b.py::g",
+        head=h2,
+    )
+    assert res.asks == 0
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 2
+    assert rounds["anchors"] == ["b.py::g"]
+    assert _blocked_by_ids(store, build) == []
+    # The line's anchor repeating — "not fixed" in the prose or not —
+    # is the same finding twice running.
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g is not fixed; verified head {h3}\n\nanchors: b.py::g",
+        head=h3,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "same pre-land FIX twice" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+
+
+def test_preland_expected_head_does_not_pass_a_stale_judged_head(
+    store: Store,
+) -> None:
+    """gr688058 (td688394): ``verified head <old>; expected head
+    <current>`` — the judged head is the VERIFIED one; an expected-head
+    mention matching the pushed tip must not clear the stale-read
+    stop."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h1}; "
+        f"expected head {h2}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_expected_before_verified_still_reads_the_judged_head(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r2): ``expected head <current>; verified head
+    <old>`` — the clauses are reversed, but the judged head is still the
+    VERIFIED one. The sha-before-``verified`` read must stay inside its
+    own clause: reaching back across the semicolon collects the pushed
+    tip and the any-match check bypasses the stale stop."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; expected head {h2}; "
+        f"verified head {h1}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
     assert _meta(store, build).get("preland_fix_rounds") is None
 
 

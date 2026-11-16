@@ -1254,10 +1254,21 @@ def _defer_land_for_review(
     note = _ls._push_branch(tree, slice_branch(todo_id))
     if "FAILED" in note:
         raise RuntimeError(note)
+    params = _land_params(ctx, todo_id, tree, lane, checked)
+    # The pushed tip, for plan_dispatch's send-back checks (gr688058):
+    # a FIX round whose verdict judged this same head means the rebuild
+    # added nothing; a verdict naming another head read a stale branch.
+    # The preland_held stash and its re-hold carry it like the other
+    # params.
+    pushed = (
+        _git(["rev-parse", f"refs/heads/{slice_branch(todo_id)}"], tree).stdout or ""
+    ).strip()
+    if re.fullmatch(r"[0-9a-f]{40}", pushed):
+        params["head"] = pushed
     ctx.store.stamp_ref_meta(
         todo_id,
         {
-            PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked),
+            PENDING_LAND_KEY: params,
             PRELAND_DEFER_FAILED_KEY: None,
             # A fresh defer supersedes the FIX/REVERT stash (gr681208).
             PRELAND_HELD_KEY: None,
@@ -1405,7 +1416,8 @@ def _preland_verdict_hold(
     if reviewer is None:
         return None
     branch = slice_branch(todo_id)
-    if _restore_reviewed_branch(tree, branch, base) is None:
+    tip = _restore_reviewed_branch(tree, branch, base)
+    if tip is None:
         unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
         ctx.set_meta(**{ATTEMPT_FREE_KEY: "preland-hold-unrestored"})
         _append_comment(
@@ -1424,10 +1436,15 @@ def _preland_verdict_hold(
             "attempt (gr681208)."
         )
     _stamp_branch_files(ctx.store, todo_id, tree)
+    params = _land_params(ctx, todo_id, tree, lane, checked)
+    # The restored pushed tip — the head the next verdict judges
+    # (gr688058): unchanged on a second send-back, the tick's
+    # unchanged-head stop reads it.
+    params["head"] = tip
     ctx.store.stamp_ref_meta(
         todo_id,
         {
-            PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked),
+            PENDING_LAND_KEY: params,
             PRELAND_HELD_KEY: None,
         },
     )
@@ -1980,6 +1997,20 @@ def _review_target(store: Any, meta: Any) -> str | None:
                     f"The branch head is `{head}`. If `git rev-parse "
                     f"origin/{branch}` prints another sha, the checkout is "
                     "stale: say so and judge nothing."
+                )
+                lines.append(
+                    "Name the head you judged in the verdict comment "
+                    "(`verified head <sha>`): the tick reads it against "
+                    "the pushed tip — a mismatch is a stale read, not a "
+                    "finding (gr688058)."
+                )
+                lines.append(
+                    "End a FIX or REVERT comment with one `anchors:` "
+                    "line (`anchors: file.py::func, …`) naming the "
+                    "`file::function` each active finding hangs on — "
+                    "resolved-context cites stay off it. The tick reads "
+                    "only that line for the repeat stop, never your "
+                    "prose (gr688058)."
                 )
         else:
             lines.append(

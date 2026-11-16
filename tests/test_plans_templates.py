@@ -861,10 +861,14 @@ def test_parented_put_keeps_llm_tier_default_for_plain(
 
 
 def test_preland_reviewer_brief_requires_docs_and_one_hop_review() -> None:
-    """Pre-land reviewers reject undocumented behavior/test changes."""
+    """Pre-land reviewers reject undocumented behavior/test changes, and
+    the brief carries the tick's read contract — the judged head and the
+    ``anchors:`` line the repeat stop reads (gr688058, td688394 r5)."""
     brief = _PRELAND_REVIEWER_BRIEF_TAIL
     assert "without the matching documentation" in brief
     assert "callers and callees" in brief
+    assert "verified head <sha>" in brief
+    assert "`anchors:` line" in brief
 
 
 # -- repo-release node (td659522 step 3 R8) ----------------------------------

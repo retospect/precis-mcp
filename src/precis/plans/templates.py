@@ -271,7 +271,8 @@ PRELAND_REVIEW_KEY = "preland_review"
 #: ``meta.pending_land`` on a build todo whose land waits on a pre-land
 #: reviewer: the params ``run_slice._mint_land`` would have minted
 #: ``land_slice`` with (todo_id, worktree, branch, lane?, checked?,
-#: target_node?). ``plan_dispatch`` clears the stamp when the verdict
+#: target_node?, head? — the pushed tip the review judges, gr688058).
+#: ``plan_dispatch`` clears the stamp when the verdict
 #: disposes of it (LAND mints, FIX/REVERT reopens the builder).
 PENDING_LAND_KEY = "pending_land"
 #: ``meta.preland_defer_failed`` on a build todo whose pre-land defer
@@ -308,10 +309,13 @@ def slice_fetch_cmd(branch: str) -> str:
 #: session's own last message, which may also begin ``handoff: review:``.
 PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
 #: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
-#: finding}`` — the pre-land FIX/REVERT verdicts in a row since the last
-#: land or coordinator ask, and a digest of the newest finding.
-#: ``plan_dispatch`` counts and caps it; ``land_slice._record_land``
-#: clears it.
+#: finding, head?, anchors?}`` — the pre-land FIX/REVERT verdicts in a
+#: row since the last land or coordinator ask, a digest of the newest
+#: finding, the ``file::function`` anchors its last ``anchors:`` line
+#: declares (the active findings — the tick never reads prose cites,
+#: td688394 r5) and the pushed head the
+#: verdict judged (gr688058). ``plan_dispatch`` counts and caps it;
+#: ``land_slice._record_land`` clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 #: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
 #: to the builder (gr681208): the ``PENDING_LAND_KEY`` params
@@ -418,6 +422,16 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
     "verdict: LAND mints the held land_slice (the squash onto main is "
     "the last step), FIX or REVERT sends the branch back to the builder "
     "with your findings as its handoff — nothing is on main to revert.\n\n"
+    "Name the branch head you judged in the verdict comment (`verified "
+    "head <sha>`): the tick reads it against the pushed tip — a mismatch "
+    "is a stale read, not a finding (gr688058).\n\n"
+    "End a FIX or REVERT comment with one `anchors:` line — "
+    "`anchors: dir/file.py::func, other.py::func2` — naming the "
+    "`file::function` each ACTIVE finding hangs on. A cite you make "
+    "only to declare resolved is context and stays off the line (none "
+    "at all — write `anchors:` bare or leave it out). The tick reads "
+    "only that line against the last round's: the same anchor twice "
+    "running is the repeat stop; prose cites never count (gr688058).\n\n"
     "Reject (FIX) a diff that changes behavior or tests without the "
     "matching documentation (docstrings, comments, skills, docs) updated "
     "in the same diff, and check one hop out: read the callers and "

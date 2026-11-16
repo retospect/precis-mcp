@@ -2583,6 +2583,10 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
         "git fetch -q origin +refs/factory/slice/7:refs/remotes/origin/slice/7"
         in target
     )
+    # …and briefed on the tick's read contract: judged head + anchors
+    # line (gr688058).
+    assert "verified head <sha>" in target
+    assert "`anchors:`" in target
 
     def no_ref(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         return _proc("", rc=1) if args[:1] == ["rev-parse"] else _proc()

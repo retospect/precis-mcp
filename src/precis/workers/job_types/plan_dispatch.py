@@ -94,10 +94,19 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    complete findings and landed shas for one briefed builder. A FIX or
    REVERT on a branch a pre-land reviewer still holds (gr570506) mints
    nothing: the build reopens with the finding as its ``handoff:`` and
-   the reviewer stays open for the rebuild. Those rounds are counted in
-   ``meta.preland_fix_rounds``; at :data:`PRELAND_FIX_CAP` in a row, or
-   on the same finding twice running, the build is held on an
-   ``ask-coordinator`` ask instead of rebuilding (gr684815). ``REVERT``
+   the reviewer stays open for the rebuild. The send-backs are counted
+   in ``meta.preland_fix_rounds`` — the finding's digest and
+   ``anchors:``-line ``file::function`` set plus the pushed head the
+   verdict judged —
+   and the build is held on an ``ask-coordinator`` ask only on the
+   failure the ask describes (gr688058): the reviewed head unchanged
+   since the last send-back (the builder is not acting), the head the
+   verdict judged other than the pushed tip (the reviewer is reading a
+   stale branch), the newest finding the last one's again (the same
+   ``file::function`` on the verdict's ``anchors:`` line — the
+   reviewer-declared active set, never a prose cite), or
+   :data:`PRELAND_FIX_CAP` rounds in a
+   row (gr684815). ``REVERT``
    mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
@@ -557,7 +566,11 @@ FIX_CHAIN_CAP = 4
 #: stops rebuilding it and asks the coordinator (gr684815). Nothing
 #: bounded that loop — every send-back re-arms the builder's retry
 #: budget — and one build ran thirty-odd rounds on a single finding.
-PRELAND_FIX_CAP = 3
+#: Six since gr688058: the cap is the backstop now, not the stop —
+#: the loop ends early only on the failure the ask names (an unchanged
+#: reviewed head, a stale-read verdict, the same finding twice), so a
+#: converging build→review loop gets the rounds.
+PRELAND_FIX_CAP = 6
 
 #: The tag a FIX-chain-capped plan root parks on (gr604629): a
 #: ``waiting-for:`` marker for the coordinator — no auto-release and no
@@ -2983,11 +2996,153 @@ def _mint_preland_land(
     return job_id
 
 
-def _preland_round(t: _Node, kind: str, rest: str) -> tuple[int, str, bool]:
-    """``(count, finding digest, repeated)`` of the pre-land FIX/REVERT
-    being sent back to ``t`` (gr684815): one more than the count
-    ``meta.preland_fix_rounds`` holds, and whether the finding is the
-    previous round's again, whitespace and case aside."""
+def _same_sha(a: str, b: str) -> bool:
+    """One sha a prefix of the other — a 40-char pushed tip against the
+    abbreviation a verdict writes (gr688058)."""
+    a, b = a.lower(), b.lower()
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+#: The ``path/file.py::Symbol`` citation a finding carries (gr688058):
+#: the newest verdict citing the last round's anchor is the same
+#: finding again — the builder's response is not reaching the review.
+_ANCHOR_RE = re.compile(r"[\w./~-]+::[\w.~-]+")
+
+#: Where one clause ends and the next begins — ``;``, a sentence end,
+#: an em dash, a newline or a comma join (td688394). Bounds the
+#: judged-head scan: a sha is judged only inside its own clause.
+_FINDING_CLAUSE_RE = re.compile(r"[;!?\n—]+|\.\s+|,\s*(?:and|but|so|yet)?\s*")
+
+#: The ``anchors:`` line the pre-land reviewer brief asks a FIX/REVERT
+#: verdict to end with — the ``file::function`` of each ACTIVE finding
+#: it sends back (gr688058, td688394 r5). The tick reads the LAST such
+#: line and never classifies the prose: a resolved-context cite
+#: (``a.py::f is fixed``) and a fresh finding read the same to a
+#: regex, so the reviewer declares the active set on this line. No
+#: ``anchors:`` line, no anchors.
+_ANCHORS_LINE_RE = re.compile(
+    r"^[ \t]*anchors\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _finding_anchors(rest: str) -> set[str]:
+    """The ``file::function`` anchors ``rest``'s last ``anchors:`` line
+    names, lowercased — the active findings the reviewer declares
+    (gr688058, td688394 r5); empty when the line is absent or bare.
+    Prose is never parsed for them."""
+    line = ""
+    for m in _ANCHORS_LINE_RE.finditer(rest):
+        line = m.group(1)
+    return {a.group(0).lower() for a in _ANCHOR_RE.finditer(line)}
+
+
+#: A sha token: a 7-to-40-hex word carrying at least one digit, so a
+#: ``td<id>`` cite or a word like ``defaced`` never reads as one.
+_SHA_TOKEN = r"\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b"
+
+#: The sha a verdict names as the head it JUDGED — ``verified head
+#: <sha>`` / ``reviewed <sha>`` / ``rev-parse <sha>`` / ``<sha>
+#: verified`` on one line (gr688058). Naming no head proves nothing; a
+#: named head other than the pushed tip proves the read was stale.
+_JUDGED_HEAD_RES = (
+    re.compile(
+        rf"\b(?:verified|reviewed|judged|rev-parse|tested)\b[^\n]{{0,40}}?`?"
+        rf"({_SHA_TOKEN})",
+        re.IGNORECASE,
+    ),
+    re.compile(rf"({_SHA_TOKEN})[^\n]{{0,30}}?\bverified\b", re.IGNORECASE),
+)
+
+#: ``head <sha>`` / ``tip <sha>`` — a judged head only when no judgment
+#: verb named one; under an expectation gloss it names what the branch
+#: should be at, never what the reviewer read (td688394).
+_HEAD_TIP_RE = re.compile(
+    rf"\b(?:head|tip)\b[^\n]{{0,40}}?`?({_SHA_TOKEN})", re.IGNORECASE
+)
+
+#: ``expected head <sha>`` / ``pushed tip <sha>`` — an expectation
+#: gloss names what the branch should be at, never the head the
+#: reviewer read. The whole mention is masked out of its clause before
+#: the judgment markers scan it, so its sha can never be judged —
+#: ``expected head <current>; verified head <old>`` judges ``<old>``
+#: however the clauses are joined (td688394 r2).
+_EXPECT_SHA_RE = re.compile(
+    rf"\b(?:expected|pushed|current|new|actual|want(?:ed)?)\b"
+    rf"[^\n]{{0,24}}?(?:head|tip)\b[^\n]{{0,16}}?`?{_SHA_TOKEN}",
+    re.IGNORECASE,
+)
+
+
+def _mask_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """``text`` with every ``(start, end)`` span blanked to spaces —
+    positions unchanged, so a match's offset still orders the text."""
+    chars = list(text)
+    for s, e in spans:
+        chars[s:e] = " " * (e - s)
+    return "".join(chars)
+
+
+def _verdict_heads(raw: str) -> list[str]:
+    """The shas ``raw`` names as the head it JUDGED, in text order —
+    what the reviewer actually read (gr688058). A judgment verb's sha
+    (``verified head <sha>``, ``<sha> verified``) is that head — read
+    inside the verb's own clause (the finding-clause boundaries), so a
+    neighbouring clause's sha is never judged, and with every
+    expectation mention (``expected head <sha>``, ``pushed tip
+    <sha>``) masked first, so a sha the verdict itself marks as
+    expected can never be judged either (td688394 r2); a bare
+    ``head``/``tip`` mention counts only when no verb named one.
+    ``"verified head <old>; expected head <current>"`` reads as the
+    stale judged head it is (td688394)."""
+    clauses: list[tuple[int, str]] = []
+    start = 0
+    for m in _FINDING_CLAUSE_RE.finditer(raw):
+        clauses.append((start, raw[start : m.start()]))
+        start = m.end()
+    clauses.append((start, raw[start:]))
+    masked = [
+        (base, _mask_spans(clause, [m.span() for m in _EXPECT_SHA_RE.finditer(clause)]))
+        for base, clause in clauses
+    ]
+    seen: dict[str, int] = {}
+    for base, clause in masked:
+        for rx in _JUDGED_HEAD_RES:
+            for m in rx.finditer(clause):
+                seen.setdefault(m.group(1).lower(), base + m.start(1))
+    if seen:
+        return sorted(seen, key=seen.__getitem__)
+    for base, clause in masked:
+        for m in _HEAD_TIP_RE.finditer(clause):
+            seen.setdefault(m.group(1).lower(), base + m.start(1))
+    return sorted(seen, key=seen.__getitem__)
+
+
+def _preland_round(
+    n: _Node,
+    t: _Node,
+    kind: str,
+    rest: str,
+    pushed: str,
+    raw: str,
+    single: bool,
+) -> tuple[int, dict[str, Any], str | None]:
+    """``(count, record, stop reason)`` of the pre-land FIX/REVERT sent
+    back to ``t`` (gr684815, gr688058): ``count`` one more than the
+    ``meta.preland_fix_rounds`` stamp holds, ``record`` the value to
+    write while the loop goes on (the finding's digest and anchors plus
+    the pushed head this verdict judged), and the ``why`` for
+    :func:`_park_preland_rounds` — ``None`` while the loop should run.
+
+    The stop is the failure the ask describes, never the round count
+    alone: the newest finding is the last one's again (same digest or
+    the same ``file::function`` on the verdict's ``anchors:`` line —
+    the reviewer-declared active set; a prose cite is never read),
+    the reviewed head is unchanged
+    since the previous send-back (the builder is not acting), the head
+    the verdict JUDGED is not the pushed tip (the reviewer is reading a
+    stale branch — read only on a single-target review, whose verdict
+    can name just the one tip), or the count reaches
+    :data:`PRELAND_FIX_CAP`."""
     prev = t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY)
     prev = prev if isinstance(prev, dict) else {}
     try:
@@ -2996,7 +3151,44 @@ def _preland_round(t: _Node, kind: str, rest: str) -> tuple[int, str, bool]:
         count = 1
     text = " ".join(f"{kind} {rest}".lower().split())
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    return count, digest, prev.get("finding") == digest
+    anchors = sorted(_finding_anchors(rest))
+    record: dict[str, Any] = {
+        "count": count,
+        "finding": digest,
+        "head": pushed or None,
+        "anchors": anchors,
+    }
+    if digest == prev.get("finding") or (
+        anchors and set(anchors) & set(prev.get("anchors") or [])
+    ):
+        return (
+            count,
+            record,
+            f"review td{n.id} returned the same pre-land {kind} twice running",
+        )
+    prev_head = str(prev.get("head") or "")
+    if pushed and prev_head and _same_sha(pushed, prev_head):
+        return (
+            count,
+            record,
+            f"review td{n.id} sent the branch back on an unchanged head "
+            f"{pushed[:12]} — the rebuild pushed nothing new",
+        )
+    heads = _verdict_heads(raw) if single else []
+    if heads and pushed and not any(_same_sha(h, pushed) for h in heads):
+        return (
+            count,
+            record,
+            f"review td{n.id} judged head {heads[0][:12]} but the pushed "
+            f"tip is {pushed[:12]} — the reviewer read a stale branch",
+        )
+    if count >= PRELAND_FIX_CAP:
+        return (
+            count,
+            record,
+            f"review td{n.id} sent the branch back {count} times in a row",
+        )
+    return count, record, None
 
 
 def _park_preland_rounds(
@@ -3007,20 +3199,14 @@ def _park_preland_rounds(
     t: _Node,
     kind: str,
     rest: str,
-    count: int,
-    repeated: bool,
+    why: str,
     now: datetime,
 ) -> None:
     """Hold the sent-back build ``t`` on a coordinator ask instead of
-    rebuilding again (gr684815): the build→review loop reached
-    :data:`PRELAND_FIX_CAP` rounds, or the reviewer returned the same
-    finding twice running. The count clears, so the answer buys a fresh
-    one."""
-    why = (
-        f"review td{n.id} returned the same pre-land {kind} twice running"
-        if repeated
-        else f"review td{n.id} sent the branch back {count} times in a row"
-    )
+    rebuilding again (gr684815, gr688058): ``why`` names the failure —
+    the same finding twice running, an unchanged reviewed head, a
+    stale-read verdict, or :data:`PRELAND_FIX_CAP` rounds. The count
+    clears, so the answer buys a fresh one."""
     w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
     res.asks += 1
     if w.dry_run:
@@ -3070,6 +3256,7 @@ def _review_back_to_builder(
     kind: str,
     rest: str,
     now: datetime,
+    raw: str = "",
 ) -> None:
     """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
     the work goes back to the builder"). Nothing landed, so no fix or
@@ -3078,15 +3265,20 @@ def _review_back_to_builder(
     ``validated:``/``no-op:`` verdict re-holds from, since that verdict
     is "the pushed branch is ready as it stands", not "nothing to
     land"), it reopens with the findings as its ``handoff:`` — the next
-    build's brief — and the reviewer stays open for the rebuild (its
-    ``blocked-by`` edge re-arms while the target is open and releases
-    when the next build defers again). The rounds are counted
-    (gr684815): at :data:`PRELAND_FIX_CAP` in a row, or on the same
-    finding twice running, the target is held on a coordinator ask
-    instead of rebuilding."""
+    build's brief, and only the NEWEST finding — and the reviewer stays
+    open for the rebuild (its ``blocked-by`` edge re-arms while the
+    target is open and releases when the next build defers again). The
+    rounds are counted (gr684815): the target is held on a coordinator
+    ask only on the failure the ask describes (gr688058) — the same
+    finding twice running, an unchanged reviewed head, a verdict that
+    names a head other than the pushed tip, or
+    :data:`PRELAND_FIX_CAP` rounds."""
     targets = _pending_targets(plan, n)
+    single = len(targets) == 1
     ruled: list[int] = []
     for t in targets:
+        held = t.meta.get(_templates.PENDING_LAND_KEY)
+        pushed = str(held.get("head") or "") if isinstance(held, dict) else ""
         w.stamp_meta(
             t,
             {
@@ -3126,19 +3318,11 @@ def _review_back_to_builder(
         )
         if t.status != "open":
             w.set_status(t, "open")
-        count, digest, repeated = _preland_round(t, kind, rest)
-        if repeated or count >= PRELAND_FIX_CAP:
-            _park_preland_rounds(plan, w, res, n, t, kind, rest, count, repeated, now)
+        count, record, why = _preland_round(n, t, kind, rest, pushed, raw, single)
+        if why is not None:
+            _park_preland_rounds(plan, w, res, n, t, kind, rest, why, now)
         else:
-            w.stamp_meta(
-                t,
-                {
-                    _templates.PRELAND_FIX_ROUNDS_KEY: {
-                        "count": count,
-                        "finding": digest,
-                    }
-                },
-            )
+            w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: record})
     sent_back = [t.id for t in targets if t.id not in ruled]
     res.notes.append(
         f"td{n.id}: review {kind} pre-land — back to the builder: "
@@ -3232,7 +3416,7 @@ def _step_reviews(
             # has not landed sends the work back to the builder — nothing
             # is on main to fix or revert — and the reviewer stays open
             # for the rebuild it then re-gates.
-            _review_back_to_builder(store, plan, w, res, n, kind, rest, now)
+            _review_back_to_builder(store, plan, w, res, n, kind, rest, now, raw or "")
             if all(_closed(t) for t in _review_targets(plan, n)):
                 # gr663909: every held target was ruled closed while the
                 # review ran — nothing is left to re-gate, and an open
