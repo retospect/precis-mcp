@@ -836,7 +836,9 @@ def test_ship_full_flag_forces_the_local_suite_on_a_docs_only_diff() -> None:
     override_at = text.index('if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then')
     pin_at = text.index('if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1')
     assert override_at < pin_at
-    go = (REPO_ROOT / ".claude" / "commands" / "go.md").read_text(encoding="utf-8")
+    # The local .claude/commands/go.md is a bootstrap stub (td657071); the
+    # served skill carries the workflow text.
+    go = (REPO_ROOT / "src/precis/data/skills/go.md").read_text(encoding="utf-8")
     assert "scripts/ship --quick" in go
     assert "scripts/release" in go
 
