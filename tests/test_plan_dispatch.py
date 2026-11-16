@@ -9543,7 +9543,8 @@ def test_overlap_held_chain_holds_no_slot_but_is_never_swept_as_stalled(
     hold holds no gripe_dispatch slot (``Chain.live`` false) yet reads as
     moving (``plan_live``): it waits on another build's land, so
     ``sweep_stalled`` leaves it alone however long the plan sat untouched.
-    Once the blocker is gone the same idle chain is stalled and swept."""
+    Once the blocker is gone the same idle chain is stalled and the sweep
+    opens its ask (it no longer closes the root)."""
     from precis.workers import gripe_dispatch as gd
 
     _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
@@ -9562,14 +9563,16 @@ def test_overlap_held_chain_holds_no_slot_but_is_never_swept_as_stalled(
     assert _status(store, held.root_id) != "won't-do"
 
     # Control: parked for another reason (no overlap hold), the same idle
-    # plan is stalled and swept.
+    # plan is stalled and asked about.
     store.add_tag(held.ids["task"], Tag.open("hold:no-dispatch"), set_by="system")
     with store.pool.connection() as conn:
         conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
     (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
     assert (chain.live, chain.plan_live) == (False, False)
     assert [r["root"] for r in gd.sweep_stalled(store, [chain])] == [held.root_id]
-    assert _status(store, held.root_id) == "won't-do"
+    # asked about, never closed: parked work is saved, not thrown away
+    assert _status(store, held.root_id) != "won't-do"
+    assert gd._open_ask(store, held.root_id)
 
 
 def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:

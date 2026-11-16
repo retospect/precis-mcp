@@ -392,7 +392,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     calls["push"] = []
     calls["push_note"] = "branch push of {branch}: on origin"
 
-    def fake_push_branch(tree: Path, branch: str) -> str:
+    def fake_push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
         calls["push"].append((Path(tree), branch))
         return calls["push_note"].format(branch=branch)
 
@@ -8620,7 +8620,7 @@ def test_devin_acceptance_artifacts_survive_worktree_reset(
     )
     supplied = "def test_widget():\n    assert widget() == 42\n"
 
-    def reset_tree(root: Path, todo_id: int) -> Path:
+    def reset_tree(root: Path, todo_id: int, **_kw: Any) -> Path:
         # Model the real reset's clean -fd: untracked tests do not survive.
         shutil.rmtree(tree / "tests")
         (tree / "tests").mkdir()
@@ -8699,7 +8699,7 @@ def test_devin_acceptance_artifacts_refuse_symlink_parent(
     outside = tmp_path / "outside"
     outside.mkdir()
 
-    def reset_tree(root: Path, todo_id: int) -> Path:
+    def reset_tree(root: Path, todo_id: int, **_kw: Any) -> Path:
         (tree / "tests").mkdir(parents=True)
         (tree / "tests" / "linked").symlink_to(outside, target_is_directory=True)
         return tree

@@ -277,7 +277,7 @@ from precis.utils.dispatch_score import (
 )
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
-from precis.workers.job_types import _lane_decide, _run_features
+from precis.workers.job_types import _lane_decide, _run_features, _slice_park
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
@@ -3785,7 +3785,15 @@ def _prepare_repo_tip(
 
 
 def _ensure_worktree(
-    root: Path, todo_id: int, base: str = "main", *, fetched: bool = False
+    root: Path,
+    todo_id: int,
+    base: str = "main",
+    *,
+    fetched: bool = False,
+    keep_wip: bool = False,
+    start_over: bool = False,
+    saved_head: str | None = None,
+    notes: list[str] | None = None,
 ) -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
     ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
@@ -3795,12 +3803,33 @@ def _ensure_worktree(
     is abandoned) — reset to a clean checkout of the branch tip first
     (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
     renamed first. ``fetched`` skips the fetch: the caller already fetched
-    ``origin/<base>`` under the credential (:func:`_prepare_repo`)."""
+    ``origin/<base>`` under the credential (:func:`_prepare_repo`).
+
+    **Park = save, resume anywhere** (:mod:`._slice_park`): with no local
+    tree the slice's pushed ``refs/factory/slice/<id>`` is fetched, and
+    when origin holds it the tree is cut from that tip, not from
+    ``origin/<base>`` — a re-armed build on another host carries on from
+    the work a failed run pushed. ``keep_wip`` (the node is parked:
+    ``meta.parked``) keeps the ``wip: parked`` snapshot on top of it, and
+    also moves a reused local tree's branch onto the snapshot
+    (``saved_head`` is ``meta.parked.head``, found locally when the same
+    host saved it); an ordinary retry resumes from the last real commit.
+    Committed work is never reset away. ``start_over`` (the closing answer
+    said so) first drops the local tree and branch and origin's saved ref,
+    and cuts from ``origin/<base>``. ``notes`` collects what happened
+    (``resumed from <sha>``) for the job's events."""
     tree = worktrees_dir(root) / slice_name(todo_id)
     branch = slice_branch(todo_id)
+    note = notes if notes is not None else []
     _adopt_legacy_branch(root, todo_id)
+    if start_over:
+        note.extend(_slice_park.drop_saved(root, todo_id))
     if tree.exists():
         _reset_reused_worktree(tree, branch)
+        if keep_wip and not start_over:
+            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
+            if moved:
+                note.append(f"resumed from {moved}")
         return tree
     extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
     if not fetched:
@@ -3809,12 +3838,25 @@ def _ensure_worktree(
             raise RuntimeError(
                 f"git fetch origin {base} failed: {fetch.stderr.strip()}"
             )
-    add = _git(["worktree", "add", "-b", branch, str(tree), f"origin/{base}"], root)
+    saved = (
+        None
+        if start_over or _branch_exists(root, branch)
+        else _slice_park.resume_tip(root, todo_id, keep_wip=keep_wip)
+    )
+    add = _git(
+        ["worktree", "add", "-b", branch, str(tree), saved or f"origin/{base}"], root
+    )
+    if add.returncode == 0 and saved:
+        note.append(f"resumed from {saved}")
     if add.returncode != 0:
         # The branch outlived its tree (an earlier attempt): re-attach it.
         add = _git(["worktree", "add", str(tree), branch], root)
         if add.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
+        if keep_wip and not start_over:
+            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
+            if moved:
+                note.append(f"resumed from {moved}")
     return tree
 
 
@@ -5071,14 +5113,38 @@ def submit(ctx: Any, spec: Any) -> Any:
             _clear_slice_index_lock(
                 ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
             )
+            # Park = save, resume anywhere (_slice_park): a re-armed
+            # parked node resumes from its saved branch; ``start over``
+            # in the closing answer drops it.
+            parked = (todo.meta or {}).get(_slice_park.PARKED_KEY)
+            park_kw: dict[str, Any] = {
+                "keep_wip": isinstance(parked, dict),
+                "start_over": bool((todo.meta or {}).get(_slice_park.START_OVER_KEY)),
+                "saved_head": str(parked.get("head") or "")
+                if isinstance(parked, dict)
+                else None,
+                "notes": [],
+            }
             if profile is None:
                 tree = _ensure_worktree(
-                    slice_root(), todo_id, *(() if base == "main" else (base,))
+                    slice_root(),
+                    todo_id,
+                    *(() if base == "main" else (base,)),
+                    **park_kw,
                 )
             else:
                 assert repo_root is not None
                 tree = _ensure_worktree(
-                    repo_root, todo_id, base=profile.base, fetched=True
+                    repo_root, todo_id, base=profile.base, fetched=True, **park_kw
+                )
+            for line in park_kw["notes"]:
+                ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
+            if park_kw["start_over"]:
+                # Consumed: the saved branch is gone; the node is no
+                # longer parked work.
+                store.stamp_ref_meta(
+                    todo_id,
+                    {_slice_park.START_OVER_KEY: None, _slice_park.PARKED_KEY: None},
                 )
             # gr674785 (td665126 spent its whole ladder on a fix a
             # sibling had landed): judge the branch the retry reused
@@ -8199,6 +8265,18 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         return True
 
     _revoke_slice_grant(ctx, todo_id, grant, "failed")
+    if not vanished and not isinstance(review, dict) and not other_repo:
+        # Park = save (_slice_park): whether this failure ends in a retry
+        # or a park is the tick's call, made on another host — so the
+        # work is saved here, on the host that holds the tree, before the
+        # tick sees the failure. Never blocks or masks the failure.
+        _slice_park.save_at_job_end(
+            ctx,
+            tree,
+            todo_id,
+            budget_note or denied or test_failure or nothing or f"exit {exit_code}",
+            base=base,
+        )
     attempt = None
     try:
         attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)

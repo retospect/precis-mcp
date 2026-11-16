@@ -589,25 +589,42 @@ REGISTRY: dict[str, SettingSpec] = {
             key="factory.gripe_dispatch.max_parked",
             type="int",
             env_var=None,
-            default=None,
-            doc="DB-only. Cap on gripe fix chains whose build is parked "
-            "(no live job, not doable: paused, blocked, ask-user, "
-            "waiting-for:*, child-failed:*) in the gripe_dispatch intake "
-            "(precis.workers.gripe_dispatch). Parked chains hold no build "
-            "slot, so this bounds how many may pile up: at the cap the "
-            "pass mints nothing and logs why. Unset reads 2 x the summed "
-            "lane capacity of the code class.",
+            default=500,
+            doc="DB-only. Last-resort backstop on gripe fix chains whose "
+            "build is parked (no live job, not doable: paused, blocked, "
+            "ask-user, waiting-for:*, child-failed:*) in the gripe_dispatch "
+            "intake (precis.workers.gripe_dispatch). Parked work holds no "
+            "build slot and is never closed by a timer, so the count of "
+            "parked chains is no longer a brake; at this many the pass "
+            "still mints nothing and logs why. The brake is the cause-based "
+            "breaker (factory.gripe_dispatch.breaker_parks).",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.breaker_parks",
+            type="int",
+            env_var=None,
+            default=5,
+            doc="DB-only. K of the cause-based breaker "
+            "(precis.plans.lane_breaker): when the newest K ended "
+            "run_slice builds on one lane or one host all failed of the "
+            "same engine cause (lane auth, HTTP 401/403, quota/rate/"
+            "transport, failure_class=infra, host refusal) across at "
+            "least two build nodes, one ask-user todo names it and new "
+            "builds stop going there until the ask is closed. Every other "
+            "lane and host keeps dispatching.",
         ),
         SettingSpec(
             key="factory.gripe_dispatch.stall_hours",
             type="int",
             env_var=None,
             default=6,
-            doc="DB-only. Hours a gripe fix chain's build may sit parked "
-            "(not live, no open ask-user todo in the plan) before the "
-            "gripe_dispatch pass closes the chain's root won't-do and "
-            "counts a stall on the gripe (chain-stalls:<n>; the second "
-            "stall adds hold:no-dispatch).",
+            doc="DB-only. Hours a gripe fix chain's whole plan may sit "
+            "untouched (build not live, nothing live in the plan, no open "
+            "ask-user todo in it) before the gripe_dispatch pass opens ONE "
+            "ask-user todo on the chain: resume, start over, or drop. The "
+            "chain is never closed by the sweep; the open ask keeps it "
+            "parked and out of the sweep. The gripe counts the asks "
+            "(chain-stalls:<n>).",
         ),
         SettingSpec(
             key="asks_triage.tier",

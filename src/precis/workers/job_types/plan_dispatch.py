@@ -388,6 +388,24 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.unplaced_ask`` and settled ``done``/``won't-do`` as the gap or
    the node closes (gr657333).
 
+6. **park stamp** (``_step_park_stamp``; park = save, resume anywhere,
+   Reto 2026-11-16: parked work holds no build seat and no timer throws
+   it away): whichever path parked a ``run_slice`` build — an open ask
+   (hygiene's, the rescue pass's, the stall sweep's), ``rescue:*`` or
+   ``child-failed:*``, ``STATUS:paused`` — the failed job already saved
+   its worktree on the build host (``meta.saved``, :mod:`._slice_park`:
+   a ``wip: parked`` snapshot commit pushed to
+   ``refs/factory/slice/<td>``). The step copies it to the node as
+   ``meta.parked = {host, worktree, head, reason, at, job}`` and writes
+   host, worktree and head into the body of every open ask blocking the
+   node (an ask minted this pass is reached next pass — the step reads
+   the plan as loaded). Answering and closing an ask re-arms the node
+   (:func:`_step_rearm`), whose next ``run_slice`` resumes from that
+   branch on any host; an answer saying ``start over`` stamps
+   ``meta.start_over`` and clears ``meta.parked`` so the launch drops the
+   saved branch and cuts from the base. A reaper for abandoned parked
+   worktrees keys on ``meta.parked.host`` + ``.worktree``.
+
 Plan roots: the ids named by ``plan:<id>`` tags on live todos, plus every
 live todo whose meta makes it a gate / loop / generator / phase; a root
 inside another root's subtree is folded into it. Closed roots are skipped.
@@ -456,7 +474,12 @@ from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta, release_claims
 from precis.todo.views import _fetch_subtree
 from precis.utils import dispatch_score as _dscore
-from precis.workers.job_types import JobTypeSpec, _lane_decide, get_job_type
+from precis.workers.job_types import (
+    JobTypeSpec,
+    _lane_decide,
+    _slice_park,
+    get_job_type,
+)
 
 log = logging.getLogger(__name__)
 
@@ -3547,6 +3570,17 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
         )
 
 
+def _answers_start_over(store: Any, ask_id: int) -> bool:
+    """The closing answer on ask ``ask_id`` says ``start over`` (any case):
+    the ``answer:`` comment, else the ask's newest comment. The ask's body
+    names the option and so is never read."""
+    answer = _release._newest_answer(store, ask_id)
+    if answer is None:
+        newest = _comments(store, ask_id)
+        answer = str(newest[0].text) if newest else ""
+    return "start over" in answer.lower()
+
+
 def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
     """An answered retry-cap ask re-arms its node with a fresh budget whatever
     ran between the ask and its answer (gr561075). :func:`_attempts` counts
@@ -3606,6 +3640,13 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         else:
             stamp["rearmed_answer"] = None
             stamp["rearmed_ask_at"] = None
+        # Park = save, resume anywhere (``_slice_park``): the re-armed
+        # build resumes from its saved branch — unless the closing answer
+        # says ``start over``: the next launch then drops the saved branch
+        # and cuts from the base.
+        if _answers_start_over(w.store, newest_ask.id):
+            stamp[_slice_park.START_OVER_KEY] = newest_ask.id
+            stamp[_slice_park.PARKED_KEY] = None
         # A node whose rescue ended in the rescue pass's own ask: the
         # human's answer IS the clearing (td584381 S1a F1) — the
         # ``rescue:<cls>`` tag would otherwise keep it excluded from
@@ -3622,6 +3663,10 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 "job": ended[-1].id if ended else None,
             }
         w.stamp_meta(n, stamp)
+        if n.status == "paused":
+            # Resume lifts ``STATUS:paused`` (Reto 2026-11-16); a
+            # ``waiting-for:*`` hold — waiting on files — stays as is.
+            w.set_status(n, "open")
         if cleared:
             w.remove_tags(n, cleared)
             if n.status == "doing":
@@ -8585,6 +8630,103 @@ def _step_hygiene(
         res.asks += 1
 
 
+# ── Park = save, resume anywhere (``_slice_park``) ────────────────
+
+
+def _is_parked(plan: _Plan, n: _Node) -> bool:
+    """A build parked for a human or the rescue pass: an open ask on it, a
+    ``rescue:*`` or ``child-failed:*`` tag, or ``STATUS:paused``."""
+    return bool(
+        plan.open_asks(n)
+        or _in_rescue(n)
+        or n.status == "paused"
+        or any(v.startswith("child-failed:") for v in n.open_tags)
+    )
+
+
+def _park_line(todo_id: int, saved: dict[str, Any]) -> str:
+    """The ask-body sentence naming where a parked build's work is."""
+    wip = " (a WIP snapshot of the uncommitted tree on top)" if saved.get("wip") else ""
+    if str(saved.get("push") or "").startswith("withheld"):
+        where = (
+            "kept on that host only — the push was withheld by the secret "
+            f"scan ({saved.get('push')}), so a resume works on that host only"
+        )
+    else:
+        where = f"pushed to `refs/factory/slice/{todo_id}`"
+    return (
+        f"{_slice_park.BODY_MARK} host `{saved.get('host')}`, worktree "
+        f"`{saved.get('worktree')}`, head `{str(saved.get('head'))[:12]}`{wip}, "
+        f"{where}. Closing this ask re-arms td{todo_id} to resume from that "
+        f"branch (and lifts STATUS:paused; a `waiting-for:*` hold stays until lifted by hand); "
+        "answer `start over` to drop it and rebuild from the base."
+    )
+
+
+def _step_park_stamp(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """Whichever path parked a build — a hygiene ask, a rescue ask, a
+    ``child-failed:`` bubble, ``STATUS:paused`` — copy where its work was
+    saved onto it. The failed ``run_slice``/``land_slice`` job saved its
+    worktree on the build host (``meta.saved``, :mod:`._slice_park`); this
+    step runs on the tick and so only reads that stamp: ``meta.parked =
+    {host, worktree, head, reason, at, job}`` on the node, and the
+    :data:`_slice_park.BODY_MARK` sentence — host, worktree, head — in the
+    body of every open ask blocking it. Idempotent: a stamp is rewritten
+    only when the saved head moves, an ask body only once."""
+    for n in plan.todos():
+        if _closed(n) or _resolve_op(n)[0] != DEFAULT_OP or not _is_parked(plan, n):
+            continue
+        saved: dict[str, Any] | None = None
+        job_id = 0
+        for j in sorted(plan.jobs(n), key=lambda j: j.id, reverse=True):
+            rec = j.meta.get(_slice_park.SAVED_KEY)
+            if j.status in _JOB_ENDED and isinstance(rec, dict) and rec.get("head"):
+                saved, job_id = rec, j.id
+                break
+        if saved is None:
+            continue
+        parked = {
+            k: saved.get(k)
+            for k in ("host", "worktree", "head", "reason", "at", "push")
+        } | {"job": job_id}
+        have = n.meta.get(_slice_park.PARKED_KEY)
+        if not (isinstance(have, dict) and have.get("head") == parked["head"]):
+            w.stamp_meta(n, {_slice_park.PARKED_KEY: parked})
+            w.comment(
+                n,
+                f"parked: work saved on {parked['host']}:{parked['worktree']} "
+                f"at {str(parked['head'])[:12]} (jo{job_id}; "
+                f"refs/factory/slice/{n.id})",
+            )
+            res.notes.append(
+                f"td{n.id}: parked work saved at {str(parked['head'])[:12]}"
+            )
+        if w.dry_run:
+            continue
+        line = _park_line(n.id, parked)
+        for ask in plan.open_asks(n):
+            try:
+                chunks = [
+                    c
+                    for c in w.store.chunks.list_chunks_for_ref(ask.id)
+                    if c.chunk_kind == TODO_BODY_KIND
+                ]
+                body = str(chunks[0].text) if chunks else ""
+                if _slice_park.BODY_MARK in body:
+                    continue
+                w.store.chunks.replace_body_chunk(
+                    ask.id,
+                    f"{body}\n\n{line}".strip(),
+                    chunk_kind=TODO_BODY_KIND,
+                    source=NAME,
+                    reason="park-save: where the parked work is",
+                )
+            except Exception:  # the stamp stands; the next pass retries
+                log.warning(
+                    "plan_dispatch: park note on ask td%d failed", ask.id, exc_info=True
+                )
+
+
 # ── Pass + dispatch ────────────────────────────────────────────────
 
 
@@ -8648,6 +8790,7 @@ def run_pass(
         _step_brief_holds(store, plan, w, res, now)
         _step_dispatch(plan, w, res, lane_table, rules, now)
         _step_hygiene(plan, w, res, now, lane_table, rules)
+        _step_park_stamp(plan, w, res)
     return res
 
 

@@ -333,7 +333,7 @@ from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, _slice_park
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -2373,6 +2373,18 @@ def _fail(
             _rs.rearm_preland_review(ctx.store, todo_id)
         except Exception:  # pragma: no cover — defensive; the job still fails
             log.warning("land_slice: pre-land re-arm on td%d failed", todo_id)
+        # Park = save (``_slice_park``): the lander's tree may sit
+        # mid-rebase, so only the branch tip is pushed — never the dirty
+        # tree. A second repo's tree is not this remote's to push.
+        if _rs.job_repo(getattr(ctx, "meta", None) or {}) == _lanes.DEFAULT_REPO:
+            _slice_park.save_at_job_end(
+                ctx,
+                _rs.worktrees_dir(_rs.slice_root()) / _rs.slice_name(int(todo_id)),
+                int(todo_id),
+                reason,
+                base=_rs._land_base(ctx.store, int(todo_id)),
+                include_dirty=False,
+            )
     ctx.record_failure(f"land_slice: {reason}{suffix}")
 
 
@@ -5587,7 +5599,7 @@ def _landed_finish(
     return True
 
 
-def _push_branch(tree: Path, branch: str) -> str:
+def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
     """Push ``<branch>`` to origin's hidden ``refs/factory/<branch>``
     (:data:`~precis.plans.templates.SLICE_REF_NS`) under the factory
     credential — until then the branch lives only on this host, so a
@@ -5613,7 +5625,11 @@ def _push_branch(tree: Path, branch: str) -> str:
     caller; an unreadable origin falls back to the plain push. The note
     carries ``(replaced)`` when the push overwrote a tip origin already
     held (an amended/rebased build whose earlier push is stale,
-    gr663738)."""
+    gr663738).
+
+    ``sha`` pushes that commit instead of the local branch tip: the
+    park-save's WIP snapshot (:mod:`precis.workers.slice_park`) rides the
+    same ref without moving the local branch."""
     ops: Path | None = None
     remote: dict[str, str] | None = None
     try:
@@ -5621,7 +5637,10 @@ def _push_branch(tree: Path, branch: str) -> str:
         url = _github_url(root)
         if url is None:
             return f"branch push of {branch}: skipped (no trusted origin url)"
-        sha = (_git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or "").strip()
+        if sha is None:
+            sha = (
+                _git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or ""
+            ).strip()
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             return f"branch push of {branch}: FAILED (no local sha)"
         env = _factory_git.git_auth_env(base=land_env())
