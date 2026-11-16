@@ -40,6 +40,7 @@ import binascii
 import json
 import logging
 import re
+import time
 from collections.abc import Sequence
 from datetime import UTC
 from typing import Any, ClassVar
@@ -2076,8 +2077,10 @@ class DraftHandler(Handler):
             # ONE chunk (no blank-line split) and skips the dangling-handle
             # gate — a ``[dc…]`` token inside it is literal source, never
             # a reference.
+            t0 = time.monotonic()
             if kind != "code":
                 self._raise_on_new_dangling_refs(str(text))
+            t1 = time.monotonic()
             chunks = self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
@@ -2086,8 +2089,25 @@ class DraftHandler(Handler):
                 meta=meta,
                 split=kind != "code",
             )
-            self.sync_draft_links(ref.id)
+            t2 = time.monotonic()
+            # Scope the link re-resolve to the chunks this put wrote —
+            # the unscoped sync re-resolved every chunk in the draft,
+            # ~50 s median on a large draft (gr676929).
+            deferred = self.sync_draft_links(
+                ref.id, restamp_chunk_ids={c.chunk_id for c in chunks}
+            )
+            t3 = time.monotonic()
             self._attribute_touch([c.chunk_id for c in chunks])
+            log.info(
+                "draft.put phases slug=%s draft_chunks=%d dangling_refs=%.3fs "
+                "add_chunks=%.3fs sync_draft_links=%.3fs attribute_touch=%.3fs",
+                slug,
+                len(self.store.drafts.chunk_ord_map(ref.id)),
+                t1 - t0,
+                t2 - t1,
+                t3 - t2,
+                time.monotonic() - t3,
+            )
             # A markdown bullet block lands as a ulist/olist container +
             # item children (the shape every export reads), so report the
             # containers instead of spraying one handle per bullet — and
@@ -2140,7 +2160,7 @@ class DraftHandler(Handler):
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
                     )
-            return Response(body=body)
+            return Response(body=_facts_deferred(body, deferred))
 
         # else: create the draft
         if project is None:

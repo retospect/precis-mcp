@@ -3705,3 +3705,29 @@ def test_search_tags_filter_and_regex_refusal(draft: DraftHandler, hub: Hub) -> 
     assert "Plain" not in out.body
     with pytest.raises(BadInput):
         draft.search(q="zeolite", mode="regex", tags=["project:nox"])
+
+
+def test_put_logs_phase_timings(
+    draft: DraftHandler, hub: Hub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr676929 slice 1: each chunk put logs one ``draft.put phases``
+    record carrying the four phase timings plus the draft's chunk count,
+    so a slow put attributes to a phase from server logs alone."""
+    import logging
+
+    draft.put(id="nt", title="T", project=_proj(hub))
+    with caplog.at_level(logging.INFO, logger="precis.handlers.draft"):
+        draft.put(id="nt", chunk_kind="paragraph", text="a plain paragraph")
+
+    recs = [r for r in caplog.records if "draft.put phases" in r.getMessage()]
+    assert len(recs) == 1
+    msg = recs[0].getMessage()
+    for key in (
+        "dangling_refs=",
+        "add_chunks=",
+        "sync_draft_links=",
+        "attribute_touch=",
+        "draft_chunks=2",
+        "slug=nt",
+    ):
+        assert key in msg

@@ -800,3 +800,67 @@ def test_text_edit_drops_a_ref_level_auto_mention_edge(
     }
     assert c not in dsts
     assert {a, b} <= dsts
+
+
+def test_put_resolves_only_the_new_chunk(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr676929: a single-chunk put re-resolves only that chunk's
+    references — the unscoped sync re-resolved every chunk in the draft
+    (a ~50 s put on a 200-chunk draft). The existing chunks' ``cites``
+    edges carry over unchanged and the new chunk's own cite lands."""
+    from precis.store.types import ChunkInsert
+    from precis.utils import draft_markup
+
+    paper = hub.live_store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    hub.live_store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text="We measured 12% FE.", meta={})]
+    )
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        pc = handle_registry.format_handle("paper", int(row[0]), chunk=True)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].dc
+    hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="\n\n".join(f"para {i} cites [{pc}]" for i in range(20)),
+        at={"after": title_h},
+    )
+    draft.sync_draft_links(ref.id)  # materialise the 20 chunks' cites edges
+
+    def cites_srcs() -> set[int | None]:
+        return {
+            link.src_chunk_id
+            for link in hub.live_store.links_for(
+                ref.id, direction="out", relation="cites"
+            )
+            if (link.meta or {}).get("auto") == "mention"
+        }
+
+    before = cites_srcs()
+    assert len(before) == 20
+
+    seen: list[str] = []
+    real = draft_markup.resolve_draft_link_targets
+
+    def counting(store, text, **kw):
+        seen.append(text)
+        return real(store, text, **kw)
+
+    monkeypatch.setattr(draft_markup, "resolve_draft_link_targets", counting)
+    draft.put(id="nt", chunk_kind="paragraph", text=f"tail also cites [{pc}]")
+
+    # one resolve call, on the new chunk's text alone
+    assert seen == [f"tail also cites [{pc}]"]
+    after = cites_srcs()
+    assert before < after  # the 20 carried, plus the new chunk's own edge
+    assert len(after) == 21
