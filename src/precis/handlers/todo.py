@@ -90,6 +90,7 @@ caching needed.
 from __future__ import annotations
 
 import dataclasses
+import json
 import time
 from collections.abc import Callable
 from enum import StrEnum
@@ -363,6 +364,30 @@ def _doable_under_ids(store: Store, raw: Any) -> list[int]:
             ),
         )
     return [r.id for r in live]
+
+
+def _dict_in_q(q: Any) -> dict[str, Any] | None:
+    """A dict smuggled through ``q=``, decoded — else ``None``.
+
+    ``q={'under': N}`` on the wire reaches the handler re-serialized
+    to the string ``'{"under": N}'`` (``tools.core._coerce_str_arg``
+    restores the literal a JSON-shaped string carried); an in-process
+    caller's dict arrives as-is. Either shape is ``args=`` typed in the
+    wrong slot — ``view='doable'`` never read ``q`` at all, so the
+    filter vanished and the global queue came back byte-identical for
+    every ``N`` (gr678249). A ``{``-string that fails ``json.loads``
+    stays a plain query.
+    """
+    if isinstance(q, dict):
+        return q
+    if isinstance(q, str) and q.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(q)
+        except ValueError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _view_doable(
@@ -908,6 +933,43 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
+        readings: list[str] = []
+        # gr678249: a dict in the q= slot is args= typed in the wrong
+        # place — ``search(kind='todo', view='doable', q={'under': N})``
+        # used to drop the filter silently and return the global queue
+        # byte-identical. Declared args= keys fold over (one reading —
+        # run it and say so); any other key refuses the way a nested
+        # args= key would.
+        q_args = _dict_in_q(q)
+        if q_args is not None:
+            declared = self.ARGS_KEYS.get("search") or frozenset()
+            unknown = sorted(set(q_args) - declared)
+            if unknown:
+                raise BadInput(
+                    f"keys {unknown!r} not accepted by todo.search; its "
+                    "args= keys are listed below — q= takes a query "
+                    "string, not an args dict",
+                    options=sorted(declared),
+                    next=(
+                        "search(kind='todo', view='doable', "
+                        f"args={{'under': {q_args['under']!r}}})"
+                        if "under" in q_args
+                        else "search(kind='todo', view='doable', "
+                        "args={'under': <todo id>})"
+                    ),
+                )
+            if "under" in q_args and (
+                args is not None
+                and args.get("under") is not None
+                and str(args["under"]) != str(q_args["under"])
+            ):
+                raise BadInput(
+                    "q={'under': …} and args={'under': …} disagree",
+                    next="pass under= once, inside args=, with the same todo id",
+                )
+            args = {**(args or {}), **q_args}
+            q = None
+            readings.append(f"q={q_args!r} read as args={q_args!r}")
         # ``view='count'`` is the shared numeric-ref aggregate (total +
         # group_by facets) — it takes no tree args, so under= (todo's
         # own subtree scope) is refused rather than silently dropped.
@@ -981,6 +1043,16 @@ class TodoHandler(NumericRefHandler):
                     "with the same todo id",
                 )
             args = {**(args or {}), "under": under}
+        # args={'under': …} is admitted for the whole verb but only
+        # view='doable' reads it — every other shape used to drop it
+        # silently (gr678249's sibling hole: the same silent misroute
+        # through the documented channel). Refuse it the way the
+        # under= kwarg and view='count' already do.
+        if view != "doable" and args is not None and args.get("under") is not None:
+            raise BadInput(
+                "under= requires view='doable' on todo search",
+                next="search(kind='todo', view='doable', under='<todo id>')",
+            )
         if view is not None:
             try:
                 view_enum = TodoView(view)
@@ -1011,26 +1083,30 @@ class TodoHandler(NumericRefHandler):
                 # gr568264: doable is the one tree view that honours
                 # tags= — the table's 3-arg signature has no channel
                 # for it, so it dispatches here with the raw tags.
-                return _view_doable(self.store, args, page_size, tags=tags)
+                return interpreted(
+                    _view_doable(self.store, args, page_size, tags=tags),
+                    readings,
+                )
             if view_enum is TodoView.RETO_QUEUE:
                 # gr673370: the queue honours q= (row-text narrowing),
                 # page_size= and page= — the table's 3-arg signature has
                 # no q/page channel, so it dispatches here like DOABLE.
-                # args={'under'} is declared for doable; refuse it here
-                # rather than drop it.
-                if args is not None and args.get("under") is not None:
-                    raise BadInput(
-                        "under= requires view='doable' on todo search",
-                        next="search(kind='todo', view='doable', under='<todo id>')",
-                    )
+                # args={'under'} is refused above for every non-doable
+                # view.
                 return asks_view.render_reto_queue(
                     self.store,
                     q=q,
                     page_size=page_size,
                     page=_kw.get("page", 1),
                 )
-            return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
-        return super().search(q=q, tags=tags, page_size=page_size, **_kw)
+            return interpreted(
+                _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size),
+                readings,
+            )
+        return interpreted(
+            super().search(q=q, tags=tags, page_size=page_size, **_kw),
+            readings,
+        )
 
     # ── put: parent_id + level guard at create ────────────────────
 
