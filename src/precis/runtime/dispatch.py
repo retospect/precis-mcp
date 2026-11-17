@@ -4665,11 +4665,25 @@ class DispatchMixin(RuntimeShape):
                             else None
                         )
                     )
+                    job_hints = []
+                    if kind == "job" and verb == "search":
+                        if {"executor", "state"}.intersection(unknown):
+                            job_hints.append(
+                                "search(kind='job', view='count', "
+                                "args={'group_by': 'meta.executor,state'})"
+                            )
+                        if "parent" in unknown:
+                            job_hints.append(
+                                f"search(kind='job', under={extras['parent']!r})"
+                            )
                     raise BadInput(
                         f"keys {unknown!r} not accepted by {kind}.{verb}; "
                         f"its args= keys are listed below",
                         options=accepted_kwargs,
-                        next=([h for h in (corrected, shape_hint) if h] or None),
+                        next=(
+                            job_hints + [h for h in (corrected, shape_hint) if h]
+                            or None
+                        ),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))
 

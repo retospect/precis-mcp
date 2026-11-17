@@ -1229,11 +1229,11 @@ class SearchMixin(RuntimeShape):
         * an ``under=`` the kind OWNS (``owns_under`` — todo/taxon trees,
           job's hierarchical scope) — source search would silently drop
           the scope;
-        * a queryless ``kind='job'`` without an explicit ``sort=`` —
+        * a queryless ``kind='job'`` dated listing —
           ``since=``/``until=`` on a plain job listing are the kind's own
           ``created_at`` bounds, so a bare window stays on the job
-          listing path. A ``q=`` or an explicit ``sort=`` asks for
-          ranking and still routes here.
+          listing path, including its natural ``sort='recency'``.
+          A ``q=`` or ``sort='relevance'`` still opts into ranking.
         """
         if verb != "search" or not self._is_source_search_request(args):
             return False
@@ -1281,16 +1281,21 @@ class SearchMixin(RuntimeShape):
                 # gr608734: job_type is the kind's own meta filter —
                 # the cross-kind primitive has no way to apply it and
                 # refused the call outright. The handler's job_type path
-                # applies q=/since=/until= itself and refuses what it
-                # cannot (sort=/mode=).
+                # applies q=/since=/until= and its own sort/mode rules.
+                return False
+            sort = str(args.get("sort") or "").strip().lower()
+            if resolved == "job" and sort in {"oldest", "newest"}:
                 return False
             q = args.get("q")
-            if (
-                resolved == "job"
-                and args.get("sort") is None
-                and not (isinstance(q, str) and q.strip())
-            ):
-                return False
+            if resolved == "job" and not (isinstance(q, str) and q.strip()):
+                extras = args.get("__extras__")
+                dated = any(
+                    args.get(key) is not None
+                    or (isinstance(extras, dict) and extras.get(key) is not None)
+                    for key in ("since", "until")
+                )
+                if not sort or (dated and sort != "relevance"):
+                    return False
         return True
 
     @staticmethod

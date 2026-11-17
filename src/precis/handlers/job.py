@@ -706,6 +706,7 @@ def _fmt_epoch(value: Any) -> str:
 
 def _job_search_call(
     *,
+    under: str | int | None = None,
     job_type: str | None = None,
     q: Any = None,
     tags: Any = None,
@@ -721,8 +722,8 @@ def _job_search_call(
     """``search(kind='job', …)`` call text for a refusal's ``next=``.
 
     Renders only keys the dated listing / job_type-filtered search
-    provably applies — ``sort=``/``mode=`` are deliberately absent (the
-    listing refuses them) and callers pass ``view=``/``group_by=`` only
+    provably applies — ``sort=``/``mode=`` are deliberately absent and
+    callers pass ``view=``/``group_by=`` only
     when ``view == 'count'`` — so the rendered call is one that works
     (mcp-authoring rule 2). ``since``/``until``/``link``/``job_type``/
     ``group_by``/``id_min``/``id_max`` ride ``args=`` on the wire — the
@@ -731,6 +732,7 @@ def _job_search_call(
     """
     parts = ["kind='job'"]
     for k, v in (
+        ("under", under),
         ("status", status),
         ("q", q),
         ("tags", tags),
@@ -918,7 +920,7 @@ _LOGS_ARG_KEYS = (
 #: sessions guessed it for compute-lane jobs, and the card's compute
 #: lines (footprint, node, wall_s, executor) are that read). ``None``
 #: maps to the default status card, which already carries status +
-#: summary + event chunks.
+#: summary + event chunks, including the failure reason under status.
 _JOB_VIEW_ALIASES: dict[str, str | None] = {
     "meta": "raw",
     "params": "raw",
@@ -927,6 +929,8 @@ _JOB_VIEW_ALIASES: dict[str, str | None] = {
     "events": "log",
     "status": None,
     "compute": None,
+    "error": None,
+    "body": None,
 }
 
 
@@ -6065,6 +6069,20 @@ class JobHandler(NumericRefHandler):
                 "job_type= must be a non-empty job_type name",
                 next="search(kind='job', args={'job_type': 'fix_gripe'})",
             )
+        if str(kw.get("sort")).strip().lower() in {"oldest", "newest"}:
+            raise BadInput(
+                f"sort={kw['sort']!r} is unavailable on job search; "
+                "count rows include each group's newest and oldest job IDs",
+                next=_job_search_call(
+                    under=under,
+                    job_type=str(job_type).strip() if job_type is not None else None,
+                    status=status,
+                    since=since,
+                    until=until,
+                    view="count",
+                    group_by=group_by or "state",
+                ),
+            )
         # ``since=``/``until=`` take the /logs spellings — an ISO
         # timestamp or an age in hours/days (``'24'``, ``'6h'``,
         # ``'7d'``; gr536316) — resolved once here so every path below
@@ -6575,7 +6593,7 @@ class JobHandler(NumericRefHandler):
                     "args={'since': '<ISO>', 'group_by': 'state'})"
                 ),
             )
-        if sort is not None:
+        if sort is not None and str(sort).strip().lower() != "recency":
             raise BadInput(
                 f"sort= doesn't apply to {label} (the listing is recency-ordered)",
                 next=(
@@ -6775,7 +6793,8 @@ class JobHandler(NumericRefHandler):
             )
         if total > len(rows):
             lines.append(
-                f"… page {page} of {-(-total // page_size)} — page={page + 1} for next"
+                f"… page {page} of {-(-total // page_size)} — "
+                "raise page_size= or narrow with job_type=/since="
             )
         lines.append("")
         lines.append(

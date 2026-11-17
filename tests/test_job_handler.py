@@ -881,6 +881,77 @@ def _insert_job(store: Store, *, meta: dict, status: str) -> int:
     return ref.id
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "hint"),
+    [
+        (
+            {"__extras__": {"executor": "codex"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"state": "failed"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"parent": "td123"}},
+            "search(kind='job', under='td123')",
+        ),
+        (
+            {"sort": "oldest"},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+        (
+            {"__extras__": {"sort": "newest"}},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+    ],
+)
+def test_job_search_refusals_name_working_call(
+    runtime_with_store: PrecisRuntime, kwargs: dict[str, Any], hint: str
+) -> None:
+    body = runtime_with_store.dispatch("search", {"kind": "job", **kwargs})
+    assert "[error:BadInput]" in body, body
+    assert "next:" in body and hint in body, body
+
+
+@pytest.mark.parametrize("extras", [{"job_type": "run_slice"}, {"since": "2000-01-01"}])
+def test_sort_recency_accepted_on_job_type_listing(
+    runtime_with_store: PrecisRuntime, store: Store, extras: dict[str, str]
+) -> None:
+    _insert_job(store, meta={"job_type": "run_slice"}, status="running")
+    query = {"kind": "job", "status": "*", "__extras__": extras}
+    default = runtime_with_store.dispatch("search", query)
+    sorted_body = runtime_with_store.dispatch("search", {**query, "sort": "recency"})
+    assert "# 1 job entry" in default, default
+    assert "# 1 job entry" in sorted_body, sorted_body
+    assert default.splitlines()[0] == sorted_body.splitlines()[0]
+
+
+@pytest.mark.parametrize("view", ["error", "body"])
+def test_view_error_aliases_status_card(
+    runtime_with_store: PrecisRuntime, store: Store, view: str
+) -> None:
+    job_id = _insert_job(store, meta={"error": "seed failure"}, status="failed")
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "job", "id": job_id, "view": view}
+    )
+    assert "error: seed failure" in body, body
+    assert f"view={view!r} read as the default status card" in body, body
+
+
+def test_under_listing_footer_has_no_page_arg(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    parent = store.insert_ref(kind="todo", slug=None, title="parent", meta={})
+    for title in ("first", "second"):
+        store.insert_ref(kind="job", slug=None, title=title, parent_id=parent.id)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "job", "under": f"td{parent.id}", "page_size": 1}
+    )
+    assert "raise page_size= or narrow with job_type=/since=" in body, body
+    assert "page=" not in body, body
+
+
 def test_job_card_leads_with_describe_sentence(jobs: JobHandler, store: Store) -> None:
     """The card's first content line is the per-type sentence (td573331),
     with ``job_type:`` still present below it."""
