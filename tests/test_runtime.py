@@ -927,3 +927,12 @@ def test_default_get_over_transport_cap_returns_head_and_outline(
     assert "next:" in out
     assert len(out.encode("utf-8")) <= 24576
     assert _ledger_result_bytes(store, marker) == len(out.encode("utf-8"))
+
+
+@pytest.mark.parametrize("kind", ["table", "spreadsheet", "sheet"])
+def test_table_kind_points_to_draft_tables(runtime: PrecisRuntime, kind: str) -> None:
+    """gr685367: spreadsheet nouns lead to the chunk surface."""
+    out = runtime.dispatch("get", {"kind": kind})
+    assert "[error:NotFound]" in out
+    assert "tables are chunks of kind='draft'" in out
+    assert "precis-table-help" in out

@@ -2,13 +2,17 @@
 id: precis-table-help
 family: core
 title: precis — spreadsheet tables in drafts (TOON view, patch, structure ops)
-summary: read and edit a draft's chunk_kind='table' chunk as an id-addressed TOON grid — view='toon', patch=, toon=, base=, structure ops
+summary: Excel, xlsx, CSV, sheet, grid, formula, calculated column, total, sum a column, bill of materials, budget — create, read and edit a draft's chunk_kind='table' chunk as an id-addressed TOON grid — view='toon', patch=, toon=, base=, structure ops
 answers:
+  - how do I edit an Excel file, add a column and a formula?
+  - can I import or export xlsx or CSV files?
+  - how do I create a budget sheet with rows, columns and totals?
+  - how do I make a bill of materials table with formulas and sum a column?
   - how do I read a draft table as TOON with row/column ids?
   - how do I patch cells in a table without resending the whole grid?
   - how do I add, drop, move or rename table rows and columns?
   - how do I avoid clobbering a concurrent table edit (base=)?
-applies-to: edit(kind='draft') on a chunk_kind='table' chunk
+applies-to: put/get/edit(kind='draft') on a chunk_kind='table' chunk
 tags: [drafting, verbs, addressing]
 status: active
 ---
@@ -19,6 +23,37 @@ A `chunk_kind='table'` draft chunk holds `meta.table` =
 `{header, rows, columns, rowmeta}` — every row and column carries a
 stable 4-char id (never reused after delete). The toon view is the
 read/edit surface for agents; ids come from meta, never the stored text.
+
+Excel/xlsx and CSV file import and export are not supported. Tables live
+inside drafts; there is no standalone `table`, `sheet` or `spreadsheet` kind.
+
+## First table in three calls
+
+Create the owning project todo, create its draft, then add the table:
+
+```python
+put(kind='todo', title='Budget')  # save the returned todo id
+put(kind='draft', id='budget', title='Budget', project='<todo-id>')
+put(kind='draft', id='budget', chunk_kind='table',
+    columns=[{'name': 'item', 'key': True},
+             {'name': 'qty'}, {'name': 'unit_price'},
+             {'name': 'cost', 'formula': 'qty*unit_price'}],
+    rows=[['Bolts', 4, 0.5], ['Brackets', 2, 3]],
+    footer={'cost': 'sum'})  # save the returned dc<id> chunk handle
+```
+
+Use the returned numeric todo id for `project=`; a project title does not
+create a project on this path. Reuse an existing project/draft to skip those
+calls. Subsequent table reads and edits address the returned `dc<id>`.
+
+`columns[].key=true` declares the key column: its values identify rows for
+patch/upsert when no row id matches. Choose unique, non-empty values.
+Formula columns calculate per row from column names; rows above omit their
+calculated cells. A column total uses `footer={'cost': 'sum'}`, not
+`formula='sum(cost)'`. Footer functions: `sum mean median std min max count`.
+Read aggregates under the grid; `view='stats'` reports column statistics.
+For the full formula grammar, error markers and footer rules see
+[[precis-draft-rich-content-help]] §Formulas, footer aggregates & stats.
 
 ## view='toon' — the agent-facing grid
 
@@ -97,6 +132,6 @@ conservatively.
 
 ## See also
 
-- [[precis-draft-rich-content-help]] — table= whole-grid replace, cell=, find=/sub=, LaTeX-sourced tables.
+- [[precis-draft-rich-content-help]] — creation, formula grammar, footer aggregates, stats, table= whole-grid replace, cell=, find=/sub=, LaTeX-sourced tables.
 - [[precis-toon]] — the toon wire format itself.
 - [[precis-draft-help]] — the draft kind and verb surface.

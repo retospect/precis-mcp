@@ -4027,6 +4027,12 @@ class DispatchMixin(RuntimeShape):
                 for h in (
                     self._generic_ref_hint(kind, raw_id),
                     _RETIRED_KINDS.get(kind),
+                    (
+                        "tables are chunks of kind='draft': "
+                        "get(kind='skill', id='precis-table-help')"
+                        if kind in {"table", "spreadsheet", "sheet"}
+                        else None
+                    ),
                 )
                 if h is not None
             ]

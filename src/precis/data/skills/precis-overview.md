@@ -92,7 +92,7 @@ name/path.
 | `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT`; where `PRECIS_ROOTS` mounts it, `skills/<slug>` is the read-only mirror of a skill file (tag `mirror:skills`, `part-of` its parent skill) | `PRECIS_ROOT`, `PRECIS_ROOTS` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
-| `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
+| `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. Data tables support formulas and totals: see `precis-table-help`. See `precis-draft-help`. | store |
 | `plan` | `po3` | A thread's reasoning outline — hierarchical todo-list + notes, never exported. One per project (`plan-of` link). See `precis-plan-help`. | store |
 ## The ref kinds, continued — designs
 
