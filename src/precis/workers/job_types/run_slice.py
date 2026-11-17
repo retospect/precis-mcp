@@ -4627,6 +4627,19 @@ def _resolve_lane_refusal(store: Any, lane: str) -> None:
         )
 
 
+def _adapter_ready(adapter: str) -> bool:
+    """Match advertised login requirements when picking on a mixed host."""
+    from precis.workers import capability_probe
+
+    if not adapter_bin_present(adapter):
+        return False
+    if adapter == "codex_exec":
+        return capability_probe.codex_login_present()
+    if adapter == "claude_p":
+        return capability_probe.claude_auth_present()
+    return True
+
+
 def _lane_offers(lane: _lanes.Lane, capability: str) -> bool:
     """``True`` when the lane's adapter declares ``capability`` — the
     ``params.lane_capability`` requirement the pick enforces."""
@@ -4844,7 +4857,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 until=wake,
             )
             return None
-        if lane.adapter in ADAPTERS and not adapter_bin_present(lane.adapter):
+        if lane.adapter in ADAPTERS and not _adapter_ready(lane.adapter):
             # The lane pin landed on a host that cannot exec it (gr676054:
             # the placement gate only sees the ``builder`` floor when the
             # lane→adapter map misses). A host gap, not a lane failure —
@@ -4853,8 +4866,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             _park_lane_full(
                 ctx,
                 f"run_slice: lane {lane.name!r} pinned by params.lane "
-                f"cannot run here — no {lane.adapter} binary on this "
-                "host; held for a host that has one",
+                f"cannot run here — no {lane.adapter} binary or login on this "
+                "host; held for a host that has both",
                 lanes=(lane.name,),
             )
             return None
@@ -4890,7 +4903,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         host_adapters = {
             ln.adapter
             for ln in table
-            if ln.adapter in ADAPTERS and adapter_bin_present(ln.adapter)
+            if ln.adapter in ADAPTERS and _adapter_ready(ln.adapter)
         }
         table = tuple(ln for ln in table if ln.adapter in host_adapters)
         backoffs = _lanes.lane_backoffs(store)

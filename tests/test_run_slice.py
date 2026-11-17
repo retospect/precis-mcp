@@ -463,6 +463,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # and the pinned-lane guard — every adapter's bin resolves by
     # default; a test names the absent ones in ``calls["bins_absent"]``.
     calls["bins_absent"] = set()
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: True)
+    monkeypatch.setattr(capability_probe, "codex_login_present", lambda: True)
     monkeypatch.setattr(
         run_slice,
         "adapter_bin_present",
@@ -2298,15 +2302,23 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
 ) -> None:
     """gr676054: a lane pin landing on a host without the lane's binary
     parks as a lane wait — the ``builder`` placement floor passed the
     host on SOME lane binary, so the pin holds for a host that carries
     this one. It is a host gap, not a lane failure: no
     ``meta.host_refusal`` stamp, so no fleet-wide lane backoff."""
-    seams["bins_absent"] = {"claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
@@ -2329,8 +2341,9 @@ def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     assert seams["launch"] == []
 
 
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_pick_filters_lanes_to_host_bins(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     """gr676054: the unpinned pick offers only lanes whose adapter binary
     this host can exec — a builder host carrying a subset must not pick
@@ -2348,7 +2361,12 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
 
     # Every fit lane's bin absent → nothing is pickable; the job parks.
-    seams["bins_absent"] = {"devin_tree", "claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"devin_tree", "claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     ctx2 = _Ctx(store, {"todo_id": 42})
     deferred: list[tuple[Any, str]] = []
 
@@ -2362,6 +2380,21 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert "no enabled lane" in deferred[0][1]
     assert ctx2.meta_set["lane_wait"] == []
     assert ctx2.failure is None
+
+
+@pytest.mark.parametrize("adapter", ["claude_p", "codex_exec"])
+def test_adapter_readiness_requires_login(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    from precis.workers import capability_probe
+
+    probe = "claude_auth_present" if adapter == "claude_p" else "codex_login_present"
+    monkeypatch.setattr(capability_probe, probe, lambda: False)
+    assert run_slice._adapter_ready(adapter) is False
+    monkeypatch.setattr(capability_probe, probe, lambda: True)
+    assert run_slice._adapter_ready(adapter) is True
+    seams["bins_absent"] = {adapter}
+    assert run_slice._adapter_ready(adapter) is False
 
 
 def test_lane_full_park_names_the_lanes_to_wake_on(seams: dict[str, Any]) -> None:

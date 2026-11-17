@@ -570,8 +570,13 @@ The probes, re-run every heartbeat:
   templates, and a hand-added value vanishes with it (2026-11-05, r222:
   every factory land queued "no host advertises repo_checkout", gr570787).
 - `claude_bin`: `claude` on the worker's `PATH`, or `PRECIS_CLAUDE_BIN`
-  set to a name on `PATH` or an absolute path (a launchd `PATH` often
-  misses it).
+  set to a name on `PATH` or an executable absolute path (a launchd `PATH`
+  often misses it), **and** credentials available to the worker user:
+  `CLAUDE_CODE_OAUTH_TOKEN` from the environment or vault/bootstrap lookup,
+  `.credentials.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`), or
+  the macOS `Claude Code-credentials` keychain item. Installing the CLI or
+  creating `~/.claude` alone does not advertise the token; log in as the
+  worker user first. This checks credential presence, not upstream validity.
 - `git`: `git` on the worker's `PATH`.
 
 Set the env vars in the worker's service environment and restart it; the
