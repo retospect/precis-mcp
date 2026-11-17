@@ -1132,7 +1132,9 @@ _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _DISPLAY_MATH_RE = re.compile(r"\$\$.*?\$\$", re.S)
 _MULTILINE_MATH_RE = re.compile(r"\$(?=[^$\n]*\n)[^$]*?\$", re.S)
 _BLOCKQUOTE_RE = re.compile(r"^[ \t]*>.*$", re.M)
-_QUOTED_RE = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”")
+# Quotes remain verbatim when source prose wraps across lines. Require a
+# closing delimiter so an unfinished quotation cannot hide the remaining text.
+_QUOTED_RE = re.compile(r'"[^"]*"|“[^”]*”')
 _URL_RE = re.compile(r"https?://\S+")
 #: ISO dates and file/module paths are names, not quantities: ``2026-08-22``
 #: is no numeric range and ``src/precis/foo.py`` no two-denominator unit.
