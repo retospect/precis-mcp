@@ -811,7 +811,9 @@ def test_factory_stream_cannot_starve_bulk(store: Store, monkeypatch: Any) -> No
     """The review's starvation shape: ten fresh factory ops fill the
     ordinary picks of a 10-claim batch, and the oldest bulk row still
     claims on the reserved tenth — its wait is bounded, not FIFO-lost.
-    A factory-first share would leave the seed unclaimed entirely."""
+    A factory-first share would leave the seed unclaimed entirely.
+    Use land jobs: run_slice admits only one fresh build per batch, so
+    a build stream cannot exercise the reserved tenth pick (gr709135)."""
     from precis.workers.executors import _common
 
     _advertise_all(store)
@@ -823,9 +825,13 @@ def test_factory_stream_cannot_starve_bulk(store: Store, monkeypatch: Any) -> No
         queued_s_ago=600,
         job_type="autocatpath_seed",
     )
-    for _ in range(10):
-        _job(store, origin="background", prio=5, job_type="run_slice")
+    factory = [
+        _job(store, origin="background", prio=5, job_type="land_slice")
+        for _ in range(10)
+    ]
     got = _claim(store, limit=10)
+    assert len(got) == 10
+    assert set(got[:9]) <= set(factory)
     assert got.index(seed) == 9
 
 
