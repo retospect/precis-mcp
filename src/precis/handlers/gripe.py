@@ -2141,7 +2141,8 @@ class GripeHandler(NumericRefHandler):
             raise BadInput(
                 f"parking a {self._sense()} needs its wake condition — "
                 "until {type, value, note}: 'ref_done' gr<N>/td<N>, "
-                "'sha_in_prod' <sha>, 'spec_landed' docs/backlog/<x>.md, "
+                "'sha_in_prod' <sha>, 'spec_landed' me<N> (spec root) or "
+                "td<N> (its plan todo), "
                 "'date' <ISO-8601>, or 'text' '<condition>'",
                 next=(
                     f"tag(kind={self.kind!r}, id={id}, "

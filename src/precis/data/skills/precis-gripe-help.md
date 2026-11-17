@@ -312,19 +312,28 @@ tag(kind="gripe", id=N, add=["STATUS:parked"],
 put(kind="gripe", id=N, tags=["STATUS:parked"], args={"until": "td456"})
 put(kind="gripe", id=N, tags=["STATUS:parked"],
     args={"until": "2026-12-01"})
-# spec_landed's value is a spec's repo path — the id this read takes:
-get(kind="md", id="docs/backlog/<slug>.md")
+# spec_landed's value is a graph handle — the spec root or its plan
+# todo (specs live in graph memory; there is no repo path to name).
+# On put the condition rides in args= — meta= is tag's carrier:
+put(kind="gripe", id=N, tags=["STATUS:parked"],
+    args={"until": {"type": "spec_landed", "value": "me<spec root>"}})
+get(kind="memory", id=me<N>)             # the spec root, names its plan todo
+get(kind="todo", id=td<N>, view="tree")  # the plan and its slices
 ```
 
 Condition types: `ref_done` (gr/td handle; met when that ref reaches a
 terminal STATUS), `sha_in_prod` (a hex sha; met once it is in the
-recorded prod head), `spec_landed` (a spec's repo path — the `id=` an
-`md` get takes, as above; the wake pass can't see the repo, so unpark
-by hand or use `text`), `date` (ISO-8601; met at that UTC instant),
+recorded prod head), `spec_landed` (a spec root `me<N>` or its plan
+todo `td<N>`; met when the todo reaches `STATUS:done` — the slice
+landed; `won't-do`/`auto-timeout` do not count — with `me<N>` resolving
+through the spec's `plan-of` link, so
+the wake pass evaluates it from the DB), `date` (ISO-8601; met at that
+UTC instant),
 `text` (free
 text — the cheapest tier judges met/not_met/unsure from the newest
 comments; unsure = not met). Shorthands: `gr<N>`/`td<N>` → `ref_done`,
-a 9–40-hex sha → `sha_in_prod`, an ISO date → `date`, anything else →
+`me<N>` → `spec_landed`, a 9–40-hex sha → `sha_in_prod`, an ISO date →
+`date`, anything else →
 `text`. `get(kind="gripe", id="/parked")` lists the shelf with each
 condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 

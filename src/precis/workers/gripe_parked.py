@@ -14,9 +14,13 @@ Evaluators:
 - ``sha_in_prod`` — the sha is in the recorded prod head
   (:func:`precis.plans.gates` — ``release.prod_head``; the server has
   no git, so "deployed" means *recorded* deployed).
-- ``spec_landed`` — a ``docs/backlog`` spec: not evaluable from the DB
-  (no repo view); stays parked — a ``text`` condition or a human
-  unpark covers it.
+- ``spec_landed`` — a spec root ``me<N>`` or its plan/slice todo
+  ``td<N>``: met when the resolved todo reaches ``STATUS:done`` (the
+  slice landed — ``won't-do``/``auto-timeout`` do not count). The
+  ``me<N>`` form resolves through the spec's ``plan-of`` link, so the
+  DB-only pass evaluates it from the graph alone (gr696034 — specs
+  moved to graph memory, ruling me568168; there is no repo path left
+  to name).
 - ``date`` — UTC now reached the ISO date.
 - ``text`` — the cheapest LLM tier judges condition + the gripe's
   newest 3 comments; ``met``/``not_met``/``unsure``, unsure = not met.
@@ -103,6 +107,57 @@ def _ref_done(store: Any, value: str) -> tuple[bool, str]:
     return False, f"{value} is {status}"
 
 
+def _todo_done(store: Any, ref_id: int) -> tuple[bool, str]:
+    """``(met, evidence)`` for one todo: met at exactly ``STATUS:done``.
+
+    "Landed" is the slice todo reaching done — ``won't-do`` and
+    ``auto-timeout`` are terminal for dispatch but are NOT a landing
+    (review td706868), so this deliberately does not use
+    :data:`precis.todo.TERMINAL_TODO_STATUSES`.
+    """
+    status = next(
+        (
+            str(t.value)
+            for t in store.tags_for(ref_id)
+            if t.namespace == "closed" and t.prefix == "STATUS"
+        ),
+        None,
+    )
+    if status == "done":
+        return True, f"td{ref_id} is done"
+    if status is None:
+        return False, f"td{ref_id} carries no STATUS"
+    return False, f"td{ref_id} is {status} — not done"
+
+
+def _spec_landed(store: Any, value: str) -> tuple[bool, str]:
+    """``spec_landed`` (gr696034): the named spec's slice todo reached
+    ``STATUS:done`` — "landed".
+
+    ``td<N>`` names the todo directly; ``me<N>`` (the spec root) resolves
+    through its inbound ``plan-of`` link to the plan root todo (one plan
+    per spec, functional). Every resolved todo must be done — with the
+    functional 1:1 that is a single STATUS read. A legacy value
+    parked before gr696034 named a ``docs/backlog`` path; the file specs
+    were deleted in the transfer landing commit, which the old contract
+    ("met when the spec is ready or gone") reads as met — wake it back
+    to triage instead of erroring on every pass.
+    """
+    if not value.startswith(("me", "td")):
+        return True, "legacy repo-path spec is gone (specs moved to graph memory)"
+    if value.startswith("td"):
+        return _todo_done(store, int(value[2:]))
+    ref_id = int(value[2:])
+    roots = [
+        edge.dst_ref_id if edge.src_ref_id == ref_id else edge.src_ref_id
+        for edge in store.links_for(ref_id, direction="in", relation="plan-of")
+    ]
+    if not roots:
+        return False, f"{value} has no plan-of todo — nothing to watch"
+    results = [_todo_done(store, r) for r in roots]
+    return all(met for met, _why in results), "; ".join(why for _met, why in results)
+
+
 def _sha_in_prod(store: Any, value: str) -> tuple[bool, str]:
     from precis.plans.gates import sha_deployed
 
@@ -169,6 +224,8 @@ def _eval(
     value = str(until.get("value") or "")
     if typ == "ref_done":
         return _ref_done(store, value)
+    if typ == "spec_landed":
+        return _spec_landed(store, value)
     if typ == "sha_in_prod":
         return _sha_in_prod(store, value)
     if typ == "date":
@@ -191,8 +248,7 @@ def _eval(
             )[:_TEXT_COMMENT_TAIL]
         ]
         return _text_met(until, comments, llm=llm)
-    # spec_landed (and anything newer this build doesn't know): the
-    # DB-only pass can't see the repo — never met here.
+    # Anything newer this build doesn't know: never met here.
     return False, f"{typ} not evaluable here"
 
 

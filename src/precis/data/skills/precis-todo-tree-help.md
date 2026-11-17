@@ -57,7 +57,8 @@ put(
 ```
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
-starting with `asa-`) cannot create or mutate them. CLI sessions,
+starting with `asa-` or `fleet-`) cannot create or mutate them. CLI
+sessions,
 interactive Python, and the precis-web UI (`web:owner`) pass through.
 Promoting/demoting an *existing* todo's facets after creation goes
 through `tag(meta={...})` (`tag()` already carries non-tag state via
