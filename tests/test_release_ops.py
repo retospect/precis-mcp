@@ -4401,31 +4401,26 @@ def test_digest_rescue_survives_a_blind_dump_past_the_cap(
 
 
 def test_compose_digest_reserves_the_room_before_composing() -> None:
-    """td655162: ``room`` comes off the budget BEFORE the digest
-    composes — trimming a composed digest from the right cuts the
-    rescued failure lines the tail exists to keep. The tail itself is
-    never truncated: only the log head gives room."""
+    """Rescued ids survive noise; a budget too small for ids refuses."""
     rescue = (
         "\njobs-logs read:\n== gate-fast ==\n  FAILED tests/x.py::t - assert 1 == 2\n"
     )
     log_text = "== gate-fast ==\n" + "  step noise\n" * (crd._DIGEST_CAP // 10)
     full = crd._compose_digest(log_text, rescue)
     assert len(full) <= crd._DIGEST_CAP
-    assert full.endswith("assert 1 == 2\n")
+    assert "FAILED tests/x.py::t - assert 1 == 2" in full
     out = crd._compose_digest(log_text, rescue, room=2000)
     assert len(out) <= 2000
-    assert out.endswith("assert 1 == 2\n")
-    # No room at all still keeps the whole rescue tail.
-    assert crd._compose_digest(log_text, rescue, room=0) == rescue
+    assert "FAILED tests/x.py::t - assert 1 == 2" in out
+    # No room cannot silently dispatch a brief without its failure ids.
+    with pytest.raises(ValueError, match="failure ids exceed"):
+        crd._compose_digest(log_text, rescue, room=0)
 
 
-def test_digest_posts_the_complete_table_and_keeps_evidence_room(
+def test_digest_excludes_range_files_and_log_noise(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td655162 review: the complete table is the fixer's only copy —
-    every file row posts unbudgeted, while the failure evidence still
-    keeps at least half the cap: a long table starves neither the rows
-    nor the rescue tail."""
+    """gr705098: range file lists and setup noise stay out of briefs."""
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
@@ -4460,13 +4455,10 @@ def test_digest_posts_the_complete_table_and_keeps_evidence_room(
     assert crd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     text = _todo_comments(store, fix_id)[0]
-    # Every file row of the complete table posts — first and last.
-    assert "src/f0.py — 1 commit (+1/-0)" in text
-    assert "src/f199.py — 1 commit (+1/-0)" in text
-    assert text.count("src/f") == 200
-    # The failure evidence kept at least half the cap (each "  step
-    # noise" line is 13 chars).
-    assert text.count("step noise") >= crd._DIGEST_CAP // 2 // 13 - 30
+    assert "src/f0.py" not in text
+    assert "src/f199.py" not in text
+    assert "step noise" not in text
+    assert len(text) <= crd._DIGEST_CAP
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
     assert "never skip, xfail or loosen a test" in text
 
@@ -5759,3 +5751,24 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
     assert len(checkout["argv"]) == launches + 1
     assert checkout["argv"][-1][1:] == ["--cut-only"]
+
+
+def test_digest_budget_preserves_all_nine_shards() -> None:
+    """gr705098: evidence is expendable; shard headings and ids are not."""
+    blocks = []
+    for shard in range(9):
+        blocks.append(f"== gate-fast ({shard}) ==")
+        blocks.extend(["  docker curl apt plugin Error noise"] * 100)
+        for test in range(6):
+            blocks.append(
+                f"  FAILED tests/test_shard{shard}.py::test_{test} - assert "
+                + "x" * 500
+            )
+    text = crd._compose_digest("\n".join(blocks), "")
+    assert len(text) <= crd._DIGEST_CAP
+    assert "docker" not in text
+    for shard in range(9):
+        assert f"== gate-fast ({shard}) ==" in text
+        assert f"FAILED tests/test_shard{shard}.py::test_5 - assert" in text
+        for test in range(6):
+            assert f"    tests/test_shard{shard}.py::test_{test}\n" in text + "\n"

@@ -14,13 +14,8 @@ pinned to that host the same way.
   digests the failed jobs; on exit 0 the job posts one ``brief:``
   comment — the header line, the digest through
   :func:`precis.utils.secret_scan.mask_secrets` capped at
-  :data:`_DIGEST_CAP`, the ranked changed-files table of
-  :mod:`precis.plans.red_suspects` (gr595552 — every file changed since
-  the last green build with its diff stat, range commits, ledger
-  handles, the failure-path flag, and the range's changed symbols per
-  the python kind's diff — complete every time: the brief is the
-  fixer's only copy of it, so the cap bounds the failure evidence,
-  never the table), and the fix-forward rule — on every live
+  :data:`_DIGEST_CAP` for the entire brief, and the fix-forward rule —
+  on every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
@@ -128,7 +123,7 @@ NAME = "ci_red_digest"
 #: only covers a stuck ``gh``.
 _DEFAULT_WALL_S = 10 * 60
 #: The brief's digest cap — a shard dump still lands as one comment.
-_DIGEST_CAP = 12000
+_DIGEST_CAP = 8000
 
 _RUN_ID_RE = re.compile(r"[0-9]+")
 _PROBE_RE = re.compile(
@@ -894,15 +889,77 @@ def _probe_done(ctx: Any, log_text: str) -> bool:
 
 
 def _compose_digest(log_text: str, rescue: str, room: int = _DIGEST_CAP) -> str:
-    """The masked digest inside ``room`` chars, the rescued lines
-    reserved the tail: they are the brief's only real signal, so a blind
-    dump past the cap loses the head room, never them. The caller takes
-    the suspects table's and the rule's room off the budget BEFORE
-    composing — trimming the composed text afterwards cuts the rescue
-    tail it exists to protect (td655162)."""
-    tail = mask_secrets(rescue)
-    head = mask_secrets(log_text)[: max(0, room - len(tail))]
-    return head + tail
+    """Keep every job and failure id before sharing space for evidence.
+
+    Raw setup logs never compete with failures. If ids alone exceed the
+    budget, refuse rather than dispatch a fixer with silently missing ids.
+    """
+    jobs: dict[str, list[str]] = {}
+    current = "(log)"
+    for raw in mask_secrets(log_text + "\n" + rescue).splitlines():
+        line = raw.strip()
+        match = _SECTION.fullmatch(line)
+        if match:
+            current = match.group(1)
+            jobs.setdefault(current, [])
+        elif line and line not in jobs.setdefault(current, []):
+            jobs[current].append(line)
+    required: dict[str, list[str]] = {}
+    evidence: dict[str, list[str]] = {}
+    for name, lines in jobs.items():
+        ids = list(
+            dict.fromkeys(
+                line.split(" - ", 1)[0].split(" ", 1)[1]
+                for line in lines
+                if line.startswith(("FAILED ", "ERROR "))
+            )
+        )
+        ids.extend(
+            line for line in lines if line.startswith("tests/") and line not in ids
+        )
+        if name == "(log)" and not ids:
+            continue
+        required[name] = [f"== {name} =="]
+        if ids:
+            required[name] += [
+                f"  failed ids ({len(ids)}):",
+                *[f"    {tid}" for tid in ids],
+            ]
+        assertions = [
+            line
+            for line in lines
+            if line.startswith(("FAILED ", "ERROR ")) and " - " in line
+        ]
+        evidence[name] = [
+            "  " + line
+            for line in (assertions or lines)
+            if line.startswith(
+                ("FAILED ", "ERROR ", "E ", "pytest summary:", "(no signal lines")
+            )
+            or re.match(r"^(?:[\w./-]+:\d+:|Error:|fatal:)", line)
+        ]
+    size = len("\n".join(line for lines in required.values() for line in lines))
+    if size > room:
+        raise ValueError(
+            "CI failure ids exceed brief budget; inspect the full run logs"
+        )
+    # Equal line shares prevent an early noisy shard starving later jobs.
+    count = sum(map(len, evidence.values()))
+    allowance = max(0, (room - size) // max(1, count) - 1)
+    for index in range(max(map(len, evidence.values()), default=0)):
+        for name, lines in evidence.items():
+            if index >= len(lines):
+                continue
+            available = min(allowance, room - size - 1)
+            if available <= 0:
+                continue
+            line = lines[index]
+            shown = (
+                line if len(line) <= available else line[: max(0, available - 1)] + "…"
+            )
+            required[name].append(shown)
+            size += len(shown) + 1
+    return "\n".join(line for lines in required.values() for line in lines)
 
 
 class _WaiverPark(Exception):
@@ -1161,25 +1218,13 @@ def _digest_done(
             "brief has nowhere to land"
         )
         return True
-    # The complete table is the fixer's only copy of it (td655162
-    # review) — it posts unbudgeted; the failure evidence keeps its
-    # room instead: at least half the cap when the table is long,
-    # everything it leaves when it is short. The digest composes AFTER
-    # the table for the same reason the rescue tail is reserved:
-    # trimming a composed digest would cut the failure lines the room
-    # exists to keep. The room reserves the longer of the two fix rules
-    # (a release-branch fix node gets :data:`_RELEASE_RULE`).
-    suspects = mask_secrets(_suspects_block(ctx, rel, log_text or "", dict(rescued)))
+    # Range files belong to the overlap hold, never the fixer brief.
+    suspects = ""
+    head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
     rule_room = max(len(_RULE), len(_RELEASE_RULE.format(target="release/r9999")))
     digest = _compose_digest(
-        log_text or "",
-        rescue,
-        room=max(
-            _DIGEST_CAP // 2,
-            _DIGEST_CAP - len(suspects) - rule_room,
-        ),
+        log_text or "", rescue, room=_DIGEST_CAP - len(head) - rule_room - 3
     )
-    head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
     # Split only a digest that provably lists every failing id: an id a
     # truncated list or a non-pytest red hides would belong to no
     # cluster, so such a red keeps one brief with the whole digest.
@@ -1202,6 +1247,9 @@ def _digest_done(
             ctx, todo_id, targets, clusters, head, digest, suspects
         )
     for tid, text in posted:
+        overhead = len(text) - len(digest)
+        fitted = _compose_digest(log_text or "", rescue, room=_DIGEST_CAP - overhead)
+        text = text.replace(digest, fitted, 1) if digest else text
         _rs._append_comment(ctx.store, tid, text)
     shown = ", ".join(f"td{t}" for t, _ in posted)
     ctx.append_chunk(

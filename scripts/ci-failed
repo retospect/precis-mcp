@@ -105,9 +105,6 @@ _PRINTABLE = re.compile(r"^[A-Za-z0-9_=, -]{0,200}$")
 #: `` - `` separator is absent on ``ERROR at setup of <nodeid>``-style
 #: lines, whose tail is the whole id).
 _SUMMARY_ID = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$")
-#: The ``failed ids:`` roll-up's own cap — independent of -n, so the
-#: verdict survives a tight per-job signal budget.
-_ID_CAP = 20
 #: pytest's final summary line, ``==== 12 passed, 1 skipped in 3.2s ====``
 #: — printed only when the session ran to its end, so it is the digest's
 #: proof a job log is complete (td650667).
@@ -258,14 +255,17 @@ def _select(entries: list[str], *, lines: int, tail: int) -> list[str]:
     """One job's picked lines: deduped signal lines, or the tail when none."""
     seen: set[str] = set()
     picked: list[str] = []
+    failures = list(dict.fromkeys(line for line in entries if _SUMMARY_ID.match(line)))
     for line in entries:
-        if not SIGNAL.search(line) or line in seen:
+        if not SIGNAL.search(line) or line in seen or line in failures:
             continue
         seen.add(line)
         picked.append(line)
-    if picked:
+    if picked or failures:
+        if failures:
+            picked = [line for line in picked if re.match(r"^E\s|^=+|short test summary info", line)]
         shown = picked if lines <= 0 else picked[:lines]
-        out = [f"  {line}" for line in shown]
+        out = [f"  {line}" for line in [*failures, *shown]]
         if len(picked) > len(shown):
             out.append(f"  … {len(picked) - len(shown)} more signal lines")
         return out
@@ -299,9 +299,7 @@ def digest_jobs(
         ids = _failed_ids(entries)
         if ids:
             out.append(f"  failed ids ({len(ids)}):")
-            out.extend(f"    {i}" for i in ids[:_ID_CAP])
-            if len(ids) > _ID_CAP:
-                out.append(f"    … +{len(ids) - _ID_CAP} more in the full log")
+            out.extend(f"    {i}" for i in ids)
         summaries = [m.group(1) for m in map(_PYTEST_SUMMARY.match, entries) if m]
         if summaries:
             out.append(f"  pytest summary: {summaries[-1]}")
@@ -321,7 +319,7 @@ _INCOMPLETE = re.compile(r"still in progress|logs? will be available", re.IGNORE
 def _backfill_blind_jobs(
     run: dict[str, Any], jobs: OrderedDict[str, list[str]]
 ) -> OrderedDict[str, list[str]]:
-    """Re-read blind jobs through ``actions/jobs/<id>/logs`` (gr587536):
+    """Re-read missing or incomplete jobs through ``actions/jobs/<id>/logs`` (gr587536):
     the shared ``--log-failed`` stream can carry only the step header
     where the job's own log has the FAILED lines. A fetched log replaces
     the job's lines outright — the fuller source either way; an
@@ -332,9 +330,11 @@ def _backfill_blind_jobs(
         if j.get("conclusion") == "failure"
     }
     out: OrderedDict[str, list[str]] = OrderedDict()
-    for name, entries in jobs.items():
+    for name in dict.fromkeys([*jobs, *ids]):
+        entries = jobs.get(name, [])
         jid = ids.get(name)
-        if not jid or any(SIGNAL.search(line) for line in entries):
+        complete = any(_PYTEST_SUMMARY.match(line) for line in entries)
+        if not jid or (_failed_ids(entries) and complete):
             out[name] = entries
             continue
         cp = _gh_api(

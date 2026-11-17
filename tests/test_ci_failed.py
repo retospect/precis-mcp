@@ -653,3 +653,37 @@ def test_blind_shared_and_job_log_fall_back_to_the_tail(tmp_path: Path) -> None:
     assert "no signal lines" in cp.stdout
     assert "actions/jobs/<id>/logs" in cp.stdout  # the next-step hint
     assert "step aborted before pytest ran" in cp.stdout  # the job-log tail
+
+
+def test_missing_and_noisy_shards_are_backfilled(tmp_path: Path) -> None:
+    """gr705098: setup errors are not proof a shard has its test failures."""
+    env = _api_dir(
+        tmp_path,
+        {
+            str(i + 100): "\n".join(
+                f"{TS} FAILED tests/test_{i}.py::test_{j} - assert 1 == 2"
+                for j in range(28)
+            )
+            for i in range(9)
+        },
+    )
+    (tmp_path / "ghstate").write_text(
+        f"shard0\tsetup\t{TS} curl error noise\n", encoding="utf-8"
+    )
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [
+                {"name": f"shard{i}", "id": i + 100, "conclusion": "failure"}
+                for i in range(9)
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    for i in range(9):
+        assert f"== shard{i} ==" in cp.stdout
+        assert "failed ids (28):" in cp.stdout
+        for j in range(28):
+            assert f"    tests/test_{i}.py::test_{j}\n" in cp.stdout
