@@ -22,6 +22,19 @@ numbers rather than by writing a parser.
 
 ## Corpora
 
+Navigation census: run `scripts/mine-sessions/run.sh --since 30d --prod`
+for a 30-day window. `navigation_usage` in the scoreboard and the detector
+of the same name count fisheye rungs (including legacy `view=`), links
+views and no-eye refusals by corpus, kind, outcome and client. Unknown
+clients stay unknown; `source` is a model tier, not client identity.
+Same-kind/id successful rung increases require a real session and ordered
+sequence numbers. Synthetic day buckets contribute usage counts only.
+Visible explicit get examples in response heads can establish hinted calls
+and later matching attempts; this is partial coverage, not a hint compliance
+rate. The ledger has no response text, so its hint coverage is unknown.
+The writer `src/precis/tool_ledger.py::arg_sample` preserves the scalar keys
+`extent`, `view` and `id`; old rows without samples cannot establish usage.
+
 | Flag | Source | What it uniquely gives |
 |---|---|---|
 | `--local` | `~/.claude/projects/*/*.jsonl` **and** `*/subagents/agent-*.jsonl` | The richest corpus: full tool stream, exact per-turn tokens from `message.usage`, non-precis detours, and user corrections. 91% of files are sidechains — an earlier audit's glob missed them entirely, so the sidechain shape is pinned by a test. |

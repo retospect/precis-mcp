@@ -79,6 +79,8 @@ class Event:
     model: str | None = None
     source: str | None = None
     """Model tier for ledger rows; caller label for llm_call_log rows."""
+    client: str | None = None
+    outcome: str | None = None
     profile: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     """``message.usage`` of the enclosing assistant turn. Tool-use blocks

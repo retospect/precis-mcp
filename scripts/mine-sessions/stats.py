@@ -37,7 +37,9 @@ from schema import Event
 #: v3 (td580721): ``detour_census`` reuses the detector's ``detour_hits``,
 #: so the same call extracted under two session paths no longer
 #: double-counts — v2 detour counts can read high.
-SCHEMA_VERSION = 3
+#: v4 (gr702994): navigation usage splits preserve ledger outcome/client;
+#: older event files remain readable but have unknown client identity.
+SCHEMA_VERSION = 4
 
 
 def _date_range(events: Sequence[Event]) -> tuple[str | None, str | None]:
@@ -238,6 +240,13 @@ def build_scoreboard(events: Sequence[Event]) -> dict[str, Any]:
         "tokens": _tokens(events),
         "detour_census": _detour_census(events),
         "exec_class_mix": _exec_class_mix(events),
+        "navigation_usage": [
+            dict(
+                zip(("signal", "corpus", "kind", "outcome", "client"), key),
+                calls=len(evs),
+            )
+            for key, evs in sorted(detect.navigation_groups(events).items())
+        ],
     }
 
 
@@ -318,6 +327,23 @@ def render_markdown(sb: dict[str, Any]) -> str:
     )
     lines.append("")
 
+    lines.extend(
+        [
+            "## navigation usage",
+            "signal | corpus | kind | outcome | client | calls",
+            "---|---|---|---|---|---",
+        ]
+    )
+    for row in sb["navigation_usage"]:
+        lines.append(
+            " | ".join(
+                str(row[k])
+                for k in ("signal", "corpus", "kind", "outcome", "client", "calls")
+            )
+        )
+    lines.append(
+        "Hints: captured response heads only; ledger hint coverage is unknown."
+    )
     return "\n".join(lines)
 
 

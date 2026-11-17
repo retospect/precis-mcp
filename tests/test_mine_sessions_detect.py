@@ -78,6 +78,109 @@ def mk(
 # ---------------------------------------------------------------------------
 
 
+def test_navigation_ledger_usage_and_escalation() -> None:
+    def call(
+        seq: int,
+        extent: str,
+        *,
+        session: str = "s1",
+        ident: str = "me1",
+        kind: str = "memory",
+        error: bool = False,
+    ) -> Event:
+        ev = mk(
+            seq=seq,
+            session=session,
+            corpus="ledger",
+            verb="get",
+            kind=kind,
+            arg_keys=("id", "extent", "view"),
+            arg_digest=json.dumps({"id": ident, "extent": extent, "view": "links"}),
+            is_error=error,
+            err_head="no eye on kind" if error else "",
+        )
+        ev.client = "codex"
+        ev.outcome = "error" if error else "ok"
+        return ev
+
+    events = [
+        call(1, "fisheye"),
+        call(2, "fisheye+1hop"),
+        call(3, "fisheye+2hop"),
+        call(4, "fisheye+2hop", error=True),
+        call(5, "fisheye+2hop", ident="me2"),
+        call(6, "fisheye+2hop", kind="quest"),
+        call(7, "fisheye+2hop", session="other"),
+        call(1, "fisheye", session="ledger:2026-11-17"),
+        call(2, "fisheye+1hop", session="ledger:2026-11-17"),
+    ]
+    groups = detect.navigation_groups(list(reversed(events)))
+    assert len(groups[("fisheye+2hop", "ledger", "memory", "ok", "codex")]) == 3
+    assert len(groups[("no-eye", "ledger", "memory", "error", "codex")]) == 1
+    escalations = {
+        key[0]: len(evs)
+        for key, evs in groups.items()
+        if key[0].startswith("escalation:")
+    }
+    assert escalations == {
+        "escalation:fisheye->fisheye+1hop": 1,
+        "escalation:fisheye+1hop->fisheye+2hop": 1,
+    }
+    assert not any(key[0].startswith("hint") for key in groups)
+    assert detect.detect_navigation_usage(events)
+    sb = stats.build_scoreboard(events)
+    assert any(
+        row["signal"] == "links" and row["client"] == "codex"
+        for row in sb["navigation_usage"]
+    )
+    assert "navigation usage" in stats.render_markdown(sb)
+
+
+def test_navigation_visible_hint_and_near_misses() -> None:
+    hint = mk(
+        seq=1,
+        verb="get",
+        kind="memory",
+        result_head="Next: get(kind='memory', id='me1', extent='fisheye+1hop')",
+    )
+    wrong = mk(
+        seq=2,
+        verb="get",
+        kind="memory",
+        arg_keys=("id", "extent"),
+        arg_digest='{"id":"me2","extent":"fisheye+1hop"}',
+    )
+    followed = mk(
+        seq=3,
+        verb="get",
+        kind="memory",
+        arg_keys=("id", "extent"),
+        arg_digest='{"id":"me1","extent":"fisheye+1hop"}',
+    )
+    assert not any(
+        key[0] == "hint-followed" for key in detect.navigation_groups([hint, wrong])
+    )
+    groups = detect.navigation_groups([hint, wrong, followed])
+    assert (
+        sum(len(evs) for key, evs in groups.items() if key[0] == "hint-followed") == 1
+    )
+    assert (
+        detect.navigation_groups(
+            [mk(verb="search", arg_keys=("extent",), arg_digest='{"extent":"fisheye"}')]
+        )
+        == {}
+    )
+    assert (
+        detect._arg_value(mk(arg_keys=("id",), arg_digest='{"id":[1,2]}'), "id") is None
+    )
+    assert (
+        detect._arg_value(
+            mk(arg_keys=("extent",), arg_digest='{"extent":"fisheye'), "extent"
+        )
+        is None
+    )
+
+
 def test_d0_exec_class_hit_blocked() -> None:
     events = [
         mk(

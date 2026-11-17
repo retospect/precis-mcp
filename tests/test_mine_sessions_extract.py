@@ -411,6 +411,7 @@ def test_ledger_row_to_event_mapping() -> None:
     }
     ev = extract.ledger_row_to_event(row, session="ledger:2026-09-20", seq=1)
     assert ev.corpus == "ledger"
+    assert ev.client is None
     assert ev.seq == 1
     assert ev.verb == "search"
     assert ev.kind == "todo"
@@ -660,10 +661,13 @@ def test_ledger_row_to_event_0209_fields() -> None:
         "error_head": None,
         "arg_sample": '{"kind":"job","under":"qu459585","view":"tree"}',
         "agentlog_id": 99,
+        "client": "codex",
     }
     ev = extract.ledger_row_to_event(row, session="host-1-abc123", seq=7)
     assert ev.session == "host-1-abc123"
     assert ev.seq == 7
+    assert ev.client == "codex"
+    assert ev.outcome == "ok"
     assert ev.result_bytes == 512
     assert ev.arg_digest == '{"kind":"job","under":"qu459585","view":"tree"}'
 
