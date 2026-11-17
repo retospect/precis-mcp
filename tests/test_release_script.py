@@ -8,6 +8,7 @@ sub-second via flags.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -2242,3 +2243,47 @@ def test_record_prod_head_mode_honours_dry_run(
     assert said[-1].startswith(
         "dry-run: would record" if dry_run else "prod head recorded"
     )
+
+
+def test_sync_to_release_head_fast_forwards_a_checkout_on_the_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr699137: a fix commit on release/rN leaves the checkout on the cut."""
+    (tmp_path / "mod").mkdir()
+    mod = _load_release(tmp_path / "mod", monkeypatch)
+
+    def g(cwd: Path, *a: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *a],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+                "PATH": os.environ["PATH"],
+            },
+        ).stdout.strip()
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    g(origin, "init", "-q", "-b", "main")
+    (origin / "f").write_text("1", encoding="utf-8")
+    g(origin, "add", "f")
+    g(origin, "commit", "-qm", "cut")
+    cut = g(origin, "rev-parse", "HEAD")
+    g(origin, "checkout", "-qb", "release/r9")
+    (origin / "f").write_text("2", encoding="utf-8")
+    g(origin, "commit", "-qam", "fix")
+    fix = g(origin, "rev-parse", "HEAD")
+    work = tmp_path / "work"
+    g(tmp_path, "clone", "-q", str(origin), str(work))
+    g(work, "checkout", "-q", "--detach", cut)
+    monkeypatch.setattr(mod, "ROOT", work)
+
+    assert mod.sync_to_release_head("release/r9").startswith("checkout moved")
+    assert g(work, "rev-parse", "HEAD") == fix
+    assert mod.sync_to_release_head("release/r9") == ""

@@ -2254,6 +2254,30 @@ def report_cut(branch: str = "") -> int:
 _DEPLOY_ONLY_RE = re.compile(r"^(?:release/)?r?(\d+)$")
 
 
+def sync_to_release_head(want: str) -> str:
+    """Fast-forward this checkout to ``origin/<want>`` (gr699137).
+
+    A release that took a fix commit has a head past the cut sha this
+    checkout sits on; once the rollout moves origin/prod there, every
+    ``scripts/prod-precis`` write from the cut sha refuses ("not a
+    descendant of origin/prod"). Best-effort: returns one status line, and
+    a checkout that is not behind (or cannot fast-forward) is left alone.
+    """
+    spec = f"+refs/heads/{want}:refs/remotes/origin/{want}"
+    if git("fetch", "-q", "origin", spec) is None:
+        return f"checkout not moved: cannot fetch origin/{want}"
+    tip = rev(f"origin/{want}")
+    if not tip:
+        return f"checkout not moved: no origin/{want}"
+    if ancestor(tip, "HEAD"):
+        return ""
+    if not ancestor("HEAD", tip):
+        return f"checkout not moved: HEAD is not an ancestor of origin/{want}"
+    if git("merge", "--ff-only", tip) is None:
+        return f"checkout not moved: cannot fast-forward to {tip[:9]}"
+    return f"checkout moved to {want} head {tip[:9]}"
+
+
 def deploy_only(args: argparse.Namespace) -> int:
     """--deploy-only r<N>: deploy the live recorded release/r<N> this
     worktree cut, pinned. Never cuts; any other state refuses with exit 1."""
@@ -2289,6 +2313,8 @@ def deploy_only(args: argparse.Namespace) -> int:
             write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at")))
     dep = rel.get("deployment") or {}
     sha = str(rel.get("base") or "")
+    if not args.dry_run and (moved := sync_to_release_head(want)):
+        say(moved)
     if dep.get("converged") and not dep.get("rollout_at"):
         if args.dry_run:
             say("would finish the prod pointer and round without another rollout")
