@@ -126,6 +126,11 @@ def render_links_section(
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
+    Reciprocal edges to the same endpoint fold into one row, with distinct
+    relation markers joined by `` / ``. Chunk scope and edge reasons remain
+    distinct so folding never loses grounding. Caps count folded rows.
+    The ``how to get`` column is omitted when all rows address whole refs.
+
     Columns: ``{related to	keywords	how to get	size [kB]
     (default 1kB)}``. Column 1
     holds ``<rel-marker> <target>`` — ``--`` for default ``related-to``
@@ -167,45 +172,70 @@ def render_links_section(
             ``NumericRefHandler._render_links_view`` already exposes as
             ``args={'of_kind': …}`` (gr472990).
 
-    Both kwargs default to a no-op so every existing callsite (the
-    numeric-ref per-``get()`` append, ``render_links_view``) renders
-    byte-identical output to before this signature grew.
+    Filters default to a no-op. Default ordering follows the earliest
+    edge in each folded row; priority ordering follows its strongest edge.
     """
     prepared = _select_link_pairs(store, ref, rel=rel, of_kind=of_kind)
     if prepared is None:
         return ""
     combined, endpoints, ref_sizes, chunk_sizes = prepared
 
-    def render(selected: list[tuple[Link, str]], total: int) -> str:
-        rows = [
-            _link_row(
-                lnk,
-                d,
-                ref=ref,
-                endpoints=endpoints,
-                ref_sizes=ref_sizes,
-                chunk_sizes=chunk_sizes,
-            )
-            for lnk, d in selected
-        ]
+    # Fold before capping: reciprocal storage must not consume the preview.
+    ordered = sorted(
+        combined, key=_priority_sort_key if priority else lambda pair: pair[0].id
+    )
+    folded: dict[tuple[int, str, str], tuple[dict[str, str], list[str], bool]] = {}
+    for lnk, direction in ordered:
+        row = _link_row(
+            lnk,
+            direction,
+            ref=ref,
+            endpoints=endpoints,
+            ref_sizes=ref_sizes,
+            chunk_sizes=chunk_sizes,
+        )
+        outbound = direction == "out"
+        other_id = lnk.dst_ref_id if outbound else lnk.src_ref_id
+        marker = (
+            _format_outbound_rel(lnk.relation)
+            if outbound
+            else _format_inbound_rel(lnk.relation)
+        )
+        target = row["related to"][len(marker) :].lstrip()
+        key = (other_id, target, row["how to get"])
+        needs_call = bool(row["how to get"]) and (
+            endpoints.get(other_id) is None
+            or (lnk.dst_chunk_id if outbound else lnk.src_chunk_id) is not None
+            or (lnk.dst_ord if outbound else lnk.src_ord) is not None
+        )
+        if key not in folded:
+            folded[key] = (row, [], needs_call)
+        markers = folded[key][1]
+        if marker not in markers:
+            markers.append(marker)
+        folded[key][0]["related to"] = f"{' / '.join(markers)} {target}".strip()
+
+    def render(
+        selected: list[tuple[dict[str, str], list[str], bool]], total: int
+    ) -> str:
+        rows = [row for row, _markers, _needs_call in selected]
+        schema = ["related to", "keywords", "size [kB] (default 1kB)"]
+        if any(needs_call for _row, _markers, needs_call in selected):
+            schema.insert(2, "how to get")
         truncated = len(selected) < total
 
         from precis.format import render_agent_table
 
         header = f"Links ({limit} of {total}):" if truncated else "Links:"
-        out = f"\n\n{header}\n" + render_agent_table(
-            rows,
-            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
-        )
-        return out
+        return f"\n\n{header}\n" + render_agent_table(rows, schema=schema)
 
     handle = handle_registry.try_format(ref.kind, ref.id) or (
         ref.slug if ref.slug is not None else ref.id
     )
     return render_capped_section(
-        combined,
+        list(folded.values()),
         limit=limit,
-        key=_priority_sort_key if priority else lambda pair: pair[0].id,
+        key=lambda _row: 0,
         render=render,
         overflow=lambda n: (
             f"\n+{n} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
