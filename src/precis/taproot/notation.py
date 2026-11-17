@@ -410,8 +410,13 @@ _UNIT_TOKEN_ALT = "|".join(
 #: reading, which is nonsensical -- the same unit symbol repeating right
 #: after the digits is `range-unit-repeated`'s shape, not an exponent, so
 #: this rule stands down and lets that one fire instead.
+#: Zero is not a negative power: `cycle-0` is an ordinal label, and
+#: rewriting it would corrupt prose. Bare `K-12` is also ambiguous with
+#: the conventional E. coli strain designation, so preserve it; an
+#: explicit caret (`K^-12`) still unambiguously requests an exponent.
 _ASCII_MINUS_EXP_RE = re.compile(
-    rf"(?<![A-Za-zµμΩ])(?P<unit>{_UNIT_TOKEN_ALT})\^?-(\d+)\b(?!\s?(?P=unit)\b)"
+    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?P<unit>{_UNIT_TOKEN_ALT})"
+    rf"\^?-(?!0+\b)(\d+)\b(?!\s?(?P=unit)\b)"
 )
 
 #: A caret followed by an uppercase letter is a letter superscript

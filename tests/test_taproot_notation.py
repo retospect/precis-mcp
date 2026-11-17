@@ -676,6 +676,10 @@ _NOMENCLATURE_HYPHEN_SENTENCES: list[str] = [
     "HKUST-1 exhibits a Langmuir surface area above 2000 m2 per gram.",
     "VOTCPP-PIF-1 was deployed as a chemiresistive sensor.",
     "Features below sub-10-nm scale were resolved by TEM.",
+    "The climate orchestrator's cycle-0 count is recorded.",
+    "E. coli K-12 was cultured overnight.",
+    "The K-12 strain was cultured overnight.",
+    "The cycle-00 label is preserved.",
 ]
 
 
@@ -704,6 +708,8 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         ("Mobility was 500 cm2 V-1 s-1.", "V⁻¹ s⁻¹"),
         ("The rate constant is 4.2 M-1 s-1.", "M⁻¹ s⁻¹"),
         ("Sheet resistance falls off as cm-2.", "cm⁻²"),
+        ("Sensitivity is 2 K-1.", "K⁻¹"),
+        ("The decay rate is 2 cycle-1.", "cycle⁻¹"),
     ]
     for sentence, expected_fragment in cases:
         warnings = lint_notation(sentence)
@@ -711,6 +717,15 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         out, codes = normalize_notation(sentence)
         assert "ascii-minus-exponent" in codes, (sentence, codes)
         assert expected_fragment in out, (sentence, out)
+
+
+def test_explicit_kelvin_minus_exponent_is_not_a_strain_name() -> None:
+    sentence = "The coefficient has units K^-12."
+    assert any("ascii-minus-exponent" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == "The coefficient has units K⁻¹²."
+    # Caret normalization runs before the bare-minus normalization.
+    assert "caret-exponent" in codes
 
 
 def test_fully_canon_compliant_sentence_produces_no_warnings() -> None:
