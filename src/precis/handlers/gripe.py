@@ -13,9 +13,11 @@ Surface (see ``precis-gripe-help``):
   matching exactly one theme folds into that theme's live
   ``theme:<slug>`` keeper as a ``+1`` comment — or becomes the keeper
   itself when none exists — so filers never have to dedup first.
-  Minting a keeper takes a stronger match than merging, and a
+  Minting and merging both need two pattern hits or a title hit; a
   ``thread:<slug>`` filing themes only within its own thread
-  (gr599069).
+  (gr599069). Only filings of at most 1500 characters without a
+  ``spec:`` line merge. Filing tags stay in the comment so a repeat
+  sighting cannot reclassify the keeper.
   ``args={'new': True}`` bypasses matching; several matches file
   normally (the ack lists them). ``args={'observation': True}`` files
   the gripe already closed (``STATUS:done`` + ``observation`` tag) via
@@ -1344,7 +1346,14 @@ class GripeHandler(NumericRefHandler):
                 memory=self.kind == "gripe" and "project:memory" in (tags or ()),
                 threads=threads,
             )
-            if keeper is not None:
+            if (
+                keeper is not None
+                and keeper_mint_match(text or "", slug)
+                and len(text or "") <= 1500
+                and not re.search(
+                    r"^\s*spec:", text or "", re.IGNORECASE | re.MULTILINE
+                )
+            ):
                 with _PUT_UNTIL.bind(until), _translate_status_check():
                     return self._merge_into_keeper(
                         keeper,
@@ -1358,14 +1367,14 @@ class GripeHandler(NumericRefHandler):
                         untags=untags,
                         idem_key=idem_key,
                     )
-            if threads:
+            if threads and keeper is None:
                 # The theme never took root in this thread — neither
                 # merge nor mint (gr599069).
                 note = (
                     f"matched theme {slug} but it has no live keeper in "
                     f"{', '.join(threads)} — filed separately (no theme tag)"
                 )
-            elif keeper_mint_match(text or "", slug):
+            elif keeper is None and keeper_mint_match(text or "", slug):
                 tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
                 note = (
                     f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
@@ -1374,8 +1383,8 @@ class GripeHandler(NumericRefHandler):
                 )
             else:
                 note = (
-                    f"matched theme {slug} — filed separately: one "
-                    "incidental hit doesn't mint a keeper"
+                    f"matched theme {slug} — filed separately (no theme tag): "
+                    "weak match or standalone filing does not merge or mint a keeper"
                 )
         elif len(matched) > 1:
             note = f"matched themes: {', '.join(matched)} — filed separately (no merge)"
@@ -1518,10 +1527,10 @@ class GripeHandler(NumericRefHandler):
     ) -> Response:
         """Fold a theme-matched filing into its keeper as a ``+1`` comment.
 
-        Same semantics as ``put(id=N, …)``: caller ``link=``/``tags=``/
-        ``untags=`` ride onto the keeper in one transaction with every
-        guard intact. ``prio=`` has no comment carrier — refuse it naming
-        the direct ``tag()`` door. ``idem_key`` dedupes the appended
+        Caller links ride onto the keeper in one transaction. Tags and
+        untags are recorded only in the comment: a repeat sighting must
+        not change the keeper's classification. ``prio=`` has no comment
+        carrier — refuse it naming the direct ``tag()`` door. ``idem_key`` dedupes the appended
         comment, and short-circuits to the ref when the key's first call
         minted the keeper itself.
         """
@@ -1553,7 +1562,11 @@ class GripeHandler(NumericRefHandler):
             resp = self._append_then_link(
                 lambda: self._append_comment(
                     id=keeper,
-                    text=self._merge_comment(text),
+                    text=(
+                        self._merge_comment(text)
+                        + (f"\nFiling tags: {tags!r}" if tags else "")
+                        + (f"\nFiling untags: {untags!r}" if untags else "")
+                    ),
                     meta={_MERGE_FILING_META: "true"} if key is not None else None,
                     idem_key=key,
                 ),
@@ -1561,8 +1574,8 @@ class GripeHandler(NumericRefHandler):
                 link=link,
                 unlink=unlink,
                 rel=rel,
-                tags=tags,
-                untags=untags,
+                tags=None,
+                untags=None,
                 what=f"{self._sense()} comment",
             )
             if route is not None:
@@ -1571,12 +1584,25 @@ class GripeHandler(NumericRefHandler):
                     self.store.update_ref(
                         keeper, meta_patch={"route": route}, conn=tx_conn
                     )
+        number = re.search(r"comment (\d+)", resp.body)
+        assert number is not None, resp.body
+        retry = retry_call(
+            "put",
+            kind=self.kind,
+            text=text,
+            tags=tags,
+            untags=untags,
+            link=link,
+            unlink=unlink,
+            rel=rel,
+            new=True,
+        )
         return replace(
             resp,
             body=(
-                f"{resp.body}\nmerged into {format_handle(self.kind, keeper)} "
-                f"(theme {slug}); to file separately anyway pass "
-                "args={'new': True}"
+                f"NOT filed as a new gripe: merged into {format_handle(self.kind, keeper)} "
+                f"(theme {slug}) as comment {number[1]}.\n"
+                f"next: {retry}\n{resp.body}"
             ),
         )
 

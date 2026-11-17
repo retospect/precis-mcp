@@ -141,10 +141,11 @@ a `+1 (<first line>): <text>` comment; the ack says so.
 <!-- write -->
 It names `args={'new': True}` as the bypass if you meant a standalone
 gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
-making it the keeper — but minting takes a stronger match than merging
-(two pattern hits or a title hit; one incidental body hit files
-standalone), and a filing carrying `thread:<slug>` only ever joins a
-keeper inside that same thread. Several matches file normally — the ack
+making it the keeper. Minting and merging both need two distinct pattern
+hits or a title hit; one incidental body hit files standalone. Filings
+over 1,500 characters or carrying a `spec:` line never merge. A merge
+echoes your tags in its comment and leaves keeper tags unchanged. A filing
+carrying `thread:<slug>` only ever joins a keeper inside that same thread. Several matches file normally — the ack
 lists them (add the one you meant as `theme:<slug>` yourself if you want
 it on a keeper). Comments (`put(id=N, …)`) never match.
 <!-- /write -->
@@ -152,8 +153,8 @@ it on a keeper). Comments (`put(id=N, …)`) never match.
 ```python
 put(kind="gripe", text="scripts/test <file> -q waits ~25s on container bring-up")
 <!-- write -->
-# → merged into gr514478 (theme test-speed); to file separately anyway
-#   pass args={'new': True}
+# → NOT filed as a new gripe: merged into gr514478 (theme test-speed) as comment 1.
+# next: repeat this put with args={'new': True}
 <!-- /write -->
 ```
 
