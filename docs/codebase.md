@@ -225,6 +225,12 @@ stream, reply off the aggregated `LlmResult`), while a concrete claude id
 driving the live Discord progress indicator). Slack's is one blocking
 `dispatch()` call.
 
+Shared context lives in `src/precis/chat/context.py::build`, behind a
+`ToolCaller` protocol and section/budget profiles. The bridge adapter
+`src/asa_bot/preamble.py::build` preserves its existing prompt; `WEB_CHAT`
+omits soul and inner life and bounds hot turns and the complete prompt.
+Core imports neither frontend, so web callers can reuse context independently.
+
 The `/rxn` web form dispatches the rxn energetics handler and renders its
 tables through the shared reader. Explicit keep stores equation inputs and
 an archival ledger in an `rxn` ref; `/refs/rxn/<id>` derives the live ledger
