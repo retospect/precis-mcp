@@ -2960,6 +2960,7 @@ class GripeHandler(NumericRefHandler):
                     next=(f"get(kind='gripe', id='/open', args={{'sort': {sort!r}}})"),
                 )
             _kw["sort"] = sort
+        raw_view = view
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
@@ -3020,6 +3021,10 @@ class GripeHandler(NumericRefHandler):
             head = "\n".join(self._header_lines(ref, tags))
             return Response(body=gf.render_fix_view(ref, state, head))
         if isinstance(id, list):
+            if raw_view in {"list", "ids"}:
+                # Compact batch views: checked on the pre-fold view, which
+                # plain_listing_view folds to None above.
+                return super().get(id=id, view=raw_view, q=q, **_kw)
             # Batch form: one summary block per id by default, or the
             # single-id view mapped over each (gr552235). The comment
             # selectors forward per id — on a bare get they mean

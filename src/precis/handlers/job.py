@@ -1296,6 +1296,8 @@ class JobHandler(NumericRefHandler):
                     "sha= only applies to the /builds view",
                     next="get(kind='job', id='/builds', args={'sha': '<commit>'})",
                 )
+            if view in {"list", "ids"}:
+                return super().get(id=id, view=view, q=q, **_kw)
             if view is not None:
                 return self._get_batch_view(
                     self._coerce_ids(id),

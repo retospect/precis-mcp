@@ -1229,6 +1229,10 @@ class MemoryHandler(AuditedRetirementHandler):
             shown = f"view={canon!r}" if canon is not None else "the default view"
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
+        if isinstance(id, list) and view in {"list", "ids"}:
+            return self._get_batch(
+                id, view=view, tag_prefixes=_kw.get("tag_prefixes", ...)
+            )
         if concrete and view is not None and view not in _BASE_VIEWS:
             legal = [
                 "argument",
@@ -1593,6 +1597,8 @@ class MemoryHandler(AuditedRetirementHandler):
         one trailer at the end points at the fisheye neighbourhood. A missing
         or deleted id is a one-line block.
         """
+        if view in {"list", "ids"}:
+            return super()._get_batch(ids, view=view, tag_prefixes=tag_prefixes)
         ref_ids = self._coerce_ids(ids)
         if view is not None:
             return self._get_batch_view(ref_ids, view=view)

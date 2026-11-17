@@ -44,7 +44,9 @@ owner, never to a browse request.
 Row tag-prefix overrides travel as call arguments because handler instances
 serve concurrent requests. Batch summaries reuse their bulk tag read and
 append selected open-tag chips only when requested, preserving the compact
-default and the existing lifecycle fields.
+default and the existing lifecycle fields. Compact batch list/ids reads
+reuse the listing renderer and allow 300 IDs because each result is one
+line; block reads and writes retain the 50-ID bound.
 """
 
 from __future__ import annotations
@@ -172,17 +174,20 @@ _BATCH_SUMMARY_VIEWS = frozenset({"title", "index"})
 # keeping one batch ``get`` render on the order of a search page. The
 # draft ``terms=[...]`` batch write reuses it for the same reason.
 BATCH_ID_CAP = 50
+COMPACT_BATCH_ID_CAP = 300
 
 
-def _id_batch_next(verb: str, kind: str, ids: list[Any], *, extra: str = "") -> str:
+def _id_batch_next(
+    verb: str, kind: str, ids: list[Any], *, extra: str = "", cap: int = BATCH_ID_CAP
+) -> str:
     """The ``next=`` for an over-cap ``id=[...]`` refusal: the same call
-    re-issued verbatim as batches of :data:`BATCH_ID_CAP` (gr547806 —
+    re-issued verbatim as batches of ``cap`` ids (gr547806 —
     ``split into calls of 50 or fewer`` told the shape but not the split,
     and sessions re-issued the whole list). ``extra`` is a literal suffix
     appended inside the parens (e.g. ``, q='...'``)."""
     return "; ".join(
-        f"{verb}(kind={kind!r}, id={ids[i : i + BATCH_ID_CAP]!r}{extra})"
-        for i in range(0, len(ids), BATCH_ID_CAP)
+        f"{verb}(kind={kind!r}, id={ids[i : i + cap]!r}{extra})"
+        for i in range(0, len(ids), cap)
     )
 
 
@@ -4828,14 +4833,16 @@ class NumericRefHandler(Handler):
         return found
 
     @classmethod
-    def _coerce_ids(cls, ids: list[Any]) -> list[int]:
+    def _coerce_ids(
+        cls, ids: list[Any], *, cap: int = BATCH_ID_CAP, view: str | None = None
+    ) -> list[int]:
         """Normalise ``id=[...]`` to distinct integer ids, order kept.
 
         Each element takes what the singleton form takes (int, decimal
         string, ``<kind>:<int>``) plus this kind's universal handle
         (``gr123``) — the spelling a search table shows, so ids can be
         copied straight out of one. Refused: a kind without
-        ``batch_ids``, an empty list, more than :data:`BATCH_ID_CAP`, an
+        ``batch_ids``, an empty list, more than ``cap`` IDs, an
         element of another kind.
         """
         if not cls.batch_ids:
@@ -4854,10 +4861,16 @@ class NumericRefHandler(Handler):
                 "id=[] is empty",
                 next=f"get(kind={cls.kind!r}, id=[<int>, ...])",
             )
-        if len(ids) > BATCH_ID_CAP:
+        if len(ids) > cap:
             raise BadInput(
-                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
-                next=_id_batch_next("get", cls.kind, ids),
+                f"id=[...] takes at most {cap} ids, got {len(ids)}",
+                next=_id_batch_next(
+                    "get",
+                    cls.kind,
+                    ids,
+                    cap=cap,
+                    extra=f", view={view!r}" if view else "",
+                ),
             )
         out: list[int] = []
         for pos, raw in enumerate(ids):
@@ -4891,6 +4904,9 @@ class NumericRefHandler(Handler):
     ) -> Response:
         """``get(id=[...])``: one summary block per id, in the order given.
 
+        ``view='list'|'ids'`` takes the compact branch instead: one line
+        per id (titles for ``list``), up to :data:`COMPACT_BATCH_ID_CAP`.
+
         Summary-shaped by default — each block is the handle, the
         lifecycle tags (closed axes, ``alert-state``), ``prio``, the link
         count and the body's first line. A missing or soft-deleted id is
@@ -4900,7 +4916,34 @@ class NumericRefHandler(Handler):
         :meth:`_get_batch_view`.
         """
         prefixes = self._parse_tag_prefixes(tag_prefixes)
-        ref_ids = self._coerce_ids(ids)
+        compact = view in {"list", "ids"}
+        ref_ids = self._coerce_ids(
+            ids, cap=COMPACT_BATCH_ID_CAP if compact else BATCH_ID_CAP, view=view
+        )
+        if compact:
+            refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
+            compact_refs = [
+                refs[rid]
+                for rid in ref_ids
+                if rid in refs
+                and refs[rid].kind == self.kind
+                and not refs[rid].retired_at
+            ]
+            rendered = self._id_lines(
+                compact_refs, titles=view == "list", row_tag_prefixes=prefixes
+            ).splitlines()
+            lines = dict(zip((r.id for r in compact_refs), rendered, strict=True))
+            for rid in ref_ids:
+                if rid not in lines:
+                    handle = handle_registry.try_format(self.kind, rid) or str(rid)
+                    ref = refs.get(rid)
+                    state = (
+                        "deleted"
+                        if ref and ref.kind == self.kind and ref.retired_at
+                        else "not found"
+                    )
+                    lines[rid] = f"{handle}  {state}"
+            return Response(body="\n".join(lines[rid] for rid in ref_ids))
         # ``title``/``index`` name what the summary form already is (one
         # handle + first-line block per id); agents guess them on a batch
         # (gr648736), so read them as the default instead of refusing.

@@ -51,6 +51,11 @@ Per-kind views are listed by the kind's own skill
 an unknown-view refusal — a view name valid on one kind does not carry
 to another.
 
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+
 ## Render a ref with its neighbourhood and recall
 
 For a newly written or edited memory, check

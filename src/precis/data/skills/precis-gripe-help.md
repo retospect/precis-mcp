@@ -368,6 +368,13 @@ comments — a page that can't hold the rest names the
 Plain `view='full'` is the bounded complete read: a long body clips
 naming `view='body'`, and comments the page can't hold are elided by
 ord with the windowed call named. `view='log'` remains the audit log.
+## Read several gripes in one call
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —

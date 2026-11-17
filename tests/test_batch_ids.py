@@ -909,3 +909,54 @@ def test_batch_tag_prefixes(hub: Hub) -> None:
     assert body.count("[fix:code]") == 2
     assert "[cluster:y]" not in body
     assert "[thread:x]" not in handler.get(id=_batch(*ids)).body
+
+
+@pytest.mark.parametrize("handler_type", [GripeHandler, MemoryHandler])
+@pytest.mark.parametrize("view", ["list", "ids"])
+def test_batch_list_view_300(hub: Hub, handler_type: Any, view: str) -> None:
+    handler = handler_type(hub=hub)
+    first = id_of(handler.put(text="compact first\nbody detail").body)
+    deleted = id_of(handler.put(text="compact deleted").body)
+    handler.delete(id=deleted, reason="batch test")
+    other = id_of(TodoHandler(hub=hub).put(text="foreign kind").body)
+    missing = first + 100_000
+    ids = [first, deleted, other, *range(missing, missing + 117)]
+    lines = handler.get(id=ids, view=view).body.splitlines()
+    assert len(lines) == 120
+    prefix = "gr" if handler_type is GripeHandler else "me"
+    assert [line.split()[0] for line in lines] == [f"{prefix}{rid}" for rid in ids]
+    assert lines[1] == f"{prefix}{deleted}  deleted"
+    assert lines[2] == f"{prefix}{other}  not found"
+    assert lines[3] == f"{prefix}{missing}  not found"
+    assert ("compact first" in lines[0]) == (view == "list")
+    assert "body detail" not in "\n".join(lines)
+    assert (
+        len(
+            handler.get(
+                id=list(range(missing, missing + 300)), view=view
+            ).body.splitlines()
+        )
+        == 300
+    )
+
+
+@pytest.mark.parametrize("handler_type", [GripeHandler, MemoryHandler])
+def test_batch_default_cap_still_50(hub: Hub, handler_type: Any) -> None:
+    handler = handler_type(hub=hub)
+    with pytest.raises(BadInput, match="at most 50"):
+        handler.get(id=list(range(1, 52)))
+    for view in ("list", "ids"):
+        with pytest.raises(BadInput, match="at most 300") as exc:
+            handler.get(id=list(range(1, 302)), view=view)
+        assert f"view={view!r}" in str(exc.value.next)
+
+
+def test_batch_list_tag_prefixes(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    handler.tag(id=ids[0], add=["topic:compact", "project:batch"])
+    body = handler.get(id=_batch(*ids), view="list", tag_prefixes="topic").body
+    assert "compact" in body and "project:batch" not in body
+    assert (
+        "compact"
+        not in handler.get(id=_batch(*ids), view="list", tag_prefixes="other").body
+    )
