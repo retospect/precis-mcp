@@ -643,6 +643,20 @@ def test_select_distractors_refuses_when_the_pool_is_too_small():
 # ---------------------------------------------------------------------------
 
 
+def _admin_conn(store: Any) -> Any:
+    """A maintenance connection without the per-test SQL bounds the DSN
+    carries: ``CREATE``/``DROP DATABASE`` are whole-cluster ops — the copy
+    and the FORCE drop's backend-termination barrier can legitimately
+    outlive ``statement_timeout=120s`` on a loaded CI runner (gr709128).
+    pytest-timeout stays the outer bound."""
+    import psycopg
+
+    conn = psycopg.connect(store.dsn, autocommit=True)
+    conn.execute("SET statement_timeout = 0")
+    conn.execute("SET lock_timeout = 0")
+    return conn
+
+
 def _clone_template(store: Any, dsn: str) -> None:
     """Stand-in for :func:`corpus.ensure_database` in tests: clone the
     maintained test template (schema, extensions and vocabulary in one copy)
@@ -655,25 +669,38 @@ def _clone_template(store: Any, dsn: str) -> None:
     from tests import conftest
 
     name = str(conninfo_to_dict(dsn)["dbname"])
-    with psycopg.connect(store.dsn, autocommit=True) as conn:
+    with _admin_conn(store) as conn:
         hit = conn.execute(
             "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
         ).fetchone()
         if hit is None:
-            conn.execute(
-                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
-                    sql.Identifier(name), sql.Identifier(conftest._TEMPLATE_DB)
+            # STRATEGY=FILE_COPY (PG15+): checkpoint + filesystem copy
+            # instead of the default WAL_LOG, which WAL-logs every copied
+            # block — the same choice _initialise_test_db makes for the
+            # session clone, for the same reason. Falls back to the default
+            # for a server too old to know the keyword.
+            try:
+                conn.execute(
+                    sql.SQL(
+                        "CREATE DATABASE {} TEMPLATE {} STRATEGY = FILE_COPY"
+                    ).format(
+                        sql.Identifier(name), sql.Identifier(conftest._TEMPLATE_DB)
+                    )
                 )
-            )
+            except psycopg.errors.SyntaxError:
+                conn.execute(
+                    sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                        sql.Identifier(name), sql.Identifier(conftest._TEMPLATE_DB)
+                    )
+                )
 
 
 def _drop_db(store: Any, dsn: str) -> None:
-    import psycopg
     from psycopg import sql
     from psycopg.conninfo import conninfo_to_dict
 
     name = str(conninfo_to_dict(dsn)["dbname"])
-    with psycopg.connect(store.dsn, autocommit=True) as conn:
+    with _admin_conn(store) as conn:
         conn.execute(
             sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
                 sql.Identifier(name)
