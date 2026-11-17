@@ -116,6 +116,12 @@ search(
 )  # default 25 papers, max 100
 ```
 
+When the result set exceeds one page, narrow by keyword navigation:
+`search(kind='paper', q='photocatalytic NOx reduction', view='toc')`.
+Follow the keyword-filter calls to smaller sets. Or re-issue more specifically
+(add a distinctive term, `scope=`, `exclude`) or less specifically (drop a
+term, widen `queries=`).
+
 Each row is one paper — the best hit's chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`), a `+N` count of that paper's other
 hits, the paper's `pa<id>` + cite key, year and title, and the best

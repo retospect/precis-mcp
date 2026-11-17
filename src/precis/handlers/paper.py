@@ -2851,6 +2851,7 @@ class PaperHandler(Handler):
         # (gr500651, ``ids=`` handles/slugs) and ``view='ingest'``
         # (gr500643, ``days=``) are paper-only ingest-state reads.
         view: str | None = None,
+        kw: str | list[str] | None = None,
         group_by: str | list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -3025,7 +3026,18 @@ class PaperHandler(Handler):
             or ingested_after_dt is not None
             or ingested_before_dt is not None
         )
-        if view is not None and view not in ("index", "ids"):
+        if kw is not None and view not in (None, "index", "ids", "toc"):
+            raise BadInput(
+                "kw= filters the ranked paper pool, not this view",
+                next="search(kind='paper', q='catalysis', view='toc', args={'kw': 'solar'})",
+            )
+        if view == "toc" or kw is not None:
+            from precis.handlers._paper_search_toc import validate_navigation
+
+            validate_navigation(
+                kind=kind, q=q, kw=kw, good=good, title=title, author=author
+            )
+        if view is not None and view not in ("index", "ids", "toc"):
             if view == "count":
                 # The count's filtered set composes the ref-level
                 # filters the listing paths honour (gr605583 — an arg
@@ -3217,7 +3229,7 @@ class PaperHandler(Handler):
             # Only name views the kind actually serves (gr520077): the
             # chase queue is the DOI-fetcher backlog — paper-only.
             options = ["count", "status", "ingest", "stubs"] + (
-                ["chase-queue"] if kind == "paper" else []
+                ["chase-queue", "toc"] if kind == "paper" else []
             )
             raise BadInput(
                 f"unknown view {view!r} for search(kind={kind!r})",
@@ -4016,7 +4028,14 @@ class PaperHandler(Handler):
             cohort_args=cohort_args,
             cohort_kwargs=cohort_kwargs,
             cohort_note=cohort_note,
+            keyword_pool=view == "toc" or kw is not None,
         )
+        if view == "toc" or kw is not None:
+            from precis.handlers._paper_search_toc import render_navigation
+
+            return render_navigation(
+                result, kw=kw, store=self.store, embedder=self.embedder
+            )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
     def _resolve_record_type_scope(self, record_type: str) -> set[int]:

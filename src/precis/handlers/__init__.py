@@ -1,9 +1,8 @@
 """Handlers — kind adapters.
 
-Modules implement :class:`precis.protocol.Handler`, declare verbs via
-:class:`precis.protocol.KindSpec` and register with :class:`precis.dispatch.Hub`
-at boot (contract: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
-sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+Modules implement :class:`precis.protocol.Handler`, declaring verbs via
+:class:`precis.protocol.KindSpec`; :class:`precis.dispatch.Hub` registers them.
+Shared shapes occupy underscore-prefixed modules.
 Staged (URL-backed draft) findings preserve a URL and verbatim quote
 without fetching; paper import promotes only a source-and-quote match to
 the ordinary chase (:mod:`precis.finding_drafts`).
@@ -21,6 +20,8 @@ snapshot determine availability without discovery or index warming: a cold
 registered worktree stays quiet, preserving its useful cold-build guidance.
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
+
+Paper keyword navigation: stateless matched-chunk facets; ephemeral extraction respects no-kwd.
 
 Capped non-verbatim paper search keeps exact-title matches as record
 callouts without promoting rows. Its store-selected page already applies
