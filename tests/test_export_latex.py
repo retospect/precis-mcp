@@ -2598,13 +2598,12 @@ def test_export_renders_itemize_and_enumerate(hub, tmp_path) -> None:
     d = DraftHandler(hub=hub)
     proj = store.insert_ref(kind="todo", slug=None, title="P").id
     d.put(id="lst", title="T", project=proj)
-    ul = d.put(id="lst", chunk_kind="ulist", text="list", at={"last": True})
+    ul = d.put(id="lst", chunk_kind="ulist", text="- alpha\n- beta", at={"last": True})
     ul_h = re.search(r"dc\d+", ul.body).group(0)  # type: ignore[union-attr]
-    d.put(id="lst", chunk_kind="item", text="alpha", at={"into": ul_h, "last": True})
-    d.put(id="lst", chunk_kind="item", text="beta", at={"into": ul_h, "last": True})
-    ol = d.put(id="lst", chunk_kind="olist", text="list", at={"last": True})
+    d.put(id="lst", chunk_kind="item", text="gamma", at={"into": ul_h, "last": True})
+    ol = d.put(id="lst", chunk_kind="olist", text="1. one\n2. two", at={"last": True})
     ol_h = re.search(r"dc\d+", ol.body).group(0)  # type: ignore[union-attr]
-    d.put(id="lst", chunk_kind="item", text="one", at={"into": ol_h, "last": True})
+    d.put(id="lst", chunk_kind="item", text="three", at={"into": ol_h, "last": True})
 
     ref = store.get_ref(kind="draft", id="lst")
     body = latex.render_body(store, ref).body

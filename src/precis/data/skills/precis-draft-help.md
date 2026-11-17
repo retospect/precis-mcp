@@ -313,18 +313,19 @@ put(
 # → markdown bullets → structured list: dc91 [ulist] holding 3 items
 ```
 
-Why it converts rather than staying bullet text: only the web reader
-renders markdown bullets. The PDF and docx exports build lists from the
-container/item shape — bullet text inside a paragraph reaches them as one
-run-on line with literal hyphens. Structured, each item is also its own
-addressable `dc` handle: citable, editable, reviewable.
+Why it converts: only the web reader renders markdown bullets. The PDF
+and docx exports build lists from the container/item shape — bullet text
+inside a paragraph reaches them as one run-on line. Structured, each item
+is its own `dc` handle: citable, editable, reviewable.
 
 A ulist needs at least two items (nested ones count), and *every* line
 must be a bullet or a continuation of the one above it — a one-bullet
 paragraph, or one that merely opens with a dash, stays literal text, no
-container minted. Converted something you meant as prose?
+container minted. `chunk_kind='ulist'`/`'olist'` runs the same door —
+`text=` may be only bullets, and the named kind wins over the markers.
+Meant prose?
 `edit(kind='draft', id='dc<container>', list_kind='normal')` dissolves it
-back to paragraphs.
+back.
 
 The outline shows a list as one row (`dc91 [ulist] 3 items: NO side · …`);
 `get(kind='draft', id='dc91')` renders its items in full. The qualified form

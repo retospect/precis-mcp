@@ -2781,7 +2781,12 @@ class DraftStore(_AbbrevMixin):
         long}``) is stamped on each. ``kind`` sets the handle namespace
         (``'plan'`` → ``pe<id>``). ``split=False`` inserts ``text``
         verbatim as one chunk — for a derived projection that must not
-        fragment (a ``table``'s markdown render)."""
+        fragment (a ``table``'s markdown render). ``chunk_kind`` in
+        ``('ulist', 'olist')`` takes only markdown bullets: they land as
+        the named container + ``item`` children — any other text is
+        refused (a container carrying prose is a malformed zero-item
+        list, gr684738); an empty ``text`` mints the bare container for
+        callers that fill it with ``item`` puts after."""
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi, anchor_id = self._resolve_at(conn, ref_id, at)
@@ -2798,12 +2803,20 @@ class DraftStore(_AbbrevMixin):
                 # export already reads (migration 0037). Bullet text left
                 # inside a paragraph renders only in the web reader and
                 # collapses to one run-on line in the PDF and docx.
+                # An explicit 'ulist'/'olist' ask runs the same parse —
+                # a container carries no prose (its 'item' children do),
+                # so its text= may be only bullets; anything else minted
+                # a malformed zero-item list no export reads (gr684738).
                 tree = (
                     mdlist.parse_list_block(block)
-                    if chunk_kind == "paragraph"
+                    if chunk_kind in ("paragraph", "ulist", "olist")
                     else None
                 )
                 if tree is not None:
+                    # The named kind wins over the bullet markers —
+                    # chunk_kind='olist' + '- item' mints an olist.
+                    if chunk_kind in ("ulist", "olist"):
+                        tree.chunk_kind = chunk_kind
                     out.extend(
                         self._insert_list_tree(
                             conn,
@@ -2817,6 +2830,17 @@ class DraftStore(_AbbrevMixin):
                         )
                     )
                     continue
+                if chunk_kind in ("ulist", "olist") and block.strip():
+                    raise BadInput(
+                        f"a {chunk_kind!r} chunk is a list container — it "
+                        "carries no prose of its own (its 'item' children "
+                        "do), so text= must be markdown bullets; anything "
+                        "else mints a malformed list holding 0 items",
+                        next="put(kind='draft', id='<slug>', "
+                        "chunk_kind='paragraph', text='- first\\n- "
+                        "second') — markdown bullets convert to a "
+                        "ulist/olist container + item chunks",
+                    )
                 out.append(
                     self._insert_draft_chunk(
                         conn,

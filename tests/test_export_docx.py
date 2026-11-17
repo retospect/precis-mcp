@@ -868,10 +868,10 @@ def test_export_renders_list_styles(
         .rstrip(",.()")
     )
     draft.put(id="ld", title="Lists", project=pid)
-    ul = draft.put(id="ld", chunk_kind="ulist", text="list", at={"last": True})
+    ul = draft.put(id="ld", chunk_kind="ulist", text="- x\n- y", at={"last": True})
     ul_h = re.search(r"dc\d+", ul.body).group(0)  # type: ignore[union-attr]
     draft.put(id="ld", chunk_kind="item", text="alpha", at={"into": ul_h, "last": True})
-    ol = draft.put(id="ld", chunk_kind="olist", text="list", at={"last": True})
+    ol = draft.put(id="ld", chunk_kind="olist", text="1. a\n2. b", at={"last": True})
     ol_h = re.search(r"dc\d+", ol.body).group(0)  # type: ignore[union-attr]
     draft.put(id="ld", chunk_kind="item", text="one", at={"into": ol_h, "last": True})
 
