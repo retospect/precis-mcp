@@ -101,6 +101,37 @@ def test_unfiltered_quest_browse(
     assert "fixture-quest-sort" in _text(core.search(kind="quest", sort="prio"))
 
 
+@pytest.mark.parametrize("status", ["open", "*", "!done"])
+def test_todo_search_excludes_retired_open_rows(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """gr684306: retirement wins over a todo's retained STATUS:open tag."""
+    rt = runtime_with_store
+    monkeypatch.setattr(core, "_get_runtime", lambda: rt)
+    handler = rt.hub.handler_for("todo")
+    assert handler is not None
+    store = rt.hub.live_store
+    live = handler.put(text="fixture-retirement-live").ref_id
+    retired = handler.put(text="fixture-retirement-retired").ref_id
+    assert live is not None and retired is not None
+    args: dict[str, Any] = dict(kind="todo", status=status, page_size=20)
+    before = _text(core.search(**args))
+    assert "fixture-retirement-live" in before
+    assert "fixture-retirement-retired" in before
+
+    handler.delete(id=retired, reason="superseded by the retained task")
+    assert any(str(tag) == "STATUS:open" for tag in store.tags_for(retired))
+    after = _text(core.search(**args))
+    assert "[error:" not in after
+    assert "fixture-retirement-live" in after
+    assert "fixture-retirement-retired" not in after
+    assert store.count_refs(kind="todo", tags=["STATUS:open"]) == 1
+    assert [ref.id for ref in store.list_refs(kind="todo")] == [live]
+    count = _text(core.search(**args, view="count"))
+    assert "[error:" not in count
+    assert "# 1 todo entry" in count
+
+
 def test_priority_not_advertised_for_ranked_source(
     runtime_with_store: PrecisRuntime, monkeypatch
 ) -> None:
