@@ -54,6 +54,48 @@ def test_get_existing_skill(skill: SkillHandler) -> None:
     assert len(out.body) > 100  # not empty
 
 
+def test_full_view_serves_complete_body_past_rev_stub(skill: SkillHandler) -> None:
+    """gr680237: the repeated full-view guess must reach the existing body door."""
+    complete = skill.get(id="precis-overview", full=True).body
+    rev = complete.rstrip().splitlines()[-1].removeprefix("skill rev ")
+    out = skill.get(id="precis-overview", view="full", have=rev)
+    note, body = out.body.split("\n", 1)
+    assert note.startswith("interpreted: view='full' read as full=True")
+    assert "extent='verbatim'" in note
+    assert body == complete
+
+
+def test_full_view_is_inert_on_section_selection(skill: SkillHandler) -> None:
+    """gr680237 review (td706444): ``full`` cannot change a ``~N``
+    section serve, so the alias is dropped silently — the read is
+    byte-identical to the plain section read with no ``interpreted:``
+    banner claiming a full body that was not served."""
+    out = skill.get(id="precis-overview~0", view="full")
+    assert out.body == skill.get(id="precis-overview~0").body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_full_view_is_inert_on_toc(skill: SkillHandler) -> None:
+    """The alias is likewise dropped on ``slug/toc`` — the TOC read is
+    unchanged and carries no false full-read banner."""
+    out = skill.get(id="precis-overview/toc", view="full")
+    assert out.body == skill.get(id="precis-overview/toc").body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_full_view_is_inert_on_index(skill: SkillHandler) -> None:
+    """A no-id index read drops ``view=`` like any other view."""
+    out = skill.get(view="full")
+    assert out.body == skill.get().body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_unrelated_skill_view_still_refuses(skill: SkillHandler) -> None:
+    with pytest.raises(BadInput, match="unknown skill view 'build'") as caught:
+        skill.get(id="precis-overview", view="build")
+    assert caught.value.options
+
+
 def test_get_bare_kind_aliases_to_help_skill(skill: SkillHandler) -> None:
     """gr338442: ``id='se'`` serves ``precis-se-help`` with a banner
     naming the redirect instead of NotFound."""

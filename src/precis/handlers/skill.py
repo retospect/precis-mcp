@@ -16,6 +16,13 @@ size dial; ``full=true`` is the deprecated spelling that still routes,
 gr568808); under the threshold the body serves verbatim, one call beats
 two. The old shape (a body that truncates at the transport cap with the
 section map at the bottom, the long-first read) is gone.
+``view='full'`` is an announced alias for ``full=True`` (gr680237):
+callers asking for the complete body bypass both the index and rev
+stub. A batch id resolves the alias per element (``_get_batch`` keeps
+the singleton's spellings), and reads where ``full`` is inert — the
+no-id index, ``slug/toc``, ``slug~N``, rulings — drop ``view=`` like
+any other view rather than claim a full read they did not perform.
+Other views still validate normally; ``extent='verbatim'`` is canonical.
 
 A bare ``get(kind='skill')`` lists every **available** skill — i.e.
 every skill whose ``status:`` front-matter is ``active`` (or absent)
@@ -1208,6 +1215,23 @@ class SkillHandler(Handler):
         if id is None or (isinstance(id, str) and id.startswith("/")):
             return self._render_index(tag=tag, tags=tags, kinds=kinds, family=family)
 
+        # gr680237: ``view='full'`` is the announced alias for
+        # ``full=True``. Resolve it here, after the batch and no-id
+        # doors above: a list id fans out through ``_get_batch`` and
+        # each element re-enters this method with ``view='full'`` (the
+        # batch's "same spellings as the singleton" contract, gr665340
+        # — the first cut intercepted the alias at the top of the body
+        # and the batch door then dropped ``full``), while a no-id
+        # index read drops ``view=`` like any other view. ``full``
+        # only changes the whole-body serve below (rev-stub bypass,
+        # index-first bypass), so the ``interpreted:`` banner is added
+        # on that path alone — on a ``/toc``, ``~N`` or rulings read
+        # it would claim a full read the serve never performed.
+        full_view_alias = view == "full"
+        if full_view_alias:
+            view = None
+            full = True
+
         raw_id = str(id).strip()
         # Worktree root prefix (gr541511): ``<wt-alias>/<slug>`` serves
         # the skill corpus of a git worktree's checkout — the md kind's
@@ -1488,15 +1512,24 @@ class SkillHandler(Handler):
             # The index IS the map — no fitted-body trailer or outline —
             # but the recovery hint still names the targeted reads a
             # caller can drill into.
-            return Response(
+            response: Response = Response(
                 body=text,
                 result_budget_hint=_result_budget_hint(display),
             )
-        return Response(
-            body=text,
-            result_budget_hint=_result_budget_hint(display),
-            budget_outline=_budget_outline(display, text),
-        )
+        else:
+            response = Response(
+                body=text,
+                result_budget_hint=_result_budget_hint(display),
+                budget_outline=_budget_outline(display, text),
+            )
+        if full_view_alias:
+            from precis.handlers._interpret import interpreted
+
+            return interpreted(
+                response,
+                ["view='full' read as full=True; prefer extent='verbatim'"],
+            )
+        return response
 
     def _get_batch(
         self, ids: list[Any], *, view: str | None, q: str | None
