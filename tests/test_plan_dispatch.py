@@ -7348,10 +7348,10 @@ def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
 
 
 def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
-    """gr688058 (c): the newest finding's ``anchors:`` line names the
-    same ``file::function`` — substantially the last one's again even
-    on new prose and a fresh verified head — so the ask comes at the
-    second round."""
+    """gr688058 (c), gr702711: the newest finding's ``anchors:`` line
+    names the same ``file::function`` AND its text is highly similar
+    (token Jaccard >= 0.6) on a fresh verified head — the last one's
+    again — so the ask comes at the second round."""
     h1, h2 = "1" * 40, "2" * 40
     mint = _reviewed_pending(
         store,
@@ -7365,7 +7365,7 @@ def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
         store,
         build,
         review,
-        f"review: FIX — a.py::f still returns early on empty input; "
+        f"review: FIX — a.py::f misses the empty case still; "
         f"verified head {h2}\n\nanchors: a.py::f",
         head=h2,
     )
@@ -7375,7 +7375,37 @@ def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
     assert "same pre-land FIX twice" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
+    assert "shared active anchor and token Jaccard similarity >= 0.6" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
     assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_same_anchor_new_finding_text_keeps_rebuilding(
+    store: Store,
+) -> None:
+    """gr702711: a shared anchor with different finding text is a new
+    finding at the same function — the build rebuilds, no ask."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f scan is unbounded; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — the cap does not bound the ILIKE pattern length; "
+        f"verified head {h2}\n\nanchors: a.py::f",
+        head=h2,
+    )
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == []
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 2
 
 
 def test_preland_last_anchors_line_is_the_whole_anchor_set(
@@ -7435,8 +7465,8 @@ def test_preland_resolved_prose_cites_stay_off_the_anchors(
     """gr688058 (td688394 r5): a verdict citing the last round's anchor
     only to declare it resolved — ``a.py::f is fixed; b.py::g still
     fails`` — names a new finding when its ``anchors:`` line carries
-    the active set alone; the line's anchor repeating next round IS
-    the repeat the ask names, whatever the prose says."""
+    the active set alone. Repeating that active anchor next round stops
+    only when normalized finding text also reaches token Jaccard >= 0.6."""
     h1, h2, h3 = "1" * 40, "2" * 40, "3" * 40
     mint = _reviewed_pending(
         store,
@@ -7461,8 +7491,8 @@ def test_preland_resolved_prose_cites_stay_off_the_anchors(
     assert rounds["count"] == 2
     assert rounds["anchors"] == ["b.py::g"]
     assert _blocked_by_ids(store, build) == []
-    # The line's anchor repeating — "not fixed" in the prose or not —
-    # is the same finding twice running.
+    # The active anchor repeats AND the finding text has token Jaccard
+    # similarity 8/13 >= 0.6 after stripping head SHAs: a repeated finding.
     res = _rebuild_and_review(
         store,
         build,

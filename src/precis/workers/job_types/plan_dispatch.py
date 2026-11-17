@@ -103,8 +103,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    since the last send-back (the builder is not acting), the head the
    verdict judged other than the pushed tip (the reviewer is reading a
    stale branch), the newest finding the last one's again (the same
-   ``file::function`` on the verdict's ``anchors:`` line — the
-   reviewer-declared active set, never a prose cite), or
+   text, or a shared ``file::function`` on the verdict's ``anchors:``
+   line with token-Jaccard text similarity of at least 0.6), or
    :data:`PRELAND_FIX_CAP` rounds in a
    row (gr684815). ``REVERT``
    mints one ``run_slice`` task ``Revert
@@ -3048,7 +3048,7 @@ def _same_sha(a: str, b: str) -> bool:
 
 
 #: The ``path/file.py::Symbol`` citation a finding carries (gr688058):
-#: the newest verdict citing the last round's anchor is the same
+#: a shared active anchor needs similar finding text to repeat the
 #: finding again — the builder's response is not reaching the review.
 _ANCHOR_RE = re.compile(r"[\w./~-]+::[\w.~-]+")
 
@@ -3161,6 +3161,34 @@ def _verdict_heads(raw: str) -> list[str]:
     return sorted(seen, key=seen.__getitem__)
 
 
+#: Token-Jaccard floor of the newest finding's text against the last
+#: round's for a shared ``anchors:`` entry to count as the same finding
+#: (gr702711): a new finding at the same function reads differently.
+PRELAND_SAME_FINDING_JACCARD = 0.6
+
+#: Longest finding text kept in the ``preland_fix_rounds`` record.
+_FINDING_TEXT_CAP = 4000
+
+_SHA_RE = re.compile(_SHA_TOKEN)
+
+
+def _finding_text(kind: str, rest: str) -> str:
+    """``rest`` as the loop compares findings: the ``anchors:`` line and
+    sha tokens dropped (a fresh verified head is not a new finding),
+    lowercased, whitespace collapsed."""
+    body = _ANCHORS_LINE_RE.sub("", rest.lower())
+    body = _SHA_RE.sub("", body)
+    return " ".join(f"{kind} {body}".lower().split())
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    """Jaccard similarity of the word-token sets of ``a`` and ``b``."""
+    ta, tb = set(re.findall(r"\w+", a)), set(re.findall(r"\w+", b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 def _preland_round(
     n: _Node,
     t: _Node,
@@ -3178,9 +3206,11 @@ def _preland_round(
     :func:`_park_preland_rounds` — ``None`` while the loop should run.
 
     The stop is the failure the ask describes, never the round count
-    alone: the newest finding is the last one's again (same digest or
-    the same ``file::function`` on the verdict's ``anchors:`` line —
-    the reviewer-declared active set; a prose cite is never read),
+    alone: the newest finding is the last one's again (same digest of the
+    text with anchors line and shas dropped, or a shared
+    ``file::function`` on the ``anchors:`` line together with token
+    Jaccard >= :data:`PRELAND_SAME_FINDING_JACCARD`; a shared anchor
+    alone is a new finding at the same function, gr702711),
     the reviewed head is unchanged
     since the previous send-back (the builder is not acting), the head
     the verdict JUDGED is not the pushed tip (the reviewer is reading a
@@ -3193,7 +3223,7 @@ def _preland_round(
         count = int(prev.get("count") or 0) + 1
     except (TypeError, ValueError):
         count = 1
-    text = " ".join(f"{kind} {rest}".lower().split())
+    text = _finding_text(kind, rest)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     anchors = sorted(_finding_anchors(rest))
     record: dict[str, Any] = {
@@ -3201,14 +3231,26 @@ def _preland_round(
         "finding": digest,
         "head": pushed or None,
         "anchors": anchors,
+        "text": text[:_FINDING_TEXT_CAP],
     }
-    if digest == prev.get("finding") or (
-        anchors and set(anchors) & set(prev.get("anchors") or [])
+    prev_anchors = set(prev.get("anchors") or [])
+    same_digest = digest == prev.get("finding")
+    if same_digest or (
+        anchors
+        and set(anchors) & prev_anchors
+        and _token_jaccard(text, str(prev.get("text") or ""))
+        >= PRELAND_SAME_FINDING_JACCARD
     ):
         return (
             count,
             record,
-            f"review td{n.id} returned the same pre-land {kind} twice running",
+            f"review td{n.id} returned the same pre-land {kind} twice running "
+            + (
+                "(same normalized finding digest)"
+                if same_digest
+                else "(shared active anchor and token Jaccard similarity "
+                f">= {PRELAND_SAME_FINDING_JACCARD})"
+            ),
         )
     prev_head = str(prev.get("head") or "")
     if pushed and prev_head and _same_sha(pushed, prev_head):

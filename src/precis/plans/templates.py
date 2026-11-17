@@ -309,12 +309,13 @@ def slice_fetch_cmd(branch: str) -> str:
 #: session's own last message, which may also begin ``handoff: review:``.
 PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
 #: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
-#: finding, head?, anchors?}`` — the pre-land FIX/REVERT verdicts in a
+#: finding, head?, anchors?, text?}`` — the pre-land FIX/REVERT verdicts in a
 #: row since the last land or coordinator ask, a digest of the newest
 #: finding, the ``file::function`` anchors its last ``anchors:`` line
 #: declares (the active findings — the tick never reads prose cites,
 #: td688394 r5) and the pushed head the
-#: verdict judged (gr688058). ``plan_dispatch`` counts and caps it;
+#: verdict judged (gr688058), plus normalized finding text for similarity
+#: comparison (gr702711). ``plan_dispatch`` counts and caps it;
 #: ``land_slice._record_land`` clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 #: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
@@ -430,8 +431,11 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
     "`file::function` each ACTIVE finding hangs on. A cite you make "
     "only to declare resolved is context and stays off the line (none "
     "at all — write `anchors:` bare or leave it out). The tick reads "
-    "only that line against the last round's: the same anchor twice "
-    "running is the repeat stop; prose cites never count (gr688058).\n\n"
+    "only that line for anchor overlap. A shared anchor stops the loop "
+    "only with token Jaccard similarity >= 0.6 against the previous "
+    "finding text; prose cites never count. An identical finding digest "
+    "also stops it, ignoring anchors lines and head shas. Different "
+    "findings at the same function keep rebuilding (gr702711).\n\n"
     "Reject (FIX) a diff that changes behavior or tests without the "
     "matching documentation (docstrings, comments, skills, docs) updated "
     "in the same diff, and check one hop out: read the callers and "
