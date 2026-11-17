@@ -1086,8 +1086,15 @@ def test_devin_brief_forbids_ending_turn_to_poll(
     )
     assert ("Do not end your turn to wait" in brief) == (adapter == "devin_tree")
     if adapter == "devin_tree":
-        assert "scripts/ship --await" in brief
-        assert "scripts/test --await <run-id>" in brief
+        if other_repo:
+            # gr709133: a repo-profile brief must not leak the precis
+            # repo's own scripts/ poll commands (the profile names its own
+            # lint/test commands instead).
+            assert "scripts/ship --await" not in brief
+            assert "scripts/test --await <run-id>" not in brief
+        else:
+            assert "scripts/ship --await" in brief
+            assert "scripts/test --await <run-id>" in brief
         assert "do not post progress-only messages" in brief
         assert "your first final message ends the session" in brief
 
