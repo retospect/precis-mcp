@@ -8,6 +8,7 @@ import re
 import pytest
 
 from precis.dispatch import Hub
+from precis.handlers.draft import DraftHandler
 from precis.handlers.plan import PlanHandler
 from precis.utils.fisheye import render_fisheye
 from precis.workers.working_set import Extent
@@ -15,6 +16,43 @@ from precis.workers.working_set import Extent
 
 def _handles(body: str) -> list[str]:
     return re.findall(r"pe\d+", body)
+
+
+@pytest.mark.parametrize("kind", ["draft", "plan"])
+def test_tree_eye_places_links_and_preserves_empty_ring(hub: Hub, kind: str) -> None:
+    """gr703057: displayed chunks alone must not suppress an empty ring."""
+    store = hub.live_store
+    handler = DraftHandler(hub=hub) if kind == "draft" else PlanHandler(hub=hub)
+    project = store.insert_ref(kind="todo", slug=None, title="Eye project")
+    handler.put(id="attachment-tree", title="Tree owner", project=project.id)
+    handles = []
+    for text in ("Previous chunk", "Focus chunk", "Following chunk"):
+        result = handler.put(id="attachment-tree", text=text, at={"last": True})
+        match = re.search(r"(?:dc|pe)\d+", result.body)
+        assert match is not None
+        handles.append(match.group())
+    target = store.drafts.get_draft_chunk(handles[1], kind=kind)
+    assert target is not None
+    empty = render_fisheye(store, kind=kind, handle=handles[1], extent="fisheye+1hop")
+    assert "no structural neighbours" in empty
+    assert "— no references —" in empty
+    note = store.insert_ref(kind="memory", slug=None, title="Attached tree note")
+    resolved = store.resolve_handle(handles[1])
+    assert resolved is not None
+    assert resolved.chunk_ord is not None
+    store.add_link(
+        src_ref_id=note.id,
+        dst_ref_id=target.ref_id,
+        relation="related-to",
+        dst_pos=resolved.chunk_ord,
+    )
+    out = render_fisheye(store, kind=kind, handle=handles[1], extent="fisheye+1hop")
+    assert (
+        out.index("Focus chunk")
+        < out.index("Attached tree note")
+        < out.index("Previous chunk")
+    )
+    assert out.count("Attached tree note") == 1
 
 
 @pytest.fixture

@@ -307,7 +307,7 @@ def render_eye(
         from precis.utils.fisheye import render_fisheye
 
         return render_fisheye(store, kind=kind, handle=handle, extent=ext)
-    if kind in _DOC_KINDS:
+    if kind in _DOC_KINDS or (kind == "quest" and is_chunk):
         return _render_doc_eye(
             store,
             handle,
@@ -938,11 +938,17 @@ def _fisheye_split(
     clusters: list[tuple[list[Any], list[str]]],
     eye_ord: int,
     ext: Extent,
+    *,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> str:
     """A chunk eye: the fisheye *within* its cluster. Other clusters collapse to
     labels; the home cluster splits into before-chunks (summary) / the eye chunk
     (verbatim, or a summary at ``summary``) / after-chunks (summary) — each chunk
-    its own ``pc`` handle to drill next."""
+    its own chunk handle to drill next. ``inline`` maps attachment chunk ids
+    to rendered links; ``shown`` records the chunks actually displayed so
+    the remaining ring can exclude exactly those attachments. The focus
+    leads the cluster, followed by its reading-order neighbours."""
     home = next(
         (
             i
@@ -955,9 +961,6 @@ def _fisheye_split(
         return _cluster_map(kind, clusters)
 
     lines: list[str] = []
-    for bucket, kws in clusters[:home]:
-        lines.append(_cluster_label(kind, bucket, kws))
-
     home_bucket, _kws = clusters[home]
     lines.append("— cluster —")
     # A forward-biased window around the eye within its cluster; the far tail of
@@ -967,7 +970,12 @@ def _fisheye_split(
     hi = min(len(home_bucket), eye_i + _HOME_FWD + 1)
     if lo > 0:
         lines.append(f"  ⋯ {lo} more ⋯")
-    for b in home_bucket[lo:hi]:
+    window = home_bucket[lo:hi]
+    for b in sorted(window, key=lambda b: b.ord != eye_ord):
+        if shown is not None:
+            shown.add(int(b.id))
+        if not lines or lines[-1]:
+            lines.append("")
         # ``pc<N> ~<ord>`` like the ``#`` chunk-get header — the decimal
         # handle alone hides the block's ``~ord`` selector (gr520328).
         h = f"{_chunk_handle(kind, b)} ~{b.ord}"
@@ -990,12 +998,48 @@ def _fisheye_split(
             sz = size_cell(len((b.text or "").encode("utf-8")))
             row = f"  · {h}  {_chunk_summary(b)}"
             lines.append(f"{row} · {sz}" if sz else row)
+        if inline and inline.get(int(b.id)):
+            lines.append(inline[int(b.id)])
+        lines.append("")
     if hi < len(home_bucket):
         lines.append(f"  ⋯ {len(home_bucket) - hi} more ⋯")
 
-    for bucket, kws in clusters[home + 1 :]:
+    for bucket, kws in [*clusters[:home], *clusters[home + 1 :]]:
         lines.append(_cluster_label(kind, bucket, kws))
     return "\n".join(lines)
+
+
+def _inline_links(
+    store: Store, ref_id: int, *, ring: RingFilter | None = None
+) -> dict[int | None, str]:
+    """Stored links grouped by their focus-side attachment (None = whole ref).
+
+    Partition before collapsing neighbours: two chunks citing the same ref
+    must each retain their own row. Rendering metadata is fetched once for
+    the whole eye rather than running a full ring renderer per attachment.
+    """
+    hops: dict[int | None, dict[tuple[str, str], list[_RingNeighbour]]] = {}
+    _all, refs = _first_hop(store, ref_id, ring=ring, attachments=hops)
+    if not hops:
+        return {}
+    chips = _row_chips(store, refs, ring=ring)
+    _entity_row_chips(store, refs, chips, None)
+    sizes = {
+        rid: size_cell(n)
+        for rid, n in store.chunks.stored_body_byte_counts(list(refs)).items()
+    }
+    kind = _focus_kind(store, ref_id)
+    return {
+        own: _render_first_hop(
+            hop,
+            refs,
+            chips=chips,
+            sizes=sizes,
+            more_hint=_more_hint_factory(store, ref_id, hop),
+            via_kind=kind,
+        )
+        for own, hop in hops.items()
+    }
 
 
 def _render_doc_eye(
@@ -1011,8 +1055,9 @@ def _render_doc_eye(
 ) -> str:
     """A doc-kind eye (paper / patent / web / …): the dynamic keyword-cluster TOC
     around the eyeball. A whole-doc handle renders the cluster map; a ``pc``
-    chunk handle renders the fisheye split within its cluster. ``fisheye+1hop``
-    appends the ref's symmetric link ring."""
+    chunk handle renders the fisheye split within its cluster. At
+    ``fisheye+1hop`` stored links sit under their record/chunk attachment;
+    only links on undisplayed chunks remain in the separate ring."""
     rh = store.resolve_handle(handle)
     if rh is None:
         raise ValueError(f"eye: no live {kind} for {handle!r}")
@@ -1024,26 +1069,44 @@ def _render_doc_eye(
     if ext <= Extent.TOC:
         return f"· {head}"
 
+    inline = (
+        _inline_links(store, ref_id, ring=ring)
+        if ext >= Extent.HOP1 and expand is None
+        else {}
+    )
+    shown: set[int] = set()
+    if inline.get(None):
+        head += "\n" + inline[None]
     blocks = store.chunks.list_chunks_for_ref(ref_id)
     if blocks:
         from precis.utils.toc_db import cluster_blocks
 
         clusters = cluster_blocks(blocks)
         if is_chunk and rh.chunk_ord is not None:
-            body = _fisheye_split(kind, clusters, int(rh.chunk_ord), ext)
+            body = _fisheye_split(
+                kind, clusters, int(rh.chunk_ord), ext, inline=inline, shown=shown
+            )
         else:
             body = _cluster_map(kind, clusters)
             lead = _abstract_lead(store, ref, ref_id)
             if lead:
                 body = f"{lead}\n\n{body}"
-        block = f"{head}\n{body}"
+        block = f"{head}\n\n{body}"
     else:
         block = head  # no body chunks yet — head alone, but the ring still shows
 
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
     sections = _rings(
-        store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring, handle=handle
+        store,
+        ref_id,
+        kind,
+        ext,
+        recall=recall,
+        expand=expand,
+        ring=ring,
+        handle=handle,
+        inline_chunks=set(inline) & (shown | {None}),
     )
     return "\n\n".join([block, *sections])
 
@@ -1179,8 +1242,7 @@ def _render_note_eye(
     body *is* the note and the links are its point. A todo's focal card also
     carries its workflow state line (:func:`_todo_state`) — STATUS and prio
     are the fields a task handoff reads first, and neither rides the chip
-    row. A quest log chunk focuses its entry text, not the quest's gist;
-    its rings still belong to the owning quest."""
+    row. Quest log chunk handles use the document eye instead."""
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
@@ -1198,12 +1260,7 @@ def _render_note_eye(
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind, chips)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
-    parsed = handle_registry.parse(handle)
-    if kind == "quest" and parsed is not None and parsed[1]:
-        text = store.chunks.chunk_text_by_id(parsed[2]) or ""
-        body, total = _cap(text, cap), len(text)
-    else:
-        body, total = _note_body(store, ref, kind, cap=cap)
+    body, total = _note_body(store, ref, kind, cap=cap)
     if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
         marker = _cut_marker(
             kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
@@ -1769,7 +1826,13 @@ def _collapse_pairs(
 
 
 def _first_hop(
-    store: Store, ref_id: int, *, ring: RingFilter | None = None
+    store: Store,
+    ref_id: int,
+    *,
+    ring: RingFilter | None = None,
+    edges: list[tuple[int, int, Any, int | None, int | None, Any]] | None = None,
+    attachments: dict[int | None, dict[tuple[str, str], list[_RingNeighbour]]]
+    | None = None,
 ) -> tuple[dict[tuple[str, str], list[_RingNeighbour]], dict[int, Any]]:
     """``(live neighbours by (ring group, label), the neighbour refs)`` —
     the collected form of :func:`_link_neighbors`, shared with the second
@@ -1783,8 +1846,13 @@ def _first_hop(
     ``relations.inverse_slug`` map. The ring keeps its own per-label cap,
     so the read is uncapped here; it is walked oldest link first. Edges
     sharing a far ref collapse to one :class:`_RingNeighbour` carrying the
-    count and the far-end chunk ids they ground at."""
-    by_label = _bucket_edges(store, ref_id, _neighbourhood_edges(store, ref_id))
+    count and the far-end chunk ids they ground at. ``edges`` supplies an
+    attachment-scoped subset without re-reading the neighbourhood.
+    ``attachments`` receives independently collapsed attachment groups, sharing
+    the same batched metadata reads as the full hop."""
+    by_label = _bucket_edges(
+        store, ref_id, _neighbourhood_edges(store, ref_id) if edges is None else edges
+    )
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids(
@@ -1814,6 +1882,31 @@ def _first_hop(
     )
     suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
+    if attachments is not None:
+        partitioned: dict[
+            int | None,
+            dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
+        ] = {}
+        for key, pairs in live.items():
+            for pair in pairs:
+                partitioned.setdefault(pair[3], {}).setdefault(key, []).append(pair)
+        attachments.update(
+            {
+                own: _collapse_hop(pairs, refs, ords, suspect, entries)
+                for own, pairs in partitioned.items()
+            }
+        )
+    return _collapse_hop(live, refs, ords, suspect, entries), refs
+
+
+def _collapse_hop(
+    live: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
+    refs: dict[int, Any],
+    ords: dict[int, int],
+    suspect: set[tuple[int, int | None]],
+    entries: dict[int, tuple[int, str, str]],
+) -> dict[tuple[str, str], list[_RingNeighbour]]:
+    """Collapse one attachment's rows using metadata shared by the whole eye."""
     out: dict[tuple[str, str], list[_RingNeighbour]] = {}
     for key, pairs in live.items():
         ordinary = []
@@ -1851,7 +1944,7 @@ def _first_hop(
                     str(getattr(refs[n.ref_id], "kind", "")), len(rank)
                 )
             )
-    return out, refs
+    return out
 
 
 def _quest_log_entries(
@@ -2700,6 +2793,7 @@ def _rings(
     ring: RingFilter | None,
     body: str = "",
     handle: str | None = None,
+    inline_chunks: set[int | None] | None = None,
 ) -> list[str]:
     """Every neighbourhood section a non-tree eye appends at ``ext``:
     the first hop at ``fisheye+1hop`` and up, the second hop at
@@ -2708,7 +2802,8 @@ def _rings(
     extra search without the caller's ``+recall`` opt-in. Todo trees use
     ``refs.parent_id`` rather than links, but still fill the first hop —
     and the ``— tree —`` ring renders even when empty, as an explicit
-    lone-leaf line (gr568413).
+    lone-leaf line (gr568413). ``inline_chunks`` contains only attachments
+    whose links were rendered inline; omit those edges from the first hop.
     """
     sections: list[str] = []
     tree = ""
@@ -2717,7 +2812,20 @@ def _rings(
 
         tree = render_tree_ring(store, ref_id)
     hop1, refs = (
-        _first_hop(store, ref_id, ring=ring) if ext >= Extent.HOP1 else ({}, {})
+        _first_hop(
+            store,
+            ref_id,
+            ring=ring,
+            edges=[
+                e
+                for e in _neighbourhood_edges(store, ref_id)
+                if (e[3] if e[0] == ref_id else e[4]) not in inline_chunks
+            ]
+            if inline_chunks
+            else None,
+        )
+        if ext >= Extent.HOP1
+        else ({}, {})
     )
     handles = entity_handles(body)
     neighbour_handles = _entity_handles_for_refs(refs).values()
@@ -2748,14 +2856,19 @@ def _rings(
                 _second_hop(
                     store,
                     ref_id,
-                    hop1,
+                    _first_hop(store, ref_id, ring=ring)[0] if inline_chunks else hop1,
                     expand=expand,
                     ring=ring,
                     body_handles=handles,
                     states=states,
                 )
             )
-        if expand is None and not sections[-1] and (ext >= Extent.HOP2 or not tree):
+        if (
+            expand is None
+            and not sections[-1]
+            and not inline_chunks
+            and (ext >= Extent.HOP2 or not tree)
+        ):
             hops = 2 if ext >= Extent.HOP2 else 1
             message = (
                 f"no structural neighbours at {hops} hop{'s' if hops == 2 else ''}"

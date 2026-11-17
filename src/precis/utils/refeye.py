@@ -175,6 +175,7 @@ CONSIDERED_RELATIONS: frozenset[str] = frozenset({"considered"})
 #: ``generalises`` and ``derived-from`` stay in ``SEMANTIC_RELATIONS`` (the
 #: draft ring follows them) but render under Taxonomy and Argument.
 RING_GROUPS: dict[str, frozenset[str]] = {
+    "Authorship": frozenset({"authored", "authored-by"}),
     "Claim graph": CLAIM_RELATIONS,
     "Roadmap": ROADMAP_RELATIONS,
     "Dependencies": DEPENDENCY_RELATIONS,
@@ -817,6 +818,7 @@ def collect_ring(
     chunks: Sequence[_Chunk],
     *,
     cap: int = _RING_CAP,
+    include_inbound: bool = True,
 ) -> dict[str, list[tuple[int, str]]]:
     """The reference ring as **grouped ``(ref_id, label)`` pairs** — the
     dedup-able form, so a multi-eye composer can merge rings across eyes by
@@ -826,7 +828,8 @@ def collect_ring(
     only bounds the Claims explosion's per-hub originator list (collected
     eagerly, unlike the other groups' entry-count cap which is applied at
     render time) — pass the same value you'll render with to keep the two
-    caps in sync."""
+    caps in sync. ``include_inbound=False`` leaves stored inbound edges to
+    the attachment-aware eye renderer, while retaining body-mined references."""
     span = _subtree(chunks, target)
     draft_ref = target.ref_id
 
@@ -840,7 +843,7 @@ def collect_ring(
 
     # ── inbound: notes/memories LINKED to this section (edges, not search) ──
     inbound: set[int] = set()
-    for link in store.links_for(draft_ref, direction="in"):
+    for link in store.links_for(draft_ref, direction="in") if include_inbound else ():
         if getattr(link, "relation", None) not in SEMANTIC_RELATIONS:
             continue
         # Section-scope when the edge lands on a chunk in this subtree; keep

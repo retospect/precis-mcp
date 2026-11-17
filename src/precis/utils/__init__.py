@@ -47,6 +47,9 @@ empty-hop decision: link edges alone cannot establish an empty first hop.
   :mod:`~precis.utils.ref_hybrid`, :mod:`~precis.utils.embed_query` (degrades
   to lexical on a bad embedder), :mod:`~precis.utils.toc` / ``toc_db``,
   :mod:`~precis.utils.fisheye` / ``refeye`` / ``eye_render``,
+  (chunk rollup eyes place stored links at their record or chunk attachment
+  before collapsing neighbours, so distinct passages keep their own links;
+  attachment groups share batched neighbour metadata reads),
   :mod:`~precis.utils.entity_courtesy` (one batched read of entity state for
   memory bodies and neighbour rows; reads tombstones without following redirects
   so old mentions disclose their successor, with no stored state copy;
