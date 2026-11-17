@@ -5,6 +5,7 @@ recorder, no network is ever touched."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -62,6 +63,32 @@ def _checks(issues: list[Any]) -> set[str]:
 
 
 # ── preflight ───────────────────────────────────────────────────────────
+
+
+def test_publish_preflight_view_lists_issues(store: Any, monkeypatch: Any) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.finding import FindingHandler
+
+    hub, row = _signed_hub(store, monkeypatch, "DFT finds the view claim holds.")
+    handler = FindingHandler(hub=Hub(store=store))
+    blocked = handler.get(id=f"fi{hub}", view="publish-preflight").body
+    assert "[blocking] [state]" in blocked
+    assert "clear to publish" not in blocked
+    _anchor(store, row)
+    _allow_signer(store, row)
+    clear = handler.get(id=f"fi{hub}", view="publish-preflight").body
+    assert "clear to publish" in clear
+    assert "[note] [ots-pending]" in clear
+    assert _refresh(store, hub).state == "anchored"
+
+
+def test_nanopub_skill_names_publish_preflight() -> None:
+    skill = Path("src/precis/data/skills/precis-nanopub-help.md").read_text(
+        encoding="utf-8"
+    )
+    assert "view='publish-preflight'" in skill
+    assert "timestamp operator" in skill
+    assert "evidence-verification operator" in skill
 
 
 def test_unminted_hub_has_no_publish_row(store: Any) -> None:

@@ -1150,6 +1150,9 @@ class FindingHandler(AuditedRetirementHandler):
         payload through ``get``'s extras channel,
         ``args={'payload': {...}}``; omitted, it gates whatever is already
         frozen or parked on the hub.
+        ``view='publish-preflight'`` reads the existing artifact's publish
+        gates, including trust and withheld evidence, without network I/O
+        or state changes (:mod:`precis.handlers._finding_publish_preflight`).
         ``view='similar'`` lists the ``k`` nearest OTHER live claim hubs to
         this hub's sentence (:func:`precis.taproot.canon.nearest_hubs`,
         the same ANN retrieval the hub-mint dedup cascade runs before
@@ -1197,6 +1200,12 @@ class FindingHandler(AuditedRetirementHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_nanopub.render_nanopub_view(self.store, ref)
+        if view == "publish-preflight":
+            from precis.handlers import _finding_publish_preflight
+
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_publish_preflight.render_publish_preflight(self.store, ref)
         if view == "mint-preflight":
             from precis.handlers import _finding_mint_preflight
 
