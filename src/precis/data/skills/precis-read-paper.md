@@ -110,8 +110,12 @@ worth the read: the main text often omits the one that matters.
 legend whose numbers depend on this setup:
 
 ```python
-link(kind="memory", id="me<setup>", target="pc<result>", rel="qualifies")
+link(kind="memory", id="me<setup>", target="pc<result>", rel="qualifies",
+     reason="<method, code, functional or parameters that scope this result>")
 ```
+
+Keep `qualifies`; the reason states which setup conditions apply to this
+result, rather than a generic caveat or a copy of the setup note's title.
 
 A reader who lands on "ΔG = −0.42 eV" and opens
 `get(id='pc<result>', extent='fisheye+1hop')` sees `qualified-by
