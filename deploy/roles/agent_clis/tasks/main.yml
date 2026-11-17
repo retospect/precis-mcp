@@ -58,7 +58,7 @@
     msg: "{{ agent_cli_out.stdout_lines | default([]) | reject('match', 'AGENT_CLI_JSON') | list }}"
 
 - name: Fail the run on a failed update or a strict-report alert
-  when: agent_cli_out.rc != 0
+  when: agent_cli_out.rc != 0 and not (agent_cli_effective_mode == 'update' and agent_cli_out.rc == 2)
   ansible.builtin.fail:
     msg: >-
       agent_cli {{ agent_cli_mode }} exited {{ agent_cli_out.rc }}:
