@@ -38,6 +38,11 @@ The binding resets on success and failure so it cannot leak to another call.
 Retired memory redirects drop view, extent and q when the successor is
 another kind, with a receipt: memory read options can break that reader.
 
+Focused refs-backed reads share a capped inbound Links section when the
+handler has no Links section of its own. Dispatch serves the paged links
+view for kinds without a dedicated one, even when their ordinary reader
+returns a status page before checking the view.
+
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.
 Call-local stage evidence retains pre-cut candidates (50 plus the total),

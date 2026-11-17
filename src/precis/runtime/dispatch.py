@@ -122,7 +122,7 @@ from precis.utils.match_all import fold_match_all_q
 
 if TYPE_CHECKING:
     from precis.store import Store
-    from precis.store.types import ResolvedHandle
+    from precis.store.types import Ref, ResolvedHandle
 
 log = logging.getLogger(__name__)
 
@@ -4423,6 +4423,12 @@ class DispatchMixin(RuntimeShape):
             )
             if reading is not None:
                 readings.append(reading)
+            fallback = self._links_view_fallback(handler, kind, args, extras)
+            if fallback is not None:
+                self._bump_ref_read(kind, args.get("id"))
+                from precis.handlers._interpret import interpreted
+
+                return interpreted(fallback, readings)
         skill_selector_hints = {"section", "heading", "lines", "offset"}
         if (
             verb == "get"
@@ -4773,19 +4779,7 @@ class DispatchMixin(RuntimeShape):
                 # retry somewhere else.
                 call_ctx = IN_FLIGHT_CALL.set((verb, kind, dict(clean)))
                 try:
-                    try:
-                        response = method(**clean)
-                    except BadInput:
-                        # gr702986: a refs-backed kind whose handler has no
-                        # view='links' gets the shared one.
-                        fallback = (
-                            self._links_view_fallback(kind, clean)
-                            if verb == "get"
-                            else None
-                        )
-                        if fallback is None:
-                            raise
-                        response = fallback
+                    response = method(**clean)
                 finally:
                     IN_FLIGHT_CALL.reset(call_ctx)
             response = self._nudge_writer(kind, verb, wctx, response)
@@ -4843,51 +4837,67 @@ class DispatchMixin(RuntimeShape):
 
         return interpreted(response, readings)
 
-    def _links_ref(self, kind: str, ident: Any) -> Any:
+    def _links_ref(self, kind: str, ident: Any) -> Ref | None:
         """The live ref a single plain ``get`` id names (int, handle, slug),
         or ``None`` — chunk selectors, lists and paths name no whole ref."""
         store = self.store
-        if (
-            store is None
-            or ident is None
-            or isinstance(ident, (list, tuple))
-            or not isinstance(ident, (str, int))
-        ):
+        if store is None or not isinstance(ident, (str, int)):
             return None
         text = str(ident).strip()
         if not text or text.startswith("/") or "~" in text or ".." in text:
             return None
+        if kind == "skill" and "/" in text:
+            return None
         try:
             target = store._read_ident_target(kind, text)
-            if target is None or target[0] not in ("ref", "cite_key"):
+            if target is None or target[0] not in ("ref", "cite_key", "skill"):
                 return None
             return store.get_ref(kind=kind, id=target[1])
         except Exception:
             log.debug("links ref lookup for %s %r failed", kind, ident, exc_info=True)
             return None
 
-    def _links_view_fallback(self, kind: str, clean: dict[str, Any]) -> Response | None:
-        """Shared ``view='links'`` for a refs-backed kind whose handler
-        refuses the view (gr702986); ``None`` when it isn't a links read of
-        one live ref, so the handler's own refusal stands."""
-        if clean.get("view") != "links":
+    def _links_view_fallback(
+        self,
+        handler: Handler,
+        kind: str,
+        args: dict[str, Any],
+        extras: dict[str, Any] | None,
+    ) -> Response | None:
+        """Serve the graph before handlers that lack a dedicated links view."""
+        if args.get("view") != "links":
             return None
-        ref = self._links_ref(kind, clean.get("id"))
+        from precis.handlers._numeric_ref import NumericRefHandler
+        from precis.handlers.paper import PaperHandler
+
+        ident = args.get("id")
+        if (
+            isinstance(handler, (NumericRefHandler, PaperHandler))
+            or "links" in handler.spec.views
+            or "links" in handler.accepted_views(id=ident)
+        ):
+            return None
+        ref = self._links_ref(kind, ident)
         store = self.store
         if ref is None or store is None:
             return None
         from precis.handlers._links_render import render_links_view
 
-        raw_args = clean.get("args")
-        args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-        return render_links_view(
-            store,
-            ref,
-            rel=args.get("rel") or clean.get("rel"),
-            of_kind=args.get("of_kind"),
-            limit=args.get("limit", clean.get("limit")),
-            cursor=args.get("cursor", clean.get("cursor")),
-        )
+        options = dict(extras or {})
+        for key, value in args.items():
+            if key not in {"id", "view"} and value is not None:
+                if key == "full" and not _flag_truthy(value):
+                    continue
+                options[key] = value
+        accepted = {"rel", "of_kind", "limit", "cursor"}
+        unknown = sorted(options.keys() - accepted)
+        if unknown:
+            raise BadInput(
+                f"keys {unknown!r} not accepted by the shared links view",
+                options=sorted(accepted),
+                next=f"get(kind={kind!r}, id={ident!r}, view='links')",
+            )
+        return render_links_view(store, ref, **options)
 
     def _append_inbound_links(
         self, kind: str, ident: Any, response: Response
