@@ -81,6 +81,7 @@ transcript, not landed history (those live in `git log` and the docs).
 - No landed history or children lists; use the graph's links.
 - No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+- Numbers ([[precis-notation-canon]]): en dash ranges `60–90%`, no grouping `10000`.
 
 1. **Search first.** `search(kind='memory', q='<the fact>',
    scope='title')`, then plain `search(kind='memory', q='<the fact>')`.
