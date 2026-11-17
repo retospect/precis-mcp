@@ -9295,7 +9295,7 @@ def test_file_overlap_hold_skips_a_release_fix_behind_a_main_build(
 ) -> None:
     """gr688291: a release-target fix is not held by a started main build
     sharing a file, and dispatches on the same tick."""
-    blocker = _started_outside_plans(store, [_SHARED])
+    _started_outside_plans(store, [_SHARED])
     waiting = _file_plan(store, f"Fix {_SHARED}")
     store.stamp_ref_meta(waiting.ids["task"], {"land_target": "release/r321"})
     res = pd.run_pass(store, dry_run=True)
@@ -9304,7 +9304,6 @@ def test_file_overlap_hold_skips_a_release_fix_behind_a_main_build(
     assert any(
         n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
     )
-    assert pd._started_slices(store)[blocker].target == "main"
 
 
 def test_file_overlap_hold_skips_a_main_build_behind_a_release_build(
@@ -9329,6 +9328,51 @@ def test_file_overlap_hold_skips_builds_on_different_release_targets(
     store: Store,
 ) -> None:
     assert not _overlap_target_case(store, "release/r320", "release/r321")
+
+
+@pytest.mark.parametrize(
+    ("blocker_target", "candidate_target", "held"),
+    [
+        (None, "release/r321", False),
+        ("release/r321", None, False),
+        ("release/r321", "release/r321", True),
+        ("release/r320", "release/r321", False),
+    ],
+)
+def test_file_overlap_hold_uses_brief_only_targets(
+    store: Store, blocker_target: str | None, candidate_target: str | None, held: bool
+) -> None:
+    from precis.workers.executors._common import build_overlap_holds
+
+    blocker = _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    for todo, target in ((blocker, blocker_target), (waiting, candidate_target)):
+        if target is not None:
+            _todo_comment(store, todo, f"brief: Release fix\nland target: {target}")
+
+    assert _overlap_note(store, waiting) == held
+    with store.pool.connection() as conn:
+        assert (waiting in build_overlap_holds(conn, [waiting])) == held
+
+
+def test_file_overlap_hold_uses_body_before_brief_target(store: Store) -> None:
+    blocker = _started_outside_plans(store, [_SHARED])
+    _todo_comment(store, blocker, "brief: Release fix\nland target: release/r321")
+    waiting = _file_plan(store, f"Fix {_SHARED}\nland target: release/r321").ids["task"]
+    _todo_comment(store, waiting, "brief: Other branch\nland target: release/r320")
+
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_uses_retry_brief_over_builder_handoff(store: Store) -> None:
+    blocker = _started_outside_plans(store, [_SHARED])
+    _todo_comment(store, blocker, "brief: Release fix\nland target: release/r321")
+    _todo_comment(store, blocker, "handoff: Attempts ended")
+    waiting = _file_plan(store, f"Fix {_SHARED}\nland target: release/r321").ids["task"]
+
+    assert not _overlap_note(store, waiting)
+    store.add_tag(blocker, Tag.open("attempt:1"), set_by="system")
+    assert _overlap_note(store, waiting)
 
 
 def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(

@@ -241,17 +241,17 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    score and release claim band into host claim order. Every doable build
    queues; a build whose file set
    overlaps a started, unlanded build's in any plan — building, held for
-   its pre-land review, or landing — stays queued until that one is on main
+   its pre-land review, or landing — stays queued until that one lands
    (td603849, widened 2026-11-15 — the ``_started_slices``/
-   ``_brief_file_sets`` check; a started build's files are its stamped
+   ``_overlap_inputs`` check; a started build's files are its stamped
    ``meta.branch_files`` plus its brief's). "Overlaps" means the same
    repo-relative path: a brief's shorter suffix (``land_slice.py``,
    ``job_types/land_slice.py``) resolves only when exactly one of the
    started build's paths ends with it, so two builds touching different
    ``dispatch.py`` or ``__init__.py`` files do not wait on each other.
-   Only builds with the same land target wait on each other (absent
-   ``meta.land_target`` is main, gr688291): a ``release/rN`` fix is never
-   held behind a main build, nor a main build behind it. A build whose ``land_slice``
+   Only builds with the same land target wait on each other. The target
+   comes from metadata, body or selected brief, with main as the default.
+   A build whose ``land_slice``
    died (newest job failed/cancelled/timed-out, none live) or that
    carries or sits under a ``rescue:``/``child-failed:`` tag holds no
    lock (gr701628); the dead-land drop reads only a failure of the
@@ -451,6 +451,9 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from itertools import groupby
+from operator import itemgetter
 from typing import Any
 
 from precis.alert_ids import RULES_BY_ID
@@ -6286,20 +6289,11 @@ class _Started:
     last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
     empty before then; ``repo`` the repo its ``repo:`` tag resolves to —
     its own, else the nearest tagged ancestor's — resolved in the store
-    because a held build can sit outside the loaded plan's nodes;
-    ``target`` the branch it lands on (:func:`_land_target`, gr688291)."""
+    because a held build can sit outside the loaded plan's nodes."""
 
     state: str
     branch_files: tuple[str, ...]
     repo: str
-    target: str = "main"
-
-
-def _land_target(meta: dict[str, Any] | None) -> str:
-    """The branch a build lands on: ``meta.land_target`` when shaped
-    ``release/r<N>`` (:func:`precis.plans.release.land_target_of`), else
-    ``main`` (gr688291)."""
-    return _release.land_target_of(meta) or "main"
 
 
 def _started_slices(store: Any) -> dict[int, _Started]:
@@ -6379,7 +6373,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                     AND NOT (COALESCE(land_dead.dead, FALSE)
                              AND land_dead.job_head IS NOT DISTINCT FROM
                                  (r.meta->%s->>'head'))),
-                   r.meta->%s, r.meta->>'land_target'
+                   r.meta->%s
               FROM refs r
               LEFT JOIN live ON live.parent_id = r.ref_id
               LEFT JOIN land_dead ON land_dead.parent_id = r.ref_id
@@ -6409,17 +6403,12 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
-    for rid, landing, pending, files, target in rows:
+    for rid, landing, pending, files in rows:
         state = (
             "landing" if landing else "in pre-land review" if pending else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
-        out[int(rid)] = _Started(
-            state,
-            paths,
-            _lanes.DEFAULT_REPO,
-            _land_target({_release.LAND_TARGET_KEY: target}),
-        )
+        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
     if not out:
         return out
     # A bare pending_land stamp under a rescue / child-failed tag (own or
@@ -6466,7 +6455,6 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             s.state,
             s.branch_files,
             sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
-            s.target,
         )
         for rid, s in out.items()
     }
@@ -6510,7 +6498,7 @@ def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
     its ``brief:``/``handoff:`` comments name (one path per token, as
     written — no basename or last-two-segment keys; see
     :func:`~precis.utils.dispatch_score.brief_files`) — one query for the
-    handful of ids the overlap check needs."""
+    supplied todo ids."""
     if not ids:
         return {}
     with store.pool.connection() as conn:
@@ -6529,6 +6517,62 @@ def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
     for ref_id, text in rows:
         texts.setdefault(int(ref_id), []).append(str(text or ""))
     return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
+
+
+def _overlap_inputs(
+    store: Any, ids: list[int]
+) -> dict[int, tuple[frozenset[str], str]]:
+    """Read file sets and effective land targets on the claim connection.
+
+    File matching considers every brief and handoff. Target resolution uses
+    the body and selected brief, as build and land do.
+    """
+    from precis.workers.job_types import run_slice
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH inputs AS (
+                SELECT r.ref_id, r.meta->%s AS target, ARRAY(
+                    SELECT t.value
+                      FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                       AND starts_with(t.value, 'attempt:')
+                ) AS retry_tags
+                  FROM refs r WHERE r.ref_id = ANY(%s)
+            )
+            SELECT i.ref_id, i.target, i.retry_tags, c.ord, c.chunk_kind, c.text
+              FROM inputs i
+              LEFT JOIN chunks c ON c.ref_id = i.ref_id AND c.ord >= 0
+                   AND c.chunk_kind IN (%s, %s)
+             ORDER BY i.ref_id, c.ord
+            """,
+            (_release.LAND_TARGET_KEY, ids, TODO_BODY_KIND, _COMMENT_KIND),
+        ).fetchall()
+
+    result: dict[int, tuple[frozenset[str], str]] = {}
+    for rid, group in groupby(rows, key=itemgetter(0)):
+        ref_rows = list(group)
+        _, target, tags, *_ = ref_rows[0]
+        body = "\n\n".join(
+            text
+            for _, _, _, _, kind, text in ref_rows
+            if kind == TODO_BODY_KIND and text
+        )
+        briefs = [
+            (ord_, text)
+            for _, _, _, ord_, kind, text in ref_rows
+            if kind == _COMMENT_KIND
+            and text
+            and text.lstrip().lower().startswith(run_slice._BRIEF_PREFIXES)
+        ]
+        latest = run_slice._select_slice_brief(
+            briefs, reviewer=False, open_tags=partial(iter, tags)
+        )
+        meta = {_release.LAND_TARGET_KEY: target}
+        files = _dscore.brief_files("\n".join([body, *(text for _, text in briefs)]))
+        result[rid] = files, _release.land_target_of(meta, body, latest) or "main"
+    return result
 
 
 def _block_lane_gap(
@@ -6707,10 +6751,8 @@ def _overlap_holds(
     directories, or an ambiguous ``__init__.py``, holds nothing; a real
     conflict still rebuilds at land. Only started work holds, never
     another candidate, so two candidates never hold each other. Builds
-    hold each other only on the same land target (:func:`_land_target`;
-    absent means main, gr688291): a release fix cut from ``release/rN``
-    is never held by a main build, nor a main build by a release one.
-    One ``_brief_file_sets`` query for the lot; empty without a started
+    hold each other only on the same land target (gr688291).
+    One ``_overlap_inputs`` query for the lot; empty without a started
     build or a build candidate."""
     builds = [
         n
@@ -6719,19 +6761,18 @@ def _overlap_holds(
     ]
     if not started or not builds:
         return {}
-    overlap_files = _brief_file_sets(store, list(started) + [n.id for n in builds])
+    inputs = _overlap_inputs(store, list(started) + [n.id for n in builds])
+    default: tuple[frozenset[str], str] = (frozenset(), "main")
     held: dict[int, tuple[int, frozenset[str]]] = {}
     held_sets = {
-        i: (overlap_files.get(i) or frozenset())
-        | _dscore.brief_files("\n".join(s.branch_files))
+        i: inputs.get(i, default)[0] | _dscore.brief_files("\n".join(s.branch_files))
         for i, s in started.items()
     }
     for n in builds:
-        mine = overlap_files.get(n.id) or frozenset()
+        mine, target = inputs.get(n.id, default)
         if not mine:
             continue
         repo = _node_repo(plan, n)
-        target = _land_target(n.meta)
         for hid in sorted(held_sets):
             # started[hid].repo, not _node_repo on plan.nodes: a held
             # build can sit outside the loaded subtrees, and skipping
@@ -6740,7 +6781,7 @@ def _overlap_holds(
                 continue
             # gr688291: another land target is another branch; a release
             # fix's wide digest brief must not wait on unrelated main work.
-            if started[hid].target != target:
+            if inputs.get(hid, default)[1] != target:
                 continue
             shared = _dscore.shared_files(mine, held_sets[hid])
             if hid != n.id and shared:

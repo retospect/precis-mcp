@@ -50,6 +50,9 @@ worktree cleanup; checked-in paths come only from explicit Acceptance tests:
 or File set: lines in the body/latest brief, so quoted symptom paths do
 not become acceptance requests. Acceptance runs exclude nightly tests,
 matching the regular check gate.
+Plan dispatch and executor claims use the same brief selection as build
+and land to resolve overlap targets. This keeps brief-only release fixes
+isolated from main while holding overlapping work on the same branch.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot

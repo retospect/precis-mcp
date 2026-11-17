@@ -3335,14 +3335,31 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
     )
+    latest = _select_slice_brief(
+        (
+            (int(c.ord), str(c.text or ""))
+            for c in chunks
+            if c.chunk_kind == _COMMENT_KIND
+        ),
+        reviewer=reviewer,
+        open_tags=lambda: _open_tag_values(store, todo_id),
+    )
+    return body, latest
+
+
+def _select_slice_brief(
+    comments: Iterable[tuple[int, str]],
+    *,
+    reviewer: bool,
+    open_tags: Callable[[], Iterable[str]],
+) -> str | None:
+    """Select the brief from ordered comment positions and retry tags."""
     latest: str | None = None
     latest_ord = -1
     steer: str | None = None
     steer_ord = -1
-    for c in chunks:
-        if c.chunk_kind != _COMMENT_KIND:
-            continue
-        text = str(c.text or "").lstrip()
+    for ord_, comment in comments:
+        text = comment.lstrip()
         lowered = text.lower()
         if not lowered.startswith(_BRIEF_PREFIXES):
             continue
@@ -3352,19 +3369,17 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
             and not _outranks_brief(text)
         ):
             continue
-        if int(c.ord) > latest_ord:
-            latest, latest_ord = text, int(c.ord)
-        if (lowered.startswith("brief:") or _outranks_brief(text)) and (
-            int(c.ord) > steer_ord
-        ):
-            steer, steer_ord = text, int(c.ord)
+        if ord_ > latest_ord:
+            latest, latest_ord = text, ord_
+        if (lowered.startswith("brief:") or _outranks_brief(text)) and ord_ > steer_ord:
+            steer, steer_ord = text, ord_
     if (
         steer is not None
         and latest_ord > steer_ord
-        and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
+        and any(_ATTEMPT_RE.match(v) for v in open_tags())
     ):
         latest = steer
-    return body, latest
+    return latest
 
 
 # ── Submit gate ────────────────────────────────────────────────────
