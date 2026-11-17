@@ -6,6 +6,11 @@ MCP-side surface: validate the submit, dedupe by idempotency key,
 auto-tag the linked parent (the linked gripe for ``fix_gripe``),
 and render the job header + status + summary on ``get``.
 
+Failed cards suppress short summaries and failure events already stated in
+their header; successful cards retain their timeline. Batch summaries use
+the shared per-id hook to expose failure reasons. Jobs alone opt into hiding
+empty or zero-valued listing columns, preserving other kinds' table contract.
+
 See ``precis-job-help`` for the agent-facing surface and
 ``precis-fix-gripe-help`` for the first concrete job_type.
 
@@ -1068,6 +1073,18 @@ def _run_file_content(payload: Any) -> str:
 
 
 class JobHandler(NumericRefHandler):
+    list_drop_constant_cols = ("remaining_words", "links", "age", "size")
+
+    def _batch_extra_line(self, ref: Ref, tags: list[tuple[str, str]]) -> str | None:
+        if not any(
+            ns == "STATUS" and val in ("failed", "timed-out") for ns, val in tags
+        ):
+            return None
+        reason = _job_error_head(
+            ref.meta or {}, self.store.chunks.list_chunks_for_ref(ref.id)
+        )
+        return f"error: {reason}" if reason is not None else None
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="job",
         title="Job",
@@ -5349,9 +5366,26 @@ class JobHandler(NumericRefHandler):
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         # The plain-language row sentence leads the card (td573331): the
         # stored title's "(unlinked)"/"(materializer i/n)" never leads.
-        lines.append(
-            f"summary: {job_row_sentence(self.store, meta=meta, status=status, blocks=blocks)}"
+        reason = (
+            _job_error_head(meta, blocks) if status in ("failed", "timed-out") else None
         )
+        sentence_blocks = [
+            b
+            for b in blocks
+            if not (
+                reason
+                and b.chunk_kind == _JOB_EVENT_KIND
+                and _error_line(b.text).startswith(reason)
+            )
+        ]
+        sentence = job_row_sentence(
+            self.store,
+            meta=meta,
+            status=status,
+            blocks=sentence_blocks,
+            **({"error": None} if reason else {}),
+        )
+        lines.append(f"summary: {sentence}")
         if status is not None:
             lines.append(f"status: {status}")
         if status in ("failed", "timed-out"):
@@ -5360,7 +5394,6 @@ class JobHandler(NumericRefHandler):
             # card's byte cap cut it on exactly the jobs that needed it.
             # A ``timed-out`` kill writes its reason the same way
             # (td648501).
-            reason = _job_error_head(meta, blocks)
             if reason is not None:
                 lines.append(f"error: {reason}")
                 if meta.get("retry_after"):
@@ -5454,6 +5487,19 @@ class JobHandler(NumericRefHandler):
 
         for block in blocks:
             kind = block.chunk_kind
+            if reason:
+                text = " ".join(block.text.split())
+                if kind == _JOB_EVENT_KIND and _error_line(block.text).startswith(
+                    reason
+                ):
+                    continue
+                if (
+                    kind == _JOB_SUMMARY_KIND
+                    and text
+                    and len(text) < 300
+                    and text in " ".join(sentence.split())
+                ):
+                    continue
             if kind == _JOB_SUMMARY_KIND:
                 lines.append("")
                 lines.append("## summary")
@@ -6603,11 +6649,14 @@ class JobHandler(NumericRefHandler):
         page_size = max(1, min(int(page_size), 100))
         offset = (page - 1) * page_size
         with self.store.pool.connection() as conn:
-            row = conn.execute(
-                f"SELECT count(*) FROM refs r WHERE {where}", params
-            ).fetchone()
-            assert row is not None
-            total = int(row[0])
+            counts = conn.execute(
+                "SELECT COALESCE((SELECT t.value FROM ref_tags rt "
+                "JOIN tags t USING (tag_id) WHERE rt.ref_id = r.ref_id "
+                "AND t.namespace = 'STATUS' LIMIT 1), 'unspecified') AS state, "
+                f"count(*) FROM refs r WHERE {where} GROUP BY state ORDER BY state",
+                params,
+            ).fetchall()
+            total = sum(int(row[1]) for row in counts)
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE {where} "
                 "ORDER BY r.updated_at DESC LIMIT %s OFFSET %s",
@@ -6630,6 +6679,10 @@ class JobHandler(NumericRefHandler):
             hi = until_d.strftime("%Y-%m-%dT%H:%M:%SZ") if until_d else "…"
             window = f" created [{lo}, {hi})"
         head = f"# {frag} job entr{'y' if total == 1 else 'ies'}{scope}{window}"
+        if counts:
+            head += (
+                " (" + " · ".join(f"{state} {count}" for state, count in counts) + ")"
+            )
         parts = [head]
         if status_note:
             parts.append(status_note)

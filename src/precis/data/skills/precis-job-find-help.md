@@ -69,7 +69,7 @@ search(kind="job", tags=["STATUS:failed"])
 ```python
 get(kind="job", id=101)
 # → header + current status + summary chunk (when finished) +
-#   recent job_event chunks (telemetry, kept for forensics)
+#   recent job_event chunks
 get(id="jo101")  # the job's universal handle resolves the same way
 ```
 
@@ -77,7 +77,8 @@ A `STATUS:failed` card leads with `error:` — the one-line failure
 reason (`meta.error`, else the newest `job_event` head; `retry_after:`
 beside it when a transient backoff was stamped) — printed right under
 `status:` so the card cap can't cut it on jobs with long event
-timelines. The full reason stays in the `job_event` chunks below.
+timelines. The card hides any `job_event` chunk that starts with the
+printed error. Use `view='raw'` for the full record.
 `view='raw'` on a failed job leads with `failure:` — the reason's
 last line, so a traceback-shaped `meta.error` shows its actual
 exception rather than just "Traceback (most recent call last):" —

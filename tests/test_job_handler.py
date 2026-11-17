@@ -1046,6 +1046,77 @@ def test_wake_args_reach_handler(
     assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
 
 
+def test_failed_card_states_error_once(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"job_type": "fake", "error": "error text"}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "error text")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert body.count("error text") == 1
+    assert body.count("Short summary") == 1
+    assert "## event" not in body
+
+
+def test_succeeded_card_keeps_summary_and_events(
+    jobs: JobHandler, store: Store
+) -> None:
+    job_id = _insert_job(store, meta={"job_type": "fake"}, status="succeeded")
+    append_chunk(store, job_id, "job_event", "Progress report")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert "## summary\nShort summary" in body
+    assert "Progress report" in body
+
+
+@pytest.mark.parametrize("status", ["failed", "timed-out"])
+def test_batch_get_shows_error_for_failed_jobs(
+    jobs: JobHandler, store: Store, status: str
+) -> None:
+    failed = _insert_job(store, meta={"error": "batch reason"}, status=status)
+    succeeded = _insert_job(store, meta={"error": "stale reason"}, status="succeeded")
+    body = jobs.get(id=[failed, succeeded]).body
+    assert body.count("error: batch reason") == 1
+    assert "stale reason" not in body
+
+
+def test_batch_get_uses_failure_boundary_event(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"finished_at": datetime.now(UTC).isoformat()}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "boundary failure")
+    body = jobs.get(id=[job_id]).body
+    assert "error: boundary failure" in body
+
+
+def test_job_type_listing_drops_dead_columns_and_tallies(
+    jobs: JobHandler, store: Store
+) -> None:
+    for status in ("queued", "failed", "failed"):
+        _insert_job(store, meta={"job_type": "listing_fixture"}, status=status)
+    _insert_job(store, meta={"job_type": "other_fixture"}, status="running")
+    body = jobs.search(job_type="listing_fixture", page_size=1).body
+    assert "failed 2" in body
+    assert "queued 1" in body
+    assert "running 1" not in body
+    table_header = next(line for line in body.splitlines() if "summary" in line)
+    for column in ("remaining_words", "links", "age", "size"):
+        assert column not in table_header
+
+    filtered = jobs.search(job_type="listing_fixture", status="failed").body
+    assert "failed 2" in filtered
+    assert "queued 1" not in filtered
+
+
+def test_job_listing_keeps_nonzero_columns(jobs: JobHandler, store: Store) -> None:
+    ref = store.insert_ref(
+        kind="job", slug=None, title="First line\nAdditional detail", meta={}
+    )
+    table = jobs._render_hits_table([ref])
+    assert "remaining_words" in table.splitlines()[0]
+    assert "links" not in table.splitlines()[0]
+
+
 class TestJobCardErrorLine:
     """The failure reason used to sit at the END of the event timeline —
     the card's byte cap cut it on exactly the jobs that needed it. A

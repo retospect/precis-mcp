@@ -853,6 +853,8 @@ class NumericRefHandler(Handler):
     #: already has (gr572710). The eye header is not a row surface: it
     #: renders the full set.
     list_row_tag_prefixes: ClassVar[tuple[str, ...] | None] = None
+    #: Omit these columns only when every cell on the page is empty or zero.
+    list_drop_constant_cols: ClassVar[tuple[str, ...]] = ()
 
     #: Open-tag axis (``'cluster'`` → ``cluster:*``) a queryless list that
     #: overflows its page summarises under the header — group counts over
@@ -4995,6 +4997,10 @@ class NumericRefHandler(Handler):
 
     # ── batch forms (``id=[...]``) ─────────────────────────────────
 
+    def _batch_extra_line(self, ref: Ref, tags: list[tuple[str, str]]) -> str | None:
+        """Optional kind-specific detail for a batch summary."""
+        return None
+
     def _get_batch(
         self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
     ) -> Response:
@@ -5090,6 +5096,9 @@ class NumericRefHandler(Handler):
                 bits.append(sz)
             summary, _rest = _extract_summary(ref.title or "")
             blocks.append("  ".join(bits) + "\n" + summary)
+            extra = self._batch_extra_line(ref, tag_rows.get(rid, []))
+            if extra is not None:
+                blocks[-1] += "\n" + extra
         body = f"# {len(ref_ids)} {self._sense()} (batch)\n\n" + "\n\n".join(blocks)
         # The read-one hint names the kind's complete read
         # (:data:`complete_get_view`) — the summary blocks are titles
@@ -5588,8 +5597,9 @@ class NumericRefHandler(Handler):
     ) -> str:
         """Render a list of refs as a single TOON table.
 
-        Columns: ``id | status? | tags? | summary | remaining_words |
-        links | age | size``.
+        Columns: ``id | status? | tags? | summary | remaining_words? |
+        links? | age? | size?``. A column in ``list_drop_constant_cols``
+        is omitted when every row on the page has an empty or zero value.
         Columns:
           - ``id``: the universal handle (``gr5``, ``me158``) — the one
             address form; no separate ``kind`` column, it is constant
@@ -5688,6 +5698,13 @@ class NumericRefHandler(Handler):
             schema.insert(2 if lifecycle else 1, "tags")
         if marks:
             schema.append("stale")
+        schema = [
+            col
+            for col in schema
+            if col not in self.list_drop_constant_cols
+            or any(row[col] not in ("", "0") for row in rows)
+        ]
+        rows = [{col: row[col] for col in schema} for row in rows]
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:
