@@ -152,6 +152,11 @@ tool sequence names the doc that taught it wrong — and its candidate
 carries the session's whole human-turn stream for the pass's model read
 to judge, not a keyword match.
 
+`navigation_usage` is an observational census, not a friction detector, and
+is not part of the `exec_class` triage. Its scoreboard row counts fisheye
+rungs, links views, refusals, escalations and observable hint follow-through;
+see Corpora above for coverage limits and the 30-day invocation.
+
 `cards.py --random N` adds an unbiased arm: uniformly sampled windows with no
 detector attached. Without it the catalogue only ever confirms shapes we
 already thought of.

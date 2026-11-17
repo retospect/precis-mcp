@@ -174,11 +174,35 @@ def test_navigation_visible_hint_and_near_misses() -> None:
         detect._arg_value(mk(arg_keys=("id",), arg_digest='{"id":[1,2]}'), "id") is None
     )
     assert (
-        detect._arg_value(
-            mk(arg_keys=("extent",), arg_digest='{"extent":"fisheye'), "extent"
+        detect.navigation_groups(
+            [mk(verb="get", arg_keys=("extent",), arg_digest='{"extent":"fisheye')]
         )
-        is None
+        == {}
     )
+
+
+def test_arg_value_recovers_truncated_json_for_existing_detectors() -> None:
+    """HEAD_CHARS truncation must not erase earlier addressing tokens."""
+    for digest in (
+        '{"id": "precis-memory-help", "kind": "skill", "text": "cut',
+        "id=precis-memory-help kind=skill text=cut",
+    ):
+        skill = mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_keys=("id", "kind", "text"),
+            arg_digest=digest,
+        )
+        assert detect._arg_value(skill, "kind") == "skill"
+        assert detect._link_values(skill) == ["precis-memory-help"]
+        error = mk(seq=2, verb="put", kind="memory", is_error=True)
+        assert detect.detect_skill_taught_wrong([skill, error])[0].signature == (
+            "skill:precis-memory-help"
+        )
+    for digest in ("id=memory:me123+suffix", '{"id":"memory:me123+suffix","text":"cut'):
+        ev = mk(arg_keys=("id",), arg_digest=digest)
+        assert detect._link_values(ev) == ["memory:me123+suffix"]
 
 
 def test_d0_exec_class_hit_blocked() -> None:

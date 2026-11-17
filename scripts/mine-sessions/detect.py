@@ -113,6 +113,12 @@ def _arg_value(ev: Event, name: str) -> str | None:
     corpus, so a single-dialect reader is silently blind there (it is
     why ``skill_taught_wrong`` reported ``skill:?`` for an id that was
     right in front of it).
+
+    Complete JSON preserves scalar strings and integers exactly. If extraction
+    truncated the JSON at HEAD_CHARS, fall back to the token regex used for
+    key=value digests: earlier values remain useful to existing detectors,
+    but may themselves be partial. Callers needing complete evidence must
+    reject malformed JSON before calling this helper.
     """
     if name not in ev.arg_keys or not ev.arg_digest:
         return None
@@ -120,13 +126,14 @@ def _arg_value(ev: Event, name: str) -> str | None:
         try:
             args = json.loads(ev.arg_digest)
         except json.JSONDecodeError:
-            return None  # truncated samples cannot prove argument equality
-        value = args.get(name) if isinstance(args, dict) else None
-        return (
-            str(value)
-            if isinstance(value, (str, int)) and not isinstance(value, bool)
-            else None
-        )
+            pass  # recover earlier tokens from truncated local digests below
+        else:
+            value = args.get(name) if isinstance(args, dict) else None
+            return (
+                str(value)
+                if isinstance(value, (str, int)) and not isinstance(value, bool)
+                else None
+            )
     pat = _ARG_VALUE_RE_CACHE.get(name)
     if pat is None:
         pat = re.compile(
@@ -361,6 +368,15 @@ def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Eve
     """
     groups: dict[tuple[str, ...], list[Event]] = defaultdict(list)
 
+    def navigation_arg(ev: Event, name: str) -> str | None:
+        # Partial tokens cannot prove a navigation rung or target equality.
+        if ev.arg_digest.lstrip().startswith("{"):
+            try:
+                json.loads(ev.arg_digest)
+            except json.JSONDecodeError:
+                return None
+        return _arg_value(ev, name)
+
     def record(signal: str, ev: Event) -> None:
         groups[
             (
@@ -375,10 +391,10 @@ def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Eve
     for ev in events:
         if ev.verb != "get":
             continue
-        extent = _arg_value(ev, "extent") or _arg_value(ev, "view") or ""
+        extent = navigation_arg(ev, "extent") or navigation_arg(ev, "view") or ""
         if extent.startswith("fisheye"):
             record(extent, ev)
-        if _arg_value(ev, "view") == "links":
+        if navigation_arg(ev, "view") == "links":
             record("links", ev)
         if ev.is_error and "no eye on kind" in ev.err_head:
             record("no-eye", ev)
@@ -393,8 +409,10 @@ def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Eve
         pending: set[tuple[str, str, str, str]] = set()
         for ev in sorted(session, key=lambda e: e.seq):
             if ev.verb == "get":
-                ident = _arg_value(ev, "id")
-                extent = _arg_value(ev, "extent") or _arg_value(ev, "view") or ""
+                ident = navigation_arg(ev, "id")
+                extent = (
+                    navigation_arg(ev, "extent") or navigation_arg(ev, "view") or ""
+                )
                 key = (ev.kind or "?", ident or "")
                 if ident and not ev.is_error:
                     old = previous.get(key)
@@ -404,7 +422,11 @@ def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Eve
                         previous[key] = extent
                 for hint in list(pending):
                     kind, target, arg, value = hint
-                    if (ev.kind, ident, _arg_value(ev, arg)) == (kind, target, value):
+                    if (ev.kind, ident, navigation_arg(ev, arg)) == (
+                        kind,
+                        target,
+                        value,
+                    ):
                         record("hint-followed", ev)
                         pending.remove(hint)
             if has_payload(ev) and not ev.is_error:
@@ -416,10 +438,10 @@ def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Eve
                         arg_keys=("kind", "id", "extent", "view"),
                         arg_digest=example,
                     )
-                    hint_kind = _arg_value(hint_ev, "kind")
-                    hint_target = _arg_value(hint_ev, "id")
+                    hint_kind = navigation_arg(hint_ev, "kind")
+                    hint_target = navigation_arg(hint_ev, "id")
                     for arg in ("extent", "view"):
-                        value = _arg_value(hint_ev, arg) or ""
+                        value = navigation_arg(hint_ev, arg) or ""
                         if (
                             hint_kind
                             and hint_target
