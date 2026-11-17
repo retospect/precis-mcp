@@ -1322,3 +1322,33 @@ def test_id_range_accepted_on_numeric_ref_kinds(
         {"kind": kind, "__extras__": {"id_min": 1, "id_max": 999_999_999}},
     )
     assert "[error" not in out, out
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("kind", ["memory", "me", " memory ", " me "])
+def test_memory_search_handle_scope_acts_as_under(
+    runtime_with_store: PrecisRuntime, nested: bool, kind: str
+) -> None:
+    """gr688476: ``scope='me<id>'`` on memory search reads as ``under=`` —
+    it no longer dies as ``unknown scope``."""
+    args: dict[str, Any] = {"kind": kind, "q": "x"}
+    if nested:
+        args["__extras__"] = {"scope": "me999999"}
+    else:
+        args["scope"] = "me999999"
+    out = runtime_with_store.dispatch("search", args)
+    assert "unknown scope" not in out, out
+    assert out == runtime_with_store.dispatch(
+        "search", {"kind": kind, "q": "x", "under": "me999999"}
+    )
+
+
+def test_memory_search_handle_scope_with_under_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "memory", "q": "x", "scope": "me1", "under": "me2"},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "unknown scope" not in out, out

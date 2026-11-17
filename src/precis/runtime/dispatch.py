@@ -2489,6 +2489,39 @@ class DispatchMixin(RuntimeShape):
             )
         args["folder"] = extras.pop("folder")
 
+    def _hoist_memory_handle_scope(self, args: dict[str, Any]) -> None:
+        """``search(kind='memory', scope='me123')`` → ``under='me123'``.
+
+        ``scope=`` on memory only picks title vs body, but agents reach for
+        it to narrow a search to a hub's subtree — the ``under=`` job (gr688476).
+        A bare memory handle in ``scope=`` (top-level or inside ``args=``)
+        moves to ``under=`` so the call does what it plainly meant; any other
+        value falls through to the handler's own scope check."""
+        kind = args.get("kind")
+        if (
+            not isinstance(kind, str)
+            or self._expand_kind_code(kind.strip()) != "memory"
+        ):
+            return
+        extras = args.get(_EXTRAS_KEY)
+        holder = args if args.get("scope") is not None else extras
+        if not isinstance(holder, dict):
+            return
+        scope = holder.get("scope")
+        if not isinstance(scope, str):
+            return
+        parsed = handle_registry.parse(scope.strip())
+        if parsed is None or parsed[0] != "memory" or parsed[1]:
+            return
+        in_extras = isinstance(extras, dict) and extras.get("under") is not None
+        if args.get("under") is not None or in_extras:
+            raise BadInput(
+                "scope= names a memory handle and under= is also set",
+                next="pass the hub once, as under='me<id>'",
+            )
+        holder.pop("scope")
+        args["under"] = scope.strip()
+
     @staticmethod
     def _hoist_fused_args(args: dict[str, Any]) -> None:
         """``args={'queries'/'answers'/'batch': …}`` → the top-level knob.
@@ -2543,6 +2576,7 @@ class DispatchMixin(RuntimeShape):
             self._hoist_source_facet_args(args)
             self._hoist_sort_arg(args)
             self._hoist_folder_arg(args)
+            self._hoist_memory_handle_scope(args)
             # gr568808: the promoted cross-kind knobs (``queries``/
             # ``answers``/``batch``) hoist out of ``args=`` so the
             # nested spelling IS the top-level call — then the batch

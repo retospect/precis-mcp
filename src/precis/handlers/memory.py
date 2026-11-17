@@ -4716,7 +4716,9 @@ class MemoryHandler(AuditedRetirementHandler):
 
         ``scope=`` picks where ``q`` matches: ``'title'`` = only the header
         card (title + hook), ``'body'`` = only the body prose, omitted =
-        both. Anything else is refused.
+        both. Dispatch also accepts a memory handle (``scope='me<id>'``)
+        as an alias for ``under=`` to search that memory's subtree.
+        Other values are refused.
 
         ``view='index'`` returns one ``- <Title> (me<id>[, <filename>]) —
         <hook>`` line per best-ranked memory (the session-start index shape;
