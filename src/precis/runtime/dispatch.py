@@ -4773,7 +4773,19 @@ class DispatchMixin(RuntimeShape):
                 # retry somewhere else.
                 call_ctx = IN_FLIGHT_CALL.set((verb, kind, dict(clean)))
                 try:
-                    response = method(**clean)
+                    try:
+                        response = method(**clean)
+                    except BadInput:
+                        # gr702986: a refs-backed kind whose handler has no
+                        # view='links' gets the shared one.
+                        fallback = (
+                            self._links_view_fallback(kind, clean)
+                            if verb == "get"
+                            else None
+                        )
+                        if fallback is None:
+                            raise
+                        response = fallback
                 finally:
                     IN_FLIGHT_CALL.reset(call_ctx)
             response = self._nudge_writer(kind, verb, wctx, response)
@@ -4819,6 +4831,7 @@ class DispatchMixin(RuntimeShape):
             self._bump_ref_read(kind, args.get("id"))
             if args.get("view") is None:
                 self._stamp_recalled(kind, args.get("id"))
+                response = self._append_inbound_links(kind, args.get("id"), response)
                 response = self._append_trust_line(
                     handler, kind, args.get("id"), response
                 )
@@ -4829,6 +4842,85 @@ class DispatchMixin(RuntimeShape):
         from precis.handlers._interpret import interpreted
 
         return interpreted(response, readings)
+
+    def _links_ref(self, kind: str, ident: Any) -> Any:
+        """The live ref a single plain ``get`` id names (int, handle, slug),
+        or ``None`` — chunk selectors, lists and paths name no whole ref."""
+        store = self.store
+        if (
+            store is None
+            or ident is None
+            or isinstance(ident, (list, tuple))
+            or not isinstance(ident, (str, int))
+        ):
+            return None
+        text = str(ident).strip()
+        if not text or text.startswith("/") or "~" in text or ".." in text:
+            return None
+        try:
+            target = store._read_ident_target(kind, text)
+            if target is None or target[0] not in ("ref", "cite_key"):
+                return None
+            return store.get_ref(kind=kind, id=target[1])
+        except Exception:
+            log.debug("links ref lookup for %s %r failed", kind, ident, exc_info=True)
+            return None
+
+    def _links_view_fallback(self, kind: str, clean: dict[str, Any]) -> Response | None:
+        """Shared ``view='links'`` for a refs-backed kind whose handler
+        refuses the view (gr702986); ``None`` when it isn't a links read of
+        one live ref, so the handler's own refusal stands."""
+        if clean.get("view") != "links":
+            return None
+        ref = self._links_ref(kind, clean.get("id"))
+        store = self.store
+        if ref is None or store is None:
+            return None
+        from precis.handlers._links_render import render_links_view
+
+        raw_args = clean.get("args")
+        args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+        return render_links_view(
+            store,
+            ref,
+            rel=args.get("rel") or clean.get("rel"),
+            of_kind=args.get("of_kind"),
+            limit=args.get("limit", clean.get("limit")),
+            cursor=args.get("cursor", clean.get("cursor")),
+        )
+
+    def _append_inbound_links(
+        self, kind: str, ident: Any, response: Response
+    ) -> Response:
+        """Close a default ``get`` with a capped inbound ``<-`` Links
+        section when the handler printed none (gr702986): a memory citing a
+        pathway/rxn/… must show on that ref's own read."""
+        body = response.body
+        if not isinstance(body, str) or "\nLinks:" in body or "\nLinks (" in body:
+            return response
+        ref = self._links_ref(kind, ident)
+        store = self.store
+        if ref is None or store is None:
+            return response
+        try:
+            from precis.handlers._links_render import (
+                DEFAULT_LINK_ROW_CAP,
+                render_links_section,
+            )
+
+            section = render_links_section(
+                store,
+                ref,
+                limit=DEFAULT_LINK_ROW_CAP,
+                priority=True,
+                inbound_only=True,
+            )
+        except Exception:
+            log.debug("inbound links for %s %r failed", kind, ident, exc_info=True)
+            return response
+        if not section:
+            return response
+        return replace(response, body=body.rstrip() + section)
 
     def _append_trust_line(
         self, handler: Handler, kind: str, ident: Any, response: Response

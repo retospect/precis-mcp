@@ -123,6 +123,7 @@ def render_links_section(
     priority: bool = False,
     rel: str | None = None,
     of_kind: str | None = None,
+    inbound_only: bool = False,
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
@@ -166,12 +167,17 @@ def render_links_section(
             ref of that kind — the same other-endpoint filter
             ``NumericRefHandler._render_links_view`` already exposes as
             ``args={'of_kind': …}`` (gr472990).
+        inbound_only: When ``True``, render only the ``<-`` rows — the
+            dispatch-level default-read section for kinds whose own
+            ``get`` prints no Links block (gr702986).
 
     Both kwargs default to a no-op so every existing callsite (the
     numeric-ref per-``get()`` append, ``render_links_view``) renders
     byte-identical output to before this signature grew.
     """
-    prepared = _select_link_pairs(store, ref, rel=rel, of_kind=of_kind)
+    prepared = _select_link_pairs(
+        store, ref, rel=rel, of_kind=of_kind, inbound_only=inbound_only
+    )
     if prepared is None:
         return ""
     combined, endpoints, ref_sizes, chunk_sizes = prepared
@@ -219,6 +225,7 @@ def _select_link_pairs(
     *,
     rel: str | None = None,
     of_kind: str | None = None,
+    inbound_only: bool = False,
 ) -> (
     tuple[list[tuple[Link, str]], dict[int, Ref], dict[int, int], dict[int, int]] | None
 ):
@@ -227,7 +234,7 @@ def _select_link_pairs(
     chunk text sizes) — or ``None`` when no row renders. Shared by
     :func:`render_links_section` and :func:`render_links_view` so the
     inline section and the standalone view draw one row set."""
-    out_links = store.links_for(ref.id, direction="out")
+    out_links = [] if inbound_only else store.links_for(ref.id, direction="out")
     in_links = store.links_for(ref.id, direction="in")
     if not out_links and not in_links:
         return None
