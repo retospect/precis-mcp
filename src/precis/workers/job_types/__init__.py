@@ -31,7 +31,8 @@ removing body/hash/event evidence or calling a provider/model.
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
 ``ci_red_digest`` reserves every failed job and test id before assertion
-evidence inside its whole-comment budget. Range files remain input to the
+evidence inside its whole-comment budget; overflowing ids get an explicit
+count and run pointer so a wide red still posts a brief. Range files remain input to the
 independent overlap hold: putting them in briefs crowds out later shards.
 
 Park snapshots scan every unpublished commit, because even credentials

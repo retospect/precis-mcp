@@ -4412,8 +4412,7 @@ def test_compose_digest_reserves_the_room_before_composing() -> None:
     out = crd._compose_digest(log_text, rescue, room=2000)
     assert len(out) <= 2000
     assert "FAILED tests/x.py::t - assert 1 == 2" in out
-    with pytest.raises(ValueError, match="failed ids exceed"):
-        crd._compose_digest(log_text, rescue, room=0)
+    assert crd._compose_digest(log_text, rescue, room=0) == ""
 
 
 def test_digest_budget_preserves_all_nine_shards() -> None:
@@ -4427,7 +4426,7 @@ def test_digest_budget_preserves_all_nine_shards() -> None:
         )
         for i in range(9)
     )
-    text = crd._brief("brief: red run", crd._compose_digest(log, ""), crd._RULE)
+    text = crd._brief("brief: red run", log, crd._RULE)
     assert len(text) <= crd._DIGEST_CAP
     assert "docker" not in text
     for i in range(9):
@@ -4453,14 +4452,6 @@ def test_digest_excludes_range_table_and_noise(
             {"555": "+ pytest -q\nFAILED tests/x.py::t - assert 1 == 2\n"},
         ),
     )
-    table = "changed files in a..b (ranked by suspicion):\n" + "\n".join(
-        f"    src/f{i}.py — 1 commit (+1/-0)" for i in range(200)
-    )
-
-    def _table(*a: Any) -> str:
-        return table
-
-    monkeypatch.setattr(crd, "_suspects_block", _table)
     ctx = Ctx(store, {"todo_id": digest_id})
     handle = crd.submit(ctx, None)
     assert ctx.failures == []
@@ -4481,6 +4472,41 @@ def test_digest_excludes_range_table_and_noise(
     assert len(text) <= crd._DIGEST_CAP
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
     assert "never skip, xfail or loosen a test" in text
+
+
+def test_digest_posts_hundreds_of_ids_within_budget(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705098: overflowing ids must post a bounded brief, never crash."""
+    mint = _cut(store)
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    monkeypatch.setattr(crd, "_try_waiver", lambda *a: (False, []))
+    log = "== gate-fast ==\n" + "\n".join(
+        f"FAILED tests/x.py::test_{i:04d} - assert False" for i in range(600)
+    )
+    ctx = Ctx(store, {"todo_id": digest_id})
+    assert crd._digest_done(ctx, {"run_id": "31"}, {"todo_id": digest_id}, log)
+    assert ctx.status == "succeeded", ctx.failures
+    text = _todo_comments(store, fix_id)[0]
+    assert len(text) <= crd._DIGEST_CAP
+    assert text.startswith("brief: release")
+    assert text.endswith(crd._RULE)
+    assert "more ids, see run 31" in text
+    assert "FAILED tests/x.py::test_0000" in text
+    assert "assert False" not in text
+
+
+def test_cluster_scope_cannot_displace_header_and_rule() -> None:
+    text = crd._brief(
+        "brief: red check.yml run 31",
+        "== gate-fast ==\nFAILED tests/x.py::test_one - assert False",
+        crd._RULE,
+        "cluster scope " * 2000,
+    )
+    assert len(text) <= crd._DIGEST_CAP
+    assert text.startswith("brief: red check.yml run 31")
+    assert text.endswith(crd._RULE)
+    assert "FAILED tests/x.py::test_one - assert False" in text
 
 
 # ── release_confirm (td573432) ────────────────────────────────────

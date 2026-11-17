@@ -13,13 +13,15 @@ pinned to that host the same way.
   the plan tick's retry cap files the ask. ``scripts/ci-failed <run_id>``
   digests the failed jobs; on exit 0 the job posts one ``brief:``
   comment capped at :data:`_DIGEST_CAP`, including header and rule.
-  Job headings and all failed ids reserve room before assertion evidence;
-  setup noise and range file lists stay out of the brief. Range paths
+  Job headings and failed ids reserve room before assertion evidence;
+  ids too numerous to fit degrade to a bare list with an omitted count
+  and run pointer, never a failed digest job.
+  Setup noise and range file lists stay out of the brief. Range paths
   remain available to the independent file-overlap hold. On every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
-  whose ids parse complete (``red_waiver.parse_failures``, no problem)
+  whose raw logs parse complete (``red_waiver.parse_failures``, no problem)
   is split by the failing ``src`` module an id's assertion line names
   (a ``src/…py`` path, or the module an ``ImportError`` /
   ``ModuleNotFoundError`` names — test files that fail on one module's
@@ -106,7 +108,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from precis.plans import red_suspects as _suspects
 from precis.plans import red_waiver as _waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
@@ -241,8 +242,8 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\s+")
 _UNKNOWN_FLAG = re.compile(r"unknown (flag|shorthand)", re.IGNORECASE)
 
-#: Per-job cap on the rescued failure lines; the brief's _DIGEST_CAP
-#: bounds the whole comment either way.
+#: Per-job cap on rescued evidence only; every FAILED/ERROR id survives.
+#: The brief's _DIGEST_CAP bounds the whole comment either way.
 _RESCUE_CAP = 40
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -888,10 +889,12 @@ def _probe_done(ctx: Any, log_text: str) -> bool:
     return True
 
 
-def _compose_digest(log_text: str, rescue: str, room: int = _DIGEST_CAP) -> str:
+def _compose_digest(
+    log_text: str, rescue: str, room: int = _DIGEST_CAP, run_id: str = "unknown"
+) -> str:
     """Fit job blocks in room, reserving headings and ids before evidence.
 
-    Refuse an identifier set that cannot fit rather than silently hiding it.
+    Drop evidence, then headings, then excess ids with an explicit marker.
     """
     jobs: dict[str, list[str]] = {}
     for source in (log_text, rescue):
@@ -936,24 +939,51 @@ def _compose_digest(log_text: str, rescue: str, room: int = _DIGEST_CAP) -> str:
                 evidence.append((len(blocks) - 1, None, f"  {line}"))
     used = len("\n".join(line for block in blocks for line in block))
     if used > room:
-        raise ValueError("failed ids exceed brief budget; inspect the full run logs")
-    # Share evidence space across jobs; headings and ids never lose room to it.
-    limit = max(0, (room - used) // max(1, len(evidence)) - 1)
-    for index, position, line in evidence:
-        if limit:
-            shown = line if len(line) <= limit else line[: limit - 1] + "…"
-            if position is None:
-                blocks[index].append(shown)
-            else:
-                blocks[index][position] += shown
+        ids_only = [
+            line.strip()
+            for block in blocks
+            for line in block
+            if line.strip().startswith(("FAILED ", "ERROR "))
+        ]
+        if len("\n".join(ids_only)) <= room:
+            return "\n".join(ids_only)
+        kept: list[str] = []
+        for line in ids_only:
+            marker = f"… +{len(ids_only) - len(kept) - 1} more ids, see run {run_id}"
+            if len("\n".join([*kept, line, marker])) > room:
+                break
+            kept.append(line)
+        marker = f"… +{len(ids_only) - len(kept)} more ids, see run {run_id}"
+        return "\n".join([*kept, marker])[: max(0, room)]
+    # Reasons win over extra traceback evidence; share each tier across jobs.
+    for reasons in (True, False):
+        tier = [item for item in evidence if (item[1] is not None) == reasons]
+        limit = max(0, (room - used) // max(1, len(tier)) - 1)
+        for index, position, line in tier:
+            if limit:
+                shown = line if len(line) <= limit else line[: limit - 1] + "…"
+                if position is None:
+                    blocks[index].append(shown)
+                    used += len(shown) + 1
+                else:
+                    blocks[index][position] += shown
+                    used += len(shown)
     return "\n".join(line for block in blocks for line in block)
 
 
 def _brief(head: str, digest: str, rule: str, scope: str = "") -> str:
     """Budget the whole comment, including cluster instructions and rule."""
-    prefix = "\n".join(p for p in (head, mask_secrets(scope)) if p)
-    room = _DIGEST_CAP - len(prefix) - len(rule) - 2
-    return "\n".join((prefix, _compose_digest(digest, "", room), rule))
+    # Scope can repeat hundreds of ids; it must not displace the run or rule.
+    scope_room = max(0, (_DIGEST_CAP - len(head) - len(rule) - 4) // 3)
+    shown_scope = mask_secrets(scope)
+    if len(shown_scope) > scope_room:
+        shown_scope = shown_scope[: max(0, scope_room - 1)] + "…"
+    prefix = "\n".join(p for p in (head, shown_scope) if p)
+    room = max(0, _DIGEST_CAP - len(prefix) - len(rule) - 2)
+    run = re.search(r"\brun (\d+)", head)
+    return "\n".join(
+        (prefix, _compose_digest(digest, "", room, run[1] if run else "unknown"), rule)
+    )
 
 
 class _WaiverPark(Exception):
@@ -1107,39 +1137,6 @@ def _try_waiver(
     return True, steps
 
 
-def _suspects_block(
-    ctx: Any,
-    rel: dict[str, Any],
-    log_text: str,
-    rescued: dict[str, list[str]],
-) -> str:
-    """The ranked changed-files table of gr595552: every file the
-    ``last-green..this-build`` diff touched, its diff stat, range
-    commits, ledger gripes and the failure-path flag — the view the
-    ci-failed digest alone never gave the fixer. Rendered complete:
-    the brief is the fixer's only copy of it, so no budget applies
-    (td655162). Best-effort: no checkout, an unreadable range or a
-    ledger fault degrades to ``""`` and the brief posts without it."""
-    try:
-        root = _rs.slice_root()
-    except Exception:
-        log.warning("%s: suspects table: no slice root", NAME, exc_info=True)
-        return ""
-    try:
-        return _suspects.suspects_block(
-            ctx.store,
-            root,
-            sha=str(rel.get("sha") or ""),
-            rng=str(rel.get("range") or ""),
-            log_text=log_text,
-            rescued=rescued,
-            env=_factory_git.git_auth_env(),
-        )
-    except Exception:
-        log.warning("%s: suspects table failed", NAME, exc_info=True)
-        return ""
-
-
 def _digest_done(
     ctx: Any, handle: dict[str, Any], params: dict[str, Any], log_text: str
 ) -> bool:
@@ -1212,10 +1209,9 @@ def _digest_done(
             "brief has nowhere to land"
         )
         return True
-    suspects = ""  # Range files feed the overlap hold, not the brief.
-    digest = _compose_digest(log_text or "", rescue)
+    digest = (log_text or "") + rescue
     head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
-    # Split only a digest that provably lists every failing id: an id a
+    # Split only raw logs that provably list every failing id: an id a
     # truncated list or a non-pytest red hides would belong to no
     # cluster, so such a red keeps one brief with the whole digest.
     failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
@@ -1229,9 +1225,7 @@ def _digest_done(
             for tid in targets
         ]
     else:
-        posted = _cluster_briefs(
-            ctx, todo_id, targets, clusters, head, digest, suspects
-        )
+        posted = _cluster_briefs(ctx, todo_id, targets, clusters, head, digest)
     for tid, text in posted:
         _rs._append_comment(ctx.store, tid, text)
     shown = ", ".join(f"td{t}" for t, _ in posted)
@@ -1262,7 +1256,6 @@ def _cluster_briefs(
     clusters: list[tuple[str, list[str]]],
     head: str,
     digest: str,
-    suspects: str = "",
 ) -> list[tuple[int, str]]:
     """One ``(fix node, brief)`` per cluster (release-train T1): the
     iteration's own fix nodes take the first clusters, and one sibling is

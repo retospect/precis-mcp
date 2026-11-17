@@ -279,8 +279,8 @@ _COLLECTION = re.compile(
     r"errors? during collection|^\s*Interrupted:|collection error|ERROR collecting",
     re.IGNORECASE | re.MULTILINE,
 )
-#: ``ci_red_digest`` appends this to a job's rescued lines when the
-#: rescue cap cut some: the ids list is then known-incomplete.
+#: Legacy rescue truncation marker: current rescue retains every id.
+#: Keep recognizing historical digests whose ids were known-incomplete.
 RESCUE_TRUNCATED = "… rescued failure lines cut at the rescue cap"
 #: The job whose red means the full matrix never ran, and ci-failed's
 #: note for it.
