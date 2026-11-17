@@ -358,6 +358,44 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
     return out
 
 
+_COUNT_AGG_GRAMMAR = (
+    "agg='<avg|sum|min|max>:meta.<key>[.<key>…][,…]' with view='count' and group_by="
+)
+_COUNT_AGG_TERM = re.compile(
+    r"(avg|sum|min|max):meta\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)"
+)
+
+
+def _require_count_agg_view(agg: Any, view: str | None) -> None:
+    if agg is not None and view != "count":
+        raise BadInput("agg= applies only to view='count'", next=_COUNT_AGG_GRAMMAR)
+
+
+def _parse_count_aggs(agg: Any, facets: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if agg is None:
+        return []
+    if not facets or not isinstance(agg, str):
+        raise BadInput("agg= requires group_by= and a string", next=_COUNT_AGG_GRAMMAR)
+    out = []
+    for term in agg.split(","):
+        match = _COUNT_AGG_TERM.fullmatch(term.strip())
+        if match is None:
+            raise BadInput(f"invalid aggregate {term!r}", next=_COUNT_AGG_GRAMMAR)
+        spec = (match[1], match[2])
+        if spec not in out:
+            out.append(spec)
+    return out
+
+
+def _count_agg_cells(
+    aggs: list[tuple[str, str]], values: tuple[tuple[float | None, int], ...]
+) -> str:
+    return "".join(
+        f" · {fn}(meta.{path})={value if value is None else format(value, '.15g')} (n={n})"
+        for (fn, path), (value, n) in zip(aggs, values, strict=True)
+    )
+
+
 def _count_facet_label(spec: tuple[str, str]) -> str:
     """Header label for one facet spec: ``meta.job_type``/``state``/``tag:area``."""
     ftype, key = spec
@@ -1446,6 +1484,7 @@ class NumericRefHandler(Handler):
         # they route to the cross-kind source-search primitive upstream.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         # ``str`` parses via ``_parse_window_bound`` (ISO); kinds that
         # resolve their own bound spellings (job's hours/days age,
         # gr536316) pass the already-parsed datetime through.
@@ -1488,6 +1527,7 @@ class NumericRefHandler(Handler):
         # Fold the ``q='*'`` match-all spelling before any view dispatch
         # (gr538071) — the shared helper's docstring says why. One door
         # for every numeric-ref kind that funnels through this search.
+        _require_count_agg_view(agg, view)
         row_tag_prefixes = self._parse_tag_prefixes(tag_prefixes)
         q = fold_match_all_q(q)
         # ``view='ids'`` renders the same filtered set as one bare handle
@@ -1599,6 +1639,7 @@ class NumericRefHandler(Handler):
                 status_note=status_note,
                 link=link,
                 group_by=group_by,
+                agg=agg,
                 sort=sort,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
@@ -2126,6 +2167,7 @@ class NumericRefHandler(Handler):
         status_note: str,
         link: str | None,
         group_by: Any,
+        agg: str | None = None,
         sort: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
@@ -2176,6 +2218,7 @@ class NumericRefHandler(Handler):
                 next=f"search(kind={self.kind!r}, view='count', args={{'group_by': 'state'}})",
             )
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
         closed_after_dt = _parse_window_bound(closed_since, "closed_since")
@@ -2203,6 +2246,7 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -2279,7 +2323,10 @@ class NumericRefHandler(Handler):
             offset = (pg - 1) * ps
             window = groups[offset : offset + ps]
             for row in window:
-                parts.append(self._count_group_line(row, facets))
+                parts.append(
+                    self._count_group_line(row, facets)
+                    + _count_agg_cells(aggs, row[2].aggregates)
+                )
             hidden_rows = groups[offset + len(window) :]
             if hidden_rows:
                 parts.append(
@@ -2304,7 +2351,9 @@ class NumericRefHandler(Handler):
                             include_ref_ids=include_ref_ids,
                             exclude_ref_ids=exclude_ref_ids,
                             extra_top=next_top,
-                            extra_args=next_args,
+                            extra_args={**(next_args or {}), "agg": agg}
+                            if agg is not None
+                            else next_args,
                             drop=next_drop,
                         ),
                         sql_capped=len(groups) == _COUNT_GROUP_LIMIT,

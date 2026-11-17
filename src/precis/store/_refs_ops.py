@@ -273,6 +273,7 @@ class FacetSpan(NamedTuple):
     max_ref_id: int
     min_created: Any
     max_created: Any
+    aggregates: tuple[tuple[float | None, int], ...] = ()
 
 
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -4947,6 +4948,7 @@ class RefsMixin:
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
+        aggs: list[tuple[str, str]] | None = None,
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
@@ -5118,6 +5120,40 @@ class RefsMixin:
                     f"GROUP BY {ordinals} "
                     f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
                 )
+                if aggs:
+                    # A tag join can repeat a ref within one group. Deduplicate
+                    # group membership before aggregating, preserving equal
+                    # numeric values from different refs.
+                    facet_cols = [f"facet_{i}" for i in range(n)]
+                    projected = [
+                        f"{expr} AS {col}"
+                        for expr, col in zip(select_exprs, facet_cols, strict=True)
+                    ]
+                    aggregates: list[str] = []
+                    for i, (fn, path) in enumerate(aggs):
+                        col = f"value_{i}"
+                        projected.append(
+                            "CASE WHEN jsonb_typeof(r.meta #> %s::text[]) = 'number' "
+                            f"THEN (r.meta #>> %s::text[])::float END AS {col}"
+                        )
+                        keys = path.split(".")
+                        select_params.extend((keys, keys))
+                        sql_fn = {
+                            "avg": "AVG",
+                            "sum": "SUM",
+                            "min": "MIN",
+                            "max": "MAX",
+                        }[fn]
+                        aggregates.extend((f"{sql_fn}({col})", f"COUNT({col})"))
+                    sql = (
+                        f"SELECT {', '.join(facet_cols)}, COUNT(*), "
+                        "min(ref_id), max(ref_id), min(created_at), max(created_at), "
+                        f"{', '.join(aggregates)} FROM ("
+                        f"SELECT DISTINCT {', '.join(projected)}, r.ref_id, r.created_at "
+                        f"FROM refs r {' '.join(joins)} WHERE {where}"
+                        f") members GROUP BY {ordinals} "
+                        f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
+                    )
                 # Bind order follows textual %s order: SELECT exprs,
                 # JOIN subqueries, WHERE clauses, then the LIMIT.
                 rows = conn.execute(
@@ -5127,7 +5163,15 @@ class RefsMixin:
                     (
                         tuple(r[:n]),
                         int(r[n]),
-                        FacetSpan(int(r[n + 1]), int(r[n + 2]), r[n + 3], r[n + 4]),
+                        FacetSpan(
+                            int(r[n + 1]),
+                            int(r[n + 2]),
+                            r[n + 3],
+                            r[n + 4],
+                            tuple(
+                                (r[i], int(r[i + 1])) for i in range(n + 5, len(r), 2)
+                            ),
+                        ),
                     )
                     for r in rows
                 ]

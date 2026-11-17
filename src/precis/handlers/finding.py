@@ -1565,6 +1565,7 @@ class FindingHandler(AuditedRetirementHandler):
         # ``refs.created_at`` on it.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
         # ``args={'id_min': N}`` / ``args={'id_max': M}`` — bound the
@@ -1639,6 +1640,9 @@ class FindingHandler(AuditedRetirementHandler):
         ``state | support | flags`` once any hit is a claim hub);
         ``get(kind='finding', id=N)`` for the full begat chain.
         """
+        from precis.handlers._numeric_ref import _require_count_agg_view
+
+        _require_count_agg_view(agg, view)
         q = fold_match_all_q(q)
         from precis.handlers._numeric_ref import _parse_id_range
 
@@ -1671,6 +1675,7 @@ class FindingHandler(AuditedRetirementHandler):
                 trust=resolved_trust,
                 tags=base_tags,
                 group_by=group_by,
+                agg=agg,
                 since=since,
                 until=until,
                 id_min=id_lo,
@@ -1900,6 +1905,7 @@ class FindingHandler(AuditedRetirementHandler):
         trust: str | None,
         tags: list[str],
         group_by: Any,
+        agg: str | None = None,
         since: str | datetime | None,
         until: str | datetime | None,
         id_min: int | None = None,
@@ -1936,7 +1942,9 @@ class FindingHandler(AuditedRetirementHandler):
 
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -1955,6 +1963,7 @@ class FindingHandler(AuditedRetirementHandler):
                 ),
             )
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
 
@@ -1974,6 +1983,7 @@ class FindingHandler(AuditedRetirementHandler):
             q=q,
             q_in_chunks=True,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -2001,9 +2011,11 @@ class FindingHandler(AuditedRetirementHandler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n, _span in groups:
+            for vals, n, span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
-                parts.append(f"  {label}: {n}")
+                parts.append(
+                    f"  {label}: {n}" + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
 

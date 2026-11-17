@@ -1379,7 +1379,10 @@ class LlmHandler(NumericRefHandler):
                 f"concurrency={a.concurrency} "
                 f"task_classes={','.join(a.task_classes) or 'unknown'} "
                 f"default_model={a.default_model or 'unknown'} key={key} "
-                f"pools={','.join(a.pools) or 'unknown'}{parked}{health}"
+                f"pools={','.join(a.pools) or 'unknown'} "
+                f"promo_expiry={a.promo_expiry or 'none'} "
+                f"models={','.join(a.models) or 'unknown'} lane_rank={a.lane_rank}"
+                f"{parked}{health}"
             )
         return "\n".join(lines)
 

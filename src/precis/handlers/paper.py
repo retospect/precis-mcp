@@ -2862,6 +2862,7 @@ class PaperHandler(Handler):
         # (gr500643, ``days=``) are paper-only ingest-state reads.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         since: str | None = None,
         until: str | None = None,
         ids: list[str] | None = None,
@@ -2951,6 +2952,9 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        from precis.handlers._numeric_ref import _require_count_agg_view
+
+        _require_count_agg_view(agg, view)
         q = fold_match_all_q(q)
         linked_from_kind = (
             self._link_scope_kind(linked_from, "linked_from")
@@ -3176,6 +3180,7 @@ class PaperHandler(Handler):
                     q=q,
                     tags=tags,
                     group_by=group_by,
+                    agg=agg,
                     since=bf["since"],
                     until=bf["until"],
                     year_from=bf["year_from"],
@@ -4878,6 +4883,7 @@ class PaperHandler(Handler):
         q: str | None,
         tags: list[str] | None,
         group_by: Any,
+        agg: str | None = None,
         since: str | datetime | None,
         until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
@@ -4916,7 +4922,9 @@ class PaperHandler(Handler):
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -4924,6 +4932,7 @@ class PaperHandler(Handler):
 
         kind = self.spec.kind
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
         normalized = Tag.normalize_filter(tags, kind=kind) if tags else None
@@ -4938,6 +4947,7 @@ class PaperHandler(Handler):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -4980,9 +4990,11 @@ class PaperHandler(Handler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n, _span in groups:
+            for vals, n, span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
-                parts.append(f"  {label}: {n}")
+                parts.append(
+                    f"  {label}: {n}" + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
             if any(ft == "fulltext" for ft, _k in facets):
