@@ -44,7 +44,8 @@ and drops the waiting tag atomically. Tag-only changes stay on
 `text=` and `body=` are the same prose slot spelled two ways across
 kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
 that declares only one spelling the other is accepted as an alias, and
-passing both at once errors. `todo` declares both — `text=` is the
+passing both at once errors (memory reads the pair as `text=` title,
+`body=` prose). `todo` declares both — `text=` is the
 title, `body=` the details — and takes either or both.
 
 ## Make a retry safe with idem_key

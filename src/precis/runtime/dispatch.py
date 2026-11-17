@@ -683,7 +683,10 @@ def _alias_prose_field(
     handler declaring both keeps them distinct (todo put: ``text=`` the
     title, ``body=`` the details; finding put runs its own text→body
     alias), and both spellings supplied to a single-spelling handler is
-    a BadInput: two prose values can't collapse into one slot silently.
+    a BadInput: two prose values can't collapse into one slot silently —
+    except when creating a memory, where the pair reads as ``text=`` the
+    title and ``body=`` the prose. Updates and other kinds keep the
+    collision error so no supplied prose is silently discarded.
     """
     accepted = _handler_accepted_kwargs(cls, verb)
     declared = [s for s in _PROSE_FIELD_SPELLINGS if s in accepted]
@@ -694,6 +697,20 @@ def _alias_prose_field(
     if alias not in clean:
         return
     if canon in clean:
+        if (
+            kind == "memory"
+            and verb == "put"
+            and clean.get("id") is None
+            and canon == "text"
+            and "title" in accepted
+            and clean.get("title") is None
+            and isinstance(clean[canon], str)
+        ):
+            # Memory creation alone reads the todo-style pair as a short
+            # title plus prose (gr702039); existing refs keep both protected.
+            clean["title"] = clean.pop("text")
+            clean["text"] = clean.pop("body")
+            return
         raise BadInput(
             f"{verb}(kind={kind!r}): {canon}= and {alias}= are the same "
             "prose field on this kind — pass one, not both",
