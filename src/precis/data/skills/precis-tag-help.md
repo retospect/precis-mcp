@@ -5,6 +5,7 @@ title: precis — the tag verb (add and remove tags)
 summary: the tag verb mechanics — atomic add/remove, axis replacement, state transitions
 answers:
   - how do I add or remove tags on a ref that already exists?
+  - how do I add the same tag to many refs?
   - how do I move a todo from open to done without leaving a stale STATUS tag?
   - what's the difference between an UPPERCASE axis tag and a lowercase open tag?
   - how do I toggle a bare flag tag like pinned?
@@ -46,6 +47,32 @@ tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
 `meta=` is a todo-only door on `tag` — an allowlisted key promotion
 ([[precis-todo-tree-help]]) — refused on every other kind. Other refs'
 meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
+
+## Tag many refs in one call
+## Add the same tag to many refs at once
+## How do I add the same tag to many refs?
+
+```python
+tag(kind="todo", id=[158, 159], add=["STATUS:done"], remove=["STATUS:open"])
+tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
+```
+
+`id=[...]` applies the same `add=` / `remove=` to every ref in the
+list in one transaction — one call replaces N single-id calls.
+Verified on the numeric-ref kinds with `batch_ids`: todo, memory,
+gripe, job, alert, finding. Slug-addressed and file kinds (paper,
+quest, orcid, conv, md / tex / python / plaintext) take one id per
+call — issue one call per ref there.
+
+All or nothing: the per-id runs share one transaction, so the first
+failure rolls back every id. A missing id aborts the whole call —
+`<handle>: <kind> id=<n> not found — batch of N rolled back, nothing
+applied` — so re-check the ids with one `search` when they come from
+a table you have not just read. The list takes at most 50 ids; an
+empty list refuses.
+
+`reason=` lands one `agent/retagged` row per affected ref on
+`ref_events` (`view='log'`) — same audit door as a single-id call.
 
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call
