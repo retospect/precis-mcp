@@ -4,7 +4,8 @@
 The TOON view is the agent-facing grid: a braced header line then one
 tab-separated line per row. Row ids ride a leading ``#`` column; a header
 cell is ``<id>:<name>`` plus the optional suffixes `` [unit]``,
-`` <from>`` and `` =formula`` (in that order):
+`` <from>`` and `` =formula`` (in that order — `` <from>`` renders a
+stored pulled column only; ``from`` refuses on write until pulls ship):
 
     {#	k5f9:vendor	m3qa:part	x7d2:qty	t6ne:line_cost =unit_price*qty}
     r2k7	jlcpcb	C19077769	100	1.23
@@ -1174,9 +1175,9 @@ def _strip_pos(*groups: list[dict[str, Any]]) -> None:
 
 
 def op_add_column(table: dict[str, Any], spec: Any, at: Any = None) -> dict[str, Any]:
-    """``add_column={name, type?, unit?, formula?, from?, role?, key?,
-    align?}`` — append (or ``at=``-position) a column; its cells start
-    ``None``."""
+    """``add_column={name, type?, unit?, formula?, role?, key?, align?}``
+    — append (or ``at=``-position) a column; its cells start ``None``.
+    A ``from`` key (pulled column) refuses — pulls aren't built yet."""
     if not isinstance(spec, dict):
         raise BadInput(
             f"add_column= must be a column spec dict, got {spec!r}",

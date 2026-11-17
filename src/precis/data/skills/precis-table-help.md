@@ -71,7 +71,7 @@ hash: 3e287c51a935
 ```
 
 - `#` = the row-id column. Header cells are `<id>:<name>` plus optional
-  ` [unit]`, ` <from>`, ` =formula` suffixes (in that order).
+  ` [unit]` and ` =formula` suffixes (in that order).
 - `cols=`/`rows=` take ids, column names, or `a..b` ranges in current
   order. `where=` is a Python-flavoured predicate over column names —
   comparisons, `and`/`or`/`not`, `in`; a non-comparable row just fails.
@@ -88,9 +88,9 @@ edit(kind='draft', id='dc<id>',
 ```
 
 - Columns resolve by `id:name`, bare id, or bare name — unknown →
-  refused listing valid ones. Declared unit/from/formula must match
-  the stored spec; calculated/pulled (`formula`/`from`) columns are
-  refused — they re-derive.
+  refused listing valid ones. Declared unit/formula must match
+  the stored spec; calculated (`formula`) columns are refused —
+  they re-derive.
 - Rows match by row id, else by the declared `key` column's value.
   **'' = unchanged**, **`null` = clear**, other values are type-inferred
   (a `type='text'` column stays verbatim).
@@ -104,7 +104,7 @@ edit(kind='draft', id='dc<id>',
 
 `edit(..., toon='<toon>')` replaces the whole grid. Ids in the header
 and `#` cells are kept (a `view='toon'` → `toon=` round-trip is
-identity); an empty `#` mints. Omitted calculated/pulled columns
+identity); an empty `#` mints. Omitted calculated columns
 persist. Dropped ids retire — they never reappear.
 
 ## Structure ops — by stable id
@@ -113,8 +113,9 @@ persist. Dropped ids retire — they never reappear.
 `rename_column={'from':<ref>,'to':'memo'}` · `move_column=<ref>` ·
 `move_row=<id>` · `rows=[[…]]` (cell lists in column order) ·
 `drop_rows=[<id>, 'a..b']` · `sort='qty desc'`. (`add_column` also takes
-`'formula'`/`'from'` keys — that is how a formula column is added to an
-existing table; `drop_column` takes the column's footer aggregate with
+a `'formula'` key — that is how a formula column is added to an
+existing table; a `'from'` pull spec refuses — pulled columns aren't
+shipped yet. `drop_column` takes the column's footer aggregate with
 it.)
 
 `at=` positions inserts/moves: `'end'` (default) | `'start'` |

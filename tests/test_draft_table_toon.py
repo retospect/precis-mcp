@@ -195,6 +195,25 @@ def test_apply_patch_unknown_col_and_calc_refused() -> None:
         apply_patch(t2, "{#\ttotal}\n" + t2["rowmeta"][0]["id"] + "\t5\n")
 
 
+def test_add_column_and_toon_from_refused(draft: DraftHandler, hub: Hub) -> None:
+    """gr685370 — 'from' pull specs have no resolver: add_column= and a
+    toon= header declaring <from> both refuse instead of minting an
+    empty, unwritable column."""
+    tc = _seed(draft, hub)
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(
+            id=tc.dc,
+            add_column={"name": "zip", "from": "table:dc6579686~kgv5"},
+        )
+    t = _meta(hub, tc)
+    doc = table_toon(t)
+    cid = t["columns"][0]["id"]
+    bad = doc.replace(f"{cid}:el", f"{cid}:el <table:dc6579686~kgv5>", 1)
+    assert bad != doc
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, toon=bad)
+
+
 def test_table_from_toon_roundtrip_and_retire() -> None:
     t = _table()
     doc = table_toon(t)
