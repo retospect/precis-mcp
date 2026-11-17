@@ -593,6 +593,13 @@ def test_approx_spacing_relation_form_does_not_fire() -> None:
     assert not any("approx-spacing" in w for w in warnings)
 
 
+def test_approx_spacing_expression_lhs_keeps_spaces() -> None:
+    ok = lint_notation("The ratio exp(8.12) ≈ 3400× holds.")
+    assert not any("approx-spacing" in w for w in ok)
+    bad = lint_notation("The ratio exp(8.12)≈3400× holds.")
+    assert any("approx-spacing" in w for w in bad)
+
+
 def test_approx_spacing_relation_missing_space_fires() -> None:
     warnings = lint_notation("Carrier density n≈10²² cm⁻³ is reported.")
     assert any("approx-spacing" in w for w in warnings)

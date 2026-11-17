@@ -516,6 +516,14 @@ _APPROX_SYMBOL_RE = re.compile(
     r"^[A-Za-zΑ-Ωα-ωΔδ]$|^[A-Za-zΑ-Ωα-ωΔδ][A-Za-z0-9]*_[A-Za-z0-9]+$"
 )
 _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
+#: A computed expression on the left of `≈` (`exp(8.12)`, `x[0]`): a
+#: closed call/index token is a relation operand, same as a symbol.
+_APPROX_EXPR_RE = re.compile(r"^[A-Za-zΑ-Ωα-ωΔδ_][A-Za-z0-9_]*[(\[].*[)\]]$")
+
+
+def _is_approx_lhs(token: str) -> bool:
+    return bool(_APPROX_SYMBOL_RE.match(token) or _APPROX_EXPR_RE.match(token))
+
 
 # ── canon v3: numeric-range dash, ASCII multiplier, formula subscript ───
 
@@ -637,8 +645,9 @@ def _check_approx_spacing(sentence: str) -> str | None:
 
     Quantity context (nothing, or a non-symbol word, to the left) wants no
     space before the number: ``≈1 Å``. Relation context (a symbol -- single
-    letter or ``K_d``-style subscript identifier -- immediately to the
-    left) wants a space on both sides: ``n ≈ 10²²``.
+    letter, ``K_d``-style subscript identifier, or a computed call such as
+    ``exp(8.12)`` -- immediately to the left) wants a space on both sides:
+    ``n ≈ 10²²``, ``exp(8.12) ≈ 3400×``.
     """
     for i, ch in enumerate(sentence):
         if ch != "≈":
@@ -650,7 +659,7 @@ def _check_approx_spacing(sentence: str) -> str | None:
         if left_attached:
             tm = _APPROX_TOKEN_RE.search(before)
             token = tm.group(0) if tm else ""
-            if _APPROX_SYMBOL_RE.match(token):
+            if _is_approx_lhs(token):
                 return (
                     f"approx-spacing: {token}≈… found -- a binary relation "
                     "with a symbol on the left wants a space on both sides "
@@ -663,7 +672,7 @@ def _check_approx_spacing(sentence: str) -> str | None:
         if stripped_before:
             tm = _APPROX_TOKEN_RE.search(stripped_before)
             prev_token = tm.group(0) if tm else ""
-        if prev_token and _APPROX_SYMBOL_RE.match(prev_token):
+        if prev_token and _is_approx_lhs(prev_token):
             continue  # 'n ≈ 10²²' -- correct relation form
 
         after_stripped = after.lstrip()
