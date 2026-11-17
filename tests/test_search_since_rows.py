@@ -148,3 +148,35 @@ def test_row_date_matches_the_refs_actual_created_day(
     assert len(rows) == 1
     m = _CREATED_RE.search(rows[0])
     assert m is not None and m.group(1) == day
+
+
+def test_pinned_handle_row_is_dated_in_window(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    # td702287 review: the pinned identity card is fetched outside the
+    # store query, so it used to be the one undated row of a windowed
+    # search — the pin's ref date is stamped like every other row's.
+    rt = runtime_with_store
+    rid = _seed_at(
+        rt,
+        "paper",
+        "pin-a",
+        "Pinned study",
+        "zeolite membrane dehydration",
+        "2026-11-09T10:00:00Z",
+    )
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": f"pa{rid}",
+            "since": "2026-11-01T00:00:00Z",
+            "until": "2026-11-16T00:00:00Z",
+        },
+    )
+    rows = _row_headers(out)
+    assert rows[0].startswith(f"## 1. pa{rid}"), rows[0]
+    m = _CREATED_RE.search(rows[0])
+    assert m is not None, f"pinned row has no created date: {rows[0]!r}"
+    assert m.group(1) == "2026-11-09"

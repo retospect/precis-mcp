@@ -307,7 +307,10 @@ get(kind="quest", id=7, view="literature", args={"since": "7d"})
 get(
     kind="quest", id=7, view="literature",
     args={"since": "2026-11-01", "until": "2026-11-08", "kind": "paper"},
-)  # args={"kind": "paper"|"finding"} narrows the serving ref's kind
+    # args={"kind": "paper"|"finding"} narrows the serving ref's kind —
+    # absent, the view defaults to papers AND findings; structures and
+    # concepts in the quest's service are not literature arrivals
+)
 ```
 
 One dated row per arrival: handle, kind, title, `linked_at` (UTC), the

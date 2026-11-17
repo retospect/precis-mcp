@@ -907,8 +907,11 @@ _LOGBOOK_PAGE = 50
 #: trailer's ``next:`` carries the resolved window + offset.
 _LITERATURE_PAGE = 100
 
-#: ``args={'kind': …}`` values ``view='literature'`` accepts — the
-#: literature-bearing serving kinds; absent means every kind.
+#: ``args={'kind': …}`` values ``view='literature'`` accepts — and its
+#: default when the arg is absent: the literature-bearing serving kinds.
+#: A structure or concept in the quest's service is not a literature
+#: arrival (td702287 review), so absent never means every serves-source
+#: kind.
 _LITERATURE_KINDS: tuple[str, ...] = ("paper", "finding")
 
 #: The ``lit-search: "<query>" → …`` preamble on a lit-search logbook line
@@ -3318,9 +3321,12 @@ class QuestHandler(NumericRefHandler):
 
         ``args={'since': …, 'until': …}`` take an ISO timestamp or a
         compact ``'7d'`` duration (either bound optional); ``args={'kind':
-        'paper'|'finding'}`` narrows the serving ref's kind. Each row shows
-        the handle, kind, title (60 chars), ``linked_at`` (UTC), the ref's
-        own ``created_at`` and ``found_by`` — the lit-search query that
+        'paper'|'finding'}`` narrows the serving ref's kind — absent, the
+        view defaults to both literature kinds (a structure or concept in
+        the quest's service is not a literature arrival, so the default
+        never means every serves-source kind). Each row shows the handle,
+        kind, title (60 chars), ``linked_at`` (UTC), the ref's own
+        ``created_at`` and ``found_by`` — the lit-search query that
         surfaced it: the edge's ``meta.found_by`` when present (edges
         linked since gr592952), else the newest ``signal: lit-search``
         logbook line naming the ref's handle, else ``-``. The summary line
@@ -3336,17 +3342,19 @@ class QuestHandler(NumericRefHandler):
         since_dt = _logbook_bound(args.get("since"), "since", now=now)
         until_dt = _logbook_bound(args.get("until"), "until", now=now)
         kind_raw = args.get("kind")
-        kinds: tuple[str, ...] | None = None
-        if kind_raw is not None:
+        kind_explicit = kind_raw is not None
+        if kind_explicit:
             kind = str(kind_raw).strip().lower()
             if kind not in _LITERATURE_KINDS:
                 raise BadInput(
                     f"args={{'kind': {kind_raw!r}}}: view='literature' "
                     f"accepts {sorted(_LITERATURE_KINDS)}",
                     next="get(kind='quest', id=N, view='literature') "
-                    "— or drop kind for every kind",
+                    "— or drop kind for papers and findings",
                 )
-            kinds = (kind,)
+            kinds: tuple[str, ...] = (kind,)
+        else:
+            kinds = _LITERATURE_KINDS
         offset = _literature_offset(args.get("offset"))
 
         rows = self.store.serves_links_in_window(
@@ -3387,7 +3395,7 @@ class QuestHandler(NumericRefHandler):
             spec.append(f"since {_iso_z(since_dt)}")
         if until_dt is not None:
             spec.append(f"until {_iso_z(until_dt)}")
-        if kinds is not None:
+        if kind_explicit:
             spec.append(f"kind {kinds[0]}")
         spec.append("newest first")
         lines.append(
@@ -3414,7 +3422,7 @@ class QuestHandler(NumericRefHandler):
                 call_args.append(f"'since': '{_iso_z(since_dt)}'")
             if until_dt is not None:
                 call_args.append(f"'until': '{_iso_z(until_dt)}'")
-            if kinds is not None:
+            if kind_explicit:
                 call_args.append(f"'kind': {kinds[0]!r}")
             call_args.append(f"'offset': {offset + _LITERATURE_PAGE}")
             lines.append(

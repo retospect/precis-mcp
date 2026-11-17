@@ -121,6 +121,29 @@ class TestLiteratureWindow:
         assert f"fi{finding.id}" in body
         assert f"pa{paper}" not in body
 
+    def test_default_view_excludes_non_literature_kinds(self, store: Any) -> None:
+        # td702287 review: the default is papers and findings — a
+        # structure or concept in the quest's service must not inflate
+        # the arrival rows or the acquisition count.
+        h, qid = _quest(store)
+        paper = _paper(store, "def-paper", "A paper arrival")
+        concept = store.insert_ref(
+            kind="concept", slug=None, title="A concept in service"
+        )
+        structure = store.insert_ref(
+            kind="structure", slug="def-struct", title="A structure in service"
+        )
+        _serve(store, paper, qid, linked_at=T0 + timedelta(days=1))
+        _serve(store, concept.id, qid, linked_at=T0 + timedelta(days=1))
+        _serve(store, structure.id, qid, linked_at=T0 + timedelta(days=1))
+
+        body = h.get(id=qid, view="literature").body
+        assert "A paper arrival" in body
+        assert "A concept in service" not in body
+        assert "A structure in service" not in body
+        assert "1 linked" in body
+        assert "1 of them newly acquired" in body
+
     def test_bad_kind_refused(self, store: Any) -> None:
         h, qid = _quest(store)
         with pytest.raises(BadInput, match="kind"):

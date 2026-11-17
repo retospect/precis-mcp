@@ -1937,6 +1937,20 @@ class SearchMixin(RuntimeShape):
                 cat = getattr(r, "created_at", None)
                 if rid is not None and cat is not None:
                     created_by_ref[int(rid)] = cat.date().isoformat()
+            if handle_hit is not None and handle_hit.ref_id is not None:
+                # The pinned identity card is fetched outside the store
+                # query (its ref is excluded from ``results`` so no window
+                # renders it twice — td609888), so date it from the ref
+                # itself: a windowed search's rows ALL carry the
+                # verifiable date, the pin included (td702287 review).
+                pin_ref = store.fetch_refs_by_ids([handle_hit.ref_id]).get(
+                    handle_hit.ref_id
+                )
+                pin_created = getattr(pin_ref, "created_at", None)
+                if pin_created is not None:
+                    created_by_ref[int(handle_hit.ref_id)] = (
+                        pin_created.date().isoformat()
+                    )
 
         def _row_suffix(hit: Any) -> str:
             d = created_by_ref.get(hit.ref_id) if hit.ref_id is not None else None
