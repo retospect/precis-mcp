@@ -148,6 +148,15 @@ carries `refs.owner_login`, so one sync tick never touches another user's
 account or mirror. The sync is account-safe: it will download to resolve a
 divergence but **refuses any full upload** that would overwrite AnkiWeb.
 
+**Boost a card (show it sooner).** The `/learning` page's *boost* button (and
+`meta.anki_boost_due = <today's date>` written directly) queues a card to come
+up today: on the next sync tick the mirror card's **due date moves to today**
+— interval, ease, reps and lapses are never touched, so review history is
+never rewritten. The marker clears only once a mirror card actually moved;
+until then the card shows *boost queued*. A card whose note is not yet in
+the mirror — or whose cards are all still new or mid-step, with no
+day-numbered due to move — keeps its marker and boosts on a later tick.
+
 ## Fix a card with `precis-fix`
 
 To have precis improve a card, in **Anki** add the tag **`precis-fix`** to it and

@@ -59,6 +59,7 @@ class AnkiCardSpec:
     fields: dict[str, str]  # e.g. {"Text": "<cloze markup>", "Back Extra": "…"}
     deck: str = PRECIS_DECK  # meta.deck; a `Precis::<topic>` sub-deck or Precis
     previously_synced: bool = False
+    boost: bool = False  # meta.anki_boost_due set — bring due forward to today
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -86,6 +87,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
         fields=out,
         deck=meta.get("deck") or PRECIS_DECK,
         previously_synced=bool(meta.get("anki_synced_at")),
+        boost=bool(meta.get("anki_boost_due")),
     )
 
 
