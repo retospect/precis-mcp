@@ -846,6 +846,20 @@ class TestGetByPubId:
         assert by_pub_id == by_ref_id
         assert f"finding {hub_id}" in by_pub_id
 
+    def test_view_full_reads_as_default(self, store) -> None:
+        """gr680234: view='full' is the gripe spelling prod keeps sending."""
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Pd/C catalyzes coupling.", scope={"material": "Pd/C"}
+            ),
+        )
+        h = _make_handler(store)
+        plain = h.get(id=hub_id).body
+        full = h.get(id=hub_id, view="full").body
+        assert full.startswith("interpreted: view='full' read as the default view")
+        assert full.endswith(plain)
+
     def test_get_by_pub_id_resolves_plain_finding(self, store) -> None:
         _seed_paper(store)
         h = _make_handler(store)

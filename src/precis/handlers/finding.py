@@ -115,6 +115,7 @@ from precis.handlers._finding_common import (
     fetch_ref_any_kind,
     multi_article_advisory,
 )
+from precis.handlers._interpret import interpreted
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -1186,6 +1187,14 @@ class FindingHandler(AuditedRetirementHandler):
             # finding-only views (evidence, judgments, …) map per id.
             return super().get(id=id, view=view, q=q, since=since, **_kw)
         id = self._resolve_pub_id_slug(id)
+        if view == "full" and q is None:
+            # Prod sends view='full' (the gripe spelling for the complete
+            # read, gr680234); a finding's default get already is its
+            # full read, so name that reading instead of refusing.
+            return interpreted(
+                self.get(id=id, view=None, q=q, since=since, **_kw),
+                ["view='full' read as the default view (the complete finding)"],
+            )
         if view == "evidence":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
