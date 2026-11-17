@@ -920,7 +920,10 @@ def build_queue_supply(store: Store) -> tuple[int, int]:
 
     Use the claimer's live host advertisements, executor cap and reserved
     bands. An unavailable host contributes nothing, and a queued or held
-    build consumes no running slot.
+    build consumes no running slot. A lane the breaker holds out
+    (:mod:`precis.plans.lane_breaker` — its newest builds all died of one
+    engine cause) drops its cap from the free count, as :func:`lane_capacity`
+    does.
     """
     from precis.workers.executors import _common as claims
     from precis.workers.service_config import ServiceConfigResolver
@@ -973,6 +976,14 @@ def build_queue_supply(store: Store) -> tuple[int, int]:
             "AND t.namespace = 'STATUS' AND t.value = 'queued'",
             (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchone()
+    held = _lane_breaker.tripped_lanes(store)
+    if held:
+        held_caps = sum(
+            ln.cap
+            for ln in _lanes.load_lanes(store)
+            if ln.name in held and ln.enabled and ln.fits(_BUILD_TASK_CLASS)
+        )
+        free = max(free - held_caps, 0)
     return free, int(row[0]) if row else 0
 
 
