@@ -503,24 +503,51 @@ def test_pin_prod_sha_refuses_anything_but_one_sha(
         assert "usage:" in result.stderr
 
 
+def _run_pin_sha(
+    env: dict[str, str], pair: dict[str, str], sha: str
+) -> subprocess.CompletedProcess[str]:
+    main = Path(pair["MAIN_CHECKOUT"])
+    helper = main / "scripts" / "host-ops" / "pin-prod-sha"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_DIR / "pin-prod-sha", helper)
+    lib = main / "scripts" / "lib"
+    lib.mkdir(exist_ok=True)
+    shutil.copy2(_REPO / "scripts" / "lib" / "env-pointers.sh", lib)
+    env = dict(
+        env,
+        PRECIS_PROD_CHECKOUT="/nonexistent/override",
+        PROD_CHECKOUT="/nonexistent/other",
+        MAIN_CHECKOUT="/nonexistent/main",
+    )
+    return subprocess.run(
+        ["bash", str(helper), sha],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        check=False,
+    )
+
+
 def test_pin_prod_sha_pins_at_the_given_sha(
-    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
 ) -> None:
-    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
+    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair_sibling["PROD_CHECKOUT"])
     # The older sha is not a commit in the prod clone until fetched — the
     # helper fetches, then detaches.
-    result = _run(env, "pin-prod-sha", git_pair["old_sha"])
+    result = _run_pin_sha(env, git_pair_sibling, git_pair_sibling["old_sha"])
     assert result.returncode == 0, result.stderr
-    assert git_pair["old_sha"][:7] in result.stdout
-    head = _git(Path(git_pair["PROD_CHECKOUT"]), "rev-parse", "HEAD")
-    assert head == git_pair["old_sha"]
+    assert git_pair_sibling["old_sha"][:7] in result.stdout
+    head = _git(Path(git_pair_sibling["PROD_CHECKOUT"]), "rev-parse", "HEAD")
+    assert head == git_pair_sibling["old_sha"]
 
 
 def test_pin_prod_sha_unknown_sha_is_exit_1(
-    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+    tmp_path: Path, bin_dir: dict[str, str], git_pair_sibling: dict[str, str]
 ) -> None:
-    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
-    result = _run(env, "pin-prod-sha", "f" * 40)
+    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair_sibling["PROD_CHECKOUT"])
+    result = _run_pin_sha(env, git_pair_sibling, "f" * 40)
     assert result.returncode == 1
     assert "is not a commit" in result.stderr
 

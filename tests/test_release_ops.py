@@ -5841,8 +5841,12 @@ def test_pin_prod_same_owner_runs_the_helper_directly(
     assert seen == [[str(helper), "abc1234" + "0" * 33]]
 
 
+@pytest.mark.parametrize(
+    "error",
+    ["sudo: a password is required", "worker is not allowed to execute helper as mcp"],
+)
 def test_pin_prod_missing_sudoers_grant_names_the_line(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str
 ) -> None:
     """sudo -n's refusal maps to the sudoers line to add, not a bare sudo
     error (gr685985 re-brief)."""
@@ -5853,7 +5857,7 @@ def test_pin_prod_missing_sudoers_grant_names_the_line(
     _pin_env(monkeypatch, tmp_path)
 
     def refused(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
-        return sp.CompletedProcess(argv, 1, "", "sudo: a password is required")
+        return sp.CompletedProcess(argv, 1, "", error)
 
     monkeypatch.setattr(rd, "_run_pin", refused)
     note = rd._pin_prod(tmp_path, "abc1234" + "0" * 33)
@@ -5898,3 +5902,20 @@ def test_pin_prod_bogus_deployed_sha_is_refused(
     assert rd._pin_prod(tmp_path, "not-a-sha") == (
         "prod checkout not pinned: bogus deployed sha 'not-a-sha'"
     )
+
+
+def test_prod_checkout_ignores_worker_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.job_types import release_deploy as rd
+
+    monkeypatch.setenv("PRECIS_PROD_CHECKOUT", str(tmp_path / "wrong"))
+    monkeypatch.setenv("PROD_CHECKOUT", str(tmp_path / "other"))
+    monkeypatch.setattr(
+        rd._rs,
+        "_git",
+        lambda args, root: SimpleNamespace(
+            returncode=0, stdout=str(tmp_path / "main" / ".git")
+        ),
+    )
+    assert rd._prod_checkout_dir(tmp_path) == tmp_path / "main-prod"

@@ -69,7 +69,9 @@ agents' tool surface one release behind. After a rollout poll runs
 directly when the factory user owns the checkout and otherwise as
 ``sudo -n -u <owner> <helper> <sha>`` under a one-line sudoers grant
 (``pin-prod-sha.sudoers``; no env, no other arguments, so the factory
-gets no write access to the tree); the CheckoutWatchdog then restarts
+gets no write access to the tree). Both owner detection and the helper
+use the fixed ``<main-checkout>-prod`` sibling, ignoring worker environment
+overrides and home fallbacks that sudo could change; the CheckoutWatchdog restarts
 the server onto the new HEAD. Best-effort: a failed pin is a summary
 note, the rollout stands, and ``release_confirm`` fails on "MCP still
 serves <sha>" instead of attesting a lagging server.
@@ -315,28 +317,20 @@ _SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 #: sudo's own words when the sudoers grant is absent (``sudo -n`` refuses
 #: before any command runs).
 _SUDO_GRANT_MISS = re.compile(
-    r"password is required|no askpass|not in the sudoers|a terminal is required", re.I
+    r"password is required|no askpass|not in the sudoers|a terminal is required|not allowed to execute",
+    re.I,
 )
 
 
 def _prod_checkout_dir(root: Path) -> Path:
-    """The prod watched checkout's path, mirroring
-    ``env_prod_checkout_dir`` (scripts/lib/env-pointers.sh): the env
-    overrides, then the ``<main-checkout>-prod`` sibling, then the legacy
-    ``~/precis-mcp-prod``. Only the path is needed here — owner and pin
-    belong to the helper."""
-    env_dir = os.environ.get("PRECIS_PROD_CHECKOUT") or os.environ.get("PROD_CHECKOUT")
-    if env_dir:
-        return Path(env_dir)
+    """Fixed sibling of the main checkout, also used by pin-prod-sha.
+
+    Ignore worker environment and home-directory fallbacks: sudo can change
+    both, so owner detection and the privileged pin must not depend on them.
+    """
     proc = _rs._git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
     main = Path(proc.stdout.strip()).parent if proc.returncode == 0 else root
-    derived = Path(f"{main}-prod")
-    if (derived / ".git" / "HEAD").is_file():
-        return derived
-    legacy = Path.home() / "precis-mcp-prod"
-    if (legacy / ".git" / "HEAD").is_file():
-        return legacy
-    return derived
+    return Path(f"{main}-prod")
 
 
 def _path_owner(path: Path) -> str:

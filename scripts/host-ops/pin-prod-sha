@@ -10,10 +10,8 @@
 # the factory must move it for the CheckoutWatchdog to restart the server
 # onto the release, and a one-line sudoers grant on THIS script (nothing
 # else — no env passing, no shell) is the narrowest safe bridge. Sudo
-# scrubs the environment, so every variable this needs is set here, not
-# inherited; HOME above all (sudo hands us the caller's home, which would
-# send the ~/precis-mcp-prod fallback in env_prod_checkout_dir to the wrong
-# account).
+# scrubs the environment. The target is always <main-checkout>-prod,
+# derived from the Git common directory of this helper, never environment or HOME.
 #
 # Does only the pin: resolve the checkout, fetch if the sha is unknown
 # there, detach HEAD at the sha, print one line. Anything that is not
@@ -29,7 +27,7 @@ usage() {
 usage: pin-prod-sha <sha>
 
 Detach the prod watched checkout (the session MCP's clone, resolved like
-scripts/host-ops/pin-prod) at <sha>, a hex sha of 7-40 characters. Exactly
+<main-checkout>-prod) at <sha>, a hex sha of 7-40 characters. Exactly
 one argument; anything else is refused. Prints the pinned sha on success.
 EOF
 }
@@ -46,13 +44,13 @@ SHA="$1"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 MAIN_CHECKOUT="$(dirname "${_common:-$REPO/.git}")"
-export HOME="$(eval echo "~$(id -un)")"
+# Ignore caller overrides in both direct and sudo execution.
+unset PRECIS_PROD_CHECKOUT PROD_CHECKOUT
 # shellcheck source=scripts/lib/env-pointers.sh
 . "${REPO}/scripts/lib/env-pointers.sh"
-
-PROD_CHECKOUT="${PROD_CHECKOUT:-$(env_prod_checkout_dir "$MAIN_CHECKOUT")}"
+PROD_CHECKOUT="${MAIN_CHECKOUT}-prod"
 [[ -f "${PROD_CHECKOUT}/.git/HEAD" ]] || {
-  echo "no prod checkout at ${PROD_CHECKOUT} (set PRECIS_PROD_CHECKOUT on the sudoers side if it lives elsewhere)" >&2; exit 1; }
+  echo "no prod checkout at ${PROD_CHECKOUT} (factory pin requires the fixed main-checkout sibling)" >&2; exit 1; }
 if ! git -C "$PROD_CHECKOUT" cat-file -e "${SHA}^{commit}" 2>/dev/null; then
   git -C "$PROD_CHECKOUT" fetch -q origin || {
     echo "fetch origin failed in ${PROD_CHECKOUT}" >&2; exit 1; }
