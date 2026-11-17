@@ -176,6 +176,9 @@ back to reading the file directly.
 
 ## Skill revisions — `have=`
 
+Open an H2 section with `id='<slug>~<heading>'`: case and whitespace are ignored; exact names precede unique prefixes, and aliases match individually.
+Example: `get(kind='skill', id='precis-memory-help~Working a memory-review todo')`.
+
 Every whole-skill serve ends with one line, `skill rev <sha8>`. To
 re-read a skill whose text is unchanged, pass it back:
 `get(kind='skill', id='<slug>', args={'have': '<sha8>'})` returns a

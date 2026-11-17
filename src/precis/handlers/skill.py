@@ -112,7 +112,7 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
 # grammar is identical across kinds. Phase B integration 2026-05-31.
 _SKILL_ID_RE = re.compile(
     r"^(?P<slug>[a-z0-9][a-z0-9\-]*)"
-    r"(?:~(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?)?"
+    r"(?:~(?:(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?|(?P<heading>[^\d~].*)))?"
     r"(?:/(?P<view>[a-z]+))?$"
 )
 
@@ -143,36 +143,24 @@ _SKILL_INDEX_FIRST_BYTES = 6 * 1024
 
 def _parse_skill_id(
     raw: str,
-) -> tuple[str, tuple[int, int] | None, str | None]:
+) -> tuple[str, tuple[int, int] | str | None, str | None]:
     """Split ``raw`` into ``(slug, chunk_spec, path_view)``.
 
     Returns:
         slug: lowercase slug (always present; ``BadInput`` if missing).
         chunk_spec: ``(lo, hi)`` inclusive for ``~N`` (lo==hi) or
-            ``~A..B``. ``None`` when no chunk selector is given.
+            ``~A..B``, or a heading string. ``None`` without a selector.
         path_view: trailing ``/view`` suffix as a string (today only
             ``"toc"`` is meaningful). ``None`` when absent.
     """
     m = _SKILL_ID_RE.match(raw)
     if m is None:
-        # A ``~`` followed by anything but digits is usually a docs
-        # placeholder pasted into a call (``slug~N`` read literally) —
-        # name that case so the fix is obvious (gr541511).
-        hint = (
-            "skill ids are slug, slug~N, slug~A..B, "
-            "or slug/toc — letters/digits/hyphens only"
-        )
-        if "~" in raw:
-            hint = (
-                "the ~ selector takes digits — slug~2 or slug~1..3; "
-                "N is only the docs placeholder (write ~<n> in prose, "
-                "a real chunk number in a call)"
-            )
+        hint = "use slug~<heading>, slug~2, slug~1..3, or slug/toc"
         raise BadInput(f"unparseable skill id: {raw!r}", next=hint)
     slug = m.group("slug")
     lo = m.group("lo")
     hi = m.group("hi")
-    chunk_spec: tuple[int, int] | None = None
+    chunk_spec: tuple[int, int] | str | None = m.group("heading")
     if lo is not None:
         lo_i = int(lo)
         hi_i = int(hi) if hi is not None else lo_i
@@ -190,6 +178,46 @@ def _parse_skill_id(
             next=f"supported path views: {sorted(_SKILL_PATH_VIEWS)}",
         )
     return slug, chunk_spec, path_view
+
+
+def _resolve_skill_heading(display: str, text: str, selector: str) -> tuple[int, int]:
+    """Resolve names to numeric sections so both addresses serve identical bodies."""
+
+    def fold(value: str) -> str:
+        return " ".join(strip_heading_mark(value).casefold().split())
+
+    chunks = chunk_by_h2(text)
+    names = {
+        i: {fold(n) for n in (c.heading, *c.aliases, *c.heading.split(" / "))}
+        for i, c in enumerate(chunks)
+        if c.heading
+    }
+    needle = fold(selector)
+    exact = [i for i, variants in names.items() if needle in variants]
+    matches = exact or [
+        i
+        for i, variants in names.items()
+        if any(n.startswith(needle) for n in variants)
+    ]
+    if len(matches) == 1:
+        return matches[0], matches[0]
+    if matches:
+        message = f"ambiguous skill heading {selector!r}"
+        candidates = matches
+    else:
+        message = f"unknown skill heading {selector!r}"
+        candidates = sorted(
+            names,
+            key=lambda i: max(
+                difflib.SequenceMatcher(None, needle, n).ratio() for n in names[i]
+            ),
+            reverse=True,
+        )[:3]
+    raise BadInput(
+        message,
+        options=[f"{display}~{i} {chunks[i].heading}" for i in candidates],
+        next=f"get(kind='skill', id='{display}/toc') lists headings",
+    )
 
 
 #: Path-view suffixes accepted on skill ids (``slug/toc``). Mirrors
@@ -1051,16 +1079,34 @@ class SkillHandler(Handler):
             text = _write_only_stub(slug)
         else:
             text, _ = scope_render(text, conn_scope)
-        body = SimpleNamespace(
-            id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
-        )
+        display = f"{head}/{slug}" if corpus is not None else slug
+        bodies = []
+        cursor = 0
+        starts = []
+        for i, chunk in enumerate(chunk_by_h2(text)):
+            first_line = chunk.text.splitlines()[0]
+            start = max(cursor, text.find(first_line, cursor))
+            starts.append(start)
+            bodies.append(
+                SimpleNamespace(
+                    ord=i,
+                    text=chunk.text,
+                    heading=chunk.heading,
+                    meta={"line_start": text.count("\n", 0, start) + 1},
+                    chunk_kind="body",
+                )
+            )
+            cursor = start + len(first_line)
+        for i, body in enumerate(bodies):
+            end = starts[i + 1] if i + 1 < len(starts) else len(text)
+            body.text = text[starts[i] : end]
         return find_response(
             kind="skill",
-            display=slug,
-            chunks=[body],
+            display=display,
+            chunks=bodies,
             q=str(q).strip(),
             context=context,
-            chunk_label=lambda _c: slug,
+            chunk_label=lambda c: f"{display}~{c.ord} {c.heading}".rstrip(),
         )
 
     def eye(
@@ -1225,6 +1271,13 @@ class SkillHandler(Handler):
         conn_scope = current_scope()
         if conn_scope == "read" and _skill_is_write_only(slug, corpus=corpus):
             return Response(body=_write_only_stub(slug, corpus=corpus))
+        if isinstance(chunk_spec, str):
+            text = _load_skill(slug, corpus=corpus)
+            if text is None:
+                raise NotFound(f"skill {slug!r} not found", next="get(kind='skill')")
+            text, _ = scope_render(text, conn_scope)
+            display = f"{root_alias}/{slug}" if root_alias else slug
+            chunk_spec = _resolve_skill_heading(display, text, chunk_spec)
         if effective_view == "toc":
             return self._render_skill_toc(
                 slug, scope=chunk_spec, corpus=corpus, root=root_alias

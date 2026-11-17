@@ -4399,6 +4399,20 @@ class DispatchMixin(RuntimeShape):
             )
             if reading is not None:
                 readings.append(reading)
+        skill_selector_hints = {"section", "heading", "lines", "offset"}
+        if (
+            verb == "get"
+            and kind == "skill"
+            and skill_selector_hints.intersection({*(extras or {}), *args})
+        ):
+            slug = str(args.get("id") or "<slug>").split("~", 1)[0]
+            raise BadInput(
+                "skill sections are addressed in id=, not section/heading/lines/offset",
+                next=(
+                    f"get(kind='skill', id='{slug}~<heading>') opens a section; "
+                    f"get(kind='skill', id='{slug}/toc') lists headings"
+                ),
+            )
         if extras:
             accepted = self._accepted_kwargs(method)
             # Handlers that opt into an explicit ``args: dict``

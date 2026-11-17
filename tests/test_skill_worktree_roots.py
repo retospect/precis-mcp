@@ -136,10 +136,12 @@ def test_non_worktree_view_grammar_unchanged(env) -> None:
         h.get(id="precis-overview/bogus")
 
 
-def test_tilde_placeholder_error_names_digits(env) -> None:
+def test_tilde_placeholder_error_names_heading_candidates(env) -> None:
     h = _make(env)
-    with pytest.raises(BadInput, match="~<n>"):
+    with pytest.raises(BadInput, match="skill heading") as caught:
         h.get(id="precis-overview~N")
+    assert "precis-overview~" in str(caught.value)
+    assert "precis-overview/toc" in str(caught.value)
 
 
 def test_repo_dev_skill_hint_sees_live_checkout_dirs(tmp_path: Path) -> None:
