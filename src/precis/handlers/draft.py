@@ -3119,7 +3119,10 @@ class DraftHandler(Handler):
         # path that re-derives a table chunk's text (``_edit_table`` /
         # ``_edit_latex_table_in_place``) — a table chunk used to be blanket-
         # rejected for dry_run regardless of op, which meant a table preview
-        # could never be rendered at all (gr273955 residual). The remaining
+        # could never be rendered at all (gr273955 residual). A ``footer=``
+        # edit previews through the op reply (the footer line before →
+        # after + grid + hash), not the text diff — the footer never appears
+        # in the derived markdown (gr685369). The remaining
         # structural / metadata ops (move, style, permission, voice/lang,
         # review, …) still have no diff semantics and reject the flag rather
         # than silently writing; the regex ``sub`` op addressed at a
@@ -4817,7 +4820,11 @@ class DraftHandler(Handler):
         text-edit paths and writes nothing: no ``edit_text``, no
         ``meta.table``/caption/flag patch, no ``chunk_events`` row
         (gr273955 residual — a table chunk used to reject dry_run
-        unconditionally)."""
+        unconditionally). The ops with their own op reply (patch=, toon=,
+        the structure ops, footer=) preview through that reply instead —
+        the changed surface as TOON — since their change may not show in
+        a text diff at all (gr685369: the footer line is not part of the
+        derived markdown)."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
                 "table=/cell=/find=/sub=/caption=/regen=/footer= apply only "
@@ -5512,6 +5519,11 @@ class DraftHandler(Handler):
         elif footer is not None:
             # footer= (spreadsheet-tables 2): set/replace/clear the
             # aggregate spec on the live grid — ``footer={}`` clears.
+            # The reply is the op reply built after evaluate_table below
+            # (the rendered footer line before → after): a footer change
+            # alters no cell of the derived markdown, so the generic
+            # dry-run diff used to claim "no change" for a write that then
+            # applied (gr685369).
             if not cur_table:
                 raise no_data_err
             try:
@@ -5546,6 +5558,21 @@ class DraftHandler(Handler):
             if eval_notes
             else ""
         )
+        if footer is not None:
+            # gr685369: the footer line never appears in the derived
+            # markdown, so the generic dry-run text diff reports "no
+            # change" for a footer edit that the real write then applies.
+            # Give footer= the same op reply as the other table ops — the
+            # rendered footer line before → after (footer_values are
+            # computed by evaluate_table above) — so both the dry run and
+            # the write ack show the change. ``none`` marks a side that
+            # has no footer line (first spec, or ``footer={}`` clearing).
+            _cur_line = table_footer_line(cur_table) if cur_table else None
+            _new_line = table_footer_line(norm)
+            op_reply = (
+                f"before: {_cur_line.removeprefix('footer: ') if _cur_line else 'none'}"
+                f"\nafter: {_new_line.removeprefix('footer: ') if _new_line else 'none'}"
+            )
         # Spreadsheet-tables 1b: ``base=<hash>`` optimistic guard over the
         # table content (not the chunk-text ``base_sha``) + the bounded
         # ``recent`` journal the guard diffs against. ``touched`` is this

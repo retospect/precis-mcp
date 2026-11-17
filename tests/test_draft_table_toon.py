@@ -298,6 +298,57 @@ def test_edit_patch_dry_run_writes_nothing(draft: DraftHandler, hub: Hub) -> Non
     assert _meta(hub, tc) == before
 
 
+def test_footer_dry_run_reports_metadata(draft: DraftHandler, hub: Hub) -> None:
+    """gr685369: a footer change never appears in the derived markdown, so
+    the generic dry-run text diff used to claim "no change" for a write the
+    real call then applied. footer= now previews (and acks) through the op
+    reply — the rendered footer line before → after + hash + grid."""
+    proj = _proj(hub)
+    draft.put(id="foot", title="T", project=proj)
+    draft.put(
+        id="foot",
+        chunk_kind="table",
+        table={
+            "header": ["sku", "item", "count", "unit_price", "line_cost"],
+            "rows": [
+                ["a1", "bolt", 10, 0.5, 5.0],
+                ["a2", "nut", 20, 0.2, 4.0],
+                ["a3", "washer", 32, 0.25, 8.0],
+            ],
+            "footer": {"line_cost": "sum"},
+        },
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "foot")
+    before = _meta(hub, tc)
+    footer = {"count": "sum", "line_cost": "mean", "item": "count"}
+    r = draft.edit(id=tc.dc, footer=footer, dry_run=True)
+    assert "dry-run — nothing written" in r.body
+    assert "no change" not in r.body
+    assert "before: sum(line_cost)=17.0" in r.body
+    assert "after: " in r.body
+    assert "mean(line_cost)=5.666666666666667" in r.body
+    assert "count(item)=3" in r.body
+    assert "sum(count)=62" in r.body
+    assert "hash: " in r.body
+    assert "{#" in r.body
+    assert _meta(hub, tc) == before, "dry run must not write"
+    # The real write acks with the same reply shape (before/after + hash)…
+    r = draft.edit(id=tc.dc, footer=footer)
+    assert "before: sum(line_cost)=17.0" in r.body
+    assert "after: " in r.body and "hash: " in r.body
+    # …and the footer actually lands, readable on the default get's footer line.
+    t = _meta(hub, tc)
+    names = {c["id"]: c["name"] for c in t["columns"]}
+    stored = {names.get(k, k): v for k, v in (t.get("footer") or {}).items()}
+    assert stored == footer
+    body = draft.get(id=tc.dc).body
+    assert "footer: " in body
+    assert "sum(count)=62" in body
+    assert "mean(line_cost)=5.666666666666667" in body
+    assert "count(item)=3" in body
+
+
 def test_edit_toon_replace(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed(draft, hub)
     doc = draft.get(id=tc.dc, view="toon").body.split("\nhash:")[0].split("\n", 1)[1]

@@ -408,7 +408,11 @@ them; the
 reply notes how many rows a footer skipped as empty/non-numeric. `edit`
 accepts `footer=` by itself to set or replace the spec (`footer={}`
 clears it) — it still counts as the edit's one selector, so it can't ride
-with `table=`/`cell=`/`find=`/`sub=`. Read the results on the `footer:`
+with `table=`/`cell=`/`find=`/`sub=`. The write reply shows the footer
+line before → after — `before: sum(line_cost)=17.0` /
+`after: mean(line_cost)=5.67; count(item)=3` — with the `hash:` and the
+TOON grid; `dry_run=True` previews exactly that reply (never a "no
+change") and writes nothing. Read the results on the `footer:`
 line under the grid, next to `ids:`.
 
 **`view='stats'`**: `get(kind='draft', id='dc<id>', view='stats')` reports
