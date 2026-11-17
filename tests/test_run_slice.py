@@ -4773,7 +4773,7 @@ def test_poll_validate_verdict_waives_the_not_run_gate(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -4812,7 +4812,7 @@ def test_poll_validate_moot_waives_the_not_run_gate(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -4851,7 +4851,7 @@ def test_poll_validate_verdictless_not_run_still_fails(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11382,6 +11382,7 @@ def test_submit_validate_hops_lanes_and_re_resolves_the_adapter(
         "code_session_models",
         lambda store, todo_id: (
             frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            frozenset(),
             None,
         ),
     )
@@ -11431,6 +11432,7 @@ def test_submit_validate_refuses_when_no_model_differs(
         "code_session_models",
         lambda store, todo_id: (
             frozenset({"m1", *run_slice._outcome.PREFIX_LANE_FALLBACK_MODELS}),
+            frozenset(),
             None,
         ),
     )
@@ -11451,7 +11453,7 @@ def test_submit_validate_parks_when_the_prior_pick_read_fails(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "read"),
+        lambda store, todo_id: (frozenset(), frozenset(), "read"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11480,7 +11482,7 @@ def test_submit_validate_refuses_an_unrecorded_prior_model(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "unrecorded"),
+        lambda store, todo_id: (frozenset(), frozenset(), "unrecorded"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11500,7 +11502,7 @@ def test_submit_model_rule_refusal_stamps_the_job(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "unrecorded"),
+        lambda store, todo_id: (frozenset(), frozenset(), "unrecorded"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11510,6 +11512,101 @@ def test_submit_model_rule_refusal_stamps_the_job(
         "run_slice: the test session must run a different model"
     )
     assert seams["launch"] == []
+
+
+def test_submit_validate_launches_across_an_unknown_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: a code session whose model was never recorded and whose
+    vendor config names no default is avoided BY ADAPTER — a test pick
+    on a different vendor's lane launches instead of refusing."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "claude-sub",
+            "claude_p",
+            "pool",
+            1,
+            frozenset({ANY_CLASS}),
+            True,
+            models=("claude-haiku-5-5",),
+            default_model="claude-haiku-5-5",
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), frozenset({"codex_exec"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    assert ctx.meta_set["lane"] == "claude-sub"
+    assert ctx.meta_set["model"] == "claude-haiku-5-5"
+    assert seams["launch"]
+
+
+def test_submit_validate_refuses_on_the_unnamed_session_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: only a pick on the SAME adapter as the unrecorded code
+    session stays refused — the vendor's own models cannot be proven
+    different from the unnamed one. The refusal names the adapter."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "codex",
+            "codex_exec",
+            "pool",
+            1,
+            frozenset({ANY_CLASS}),
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), frozenset({"codex_exec"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.failure is not None and "refusing the launch" in ctx.failure
+    assert "codex_exec" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_poll_stamps_the_cli_reported_model_when_the_launch_was_unnamed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: a launch the submit could not name (no recorded model,
+    no nameable account default) stays recordable — once the CLI
+    reports the model it actually ran (devin's ATIF ``model_name``),
+    the job's ``meta.model`` carries it, so a later test session reads
+    a concrete model instead of the avoid-by-adapter fallback."""
+    real_default = run_slice._outcome.account_default_model
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "account_default_model",
+        lambda adapter: None if adapter == "devin_tree" else real_default(adapter),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    assert ctx.meta_set.get("model") is None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 1.0})
+    seams["alive"] = False
+    seams["ahead"] = "abc1234 the slice's commit\n"
+    _finish(handle, 0, "all done\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.meta_set["model"] == "Claude Fable 5.1 Medium"
+    assert pctx.meta_set["usage"]["model"] == "Claude Fable 5.1 Medium"
 
 
 def test_poll_gate_failure_vetoes_the_land(seams: dict[str, Any]) -> None:
@@ -11620,7 +11717,7 @@ def test_poll_gate_failure_vetoes_the_validate_close(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})

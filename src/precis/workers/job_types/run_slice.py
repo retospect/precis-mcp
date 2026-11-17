@@ -604,10 +604,12 @@ def _diverse_test_pick(
     (review td655142: an unestablishable prior model may never ride an
     empty avoid past the different-model rule)."""
     try:
-        avoid, unknown = _outcome.code_session_models(ctx.store, todo_id)
+        avoid, unknown_adapters, unknown = _outcome.code_session_models(
+            ctx.store, todo_id
+        )
     except Exception:  # pragma: no cover — the read already reports
         log.warning("run_slice: prior-pick read for td%d failed", todo_id)
-        avoid, unknown = frozenset(), "read"
+        avoid, unknown_adapters, unknown = frozenset(), frozenset(), "read"
     if unknown == "read":
         # A store fault, not a verdict: park on the lane-wait machinery
         # rather than launch on a guess or burn an attempt on a window
@@ -620,8 +622,9 @@ def _diverse_test_pick(
         )
         return None, None, None
     if unknown == "unrecorded":
-        # Permanent: a prior code session's model was never recorded —
-        # no pick can be PROVEN different from it.
+        # Permanent: a prior code session recorded neither a model nor
+        # the adapter that ran it — no pick can be PROVEN different
+        # from it.
         why = (
             "run_slice: the test session must run a different model than "
             "the run's code session(s), but a prior code session's model "
@@ -630,7 +633,7 @@ def _diverse_test_pick(
         )
         ctx.append_chunk("job_event", why)
         return None, None, why
-    if not avoid:
+    if not avoid and not unknown_adapters:
         return lane, model, None
     new_lane, new_model, note = _outcome.diverse_model_pick(
         ctx.store,
@@ -643,6 +646,7 @@ def _diverse_test_pick(
         avoid=avoid,
         model_pin=model_pin,
         task_class=task_class,
+        unknown_adapters=unknown_adapters,
     )
     if note:
         ctx.append_chunk("job_event", note)
@@ -4963,7 +4967,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     # through the new lane's vendor, not the stale one (review
     # td655142); a refusal fails the job without a launch, a prior-pick
     # read that could not answer parks it (no note — ``_park_lane_full``
-    # already spoke), and an unrecorded prior model refuses it.
+    # already spoke), and a code session with neither a recorded model
+    # nor a known adapter refuses it (gr702143: an unnamed default
+    # otherwise falls back to its adapter — a different vendor's lane
+    # proves the difference).
     if task_class == _outcome.TEST_TASK_CLASS and lane is not None:
         lane, model, diversity_note = _diverse_test_pick(
             ctx,
@@ -7144,7 +7151,10 @@ def _adapter_usage(
     ctx: Any, handle: dict[str, Any], log_text: str = ""
 ) -> dict[str, Any] | None:
     """The usage the session's adapter reports, stamped onto
-    ``meta.usage`` — a live job's reported usage is real spend.
+    ``meta.usage`` — a live job's reported usage is real spend. When
+    the usage names the model the CLI resolved and the job recorded no
+    launch model, the report is stamped onto ``meta.model`` too, so the
+    run's later test session reads a concrete model (gr702143).
     ``log_text`` is the session log; the live check passes ``""`` (only
     devin's ATIF exists mid-run — every other vendor's usage lands at
     the end)."""
@@ -7167,6 +7177,17 @@ def _adapter_usage(
             "checked_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         ctx.set_meta(usage=stamped)
+        reported = stamped.get("model")
+        if (
+            isinstance(reported, str)
+            and reported.strip()
+            and not str((ctx.meta or {}).get("model") or "").strip()
+        ):
+            # gr702143: the submit could not name the launch model (the
+            # account default was unrecorded) — the CLI's own report is
+            # the concrete record, so a later test session reads a named
+            # model off this job instead of an avoid-by-adapter fallback.
+            ctx.set_meta(model=reported.strip())
         return stamped
     return None
 
