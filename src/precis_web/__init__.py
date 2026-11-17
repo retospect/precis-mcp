@@ -90,10 +90,14 @@ PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
-(Drive, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
-preset the retired ToDo tab's dashboard list became, gr664410 — the
-``/todo/{id}`` workbench stays per-item — Schedules, Clusters,
-Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,
+(Drive, Design); plain links (Quests → ``/refs/quest``, Clusters,
+Reactions → the ``/rxn`` ledger — kept top-level rather than folded
+into Drive's New form, gr664411). The former Browse ▾ kind presets are
+Drive's sidebar "Saved views" (``drive_views.py``: Drafts, Papers,
+Schedules, Structures, CAD, PCB, Figures, Mermaid, plus the Nanopubs
+workbench link); the Todos ``queue=doable`` preset the retired ToDo
+tab's dashboard list became (gr664410 — the ``/todo/{id}`` workbench
+stays per-item) is a Drive facet. Attention (Needs you, Gripes, Alerts,
 badged); Manual (top-level and unbadged because it is the no-idea-where tab);
 Ops ▾ (System, Categorizers, Agent Logs, Console, Env, Secrets); search submits
 to ``/drive``; "?" launches a tour only when the path matches a manifest
