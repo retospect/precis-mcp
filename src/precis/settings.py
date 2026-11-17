@@ -586,15 +586,25 @@ REGISTRY: dict[str, SettingSpec] = {
             "reads as 'filer'.",
         ),
         SettingSpec(
+            key="factory.gripe_dispatch.queue_depth",
+            type="int",
+            env_var=None,
+            default=2,
+            doc="DB-only. Target queued, unclaimed build jobs per free executor "
+            "slot on live code-capable hosts. Bounds how far ahead gripe text "
+            "is frozen into chains; host claim loops alone admit running work.",
+        ),
+        SettingSpec(
             key="factory.gripe_dispatch.max_parked",
             type="int",
             env_var=None,
             default=500,
             doc="DB-only. Last-resort backstop on gripe fix chains whose "
-            "build is parked (no live job, not doable: paused, blocked, "
-            "ask-user, waiting-for:*, child-failed:*) in the gripe_dispatch "
-            "intake (precis.workers.gripe_dispatch). Parked work holds no "
-            "build slot and is never closed by a timer, so the count of "
+            "build is not live (no running job or claim: queued, "
+            "file-overlap held, paused, blocked, ask-user, waiting-for:*, "
+            "child-failed:*) in the gripe_dispatch intake "
+            "(precis.workers.gripe_dispatch); the queued queue_depth "
+            "buffer counts here. Such work holds no running slot and is never closed by a timer, so the count of "
             "parked chains is no longer a brake; at this many the pass "
             "still mints nothing and logs why. The brake is the cause-based "
             "breaker (factory.gripe_dispatch.breaker_parks).",

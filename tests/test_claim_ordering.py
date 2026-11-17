@@ -115,6 +115,118 @@ def _advertise(store: Store, host: str, slots: dict[str, int | None]) -> None:
         conn.commit()
 
 
+def test_dispatch_score_orders_before_fifo_and_preserves_release_band(
+    store: Store,
+) -> None:
+    """gr702610: host claims use dispatch scores, within the release band."""
+    executor = "score_order_test"
+    low = _queue_job(store, executor=executor, prio=5, extra_meta={"dispatch_score": 1})
+    high = _queue_job(
+        store, executor=executor, prio=5, extra_meta={"dispatch_score": 100}
+    )
+    release = _queue_job(
+        store,
+        executor=executor,
+        prio=5,
+        extra_meta={"dispatch_score": 2, "claim_band": "release"},
+    )
+    assert _claim_order(store, executor) == [release, high, low]
+
+
+def test_claim_skips_overlap_and_takes_unrelated_build(store: Store) -> None:
+    """A held prefix longer than overfetch cannot hide unrelated work."""
+    from precis.plans import templates
+    from precis.workers.executors import _common as common
+    from precis.workers.job_types import plan_dispatch as pd
+
+    def plan(body: str) -> int:
+        def build(m: templates._Minter) -> None:
+            m.node("root", "Plan", {"auto_close": True})
+            m.node("task", "Build", {"op": "run_slice"}, body=body)
+
+        return templates._run(store, None, build).ids["task"]
+
+    def job(todo: int, score: int) -> int:
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="build",
+            parent_id=todo,
+            meta={
+                "executor": "ssh_node",
+                "job_type": "run_slice",
+                "params": {"todo_id": todo},
+                "dispatch_score": score,
+            },
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+        return int(ref.id)
+
+    host = "maple"
+    _advertise(store, host, {"builder": 1, "repo_checkout": 1, "git": 1})
+    holder = plan("Edit src/precis/a.py")
+    holder_job = job(holder, 100)
+    store.add_tag(
+        holder_job, Tag.closed("STATUS", "running"), set_by="agent", replace_prefix=True
+    )
+    # More held jobs than the claim window, each hotter than the clean one.
+    held = [
+        job(plan("Edit src/precis/a.py"), 90)
+        for _ in range(common._CLAIM_OVERFETCH + 1)
+    ]
+    clean_todo = plan("Edit src/precis/b.py")
+    clean = job(clean_todo, 1)
+    assert clean_todo not in pd.live_nodes(store, [clean_todo])
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id=host
+        )
+        assert [r[0] for r in claimed] == [clean]
+        conn.commit()
+    for ref_id in held:
+        ref = store.get_ref(kind="job", id=ref_id)
+        assert ref is not None
+        assert ref.meta.get("lease_host") is None
+    # Ending the holder lifts the hold without requeueing or reminting.
+    store.add_tag(
+        holder_job, Tag.closed("STATUS", "failed"), set_by="agent", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id=host
+        )
+        assert claimed[0][0] == held[0]
+        conn.rollback()
+
+
+def test_claim_batch_does_not_start_two_overlapping_builds(store: Store) -> None:
+    """The second pick sees the first pick's uncommitted running stamp."""
+    from precis.plans import templates
+
+    def build(m: templates._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        for key in ("a", "b"):
+            m.node(key, key, {"op": "run_slice"}, body="Edit src/precis/shared.py")
+
+    minted = templates._run(store, None, build)
+    for key in ("a", "b"):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=key,
+            parent_id=minted.ids[key],
+            meta={"executor": "ssh_node", "job_type": "run_slice", "params": {}},
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=2, reserve_host_id="maple"
+        )
+        assert len(claimed) == 1
+        conn.rollback()
+
+
 def test_lower_prio_claimed_first(store: Store) -> None:
     ex = "test_order_prio_first"
     low_number_urgent = _queue_job(store, executor=ex, prio=1)

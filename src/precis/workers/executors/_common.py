@@ -16,7 +16,9 @@ import logging
 import math
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -1407,6 +1409,63 @@ def _service_pin_hosts_for(
     return hosts if hosts else None
 
 
+def build_overlap_holds(
+    conn: Connection, parent_ids: list[int] | None = None
+) -> set[int]:
+    """Build todo ids held by started work, read in the claim transaction.
+
+    Reusing the planner's file and repo resolution keeps pending pre-land
+    reviews and branch diffs in the same exclusion set. The reader borrows
+    this connection without committing it, so earlier claims in a batch
+    are visible as holders too. Cheap on the claim path: no started build
+    or no queued ``run_slice`` job (or none in ``parent_ids``) returns
+    before any plan load, and the load covers only the plan roots above
+    those queued builds, not every plan subtree.
+    """
+    from precis.workers.job_types import plan_dispatch as pd
+
+    reader = SimpleNamespace(pool=SimpleNamespace(connection=lambda: nullcontext(conn)))
+    started = pd._started_slices(reader)
+    if not started:
+        return set()
+    if parent_ids is None:
+        parent_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT parent_id FROM refs j"
+                " WHERE j.kind = 'job' AND j.retired_at IS NULL"
+                " AND j.parent_id IS NOT NULL"
+                " AND j.meta->>'job_type' = 'run_slice'"
+                " AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)"
+                "  WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'"
+                "  AND t.value = 'queued')"
+            ).fetchall()
+        ]
+    if not parent_ids:
+        return set()
+    ancestors = {
+        int(r[0])
+        for r in conn.execute(
+            "WITH RECURSIVE up(ref_id, parent_id) AS ("
+            " SELECT ref_id, parent_id FROM refs WHERE ref_id = ANY(%s)"
+            " UNION SELECT r.ref_id, r.parent_id FROM refs r"
+            "  JOIN up ON r.ref_id = up.parent_id)"
+            " SELECT ref_id FROM up",
+            (parent_ids,),
+        ).fetchall()
+    }
+    roots = [r for r in pd._candidate_roots(conn) if r in ancestors]
+    if not roots:
+        return set()
+    plan = pd._load(reader, roots)
+    wanted = set(parent_ids)
+    return set(
+        pd._overlap_holds(
+            plan, reader, started, [n for n in plan.todos() if n.id in wanted]
+        )
+    )
+
+
 def _claim_order_sql(
     age_step_s: float,
     class_age_s: float,
@@ -2063,6 +2122,26 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            # The claim stamps no STATUS:running (dispatch does, after the
+            # batch), so a second build picked in this batch could not see
+            # the first as a holder: one fresh build per claim batch. Cheap
+            # first — it saves the lock and the overlap read below.
+            if fresh_builds:
+                return None
+            # Serialize overlap read + running stamp across hosts. A loser
+            # leaves work queued; no lease or resource reservation was made.
+            locked = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+                ("factory:build-overlap",),
+            ).fetchone()
+            if not (locked and locked[0]):
+                return None
+            parent = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            if parent and parent[0] in build_overlap_holds(conn, [parent[0]]):
+                return None
         pin_hosts = _service_pin_hosts_for(meta, service_pinned)
         if pin_hosts is not None and default_host not in pin_hosts:
             # Placement pin (gr506045): the service's host-scoped enabled
@@ -2287,6 +2366,7 @@ def claim_executor_jobs(
         return (ref_id, title, meta)
 
     claimed: list[tuple[int, str, dict[str, Any]]] = []
+    fresh_builds: list[int] = []
 
     # ── Reclaim-only pre-pass (starvation fix — see the docstring's
     # "Starvation-bound reclaim pre-pass") ──────────────────────────────
@@ -2609,6 +2689,19 @@ def claim_executor_jobs(
             f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
         )
         factory_order_sql = "factory_pref ASC, "
+    # Filter existing holds before LIMIT: even a queue longer than the
+    # overfetch window cannot hide an unrelated build behind held jobs.
+    if executor == "ssh_node":
+        held_builds = build_overlap_holds(conn)
+        if held_builds:
+            where_sql += (
+                " AND (r.meta->>'job_type' <> 'run_slice' "
+                "OR r.parent_id IS NULL OR r.parent_id <> ALL(%s))"
+            )
+            where_params = (*where_params, sorted(held_builds))
+    score_order_sql = (
+        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8, 0) DESC, "
+    )
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
@@ -2664,7 +2757,7 @@ def claim_executor_jobs(
     rows = conn.execute(
         fresh_sql.replace("@@BG_WHERE@@", "").replace(
             "@@ORDER_BY@@",
-            f"claim_rank ASC, {factory_order_sql}{share_order_sql}"
+            f"claim_rank ASC, {factory_order_sql}{score_order_sql}{share_order_sql}"
             "aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
         (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
@@ -2805,7 +2898,7 @@ def claim_executor_jobs(
 
     def _order_key(
         r: Any,
-    ) -> tuple[float, float, float, float, float, int, Any, int]:
+    ) -> tuple[float, float, float, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -2847,6 +2940,7 @@ def claim_executor_jobs(
             -scarcity,
             rank,
             factory,
+            -float(dict(r[2] or {}).get(_dscore.SCORE_META_KEY) or 0),
             -deficit,
             aged,
             _row_affinity(r),
@@ -2914,6 +3008,8 @@ def claim_executor_jobs(
         if claim is None:
             continue
         claimed.append(claim)
+        if job_type == "run_slice":
+            fresh_builds.append(ref_id)
         fresh_claimed += 1
         running_total += 1
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1

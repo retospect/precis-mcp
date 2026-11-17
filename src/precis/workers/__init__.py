@@ -34,8 +34,8 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
 Adding a claiming ref-pass: follow the recipe in :mod:`.ref_lease`, not
 hand-rolled ``claimed_by`` UPDATEs.
 
-``gripe_dispatch`` admission (landable projects, the 15-minute triage grace
-period): skill ``precis-work-help``.
+Factory queues doable nodes; claims own capacity and overlaps.
+Gripe intake bounds frozen reports (``precis-work-help``).
 
 Planner-declared halts are runner-owned class transitions
 (:mod:`.halt_policy`, retry receipt :mod:`.halt_retry`): infra failures

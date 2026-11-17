@@ -126,6 +126,10 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
+Plan dispatch queues every doable node with its score and release band.
+Host executor claims enforce capacity and skip file overlaps with started,
+unlanded builds; gripe intake bounds minting by queued builds per free
+executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
 `reports.weekly` collects factory tables for the deterministic `weekly_report`
 job. It shares gripe closure clocks with the flow view and replaces direct
 draft-section table children atomically, preserving authored prose. Its weekly

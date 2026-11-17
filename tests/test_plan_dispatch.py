@@ -9111,6 +9111,22 @@ def test_dispatch_orders_by_stamped_score_across_roots(store: Store) -> None:
     assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
 
 
+def test_dispatch_queues_overlapping_build_with_score_and_release_band(
+    store: Store,
+) -> None:
+    """gr702610: overlap changes claim eligibility, never queue admission."""
+    _started_outside_plans(store, ["src/precis/a.py"])
+    waiting = _file_plan(store, "Fix src/precis/a.py")
+    store.stamp_ref_meta(
+        waiting.root_id, {"dispatch_score": 42.0, "claim_band": "release"}
+    )
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, waiting.ids["task"])
+    assert meta["dispatch_score"] == 42.0
+    assert meta["claim_band"] == "release"
+    assert waiting.ids["task"] not in pd.live_nodes(store, [waiting.root_id])
+
+
 def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     """td603849: a run_slice whose brief names the same file an
     in-flight land's brief names is held until that land finishes."""
@@ -9121,7 +9137,7 @@ def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     res = pd.run_pass(store, dry_run=True)
     notes = "\n".join(res.notes)
     assert f"td{conflict.ids['task']}: file-overlap hold" in notes
-    assert res.dispatched == 1
+    assert res.dispatched == 2  # both queue; overlap admission happens at claim
     dispatched = [n for n in res.notes if "would dispatch" in n]
     assert any(f"td{clean.ids['task']}" in n for n in dispatched)
 
@@ -9141,7 +9157,7 @@ def test_file_overlap_hold_waits_for_a_live_build_and_lifts_when_it_ends(
     assert hold == [
         f"td{waiting.ids['task']}: file-overlap hold — waits on "
         f"td{building.ids['task']} (building): both touch "
-        "`workers/run_slice.py`; dispatches "
+        "`workers/run_slice.py`; claims "
         f"once td{building.ids['task']} is on main"
     ]
     _set_job_status(store, job, "failed")
@@ -9521,10 +9537,17 @@ def test_live_nodes_discounts_an_overlap_held_candidate(store: Store) -> None:
     assert res.held == 1
     live = pd.live_nodes(store, [held.root_id, free.root_id])
     assert held.ids["task"] not in live
-    assert free.ids["task"] in live
+    assert free.ids["task"] not in live  # undispatched work holds no slot
+    # Stall detection still sees the waiting candidate as moving.
+    both = pd.live_nodes(store, [held.root_id], count_held=True)
+    assert held.ids["task"] in both
     with store.pool.connection() as conn:
         conn.execute("UPDATE refs SET retired_at = now() WHERE kind = 'job'")
-    assert held.ids["task"] in pd.live_nodes(store, [held.root_id])
+    # The blocker's jobs are gone: the hold lifts, but the node is still
+    # doable work awaiting a claim — moving for stall detection, no running
+    # slot for the census.
+    assert held.ids["task"] in pd.live_nodes(store, [held.root_id], count_held=True)
+    assert held.ids["task"] not in pd.live_nodes(store, [held.root_id])
 
 
 def test_summary_counts_the_overlap_held_candidates(store: Store) -> None:

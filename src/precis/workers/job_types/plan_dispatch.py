@@ -237,9 +237,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ancestor's, else :data:`DEFAULT_SCORE`, and a human-set ``prio``
    multiplies it (never the key). So a release-pass root stamped
    ``RELEASE_SCORE`` mints (and reaches the lanes) before a default
-   gripe build, whichever root is older. A build whose file set
+   gripe build, whichever root is older. The job carries the effective
+   score and release claim band into host claim order. Every doable build
+   queues; a build whose file set
    overlaps a started, unlanded build's in any plan — building, held for
-   its pre-land review, or landing — is held until that one is on main
+   its pre-land review, or landing — stays queued until that one is on main
    (td603849, widened 2026-11-15 — the ``_started_slices``/
    ``_brief_file_sets`` check; a started build's files are its stamped
    ``meta.branch_files`` plus its brief's). "Overlaps" means the same
@@ -417,7 +419,7 @@ in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
 dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N held=N``
-(``held``: candidates the file-overlap hold skipped this pass); the
+(``held``: candidates waiting on file overlap at claim); the
 actions follow it. A ``release_cut`` node's dispatch refusal (a cut
 held on the tip's reviews) is also one ``job_result`` line and a log
 line, once per change of its text (``meta.cut_refusal_logged`` on the
@@ -1521,7 +1523,7 @@ class PassResult:
     reopened: int = 0
     #: Reviewer verdicts acted on (LAND / FIX / REVERT).
     reviews: int = 0
-    #: Candidates skipped this pass by the file-overlap hold (gr701628).
+    #: Queued candidates currently waiting on file overlap at claim.
     held: int = 0
     #: Why the pass did nothing (another tick held the lock); ``None`` = ran.
     skipped: str | None = None
@@ -4436,8 +4438,8 @@ def _node_live(plan: _Plan, n: _Node) -> bool:
     :func:`_step_dispatch` predicate (open task shape, no hold tag, not
     blocked or paused). A parked node (``ask-user``, ``waiting-for:*``,
     ``child-failed:*``, paused, blocked, rescue) is not live. The
-    file-overlap hold is not read here (it needs the store);
-    :func:`live_nodes` discounts it."""
+    file-overlap hold does not stop queueing. :func:`live_nodes` separates
+    running work from queued or undispatched work for the census."""
     if plan.live_job(n) or _claims(n):
         return True
     if n.status != "open" or not _dispatchable(plan, n):
@@ -4446,39 +4448,35 @@ def _node_live(plan: _Plan, n: _Node) -> bool:
 
 
 def live_and_held_nodes(store: Any, roots: list[int]) -> tuple[set[int], set[int]]:
-    """``(live, held)`` under the plan ``roots``: ``live`` the todos that
-    are live (:func:`_node_live`) and not waiting in the file-overlap
-    hold, ``held`` the otherwise-live candidates :func:`_step_dispatch`
-    would skip for a file overlap with a started build
-    (:func:`_overlap_holds`, the same check; ``_started_slices`` computed
-    once per call). The two are disjoint: a held node is waiting on
-    another build's land, not running, and not dead (gr701628). A node
-    with a live job or a claim is running, never held."""
+    """``(running, waiting)`` todos under ``roots`` (gr702610).
+
+    Running jobs and explicit claims consume capacity. Queued jobs and
+    doable nodes remain moving for the stall sweep, including builds
+    waiting on file overlap at claim time, but hold no running slot.
+    """
     if not roots:
         return set(), set()
     plan = _load(store, list(roots))
-    live = {n.id for n in plan.todos() if _node_live(plan, n)}
-    idle = [
-        plan.nodes[i]
-        for i in sorted(live)
-        if not plan.live_job(plan.nodes[i]) and not _claims(plan.nodes[i])
-    ]
-    if not idle:
-        return live, set()
-    held = set(_overlap_holds(plan, store, _started_slices(store), idle))
-    return live - held, held
+    moving = {n.id for n in plan.todos() if _node_live(plan, n)}
+    live = {
+        i
+        for i in moving
+        if _claims(plan.nodes[i])
+        or any(j.status == "running" for j in plan.jobs(plan.nodes[i]))
+    }
+    # Waiting work remains moving for stall detection, but only a running
+    # job or explicit claim consumes capacity. This includes queued builds
+    # held on files and doable nodes awaiting their first dispatch.
+    return live, moving - live
 
 
 def live_nodes(store: Any, roots: list[int], *, count_held: bool = False) -> set[int]:
-    """Ids of the todos under the plan ``roots`` that are live
-    (:func:`_node_live`) — the one liveness read ``gripe_dispatch``
-    shares with the dispatch tick, so a chain it counts as holding a
-    build slot is a chain the tick is running or about to run. A
-    candidate waiting in the file-overlap hold is not live (gr701628): it
-    holds no slot until the blocker lands. ``count_held=True`` keeps the
-    held candidates in the set — the stall sweep's read, where a node
-    waiting on another build's land is waiting, not dead
-    (:func:`live_and_held_nodes` returns the two sets apart)."""
+    """Running todos under ``roots``; ``count_held`` includes waiting work.
+
+    Used-slot census excludes every queued or undispatched build, whether
+    held on files or immediately claimable. Stall detection includes both
+    sets, because work awaiting a host is still moving.
+    """
     live, held = live_and_held_nodes(store, roots)
     return live | held if count_held else live
 
@@ -6283,8 +6281,10 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     that stale failure must not release the hold during the rebuilt
     branch's pre-land review. Heads absent on both sides (a defer that
     could not resolve its tip) count as one attempt, the pre-scope read.
-    A build still in its pre-land review (no land job yet) and one with
-    a live job count as before."""
+    A build still in its pre-land review (no land job yet) counts as
+    before. Only a ``STATUS:running`` ``run_slice`` job or a
+    ``land_slice`` job holds; a merely queued job holds nothing, so
+    queued builds never block each other."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -6294,6 +6294,10 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                   FROM refs j
                  WHERE j.kind = 'job' AND j.retired_at IS NULL
                    AND j.meta->>'job_type' = ANY(%s)
+                   AND (j.meta->>'job_type' = 'land_slice' OR EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = 'running'))
                    AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
@@ -6631,8 +6635,8 @@ def _overlap_holds(
     candidates: list[_Node],
 ) -> dict[int, tuple[int, frozenset[str]]]:
     """``{candidate id: (blocking started id, shared file keys)}`` — the
-    td603849 file-overlap hold, the one read :func:`_step_dispatch` skips
-    on and :func:`live_nodes` discounts by (gr701628). Only a default-op,
+    td603849 file-overlap hold, reported by :func:`_step_dispatch` and
+    enforced inside the executor claim transaction (gr702610). Only a default-op,
     non-generator build is held; ``started`` is :func:`_started_slices`;
     a started build blocks a candidate in the same repo when a file the
     candidate's brief names is the same repo-relative path as one the
@@ -6687,25 +6691,14 @@ def _step_dispatch(
 ) -> None:
     if now is None:
         now = datetime.now(UTC)
-    started = _started_slices(w.store)
     candidates = [
         n
         for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
         if _dispatchable(plan, n) and n.status == "open"
     ]
-    # td603849 file-overlap hold, widened 2026-11-15 (Reto: sequence the
-    # slices): a build whose files overlap a build that has STARTED and not
-    # landed — building, held for its pre-land review, or landing, in any
-    # plan — waits until that one is on main, so it is built on top of it
-    # instead of re-conflicting at its own land. Only started work holds,
-    # never another waiting candidate, so two candidates never hold each
-    # other; the started one always ends (lands or fails) and the hold
-    # lifts on the next tick. A started build's files are its branch's
-    # real diff when it has exited clean once, plus its brief's guess.
-    # Lands made from a human worktree are invisible here: those still
-    # meet the rebase brief at land time. A started build whose land died
-    # or that sits in rescue holds nothing (gr701628, ``_started_slices``);
-    # the skip is counted in ``res.held`` and shown in the summary line.
+    # Diagnostic only: every doable node is queued. The claim transaction
+    # rechecks this map, so overlap holds never consume an executor slot.
+    started = _started_slices(w.store)
     held = _overlap_holds(plan, w.store, started, candidates)
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text. The
@@ -6715,6 +6708,17 @@ def _step_dispatch(
     for n in candidates:
         if _excluded(plan, n) or _claims(n) or plan.live_job(n):
             continue
+        if n.id in held:
+            res.held += 1
+            hid, shared = held[n.id]
+            named = sorted(p for p in shared if "/" in p) or sorted(shared)
+            res.notes.append(
+                f"td{n.id}: file-overlap hold — waits on td{hid} "
+                f"({started[hid].state}): both touch "
+                f"{', '.join(f'`{p}`' for p in named[:3])}"
+                f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
+                "is on main"
+            )
         # td659522 step 0: every op on a node tagged for another repo is
         # skipped before any routing, escalation or ask — the builder,
         # reviewer and lander all assume a precis worktree.
@@ -6733,20 +6737,6 @@ def _step_dispatch(
             if mismatch is not None:
                 res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
                 continue
-        if n.id in held:
-            res.held += 1
-            hid, shared = held[n.id]
-            # ``shared`` holds resolved full paths only; list a
-            # directory-qualified one ahead of a root-level file.
-            named = sorted(p for p in shared if "/" in p) or sorted(shared)
-            res.notes.append(
-                f"td{n.id}: file-overlap hold — waits on td{hid} "
-                f"({started[hid].state}): both touch "
-                f"{', '.join(f'`{p}`' for p in named[:3])}"
-                f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
-                "is on main"
-            )
-            continue
         job_type, params = _resolve_op(n)
         # td659522 step 1: a build in another repo carries it on the job;
         # a default-repo node gets no key, so its params are unchanged.
@@ -7005,9 +6995,14 @@ def _step_dispatch(
                 # The decide() shadow beside the dispatch-time pick
                 # (td572552 S4b) — run_slice.submit nests it under its
                 # own submit record.
-                meta_extra={"decision": decision_stamp}
-                if decision_stamp is not None
-                else None,
+                meta_extra={
+                    _dscore.SCORE_META_KEY: _effective_score(plan, n),
+                    **(
+                        {"decision": decision_stamp}
+                        if decision_stamp is not None
+                        else {}
+                    ),
+                },
             )
             if requeued_cancel is not None:
                 res.notes.append(
@@ -8744,6 +8739,35 @@ def read_only_reason(store: Any, params: dict[str, Any] | None = None) -> str | 
     if (params or {}).get("dry_run"):
         return "params.dry_run"
     return None
+
+
+def enqueue_roots(store: Any, roots: list[int]) -> PassResult:
+    """Queue doable work in freshly minted chains without waiting a tick.
+
+    Share the tick lock and all dispatch guards; executor claimers own
+    capacity and file-overlap admission.
+    """
+    res = PassResult(dry_run=False)
+    if not roots:
+        return res
+    with try_xact_advisory_lock(
+        store.dsn,
+        TICK_LOCK_KEY,
+        idle_timeout=TICK_LOCK_IDLE_TIMEOUT,
+        application_name=TICK_LOCK_APP_NAME,
+    ) as got:
+        if not got:
+            res.skipped = "another tick holds the lock"
+            return res
+        plan = _load(store, roots)
+        _step_dispatch(
+            plan,
+            _Writer(store, False),
+            res,
+            _lanes.load_lanes(store),
+            _spend_rules(store),
+        )
+    return res
 
 
 def run_pass(
