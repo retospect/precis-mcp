@@ -8,6 +8,7 @@ answers:
   - how does the gardener detect restated memory claims?
   - how does the gardener detect changed memory sources and entity state?
   - what do the memory and memory-review checks flag?
+  - how do I audit memory claim coverage?
   - what does a reviewed memory supersede or retire do?
   - how do I fix a memory flagged AUDIT:notation?
 applies-to: get/search (kind='memory'/'job'), reviews ledger
@@ -78,6 +79,57 @@ proposals only:
 
 `restated_claim`, `source_drift` and `entity_claim_stale` belong to the same
 review group.
+
+## Claim-level grounding audit
+
+Run an audit tick when the gardener is enabled and outside cooling.
+Like every hand-submitted job it needs a parent — the todo it runs for:
+
+```python
+put(kind='job', parent_id=<todo ref id>,
+    args={'job_type': 'graph_garden',
+    'params': {'pass': 'memory-grounding'}})
+```
+
+`memory-grounding` is opt-in and excluded from `all`. Audit-only jobs skip
+the proposal consumer. The audit skips DREAMs and human-origin holds.
+A tick scans up to ten memories within the shared proposal budget.
+Each memory gets one classifier call with
+at most 60 body spans, 16,000 span characters, and 12 candidate citation
+links. A router pause defers the tick with its audit window available for retry.
+Failed or incomplete classifier replies leave the same SHA eligible on a later scan.
+
+The review ledger stores a `proposed` row per audited memory revision with
+actor `garden-grounding`, content SHA and a `grounding_audit` note. The
+row is audit-only and outside the pending action queue —
+`get(kind='job', id='/garden/proposals')` intentionally excludes it. Read
+it back with `precis.graph.garden.grounding.latest_audit(store, ref_id)`
+in Python, or on prod:
+
+```
+scripts/prod-psql --ro "SELECT review_id, content_sha, at
+  FROM reviews WHERE actor = 'garden-grounding'
+    AND target_kind = 'ref' AND target_id = <memory ref_id>
+  ORDER BY review_id DESC LIMIT 5"
+```
+
+Each claim gives body offsets, subject, scope, kind, evidence or
+premises, and term flags. The classifier records meaning and existence
+as distinct claims. Chat — a `chat:`/`conv:` reference or a `co`/`cc`/`ag`
+handle — can support attribution or a decision, never an empirical claim.
+
+Read `classifier_reported_claims` and `inspected` as counts of anchored
+classifier entries and
+`provisional` as suggested support awaiting verification. `unresolved`
+counts identified claims with open support or term questions.
+`spans_unchecked` counts omitted or unclassified inputs. `unaccounted_ranges`
+gives body offsets of scanned text outside the reported excerpts and
+structural spans, plus the ranges of claim sentences the scan bounds
+omitted — exactly which text went unchecked. Exact claim totals and unchecked claim counts remain null because a
+classifier can miss assertions even inside an excerpt. Read
+`truncated`, `spans_omitted_by_limit`, and `candidate_links_truncated` for
+the bounds reached. Missing material leaves support unknown.
+`all_grounded` stays false in this audit-only pass.
 
 ## Notation flags
 

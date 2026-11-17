@@ -971,6 +971,33 @@ class TestDispatchGlue:
         assert "skipped" not in ctx.meta["garden"]
         assert ctx.events == [] and ctx.failure is None
 
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"pass": "memory-grounding"},
+            {"pass": ["memory-grounding"], "consume": True},
+        ],
+    )
+    def test_dispatch_grounding_only_skips_consumer(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch, params: dict[str, Any]
+    ) -> None:
+        from precis.graph.garden import consumer
+        from precis.workers.job_types.graph_garden import SPEC, _dispatch
+
+        _lit_service(store)
+        calls: list[Store] = []
+
+        def consume(store: Store, **kwargs: Any) -> consumer.ConsumeReport:
+            calls.append(store)
+            raise AssertionError("audit-only tick reached the consumer")
+
+        monkeypatch.setattr(consumer, "consume_proposals", consume)
+        ctx = self._Ctx(store, params)
+        _dispatch(ctx, SPEC)
+        assert not calls
+        assert "consumed" not in ctx.meta["garden"]
+        assert "consume_error" not in ctx.meta["garden"]
+
     def test_consecutive_runs_do_not_repropose(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
