@@ -71,12 +71,15 @@ def test_publish_preflight_view_lists_issues(store: Any, monkeypatch: Any) -> No
 
     hub, row = _signed_hub(store, monkeypatch, "DFT finds the view claim holds.")
     handler = FindingHandler(hub=Hub(store=store))
-    blocked = handler.get(id=f"fi{hub}", view="publish-preflight").body
+    # The handler is called directly here, below the dispatch layer that
+    # rewrites an ``fi<N>`` handle to the bare ref_id, so the id must be a
+    # form the handler accepts itself: the ``finding:<int>`` link target.
+    blocked = handler.get(id=f"finding:{hub}", view="publish-preflight").body
     assert "[blocking] [state]" in blocked
     assert "clear to publish" not in blocked
     _anchor(store, row)
     _allow_signer(store, row)
-    clear = handler.get(id=f"fi{hub}", view="publish-preflight").body
+    clear = handler.get(id=f"finding:{hub}", view="publish-preflight").body
     assert "clear to publish" in clear
     assert "[note] [ots-pending]" in clear
     assert _refresh(store, hub).state == "anchored"
