@@ -695,8 +695,11 @@ _OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
 #: flattens a ``-negated`` term or a ``"quoted phrase"`` into positive OR
 #: terms, inverting the query's intent. A bare ``or`` needs no guard —
 #: plainto drops it as a stopword, so the retry ORs the same term set
-#: websearch did.
-_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
+#: websearch did. A hyphen before an uppercase letter or digit ('-NH',
+#: '-OH', '-1') is group notation in scientific text, not a negation —
+#: guarding on it silently killed the whole recall fallback (gr681469),
+#: so only a lowercase ``-word`` counts as an operator.
+_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-(?![A-Z0-9])\S')
 
 #: Minimum words before an *unscoped* query earns the OR retry
 #: (gr614169). Inside one ref any multi-word query retries — every term
