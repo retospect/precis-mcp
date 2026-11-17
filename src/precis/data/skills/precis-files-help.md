@@ -186,9 +186,11 @@ edit(
 # Delete a region.
 delete(kind="markdown", id="notes/meeting.md~note-on-reagents")
 
-# Whole-file delete via edit (the delete verb only handles regions
-# with a selector in id=). Clear the file in one call:
+# Keep the file but empty its contents:
 edit(kind="markdown", id="notes/meeting.md", mode="replace", text="")
+
+# Remove the file and retire its ref:
+delete(kind="markdown", id="notes--meeting", args={"confirm": "delete-file-notes--meeting"})
 ```
 
 A block is one paragraph, one heading, one fenced code, one table, or

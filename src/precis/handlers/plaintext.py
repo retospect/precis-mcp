@@ -16,8 +16,10 @@ Same address grammar:
     notes--log/raw      — full source text
     /                   — list every known plaintext file
 
-Same put modes (``create`` / ``append`` / ``replace`` / ``delete`` /
-``edit`` / ``insert``) with identical semantics to markdown.
+Same put modes (``create`` / ``append`` / ``insert``) and edit/delete
+semantics as markdown. Whole-file delete requires explicit confirmation
+through ``args={'confirm': 'delete-file-<slug>'}`` on the tool surface;
+``dry_run=True`` previews without retiring the ref or unlinking the file.
 """
 
 from __future__ import annotations
@@ -1612,7 +1614,7 @@ class PlaintextHandler(Handler):
 
         - Block-level (default): requires a selector in ``id``
           (``slug~SLUG`` / ``slug~Lstart-Lend``).
-        - File-level: pass ``confirm='delete-file-<slug>'`` with no
+        - File-level: send ``args={'confirm': 'delete-file-<slug>'}`` with no
           selector. Unlinks the file under ``PRECIS_ROOT`` and
           soft-deletes the ref. The confirm string encodes the
           slug so a stray ``confirm=True`` can't delete the wrong
@@ -1633,7 +1635,7 @@ class PlaintextHandler(Handler):
                 raise BadInput(
                     (
                         f"delete on {self._KIND} requires a block selector - "
-                        f"id='{slug}~SLUG' - or confirm={expected_confirm!r} "
+                        f"id='{slug}~SLUG' - or args={{'confirm': {expected_confirm!r}}} "
                         "to remove the whole file"
                     ),
                     next=(

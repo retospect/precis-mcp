@@ -20,9 +20,9 @@ scope: write
 Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
 
 `delete` removes content two ways. Numeric-ref kinds soft-delete:
-the row hides from list/search but is recoverable. File kinds
-require a selector and rewrite the file without the addressed
-region.
+the row hides from list/search but is recoverable. File selectors
+remove the addressed region. Markdown, plaintext and tex also allow
+whole-file removal with explicit confirmation (see below).
 
 ## Soft-delete a memory, todo, or other numeric ref
 ## Remove a note I no longer want
