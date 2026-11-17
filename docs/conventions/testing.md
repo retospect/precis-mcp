@@ -11,6 +11,14 @@ a macOS host to exercise the Darwin/bash-3.2 legs for real — see
 
 ## Why not a bare invocation
 
+Tests must inject fake transports rather than contact external services.
+The autouse socket guard in `tests/_network.py` blocks remote TCP, UDP and
+DNS through Python sockets, while allowing loopback test servers and Unix
+sockets. An integration test must explicitly use `@pytest.mark.allow_network`
+to opt in. Native-library connections (including the isolated PostgreSQL
+test database) and subprocesses are outside this Python guard. Nanopub
+registry defaults are always blocked separately: inject `post=` / `fetch=`.
+
 - **`uv run pytest` (host).** The host Python is torch-free, so it reports
   spurious `ModuleNotFoundError` for `marker`, `sentence_transformers`, … —
   not real bugs, just a missing extra the dev container bakes in. See the

@@ -205,11 +205,23 @@ def _stuck(store: Any) -> Any:
     old = _old(store)
 
     def post(url: str, body: bytes) -> None:
-        raise TimeoutError("read timed out")
+        raise TimeoutError("injected registry stub: read timed out")
 
     with pytest.raises(BadInput):
         _live(store, old.claim_ref_id, post)
     return old
+
+
+def test_missing_post_cannot_publish_to_live_registry(store: Any) -> None:
+    old = _old(store)
+    with pytest.raises(pytest.fail.Exception, match="inject post=/fetch="):
+        registry.publish(store, old.claim_ref_id, live=True, interactive=True)
+
+
+def test_missing_fetch_cannot_reconcile_against_live_registry(store: Any) -> None:
+    _stuck(store)
+    with pytest.raises(pytest.fail.Exception, match="inject post=/fetch="):
+        registry.reconcile_publishing(store, older_than=timedelta(0))
 
 
 def test_publishing_state_header_names_what_happens(store: Any) -> None:
