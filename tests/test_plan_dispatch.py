@@ -1752,6 +1752,38 @@ def test_gate_kill_capped_land_goes_to_the_ask(store: Store) -> None:
     assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
 
 
+def test_repeat_conflict_land_parks_at_the_conflict_ask(store: Store) -> None:
+    """gr705291: a lander-stamped repeat conflict — ``red_class
+    "rebase-conflict"`` + ``land_again_cap``, the identical tip retried —
+    parks at the re-land ask, worded so 'land again' only follows a
+    resolved branch (the identical ship would just re-conflict)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        meta={
+            "attempt_free": "infra-land",
+            "land_again_cap": True,
+            "red_class": "rebase-conflict",
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert "conflict re-landed unchanged" in str(ask_ref.title)
+    assert _meta(store, ask)["ask"]["options"][0] == "land again (no builder)"
+    body = _body_text(store, ask)
+    assert "unchanged branch tip" in body
+    assert "tip identical to the last conflicted land" in body
+    assert "not at fault" not in body
+
+
 def test_deadline_killed_land_locks_the_slice(store: Store) -> None:
     """gr647914 / td648501: a land killed at its wall deadline —
     ``STATUS:timed-out`` plus the marks ``land_slice.DEADLINE_KILL_META``

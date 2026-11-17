@@ -7141,11 +7141,19 @@ def _mint_ask(
     # ask with its own wording: the ship may already have merged, so the
     # answer must weigh a half-landed run, not gate infrastructure.
     timed_out = newest.meta.get("red_class") == "timed-out"
+    # And a conflict the lander saw twice on an unchanged tip
+    # (``red_class == "rebase-conflict"``, gr705291) is the same ask
+    # again, worded so 'land again' is only answered once the branch
+    # moved — the identical ship would re-conflict.
+    conflicted = newest.meta.get("red_class") == "rebase-conflict"
     if relands:
         head = (
             f"job:{newest.id} {newest.status} — the land was killed at the "
             "wall-clock deadline"
             if timed_out
+            else f"job:{newest.id} {newest.status} — the land re-tried the "
+            "same origin/main conflict on an unchanged branch tip"
+            if conflicted
             else f"job:{newest.id} {newest.status} — {relands} land(s) in a row "
             "died outside the diff (gate infrastructure)"
         )
@@ -7153,6 +7161,9 @@ def _mint_ask(
             f"td{n.id}: the land timed out mid-ship: land again, "
             "rewrite the brief, or drop it?"
             if timed_out
+            else f"td{n.id}: the same conflict re-landed unchanged: land "
+            "again, rewrite the brief, or drop it?"
+            if conflicted
             else f"td{n.id}: land failed outside the diff {relands} times: "
             "land again, rewrite the brief, or drop it?"
         )
@@ -7212,6 +7223,17 @@ def _mint_ask(
                 "The ship was killed at the wall deadline and may already "
                 "have merged — check the `landed:` comment or origin/main "
                 "before re-landing."
+            )
+        elif conflicted:
+            # gr705291: the branch tip never moved between the conflicted
+            # lands — 'land again' only helps once the conflict is
+            # resolved on the branch, so the ask must not clear it.
+            verdict = (
+                "The conflict came back on a tip identical to the last "
+                "conflicted land's — the branch was never changed, so "
+                "'land again' only helps after the conflict is resolved "
+                "on the branch (merge or rebase origin/main and commit); "
+                "'rewrite the brief' mints a builder for it."
             )
         elif newest.meta.get("land_again_cap"):
             # A capped exit-137 (the land's own gate-kill retries spent):

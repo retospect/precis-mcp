@@ -208,6 +208,15 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   suite on a FULL answer; the deploy gate runs the suite. Only a
   main-green red burns an attempt; any launch, probe or
   exclusion-record failure falls back to the ordinary red.
+  A conflict against a moved ``origin/main`` — ship's rebase or
+  forward-merge die (:data:`CONFLICT_MARKS`) — is a branch red like any
+  other, with one bound (gr705291): the failed land stamps the tip it
+  tried on the todo (``meta.land_conflict``), and the SAME verdict on
+  the IDENTICAL tip is the retry nothing resolves — the reopen came
+  back with the conflict untouched — so it fails attempt-free with
+  ``red_class="rebase-conflict"`` and ``land_again_cap``: the tick's
+  re-land ask, never another identical ship. A moved tip is a fresh try
+  and reds ordinarily.
 * :func:`kill` SIGTERMs the live phase's process group (a running
   verify's during verify, ship's otherwise) and drops the main probe's
   worktree and stack. A WALL-DEADLINE kill additionally carries
@@ -578,6 +587,26 @@ GATE_KILL_BACKOFF_S = 120
 GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
+#: Substrings of ship's two conflict die lines against a moved
+#: ``origin/main`` — the squash-rebase's and the forward-merge's
+#: (``scripts/ship``). A land red on one is a branch-vs-main state:
+#: resolvable on the branch, never a gate verdict on the diff and never
+#: a main/host refusal. The lock failure's "could not sync" die names
+#: "not a conflict" and does not match.
+CONFLICT_MARKS: tuple[str, ...] = (
+    "rebase conflict onto origin/main",
+    "merge conflict integrating origin/main",
+)
+#: The slice todo's ``meta.<key>`` — ``{head, cross, job, at}`` of the
+#: branch tip the newest conflict-red land tried (gr705291). The next
+#: conflict red measures "unchanged" against it.
+LAND_CONFLICT_KEY = "land_conflict"
+#: ``meta.red_class`` of a conflict retried on an unchanged tip:
+#: outside the diff (attempt-free) and ``land_again_cap``-stamped, so
+#: the tick parks at the re-land ask instead of looping the identical
+#: ship forever.
+CONFLICT_RED_CLASS = "rebase-conflict"
+
 #: The flock file in the worktree's gitdir. One land holds it for the
 #: ship's whole life — the fd is passed to the launched ship process —
 #: so a second land on the same worktree finds it held: its own stamp
@@ -640,6 +669,8 @@ DESCRIPTION: str = (
     "pending sha-in-prod gate, then delete the worktree and the slice/<id> "
     "branch (local and origin). A red ship reopens the todo with attempt:<n>; "
     "a refusal about main's state (drift guard) retries ship every 30 min, up to 8 times. "
+    "The same origin/main conflict on an unchanged branch tip parks at the "
+    "re-land ask instead of re-landing forever (gr705291). "
     "Minted by run_slice; with params.pr it lands a pull request's head "
     "(slice/pr-<n>, --checked when the selection is a spot check) and "
     "closes the PR. Refused while "
@@ -1474,6 +1505,71 @@ def infra_red(log_text: str, exit_code: int | None) -> str | None:
     if exit_code == 137:
         return "gate infrastructure"
     return None
+
+
+def is_conflict_red(cross: str | None) -> bool:
+    """True when ``cross`` is ship dying on a conflict against a moved
+    ``origin/main`` (:data:`CONFLICT_MARKS`) — a state of the branch,
+    not a gate verdict on the diff."""
+    return bool(cross) and any(m in str(cross) for m in CONFLICT_MARKS)
+
+
+def _conflict_repeat(
+    ctx: Any, todo_id: int, tree: Path, branch: str, cross: str | None
+) -> str | None:
+    """The branch tip when this red re-tried a conflict on a tip
+    identical to the last conflicted land's — the reopened todo came
+    back with the conflict untouched (gr705291: td700720 re-landed the
+    same head at attempts 2–4, each ship dying the same way). ``None``
+    on a non-conflict verdict, an unreadable tip (fail open to the
+    ordinary red), or a moved tip — a moved tip IS a fresh try, so its
+    conflict is another ordinary red. Either way the newest try's tip
+    re-stamps ``meta.land_conflict`` for the next land to measure."""
+    if todo_id <= 0 or not is_conflict_red(cross):
+        return None
+    try:
+        proc = _git(["rev-parse", f"refs/heads/{branch}"], tree)
+    except Exception:  # a gone worktree is an unreadable tip
+        return None
+    head = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head):
+        return None
+    try:
+        ref = ctx.store.get_ref(kind="todo", id=todo_id)
+        prev = ((ref.meta if ref is not None else None) or {}).get(LAND_CONFLICT_KEY)
+        ctx.store.stamp_ref_meta(
+            todo_id,
+            {
+                LAND_CONFLICT_KEY: {
+                    "head": head,
+                    "cross": str(cross)[:300],
+                    "job": getattr(ctx, "ref_id", None),
+                    "at": _now().strftime(_TS_FMT),
+                }
+            },
+        )
+    except Exception:  # the ordinary red still owns the verdict
+        log.warning(
+            "land_slice: conflict-tip stamp on td%d failed", todo_id, exc_info=True
+        )
+        return None
+    return head if isinstance(prev, dict) and prev.get("head") == head else None
+
+
+def _conflict_blocked(branch: str, head: str, cross: str) -> tuple[str, str]:
+    """``(reason, handoff)`` for :func:`_conflict_repeat`'s hit — the
+    "land BLOCKED" note of a conflict retried on an unchanged tip; the
+    tick's re-land ask owns the next move (gr705291)."""
+    return (
+        f"land re-tried the same conflict on an unchanged {branch} "
+        f"({head[:12]}): {cross}",
+        f"land BLOCKED on {branch}: the tip {head[:12]} is identical to "
+        f"the tip the last conflicted land tried ({cross}) — the "
+        "conflict was never resolved, so re-landing retries nothing. "
+        "Merge or rebase origin/main on the branch and commit before "
+        "answering the re-land ask 'land again'; 'rewrite the brief' "
+        "mints a builder on new instructions instead.",
+    )
 
 
 def landed_short(log_text: str) -> str | None:
@@ -5232,6 +5328,21 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
             "leave the tree clean; the lander re-runs scripts/ship."
         )
+        if is_conflict_red(cross):
+            # Ship's "rebase --continue" names state the retried session
+            # does not have — the reuse checkout aborts the in-flight
+            # sync — so the builder resolves fresh against the local ref
+            # (gr705291: the stale instruction is why the conflict kept
+            # coming back unresolved).
+            handoff = (
+                f"land FAILED on {branch}: {cross}. The next session "
+                "starts from a clean tree at the branch tip — the "
+                "in-flight merge/rebase is aborted on reuse — so resolve "
+                "fresh: `git merge origin/main` (or `git rebase "
+                "origin/main`), fix the conflicts and commit the "
+                "resolution (or leave the resolved tree for the harness "
+                "to commit); the lander re-runs scripts/ship."
+            )
         # Gate output can echo credentials (env dumps, request URLs): mask
         # FIRST, then cut — a secret spanning the cut boundary can
         # otherwise leak a fragment. What rides the todo comment and the
@@ -5373,10 +5484,22 @@ def poll(ctx: Any, handle: Any) -> bool:
                 reason, handoff = _blocked_handoff(branch, kills, kill_cross, "gate")
                 red_class = "gate infrastructure"
             else:
-                red_class = infra_red(log_text, exit_code)
+                repeated = _conflict_repeat(ctx, todo_id, tree, branch, cross)
+                if repeated is not None:
+                    # gr705291: the conflict came back on the identical
+                    # tip — the reopen changed nothing, so another
+                    # automatic land retries the same ship forever.
+                    # Attempt-free and capped: the tick's re-land ask is
+                    # where it stops.
+                    red_class = CONFLICT_RED_CLASS
+                    reason, handoff = _conflict_blocked(branch, repeated, cross)
+                else:
+                    red_class = infra_red(log_text, exit_code)
             if red_class is not None:
-                # Outside the diff (no attempt), but spent — the tick
-                # goes to the ask rather than re-landing (gr570187).
+                # Outside the diff — or an identical-tip conflict retry
+                # (gr705291) — but spent either way: no attempt is
+                # burned and the tick goes to the ask rather than
+                # re-landing (gr570187).
                 ctx.set_meta(land_again_cap=True)
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
@@ -5911,6 +6034,8 @@ __all__ = [
     "ALREADY_LANDED_WINDOW",
     "CHECKED_RED_MARK",
     "COMPATIBLE_EXECUTORS",
+    "CONFLICT_MARKS",
+    "CONFLICT_RED_CLASS",
     "DEADLINE_KILL_META",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
@@ -5921,6 +6046,7 @@ __all__ = [
     "HOST_REFUSAL_MARKS",
     "INDEX_LOCK_STALE_S",
     "INDEX_LOCK_WAIT_S",
+    "LAND_CONFLICT_KEY",
     "LAND_LOCK_FILE",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
@@ -5944,6 +6070,7 @@ __all__ = [
     "host_refusal_line",
     "index_lock_stale_s",
     "index_lock_wait_s",
+    "is_conflict_red",
     "is_host_refusal",
     "is_main_refusal",
     "kill",

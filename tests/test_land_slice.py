@@ -2946,6 +2946,115 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     assert "landed_sha" not in pctx.meta_set
 
 
+# ── repeat conflicts on an unchanged tip (gr705291) ─────────────────
+
+#: Ship's squash-rebase die against a moved ``origin/main`` — the ✖
+#: ``cross_line`` picks it up as the verdict.
+CONFLICT_LOG = (
+    "quick ship (--quick)\n"
+    "First, rewinding head to replay your work on top of it...\n"
+    "Applying: fix(x): thing\n"
+    "CONFLICT (content): Merge conflict in src/precis/x.py\n"
+    "error: could not apply abc1234... fix(x): thing\n"
+    "\x1b[31m✖ rebase conflict onto origin/main — resolve in "
+    "/checkout/.claude/worktrees/slice-td42, then 'git add -A && "
+    "GIT_EDITOR=true git rebase --continue' and re-run scripts/ship (or "
+    "'git rebase --abort' to back out).\x1b[0m\n"
+)
+#: Ship's forward-merge die — the other ``land_slice.CONFLICT_MARKS`` shape.
+MERGE_CONFLICT_LOG = (
+    "quick ship (--quick)\n"
+    "Auto-merging src/precis/x.py\n"
+    "CONFLICT (content): Merge conflict in src/precis/x.py\n"
+    "\x1b[31m✖ merge conflict integrating origin/main — resolve in "
+    "/checkout/.claude/worktrees/slice-td42, then 'git add -A && git "
+    "commit' and re-run scripts/ship.\x1b[0m\n"
+)
+#: The tip the fake ``rev-parse refs/heads/<branch>`` serves — td700720's
+#: re-landed head 20d85b13a in the incident.
+TIP = "20d85b13a" + "1" * 31
+
+
+def test_poll_conflict_red_reopens_with_an_attempt_and_stamps_the_tip(
+    seams: dict[str, Any],
+) -> None:
+    """gr705291: the first origin/main conflict is an ordinary red — the
+    reopen hands the branch to a builder — and the tip it failed on rides
+    ``meta.land_conflict`` so the next conflict can tell an unchanged
+    retry."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["tips"] = {"refs/heads/slice/42": TIP + "\n"}
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, CONFLICT_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "attempt:1" in pctx.failure
+    assert "attempt_free" not in pctx.meta_set
+    assert "land_again_cap" not in pctx.meta_set
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: lander: land FAILED on slice/42: ")
+    assert "rebase conflict onto origin/main" in handoff
+    # The retried builder resolves fresh — ship's "rebase --continue"
+    # names state the reuse checkout already aborted.
+    assert "`git merge origin/main`" in handoff
+    record = store.refs[42].meta["land_conflict"]
+    assert record["head"] == TIP and record["job"] == 901
+
+
+def test_poll_conflict_red_on_the_same_tip_parks_at_the_ask(
+    seams: dict[str, Any],
+) -> None:
+    """gr705291: the same conflict on a tip identical to the last
+    conflicted land's is the retry nothing resolves — attempt-free with
+    ``land_again_cap`` so the tick files the re-land ask instead of
+    looping the identical ship (td700720, attempts 2–4)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"land_conflict": {"head": TIP}},
+    )
+    seams["tips"] = {"refs/heads/slice/42": TIP + "\n"}
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, CONFLICT_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "rebase-conflict"
+    assert pctx.meta_set["land_again_cap"] is True
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    [handoff] = store.comments(42)
+    assert "land BLOCKED on slice/42" in handoff
+    assert "identical" in handoff and "re-land ask" in handoff
+
+
+@pytest.mark.parametrize("log_text", [CONFLICT_LOG, MERGE_CONFLICT_LOG])
+def test_poll_conflict_red_on_a_moved_tip_is_a_fresh_ordinary_red(
+    seams: dict[str, Any], log_text: str
+) -> None:
+    """A changed tip is a fresh try — a builder merged, or main moved —
+    so its conflict red is ordinary again, and the record re-stamps to
+    the newest tip (both of ship's conflict die lines count)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"land_conflict": {"head": "0" * 40}},
+    )
+    seams["tips"] = {"refs/heads/slice/42": TIP + "\n"}
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, log_text)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None and "attempt:1" in pctx.failure
+    assert "attempt_free" not in pctx.meta_set
+    assert store.refs[42].meta["land_conflict"]["head"] == TIP
+
+
 # ── the failing lines survive (gr573347 a) ─────────────────────────
 
 #: The pinned ruff's default FULL format (0.17): ``CODE [*] message``,
