@@ -568,6 +568,45 @@ def test_pytest_final_summary_is_named_per_job(tmp_path: Path) -> None:
     assert cp.stdout.count("pytest summary:") == 1
 
 
+def test_noise_and_missing_shards_are_backfilled(tmp_path: Path) -> None:
+    """gr705098: any error-like setup line used to suppress backfill."""
+    logs = {
+        str(i): f"{TS} FAILED tests/x.py::test_{i} - assert {i} == 0\n"
+        for i in range(1, 10)
+    }
+    env = _api_dir(tmp_path, logs)
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [
+                {"name": f"gate-fast {i}", "databaseId": i, "conclusion": "failure"}
+                for i in range(1, 10)
+            ],
+        }
+    )
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast 1\tsetup\t{TS} curl error: setup noise\n",
+        encoding="utf-8",
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    for i in range(1, 10):
+        assert f"== gate-fast {i} ==" in cp.stdout
+        assert f"FAILED tests/x.py::test_{i} - assert {i} == 0" in cp.stdout
+
+
+def test_all_failed_ids_survive_line_limit(tmp_path: Path) -> None:
+    log = "".join(
+        f"shard\tpytest\t{TS} FAILED tests/x.py::test_{i} - assert {i} == 0\n"
+        for i in range(50)
+    )
+    cp = _run(["223355", "-n", "1"], _gh_stub(tmp_path, log))
+    assert cp.returncode == 0, cp.stderr
+    for i in range(50):
+        assert f"FAILED tests/x.py::test_{i} - assert {i} == 0" in cp.stdout
+
+
 _SOAK_RUN = {
     "status": "completed",
     "conclusion": "failure",

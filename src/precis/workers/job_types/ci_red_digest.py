@@ -12,15 +12,10 @@ pinned to that host the same way.
   (:func:`precis.plans.gates.read_ci_verdicts`); none fails the job and
   the plan tick's retry cap files the ask. ``scripts/ci-failed <run_id>``
   digests the failed jobs; on exit 0 the job posts one ``brief:``
-  comment — the header line, the digest through
-  :func:`precis.utils.secret_scan.mask_secrets` capped at
-  :data:`_DIGEST_CAP`, the ranked changed-files table of
-  :mod:`precis.plans.red_suspects` (gr595552 — every file changed since
-  the last green build with its diff stat, range commits, ledger
-  handles, the failure-path flag, and the range's changed symbols per
-  the python kind's diff — complete every time: the brief is the
-  fixer's only copy of it, so the cap bounds the failure evidence,
-  never the table), and the fix-forward rule — on every live
+  comment capped at :data:`_DIGEST_CAP`, including header and rule.
+  Job headings and all failed ids reserve room before assertion evidence;
+  setup noise and range file lists stay out of the brief. Range paths
+  remain available to the independent file-overlap hold. On every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
@@ -128,7 +123,7 @@ NAME = "ci_red_digest"
 #: only covers a stuck ``gh``.
 _DEFAULT_WALL_S = 10 * 60
 #: The brief's digest cap — a shard dump still lands as one comment.
-_DIGEST_CAP = 12000
+_DIGEST_CAP = 8000
 
 _RUN_ID_RE = re.compile(r"[0-9]+")
 _PROBE_RE = re.compile(
@@ -469,11 +464,11 @@ def _jobs_logs_rescue(
             if _JOBLOG_SIGNAL.search(line) and line not in lines:
                 lines.append(line)
         if lines:
-            kept = lines[:_RESCUE_CAP]
-            if len(lines) > _RESCUE_CAP:
-                # Mark the cut: the red-test waiver must not trust a
-                # partial id list (``red_waiver.parse_failures``).
-                kept.append(_waiver.RESCUE_TRUNCATED)
+            required = [
+                line for line in lines if line.startswith(("FAILED ", "ERROR "))
+            ]
+            evidence = [line for line in lines if line not in required]
+            kept = required + evidence[:_RESCUE_CAP]
             out.append((name, kept))
     if not out:
         return [], "the jobs-logs read found no FAILED lines either"
@@ -894,15 +889,71 @@ def _probe_done(ctx: Any, log_text: str) -> bool:
 
 
 def _compose_digest(log_text: str, rescue: str, room: int = _DIGEST_CAP) -> str:
-    """The masked digest inside ``room`` chars, the rescued lines
-    reserved the tail: they are the brief's only real signal, so a blind
-    dump past the cap loses the head room, never them. The caller takes
-    the suspects table's and the rule's room off the budget BEFORE
-    composing — trimming the composed text afterwards cuts the rescue
-    tail it exists to protect (td655162)."""
-    tail = mask_secrets(rescue)
-    head = mask_secrets(log_text)[: max(0, room - len(tail))]
-    return head + tail
+    """Fit job blocks in room, reserving headings and ids before evidence.
+
+    Refuse an identifier set that cannot fit rather than silently hiding it.
+    """
+    jobs: dict[str, list[str]] = {}
+    for source in (log_text, rescue):
+        current = ""
+        for raw in mask_secrets(source).splitlines():
+            mark = _SECTION.fullmatch(raw)
+            if mark:
+                current = mark.group(1)
+                jobs.setdefault(current, [])
+            elif current and raw.strip() not in jobs[current]:
+                jobs[current].append(raw.strip())
+    blocks: list[list[str]] = []
+    evidence: list[tuple[int, int | None, str]] = []
+    for job, lines in jobs.items():
+        ids: dict[str, str] = {}
+        for line in lines:
+            match = re.match(r"^(FAILED|ERROR) (.+?)(?: - (.*))?$", line)
+            if match:
+                key = f"{match[1]} {match[2]}"
+                ids[key] = match[3] or ids.get(key, "")
+        block = [f"== {job} =="]
+        if ids:
+            block.append(f"  failed ids ({len(ids)}):")
+            block.extend(f"  {key}" for key in ids)
+        blocks.append(block)
+        for index, reason in enumerate(ids.values(), start=2):
+            if reason:
+                evidence.append((len(blocks) - 1, index, f" - {reason}"))
+        for line in lines:
+            if line.startswith(
+                (
+                    "E ",
+                    "pytest summary:",
+                    "(log unreadable",
+                    "(no signal",
+                    "Error:",
+                    "fatal:",
+                )
+            ) or re.match(
+                r"^(?:(?:src|tests|scripts)/.*:\d+:|=+ .*\bin \d+(?:\.\d+)?s)", line
+            ):
+                evidence.append((len(blocks) - 1, None, f"  {line}"))
+    used = len("\n".join(line for block in blocks for line in block))
+    if used > room:
+        raise ValueError("failed ids exceed brief budget; inspect the full run logs")
+    # Share evidence space across jobs; headings and ids never lose room to it.
+    limit = max(0, (room - used) // max(1, len(evidence)) - 1)
+    for index, position, line in evidence:
+        if limit:
+            shown = line if len(line) <= limit else line[: limit - 1] + "…"
+            if position is None:
+                blocks[index].append(shown)
+            else:
+                blocks[index][position] += shown
+    return "\n".join(line for block in blocks for line in block)
+
+
+def _brief(head: str, digest: str, rule: str, scope: str = "") -> str:
+    """Budget the whole comment, including cluster instructions and rule."""
+    prefix = "\n".join(p for p in (head, mask_secrets(scope)) if p)
+    room = _DIGEST_CAP - len(prefix) - len(rule) - 2
+    return "\n".join((prefix, _compose_digest(digest, "", room), rule))
 
 
 class _WaiverPark(Exception):
@@ -1161,24 +1212,8 @@ def _digest_done(
             "brief has nowhere to land"
         )
         return True
-    # The complete table is the fixer's only copy of it (td655162
-    # review) — it posts unbudgeted; the failure evidence keeps its
-    # room instead: at least half the cap when the table is long,
-    # everything it leaves when it is short. The digest composes AFTER
-    # the table for the same reason the rescue tail is reserved:
-    # trimming a composed digest would cut the failure lines the room
-    # exists to keep. The room reserves the longer of the two fix rules
-    # (a release-branch fix node gets :data:`_RELEASE_RULE`).
-    suspects = mask_secrets(_suspects_block(ctx, rel, log_text or "", dict(rescued)))
-    rule_room = max(len(_RULE), len(_RELEASE_RULE.format(target="release/r9999")))
-    digest = _compose_digest(
-        log_text or "",
-        rescue,
-        room=max(
-            _DIGEST_CAP // 2,
-            _DIGEST_CAP - len(suspects) - rule_room,
-        ),
-    )
+    suspects = ""  # Range files feed the overlap hold, not the brief.
+    digest = _compose_digest(log_text or "", rescue)
     head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
     # Split only a digest that provably lists every failing id: an id a
     # truncated list or a non-pytest red hides would belong to no
@@ -1189,11 +1224,7 @@ def _digest_done(
         posted = [
             (
                 tid,
-                "\n".join(
-                    part
-                    for part in [head, digest, suspects, _fix_rule(ctx.store, tid)]
-                    if part
-                ),
+                _brief(head, digest, _fix_rule(ctx.store, tid)),
             )
             for tid in targets
         ]
@@ -1273,17 +1304,7 @@ def _cluster_briefs(
         out.append(
             (
                 tid,
-                "\n".join(
-                    part
-                    for part in [
-                        head,
-                        mask_secrets(scope),
-                        digest,
-                        suspects,
-                        _fix_rule(ctx.store, tid),
-                    ]
-                    if part
-                ),
+                _brief(head, digest, _fix_rule(ctx.store, tid), scope),
             )
         )
     return out

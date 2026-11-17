@@ -4263,7 +4263,7 @@ def test_digest_blind_sections_are_rescued_through_the_job_log(
     assert len(comments) == 1
     text = comments[0]
     assert text.startswith("brief:")
-    assert "jobs-logs read" in text
+    assert "== gate-fast (3.13, 1) ==" in text
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
     assert "1 failed, 9 passed in 3.2s" in text
 
@@ -4396,36 +4396,51 @@ def test_digest_rescue_survives_a_blind_dump_past_the_cap(
     assert len(comments) == 1
     text = comments[0]
     assert text.startswith("brief:")
-    assert "jobs-logs read" in text
+    assert "== gate-fast (3.13, 1) ==" in text
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
 
 
 def test_compose_digest_reserves_the_room_before_composing() -> None:
-    """td655162: ``room`` comes off the budget BEFORE the digest
-    composes — trimming a composed digest from the right cuts the
-    rescued failure lines the tail exists to keep. The tail itself is
-    never truncated: only the log head gives room."""
+    """Reserve ids before evidence, including rescued job logs."""
     rescue = (
         "\njobs-logs read:\n== gate-fast ==\n  FAILED tests/x.py::t - assert 1 == 2\n"
     )
     log_text = "== gate-fast ==\n" + "  step noise\n" * (crd._DIGEST_CAP // 10)
     full = crd._compose_digest(log_text, rescue)
     assert len(full) <= crd._DIGEST_CAP
-    assert full.endswith("assert 1 == 2\n")
+    assert "FAILED tests/x.py::t - assert 1 == 2" in full
     out = crd._compose_digest(log_text, rescue, room=2000)
     assert len(out) <= 2000
-    assert out.endswith("assert 1 == 2\n")
-    # No room at all still keeps the whole rescue tail.
-    assert crd._compose_digest(log_text, rescue, room=0) == rescue
+    assert "FAILED tests/x.py::t - assert 1 == 2" in out
+    with pytest.raises(ValueError, match="failed ids exceed"):
+        crd._compose_digest(log_text, rescue, room=0)
 
 
-def test_digest_posts_the_complete_table_and_keeps_evidence_room(
+def test_digest_budget_preserves_all_nine_shards() -> None:
+    """Noise and long assertions lose room before any shard or failed id."""
+    log = "\n".join(
+        f"== gate-fast {i} ==\n"
+        + "docker curl apt plugin noise\n" * 100
+        + "\n".join(
+            f"  FAILED tests/x.py::test_{i}_{j} - assert {i} == {j} " + "x" * 500
+            for j in range(6)
+        )
+        for i in range(9)
+    )
+    text = crd._brief("brief: red run", crd._compose_digest(log, ""), crd._RULE)
+    assert len(text) <= crd._DIGEST_CAP
+    assert "docker" not in text
+    for i in range(9):
+        assert text.count(f"== gate-fast {i} ==") == 1
+        for j in range(6):
+            assert f"FAILED tests/x.py::test_{i}_{j}" in text
+            assert f"assert {i} == {j}" in text
+
+
+def test_digest_excludes_range_table_and_noise(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td655162 review: the complete table is the fixer's only copy —
-    every file row posts unbudgeted, while the failure evidence still
-    keeps at least half the cap: a long table starves neither the rows
-    nor the rescue tail."""
+    """gr705098: range tables cannot crowd failure evidence out of briefs."""
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
@@ -4460,13 +4475,10 @@ def test_digest_posts_the_complete_table_and_keeps_evidence_room(
     assert crd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     text = _todo_comments(store, fix_id)[0]
-    # Every file row of the complete table posts — first and last.
-    assert "src/f0.py — 1 commit (+1/-0)" in text
-    assert "src/f199.py — 1 commit (+1/-0)" in text
-    assert text.count("src/f") == 200
-    # The failure evidence kept at least half the cap (each "  step
-    # noise" line is 13 chars).
-    assert text.count("step noise") >= crd._DIGEST_CAP // 2 // 13 - 30
+    assert "changed files" not in text
+    assert "src/f199.py" not in text
+    assert "step noise" not in text
+    assert len(text) <= crd._DIGEST_CAP
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
     assert "never skip, xfail or loosen a test" in text
 

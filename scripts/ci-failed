@@ -25,7 +25,7 @@ matrix needs it green), so the run's verdict is the re-run's failed ids
 alone — the read the r236 gate got wrong (gr580432).
 
     scripts/ci-failed <run-id>            digest of the run's failed jobs
-    scripts/ci-failed <run-id> -n N       cap per-job output at N lines
+    scripts/ci-failed <run-id> -n N       cap optional per-job evidence at N lines
                                           (default 40; 0 = unlimited)
     scripts/ci-failed <run-id> --tail K   fallback tail per silent job
                                           (default 15)
@@ -105,9 +105,6 @@ _PRINTABLE = re.compile(r"^[A-Za-z0-9_=, -]{0,200}$")
 #: `` - `` separator is absent on ``ERROR at setup of <nodeid>``-style
 #: lines, whose tail is the whole id).
 _SUMMARY_ID = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$")
-#: The ``failed ids:`` roll-up's own cap — independent of -n, so the
-#: verdict survives a tight per-job signal budget.
-_ID_CAP = 20
 #: pytest's final summary line, ``==== 12 passed, 1 skipped in 3.2s ====``
 #: — printed only when the session ran to its end, so it is the digest's
 #: proof a job log is complete (td650667).
@@ -264,7 +261,9 @@ def _select(entries: list[str], *, lines: int, tail: int) -> list[str]:
         seen.add(line)
         picked.append(line)
     if picked:
-        shown = picked if lines <= 0 else picked[:lines]
+        required = [line for line in picked if _SUMMARY_ID.match(line)]
+        optional = [line for line in picked if not _SUMMARY_ID.match(line)]
+        shown = required + (optional if lines <= 0 else optional[:lines])
         out = [f"  {line}" for line in shown]
         if len(picked) > len(shown):
             out.append(f"  … {len(picked) - len(shown)} more signal lines")
@@ -299,9 +298,7 @@ def digest_jobs(
         ids = _failed_ids(entries)
         if ids:
             out.append(f"  failed ids ({len(ids)}):")
-            out.extend(f"    {i}" for i in ids[:_ID_CAP])
-            if len(ids) > _ID_CAP:
-                out.append(f"    … +{len(ids) - _ID_CAP} more in the full log")
+            out.extend(f"    {i}" for i in ids)
         summaries = [m.group(1) for m in map(_PYTEST_SUMMARY.match, entries) if m]
         if summaries:
             out.append(f"  pytest summary: {summaries[-1]}")
@@ -319,22 +316,28 @@ _INCOMPLETE = re.compile(r"still in progress|logs? will be available", re.IGNORE
 
 
 def _backfill_blind_jobs(
-    run: dict[str, Any], jobs: OrderedDict[str, list[str]]
+    run: dict[str, Any], jobs: OrderedDict[str, list[str]], *, job_prefix: str = ""
 ) -> OrderedDict[str, list[str]]:
-    """Re-read blind jobs through ``actions/jobs/<id>/logs`` (gr587536):
-    the shared ``--log-failed`` stream can carry only the step header
-    where the job's own log has the FAILED lines. A fetched log replaces
-    the job's lines outright — the fuller source either way; an
-    unreadable one keeps the shared stream's tail."""
+    """Backfill absent or incomplete jobs from the metadata's failure list.
+
+    Setup errors do not prove pytest output was read: only failed ids
+    together with a final pytest summary let the shared log stand alone.
+    An unreadable job keeps any shared-log evidence.
+    """
     ids = {
         str(j.get("name") or ""): str(j.get("databaseId") or j.get("id") or "")
         for j in run.get("jobs", [])
         if j.get("conclusion") == "failure"
+        and str(j.get("name") or "").startswith(job_prefix)
     }
     out: OrderedDict[str, list[str]] = OrderedDict()
-    for name, entries in jobs.items():
+    for name in dict.fromkeys([*jobs, *ids]):
+        entries = jobs.get(name, [])
         jid = ids.get(name)
-        if not jid or any(SIGNAL.search(line) for line in entries):
+        if not jid or (
+            _failed_ids(entries)
+            and any(_PYTEST_SUMMARY.match(line) for line in entries)
+        ):
             out[name] = entries
             continue
         cp = _gh_api(
@@ -506,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
             (j, e) for j, e in jobs.items() if j.startswith(a.job_prefix)
         )
     if run is not None:
-        jobs = _backfill_blind_jobs(run, jobs)
+        jobs = _backfill_blind_jobs(run, jobs, job_prefix=a.job_prefix)
     print(digest_jobs(jobs, lines=a.lines, tail=a.tail, job_prefix=a.job_prefix))
     return 0 if metadata_ok else 1
 
