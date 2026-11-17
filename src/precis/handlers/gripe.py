@@ -2927,10 +2927,16 @@ class GripeHandler(NumericRefHandler):
         # route like ``page``/``sort``.
         closed_since: str | None = None,
         closed_until: str | None = None,
+        # ``args={'tag_prefixes': 'thread,fix'}`` — the batch summary rows'
+        # tag-prefix selector (td702062); declared here so the dispatcher's
+        # own-signature args= gate admits it, then forwarded to the base.
+        tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
         # base reads it back out of the forwarded kwargs (gr497175).
+        if tag_prefixes is not ...:
+            _kw["tag_prefixes"] = tag_prefixes
         if page is not None:
             _kw["page"] = page
         if page_size is not None:

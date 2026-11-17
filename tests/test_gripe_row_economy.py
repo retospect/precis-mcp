@@ -152,6 +152,6 @@ def test_tag_prefixes_through_dispatch(
         ("get", {"id": [gid]}),
     ):
         body = runtime_with_store.dispatch(
-            verb, {"kind": "gripe", **params, "args": {"tag_prefixes": "reto"}}
+            verb, {"kind": "gripe", **params, "__extras__": {"tag_prefixes": "reto"}}
         )
         assert "[reto:ask]" in body

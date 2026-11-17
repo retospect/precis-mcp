@@ -306,8 +306,10 @@ def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
         for g in (dense, sparse, body_hit)
     }
     assert set(qual) == want
-    # the densest lexical match leads
-    assert _h(dense) in qual[0]
+    # best match first: td703300 length-normalises the lexical rank, so the
+    # short chunk that is exactly the query leads and a longer title that
+    # merely repeats a word no longer outranks it
+    assert [c.split("'")[3] for c in qual] == [_h(g) for g in (body_hit, sparse, dense)]
     for g in (off, partial, runbook, linked):
         assert not any(_h(g) in c for c in qual)
 

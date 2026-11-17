@@ -8,6 +8,7 @@ import pytest
 import precis.handlers
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.handlers._audited_retirement import AuditedRetirementHandler
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers.job import JobHandler
 from precis.store import Tag
@@ -40,8 +41,11 @@ def _base_delete_handlers() -> list[type[NumericRefHandler]]:
         kind = getattr(spec, "kind", None)
         if not kind or kind in found or not getattr(spec, "supports_delete", False):
             continue
-        # memory's door adds mention checks, then keeps the base's guards.
-        if cls.delete is not NumericRefHandler.delete and kind != "memory":
+        # the audited-retirement door (memory, finding) adds mention checks,
+        # then keeps the base's guards.
+        if cls.delete is not NumericRefHandler.delete and not issubclass(
+            cls, AuditedRetirementHandler
+        ):
             continue
         found[kind] = cls
     return [found[k] for k in sorted(found)]

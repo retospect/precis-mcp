@@ -3711,8 +3711,10 @@ def test_put_logs_phase_timings(
     draft: DraftHandler, hub: Hub, caplog: pytest.LogCaptureFixture
 ) -> None:
     """gr676929 slice 1: each chunk put logs one ``draft.put phases``
-    record carrying the four phase timings plus the draft's chunk count,
-    so a slow put attributes to a phase from server logs alone."""
+    record carrying the four phase timings plus the number of chunks the
+    put added (``added_chunks``; td700938 replaced the whole-draft
+    ``draft_chunks`` count, a post-commit DB read, with it), so a slow put
+    attributes to a phase from server logs alone."""
     import logging
 
     draft.put(id="nt", title="T", project=_proj(hub))
@@ -3727,7 +3729,7 @@ def test_put_logs_phase_timings(
         "add_chunks=",
         "sync_draft_links=",
         "attribute_touch=",
-        "draft_chunks=2",
+        "added_chunks=1",
         "slug=nt",
     ):
         assert key in msg
