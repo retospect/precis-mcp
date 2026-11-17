@@ -5090,6 +5090,9 @@ def test_gripes_status_change_htmx_swaps_fragment(runtime, client) -> None:
     assert resp.status_code == 200
     assert 'id="gripe-status-96"' in resp.text
     assert "wontfix" in resp.text
+    # Attention rides inside the swapped fragment (gr695933 review): a
+    # terminal status re-renders it, so the metadata line can't go stale.
+    assert "Attention: no" in resp.text
     # The now-active status no longer offers its own transition button.
     assert 'value="wontfix"' not in resp.text
     assert (
