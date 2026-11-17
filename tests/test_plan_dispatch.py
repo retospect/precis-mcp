@@ -9273,6 +9273,64 @@ def test_file_overlap_hold_ignores_an_ambiguous_basename(store: Store) -> None:
     assert not _overlap_note(store, untouched.ids["task"])
 
 
+_SHARED = "src/precis/workers/job_types/plan_dispatch.py"
+
+
+def _overlap_target_case(
+    store: Store, started_target: str | None, cand_target: str | None
+) -> bool:
+    """gr688291: whether a candidate on ``cand_target`` (None: main) is
+    held by a started build on ``started_target`` sharing one file."""
+    blocker = _started_outside_plans(store, [_SHARED])
+    if started_target:
+        store.stamp_ref_meta(blocker, {"land_target": started_target})
+    waiting = _file_plan(store, f"Fix {_SHARED}")
+    if cand_target:
+        store.stamp_ref_meta(waiting.ids["task"], {"land_target": cand_target})
+    return _overlap_note(store, waiting.ids["task"])
+
+
+def test_file_overlap_hold_skips_a_release_fix_behind_a_main_build(
+    store: Store,
+) -> None:
+    """gr688291: a release-target fix is not held by a started main build
+    sharing a file, and dispatches on the same tick."""
+    blocker = _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}")
+    store.stamp_ref_meta(waiting.ids["task"], {"land_target": "release/r321"})
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+    assert pd._started_slices(store)[blocker].target == "main"
+
+
+def test_file_overlap_hold_skips_a_main_build_behind_a_release_build(
+    store: Store,
+) -> None:
+    assert not _overlap_target_case(store, "release/r321", None)
+
+
+def test_file_overlap_hold_keeps_two_main_builds_sharing_a_file(
+    store: Store,
+) -> None:
+    assert _overlap_target_case(store, None, None)
+
+
+def test_file_overlap_hold_keeps_two_builds_on_one_release_target(
+    store: Store,
+) -> None:
+    assert _overlap_target_case(store, "release/r321", "release/r321")
+
+
+def test_file_overlap_hold_skips_builds_on_different_release_targets(
+    store: Store,
+) -> None:
+    assert not _overlap_target_case(store, "release/r320", "release/r321")
+
+
 def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
     store: Store,
 ) -> None:

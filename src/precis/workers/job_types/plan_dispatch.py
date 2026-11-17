@@ -248,7 +248,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    repo-relative path: a brief's shorter suffix (``land_slice.py``,
    ``job_types/land_slice.py``) resolves only when exactly one of the
    started build's paths ends with it, so two builds touching different
-   ``dispatch.py`` or ``__init__.py`` files do not wait on each other. A build whose ``land_slice``
+   ``dispatch.py`` or ``__init__.py`` files do not wait on each other.
+   Only builds with the same land target wait on each other (absent
+   ``meta.land_target`` is main, gr688291): a ``release/rN`` fix is never
+   held behind a main build, nor a main build behind it. A build whose ``land_slice``
    died (newest job failed/cancelled/timed-out, none live) or that
    carries or sits under a ``rescue:``/``child-failed:`` tag holds no
    lock (gr701628); the dead-land drop reads only a failure of the
@@ -6283,11 +6286,20 @@ class _Started:
     last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
     empty before then; ``repo`` the repo its ``repo:`` tag resolves to —
     its own, else the nearest tagged ancestor's — resolved in the store
-    because a held build can sit outside the loaded plan's nodes."""
+    because a held build can sit outside the loaded plan's nodes;
+    ``target`` the branch it lands on (:func:`_land_target`, gr688291)."""
 
     state: str
     branch_files: tuple[str, ...]
     repo: str
+    target: str = "main"
+
+
+def _land_target(meta: dict[str, Any] | None) -> str:
+    """The branch a build lands on: ``meta.land_target`` when shaped
+    ``release/r<N>`` (:func:`precis.plans.release.land_target_of`), else
+    ``main`` (gr688291)."""
+    return _release.land_target_of(meta) or "main"
 
 
 def _started_slices(store: Any) -> dict[int, _Started]:
@@ -6367,7 +6379,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                     AND NOT (COALESCE(land_dead.dead, FALSE)
                              AND land_dead.job_head IS NOT DISTINCT FROM
                                  (r.meta->%s->>'head'))),
-                   r.meta->%s
+                   r.meta->%s, r.meta->>'land_target'
               FROM refs r
               LEFT JOIN live ON live.parent_id = r.ref_id
               LEFT JOIN land_dead ON land_dead.parent_id = r.ref_id
@@ -6397,12 +6409,17 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
-    for rid, landing, pending, files in rows:
+    for rid, landing, pending, files, target in rows:
         state = (
             "landing" if landing else "in pre-land review" if pending else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
-        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
+        out[int(rid)] = _Started(
+            state,
+            paths,
+            _lanes.DEFAULT_REPO,
+            _land_target({_release.LAND_TARGET_KEY: target}),
+        )
     if not out:
         return out
     # A bare pending_land stamp under a rescue / child-failed tag (own or
@@ -6449,6 +6466,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
             s.state,
             s.branch_files,
             sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
+            s.target,
         )
         for rid, s in out.items()
     }
@@ -6688,8 +6706,11 @@ def _overlap_holds(
     the started build's paths ends with it — the same basename in two
     directories, or an ambiguous ``__init__.py``, holds nothing; a real
     conflict still rebuilds at land. Only started work holds, never
-    another candidate, so two candidates never hold each other. One
-    ``_brief_file_sets`` query for the lot; empty without a started
+    another candidate, so two candidates never hold each other. Builds
+    hold each other only on the same land target (:func:`_land_target`;
+    absent means main, gr688291): a release fix cut from ``release/rN``
+    is never held by a main build, nor a main build by a release one.
+    One ``_brief_file_sets`` query for the lot; empty without a started
     build or a build candidate."""
     builds = [
         n
@@ -6710,11 +6731,16 @@ def _overlap_holds(
         if not mine:
             continue
         repo = _node_repo(plan, n)
+        target = _land_target(n.meta)
         for hid in sorted(held_sets):
             # started[hid].repo, not _node_repo on plan.nodes: a held
             # build can sit outside the loaded subtrees, and skipping
             # the check then held a same-path build in another repo.
             if started[hid].repo != repo:
+                continue
+            # gr688291: another land target is another branch; a release
+            # fix's wide digest brief must not wait on unrelated main work.
+            if started[hid].target != target:
                 continue
             shared = _dscore.shared_files(mine, held_sets[hid])
             if hid != n.id and shared:
