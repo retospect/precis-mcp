@@ -763,7 +763,8 @@ body: past that, follow [[how-to-split-memory]] to make it terser or
 preserve the detail in linked nodes before trimming the original.
 
 Search inside one hub or summary node with
-`search(kind="memory", q="pump", args={"under": "me3"})`; add
+`search(kind="memory", q="pump", args={"under": "me3"})` (short spelling: `scope="me3"`;
+a numeric memory id works too); add
 `"depth": 1` for direct members, `tags=["section:gotchas"]` to narrow by type.
 
 Two generated outlines (gr631890) replace hand-maintained member lists:
@@ -776,7 +777,9 @@ subtree counts, `offset=` pages. And
 *forest* — every node carrying the tag whose own `part-of` parents do
 not — one line each with keywords and member count. A trailing `*` on
 a `tags=` entry prefix-matches the tag value inside this view only;
-`view='members'` stays the flat paged listing. The kind's own contents
+`view='members'` stays the flat paged listing and pages with
+`args={'offset': N, 'depth': D}`; the footer prints the next call.
+The kind's own contents
 is `get(kind="memory", id="/toc")` (or bare `get(kind="memory", view="toc")`):
 every root of the live graph, the same forest render (gr568237).
 

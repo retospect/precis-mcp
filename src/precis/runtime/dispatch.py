@@ -2494,7 +2494,7 @@ class DispatchMixin(RuntimeShape):
 
         ``scope=`` on memory only picks title vs body, but agents reach for
         it to narrow a search to a hub's subtree — the ``under=`` job (gr688476).
-        A bare memory handle in ``scope=`` (top-level or inside ``args=``)
+        A memory handle or numeric id in ``scope=`` (top-level or inside ``args=``)
         moves to ``under=`` so the call does what it plainly meant; any other
         value falls through to the handler's own scope check."""
         kind = args.get("kind")
@@ -2510,17 +2510,31 @@ class DispatchMixin(RuntimeShape):
         scope = holder.get("scope")
         if not isinstance(scope, str):
             return
-        parsed = handle_registry.parse(scope.strip())
-        if parsed is None or parsed[0] != "memory" or parsed[1]:
+        raw = scope.strip()
+        parsed = handle_registry.parse(raw)
+        if raw.isascii() and raw.isdecimal():
+            scope_id = int(raw)
+        elif parsed is not None and parsed[0] == "memory" and not parsed[1]:
+            scope_id = parsed[2]
+        else:
             return
-        in_extras = isinstance(extras, dict) and extras.get("under") is not None
-        if args.get("under") is not None or in_extras:
-            raise BadInput(
-                "scope= names a memory handle and under= is also set",
-                next="pass the hub once, as under='me<id>'",
-            )
+        for source in (args, extras):
+            if not isinstance(source, dict) or source.get("under") is None:
+                continue
+            under = str(source["under"]).strip()
+            parsed_under = handle_registry.parse(under)
+            same = (
+                under.isascii() and under.isdecimal() and int(under) == scope_id
+            ) or parsed_under == ("memory", False, scope_id)
+            if not same:
+                raise BadInput(
+                    "scope= names a memory handle and under= names a different subtree",
+                    next="pass the same hub in scope= and under=, or use under= alone",
+                )
         holder.pop("scope")
-        args["under"] = scope.strip()
+        if isinstance(extras, dict):
+            extras.pop("under", None)
+        args["under"] = handle_registry.format_handle("memory", scope_id)
 
     @staticmethod
     def _hoist_fused_args(args: dict[str, Any]) -> None:

@@ -4745,7 +4745,7 @@ class MemoryHandler(AuditedRetirementHandler):
         if chunk_scope not in (None, "title", "body"):
             raise BadInput(
                 f"unknown scope {scope!r} for search(kind='memory')",
-                options=["title", "body"],
+                options=["title", "body", "a memory handle (alias of under=)"],
                 next="search(kind='memory', q='<words>', scope='title')",
             )
         if view is None or view == "count":
