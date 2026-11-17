@@ -341,6 +341,29 @@ def test_hyphen_numeric_range_does_not_fire_on_named_method() -> None:
     assert not any("hyphen-numeric-range" in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    ["qwen3.6-27b-q8_0", "package3.16-27b", "model_6-27b", "模型6-27b"],
+)
+def test_hyphen_numeric_range_preserves_identifiers(identifier: str) -> None:
+    sentence = f"The selected model is {identifier}."
+    assert not any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence
+    assert "hyphen-numeric-range" not in codes
+
+
+@pytest.mark.parametrize("numeric_range", ["0.7-0.9 mg", "6-27 mg", "16-27b"])
+def test_hyphen_numeric_range_preserves_standalone_detection(
+    numeric_range: str,
+) -> None:
+    sentence = f"The measured range is {numeric_range}."
+    assert any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence.replace("-", "–")
+    assert "hyphen-numeric-range" in codes
+
+
 # Pople basis sets are nomenclature hyphens, not ranges. Found on
 # fi191307, which no reword could clear: keeping the basis set kept the
 # lint, dropping it failed numeric-token preservation
@@ -449,6 +472,18 @@ def test_range_unit_repeated_does_not_fire_on_nomenclature() -> None:
             sentence,
             warnings,
         )
+
+
+@pytest.mark.parametrize("identifier", ["model_4b-4b", "model.4b-4b", "模型4b-4b"])
+def test_range_unit_repeated_does_not_fire_on_identifier(identifier: str) -> None:
+    # Same `(?<![-\w.])` guard as hyphen-numeric-range: `4b-4b` here is a
+    # model/package version tag, not a duplicated unit (gr695785) -- and
+    # normalize must leave the identifier byte-identical.
+    sentence = f"Runs used {identifier} throughout."
+    assert not any("range-unit-repeated" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert identifier in out
+    assert "range-unit-repeated" not in codes
 
 
 def test_range_unit_repeated_auto_fixes() -> None:

@@ -528,11 +528,15 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: immediately (optionally through one space) followed by a unit-ish
 #: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Four guards keep
 #: nomenclature hyphens out, each found by a corpus dry run:
-#: `(?<![-A-Za-z\d])` before the first number excludes a hyphen/letter/
-#: digit immediately to its left, so a *named-method* hyphen (`M06-2X`,
-#: a DFT functional) never fires (the `06` would otherwise read as the
-#: left half of a range) and neither does a mid-chain member of a longer
-#: hyphenated run; `(?!-\d)` after the second number excludes a
+#: `(?<![-\w.])` before the first number excludes a hyphen, word
+#: character or dot immediately to its left, so a *named-method* hyphen
+#: (`M06-2X`, a DFT functional) never fires (the `06` would otherwise
+#: read as the left half of a range), neither does a mid-chain member of
+#: a longer hyphenated run, and neither does a hyphen inside a model/
+#: package identifier (`qwen3.6-27b-q8_0`, `model_6-27b`, `模型6-27b`) --
+#: blocking dots keeps the matcher from restarting after an identifier's
+#: decimal point while still accepting a standalone decimal range
+#: (`0.7-0.9 mg`); `(?!-\d)` after the second number excludes a
 #: `-<digit>` immediately to its right, so a three-way nomenclature chain
 #: (`5-8-5`, a Stone-Wales defect label) never fires on either of its two
 #: hyphens. Compound/series names (`Fe-ZSM-5`, `UiO-66`, `MIL-101`,
@@ -555,7 +559,7 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: does not merely lint, it rewrites `6-311G` to `6–311G` and corrupts
 #: the basis set.
 _HYPHEN_NUMERIC_RANGE_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
+    r"(?<![-\w.])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
     r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
@@ -579,14 +583,14 @@ _ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 #: separately and on a structurally disjoint shape (that rule requires
 #: the two numbers to be dash-adjacent with nothing between; this one
 #: requires a unit token *between* the first number and the dash, so the
-#: two never double-fire on the same span). The same
-#: `(?<![-A-Za-z\d])` guard as `hyphen-numeric-range` keeps a named-
-#: method hyphen (`M06-2X`) from reading its trailing digit as a range
-#: endpoint. `(?P=unit)` requires an exact repeat of the first unit's
-#: text, so `9 GPa-12 kPa` (a genuine unit change, not a duplication)
-#: never fires.
+#: two never double-fire on the same span). The same `(?<![-\w.])` guard
+#: as `hyphen-numeric-range` keeps a named-method hyphen (`M06-2X`) and
+#: an identifier's word-char/dot-adjacent digits (`model_4b-4b`) from
+#: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
+#: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
+#: a duplication) never fires.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )
