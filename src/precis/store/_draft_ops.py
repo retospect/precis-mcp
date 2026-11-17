@@ -2799,10 +2799,14 @@ class DraftStore(_AbbrevMixin):
                 # inside a paragraph renders only in the web reader and
                 # collapses to one run-on line in the PDF and docx.
                 tree = (
-                    mdlist.parse_list_block(block)
-                    if chunk_kind == "paragraph"
+                    mdlist.parse_list_block(
+                        block, allow_single=chunk_kind in ("ulist", "olist")
+                    )
+                    if chunk_kind in ("paragraph", "ulist", "olist")
                     else None
                 )
+                if tree is not None and chunk_kind in ("ulist", "olist"):
+                    tree.chunk_kind = chunk_kind
                 if tree is not None:
                     out.extend(
                         self._insert_list_tree(

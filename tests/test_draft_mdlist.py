@@ -91,6 +91,12 @@ def test_a_single_bullet_is_not_a_list() -> None:
     assert parse_list_block("- the dash opens a clause\nand it runs on") is None
 
 
+def test_explicit_single_item_list() -> None:
+    node = parse_list_block("- only item\ncontinued", allow_single=True)
+    assert node is not None
+    assert _flat(node) == [(0, "ulist", ""), (1, "item", "only item continued")]
+
+
 def test_blank_lines_between_items_stay_one_list() -> None:
     # ``_split_blocks`` splits on blank lines before the parser sees a
     # block, but a caller reaching the parser directly gets loose lists.

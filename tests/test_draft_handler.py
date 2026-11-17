@@ -3345,6 +3345,30 @@ def test_put_converts_markdown_bullets_to_a_structured_list(
     ]
 
 
+@pytest.mark.parametrize("list_kind", ["ulist", "olist"])
+def test_put_single_item_nested_list(
+    draft: DraftHandler, hub: Hub, list_kind: str
+) -> None:
+    """gr685124: explicit nested lists need no disposable second item."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    draft.put(id="nt", text="- parent\n- sibling")
+    parent = next(c for c in _order(hub, "nt") if c.chunk_kind == "item")
+    response = draft.put(
+        id="nt",
+        chunk_kind=list_kind,
+        text="- only child",
+        at={"into": parent.dc, "last": True},
+    )
+    rows = _order(hub, "nt")
+    nested = next(c for c in rows if c.parent_chunk_id == parent.chunk_id)
+    assert nested.chunk_kind == list_kind
+    assert nested.text == ""
+    children = [c for c in rows if c.parent_chunk_id == nested.chunk_id]
+    assert [(c.chunk_kind, c.text) for c in children] == [("item", "only child")]
+    assert "holding 1 item," in response.body
+    assert "only child" in draft.get(id=nested.dc).body
+
+
 def test_put_leaves_a_hyphen_led_paragraph_alone(draft: DraftHandler, hub: Hub) -> None:
     """The guards: a single bullet is not a list, and prose that merely
     opens with a dash stays one paragraph."""

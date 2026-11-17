@@ -50,7 +50,7 @@ def _kind(marker: str) -> str:
     return "ulist" if marker in ("-", "*", "+") else "olist"
 
 
-def parse_list_block(text: str) -> Node | None:
+def parse_list_block(text: str, *, allow_single: bool = False) -> Node | None:
     """Parse one blank-line-delimited block as a markdown list.
 
     Returns the root container, or ``None`` when the block is not a list —
@@ -61,7 +61,9 @@ def parse_list_block(text: str) -> Node | None:
     all-lines rule is what keeps a paragraph that merely opens with a dash
     out — its second sentence would have to be a bullet too.
 
-    Continuations join with a single space; the items are prose.
+    Continuations join with a single space; the items are prose. Explicit
+    list writes set ``allow_single``: their kind already establishes intent,
+    so they need no second bullet to distinguish a list from dash-led prose.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if any(_FENCE.match(ln) for ln in lines):
@@ -69,7 +71,7 @@ def parse_list_block(text: str) -> Node | None:
     first = next((ln for ln in lines if ln.strip()), None)
     if first is None or not _BULLET.match(first):
         return None
-    if sum(1 for ln in lines if _BULLET.match(ln)) < 2:
+    if not allow_single and sum(1 for ln in lines if _BULLET.match(ln)) < 2:
         # One bullet is not a list worth restructuring, and a paragraph
         # that opens with a dash and runs on ("- the clause, said X, then
         # …") would otherwise convert under lazy continuation. Across the
