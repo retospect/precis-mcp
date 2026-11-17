@@ -595,6 +595,7 @@ def _all_imports(tree: ast.Module) -> dict[str, str]:
     return out
 
 
+@functools.cache
 def _tracked_py_files() -> list[Path]:
     """Every tracked+untracked ``*.py`` file, ``git``-scoped like
     ``coderef._grep_candidates``. The gate container has no ``.git``
@@ -602,7 +603,9 @@ def _tracked_py_files() -> list[Path]:
     addopts comment), so this falls back to a plain ``src/`` walk in that
     case, same fallback shape (and same ``src/``-only scope) as
     ``coderef._grep_candidates`` itself — every production caller this
-    package cares about lives under ``src/``."""
+    package cares about lives under ``src/``. Memoized: the worktree is
+    static for a test run, and ~700 per-anchor caller scans were paying a
+    ``git ls-files`` subprocess each."""
     try:
         out = subprocess.run(
             [
@@ -626,6 +629,23 @@ def _tracked_py_files() -> list[Path]:
         pass
     base = _REPO_ROOT / "src"
     return sorted(p for p in base.rglob("*.py") if ".git" not in p.parts)
+
+
+@functools.cache
+def _non_test_scan_files() -> tuple[tuple[str, str, str], ...]:
+    """Every non-``tests/`` tracked file as ``(str path, resolved str
+    path, posix relpath)`` — the loop shape all three caller scans share.
+    Precomputing once drops ~700 x 2200 ``relative_to``/``resolve()``
+    calls per xdist worker (each ``resolve()`` is a filesystem syscall);
+    the posix relpath is what caller sets and ``exclude_relpath`` compare
+    against."""
+    out = []
+    for path in _tracked_py_files():
+        rel = path.relative_to(_REPO_ROOT)
+        if rel.parts[0] == "tests":
+            continue
+        out.append((str(path), str(path.resolve()), rel.as_posix()))
+    return tuple(out)
 
 
 def _attr_load_root(node: ast.Attribute) -> str | None:
@@ -679,14 +699,36 @@ def _scan_tree(tree: ast.Module) -> _FileScan:
 @functools.cache
 def _file_index(path_str: str) -> _FileScan | None:
     path = Path(path_str)
+    if path.is_relative_to(_PCB_DIR):
+        try:
+            return _scan_tree(
+                ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            )
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            return None
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-    except (SyntaxError, UnicodeDecodeError, OSError):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    # Text gate BEFORE the parse — td709194: the td701826 filter still paid
+    # a full ast.parse on all ~2200 non-tests files per worker to discover
+    # ~90 kept ones, the cost that ran a macOS worker into the 300 s
+    # timeout kill (gr709131). A file can only bind a ``precis.pcb*``
+    # import (what _all_imports records, and the caller predicate below
+    # requires) when its source names ``precis`` and ``pcb`` at all —
+    # ``import precis.pcb.x`` / ``from precis.pcb.x import y`` /
+    # ``from precis import pcb`` all qualify; relative imports produce no
+    # binding _all_imports sees, so nothing is lost by dropping them here.
+    if "precis" not in text or "pcb" not in text:
+        return None
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, UnicodeDecodeError):
         return None
     # Outside the defining package, the caller predicate requires a PCB
     # import binding. Inspect imports before building the much larger load
     # index; keep lazy imports and aliases through the same whole-tree scan.
-    if not path.is_relative_to(_PCB_DIR) and not any(
+    if not any(
         dotted == "precis.pcb" or dotted.startswith("precis.pcb.")
         for dotted in _all_imports(tree).values()
     ):
@@ -781,21 +823,19 @@ def _production_callers(anchor: str) -> set[str]:
     # anchor relpaths like _IR_RELPATH (always posix), so a str(rel) here
     # would leak the defining file back in as its own "consumer" on
     # Windows, where str(Path) yields backslashes.
+    def_path_str = str(def_path)
     callers: set[str] = set()
-    for path in _tracked_py_files():
-        rel = path.relative_to(_REPO_ROOT)
-        if rel.parts[0] == "tests":
-            continue
-        indexed = _file_index(str(path))
+    for path_str, resolved_str, rel_posix in _non_test_scan_files():
+        indexed = _file_index(path_str)
         if indexed is None:
             continue
         imports, name_loads, attr_loads = indexed
-        if path.resolve() == def_path:
+        if resolved_str == def_path_str:
             lines = name_loads.get(leaf, []) + [
                 ln for _root, ln in attr_loads.get(leaf, [])
             ]
             if any(ln != def_line for ln in lines):
-                callers.add(rel.as_posix())
+                callers.add(rel_posix)
         elif _is_production_caller_scan(
             imports,
             name_loads,
@@ -804,7 +844,7 @@ def _production_callers(anchor: str) -> set[str]:
             target_module=target_module,
             acceptable=acceptable,
         ):
-            callers.add(rel.as_posix())
+            callers.add(rel_posix)
     return callers
 
 
@@ -921,17 +961,29 @@ _IR_RELPATH = _IR_PATH.relative_to(_REPO_ROOT).as_posix()
 
 @functools.cache
 def _file_write_index(path_str: str) -> frozenset[str]:
-    """Every name this file WRITES to as a dataclass-field PRODUCER: a
-    constructor keyword argument (``PcbIR(field=...)``) or a direct
-    attribute-store assignment (``self.field = ...``). A keyword-argument
-    name is invisible to :func:`_file_index`'s Name/Attribute Load scan
-    (``keyword.arg`` is a bare string, never a ``Name``/``Attribute``
-    node) — this is that function's write-side analogue, needed because a
-    ``slots=True`` dataclass field's only real producer site is almost
-    always a constructor kwarg, not an attribute-store assignment."""
+    """Every name this file WRITES to as a dataclass-field PRODUCER,
+    restricted to ``PcbIR``'s field names (the only fields this index
+    ever probes): a constructor keyword argument (``PcbIR(field=...)``)
+    or a direct attribute-store assignment (``self.field = ...``). A
+    keyword-argument name is invisible to :func:`_file_index`'s
+    Name/Attribute Load scan (``keyword.arg`` is a bare string, never a
+    ``Name``/``Attribute`` node) — this is that function's write-side
+    analogue, needed because a ``slots=True`` dataclass field's only real
+    producer site is almost always a constructor kwarg, not an
+    attribute-store assignment. The text gate skips the parse outright
+    when no field name appears contiguously — a write site spells the
+    field name, so this loses nothing; the intersected return keeps the
+    per-worker cache at a handful of names instead of every kwarg and
+    attribute store in the tree."""
     try:
-        tree = ast.parse(Path(path_str).read_text(encoding="utf-8", errors="ignore"))
-    except (SyntaxError, UnicodeDecodeError, OSError):
+        text = Path(path_str).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return frozenset()
+    if not any(name in text for name in _PCBIR_FIELD_NAMES):
+        return frozenset()
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, UnicodeDecodeError):
         return frozenset()
     out: set[str] = set()
     for node in ast.walk(tree):
@@ -939,18 +991,15 @@ def _file_write_index(path_str: str) -> frozenset[str]:
             out.add(node.arg)
         elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
             out.add(node.attr)
-    return frozenset(out)
+    return frozenset(out & _PCBIR_FIELD_NAMES)
 
 
 def _field_write_sites(field: str) -> set[str]:
-    out: set[str] = set()
-    for path in _tracked_py_files():
-        rel = path.relative_to(_REPO_ROOT)
-        if rel.parts[0] == "tests":
-            continue
-        if field in _file_write_index(str(path)):
-            out.add(rel.as_posix())
-    return out
+    return {
+        rel_posix
+        for path_str, _resolved, rel_posix in _non_test_scan_files()
+        if field in _file_write_index(path_str)
+    }
 
 
 def _pcbir_field_consumers(field: str) -> set[str]:
@@ -1022,6 +1071,17 @@ def _capability_fields() -> list[str]:
     return _tuple_string_constants(_CAPABILITIES_PATH, "FIELDS")
 
 
+#: The only names ``_field_table_consumers`` ever probes — intersecting each
+#: file's string constants with this set keeps the per-worker cache at a few
+#: retained strings instead of ~200k across the tree (td709194, the same
+#: per-worker memory bound td701826 applied to ``_file_index``). No text
+#: pre-gate here: an implicit-concat literal (``"trace_" "width_mm"``)
+#: parses to one full Constant without the name appearing contiguously in
+#: the source, so a textual check could drop a real consumer — the parse
+#: stays, only the retained set shrinks.
+_CAPABILITY_FIELD_SET = frozenset(_capability_fields())
+
+
 @functools.cache
 def _string_constants_in_file(path_str: str) -> frozenset[str]:
     try:
@@ -1031,19 +1091,18 @@ def _string_constants_in_file(path_str: str) -> frozenset[str]:
     return frozenset(
         node.value
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in _CAPABILITY_FIELD_SET
     )
 
 
 def _field_table_consumers(field: str, *, exclude_relpath: str) -> set[str]:
-    out: set[str] = set()
-    for path in _tracked_py_files():
-        rel = path.relative_to(_REPO_ROOT)
-        if rel.parts[0] == "tests" or rel.as_posix() == exclude_relpath:
-            continue
-        if field in _string_constants_in_file(str(path)):
-            out.add(rel.as_posix())
-    return out
+    return {
+        rel_posix
+        for path_str, _resolved, rel_posix in _non_test_scan_files()
+        if rel_posix != exclude_relpath and field in _string_constants_in_file(path_str)
+    }
 
 
 @pytest.mark.parametrize("field", _capability_fields())
@@ -1169,6 +1228,30 @@ def test_file_index_keeps_lazy_aliased_pcb_imports(tmp_path: Path) -> None:
         target_module="precis.pcb.drc",
         acceptable={"precis.pcb.drc", "precis.pcb.drc.vias_in_courtyard_count"},
     )
+
+
+def test_file_index_keeps_from_precis_import_pcb(tmp_path: Path) -> None:
+    """The text gate's subtle keep-case: ``from precis import pcb`` names
+    ``precis`` and ``pcb`` but never ``precis.pcb`` contiguously — the gate
+    must still reach the parse so ``_all_imports``' ``pcb -> precis.pcb``
+    binding keeps the file."""
+    path = tmp_path / "caller.py"
+    path.write_text(
+        "from precis import pcb\n"
+        "def check():\n"
+        "    return pcb.drc.vias_in_courtyard_count()\n",
+        encoding="utf-8",
+    )
+    indexed = _file_index(str(path))
+    assert indexed is not None
+
+
+def test_file_index_drops_precisless_and_pcbless(tmp_path: Path) -> None:
+    """Only one of the two gate words — ``import precis.store`` binds no
+    ``precis.pcb`` module and is not a caller this predicate can count."""
+    path = tmp_path / "half.py"
+    path.write_text("import precis.store\nprecis.store.get()\n", encoding="utf-8")
+    assert _file_index(str(path)) is None
 
 
 @pytest.mark.parametrize(
