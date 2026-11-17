@@ -476,12 +476,19 @@ edit(kind="finding", id=42, args={"pick_candidate": "miller23a"})
 edit(kind="finding", id=42, args={"pick_candidate": 42})  # or by ref_id
 ```
 
-If the chase stalls with `STATUS:dead_chain`, the frontier chunk had
-no resolvable inline citation. When the frontier paper itself is
-fetched and held — the dead_chain is stale, not real — close it out
-with `pick_candidate='self'`: the finding links `derived-from` the
-held paper and flips to `STATUS:established`. Pass `reason=` to record
-why (stored as `meta.close_out_reason`):
+## Close a dead chain against its held terminal paper
+
+Read the live status before choosing `pick_candidate='self'`:
+
+```python
+get(kind="finding", id="fi42")
+```
+
+Use `'self'` only when the finding is `STATUS:dead_chain`, its chain
+has a terminal paper, and that paper has fetched body text supporting
+the claim. It links `derived-from` the held terminal paper and flips
+the finding to `STATUS:established`. `reason=` records the evidence
+for this close-out as `meta.close_out_reason`:
 
 ```python
 edit(
@@ -492,7 +499,14 @@ edit(
 )
 ```
 
-`'self'` refuses when the frontier paper isn't held (a stub the fetch
+For `STATUS:established`, no chase close-out is needed. For
+`STATUS:multi_candidate`, select a listed candidate as above; for other
+statuses, inspect the finding and its chase log. Do not retag a finding
+as dead_chain to force this operation. `'self'` does not approve or verify
+a claim: omit `verdict=` and body-edit `mode=`. Claim review and publication
+follow [[precis-nanopub-help]].
+
+`'self'` also refuses when the frontier paper isn't held (a stub the fetch
 never filled is still a dead end) — if a fetch never ran, ask the user
 to run `precis worker --only fetch` first.
 
