@@ -986,6 +986,17 @@ class MemoryHandler(AuditedRetirementHandler):
         page_size: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if id == "/links" or (view == "links" and _kw.get("reason") == "missing"):
+            return super().get(
+                id=id,
+                view=view,
+                q=q,
+                rel=rel,
+                of_kind=of_kind,
+                direction=direction,
+                limit=limit,
+                **_kw,
+            )
         if page is not None:
             _kw["page"] = page
         if page_size is not None:

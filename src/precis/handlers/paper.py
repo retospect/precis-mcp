@@ -777,6 +777,16 @@ class PaperHandler(Handler):
                 # ``next:`` line left off; ``rel``/``of_kind`` filter the
                 # edge set like draft's links view.
                 "cursor",
+                "reason",
+                "relation",
+                "src_kind",
+                "dst_kind",
+                "include_structural",
+                "count",
+                "space",
+                "under",
+                "endpoint",
+                "direction",
                 "rel",
                 "of_kind",
                 # ``view='comments'`` note selectors (gr521094):
@@ -10628,6 +10638,16 @@ class PaperHandler(Handler):
             return Response(body="\n".join(lines))
 
         if view == "links":
+            if (args or {}).get("reason") == "missing":
+                from precis.handlers._links_missing_reason import render_missing_reasons
+
+                return render_missing_reasons(
+                    self.store,
+                    kind=ref.kind,
+                    id_arg=ref.public_id,
+                    focus_ref_id=ref.id,
+                    **(args or {}),
+                )
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
             # ``cited-by`` edges on a paper (214 inbound related-to on

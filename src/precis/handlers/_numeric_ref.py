@@ -1136,9 +1136,56 @@ class NumericRefHandler(Handler):
         depth: int | str | None = None,
         limit: int | str | None = None,
         cursor: str | None = None,
+        reason: str | None = None,
+        relation: str | None = None,
+        src_kind: str | None = None,
+        dst_kind: str | None = None,
+        include_structural: bool | None = None,
+        count: bool | None = None,
+        space: str | None = None,
+        under: str | int | None = None,
+        endpoint: str | None = None,
         tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
+        missing_queue = id == "/links" or (view == "links" and reason == "missing")
+        if reason is not None and (reason != "missing" or not missing_queue):
+            raise BadInput(
+                "reason='missing' requires view='links' or id='/links'",
+                next=f"get(kind={self.kind!r}, id={id!r}, view='links', args={{'reason': 'missing'}})",
+            )
+        if missing_queue:
+            if q is not None or of_kind is not None:
+                raise BadInput(
+                    "missing reasons take src_kind/dst_kind, not q/of_kind",
+                    next="get(kind='memory', id='/links', args={'src_kind': 'memory'})",
+                )
+            if id == "/links":
+                self._check_list_id_view(id, view)
+            from precis.handlers._links_missing_reason import render_missing_reasons
+
+            focus = (
+                None
+                if id == "/links"
+                else self._resolve_live_ref(self._coerce_id(id)).id
+            )
+            return render_missing_reasons(
+                self.store,
+                kind=self.kind,
+                id_arg=str(id),
+                focus_ref_id=focus,
+                relation=relation or rel,
+                src_kind=src_kind,
+                dst_kind=dst_kind,
+                include_structural=include_structural,
+                count=count,
+                space=space,
+                under=under,
+                endpoint=endpoint,
+                direction=direction,
+                cursor=cursor,
+                limit=limit,
+            )
         if (closed_since is not None or closed_until is not None) and not (
             isinstance(id, str) and id.startswith("/")
         ):
