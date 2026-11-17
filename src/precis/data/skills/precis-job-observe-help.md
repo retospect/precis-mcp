@@ -267,21 +267,30 @@ worker may claim it).
 ## Is a live switch set? — /settings
 
 ```python
-get(kind="job", id="/settings")   # every app_settings + service_config row
+get(kind="job", id="/settings")   # Factory arming + live setting overrides
 ```
 
-`app_settings` is the generic non-secret KV (a row IS a non-default
-override — cadence knobs like `dream.min_interval_minutes`, budget caps,
-marker snapshots); `service_config` is the per-(host, service)
-run-control table (`prio` = live off/weight switch, `concurrency` =
-in-pass fan-out, `expires_at` = reserve-mode clock). Deny-by-default:
-only allowlisted key families render a row at all (the rest are a
-withheld count), unknown key segments render as `<name>`, and values
-render only as typed scalars (bool, number, timestamp, duration,
-vetted enum word — anything else is `(withheld: string, N chars)`).
-`service_config.host` is masked. Read-only — writes stay with
-a human operator. The Dark switches table on [[precis-status]] covers
-only `enable_env` services; this is every row.
+`Factory arming` reports recurring schedules for `plan_dispatch`,
+`release_poll`, `ci_watch`, `pr_poll` and `gripe_validate`, with their
+`td<id>` handles and paused counts. `armed` means an unpaused recurring
+todo exists, not proof that ticks run; a done tag alone does not disarm
+cron. A dedicated plan tick can dispatch without a recurring todo.
+
+The kill-switch line separates the shared dispatch hold from the switch
+in the serving MCP process; worker environment state remains `unknown`.
+The shared hold makes `plan_dispatch` and `ci_watch` read-only;
+`release_poll` and `pr_poll` may still mint plans, and `gripe_validate`
+is not kill-switched. Check activity:
+
+```python
+get(kind="job", id="/logs?handler=plan_tick&level=INFO")
+get(kind="job", id="/throughput")
+```
+
+`app_settings` lists non-default overrides; `service_config` lists live
+service controls (`prio`, `concurrency`, `expires_at`). Only allowlisted
+keys and typed values render; other keys count as withheld, unknown key
+segments become `<name>`, and hosts are masked. Writes stay with an operator.
 
 ## Which claim.* overrides are set? — /claim
 
