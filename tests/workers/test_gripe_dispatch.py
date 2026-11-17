@@ -1233,6 +1233,35 @@ def _chain_for(store: Store, gripe_id: int) -> tuple[int, int]:
     return int(mint.root_id), _build_node(store, int(mint.root_id))
 
 
+# ── open_build_roots: land-notify's pre-resolve read (gr686283) ────────
+
+
+def test_open_build_roots_names_the_in_flight_chain(store: Store) -> None:
+    gid = _gripe(store, "g1")
+    other = _gripe(store, "g2")
+    root, _build = _chain_for(store, gid)
+    assert gd.open_build_roots(store, [gid]) == {gid: [root]}
+    assert gd.open_build_roots(store, [other]) == {}
+    assert gd.open_build_roots(store, [gid, other]) == {gid: [root]}
+    assert gd.open_build_roots(store, []) == {}
+
+
+def test_open_build_roots_empties_once_the_build_lands(store: Store) -> None:
+    gid = _gripe(store, "g1")
+    root, build = _chain_for(store, gid)
+    store.add_tag(
+        build, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert gd.open_build_roots(store, [gid]) == {}
+    # a terminal chain root closes the chain even with the build open
+    gid2 = _gripe(store, "g3")
+    root2, _build2 = _chain_for(store, gid2)
+    store.add_tag(
+        root2, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert gd.open_build_roots(store, [gid2]) == {}
+
+
 def _age_node(store: Store, node: int, hours: float) -> None:
     """Make everything in the build node's whole plan (every todo tagged
     ``plan:<root>``, their tags and their jobs) ``hours`` old."""

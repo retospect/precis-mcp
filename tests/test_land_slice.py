@@ -4081,11 +4081,14 @@ def test_drift_preflight_sources_the_helper_from_the_verified_mirror(
     assert pre["ran"] and "refusing" in pre["diag"]
 
 
-def test_deferred_notify_writes_the_subjects_handles(seams: dict[str, Any]) -> None:
+def test_deferred_notify_writes_the_subjects_handles(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Review td660513 finding 4 (regression): ship's land_notify was held
     (``PRECIS_LAND_NOTIFY=0``); after the origin sync verified the sha the
     lander writes every handle the subject names — this todo's own record
     is :func:`_record_land`'s, the rest land_notify's shape."""
+    monkeypatch.setattr(land_slice, "_open_build_roots", lambda store, ids: {})
     store = _Store()
     store.add_todo(42)
     store.add_todo(55)
@@ -4117,12 +4120,50 @@ def test_deferred_notify_writes_the_subjects_handles(seams: dict[str, Any]) -> N
     assert all("already" in n or "left" in n for n in second)
 
 
+def test_deferred_notify_demotes_gripe_with_open_build(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr686283: a subject-named gripe whose fix build is still in flight
+    (an open chain) gets the partial comment only — no ``resolved:``, no
+    STATUS write — and the note names the open chain root."""
+    seen_ids: list[list[int]] = []
+
+    def fake_open_roots(store: Any, ids: list[int]) -> dict[int, list[int]]:
+        seen_ids.append(list(ids))
+        return {7: [685659]}
+
+    monkeypatch.setattr(land_slice, "_open_build_roots", fake_open_roots)
+    store = _Store()
+    store.add_todo(42)
+    sha = "c" * 40
+    subject = "fix(deploy): PATH (td42, gr7)"
+    notes = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    gripe7 = [
+        c.text for c in store.chunks.rows.get(7, []) if c.chunk_kind == "gripe_comment"
+    ]
+    assert any(t.startswith("landed (partial): ccccccccc") for t in gripe7)
+    assert "STATUS:auto_verify" not in store.tag_strings(7)
+    assert any("partial landed comment (open build td685659)" in n for n in notes)
+    assert seen_ids == [[7]]
+
+
+def test_subject_handles_marks_part_gripes() -> None:
+    """gr686283: ``part grN`` parses as the partial form, like ``refs``."""
+    assert land_slice._subject_handles("f: y (gr1, part gr2)") == [
+        ("gripe", 1, False),
+        ("gripe", 2, True),
+    ]
+    assert land_slice._subject_handles("f: y (part gr3)") == [("gripe", 3, True)]
+
+
 def test_deferred_notify_leaves_a_second_repo_todo_alone(
     seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If this fails a precis land whose subject names a todo that landed
     in another repo (td659522) writes a precis ``landed:`` sha on it — the
     reviewer of that slice would then read a sha its repo does not hold."""
+    monkeypatch.setattr(land_slice, "_open_build_roots", lambda store, ids: {})
     store = _Store()
     store.add_todo(42)
     store.add_todo(55, status="done", comments=("landed: 123456789 — engine",))
@@ -4177,6 +4218,7 @@ def test_deferred_notify_replays_gripe_note(
     goes on every gripe the SQUASH MESSAGE names (subject tail and
     ``Fixes:`` trailers alike), before land_notify's writes so a
     ``resolved:`` stays the newest."""
+    monkeypatch.setattr(land_slice, "_open_build_roots", lambda store, ids: {})
     store = _Store()
     store.add_todo(42)
     store.add_todo(7)

@@ -351,10 +351,11 @@ _DEFAULT_WALL_S = 3600
 _TAIL_CAP = 2000
 
 #: ``scripts/lib/land_notify.py``'s trailing handle list, including its
-#: partial ``refs grN`` form (gr659980: a list holding one was not seen,
-#: so a second `` (tdN)`` list was appended and land-notify read only that).
+#: partial ``refs grN`` / ``part grN`` forms (gr659980: a list holding one
+#: was not seen, so a second `` (tdN)`` list was appended and land-notify
+#: read only that; gr686283 adds ``part``).
 _HANDLE = r"(?:gr|td)\d+"
-_ITEM = rf"(?:{_HANDLE}|refs\s+gr\d+)"
+_ITEM = rf"(?:{_HANDLE}|(?:refs|part)\s+gr\d+)"
 _HANDLES_RE = re.compile(rf"\(({_ITEM}(?:[,\s]+{_ITEM})*)\)\s*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_RE = re.compile(r"SHIP_STATUS:\s*(\S+)")
@@ -1766,9 +1767,9 @@ def _notify_gripe(
     return f"gripe gr{gripe_id}: {', '.join(did)} written"
 
 
-#: land_notify's ``_ITEM_RE`` — one ``(refs )?(gr|td)N`` item; group 1
-#: marks the ``refs grN`` partial form.
-_ITEM_PARSE_RE = re.compile(r"(refs\s+)?(gr|td)(\d+)")
+#: land_notify's ``_ITEM_RE`` — one ``((refs|part) )?(gr|td)N`` item;
+#: group 1 marks the ``refs grN`` / ``part grN`` partial forms.
+_ITEM_PARSE_RE = re.compile(r"((?:refs|part)\s+)?(gr|td)(\d+)")
 _MAX_HANDLES = 8
 
 #: scripts/gripe-note's ``fixed_gripe_ids`` source: the subject's
@@ -1831,6 +1832,16 @@ def _landed_elsewhere(store: Any, todo_id: int) -> str | None:
     return None
 
 
+def _open_build_roots(store: Any, gripe_ids: list[int]) -> dict[int, list[int]]:
+    """``{gripe_id: [chain root ids]}`` for the gripes whose fix build is
+    still in flight (gr686283) — the lander-side twin of land_notify's
+    ``gripes --fix-open`` read. The predicate is the factory's own
+    (:func:`precis.workers.gripe_dispatch.open_build_roots`)."""
+    from precis.workers import gripe_dispatch
+
+    return gripe_dispatch.open_build_roots(store, gripe_ids)
+
+
 def _deferred_notify(
     store: Any, subject: str, sha: str, todo_id: int, tree: Path
 ) -> list[str]:
@@ -1844,8 +1855,11 @@ def _deferred_notify(
     * then ``scripts/lib/land_notify.py`` (``PRECIS_LAND_NOTIFY=0``):
       other todos get the ``landed:`` comment + done (a todo that
       landed in a second repo is left alone, :func:`_landed_elsewhere`),
-      a ``refs grN`` the partial comment alone, a plain gripe the
-      resolved comment + ``STATUS:auto_verify``.
+      a ``refs grN``/``part grN`` the partial comment alone, a gripe
+      whose fix build is still in flight (an open chain
+      :func:`_open_build_roots` reports — gr686283) the same partial
+      comment alone, a plain gripe the resolved comment +
+      ``STATUS:auto_verify``.
 
     gripe-note's comment lands before land_notify's so a ``resolved:``
     stays the newest — ship's own order. This land's own todo is written
@@ -1882,22 +1896,44 @@ def _deferred_notify(
             ],
         )
         notes.append(f"gripe gr{gid}: landed note")
-    for kind, n, partial in _subject_handles(subject):
-        if kind == "todo":
-            if n == todo_id:
-                continue
-            elsewhere = _landed_elsewhere(store, n)
-            if elsewhere is not None:
-                # td659522: its ``landed:`` sha is that repo's (the
-                # reviewer's target read); a precis sha there would lie.
-                notes.append(f"todo td{n}: left alone (it landed in {elsewhere})")
-                continue
-            wrote = _record_land(store, n, sha, subject)
-            notes.append(
-                f"todo td{n}: "
-                + (", ".join(wrote) + " written" if wrote else "already recorded")
-            )
-        elif partial:
+    handles = _subject_handles(subject)
+    for kind, n, _partial in handles:
+        if kind != "todo":
+            continue
+        if n == todo_id:
+            continue
+        elsewhere = _landed_elsewhere(store, n)
+        if elsewhere is not None:
+            # td659522: its ``landed:`` sha is that repo's (the
+            # reviewer's target read); a precis sha there would lie.
+            notes.append(f"todo td{n}: left alone (it landed in {elsewhere})")
+            continue
+        wrote = _record_land(store, n, sha, subject)
+        notes.append(
+            f"todo td{n}: "
+            + (", ".join(wrote) + " written" if wrote else "already recorded")
+        )
+    # gr686283: the open-chain read runs AFTER the todo loop — a named
+    # build node this land just closed must not count as in flight.
+    # A fault fails safe like land_notify's unreadable read: every plain
+    # gripe demotes to partial rather than a false ``resolved:``.
+    plain = [n for kind, n, partial in handles if kind == "gripe" and not partial]
+    open_roots: dict[int, list[int]] = {}
+    if plain:
+        try:
+            open_roots = _open_build_roots(store, plain)
+        except Exception:
+            log.warning("land_slice: open-build read failed", exc_info=True)
+            open_roots = {gid: [] for gid in plain}
+    for kind, n, partial in handles:
+        if kind != "gripe":
+            continue
+        why = ""
+        if not partial:
+            if n in open_roots:
+                roots = ", ".join(f"td{r}" for r in open_roots[n])
+                why = f"open build {roots}" if roots else "build state unreadable"
+        if partial or why:
             # ``landed (partial):`` — touches the gripe, no status.
             text = f"landed (partial): {sha[:9]} — {subject.strip()}"
             comments = [
@@ -1927,7 +1963,8 @@ def _deferred_notify(
                     )
                 ],
             )
-            notes.append(f"gripe gr{n}: partial landed comment")
+            suffix = f" ({why})" if why else ""
+            notes.append(f"gripe gr{n}: partial landed comment{suffix}")
         else:
             # land_notify's resolved path — ``resolved:`` comment +
             # ``STATUS:auto_verify`` (it auto-verifies; _notify_gripe's

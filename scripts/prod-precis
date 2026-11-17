@@ -39,6 +39,7 @@ READ_ONLY=(
     quest:status
     quest:replay
     memory:index gripes:--summary
+    gripes:--fix-open
     gripe-fix:brief
     secret:check
 )

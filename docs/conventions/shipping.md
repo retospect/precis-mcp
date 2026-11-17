@@ -35,8 +35,13 @@ and gets nothing. A commit that *touches* a gripe without finishing it
 uses the partial form `refs grN` inside the same trailing list
 (`fix(x): y (gr1, refs gr2)`, gr547015): land-notify posts a
 `landed (partial): <sha>` comment with no `resolved:` and no STATUS
-write, so nothing auto-closes. A gripe that must *never* auto-close
-carries the `hold:no-autoclose` tag (a plain tag, applied with
+write, so nothing auto-closes. The factory lander also reads `part grN`
+as partial, and lands a plain `grN` whose gripe-fix chain is still in
+flight (an open factory build) as partial too — `land_slice._deferred_notify`
+asks `gripe_dispatch.open_build_roots` after recording the land, and a
+read fault demotes every plain `grN` to partial (gr686283). Hand
+`scripts/ship` lands do not yet: use `refs grN` there. A gripe that must
+*never* auto-close carries the `hold:no-autoclose` tag (a plain tag, applied with
 `tag(kind='gripe', id=N, add=['hold:no-autoclose'])`) — even if a commit
 names it plainly, gripe-validate skips it and posts a `shipped in r<N>`
 note instead of `STATUS:done`.

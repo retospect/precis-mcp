@@ -436,6 +436,25 @@ def _unlanded_chains(
     ]
 
 
+def open_build_roots(store: Store, gripe_ids: Any) -> dict[int, list[int]]:
+    """``{gripe_id: [chain root ids, sorted]}`` for the named gripes — each
+    gripe with a live plan root ``related-to`` it whose build has not
+    landed (:func:`_unlanded_chains`' predicate, the factory's own
+    in-flight definition). scripts/ship's land-notify asks before writing
+    ``resolved:`` on a subject-named gripe: an open build means the land
+    is at most a partial hand part of the fix, so the gripe keeps its
+    status (gr686283)."""
+    wanted = {int(g) for g in gripe_ids}
+    if not wanted:
+        return {}
+    out: dict[int, list[int]] = {}
+    for root, gids, _builds in _unlanded_chains(store):
+        for gid in gids:
+            if gid in wanted:
+                out.setdefault(gid, []).append(root)
+    return {gid: sorted(roots) for gid, roots in out.items()}
+
+
 def chains(store: Store) -> list[Chain]:
     """Every unlanded chain, marked running or waiting/parked.
 
@@ -1396,6 +1415,7 @@ __all__ = [
     "gripe_dispatch_enabled",
     "gripe_trust",
     "lane_capacity",
+    "open_build_roots",
     "open_chain_count",
     "parked_chain_count",
     "run_gripe_dispatch_pass",
