@@ -559,12 +559,17 @@ _HYPHEN_NUMERIC_RANGE_RE = re.compile(
     r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
-#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit,
-#: word-bounded on the right -- `1.61x`, `4-8x`, `100x`. The lookbehind
-#: means the `x` must directly abut the digit (no space), and the
-#: trailing `\b` means a grid-style label like `2x2` never fires (`x` is
-#: followed by another digit, so no word boundary sits between them).
-_ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
+#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit run
+#: that starts at a word boundary -- `1.61x`, `4-8x`, `100x`. The
+#: leading `\b` means the digit run must start at the beginning of a
+#: word: a ref-handle range like `pa4249x` (pa42490 to pa42499) has its
+#: digits glued to the handle prefix (`pa`, `pc`, `fi`, `me`, `td`,
+#: `gr`, ...), and between two word characters no boundary sits, so the
+#: range never fires (gr694538). The trailing `\b` means a grid-style
+#: label like `2x2` never fires either (`x` is followed by another
+#: digit, so no word boundary sits between them). The digit run is
+#: captured so `normalize_notation` can rewrite only the `x`.
+_ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 
 #: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
 #: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
@@ -1106,7 +1111,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         "hyphen-numeric-range",
         applied,
     )
-    s = _apply(s, _ASCII_X_MULT_RE, "×", "ascii-x-multiplier", applied)
+    s = _apply(
+        s,
+        _ASCII_X_MULT_RE,
+        lambda m: f"{m.group(1)}×",
+        "ascii-x-multiplier",
+        applied,
+    )
     s = _apply(
         s,
         _RANGE_UNIT_REPEATED_RE,

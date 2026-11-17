@@ -399,6 +399,19 @@ def test_ascii_x_multiplier_does_not_fire_on_grid_label() -> None:
     assert not any("ascii-x-multiplier" in w for w in warnings)
 
 
+def test_ascii_x_multiplier_does_not_fire_on_handle_range() -> None:
+    # 'pa4249x' is a ref-handle range (pa42490 to pa42499), not a number
+    # times something: the digit run is glued to the handle prefix, so no
+    # word boundary sits before it (gr694538). The normalize path must not
+    # rewrite it either.
+    sentence = "The pa4249x range has 5 merged pairs."
+    warnings = lint_notation(sentence)
+    assert not any("ascii-x-multiplier" in w for w in warnings)
+    out, codes = normalize_notation(sentence)
+    assert "×" not in out, out
+    assert "ascii-x-multiplier" not in codes, codes
+
+
 # ── 2026-08-20 numeric-value policy: range-unit-repeated ─────────────────
 
 
