@@ -366,6 +366,21 @@ def _doable_under_ids(store: Store, raw: Any) -> list[int]:
     return [r.id for r in live]
 
 
+def _under_doable_next(raw: Any) -> list[str]:
+    """gr676953: an ``under=`` on a view that is not ``doable`` used to
+    be pointed at a single next call that only listed the claimable
+    leaves — and spelled ``under=`` top-level, the form the same
+    response called deprecated. Point at both reads instead: the
+    subtree (``get`` view='tree') first, then the claimable-leaf
+    search, interpolating the caller's own id when known.
+    """
+    ident = repr(raw) if raw is not None else "<todo id>"
+    return [
+        f"get(kind='todo', id={ident}, view='tree')",
+        f"search(kind='todo', view='doable', args={{'under': {ident}}})",
+    ]
+
+
 def _dict_in_q(q: Any) -> dict[str, Any] | None:
     """A dict smuggled through ``q=``, decoded — else ``None``.
 
@@ -1030,7 +1045,7 @@ class TodoHandler(NumericRefHandler):
             if view != "doable":
                 raise BadInput(
                     "under= requires view='doable' on todo search",
-                    next="search(kind='todo', view='doable', under='<todo id>')",
+                    next=_under_doable_next(under),
                 )
             if (
                 args is not None
@@ -1051,7 +1066,7 @@ class TodoHandler(NumericRefHandler):
         if view != "doable" and args is not None and args.get("under") is not None:
             raise BadInput(
                 "under= requires view='doable' on todo search",
-                next="search(kind='todo', view='doable', under='<todo id>')",
+                next=_under_doable_next(args["under"]),
             )
         if view is not None:
             try:
