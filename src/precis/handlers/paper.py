@@ -9850,14 +9850,34 @@ class PaperHandler(Handler):
         id: str | int,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open."""
+        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open.
+
+        ``reason=`` (gr688475) lands as one ``agent/retagged``
+        ``ref_events`` row — the audit line a mass tag fold (removing a
+        quest tag from a sweep of papers) otherwise lacks. Same door as
+        the numeric-ref kinds' tag ``reason=`` (gr504803) and pcb's
+        delete ``reason=`` (gr523119): declared on the handler so the
+        dispatch arg gate lets it through, recorded in the same
+        transaction as the tag writes.
+        """
         require_tag_ops("paper", add, remove)
         slug, ref_id = self._resolve_paper_slug(id)
-        n_added, n_removed = apply_tag_ops(
-            self.store, "paper", ref_id, tags=add, untags=remove
-        )
+        with self.store.tx() as conn:
+            n_added, n_removed = apply_tag_ops(
+                self.store, "paper", ref_id, tags=add, untags=remove, conn=conn
+            )
+            r = (reason or "").strip()
+            if r:
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="retagged",
+                    payload={"reason": r},
+                    conn=conn,
+                )
         return Response(
             body=format_link_tag_ack(
                 kind=self.spec.kind,
