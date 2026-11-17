@@ -302,6 +302,20 @@ def set_skill_slug_probe(probe: Callable[[str], bool] | None) -> None:
     _SKILL_SLUG_PROBE = probe
 
 
+def is_served_skill_slug(token: str) -> bool:
+    """Whether ``token`` names a skill this build serves.
+
+    The same probe the `~N` carve-out consults (plugin slugs included),
+    with the packaged-corpus fallback when the probe was never
+    registered. ``precis.runtime.dispatch`` uses this for kindless-get
+    inference (gr676949) — taproot answers so the runtime need not reach
+    up to the handlers layer.
+    """
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
+
+
 @lru_cache(maxsize=1)
 def _skill_slugs() -> frozenset[str]:
     """Slugs of the skills shipped under ``precis.data.skills`` -- the

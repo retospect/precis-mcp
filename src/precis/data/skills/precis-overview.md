@@ -36,7 +36,9 @@ to every kind that supports them.
 | `tag`    | Add or remove tags (`add=[...]`, `remove=[...]`). |
 | `link`   | Add or remove a cross-link (`target=`, `rel=`). |
 
-For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
+For `get`, `kind=` is optional when `id=` self-identifies (handle,
+bare ref id, slug, DOI, `kind:id`); otherwise required. For
+`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 
 **A precis web path is a handle, not a page to fetch.** If a user gives

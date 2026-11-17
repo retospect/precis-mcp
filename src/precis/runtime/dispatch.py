@@ -302,6 +302,13 @@ _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 #: handle grammar (``pe<N>`` + relative ops), never ``slug~ord``.
 _PLAN_PE_RE = re.compile(r"^pe(\d+)(.*)$")
 
+#: Bare-DOI grammar (``10.1021/ja01019a011``) — a kindless
+#: ``get(id='10.…')`` self-identifies as kind='paper' (gr676949). The
+#: full DOI stays on ``id=``: suffixes contain ``/``, so the id is never
+#: split for this shape. Same grammar as
+#: ``precis.ingest.provenance``/``semanticscholar``.
+_BARE_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
 #: Matches the ``[error:ClassName]`` prefix :meth:`ErrorMixin.render_error`
 #: always emits — the tool-call ledger (:mod:`precis.tool_ledger`) reads the
 #: error class name back out of the already-rendered body instead of
@@ -5317,6 +5324,42 @@ class DispatchMixin(RuntimeShape):
         if len(owners) == 1:
             args["kind"] = owners[0]
 
+    def _maybe_infer_get_address_kind(self, args: dict[str, Any], ident: str) -> None:
+        """Pin ``kind`` for three kindless-``get`` id shapes (gr676949):
+        a bare kind word, a served skill slug, a bare DOI.
+
+        Runs in the no-``:`` branch of :meth:`_maybe_split_prefixed_id`
+        after the ref-slug and file probes above, so a real ref slug or
+        file that collides with one of these shapes still wins (refs
+        checked first — a slug is an address; a kind word is not). Get
+        only: ``put``/``edit``/… stay kind-required.
+        """
+        if self.hub is None:
+            return
+        live_kinds = set(self.hub.kinds)
+        stripped = ident.strip()
+        # ``id=`` that IS a live kind word — ``get(id='skill', q='gripe')``
+        # reads as kind='skill'. The id moves to nothing (``q=``/``view=``
+        # stay); a kind that needs an id gets its own refusal downstream.
+        if stripped in live_kinds:
+            args["kind"] = stripped
+            args.pop("id", None)
+            return
+        # A served skill slug — ``get(id='precis-get-help')`` reads the
+        # skill. The id stays whole (the handler parses a ``~N`` /
+        # ``/view`` suffix itself).
+        base = re.split(r"[~/?]", stripped, maxsplit=1)[0].strip()
+        if base:
+            from precis.taproot.notation import is_served_skill_slug
+
+            if is_served_skill_slug(base):
+                args["kind"] = "skill"
+                return
+        # A bare DOI — ``get(id='10.1021/x')`` reads the paper; the full
+        # DOI stays on ``id=`` (never split on ``/`` for this shape).
+        if "paper" in live_kinds and _BARE_DOI_RE.match(stripped):
+            args["kind"] = "paper"
+
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
         """Universal handles: route a draft chunk handle ``dc<id>`` (optionally with a
         relative operator ``^`` / ``+N`` / ``-lo..hi``) to the draft handler,
@@ -6046,6 +6089,47 @@ class DispatchMixin(RuntimeShape):
             return False
         return kind is None or found in {k.strip() for k in kind.split(",")}
 
+    def _refuse_disabled_kind_prefix(self, prefix: str) -> None:
+        """Raise ``Unsupported`` for a ``kind:id`` whose kind this build
+        disabled at boot (gr676949 slice 3).
+
+        ``get(id='tex:chapters/intro')`` on a host without ``PRECIS_ROOT``
+        used to fall through to the bare ``missing kind=`` refusal, which
+        named neither the id's kind nor the way out. The cause says the
+        kind is disabled on this host (with the boot-time reason); the
+        breadcrumb defers to the disabled-kinds skill rather than
+        duplicating its per-kind guidance, and — when the deployment
+        serves the kind from another host — names that host, the
+        read-only fallback ``precis-get-help`` documents for a kind this
+        process lacks. No-op when the prefix is not a registered kind.
+        """
+        if self.hub is None:
+            return
+        verdict = getattr(self.hub, "loadabilities", {}).get(prefix)
+        if verdict is None or verdict.loaded:
+            return
+        reason = verdict.reason or "disabled"
+        hints: list[str] = []
+        store = getattr(self.hub, "store", None)
+        if store is not None:
+            try:
+                hosts = store.find_kind_providers(prefix)
+            except Exception:  # pragma: no cover - missing table / DB error
+                hosts = []
+            if hosts:
+                hints.append(
+                    f"kind {prefix!r} routes through host(s): {', '.join(hosts)} "
+                    "— read it there (read-only here)"
+                )
+        hints.append(
+            "see get(kind='skill', id='precis-kinds-disabled-help') "
+            "and precis-overview Needs column"
+        )
+        raise Unsupported(
+            f"kind {prefix!r} is disabled on this host ({reason})",
+            next=hints,
+        )
+
     def _maybe_split_prefixed_id(
         self, args: dict[str, Any], *, verb: str | None = None
     ) -> None:
@@ -6110,6 +6194,10 @@ class DispatchMixin(RuntimeShape):
             # names its kind via the extension of the file it addresses
             # (gr648740).
             self._maybe_infer_file_kind(args, ident)
+            # gr676949: a bare kind word (``get(id='skill', q='gripe')``),
+            # a served skill slug, or a bare DOI self-identifies too.
+            if verb == "get" and args.get("kind") is None:
+                self._maybe_infer_get_address_kind(args, ident)
             return
         # Only honour a colon that comes before any selector / view
         # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``
@@ -6123,6 +6211,11 @@ class DispatchMixin(RuntimeShape):
             return
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
         if prefix not in live_kinds:
+            # A prefix naming a registered-but-disabled kind is not an
+            # unknown id — name the disabled kind instead of bouncing on
+            # the bare "missing kind=" (gr676949: ``get(id='tex:<slug>')``
+            # on a host without PRECIS_ROOT).
+            self._refuse_disabled_kind_prefix(prefix)
             # Not a recognised kind prefix — but ``<alias>::<qualname>``
             # is the python kind's address grammar and no other live
             # kind uses ``::``, so when the alias names a configured
