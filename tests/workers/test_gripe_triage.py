@@ -1359,6 +1359,94 @@ class TestVerdictSemantics:
         # body carries the context whole.
         assert long_url in _body(store, todos[0])
 
+    def test_recommend_restating_reason_falls_back_to_option(
+        self, store: Store
+    ) -> None:
+        """gr652284: a ``recommend`` that just re-says the reason is no
+        recommendation — the recommended option's action takes its
+        place on the minted ask's option 1 and the ``recommend:``
+        comment."""
+        reason = (
+            "plan_tick worker session lacked PRECIS_ROOT and any "
+            "filesystem/DB access path, blocking the todo's required "
+            "file access"
+        )
+        recommended = "make plan_tick set PRECIS_ROOT"
+        options = [
+            {
+                "option": recommended,
+                "cost": "one provisioning patch",
+                "recommended": True,
+            },
+            # Oversized — the model's own ask fails the meta.ask lint,
+            # so the minted todo is the fallback framed on the
+            # recommendation (gr673371): option 1 proves WHICH text the
+            # recommendation property returned.
+            {
+                "option": "leave provisioning unchanged " + "x" * 200,
+                "cost": "every tick fails",
+            },
+        ]
+        gid = _gripe(store, "plan_tick session lacked PRECIS_ROOT")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=reason,
+                            ask=_ask(options=options),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        minted = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert minted[0] == f"{recommended} — triage's recommendation"
+        assert f"recommend: {recommended}" in _comments(store, gid)
+
+    def test_action_recommend_kept(self, store: Store) -> None:
+        """gr652284: a ``recommend`` that names a real action — not a
+        restatement of the problem — is used verbatim."""
+        reason = (
+            "plan_tick worker session lacked PRECIS_ROOT and any "
+            "filesystem/DB access path, blocking the todo's required "
+            "file access"
+        )
+        recommend = (
+            "dispatch infra fix: make plan_tick session provisioning "
+            "always set PRECIS_ROOT, and fail the tick early with a "
+            "clear error when it is missing"
+        )
+        gid = _gripe(store, "plan_tick session lacked PRECIS_ROOT")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=recommend,
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+        )
+        assert r.extra["reto"] == 1
+        assert f"recommend: {recommend}" in _comments(store, gid)
+
     def test_needs_spec_and_recommend_dedup(self, store: Store) -> None:
         """gr595189: when the needs-spec note and the recommend note
         would carry the same text, only one comment is written — a
@@ -1653,6 +1741,22 @@ class TestVerdictSemantics:
         )
         assert "pcb-router" in prompts[0]
         assert "ship-gate-ci" in prompts[0]
+
+    def test_prompt_demands_action_recommend(self, store: Store) -> None:
+        """gr652284: the verdict schema tells the model ``recommend``
+        is an imperative action, not a restatement of the problem."""
+        _gripe(store, "fresh")
+        _light(store)
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": []})(prompt)
+
+        _run(store, llm=spy)
+        assert "an imperative action, not a restatement of the problem" in " ".join(
+            prompts[0].split()
+        )
 
 
 # ── flood control ─────────────────────────────────────────────────────────
