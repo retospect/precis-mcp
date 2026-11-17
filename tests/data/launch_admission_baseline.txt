@@ -135,6 +135,7 @@ src/precis/workers/job_types/land_slice.py::_selector_stdout 1
 src/precis/workers/job_types/lane_health.py::_probe_claude_p 1
 src/precis/workers/job_types/lane_health.py::_probe_codex_exec 1
 src/precis/workers/job_types/pr_action.py::_gh 1
+src/precis/workers/job_types/release_deploy.py::_run_pin 1
 src/precis/workers/job_types/run_slice.py::_devin_auth_status 1
 src/precis/workers/job_types/run_slice.py::_devin_model_prices 1
 src/precis/workers/job_types/run_slice.py::_run 1

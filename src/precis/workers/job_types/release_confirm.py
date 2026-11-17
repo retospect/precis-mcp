@@ -62,6 +62,18 @@ it — ``release.ci_verdicts``'s newest verdict on the sha (a waived red's
 unverifiable — an unreadable head, a head that moved again, no green run
 — keeps the mismatch a problem: fail closed, never a guessed sha.
 
+**The session MCP** (gr685985). The deploy pins the prod watched checkout
+(:func:`precis.workers.job_types.release_deploy._pin_prod`) and the
+CheckoutWatchdog restarts the shared server onto it, so a confirm that
+only read workers could say "deployed" while every agent still saw the
+previous release. The ``release.mcp_url`` operator setting must name the
+session MCP and :func:`_mcp_evidence` reads ``precis-status``'s ``served_sha``
+through the MCP itself (the token from ``PRECIS_MCP_TOKEN``) and it must
+equal the release sha: a lagging server parks the probe like a worker
+still restarting and, past the window, fails with "MCP still serves
+<sha>" — never "confirmed". Unset is a problem too ("MCP not attested"):
+an unattested MCP never confirms.
+
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
 the plan root and ``release.round``
@@ -156,6 +168,12 @@ HEALTH_URL_KEY = "release.health_url"
 #: them equal, the same repeated-literal arrangement as
 #: :data:`precis.plans.release.ROUND_KEY`).
 BOOT_SHA_HEADER = "X-Precis-Boot-Sha"
+
+#: ``release.mcp_url`` — the operator setting naming the session MCP's
+#: streamable-http endpoint; empty means the MCP is not attested.
+MCP_URL_KEY = "release.mcp_url"
+
+_SERVED_SHA_RE = re.compile(r"\bserved_sha\b\W{0,4}([0-9a-f]{7,40})\b")
 
 #: The restart-race window: the probe re-reads heartbeats until this long
 #: after the deploy finished, then anything still not at the release sha
@@ -343,6 +361,51 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     return "", f"web reports {reported}, release is {sha[:12]}"
 
 
+def _mcp_served_sha(url: str) -> str | None:
+    """Seam: ``served_sha`` from ``get(kind='skill', id='precis-status')``
+    on the session MCP at ``url`` (bearer from ``PRECIS_MCP_TOKEN``); a
+    bounded round trip. ``None`` when the answer carries no sha; a raise
+    is a failed probe (the caller reports the class name only)."""
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    token = os.environ.get("PRECIS_MCP_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    async def _ask() -> str | None:
+        async with streamablehttp_client(url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                res = await session.call_tool(
+                    "get", {"kind": "skill", "id": "precis-status"}
+                )
+                text = "\n".join(str(getattr(c, "text", "") or "") for c in res.content)
+                m = _SERVED_SHA_RE.search(text)
+                return m.group(1) if m else None
+
+    return asyncio.run(asyncio.wait_for(_ask(), 30))
+
+
+def _mcp_evidence(url: str | None, sha: str) -> tuple[str, str | None, bool]:
+    """``(clause, problem, lagging)`` for the session-MCP half of the
+    evidence. ``url`` unset is a problem: an unattested MCP is never "confirmed". ``lagging`` marks
+    a server answering with another sha — the restart may still be coming,
+    so the caller parks on it until the window ends. No URL in any text."""
+    if not url or not url.strip():
+        return "", "MCP not attested (release.mcp_url unset)", False
+    try:
+        served = _mcp_served_sha(url.strip())
+    except Exception as exc:
+        return "", f"MCP unreachable ({type(exc).__name__})", False
+    if served is None:
+        return "", "MCP reports no served_sha", False
+    if _same_sha(served, sha):
+        return f"at {sha[:12]}", None, False
+    return "", f"MCP still serves {served[:12]}, release is {sha[:12]}", True
+
+
 def _fetch_head(repo: str, branch: str) -> str | None:
     """Seam: ``branch``'s live head on GitHub
     (``ci_verdict_poll.fetch_head``); ``None`` when unreadable."""
@@ -517,10 +580,20 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
 
     url = settings.get_str(HEALTH_URL_KEY, store=store) if sha is not None else None
     web_problem: str | None = None
+    mcp_clause = "not attested (no pinned sha)"
     if sha is not None:
         web_clause, web_problem = _web_evidence(url, sha)
         if web_problem is not None:
             problems.append(web_problem)
+        mcp_url = settings.get_str(MCP_URL_KEY, store=store)
+        mcp_clause, mcp_problem, mcp_lagging = _mcp_evidence(mcp_url, sha)
+        if mcp_problem is not None:
+            if mcp_lagging and deadline is not None and now < deadline:
+                # The watchdog restarts the server after the pin: wait.
+                waiting.append("mcp")
+                mcp_clause = f"{mcp_problem} (waiting on restart)"
+            else:
+                problems.append(mcp_problem)
     else:
         web_clause = "not attested (no pinned sha)"
     if not live:
@@ -551,6 +624,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
         f"{rn or 'r?'} pinned {short}{moved}; {workers}{note}; web: {web_clause}"
+        f"; mcp: {mcp_clause}"
     )[:_TEXT_CAP]
     return Evidence(
         ok=not problems and not waiting,
@@ -1027,6 +1101,7 @@ __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
     "HEALTH_URL_KEY",
+    "MCP_URL_KEY",
     "NAME",
     "PARAMS_SCHEMA",
     "REQUIRES",

@@ -416,6 +416,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "different-sha URL files the confirm's ask.",
         ),
         SettingSpec(
+            key="release.mcp_url",
+            type="str",
+            env_var="PRECIS_RELEASE_MCP_URL",
+            default=None,
+            doc="The streamable-http URL of the shared session MCP that "
+            "release_confirm asks for precis-status's served_sha "
+            "(precis.workers.job_types.release_confirm; bearer from "
+            "PRECIS_MCP_TOKEN) — an operator setting, no address belongs "
+            "in the repo. It must equal the release sha or the confirm "
+            "fails 'MCP still serves <sha>' (gr685985). Empty: the confirm "
+            "fails 'MCP not attested'.",
+        ),
+        SettingSpec(
             key="release.no_release_windows",
             type="str",
             env_var="PRECIS_RELEASE_NO_RELEASE_WINDOWS",

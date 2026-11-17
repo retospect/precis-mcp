@@ -59,6 +59,20 @@ counts no attempt for it.
   rollout time), and
   the ``next:`` line lands in the summary. Any other exit fails with the log
   tail.
+
+**The session MCP pin** (gr685985). The rollout does not move the prod
+watched checkout the session MCP serves from, and nothing else ran the
+manual ``scripts/host-ops/pin-prod`` step, so every release left the
+agents' tool surface one release behind. After a rollout poll runs
+``scripts/host-ops/pin-prod-sha`` at the deployed sha
+(:func:`_pin_prod`) — the smallest mechanism: one fixed helper, invoked
+directly when the factory user owns the checkout and otherwise as
+``sudo -n -u <owner> <helper> <sha>`` under a one-line sudoers grant
+(``pin-prod-sha.sudoers``; no env, no other arguments, so the factory
+gets no write access to the tree); the CheckoutWatchdog then restarts
+the server onto the new HEAD. Best-effort: a failed pin is a summary
+note, the rollout stands, and ``release_confirm`` fails on "MCP still
+serves <sha>" instead of attesting a lagging server.
 """
 
 from __future__ import annotations
@@ -67,6 +81,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -287,6 +302,125 @@ def _landed(root: Path, prev: str, head: str) -> list[str]:
     return [s[:n] for s in proc.stdout.split()]
 
 
+#: The pin helper's wall: one ``git fetch`` and a detached checkout.
+_PIN_TIMEOUT_S = 120
+
+#: The narrow helper that moves the prod watched checkout (gr685985) —
+#: invoked directly when the factory user owns the checkout, else through
+#: the one-line sudoers grant shipped as ``pin-prod-sha.sudoers``.
+PIN_PROD_HELPER = Path("scripts") / "host-ops" / "pin-prod-sha"
+
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+
+#: sudo's own words when the sudoers grant is absent (``sudo -n`` refuses
+#: before any command runs).
+_SUDO_GRANT_MISS = re.compile(
+    r"password is required|no askpass|not in the sudoers|a terminal is required", re.I
+)
+
+
+def _prod_checkout_dir(root: Path) -> Path:
+    """The prod watched checkout's path, mirroring
+    ``env_prod_checkout_dir`` (scripts/lib/env-pointers.sh): the env
+    overrides, then the ``<main-checkout>-prod`` sibling, then the legacy
+    ``~/precis-mcp-prod``. Only the path is needed here — owner and pin
+    belong to the helper."""
+    env_dir = os.environ.get("PRECIS_PROD_CHECKOUT") or os.environ.get("PROD_CHECKOUT")
+    if env_dir:
+        return Path(env_dir)
+    proc = _rs._git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    main = Path(proc.stdout.strip()).parent if proc.returncode == 0 else root
+    derived = Path(f"{main}-prod")
+    if (derived / ".git" / "HEAD").is_file():
+        return derived
+    legacy = Path.home() / "precis-mcp-prod"
+    if (legacy / ".git" / "HEAD").is_file():
+        return legacy
+    return derived
+
+
+def _path_owner(path: Path) -> str:
+    """``path``'s owner name (``""`` when unstatable)."""
+    import pwd
+
+    try:
+        return pwd.getpwuid(path.stat().st_uid).pw_name
+    except (OSError, KeyError):
+        return ""
+
+
+def _me() -> str:
+    """The factory worker's user name."""
+    import pwd
+
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return str(os.geteuid())
+
+
+def _pin_argv(helper: Path, owner: str, user: str, sha: str) -> list[str]:
+    """The pin command: the helper alone when the factory user owns the
+    checkout, else ``sudo -n -u <owner> <helper> <sha>`` — exactly, no
+    ``env`` hop and no other arguments (the helper sets its own
+    variables; a sudoers grant that allowed env would allow any command
+    as the owner)."""
+    if owner and owner != user:
+        return ["sudo", "-n", "-u", owner, str(helper), sha]
+    return [str(helper), sha]
+
+
+def _run_pin(argv: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    """Seam: run the pin command (tests stub this)."""
+    return subprocess.run(
+        argv,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=_PIN_TIMEOUT_S,
+        check=False,
+    )
+
+
+def _pin_prod(root: Path, sha: str = "") -> str:
+    """Seam: pin the prod watched checkout at the deployed ``sha`` through
+    :data:`PIN_PROD_HELPER` and return one summary note (never raises) —
+    the CheckoutWatchdog then restarts the session MCP onto the release.
+    Cross-owner the helper runs as the checkout's owner through the
+    narrow sudoers grant, so the factory gets no write access to the
+    tree. A missing grant, a failed pin, or a reported HEAD that is not
+    the deployed sha all say "not pinned" — best-effort: the rollout
+    stands, and ``release_confirm`` fails on "MCP still serves <sha>"
+    instead of attesting a lagging server."""
+    helper = (root / PIN_PROD_HELPER).resolve()
+    if not helper.exists():
+        return f"prod checkout not pinned: no {PIN_PROD_HELPER} in {root}"
+    if not _SHA_RE.fullmatch(sha or ""):
+        return f"prod checkout not pinned: bogus deployed sha {sha[:12]!r}"
+    try:
+        owner = _path_owner(_prod_checkout_dir(root))
+        user = _me()
+        argv = _pin_argv(helper, owner, user, sha)
+        proc = _run_pin(argv, root)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"prod checkout not pinned: {type(exc).__name__}"
+    if proc.returncode != 0:
+        if argv[0] == "sudo" and _SUDO_GRANT_MISS.search(proc.stderr or ""):
+            return (
+                "prod checkout not pinned: missing sudoers grant — add on this "
+                f"host: {user} ALL=({owner}) NOPASSWD: {helper}"
+            )[:300]
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
+        return f"prod checkout not pinned: exit {proc.returncode} {''.join(tail)}"[:300]
+    first = (proc.stdout or "").strip().splitlines()[:1]
+    m = re.search(r" at ([0-9a-f]{7,40})\b", "".join(first))
+    if m is None or not sha.startswith(m.group(1)):
+        got = m.group(1) if m else "?"
+        return f"prod checkout not pinned: at {got}, deployed {sha[:12]}"
+    return f"prod checkout pinned: {''.join(first)}"[:300]
+
+
 #: The deploy script's own words for a refusal before any rollout (the
 #: backup-window refusal, scripts/deploy): no host moved.
 _NO_HOST_TOUCHED = "no host was touched"
@@ -353,6 +487,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             except Exception as exc:  # best-effort like the prod-head write
                 log.warning("%s: deploy scope record failed", NAME, exc_info=True)
                 lines.append(f"bounce scope not recorded: {type(exc).__name__}")
+        lines.append(_pin_prod(root, head))
     else:
         lines.append("no RELEASE_DEPLOYED line (rollout was already done)")
     now = datetime.now(UTC)

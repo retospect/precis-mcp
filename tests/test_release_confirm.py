@@ -36,6 +36,11 @@ REL = {"rN": "r7", "sha": SHA, "range": RNG}
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
+    # The session MCP is attested at the release sha unless a test says
+    # otherwise (``_mcp`` restores the real probe).
+    monkeypatch.setattr(
+        rcf, "_mcp_evidence", lambda url, sha: (f"at {sha[:12]}", None, False)
+    )
     psettings.invalidate()
 
 
@@ -105,7 +110,7 @@ def test_workers_all_at_the_pinned_sha_passes(store: Store) -> None:
     assert ev.ok and ev.sha == SHA and ev.problems == []
     assert ev.text == (
         f"r7 pinned {SHA[:12]}; workers: 2 live (node-a, node-b), "
-        f"all at {SHA[:12]}; web: not attested (release.health_url unset)"
+        f"all at {SHA[:12]}; web: not attested (release.health_url unset); mcp: at {SHA[:12]}"
     )
 
 
@@ -409,7 +414,9 @@ def test_web_unset_passes_with_the_not_attested_line(store: Store) -> None:
     _beat(store, "node-a", SHA)
     ev = rcf.gather_evidence(store, REL, now=NOW)
     assert ev.ok
-    assert ev.text.endswith("web: not attested (release.health_url unset)")
+    assert ev.text.endswith(
+        f"web: not attested (release.health_url unset); mcp: at {SHA[:12]}"
+    )
 
 
 def test_web_at_the_pinned_sha_passes(
@@ -420,7 +427,7 @@ def test_web_at_the_pinned_sha_passes(
     psettings.set_setting(rcf.HEALTH_URL_KEY, HEALTH_URL, store=store)
     _web(monkeypatch, resp=_ok_resp(SHA))
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert ev.ok and ev.text.endswith(f"web: at {SHA[:12]}")
+    assert ev.ok and f"web: at {SHA[:12]}; mcp: " in ev.text
 
 
 def test_web_another_sha_fails(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -867,3 +874,72 @@ def test_failure_reason_is_capped_at_560(store: Store) -> None:
     assert not ev.ok
     assert len(rcf.failure_reason(ev)) <= 560
     assert "node-00x" in rcf.failure_reason(ev)
+
+
+MCP_URL = "http://mcp.invalid/mcp"
+_REAL_MCP_EVIDENCE = rcf._mcp_evidence
+
+
+def _mcp(monkeypatch: pytest.MonkeyPatch, served: str | None) -> None:
+    monkeypatch.setattr(rcf, "_mcp_evidence", _REAL_MCP_EVIDENCE)
+
+    def get(url: str) -> str | None:
+        assert url == MCP_URL
+        return served
+
+    monkeypatch.setattr(rcf, "_mcp_served_sha", get)
+
+
+def test_mcp_at_the_release_sha_adds_an_mcp_line(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    psettings.set_setting(rcf.MCP_URL_KEY, MCP_URL, store=store)
+    _mcp(monkeypatch, SHA[:12])
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert ev.ok, ev.problems
+    assert ev.text.endswith(f"mcp: at {SHA[:12]}")
+
+
+def test_lagging_mcp_served_sha_fails_the_confirm(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    psettings.set_setting(rcf.MCP_URL_KEY, MCP_URL, store=store)
+    _mcp(monkeypatch, SHA2)
+    late = datetime.now(UTC) + timedelta(hours=1)  # past the restart window
+    ev = rcf.gather_evidence(store, REL, now=late)
+    assert not ev.ok and not ev.waiting
+    assert ev.problems == [f"MCP still serves {SHA2[:12]}, release is {SHA[:12]}"]
+    assert not ev.web_only
+    assert "confirmed" not in rcf.failure_reason(ev)
+
+
+def test_lagging_mcp_inside_the_window_parks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    psettings.set_setting(rcf.MCP_URL_KEY, MCP_URL, store=store)
+    _mcp(monkeypatch, SHA2)
+    soon = datetime.now(UTC) + timedelta(seconds=1)
+    ev = rcf.gather_evidence(store, REL, now=soon)
+    assert not ev.ok and ev.problems == [] and ev.waiting == ("mcp",)
+
+
+def test_unset_mcp_url_fails_the_confirm(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rcf, "_mcp_evidence", _REAL_MCP_EVIDENCE)
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok
+    assert ev.problems == ["MCP not attested (release.mcp_url unset)"]
+
+
+def test_mcp_url_is_a_registered_setting() -> None:
+    spec = psettings.REGISTRY["release.mcp_url"]
+    assert spec.env_var == "PRECIS_RELEASE_MCP_URL" and spec.default is None

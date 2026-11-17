@@ -9,6 +9,7 @@ never touch a real host.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ _SCRIPTS = [
     "nfs-recover",
     "os-update",
     "pin-prod",
+    "pin-prod-sha",
     "play",
     "vllm-stop",
 ]
@@ -485,7 +487,58 @@ def test_pin_prod_detaches_at_prod(
     assert head == git_pair["prod_sha"]
 
 
-# ── PROD_CHECKOUT derivation (gr513362): the clone is <main-checkout>-prod ──
+# ── pin-prod-sha ─────────────────────────────────────────────────────────────
+# The fixed helper the factory's deploy leg runs as the checkout's owner
+# (gr685985): one sha argument, no env, the pin only. The sudoers grant
+# beside it is a documented example, installed by hand on the host.
+
+
+def test_pin_prod_sha_refuses_anything_but_one_sha(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
+    for bad in ([], ["xyz"], ["ABCDEF1"], ["a" * 41], ["a" * 40, "b" * 40]):
+        result = _run(env, "pin-prod-sha", *bad)
+        assert result.returncode == 2, bad
+        assert "usage:" in result.stderr
+
+
+def test_pin_prod_sha_pins_at_the_given_sha(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
+    # The older sha is not a commit in the prod clone until fetched — the
+    # helper fetches, then detaches.
+    result = _run(env, "pin-prod-sha", git_pair["old_sha"])
+    assert result.returncode == 0, result.stderr
+    assert git_pair["old_sha"][:7] in result.stdout
+    head = _git(Path(git_pair["PROD_CHECKOUT"]), "rev-parse", "HEAD")
+    assert head == git_pair["old_sha"]
+
+
+def test_pin_prod_sha_unknown_sha_is_exit_1(
+    tmp_path: Path, bin_dir: dict[str, str], git_pair: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir, PROD_CHECKOUT=git_pair["PROD_CHECKOUT"])
+    result = _run(env, "pin-prod-sha", "f" * 40)
+    assert result.returncode == 1
+    assert "is not a commit" in result.stderr
+
+
+def test_pin_prod_sha_sudoers_example_is_one_grant_line(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    """The example next to the helper names exactly one NOPASSWD line —
+    the host op installs it by hand, nothing in code does."""
+    text = (_DIR / "pin-prod-sha.sudoers").read_text(encoding="utf-8")
+    grants = [
+        ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    assert len(grants) == 1
+    assert re.match(
+        r"^<worker user> ALL=\(<owner>\) NOPASSWD: <absolute helper path>$",
+        grants[0],
+    )
 
 
 def test_pin_prod_derives_the_clone_next_to_main(
@@ -533,6 +586,9 @@ def test_pin_prod_precis_prod_checkout_override(
     )
     result = _run(env, "pin-prod")
     assert result.returncode == 0, result.stderr
+
+
+# ── PROD_CHECKOUT derivation (gr513362): the clone is <main-checkout>-prod ──
 
 
 def test_play_derives_prod_checkout(

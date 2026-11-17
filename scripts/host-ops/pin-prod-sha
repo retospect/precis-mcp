@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Pin the prod watched checkout at ONE sha — the fixed helper the factory's
+# deploy leg runs as the checkout's owner (gr685985). Two invocation shapes,
+# neither takes anything but the sha:
+#
+#   pin-prod-sha <sha>                          (the owner runs it)
+#   sudo -n -u <owner> pin-prod-sha <sha>       (the factory's worker user)
+#
+# The sudo shape is the whole point: the checkout belongs to the MCP's user,
+# the factory must move it for the CheckoutWatchdog to restart the server
+# onto the release, and a one-line sudoers grant on THIS script (nothing
+# else — no env passing, no shell) is the narrowest safe bridge. Sudo
+# scrubs the environment, so every variable this needs is set here, not
+# inherited; HOME above all (sudo hands us the caller's home, which would
+# send the ~/precis-mcp-prod fallback in env_prod_checkout_dir to the wrong
+# account).
+#
+# Does only the pin: resolve the checkout, fetch if the sha is unknown
+# there, detach HEAD at the sha, print one line. Anything that is not
+# exactly one well-formed sha is refused with exit 2; a well-formed sha
+# that names no commit in the checkout is exit 1.
+#
+# The matching sudoers grant is a host op, installed by hand with visudo —
+# see pin-prod-sha.sudoers next to this script.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: pin-prod-sha <sha>
+
+Detach the prod watched checkout (the session MCP's clone, resolved like
+scripts/host-ops/pin-prod) at <sha>, a hex sha of 7-40 characters. Exactly
+one argument; anything else is refused. Prints the pinned sha on success.
+EOF
+}
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+esac
+if [[ $# -ne 1 || ! "$1" =~ ^[0-9a-f]{7,40}$ ]]; then
+  usage >&2
+  exit 2
+fi
+SHA="$1"
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+_common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+MAIN_CHECKOUT="$(dirname "${_common:-$REPO/.git}")"
+export HOME="$(eval echo "~$(id -un)")"
+# shellcheck source=scripts/lib/env-pointers.sh
+. "${REPO}/scripts/lib/env-pointers.sh"
+
+PROD_CHECKOUT="${PROD_CHECKOUT:-$(env_prod_checkout_dir "$MAIN_CHECKOUT")}"
+[[ -f "${PROD_CHECKOUT}/.git/HEAD" ]] || {
+  echo "no prod checkout at ${PROD_CHECKOUT} (set PRECIS_PROD_CHECKOUT on the sudoers side if it lives elsewhere)" >&2; exit 1; }
+if ! git -C "$PROD_CHECKOUT" cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+  git -C "$PROD_CHECKOUT" fetch -q origin || {
+    echo "fetch origin failed in ${PROD_CHECKOUT}" >&2; exit 1; }
+fi
+FULL="$(git -C "$PROD_CHECKOUT" rev-parse --verify --quiet "${SHA}^{commit}")" || {
+  echo "${SHA} is not a commit in ${PROD_CHECKOUT} (fetched origin; still unknown)" >&2; exit 1; }
+# env_prod_checkout_sync re-derives the dir from the root; name the resolved
+# path so the sync moves THIS checkout (sudo scrubbed the caller's env).
+PRECIS_PROD_CHECKOUT="$PROD_CHECKOUT" env_prod_checkout_sync "$MAIN_CHECKOUT" "$FULL"
+echo "precis-mcp-prod at $(git -C "$PROD_CHECKOUT" rev-parse --short HEAD) (${PROD_CHECKOUT})"

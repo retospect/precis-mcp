@@ -62,6 +62,9 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
+    monkeypatch.setattr(
+        rcf, "_mcp_evidence", lambda url, sha: (f"at {sha[:12]}", None, False)
+    )
     psettings.invalidate()
     # These op tests exercise approval, pins and rollout bookkeeping;
     # shared ancestry and exact-head CI refusal cases live in test_release_gate.
@@ -4597,7 +4600,7 @@ def test_confirm_after_deploy_exit_3_confirms_and_closes(
     handle = rcf.submit(ctx, None)
     assert handle is not None, ctx.failures
     text = handle["evidence"]
-    assert "web: not attested (release.health_url unset)" in text
+    assert f"web: not attested (release.health_url unset); mcp: at {SHA[:12]}" in text
     assert checkout["argv"][-1] == [
         str(script),
         "deploy",
@@ -5038,7 +5041,12 @@ def test_consecutive_unbounced_deploys_keep_the_original_worker_sha(
         ctx, handle = _deploy_handle(store, mint)
         _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {prev}\n{_scope_line(scope)}")
         assert rd.poll(ctx, handle) is True, ctx.failures
-        return _meta(store, mint.root_id)["release"]
+        rel = _meta(store, mint.root_id)["release"]
+        # td703295: a deploy refuses while another release-pass is open —
+        # each pass here ends with its deploy, so close the root before the
+        # next pass mints.
+        _close(store, mint.root_id)
+        return rel
 
     deploy(a, "none")
     rel = deploy(b, "web")
@@ -5759,3 +5767,134 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
     assert len(checkout["argv"]) == launches + 1
     assert checkout["argv"][-1][1:] == ["--cut-only"]
+
+
+def _pin_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A helper script in a fake root and owner/user seams pinned to a
+    cross-owner layout: checkout owned by ``mcp``, factory user ``worker``."""
+    from precis.workers.job_types import release_deploy as rd
+
+    script = tmp_path / rd.PIN_PROD_HELPER
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "#!/bin/sh\necho 'precis-mcp-prod at abc1234'\n", encoding="utf-8"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(rd, "_prod_checkout_dir", lambda root: tmp_path / "prod")
+    monkeypatch.setattr(rd, "_path_owner", lambda path: "mcp")
+    monkeypatch.setattr(rd, "_me", lambda: "worker")
+    return script
+
+
+def test_pin_prod_missing_helper_names_the_helper(tmp_path: Path) -> None:
+    from precis.workers.job_types import release_deploy as rd
+
+    assert "not pinned: no scripts/host-ops/pin-prod-sha" in rd._pin_prod(
+        tmp_path, "a" * 40
+    )
+
+
+def test_pin_prod_cross_owner_command_is_sudo_helper_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cross-owner argv is exactly [sudo, -n, -u, owner, helper, sha] —
+    no env hop, no other arguments (gr685985 re-brief)."""
+    import subprocess as sp
+
+    from precis.workers.job_types import release_deploy as rd
+
+    _pin_env(monkeypatch, tmp_path)
+    seen: list[list[str]] = []
+
+    def fake_run_pin(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
+        seen.append(argv)
+        return sp.CompletedProcess(argv, 0, "precis-mcp-prod at abc1234\n", "")
+
+    monkeypatch.setattr(rd, "_run_pin", fake_run_pin)
+    assert rd._pin_prod(tmp_path, "abc1234" + "0" * 33) == (
+        "prod checkout pinned: precis-mcp-prod at abc1234"
+    )
+    helper = (tmp_path / rd.PIN_PROD_HELPER).resolve()
+    assert seen == [["sudo", "-n", "-u", "mcp", str(helper), "abc1234" + "0" * 33]]
+
+
+def test_pin_prod_same_owner_runs_the_helper_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess as sp
+
+    from precis.workers.job_types import release_deploy as rd
+
+    _pin_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(rd, "_path_owner", lambda path: "worker")
+    seen: list[list[str]] = []
+
+    def fake_run_pin(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
+        seen.append(argv)
+        return sp.CompletedProcess(argv, 0, "precis-mcp-prod at abc1234\n", "")
+
+    monkeypatch.setattr(rd, "_run_pin", fake_run_pin)
+    assert rd._pin_prod(tmp_path, "abc1234" + "0" * 33) == (
+        "prod checkout pinned: precis-mcp-prod at abc1234"
+    )
+    helper = (tmp_path / rd.PIN_PROD_HELPER).resolve()
+    assert seen == [[str(helper), "abc1234" + "0" * 33]]
+
+
+def test_pin_prod_missing_sudoers_grant_names_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sudo -n's refusal maps to the sudoers line to add, not a bare sudo
+    error (gr685985 re-brief)."""
+    import subprocess as sp
+
+    from precis.workers.job_types import release_deploy as rd
+
+    _pin_env(monkeypatch, tmp_path)
+
+    def refused(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
+        return sp.CompletedProcess(argv, 1, "", "sudo: a password is required")
+
+    monkeypatch.setattr(rd, "_run_pin", refused)
+    note = rd._pin_prod(tmp_path, "abc1234" + "0" * 33)
+    helper = (tmp_path / rd.PIN_PROD_HELPER).resolve()
+    assert "not pinned" in note
+    assert f"worker ALL=(mcp) NOPASSWD: {helper}" in note
+
+
+def test_pin_prod_helper_failure_and_wrong_sha_are_not_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess as sp
+
+    from precis.workers.job_types import release_deploy as rd
+
+    _pin_env(monkeypatch, tmp_path)
+
+    def boom(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
+        return sp.CompletedProcess(argv, 2, "", "boom")
+
+    monkeypatch.setattr(rd, "_run_pin", boom)
+    assert rd._pin_prod(tmp_path, "abc1234" + "0" * 33) == (
+        "prod checkout not pinned: exit 2 boom"
+    )
+
+    def other(argv: list[str], root: Path) -> sp.CompletedProcess[str]:
+        return sp.CompletedProcess(argv, 0, "precis-mcp-prod at ffffffffffff\n", "")
+
+    monkeypatch.setattr(rd, "_run_pin", other)
+    deployed = "abc1234" + "0" * 29
+    assert f"not pinned: at ffffffffffff, deployed {deployed[:12]}" in rd._pin_prod(
+        tmp_path, deployed
+    )
+
+
+def test_pin_prod_bogus_deployed_sha_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.job_types import release_deploy as rd
+
+    _pin_env(monkeypatch, tmp_path)
+    assert rd._pin_prod(tmp_path, "not-a-sha") == (
+        "prod checkout not pinned: bogus deployed sha 'not-a-sha'"
+    )

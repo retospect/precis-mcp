@@ -1,0 +1,10 @@
+# Example sudoers grant for scripts/host-ops/pin-prod-sha (gr685985).
+#
+# Installed BY HAND on the session-MCP host(s) with visudo — no script
+# installs it. <worker user> is the factory's deploy user; <owner> is the
+# user that owns the prod watched checkout; the helper path must be the
+# absolute path on the host (the checkout that holds the repo, not a
+# repo-relative one). The grant names this one script only: sudo runs it
+# with a scrubbed environment, it takes no env and no arguments but the
+# sha, and it does only the pin.
+<worker user> ALL=(<owner>) NOPASSWD: <absolute helper path>
