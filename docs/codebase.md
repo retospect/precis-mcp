@@ -271,6 +271,11 @@ Most work lands at one of these. Each has a convention that bites:
   at release time (`scripts/bump`), never hand-edit it.
 - **Add a worker pass** → register on the derived queue; don't call
   `fill_embeddings` from the ingest path (workers own it).
+- **Journal names** → `ingest/journal_record.py` caches Crossref journal
+  records by ISSN in `app_state`; metadata enrichment materializes the title
+  in `meta.journal`. The worker repairs old papers and refreshes every 30 days;
+  substantive name disagreements create deduplicated review todos. Citation
+  exporters prefer that journal over a provider's raw `meta.venue`.
 - **Mutate chunk text** → DELETE + INSERT, never UPDATE (cascade).
 - **Ingest needs worker-side follow-up** → `precis.ingest` may not
   import `precis.workers` (import-linter contract), so an ingest path

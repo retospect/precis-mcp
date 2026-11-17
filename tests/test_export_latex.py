@@ -2047,7 +2047,7 @@ def test_build_bib_article_emits_journaltitle_from_meta_journal() -> None:
     assert "journaltitle = {Surface Science}" in bib
 
 
-def test_build_bib_article_venue_wins_over_journal() -> None:
+def test_build_bib_article_canonical_journal_wins_over_venue() -> None:
     store = _BibStore(
         {
             ("paper", "p1"): _bibref(
@@ -2061,8 +2061,8 @@ def test_build_bib_article_venue_wins_over_journal() -> None:
         }
     )
     bib = latex.build_bib(store, ["p1"], [])
-    assert "journaltitle = {Venue Name}" in bib
-    assert "Journal Name" not in bib
+    assert "journaltitle = {Journal Name}" in bib
+    assert "Venue Name" not in bib
 
 
 def test_build_bib_article_no_journal_omits_field() -> None:

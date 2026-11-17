@@ -86,7 +86,10 @@ the lookup provider).
 ``meta.entry_type``/``journal``/``issn``, extra ``ref_identifiers``,
 per-author ORCID links, and retraction status from one Crossref
 (+conditional OpenAlex) fetch, on the :mod:`precis.workers.paper_meta_enrich`
-cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
+cadence. Journal spelling comes from the shared Crossref journal record keyed
+by ISSN (``journal_record``), with a 30-day background refresh even for
+already-enriched papers; ambiguous source identities create review todos.
+``meta.authors_resolved_at`` is its idempotency stamp and
 ``refs.human_verified_at`` its skip guard. It also fills
 ``refs.title``/``refs.year`` when — and only when — the ref has none of
 its own (:func:`precis.identity.is_placeholder_title`), which is how a

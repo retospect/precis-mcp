@@ -3144,8 +3144,8 @@ def build_bib(
             # source dict) so both renderers agree on the venue string.
             meta = pref.meta or {}
             journal = str(
-                meta.get("venue")
-                or meta.get("journal")
+                meta.get("journal")
+                or meta.get("venue")
                 or meta.get("container_title")
                 or ""
             ).strip()

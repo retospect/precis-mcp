@@ -1752,8 +1752,8 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         "authors": pref.authors,
         "title": pref.title or slug,
         "year": pref.year,
-        "journal": meta.get("venue")
-        or meta.get("journal")
+        "journal": meta.get("journal")
+        or meta.get("venue")
         or meta.get("container_title"),
         "volume": meta.get("volume"),
         "number": meta.get("number"),
@@ -2013,7 +2013,7 @@ def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
             out.append((f"{', ' if publisher else ' '}version {version}", none))
         return _sentence(out) if out else out
     if entry_type == "article":
-        journal = field("venue") or field("journal") or field("container_title")
+        journal = field("journal") or field("venue") or field("container_title")
         if journal:
             out.append((" ", none))
             out += [(t, st | ital) for t, st in _bib_markup_runs(journal)]

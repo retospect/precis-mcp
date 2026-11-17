@@ -157,9 +157,10 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
         source.get("bib_type") or source.get("kind") or "article",
         _REF_TYPES["article"],
     )
-    # Same venue precedence as the .bib/.docx exporters.
+    # Canonical `journal` first — same venue precedence as the
+    # .bib/.docx exporters and `_resolve_source`.
     venue = _strip_markup(
-        source.get("venue") or source.get("journal") or source.get("container_title")
+        source.get("journal") or source.get("venue") or source.get("container_title")
     )
     rec = source["rec_number"]
     parts = [
