@@ -324,6 +324,11 @@ def _kind_codes() -> dict[str, str]:
     return {**KIND_CODES, **_plugin_kind_codes}
 
 
+def record_kinds() -> frozenset[str]:
+    """Record-addressable kinds, including installed plugin contributions."""
+    return frozenset(_kind_codes())
+
+
 def is_known_kind(kind: str) -> bool:
     """True if ``kind`` is in the full registry — built-ins *plus*
     plugin-contributed kinds *plus* :data:`CODELESS_KINDS` (registered

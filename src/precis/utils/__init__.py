@@ -10,6 +10,9 @@ pattern. Module docstrings own the detail; this one only groups them.
 The eye renderer assembles todo ``parent_id`` tree neighbours before its
 empty-hop decision: link edges alone cannot establish an empty first hop.
 
+Mention kinds derive lazily from the handle registry plus codeless caches.
+Lazy discovery avoids cycles when handle-code plugins import mention consumers.
+
 **Groups.**
 
 - *Outbound network + LLM seams.* :mod:`~precis.utils.safe_fetch` (SSRF guard —

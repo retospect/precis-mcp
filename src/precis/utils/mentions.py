@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Set
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -90,52 +90,55 @@ BARE_PAPER_PATTERN = re.compile(
 #: :func:`extract_part_lcscs`, so either spelling resolves exactly once.
 BARE_PART_PATTERN = re.compile(r"(?<![A-Za-z0-9:])C\d{3,8}(?![A-Za-z0-9])")
 
-#: Kinds we resolve. The regex over-fires on ``noun:value`` prose
-#: (``user:asa``, ``tag:open``); emission/resolution is gated on this
-#: allowlist. Keep aligned with ``_REFS_BROWSABLE_KINDS`` in
-#: routes/refs.py.
-LINKIFY_KINDS: frozenset[str] = frozenset(
+#: Real kinds suppressed because they read as noise in prose.
+LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
+
+#: Codeless tools/providers whose cached refs support legacy mentions.
+#: Private non-ref data and tools without cached refs stay out.
+_CODELESS_CACHE_KINDS: frozenset[str] = frozenset(
     {
-        "memory",
-        "conv",
-        "gripe",
-        "pres",
-        "oracle",
-        "paper",
-        "patent",
-        "todo",
-        "job",
-        "agentlog",
-        "finding",
-        "citation",
-        "draft",
-        "anki",
-        "perplexity-research",
-        "perplexity-reasoning",
+        "calc",
+        "math",
+        "provenance",
+        "random",
         "web",
         "youtube",
         "websearch",
-        "message",
-        "math",
-        "calc",
-        "skill",
-        "provenance",
-        "random",
-        # Atomistic simulation structure + its reaction-energetics pathway —
-        # both drifted from _REFS_BROWSABLE_KINDS (routes/refs.py); realigned
-        # so ``structure:NNN`` / ``pathway:NNN`` / ``[[…]]`` resolve instead
-        # of rendering literal, and the computational-evidence provenance
-        # class (routes/drafts.py) sees them as citations.
-        "structure",
-        "pathway",
+        "perplexity-research",
+        "perplexity-reasoning",
     }
 )
 
-#: Real kinds we still suppress because they read as noise in prose
-#: (``tag:open`` is ambiguous with a tag namespace). Today both are
-#: absent from ``LINKIFY_KINDS`` too; this stays as the explicit
-#: opt-out lever.
-LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
+
+#: The regex over-fires on ``noun:value`` prose (``user:asa``, ``tag:open``).
+#: Derive the allowlist from record handles, including plugins, so new
+#: handle kinds work in legacy mentions and web linkification automatically.
+class _LinkifyKinds(Set[str]):
+    # Plugins can import mention consumers while their codes load. Defer
+    # discovery until use so importing this module cannot create a cycle.
+    def __iter__(self) -> Iterator[str]:
+        return iter(
+            (handle_registry.record_kinds() | _CODELESS_CACHE_KINDS) - LOW_SIGNAL_KINDS
+        )
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __contains__(self, kind: object) -> bool:
+        return (
+            isinstance(kind, str)
+            and kind not in LOW_SIGNAL_KINDS
+            and (
+                kind in _CODELESS_CACHE_KINDS or kind in handle_registry.record_kinds()
+            )
+        )
+
+    @classmethod
+    def _from_iterable[T](cls, it: Iterable[T]) -> frozenset[T]:
+        return frozenset(it)
+
+
+LINKIFY_KINDS: Set[str] = _LinkifyKinds()
 
 #: Kinds whose refs are computational evidence that *sources* a claim
 #: the way a corpus paper does — a cited simulation structure
@@ -400,11 +403,8 @@ def extract_part_lcscs(body: str) -> list[str]:
     Two spellings share the part grammar: the prefixed ``part:C…``
     handle (either ``c`` case — the writer explicitly named a part) and
     the bare uppercase token ``C<number>``. Extraction only — whether a
-    C-number mints or resolves is downstream's call. ``part:`` is
-    deliberately NOT on :data:`LINKIFY_KINDS`: keeping it out leaves
-    the web read surface (``precis_web.linkify`` /
-    ``_REFS_BROWSABLE_KINDS``) untouched while the write-time
-    autolinker still catches the handle form here.
+    C-number mints or resolves is downstream's call. Prefixed parts also
+    participate in the shared legacy mention grammar.
     """
     if not body:
         return []

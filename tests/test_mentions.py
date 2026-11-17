@@ -12,7 +12,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from precis.utils import mentions
+import pytest
+
+from precis.utils import handle_registry, mentions
 
 # ---------------------------------------------------------------------------
 # extract_handles
@@ -52,6 +54,43 @@ def test_extract_gates_on_allowlist_and_low_signal() -> None:
     # should surface, even though both match the ``noun:value`` shape.
     handles = mentions.extract_handles("user:asa tag:open memory:1")
     assert handles == [("memory", "1", None)]
+
+
+def test_linkify_kinds_cover_handle_registry() -> None:
+    """gr702989: every registered record kind supports legacy mentions."""
+    expected = handle_registry.record_kinds() - mentions.LOW_SIGNAL_KINDS
+    assert expected <= mentions.LINKIFY_KINDS
+    assert not mentions.LINKIFY_KINDS & mentions.LOW_SIGNAL_KINDS
+    assert mentions.LINKIFY_KINDS - expected == {
+        "calc",
+        "math",
+        "provenance",
+        "random",
+        "web",
+        "youtube",
+        "websearch",
+        "perplexity-research",
+        "perplexity-reasoning",
+    }
+
+
+def test_linkify_kinds_follow_plugin_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consumers retain a live view when plugin discovery adds kinds."""
+    kinds = {"memory": "me"}
+    monkeypatch.setattr(handle_registry, "_kind_codes", lambda: kinds)
+    assert "sample" not in mentions.LINKIFY_KINDS
+    kinds["sample"] = "zz"
+    assert "sample" in mentions.LINKIFY_KINDS
+    assert "sample" in set(mentions.LINKIFY_KINDS)
+    assert len(mentions.LINKIFY_KINDS) == len(set(mentions.LINKIFY_KINDS))
+    assert mentions.extract_handles("sample:123") == [("sample", "123", None)]
+
+
+@pytest.mark.parametrize("kind", sorted(mentions.LINKIFY_KINDS))
+def test_extract_every_linkify_kind(kind: str) -> None:
+    assert mentions.extract_handles(f"see {kind}:123~2") == [(kind, "123", "~2")]
 
 
 def test_extract_handles_structure() -> None:
