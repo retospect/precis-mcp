@@ -120,6 +120,13 @@ NOT_VOCAB: dict[str, str] = {
         "no-op.', 0102's docstring). Ordinary tag rows are created "
         "on-demand at write time (get-or-create), not seeded."
     ),
+    "web_user_capability_tokens": (
+        "0332_client_capability_tokens.sql: folds each web_users row's "
+        "existing feed_token_sha256 into a feed-scoped capability token "
+        "(INSERT … SELECT FROM web_users WHERE feed_token_sha256 IS NOT "
+        "NULL) — empty on a fresh DB; per-user credentials are minted at "
+        "runtime, never reference vocabulary."
+    ),
     "_key": (
         "0239_vault_key_table.sql: carries the cluster's existing "
         "app.secret_key GUC into vault._key, guarded by 'WHERE "

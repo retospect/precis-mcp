@@ -5038,7 +5038,11 @@ def test_consecutive_unbounced_deploys_keep_the_original_worker_sha(
         ctx, handle = _deploy_handle(store, mint)
         _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {prev}\n{_scope_line(scope)}")
         assert rd.poll(ctx, handle) is True, ctx.failures
-        return _meta(store, mint.root_id)["release"]
+        rel = _meta(store, mint.root_id)["release"]
+        # the live flow closes a deployed pass; the shared flight gate
+        # refuses the next pass while an earlier one is still open
+        _close(store, mint.root_id)
+        return rel
 
     deploy(a, "none")
     rel = deploy(b, "web")

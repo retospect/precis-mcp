@@ -144,10 +144,14 @@ def collect(store: Any, since: str | datetime, until: str | datetime) -> Rows:
         "Gripes by origin and goal",
         "event axis value count",
         """
-        SELECT event, t.namespace, t.value, count(DISTINCT r.ref_id)
+        SELECT event, split_part(t.value, ':', 1),
+               substr(t.value, strpos(t.value, ':') + 1), count(DISTINCT r.ref_id)
         FROM live r JOIN ref_tags rt USING (ref_id) JOIN tags t USING (tag_id)
         CROSS JOIN (VALUES ('filed'), ('closed')) AS events(event)
-        WHERE r.kind = 'gripe' AND t.namespace IN ('origin-class','goal')
+        -- ``origin-class:<v>`` / ``goal:<v>`` are OPEN tags (the axis rides
+        -- in the value), as the gripe filer and triage stamp them
+        WHERE r.kind = 'gripe' AND t.namespace = 'OPEN'
+          AND (t.value LIKE 'origin-class:%%' OR t.value LIKE 'goal:%%')
           AND (rt.expires_at IS NULL OR rt.expires_at > now())
           AND ((event = 'filed' AND r.created_at >= %s AND r.created_at < %s)
             OR (event = 'closed' AND state IN ('done','wontfix')
@@ -295,7 +299,7 @@ def write_tables(store: Any, draft: str, section: str, data: Rows) -> None:
             if c.parent_chunk_id == heading.chunk_id and c.chunk_kind == "table"
         ]
         for chunk in old:
-            store.drafts.retire_chunk(chunk.dc, mode="cascade")
+            store.drafts.retire_chunk(chunk.handle, mode="cascade")
         for name, rows in data.items():
             table = table_data(rows)
             store.drafts.add_chunks(

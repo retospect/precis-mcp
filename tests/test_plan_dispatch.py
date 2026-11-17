@@ -357,7 +357,7 @@ def test_a_repo_node_routes_on_the_profile_deny_paths(
             "ci",
             "CI",
             {"op": "run_slice"},
-            body="Edit .github/workflows/ci.yml to add 3.12.",
+            body="Fix: edit .github/workflows/ci.yml to add 3.12.",
         )
 
     mint = T._run(store, None, build)

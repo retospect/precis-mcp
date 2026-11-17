@@ -677,7 +677,7 @@ def test_trust_toon_two_seed_pass_renders_seed_row_pass() -> None:
             [2, 3],
             [1],
             [1],
-            "BLOCKED",
+            "WARN",
             "(requested [2,3], executed [1]); dispatch dropped or substituted seeds",
             id="substituted-single-seed",
         ),
@@ -693,7 +693,7 @@ def test_trust_toon_two_seed_pass_renders_seed_row_pass() -> None:
             [2, 3],
             [2, 3],
             [2],
-            "BLOCKED",
+            "WARN",
             "(requested [2,3], executed [2,3])",
             id="started-is-not-usable",
         ),
@@ -749,7 +749,7 @@ def test_trust_toon_reports_seed_dispatch_without_changing_independence(
     assert f"verdict: {verdict}" in verdict_line
     assert note in verdict_line
     assert note in seed_line
-    if verdict == "BLOCKED":
+    if verdict == "WARN":  # gr593137: verified single-seed evidence is WARN
         assert f"seeds:1-independent {note}" in verdict_line
         assert "fail" in seed_line
     else:
