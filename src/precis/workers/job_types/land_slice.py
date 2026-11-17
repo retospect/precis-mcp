@@ -5844,6 +5844,10 @@ def kill(ctx: Any, handle: Any) -> None:
                 _rs._signal_group(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # The pgid now belongs to another user's process (reused
+                # after ship exited): not ours to signal, so skip it.
+                log.warning("land_slice: kill skipped — pgid %d is not ours", pgid)
     params = (getattr(ctx, "meta", None) or {}).get("params") or {}
     todo_id = params.get("todo_id")
     number = _pr_param(params)
