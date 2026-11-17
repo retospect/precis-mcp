@@ -328,12 +328,13 @@ laundered into a draft.
 
 **A claim can move backwards.** When the widening pass attaches a
 `contradicts` edge, the hub's publish posture follows the evidence: a
-`reviewed`/`signed` hub reopens to `candidate` (it must earn approval
-again). This legacy signed demotion still needs alignment: signing is now
-the correction boundary; never use reopen to edit a signed claim. An
-`anchored`/`published` claim cannot be reopened — its
-bytes are frozen — so it raises an alert for a human to supersede or
-retract. So a `state` you read yesterday is not a promise about today;
+`reviewed`/`signed` hub reopens to `candidate` (it re-earns approval).
+This legacy signed demotion still needs alignment: signing is the
+correction boundary — `args={'reopen': True, 'reason': …}` unsigns
+audited. `anchored`/`published` bytes are frozen, so the demotion raises
+an alert; `args={'supersede': True, 'reason': …}` stages the successor
+while unpublished, `precis nanopub retract` is the human door once
+published. A `state` you read yesterday is no promise about today;
 re-check before citing.
 
 ## Read a finding
@@ -518,8 +519,10 @@ and the `pub_id` in sync.
 
 **`edit(kind='finding', ...)` accepts exactly one of** a body edit
 (`find=`/`text=` with `mode='find-replace'|'replace'`) | `pick_candidate=`
-(above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` |
-`testable_by=`/`motivation=` — passing more than one errors
+(above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` (below) |
+`testable_by=`/`motivation=` | `args={'reopen': True, 'reason': …}` |
+`args={'supersede': True, 'reason': …}` (the audited nanopub doors —
+`precis-nanopub-help`) — passing more than one errors
 (`testable_by=`/`motivation=` may combine with each other, and
 `meta={'scope': …}` with `title=`). `title=` retitles a `TAPROOT:claim`
 hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
@@ -531,6 +534,9 @@ previews) — scope is part of the hub's identity, so it re-derives the
 sharpen an unsigned (`candidate`/`reviewed`) hypothesis's falsification terms.
 Unsigned edits reopen its review and flag/list consumers; signed claims refuse.
 See `precis-nanopub-help`'s "Sharpening".
+
+## Mark a claim's source unacquirable — the Ⓐ/✍ override
+
 `unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/

@@ -39,7 +39,7 @@ def supersede(store: Store, hub_ref_id: int, *, reason: str) -> PublishRow:
             raise BadInput(
                 f"fi{hub_ref_id} is {old.state!r} / published externally — an "
                 "agent does not supersede a published claim",
-                next="a human runs `precis nanopub retract` / `supersede`",
+                next="a human runs `precis nanopub retract`",
             )
         new = store.nanopub_supersede(old.id, conn=conn)
         store.append_event(

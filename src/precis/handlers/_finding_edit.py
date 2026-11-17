@@ -1,5 +1,6 @@
 """``edit(kind='finding', ...)`` — pick_candidate / title / meta={'scope'} /
-unacquirable_note / testable_by+motivation / the body edit.
+unacquirable_note / testable_by+motivation / the body edit / the audited
+nanopub doors (reopen / supersede).
 
 Split out of ``finding.py`` (me690495):
 this state machine (~350 lines across the mutually-exclusive ops) only
@@ -321,8 +322,9 @@ def edit(
         raise BadInput(
             "edit(kind='finding') accepts exactly one of pick_candidate, "
             "title (optionally with meta={'scope': …}), unacquirable_note, "
-            "testable_by=/motivation=, or a body edit (find=/text= with "
-            f"mode='find-replace'|'replace') — got {', '.join(given)}",
+            "testable_by=/motivation=, a body edit (find=/text= with "
+            "mode='find-replace'|'replace'), or an audited nanopub door "
+            f"(reopen= / supersede=) — got {', '.join(given)}",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
                 "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
@@ -331,7 +333,11 @@ def edit(
                 "experiment>') / "
                 "edit(kind='finding', id='fi<N>', meta={'scope': {...}}) / "
                 "edit(kind='finding', id='fi<N>', mode='find-replace', "
-                "find='<span>', text='<replacement>')"
+                "find='<span>', text='<replacement>') / "
+                "edit(kind='finding', id='fi<N>', args={'reopen': True, "
+                "'reason': '<why>'}) / "
+                "edit(kind='finding', id='fi<N>', args={'supersede': True, "
+                "'reason': '<why>'})"
             ),
         )
     is_self_pick = (

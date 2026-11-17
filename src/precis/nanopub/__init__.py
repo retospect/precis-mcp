@@ -90,7 +90,8 @@ Slices 4-5 — publish path (POST gated, CLI-only):
   edges, non-blocking) alongside the blocking ``contradicts`` state.
 - :mod:`.demote` — the ladder walked downward: a new ``contradicts``
   edge reopens a pre-anchor hub to ``candidate``; past the anchor it
-  raises for a human supersede/retract instead.
+  raises an alert instead — ``supersede`` while unpublished, a human
+  ``precis nanopub retract`` once published externally.
 - :mod:`.registry` — the registry POST, the one point of no return:
   ``interactive=True`` + ``live=True`` + zero blocking preflight
   issues, exact stored bytes, CLI-only.

@@ -15,9 +15,9 @@ evidence arrived. This module is that policy, keyed on **the freeze line**:
   ``reopen``.
 * **above it** (``anchored``, ``published``) — irreversible/public
   forever; editing here rewrites history someone may have cited. Only
-  honest move is a new artifact (supersede/retract, human door via
-  ``precis nanopub publish``/``retract``): raises an alert, changes no
-  state: ``supersede-required``.
+  honest move is a new artifact (``supersede`` — the audited agent door
+  while unpublished; ``precis nanopub retract`` — human once published
+  externally): raises an alert, changes no state: ``supersede-required``.
 
 Terminal rows (``superseded``/``retracted``/``rejected``) read as ``none``.
 
@@ -55,7 +55,8 @@ log = logging.getLogger(__name__)
 ACTION_NONE = "none"
 #: Pre-anchor: flip the publish row back to ``candidate``.
 ACTION_REOPEN = "reopen"
-#: Anchored or published — a human must supersede/retract instead.
+#: Anchored or published — supersede (agent door while unpublished) or a
+#: human retract once published externally.
 ACTION_SUPERSEDE_REQUIRED = "supersede-required"
 
 ALERT_SOURCE = RULES_BY_ID["nanopub-demote/contradicted-frozen:{hub_ref_id}"].rule

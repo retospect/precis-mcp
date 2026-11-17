@@ -57,10 +57,12 @@ exists. Details: [[precis-taproot-help]].
   dispute adjudication before it can be read as settled.
 - **Signing is the correction boundary.** Candidate/reviewed claims are
   internal: edit in place, returning unsigned approvals to candidate and
-  flagging their consumers for re-review. Once signed, correct through a
-  successor nanopublication (`npx:supersedes`), including anchored/published
-  predecessors. Existing bytes and proofs remain immutable. Re-read the
-  current state before acting.
+  flagging their consumers for re-review. Once signed the bytes freeze and
+  the audited doors route the correction: `reopen` voids a signed row back
+  to `candidate`, `supersede` stages the successor (`npx:supersedes`) for
+  an anchored, unpublished claim, and a published claim is a human
+  `precis nanopub retract`. Existing bytes and proofs remain immutable.
+  Re-read the current state before acting.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and the hub's
@@ -165,9 +167,9 @@ the claim is unsigned (`candidate`/`reviewed`), `edit(kind='finding',
 id='fi<N>', args={'testable_by': …})` (and/or `'motivation': …`) patches the parked
 envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
-are flagged/listed for re-review. Once signed, correction requires a successor
-nanopublication; this edit door refuses. Two audited doors, both needing
-`reason=` (signing stays human):
+are flagged/listed for re-review. Once signed, this edit door refuses —
+correction goes through two audited doors, both needing `reason=` (signing
+stays human):
 `edit(kind='finding', id='fi<N>', args={'reopen': True, 'reason': …})` voids a
 `reviewed`/`signed` row back to `candidate` (the voided trusty URI lands on a
 `publish_reopened` event), and `args={'supersede': True, 'reason': …}` stages a
@@ -444,12 +446,15 @@ currently cause title/scope edits to refuse atomically until reference
 retargeting is supported.
 No-op and scope dry-run edits leave review state unchanged.
 
-Once signed (including anchored/published), use a new nanopublication whose
-pubinfo asserts `<successor> npx:supersedes <predecessor trusty URI>`, signed with
-the same key. Existing bytes and OTS proofs are immutable. `npx:retracts` is
-withdrawal without a successor. No tool stages a successor for you, and
-until one is staged the in-place edit refuses signed claims. Actual
-approval/signing and publication of successors remain the normal human flow.
+Once signed, the in-place edit refuses — existing bytes and OTS proofs
+are immutable — and the audited doors above route the correction: `reopen`
+voids a signed, unanchored row back to `candidate` (the ordinary edit doors
+then apply); `supersede` stages the successor for an anchored, unpublished
+claim, whose signed nanopublication's pubinfo asserts
+`<successor> npx:supersedes <predecessor trusty URI>` with the same key.
+`npx:retracts` is withdrawal without a successor; a claim published
+externally is a human `precis nanopub retract`. Actual approval/signing and
+publication of successors remain the normal human flow.
 
 ## Publish states
 
