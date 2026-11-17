@@ -1111,6 +1111,11 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
 
+    # Remaining prose stars are literal (including adsorbate notation).
+    # Use the same glyph as the author's \* escape; math and inline code
+    # remain in the stash so their stars retain their original meaning.
+    s = s.replace("*", r"\textasteriskcentered{}")
+
     # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
     #     reads that as a display-math opener ("Display math should end with
     #     $$"; nano-computer's authored ``$∼$$2^30$``). Separate adjacent

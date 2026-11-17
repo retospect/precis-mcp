@@ -445,7 +445,7 @@ def test_italic_single_star_to_emph() -> None:
     out, _ = _inline("a *directly bonded* pair, **not** 2 * 3, and $a*b$ math")
     assert r"\emph{directly bonded}" in out
     assert r"\textbf{not}" in out and r"\emph{not}" not in out
-    assert "2 * 3" in out  # spaced multiplication untouched
+    assert r"2 \textasteriskcentered{} 3" in out  # literal multiplication
     assert "$a*b$" in out  # star inside math not turned into emphasis
 
 
@@ -453,14 +453,18 @@ def test_adsorbate_star_stays_literal() -> None:
     # gr674905: surface-chemistry star notation (*NO, *H, *OH, H*, O*, Pd*)
     # is literal prose — the italic rule and the house-style lint read it
     # the same way (utils/adsorbate_star).
-    out, _ = _inline("*NO3- dissociation to *NO2- + O* is more favorable")
+    out, _ = _inline("*NO₃⁻ dissociation to *NO₂⁻ + O* is more favorable")
     assert r"\emph{" not in out
-    assert "*NO" in out and "O*" in out
+    assert r"\textasteriskcentered{}NO" in out
+    assert r"O\textasteriskcentered{}" in out
+    assert out.count(r"\textasteriskcentered{}") == 3
     out, _ = _inline("adsorbed *H and *OH on the surface, plus Pd* and O*")
-    assert r"\emph{" not in out and "*H" in out and "Pd*" in out
+    assert r"\emph{" not in out
+    assert r"\textasteriskcentered{}H" in out
+    assert r"Pd\textasteriskcentered{}" in out
     # A trailing adsorbate star can't close a real italic either.
     out, _ = _inline("a *word* and O* adsorbate")
-    assert r"\emph{word}" in out and "O*" in out
+    assert r"\emph{word}" in out and r"O\textasteriskcentered{}" in out
 
 
 def test_escaped_star_renders_literal_asterisk() -> None:

@@ -2,6 +2,10 @@
 
 The packaged preamble loads ``fontspec``, so PDF compilation and the CLI's
 manual compile hint use LuaLaTeX (``latexmk -lualatex``).
+Adsorbate stars share the literal-star decision with Word and house-style
+lint. LaTeX emits remaining prose stars with an explicit centered-star
+command so automatic notation and author-escaped stars use the same glyph;
+protected math and code keep their original star syntax.
 PDF exports allow five minutes by default for large drafts and their
 bibliography/glossary passes (gr684953); ``PRECIS_LATEXMK_TIMEOUT_S`` or
 an explicit compile timeout can override that budget.
