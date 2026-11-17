@@ -73,6 +73,8 @@ quality-of-life and container items.
    the build body. First run (jo565335): codex built the fix but
    its workspace-write sandbox keeps `.git` read-only, so `run_slice.poll`
    now commits a clean session's tree with its `scratch/commit-msg.txt`
+   — or a generated `fix(slice): complete (<handles>)` subject when the
+   session reported the commit blocked without one (gr702644) —
    instead of widening codex's writable roots. Its escalation then burned
    an attempt on the Claude weekly 429: a quota or rate result
    now parks the slice with no attempt, resubmitting at once on another

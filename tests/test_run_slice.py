@@ -2098,7 +2098,7 @@ def test_submit_unpinned_child_uses_lane_default_model(
 
 
 def test_submit_env_is_an_allowlist(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("PRECIS_DB_DSN", "dbname=precis user=agent_rw")
     monkeypatch.setenv("DATABASE_URL", "postgresql:///precis")
@@ -2106,6 +2106,9 @@ def test_submit_env_is_an_allowlist(
     monkeypatch.setenv("VAULT_TOKEN", "v")
     monkeypatch.setenv("PRECIS_MCP_TOKEN", "mcp-token")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    # A HOME with no ``.local/bin/uv`` keeps the gr702380 fallback inert
+    # — the allowlist's PATH assertion stays about pass-through.
+    monkeypatch.setenv("HOME", str(tmp_path))
     store = _Store()
     store.add_todo(42, "t")
     _submit(store, seams, effort="low")
@@ -3771,6 +3774,34 @@ def test_slice_env_minted_token_without_the_oauth_login(
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_slice_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702380: the session env reaches uv in ``~/.local/bin`` when a
+    non-login coder unit's PATH lacks it — the same fallback
+    ``land_env`` gives its children, precedence preserved."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = run_slice.slice_env(42, "low", mcp=False)
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+
+
 def test_render_brief_read_mcp_paragraphs() -> None:
     """The scope's brief paragraph replaces the no-MCP one: reader's is
     the spec text verbatim; triage's names its write set and never says
@@ -4698,6 +4729,71 @@ def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "Commit: worker committed the session's working tree" in summary
     assert "1 commit(s) ahead of origin/main" in summary
+
+
+def test_poll_commits_a_blocked_commit_without_a_message(
+    seams: dict[str, Any],
+) -> None:
+    """gr702644 (td700755): a codex slice under a read-only ``.git``
+    sandbox finishes real work, reports the commit blocked and writes no
+    ``scratch/commit-msg.txt`` — the worker commits with a generated
+    subject instead of counting a no-commit run and relaunching."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    tree = Path(handle["worktree"])
+    seams["porcelain"] = " M a.py\n M b.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(slice): complete (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Commit blocked by read-only `.git`; changes "
+                "remain in the worktree.\ntests: ran",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert ["add", "-A"] in [a for a, _cwd in seams["git"]]
+    commits = [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["commit_text"] == "fix(slice): complete (td42)\n"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert seams["land_checked"] == [True]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert (
+        "Commit: worker committed the session's working tree with "
+        "a worker-generated subject" in summary
+    )
+
+
+def test_poll_a_dirty_tree_without_a_blocked_report_commits_nothing(
+    seams: dict[str, Any],
+) -> None:
+    """The fallback is gated on the session's own report: a clean exit
+    that left edits but never said its commit was refused keeps the
+    no-commit ruling — stray leftovers are not the lander's business."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Done; tree left as-is."}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert not [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
 
 
 def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
@@ -10214,7 +10310,7 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
 
     key = "sk-commit-note-key"
     note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
-    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)

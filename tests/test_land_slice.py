@@ -1019,6 +1019,36 @@ def test_land_env_scrubs_credentials_keeps_knobs(
         assert leaked not in env.values()
 
 
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_land_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702644: non-login land services must reach uv in nested helpers."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = land_slice.land_env()
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+    result = subprocess.run(
+        ["/usr/bin/env", "uv"], env=env, check=False, capture_output=True
+    )
+    assert result.returncode == 0
+
+
 def test_submit_ship_env_is_allowlist_not_whole_worker_env(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

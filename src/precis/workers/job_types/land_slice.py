@@ -838,7 +838,14 @@ def land_env() -> dict[str, str]:
     ``refs/replace/*`` planted for an oracle-verified sha must never
     substitute the object a child's trusted read resolves — ship's
     fetch/merge, the drift helper's own ``rev-list``, a gate child's
-    git calls alike (review td660513, pre-land pass)."""
+    git calls alike (review td660513, pre-land pass). ``PATH`` gains the
+    worker user's ``~/.local/bin`` appended when ``uv`` is installed
+    there but missing from the inherited PATH — a non-login coder
+    service carries no shell-hook PATH (gr702644), and ship plus its
+    nested ``/usr/bin/env uv`` helpers must still resolve it; the append
+    preserves the operator's PATH precedence
+    (:func:`~precis.workers.job_types.run_slice.path_with_user_uv`, the
+    same rule ``slice_env`` gives the session itself)."""
     env = {k: os.environ[k] for k in LAND_ENV_NAMES if os.environ.get(k)}
     for name, value in os.environ.items():
         if (
@@ -848,6 +855,9 @@ def land_env() -> dict[str, str]:
         ):
             env[name] = value
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    patched = _rs.path_with_user_uv(env.get("PATH"))
+    if patched != (env.get("PATH") or os.defpath):
+        env["PATH"] = patched
     return env
 
 

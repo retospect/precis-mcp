@@ -59,6 +59,12 @@ all impacted behavior. First-line verdicts survive test-only dirty trees.
 Cloud ``devin_task`` appends a pending named-branch handoff contract; no
 consumer fetches or lands that branch yet, and the API executor has no
 local checkout.
+Land children and slice sessions retain service PATH precedence, with the
+user's uv install directory as a fallback so non-login coder services can
+run ship's nested helpers and the gate (gr702380). A clean exit whose
+session reported its commit blocked still lands: the worker commits the
+tree under a generated subject when no commit-msg.txt exists (gr702644),
+and a commit that fails park-saves the tree like every failed run.
 
 Builder ``skills:`` markers create skill-editor children after a successful
 land. A receipt under the source row lock prevents duplicate follow-ups

@@ -151,7 +151,17 @@ that holds the lane's credentials with ``params.target_node``):
   result or the newest comments closes the todo done, a ``moot:``
   tagged ``verdict:moot`` so the tick drops the plan and notes the
   verdict on the gripe — except a ``moot:`` pinned to a different
-  ``gr<N>`` than the plan's, which is never this plan's verdict. Only
+  ``gr<N>`` than the plan's, which is never this plan's verdict.
+  Before any verdict arm rules, a clean exit whose session left edits
+  but no commit gets the worker's commit in its stead
+  (:func:`_commit_for_session`, gr564261): the session's
+  ``scratch/commit-msg.txt``, or — when it reported the commit blocked
+  and left no message — a worker-generated ``fix(slice): complete
+  (<handles>)`` subject (:func:`_commit_blocked`,
+  :func:`_session_commit_fallback`; gr702644: a sandboxed codex build
+  that cannot write ``.git`` must not round-trip through the no-commit
+  retry holding the file-overlap slot). A commit that still fails
+  park-saves the tree (:mod:`_slice_park`) like every failed run. Only
   a no-commit exit carrying no verdict anywhere is the failure below.
   Every one of those closes and the ``land_slice`` mint stands only on
   the every-run hard gates (:mod:`precis.plans.outcome`, gr595545 —
@@ -788,6 +798,28 @@ def slice_branch(todo_id: int) -> str:
     return f"slice/{todo_id}"
 
 
+def path_with_user_uv(path: str | None) -> str:
+    """``path`` with the worker user's ``~/.local/bin`` appended when
+    ``uv`` is not on it but is installed there — the uv installer's
+    default destination. Appending preserves PATH precedence: an
+    operator's own entry still wins.
+
+    gr702380 / gr702644: the least-privilege ``coder`` services launch
+    without a login shell, so the unit's PATH can omit that dir — the
+    session or land child then cannot exec ``uv`` (``scripts/test``,
+    ``uv run``) or ``gh`` when it also lives there, although both are
+    installed. ``slice_env`` applies the rule to the session;
+    :func:`precis.workers.job_types.land_slice.land_env` applies it to
+    land children."""
+    base = path or os.defpath
+    local_bin = Path.home() / ".local" / "bin"
+    if shutil.which("uv", path=base) is None and shutil.which(
+        "uv", path=str(local_bin)
+    ):
+        return base + os.pathsep + str(local_bin)
+    return base
+
+
 def slice_env(
     todo_id: int, effort: str, *, mcp_token: str | None = None, mcp: bool = True
 ) -> dict[str, str]:
@@ -811,6 +843,10 @@ def slice_env(
     ``kimi_tree`` (td573681): :func:`_kimi_launch_env` adds the
     synthesized provider env, key included, after this returns."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
+    # gr702380: a non-login coder unit's PATH can lack the user's uv
+    # install dir — append it (precedence-preserving) so the session can
+    # exec uv/gh; the same rule ``land_env`` gives its children.
+    env["PATH"] = path_with_user_uv(env.get("PATH"))
     if mcp:
         from precis.utils.claude_oauth import ensure_oauth_token
 
@@ -5647,13 +5683,61 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     return "\n".join([subject, *body]).strip() + "\n"
 
 
+def _session_commit_fallback(store: Any, todo_id: int) -> str:
+    """The worker-generated conventional subject
+    :func:`_commit_for_session` uses when the session left no
+    ``scratch/commit-msg.txt``: the todo's ``fixes`` gripes first, then
+    the td — the lander squashes the branch under this subject."""
+    refs = _fixes_refs(store, todo_id)
+    return f"fix(slice): complete ({', '.join([*refs[1:], refs[0]])})\n"
+
+
+#: Substrings a session's report carries when its ``git commit`` was
+#: refused — a read-only ``.git``, a denied write, a permission it
+#: lacked, an ``index.lock`` it could not take (gr702644).
+_COMMIT_BLOCKED_MARKERS: tuple[str, ...] = (
+    "blocked",
+    "refus",
+    "denied",
+    "read-only",
+    "read only",
+    "could not",
+    "couldn't",
+    "cannot",
+    "can't",
+    "unable",
+    "permission",
+)
+
+
+def _commit_blocked(result: str | None) -> bool:
+    """``True`` when the session's final text says its commit was refused
+    or could not run — the sandboxed builder's exit-clean-with-dirty-tree
+    shape (gr702644: td700755 finished real work under codex and reported
+    "Commit blocked by read-only `.git`"; with no
+    ``scratch/commit-msg.txt`` the poll read 0 commits as a no-commit run
+    and relaunched, holding the file-overlap slot the whole time). The
+    marker gates only the fallback subject — a session that left real
+    edits and says the commit itself failed still gets the worker's
+    commit; a clean tree never reaches the write either way."""
+    for ln in (result or "").splitlines():
+        low = ln.lower()
+        if "commit" in low and any(m in low for m in _COMMIT_BLOCKED_MARKERS):
+            return True
+        if "index.lock" in low or "read-only `.git`" in low:
+            return True
+    return False
+
+
 def _commit_for_session(
     tree: Path, todo_id: int, *, fallback_message: str | None = None
 ) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
     when there was nothing to do (no message or fallback, nothing staged).
-    Devin supplies a fallback so a missing message cannot strand its edits.
+    Devin supplies a fallback so a missing message cannot strand its edits;
+    so does any adapter whose session reported its commit blocked
+    (:func:`_commit_blocked`, gr702644).
 
     gr564261's first codex-direct run (jo565335): ``codex exec`` under
     ``--sandbox workspace-write`` keeps ``.git`` read-only, so the session
@@ -7622,12 +7706,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     p.startswith("tests/") for p in paths
                 )
                 if test_failure is None and not preserve_verdict:
-                    refs = _fixes_refs(ctx.store, todo_id)
-                    handles = ", ".join([*refs[1:], refs[0]])
                     committed = _commit_for_session(
                         tree,
                         todo_id,
-                        fallback_message=f"fix(slice): complete ({handles})\n",
+                        fallback_message=_session_commit_fallback(ctx.store, todo_id),
                     )
                 ctx.set_meta(
                     acceptance_tests={
@@ -7642,7 +7724,21 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     else None
                 )
                 if paths is None or any(not p.startswith("tests/") for p in paths):
-                    committed = _commit_for_session(tree, todo_id)
+                    committed = _commit_for_session(
+                        tree,
+                        todo_id,
+                        # gr702644: a session that says its commit was
+                        # blocked gets the worker's commit under a
+                        # generated subject even without
+                        # scratch/commit-msg.txt; a commit that still
+                        # fails park-saves the tree on the failure path
+                        # (_slice_park.save_at_job_end).
+                        fallback_message=(
+                            _session_commit_fallback(ctx.store, todo_id)
+                            if _commit_blocked(result)
+                            else None
+                        ),
+                    )
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -8506,6 +8602,7 @@ __all__ = [
     "factory_off",
     "kill",
     "parse_result",
+    "path_with_user_uv",
     "poll",
     "release",
     "release_todo",
