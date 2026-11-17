@@ -52,7 +52,17 @@ tags=['STATUS:done'])`; drop tags atomically with `untags=`, e.g.
 untags=['waiting-for:reto'])`. Tag-only changes use
 `tag(add=[...]/remove=[...])`. `get`
 shows the newest 3 in full, older ones as one-liners, and
-`get(kind='todo', id=122, view='comments')` shows all. The details body
+`get(kind='todo', id=122, view='comments')` shows all, oldest first,
+paged whole — and selects: `args={'comments': 5}` the newest 5,
+`args={'comments': '3-7'}` a comment-number window, `args={'comment':
+4}` one comment uncapped; on a bare get a selector reads as
+`view='comments'`. Ask for a window only from numbers a response
+already named — an elided span, or the count line a comments view ends
+with (`comments: all N`, `comments: A-B of N`). A guessed range refuses
+(gr688479) with the count, the valid span and the working call as
+`next=` — issue the `next=`, never re-issue the failing range.
+
+The details body
 reads alone via `view='body'` (title + untruncated `todo_body` — the call a
 `… cut:` marker names when the whole card can't fit). The ref's `meta`
 dict (workspace, llm_tier, op, …) reads via `view='meta'`.
