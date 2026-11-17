@@ -2674,6 +2674,15 @@ _DEVIN_TURN_RULES = (
     "final message ends the session."
 )
 
+#: The foreign-repo (repo-profile) variant: the same rule without the
+#: precis repo's own ``scripts/`` poll commands, which a profiled repo
+#: does not carry (gr709133).
+_DEVIN_TURN_RULES_FOREIGN = (
+    "Do not end your turn to wait for a command: run it in the foreground "
+    "or poll it inside this turn; do not post progress-only messages — "
+    "your first final message ends the session."
+)
+
 
 def _brief_intro(
     todo_id: int,
@@ -2683,10 +2692,13 @@ def _brief_intro(
     effort: str,
     base: str,
     adapter: str | None = None,
+    *,
+    foreign: bool = False,
 ) -> list[str]:
     """The brief's heading and session paragraph, repo-neutral up to and
     including "Work only in this worktree." — each brief appends its own
-    reading list."""
+    reading list. ``foreign`` marks a repo-profile brief: its Devin turn
+    rule omits the precis repo's ``scripts/`` poll commands."""
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
         "",
@@ -2696,7 +2708,7 @@ def _brief_intro(
         f"`{slice_branch(todo_id)}`, cut from `origin/{base}`." + _SESSION_RULES,
     ]
     if adapter == "devin_tree":
-        lines.extend(["", _DEVIN_TURN_RULES])
+        lines.extend(["", _DEVIN_TURN_RULES_FOREIGN if foreign else _DEVIN_TURN_RULES])
     return lines
 
 
@@ -3217,7 +3229,9 @@ def _render_repo_brief(
     lane's list, used only when the profile carries none."""
     base = profile.base
     devin = adapter == "devin_tree"
-    lines = _brief_intro(todo_id, title, lane, model, effort, base, adapter)
+    lines = _brief_intro(
+        todo_id, title, lane, model, effort, base, adapter, foreign=True
+    )
     lines[-1] += f" This is the `{profile.name}` repository."
     if profile.read_first:
         lines[-1] += (

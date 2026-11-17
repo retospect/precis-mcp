@@ -16,11 +16,11 @@ Gates (fail):
 - heading-structure breaks — more than one H1, a skipped heading level,
   an empty section outside the chunker's alias groups;
 - dead xrefs — every ``get(kind='skill', id=…)``, ``[[wikilink]]``,
-  ``skill:slug`` handle and ``slug~N``/``slug~A..B`` address must resolve
-  to a real slug, and to a real block when ``~N`` is given. Xref checks
-  run on the raw file, fenced code included: a ``slug~N`` inside an
-  example fence is a promise to the reader and must resolve exactly like
-  a prose mention.
+  ``skill:slug`` handle and ``slug~N``/``slug~A..B``/``slug~<heading>``
+  address must resolve to a real slug, and to a real block or heading
+  when a selector is given. Xref checks run on the raw file, fenced code
+  included: a ``slug~N`` inside an example fence is a promise to the
+  reader and must resolve exactly like a prose mention.
 
 Report-only (warn): blocks over the 500–2000-token target, and files
 carrying many sub-~150-token blocks (over-splitting — a powder of trivia
@@ -42,6 +42,7 @@ from precis.skill_index.chunker import _strip_front_matter, chunk_by_h2
 from precis.utils.llm.admit import estimate_tokens
 from precis.utils.skill_common import WIKILINK_RE, parse_frontmatter
 from precis.utils.skill_scope import render as scope_render
+from precis.utils.skill_scope import strip_heading_mark
 from tests._skill_roots import skill_files
 
 #: Designed-block budget in tokens (block-navigation rulings). Over the
@@ -70,10 +71,13 @@ _KIND_SKILL_RE = re.compile(r"kind\s*=\s*['\"]skill['\"]")
 _ID_ARG_RE = re.compile(r"\bid\s*=\s*['\"]([^'\"]+)['\"]")
 _SKILL_HANDLE_RE = re.compile(r"(?<![\w-])skill:([a-z0-9][a-z0-9-]*)")
 _CHUNK_REF_RE = re.compile(r"(?<![\w-])([a-z0-9][a-z0-9-]*)~(\d+)(?:\.\.(\d+))?")
+#: Skill-id grammar for ``get(kind='skill', id=…)`` — mirrors the
+#: handler's ``_SKILL_ID_RE`` (``~N``/``~A..B``/``~<heading>``/``/view``)
+#: plus the ``wt-<tree>/`` worktree-root prefix.
 _SKILL_ID_GRAMMAR_RE = re.compile(
     r"^(?:(?P<root>wt-[a-z0-9][a-z0-9_.-]*)/)?"
     r"(?P<slug>[a-z0-9][a-z0-9-]*)"
-    r"(?:~(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?)?"
+    r"(?:~(?:(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?|(?P<heading>[^\d~].*)))?"
     r"(?:/(?P<view>[a-z]+))?$"
 )
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -128,6 +132,26 @@ def _chunk_count(slug: str) -> int | None:
     if path is None:
         return None
     return len(chunk_by_h2(_rendered(path)))
+
+
+def _fold_heading(value: str) -> str:
+    """The handler's heading fold — mirror of ``_resolve_skill_heading``."""
+    return " ".join(strip_heading_mark(value).casefold().split())
+
+
+@cache
+def _heading_names(slug: str) -> dict[int, frozenset[str]] | None:
+    """Folded selector names per block index; None for synth."""
+    path = _all_skill_paths().get(slug)
+    if path is None:
+        return None
+    return {
+        i: frozenset(
+            _fold_heading(n) for n in (c.heading, *c.aliases, *c.heading.split(" / "))
+        )
+        for i, c in enumerate(chunk_by_h2(_rendered(path)))
+        if c.heading
+    }
 
 
 def _headings(text: str) -> list[tuple[int, str, int]]:
@@ -309,6 +333,27 @@ def test_skill_no_empty_sections(path: Path) -> None:
 # ── (c) link validity ──────────────────────────────────────────────
 
 
+def _heading_problems(slug: str, rid: str, selector: str) -> list[str]:
+    """A ``slug~<heading>`` must resolve like the runtime: exact (or
+    unique prefix) against folded heading, aliases and `` / `` splits —
+    mirror of ``_resolve_skill_heading`` in ``precis.handlers.skill``."""
+    names = _heading_names(slug)
+    if names is None:
+        return [f"id={rid!r}: {slug} is synthesised — no ~<heading> sections"]
+    needle = _fold_heading(selector)
+    exact = [i for i, variants in names.items() if needle in variants]
+    matches = exact or [
+        i
+        for i, variants in names.items()
+        if any(n.startswith(needle) for n in variants)
+    ]
+    if len(matches) == 1:
+        return []
+    if matches:
+        return [f"id={rid!r}: ambiguous heading — {slug} sections {matches} all match"]
+    return [f"id={rid!r}: {slug} has no heading matching {selector!r}"]
+
+
 def _id_problems(text: str) -> list[str]:
     """Every ``id=`` inside a ``get(kind='skill', …)`` call must resolve."""
     valid = _valid_slugs()
@@ -329,7 +374,7 @@ def _id_problems(text: str) -> list[str]:
             if "~" in rid:
                 problems.append(
                     f"unparseable skill id {rid!r} — ~ takes digits "
-                    "(slug~2); ~<n> is the placeholder spelling"
+                    "(slug~2) or a heading (slug~<heading>)"
                 )
             else:
                 problems.append(f"unparseable skill id {rid!r}")
@@ -345,7 +390,10 @@ def _id_problems(text: str) -> list[str]:
         view = g.group("view")
         if view is not None and view not in _SKILL_PATH_VIEWS:
             problems.append(f"id={rid!r} uses unknown view /{view}")
-        if g.group("lo") is not None:
+        heading = g.group("heading")
+        if heading is not None:
+            problems.extend(_heading_problems(slug, rid, heading))
+        elif g.group("lo") is not None:
             lo = int(g.group("lo"))
             hi = int(g.group("hi") or g.group("lo"))
             if hi < lo:
