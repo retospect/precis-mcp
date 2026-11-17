@@ -1401,6 +1401,24 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:pStyle>
 </w:pPr>
 <w:r>
+<w:t>Retraction coverage</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:color w:val="FF0000">
+</w:color>
+</w:rPr>
+<w:t>Retraction coverage: 0 of 5 checked within 30 d. No retraction checks requested for this export. 5 cited papers have never been checked.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
 <w:t>Data package</w:t>
 </w:r>
 </w:p>

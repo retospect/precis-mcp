@@ -239,6 +239,9 @@ Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
 \par\noindent Claim 8 (unverified) {\textemdash} source pending
 \par\noindent Claim 9 (unverified) {\textemdash} source pending
 \par\noindent Claim 10 (unverified) {\textemdash} source pending
+\section*{Retraction coverage}
+\textcolor{red}{Retraction coverage: 0 of 7 checked within 30 d. No retraction checks requested for this export. 7 cited papers have never been checked.}
+
 
 \clearpage
 \section*{Data package}

@@ -1673,6 +1673,22 @@ class DocxRenderer:
         ctx = self.ctx
         if name == "unverified":
             _append_unverified_claims(sink, ctx)
+            from docx.shared import RGBColor
+
+            from precis.export.retraction import (
+                draft_retraction_report,
+                retraction_coverage_entries,
+            )
+
+            entries = retraction_coverage_entries(
+                draft_retraction_report(ctx.store, None, cited_slugs=ctx.cited), "none"
+            )
+            if entries:
+                sink.add_heading("Retraction coverage", level=1)
+                for text, red in entries:
+                    run = sink.add_paragraph().add_run(text)
+                    if red:
+                        run.font.color.rgb = RGBColor(255, 0, 0)
         elif name == "data_package":
             _append_data_package(sink, ctx.data_package)
             if ctx.audience is not None and ctx.audience.name == "external":

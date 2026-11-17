@@ -3894,6 +3894,8 @@ def export_draft(
     doc_type: str | None = None,
     remarkable: bool = False,
     retraction_override: list[Any] | None = None,
+    retraction_check: str = "none",
+    retraction_report: Any = None,
     doi_links: bool = True,
     library_links: bool = True,
     bib_style: str | None = None,
@@ -4041,7 +4043,23 @@ def export_draft(
             source_bundle, rendered.warnings, retraction_override=retraction_override
         )
 
+    from precis.export.retraction import (
+        draft_retraction_report,
+        retraction_coverage_entries,
+    )
+
+    coverage = retraction_coverage_entries(
+        retraction_report
+        if retraction_report is not None
+        else draft_retraction_report(mstore, ref, cited_slugs=rendered.cited_slugs),
+        retraction_check,
+    )
     unverified_tex = build_unverified_claims_section(rendered.trust)
+    if coverage:
+        unverified_tex += "\n\\section*{Retraction coverage}\n"
+        for text, red in coverage:
+            line = _tex(text)
+            unverified_tex += ("\\textcolor{red}{" + line + "}" if red else line) + "\n"
     published_tex = (
         build_published_claims_section(mstore, rendered.trust, rendered.claim_cites)
         if claim_appendix

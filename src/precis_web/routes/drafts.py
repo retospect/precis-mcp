@@ -1347,10 +1347,18 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
     """JSON body for ``DraftRetractionReport`` — shared by
     ``retraction_status_route`` (read, ``check=False``) and
     ``retraction_check_route`` (``check=True``)."""
+    from precis.export.retraction import retraction_coverage_entries
+
     return {
         "ok": True,
+        "coverage_entries": {
+            scope: retraction_coverage_entries(report, scope)
+            for scope in ("none", "stale", "all")
+        },
         "checked": report.checked,
         "summary": report.summary(),
+        "coverage": report.coverage_summary(),
+        "recent_count": report.recent_count,
         "blocks_export": report.blocks_export,
         "total": len(report.papers),
         # The full cited-paper set — the export pane's citation-health
@@ -1652,10 +1660,10 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     stored-state-only read (``check=False``, no network) as the docx
     route: enqueuing a job must not itself wait on Crossref. Taking the
     override — combined with ``sources=1`` — is passed to the job so the
-    compiled PDF's sources appendix records which cite(s) were overridden
-    (``precis.export.latex.build_source_appendix``); the job re-derives the
-    same no-network report rather than threading paper details through job
-    params."""
+    compiled PDF's sources appendix records which cite(s) were overridden.
+    ``retraction_check=stale`` (default) refreshes citations older than 30
+    days in the worker; ``all`` forces every citation and ``none`` skips
+    network checks. The worker reapplies the gate after checking."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -1705,6 +1713,11 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
 
     slug = str(ref.slug or ref.id)
     params: dict[str, Any] = {"draft": slug}
+    scope = str(form.get("retraction_check") or "stale")
+    if scope not in {"none", "stale", "all"}:
+        return JSONResponse({"error": "invalid retraction_check"}, status_code=400)
+    if scope != "none":
+        params["retraction_check"] = scope
     idem = f"draft_export:{slug}"
     if with_sources:
         params["include_sources"] = True
@@ -1712,13 +1725,14 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     if audience == "external":
         params["audience"] = audience
         idem += ":external"
-    if retraction_override_used:
+    if ignore_retractions:
         params["ignore_retractions"] = True
     # Thread the figure waiver through to the job so its identical clearance
     # gate lets the same image-less figures ship as placeholders (the route
     # only preflighted; the job is the enforcing surface).
     if placeholder_figures:
         params["placeholder_figures"] = True
+    idem += f":retractions-{scope}:override-{int(ignore_retractions)}"
     return await redirect_or_error(
         request,
         "put",
@@ -1793,7 +1807,10 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     form = await request.form()
-    force = str(form.get("force") or "") in ("1", "true", "yes", "on")
+    scope = str(form.get("retraction_check") or "stale")
+    if scope not in {"none", "stale", "all"}:
+        return JSONResponse({"error": "invalid retraction_check"}, status_code=400)
+    force = scope == "all" or str(form.get("force") or "") in ("1", "true", "yes", "on")
 
     def _run() -> tuple[Any, list[str], int, int]:
         # ``cited_paper_refs`` renders the draft body to learn what it
@@ -1806,11 +1823,11 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
             ref,
             cited_slugs=[r.slug for r in refs],
             check_slugs=[r.slug for r in selected],
-            check=True,
+            check=scope != "none",
             force=force,
             mailto=_crossref_mailto(),
         )
-        return report, unresolved, len(refs), len(selected)
+        return report, unresolved, len(refs), len(selected) if scope != "none" else 0
 
     try:
         report, unresolved, total, checked_now = await asyncio.wait_for(
@@ -1848,7 +1865,7 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
             status_code=502,
         )
 
-    truncated = checked_now < total
+    truncated = scope != "none" and checked_now < total
     payload = _retraction_report_json(report)
     payload["unresolved"] = unresolved
     payload["truncated"] = truncated
@@ -2326,7 +2343,7 @@ async def pdf(request: Request, ident: str) -> Response:
     claims = _claims_wanted(request)
     from precis.export.audience import web_base_url
 
-    if audience == "external":
+    if audience == "external" or request.scope.get("retraction_report") is not None:
         cache_dir = Path(tempfile.mkdtemp(prefix="precis-draft-external-"))
     else:
         base_url = await asyncio.to_thread(web_base_url, store)
@@ -2354,7 +2371,11 @@ async def pdf(request: Request, ident: str) -> Response:
         )
         filename = f"{base}{suffix}.pdf"
 
-        if audience == "external" or not pdf_path.exists():
+        if (
+            audience == "external"
+            or request.scope.get("retraction_report") is not None
+            or not pdf_path.exists()
+        ):
             if not have_latexmk():
                 return templates.TemplateResponse(
                     request,
@@ -2381,6 +2402,8 @@ async def pdf(request: Request, ident: str) -> Response:
                     store,
                     ref,
                     target_dir=cache_dir,
+                    retraction_report=request.scope.get("retraction_report"),
+                    retraction_check=request.scope.get("retraction_check", "none"),
                     include_sources=with_sources,
                     withheld_figures=pf.withheld_handles,
                     doi_links=links,
@@ -2426,9 +2449,20 @@ async def pdf(request: Request, ident: str) -> Response:
             # download route creates a fresh response and TTL expiry cleans up.
             handed_off = True
             return response
-        return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+        ephemeral = request.scope.get("retraction_report") is not None
+        handed_off = True
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=filename,
+            background=BackgroundTask(shutil.rmtree, cache_dir, ignore_errors=True)
+            if ephemeral
+            else None,
+        )
     finally:
-        if audience == "external" and not handed_off:
+        if (
+            audience == "external" or request.scope.get("retraction_report") is not None
+        ) and not handed_off:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
 
@@ -2449,6 +2483,7 @@ async def export_start_route(request: Request, ident: str) -> Response:
     (``sources``, ``citations``, overrides…). The page polls
     :func:`export_status_route`, then fetches the file from
     :func:`export_download_route`. See :mod:`precis_web.export_jobs`."""
+    from functools import partial
     from urllib.parse import parse_qsl
 
     from precis_web import export_jobs
@@ -2474,7 +2509,9 @@ async def export_start_route(request: Request, ident: str) -> Response:
         resolve=_draft_ref,
         # The papers bundle isn't an export document — the docx/PDF gates
         # (retraction, figure clearance) don't apply to it.
-        preflight=None if fmt == "zip" else _export_preflight,
+        preflight=None
+        if fmt == "zip"
+        else partial(_export_preflight, check_retractions=fmt == "pdf"),
     )
     return JSONResponse(
         {
@@ -2492,16 +2529,39 @@ def _async_url(ident: str, fmt: str) -> str:
     )
 
 
-def _export_preflight(store: Store, ref: Any, request: Request) -> Any:
+def _export_preflight(
+    store: Store, ref: Any, request: Request, *, check_retractions: bool = False
+) -> Any:
     """The shared export gates, run as the async job's reported stage 1
     (``export_jobs.start``): the same ``draft_export_preflight`` the
     handlers run for a direct GET, with the override flags parsed off the
-    fabricated GET's query — identical parsing either way."""
+    fabricated GET's query. PDF downloads refresh the requested scope
+    before gating; Word uses stored state only."""
+    report = None
+    if check_retractions:
+        from precis.export import progress
+        from precis.export.retraction import draft_retraction_report
+
+        scope = request.query_params.get("retraction_check", "stale")
+        if scope not in {"none", "stale", "all"}:
+            raise ValueError("invalid retraction_check: choose none, stale or all")
+        progress.report("checking retractions")
+        report = draft_retraction_report(
+            store,
+            ref,
+            check=scope != "none",
+            force=scope == "all",
+            mailto=_crossref_mailto(),
+        )
+        progress.report(report.coverage_summary())
+        request.scope["retraction_report"] = report
+        request.scope["retraction_check"] = scope
     return draft_export_preflight(
         store,
         ref,
         ignore_retractions=_flag(request, "ignore_retractions"),
         placeholder_figures=_flag(request, "placeholder_figures"),
+        retraction_report=report,
     )
 
 
