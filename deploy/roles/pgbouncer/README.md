@@ -76,9 +76,12 @@ every transaction.
 | `SET hnsw.iterative_scan` / `hnsw.max_scan_tuples` | 1 / 1 | ad-hoc, untracked, not reported by the server; the rule below covers it |
 
 `SET ROLE` cannot be tracked, because `role` is not a reported parameter.
-Under transaction pooling it leaks to other clients, which is why
-`PRECIS_MCP_DB_ROLE_ENFORCE` must stay off on any pgbouncer DSN
-(`store/pool.py::_db_role_enforced`).
+A session-level one under transaction pooling both fails to persist and
+leaks to other clients — which is why `PRECIS_MCP_DB_ROLE_ENFORCE` used to
+require a direct DSN. Since migration slice S1 (multi-user-overhaul)
+`store/pool.py::_apply_db_role` applies the role per transaction via
+`SET LOCAL ROLE` — safe under the pool — so the flag is on for agent
+subprocesses and containers (`store/pool.py::_db_role_enforced`).
 
 **The rule stands for everything untracked:** no session-level `SET`
 through the prod DSN. Use `BEGIN READ ONLY`, `SET LOCAL`, or the
