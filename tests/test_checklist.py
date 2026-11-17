@@ -512,6 +512,18 @@ class TestAssign:
         with pytest.raises(NotFound):
             h.edit(id="cl", op="assign", target="paper:does-not-exist")
 
+    def test_get_target_resolves_memory_handle(self, store: Store) -> None:
+        """gr677471: ``memory:me<id>`` resolves as a checklist target —
+        memory nodes have no slug, only the universal handle."""
+        h = _handler(store)
+        h.put(id="cl", items=[])
+        ref = store.insert_ref(kind="memory", slug=None, title="Plan root")
+        resp = h.get(target=f"memory:me{ref.id}")
+        assert f"memory:{ref.id}" in resp.body
+        with pytest.raises(NotFound) as excinfo:
+            h.get(target="memory:me999999999")
+        assert "memory:me" in str(excinfo.value)
+
 
 # ── search ───────────────────────────────────────────────────────────
 
