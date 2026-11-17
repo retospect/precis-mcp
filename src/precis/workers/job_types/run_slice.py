@@ -2631,6 +2631,14 @@ _SESSION_RULES = (
 )
 
 
+_DEVIN_TURN_RULES = (
+    "Do not end your turn to wait for a command: run it in the foreground "
+    "or poll it (`scripts/ship --await`, `scripts/test --await <run-id>`) "
+    "inside this turn; do not post progress-only messages — your first "
+    "final message ends the session."
+)
+
+
 def _brief_intro(
     todo_id: int,
     title: str,
@@ -2638,11 +2646,12 @@ def _brief_intro(
     model: str | None,
     effort: str,
     base: str,
+    adapter: str | None = None,
 ) -> list[str]:
     """The brief's heading and session paragraph, repo-neutral up to and
     including "Work only in this worktree." — each brief appends its own
     reading list."""
-    return [
+    lines = [
         f"# Slice td{todo_id}: {title.strip()}",
         "",
         f"You are a headless build session on lane `{lane}` "
@@ -2650,6 +2659,9 @@ def _brief_intro(
         f"effort `{effort}`), in git worktree `{slice_name(todo_id)}` on branch "
         f"`{slice_branch(todo_id)}`, cut from `origin/{base}`." + _SESSION_RULES,
     ]
+    if adapter == "devin_tree":
+        lines.extend(["", _DEVIN_TURN_RULES])
+    return lines
 
 
 def _no_mcp_lines(read_mcp: str | None) -> list[str]:
@@ -2898,7 +2910,7 @@ def render_brief(
             target=target,
             adapter=adapter,
         )
-    lines = _brief_intro(todo_id, title, lane, model, effort, base)
+    lines = _brief_intro(todo_id, title, lane, model, effort, base, adapter)
     lines[-1] += (
         " Read CLAUDE.md and AGENTS.md here before "
         "editing; their rules bind you — except the round rule: a slice "
@@ -3169,7 +3181,7 @@ def _render_repo_brief(
     lane's list, used only when the profile carries none."""
     base = profile.base
     devin = adapter == "devin_tree"
-    lines = _brief_intro(todo_id, title, lane, model, effort, base)
+    lines = _brief_intro(todo_id, title, lane, model, effort, base, adapter)
     lines[-1] += f" This is the `{profile.name}` repository."
     if profile.read_first:
         lines[-1] += (

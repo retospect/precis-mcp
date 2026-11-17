@@ -1063,6 +1063,31 @@ def test_brief_states_the_one_turn_rule() -> None:
         assert "never start a background subagent and wait for it" in brief
 
 
+@pytest.mark.parametrize("adapter", ["devin_tree", "codex_exec", None])
+@pytest.mark.parametrize("other_repo", [False, True])
+def test_devin_brief_forbids_ending_turn_to_poll(
+    adapter: str | None, other_repo: bool
+) -> None:
+    """gr676969: Devin must wait for its commands within the build turn."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="builder",
+        model=None,
+        effort="high",
+        adapter=adapter,
+        profile=lanes.REPO_PROFILES["catpath"] if other_repo else None,
+    )
+    assert ("Do not end your turn to wait" in brief) == (adapter == "devin_tree")
+    if adapter == "devin_tree":
+        assert "scripts/ship --await" in brief
+        assert "scripts/test --await <run-id>" in brief
+        assert "do not post progress-only messages" in brief
+        assert "your first final message ends the session" in brief
+
+
 def test_brief_parts_prefers_brief_over_dead_attempt_handoff() -> None:
     """gr571311: a failed attempt's last message is posted as a
     ``handoff:`` comment; while an ``attempt:`` tag stands it must not
