@@ -8,7 +8,8 @@ synchronous heavy call. S2 (gr657245) routes the builder-editable launch
 sites (the run_slice/land_slice/dep_check/lane_health/boundary_probe
 detached launcher, the codex/claude subprocess runners, the moot test
 probe) through them; the release and gate tooling and the claim path are
-deliberately still outside (S3 / Reto's patch).
+deliberately still outside (S3 / Reto's patch). Fresh run_slice claims use
+:func:`launch_fits` as a preflight only; spawn retains hold ownership.
 
 **Lock order.** Every multi-row writer of ``resource_slots`` (this
 reserve, the heartbeat's capability and capacity syncs, release) touches
@@ -283,6 +284,20 @@ def _host_offers(conn: Connection, host: str, footprint: Footprint) -> bool:
     )
 
 
+def launch_fits(conn: Connection, host: str, footprint: Footprint) -> bool:
+    """Check spawn capacity without retaining a second reservation.
+
+    A successful probe refunds immediately; spawn owns the detached hold.
+    A race after commit is handled by run_slice’s attempt-free lane wait.
+    No advertised rows means unheld, matching the launch fallback.
+    """
+    requirements = footprint.requirements()
+    if _ops.reserve_resource_slots(conn, host, requirements):
+        _ops.release_resource_slots(conn, host, requirements)
+        return True
+    return not _host_offers(conn, host, footprint)
+
+
 def _try_admit(
     store: Any,
     host: str,
@@ -509,6 +524,7 @@ __all__ = [
     "Refused",
     "admit",
     "hold",
+    "launch_fits",
     "local_host",
     "release",
     "spawn",

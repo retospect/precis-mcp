@@ -5501,8 +5501,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: "admission"})
-        ctx.record_failure(f"run_slice: launch deferred, host at capacity: {exc}")
+        # gr708204: park on the lane-wait path (the busy-lane shape) —
+        # a failed job per deferral climbed to FREE_RUN_CAP and filed a
+        # showstopper ask per node. Past the park cap the job still
+        # fails attempt-free as "lane-wait".
+        _park_lane_full(
+            ctx,
+            f"run_slice: launch deferred, host at capacity: {exc}",
+            lanes=[lane.name],
+        )
         return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)

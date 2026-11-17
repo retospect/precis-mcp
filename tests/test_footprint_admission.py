@@ -1246,3 +1246,21 @@ def test_model_affinity_prefers_implicit_warm_model(store: Store) -> None:
     rows = _claim(store, "ssh_node", limit=1)
 
     assert [r[0] for r in rows] == [warm]
+
+
+def test_slice_does_not_reserve_learned_rss_twice(store: Store) -> None:
+    from precis.workers.footprint_admission import admission_units
+
+    with store.pool.connection() as conn:
+        assert (
+            admission_units(
+                conn,
+                executor="ssh_node",
+                meta={"job_type": "run_slice"},
+                res_host=HOST,
+                requires={},
+                advertised_here={"mem_mb", "cpu_milli"},
+                cache={("rss", "run_slice", None, None): 4096},
+            )
+            == {}
+        )

@@ -2180,6 +2180,14 @@ def claim_executor_jobs(
             # don't leak on the reserving host. No-op for fresh queued work.
             release_job_reservation(conn, ref_id)
             meta.pop("reserved", None)
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            from precis.workers.admission import launch_fits
+            from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+            # Launch runs locally, even if params carry a target_node.
+            # Check the exact spawn ledger, not learned RSS or executor cap.
+            if not launch_fits(conn, default_host, _WORK_FOOTPRINTS["slice"]):
+                return None
         requires = effective_requires(meta)
         # The resource lives where the job runs: its target_node (an
         # ssh_node GPU job reserves on the GPU box, not the claimer), else

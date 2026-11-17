@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
@@ -934,3 +936,54 @@ def test_deficit_pre_limit_order_keeps_the_owed_lane(store: Store) -> None:
     got = _claim(store, limit=1)
     assert got == [big]
     assert all(s not in got for s in smalls)
+
+
+@pytest.mark.parametrize("cpu,mem", [(1999, 8192), (4000, 4095), (4000, None)])
+def test_slice_claim_waits_for_launch_capacity(
+    store: Store, cpu: int, mem: int | None
+) -> None:
+    """gr708204: executor space cannot override the launch footprint."""
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": cpu, "mem_mb": mem})
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    other = _job(store, origin="background", prio=5)
+    before = {r.resource: r.free for r in store.resource_slots_for_host("h1")}
+    assert _claim(store) == [other]
+    assert {r.resource: r.free for r in store.resource_slots_for_host("h1")} == before
+    with store.pool.connection() as conn:
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (run,)
+        ).fetchone()
+        assert meta is not None
+        assert not meta[0].get("lease_host")
+        assert not meta[0].get("reserved")
+    store.sync_host_capacity("h1", {"cpu_milli": 4000, "mem_mb": 8192})
+    assert run in _claim(store)
+    assert {r.resource: r.free for r in store.resource_slots_for_host("h1")} == {
+        **before,
+        "cpu_milli": 4000,
+        "mem_mb": 8192,
+    }
+
+
+def test_slice_claim_observes_live_launch_hold(store: Store) -> None:
+    from precis.workers import admission
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": 4000, "mem_mb": 8192})
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    with store.pool.connection() as conn:
+        held = admission.admit(
+            conn, "h1", admission.Footprint(cpu_milli=3000, mem_mb=5000), "test"
+        )
+    assert held is not None
+    assert _claim(store) == []
+    with store.pool.connection() as conn:
+        admission.release(conn, held)
+    assert _claim(store) == [run]
+    # Claim probing leaves room for the actual launch: no double reservation.
+    with store.pool.connection() as conn:
+        launched = admission.admit(conn, "h1", _WORK_FOOTPRINTS["slice"], "test")
+        assert launched is not None
+        admission.release(conn, launched)

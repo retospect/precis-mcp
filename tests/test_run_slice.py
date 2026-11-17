@@ -3048,9 +3048,36 @@ def test_submit_refused_launch_is_attempt_free(
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
-    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "admission"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "lane-wait"
     assert "host at capacity" in (ctx.failure or "")
     assert seams["launch"] == []
+
+
+def test_submit_refused_launch_parks_on_lane_wait(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr708204: a capacity deferral parks the job (the busy-lane shape)
+    instead of failing it, so the free-failure run never reaches the
+    showstopper ask."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("full")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "host at capacity" in deferred[0][1]
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert ctx.meta_set["wait_parks"] == 1
 
 
 def test_launch_goes_through_spawn(

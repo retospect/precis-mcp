@@ -138,6 +138,11 @@ their live DOI health and signed image/PDF URL views are refused in read scope.
 Converted handles recheck the resolved kind against the same policy before
 dispatch rewrites the kind, so redirects cannot bypass it. Pulls and edits remain
 behind the removed write verbs and the callback's ``agent_ro`` database role.
+
+Fresh run_slice claims probe the same fixed CPU/memory footprint as launch.
+The probe refunds immediately because detached spawn owns the lifetime hold;
+a race before spawn parks on lane wait without spending an attempt.
+
 """
 
 from __future__ import annotations
