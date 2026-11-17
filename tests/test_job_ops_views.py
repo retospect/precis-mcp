@@ -684,3 +684,22 @@ def test_settings_empty_tables_render_cleanly(jobs: JobHandler) -> None:
     assert resp.body.startswith("# settings")
     assert "## app_settings" in resp.body
     assert "## service_config" in resp.body
+
+
+def test_logs_line_drops_duplicated_prefix(jobs: JobHandler, store: Store) -> None:
+    tag = uuid4().hex[:8]
+    now = datetime.now(UTC)
+    formatted = f"2026-11-14 11:02:33,512 WARNING precis.workers.runner: dup {tag}"
+    plain = f"plain {tag} message"
+    with store.pool.connection() as conn:
+        for msg in (formatted, plain):
+            conn.execute(
+                "INSERT INTO worker_logs (ts, host, process, pass, level, message) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (now, f"h{tag}", "precis-worker", "runner", "WARNING", msg),
+            )
+        conn.commit()
+    body = jobs.get(id=f"/logs?host=h{tag}").body
+    assert f"WARNING dup {tag}" in body
+    assert "2026-11-14 11:02:33,512" not in body
+    assert f"WARNING {plain}" in body

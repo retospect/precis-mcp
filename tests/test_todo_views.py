@@ -1625,3 +1625,14 @@ def test_direction_todos_not_in_open_todo_servers(
     m = quest_momentum(store, qid)
     assert dir_id in direction_ref_ids(store, qid)
     assert m.open_todo_servers == 0
+
+
+def test_recent_lists_handles(store: Store) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.todo import TodoHandler
+
+    h = TodoHandler(hub=Hub(store=store))
+    h.put(text="recent handle probe")
+    body = h.get(id="/recent").body
+    rows = [ln.strip() for ln in body.splitlines() if "recent handle probe" in ln]
+    assert rows and rows[0].startswith("td"), body

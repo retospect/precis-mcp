@@ -2999,7 +2999,7 @@ class JobHandler(NumericRefHandler):
 
         lines = [header, ""]
         for ts, host_val, handler_val, level_val, message in rows:
-            msg = message or ""
+            msg = _strip_logs_prefix(message or "", level_val, handler_val)
             if len(msg) > _LOGS_MESSAGE_TRUNC:
                 msg = msg[:_LOGS_MESSAGE_TRUNC] + "…"
             ts_utc = as_utc(ts)
@@ -6994,6 +6994,27 @@ def _typed_scalar(text: str, *, schema_key: str | None = None) -> str:
     ):
         return text
     return _withheld_cell(text)
+
+
+_LOGS_PREFIX_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} (?P<level>[A-Z]+) (?P<logger>[\w.\-]+): "
+)
+
+
+def _strip_logs_prefix(msg: str, level: object, handler: object) -> str:
+    """Drop the DB handler's formatted ``<ts> <LEVEL> <logger>: `` prefix.
+
+    Timestamp and level are columns already; the logger is dropped when it
+    is the handler column (or its last dotted segment), else kept.
+    """
+    m = _LOGS_PREFIX_RE.match(msg)
+    if m is None or m.group("level") != str(level):
+        return msg
+    logger = m.group("logger")
+    rest = msg[m.end() :]
+    if logger == str(handler) or logger.rsplit(".", 1)[-1] == str(handler):
+        return rest
+    return f"{logger}: {rest}"
 
 
 def _render_setting_json(parsed: Any) -> str:

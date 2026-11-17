@@ -5857,7 +5857,10 @@ class NumericRefHandler(Handler):
             rows: list[dict[str, str]] = []
             for r in refs:
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
-                row: dict[str, str] = {"id": str(r.id), "preview": preview}
+                row: dict[str, str] = {
+                    "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    "preview": preview,
+                }
                 if any_tagged:
                     row["tags"] = " ".join(str(t) for t in tags_per_ref[r.id])
                 rows.append(row)
