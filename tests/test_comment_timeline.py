@@ -63,11 +63,58 @@ def test_append_ack_and_display_policy(
         assert [ln.split()[1] for ln in oneliners] == ["2", "1"]
         assert oneliners[0].endswith("· note-2")
         assert out.index("note-5") < out.index("note-4") < out.index("note-3")
-        assert "comments: newest 3 in full, older as one-liners" in out
+        assert "comments: newest 3 (long ones cut mid-text), older as one-liners" in out
         assert f"get(kind='{which}', id={rid}, view='comments')" in out
     full = h.get(id=rid, view="comments").body
     assert full.index("note-1") < full.index("note-2") < full.index("note-5")
     assert full.count("## comment ") == 5
+
+
+def test_todo_bare_get_clips_long_comments(todo: TodoHandler) -> None:
+    rid = _new(todo)
+    texts = [f"head-{i}" + str(i) * 5988 + f"tail-{i}" for i in range(1, 4)]
+    for text in texts:
+        todo.put(id=rid, text=text)
+    out = todo.get(id=rid).body
+    assert len(out) < 7500
+    assert out.count("chars cut") == 3
+    for i in range(1, 4):
+        assert f"head-{i}" in out and f"tail-{i}" in out
+        assert (
+            f"get(kind='todo', id={rid}, view='comments', args={{'comment': {i}}})"
+            in out
+        )
+    assert "long ones cut mid-text" in out
+    # The explicit view pages whole comments; each single read is uncapped.
+    full = todo.get(id=rid, view="comments").body
+    assert texts[0] in full
+    assert "comments 2-3 elided" in full
+    assert "chars cut" not in full
+    for i, text in enumerate(texts, start=1):
+        single = todo.get(id=rid, view="comments", comment=i).body
+        assert text in single
+        assert "chars cut" not in single
+
+
+@pytest.mark.parametrize("size", [2000, 2500, 2501])
+def test_todo_comment_cut_slack(todo: TodoHandler, size: int) -> None:
+    rid = _new(todo)
+    text = "x" * size
+    todo.put(id=rid, text=text)
+    out = todo.get(id=rid).body
+    assert ("chars cut" in out) == (size > 2500)
+    if size <= 2500:
+        assert text in out
+
+
+@pytest.mark.parametrize("prefix", ["spec:", "brief:"])
+def test_todo_spec_comment_not_clipped(todo: TodoHandler, prefix: str) -> None:
+    rid = _new(todo)
+    text = prefix + "x" * (6000 - len(prefix))
+    todo.put(id=rid, text=text)
+    out = todo.get(id=rid).body
+    assert text in out
+    assert "chars cut" not in out
 
 
 def test_todo_comment_ord_never_collides_with_body(todo: TodoHandler) -> None:

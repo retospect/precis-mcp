@@ -3,10 +3,36 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from typing import Any
 
 import pytest
+from psycopg.conninfo import conninfo_to_dict
+
+
+def _test_db_host() -> str | None:
+    """Hostname of the disposable test DB — outside this guard by design.
+
+    ``docs/conventions/testing.md`` carves the isolated PostgreSQL test
+    database out of the Python guard (native-libpq connections only).
+    psycopg3 nonetheless resolves a *named* host through Python
+    ``socket.getaddrinfo`` in its per-host attempt splitter, so the
+    compose service name (``precis-test-db``) needs an explicit pass.
+    """
+    dsn = os.environ.get("PRECIS_TEST_PG_URL", "")
+    if not dsn:
+        return None
+    try:
+        host = conninfo_to_dict(dsn).get("host")
+    except Exception:  # pragma: no cover — malformed DSN surfaces elsewhere
+        return None
+    return str(host) if host else None
+
+
+#: Resolved at import: the guard compares the raw (pre-DNS) hostname, so
+#: the exemption must be by name, not address.
+_TEST_DB_HOST = _test_db_host()
 
 
 def _check_address(address: Any) -> None:
@@ -15,7 +41,7 @@ def _check_address(address: Any) -> None:
     host = address[0]
     if isinstance(host, bytes):
         host = host.decode("ascii")
-    if host == "localhost":
+    if host == "localhost" or host == _TEST_DB_HOST:
         return
     try:
         ip = ipaddress.ip_address(host)

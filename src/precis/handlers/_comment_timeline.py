@@ -17,7 +17,9 @@ view is selectable
 window, ``args={'comment': K}`` one) and pages whole comments under
 :data:`COMMENT_PAGE_CHARS` — never a mid-text cut (gr515093) — naming
 the next window's call when a page can't hold the rest. ``view='full'``
-bounds the same way. Todo keeps the original bare-get newest-3 policy.
+bounds the same way. Todo caps its newest three comments at 2000 characters
+each (plus cut slack and marker), preserving head and tail. ``spec:`` and
+``brief:`` work orders stay whole so builders never act on a cut instruction.
 
 Comments are chunks (``gripe_comment`` / ``todo_comment``); chunks are
 append-only, so "hiding a stale comment" is not a chunk write. The hidden
@@ -91,6 +93,7 @@ _DEFAULT_POLICY = _Policy(FULL_COMMENTS, None, ONE_LINER_CAP)
 #: Paper (gr521094): the newest note only — the overview card is
 #: already dense, so older notes stay one-liners.
 _KIND_POLICY: dict[str, _Policy] = {
+    "todo": _Policy(3, 2000, ONE_LINER_CAP),
     "paper": _Policy(1, None, ONE_LINER_CAP),
 }
 
@@ -203,10 +206,16 @@ def render_comments(
         if len(visible) > policy.full_count
         else []
     )
-    pointer = f"get(kind={kind!r}, id={ref.id}, view='comments')"
     parts = [
         f"## comment {num(c)} · {_stamp(c)}\n"
-        + clip_middle(c.text, policy.full_chars, pointer)
+        + clip_middle(
+            c.text,
+            None
+            if kind == "todo" and c.text.startswith(("spec:", "brief:"))
+            else policy.full_chars,
+            f"get(kind={kind!r}, id={ref.id}, view='comments', "
+            f"args={{'comment': {num(c)}}})",
+        )
         for c in newest
     ]
     if older:

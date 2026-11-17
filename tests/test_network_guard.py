@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from precis.nanopub import registry
-from tests._network import _check_address
+from tests._network import _check_address, _test_db_host
 
 
 @pytest.mark.parametrize("method", ["connect", "connect_ex"])
@@ -59,6 +59,20 @@ def test_loopback_server_is_available() -> None:
 @pytest.mark.parametrize("address", ["/tmp/test.sock", ("::1", 80), ("localhost", 80)])
 def test_local_addresses_are_allowed(address: object) -> None:
     _check_address(address)
+
+
+def test_configured_test_db_host_is_allowed() -> None:
+    """The disposable test DB is outside the guard (docs/conventions/testing.md).
+
+    psycopg3 resolves a named DB host through Python ``getaddrinfo`` in
+    its attempt splitter, so the carve-out must hold by hostname.
+    """
+    host = _test_db_host()
+    if host is None:
+        pytest.skip("PRECIS_TEST_PG_URL not set")
+    _check_address((host, 5432))
+    with pytest.raises(AssertionError, match="outbound network blocked"):
+        _check_address((f"not-{host}", 5432))
 
 
 def test_monkeypatch_undo_preserves_guard(monkeypatch: pytest.MonkeyPatch) -> None:

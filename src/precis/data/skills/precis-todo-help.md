@@ -50,13 +50,15 @@ is one call: `put(kind='todo', id=122, text='done — pr merged',
 tags=['STATUS:done'])`; drop tags atomically with `untags=`, e.g.
 `put(kind='todo', id=122, text='answered', tags=['STATUS:done'],
 untags=['waiting-for:reto'])`. Tag-only changes use
-`tag(add=[...]/remove=[...])`. `get`
-shows the newest 3 in full, older ones as one-liners, and
-`get(kind='todo', id=122, view='comments')` shows all, oldest first,
-paged whole — and selects: `args={'comments': 5}` the newest 5,
-`args={'comments': '3-7'}` a comment-number window, `args={'comment':
-4}` one comment uncapped; on a bare get a selector reads as
-`view='comments'`. Ask for a window only from numbers a response
+`tag(add=[...]/remove=[...])`. A bare `get`
+shows the newest 3, older ones as one-liners — each newest comment longer
+than ~2500 characters is cut mid-text (head + tail, 2000-char budget) with
+a marker naming `args={'comment': K}` for the whole one; `spec:` / `brief:`
+work orders stay whole. `get(kind='todo', id=122, view='comments')` shows
+all, oldest first, paged whole — and selects: `args={'comments': 5}` the
+newest 5, `args={'comments': '3-7'}` a comment-number window,
+`args={'comment': 4}` one comment uncapped; on a bare get a selector reads
+as `view='comments'`. Ask for a window only from numbers a response
 already named — an elided span, or the count line a comments view ends
 with (`comments: all N`, `comments: A-B of N`). A guessed range refuses
 (gr688479) with the count, the valid span and the working call as
