@@ -54,6 +54,10 @@ matching the regular check gate.
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot
 starve shared factory dispatch; timeout and cancellation stop their group.
+Completed receipts also require verified group cleanup before committing:
+orphaned test children can retain the Git index lock after the runner exits.
+An existing leader must match its saved identity before signalling; uncertain
+cleanup fails closed so a recycled process group cannot be killed.
 Every worker commit still lands checked: ask-specific tests do not cover
 all impacted behavior. First-line verdicts survive test-only dirty trees.
 Cloud ``devin_task`` appends a pending named-branch handoff contract; no

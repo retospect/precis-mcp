@@ -3545,6 +3545,46 @@ def _git_or_raise(args: list[str], tree: Path) -> None:
     raise cls(f"git {' '.join(args)} in reused worktree failed: {err}")
 
 
+def _index_lock_report(lock: Path) -> str:
+    """Path, size, age and any holder pid/command line of ``lock`` — what
+    the "index-lock" give-back names (gr684888) so the operator sees who
+    keeps the commit step from running. Best effort: never raises."""
+    try:
+        st = lock.stat()
+    except OSError:
+        return f"{lock} (gone)"
+    from precis.workers.job_types import land_slice as _ls
+
+    out = f"{lock} ({st.st_size} bytes, {max(0, time.time() - st.st_mtime):.0f}s old"
+    holders = _ls._lock_holders(lock)
+    if holders is None:
+        return out + ", holder unknown)"
+    if not holders:
+        return out + ", no open holder)"
+    parts = []
+    for pid in holders[:5]:
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            cmd = raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            cmd = ""
+        parts.append(f"pid {pid}" + (f" `{cmd[:120]}`" if cmd else ""))
+    return out + ", held by " + "; ".join(parts) + ")"
+
+
+def _slice_index_lock(tree: Path, stderr: str = "") -> Path:
+    """The slice worktree's ``index.lock``: its gitdir's when git answers,
+    else the path git's own error names, else the conventional
+    ``.git/index.lock`` so the report still has something to stat."""
+    from precis.workers.job_types import land_slice as _ls
+
+    gitdir = _ls._worktree_gitdir(tree)
+    if gitdir is not None:
+        return gitdir / "index.lock"
+    m = re.search(r"'([^']*index\.lock)'", stderr)
+    return Path(m.group(1)) if m else tree / ".git" / "index.lock"
+
+
 def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     """gr650484 — reap a reused slice tree's stale ``index.lock`` before
     :func:`_reset_reused_worktree`'s ``checkout -f`` meets it: a dead
@@ -3557,8 +3597,10 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     :func:`land_slice.index_lock_wait_s` wait first (gr662077): the
     previous attempt's own git often still holds the lock when the retry
     lands, and finishing it beats bouncing back to the tick — only a
-    lock still held past the wait raises :class:`_IndexLockWait`. No
-    tree yet, or no gitdir git will name: nothing to clear."""
+    lock still held past the wait raises :class:`_IndexLockWait`.
+    :func:`_commit_for_session` waits on the same judge before its
+    ``git add`` (gr684888). No tree yet, or no gitdir git will name:
+    nothing to clear."""
     if not tree.exists():
         return
     # land_slice imports this module at load time; the lazy import keeps
@@ -3583,11 +3625,11 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _IndexLockWait(
-                f"index.lock {lock} was still held after "
-                f"{_ls.index_lock_wait_s():.0f}s — a live git owns the "
-                "checkout, it is younger than "
+                f"index.lock {_index_lock_report(lock)} was still held after "
+                f"{_ls.index_lock_wait_s():.0f}s — a live git owns it, "
+                "it is younger than "
                 f"{_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
-                "ruled out; the reuse checkout waits for it"
+                "ruled out; it is left in place"
             )
         time.sleep(min(1.0, remaining))
 
@@ -5629,7 +5671,11 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
 
 
 def _commit_for_session(
-    tree: Path, todo_id: int, *, fallback_message: str | None = None
+    tree: Path,
+    todo_id: int,
+    *,
+    fallback_message: str | None = None,
+    ctx: Any = None,
 ) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
@@ -5642,14 +5688,34 @@ def _commit_for_session(
     create ``index.lock``; the poll then read 0 commits ahead as "nothing to
     land" and burned an attempt. The worker runs outside that sandbox, so
     it commits in the session's stead. The deny check ran on the working
-    tree before this, so a denied path never reaches the commit."""
+    tree before this, so a denied path never reaches the commit.
+
+    gr684888: with a ``ctx`` the step first waits on the slice's
+    ``index.lock`` (:func:`_clear_slice_index_lock`: reaps only a lock the
+    judge proves stale) and retries ``git add`` once on an "index.lock"
+    failure; a lock still held raises :class:`_IndexLockWait` with its
+    path, size, age and holder, the edits left unstaged."""
     message = _commit_message(tree, todo_id)
     source = COMMIT_MSG_REL.as_posix() if message else "a worker-generated subject"
     message = message or fallback_message
     if message is None:
         return None
     # scratch/ is gitignored on main, so the message file never rides along.
+    if ctx is not None:
+        _clear_slice_index_lock(ctx, tree)
     add = _git(["add", "-A"], tree)
+    if add.returncode != 0 and ctx is not None and "index.lock" in add.stderr:
+        # A lock raced in past the judged wait: one more wait-and-judge,
+        # then the give-back names what holds it — path, size, age and
+        # any holder — not just git's stderr.
+        _clear_slice_index_lock(ctx, tree)
+        add = _git(["add", "-A"], tree)
+        if add.returncode != 0 and "index.lock" in add.stderr:
+            raise _IndexLockWait(
+                "git add still met an index.lock after the judged wait: "
+                f"{_index_lock_report(_slice_index_lock(tree, add.stderr))} "
+                f"({add.stderr.strip()[:200]})"
+            )
     if add.returncode != 0:
         return f"worker commit skipped: git add failed ({add.stderr.strip()[:200]})"
     staged = _git(["diff", "--cached", "--quiet"], tree)
@@ -5669,6 +5735,21 @@ def _commit_for_session(
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
     return f"{WORKER_COMMITTED} the session's working tree with {source}"
+
+
+def _give_back_index_lock(
+    ctx: Any, todo_id: int, lane: Any, exc: _IndexLockWait
+) -> bool:
+    """The commit step met an index.lock it could not prove stale: end the
+    job attempt-free as ``"index-lock"`` (gr684888) with the lock's
+    details on the summary; the builder's edits stay unstaged in the tree."""
+    unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+    ctx.set_meta(compute_handle_released=True, **{ATTEMPT_FREE_KEY: "index-lock"})
+    ctx.record_failure(
+        f"run_slice: td{todo_id} finished build left uncommitted — {exc}; "
+        "edits stay unstaged in the slice tree"
+    )
+    return True
 
 
 def _acceptance_paths(body: str, latest: str | None) -> list[str]:
@@ -5790,38 +5871,97 @@ def _devin_acceptance_tests(
             return None
         except OSError as exc:
             return True, f"Devin acceptance tests could not run: {exc}"
-        if sys.platform == "darwin":
-            test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
+        identity = _process_identity(test_handle["pid"])
+        if identity is not None:
+            test_handle["boot_id"], test_handle["start_time"] = identity
+        test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
         handle["acceptance_handle"] = test_handle
         ctx.set_meta(compute_handle=handle)
     code = _read_exit(test_handle)
     if code is None:
         if time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S:
-            _kill_acceptance(handle)
-            return True, "Devin acceptance tests timed out"
+            cleanup = _kill_acceptance(handle, force=True)
+            return True, cleanup or "Devin acceptance tests timed out"
         if _session_alive(test_handle):
             return None
-        # The run may have written its receipt between the read above and
-        # the liveness probe: re-read before calling it vanished.
+        # A receipt can arrive during the liveness probe. Both reads must
+        # pass the same cleanup gate before a worker commit is allowed.
         code = _read_exit(test_handle)
-        if code is None:
-            return True, "Devin acceptance tests vanished without an exit receipt"
+    cleanup = _kill_acceptance(handle, force=True)
+    if cleanup:
+        return True, cleanup
+    if code is None:
+        return True, "Devin acceptance tests vanished without an exit receipt"
     if code != 0:
         tail = "\n".join(_read_log(test_handle).splitlines()[-60:])
         return True, f"Devin acceptance tests failed (exit {code})\n{tail}"
     return True, None
 
 
-def _kill_acceptance(handle: dict[str, Any]) -> None:
-    """Stop only the detached acceptance group; never wait in a worker pass."""
+def _acceptance_group_running(pgid: int) -> bool:
+    """Prove the group has no runnable members; zombies cannot hold locks.
+
+    Unlike _group_alive, this also checks a live leader and refuses an
+    unavailable process table rather than treating EPERM as a dead group.
+    """
+    result = subprocess.run(
+        ["ps", "-eo", "pgid=,stat="],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+        check=True,
+    )
+    return any(
+        int(fields[0]) == pgid and not fields[1].startswith("Z")
+        for line in result.stdout.splitlines()
+        if len(fields := line.split()) >= 2
+    )
+
+
+def _kill_acceptance(handle: dict[str, Any], *, force: bool = False) -> str | None:
+    """Stop an identified acceptance group and prove its members stopped.
+
+    A surviving group without a leader cannot have recycled its PGID. If
+    the leader slot exists, its recorded identity must match before any
+    signal. Failure to prove cleanup blocks the worker commit.
+    """
     test_handle = handle.get("acceptance_handle")
-    if isinstance(test_handle, dict) and _session_alive(test_handle):
+    if not isinstance(test_handle, dict):
+        return None
+    if not (force or _session_alive(test_handle)):
+        return None
+    pgid = _handle_pgid(test_handle)
+    if not pgid:
+        return "Devin acceptance cleanup refused: invalid process group"
+    try:
+        if not _acceptance_group_running(pgid):
+            return None
         try:
-            pgid = _handle_pgid(test_handle)
-            if pgid:
-                _signal_group(pgid, signal.SIGKILL)
+            os.getpgid(pgid)
+        except ProcessLookupError:
+            pass  # Surviving orphans still own the original group ID.
+        else:
+            identity = _process_identity(pgid)
+            expected = (test_handle.get("boot_id"), test_handle.get("start_time"))
+            matches = identity is not None and identity == expected
+            if identity is None:
+                recorded = test_handle.get("ps_identity")
+                matches = bool(recorded) and _darwin_process_identity(pgid) == recorded
+            if not matches:
+                return f"Devin acceptance cleanup refused: group {pgid} identity changed or unknown"
+        try:
+            _signal_group(pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        deadline = time.monotonic() + 5.0
+        while _acceptance_group_running(pgid):
+            if time.monotonic() >= deadline:
+                return f"Devin acceptance cleanup failed: group {pgid} still running after 5s"
+            time.sleep(0.05)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return f"Devin acceptance cleanup failed for group {pgid}: {exc}"
+    return None
 
 
 def skills_named(text: str | None) -> tuple[str, ...] | None:
@@ -7591,11 +7731,15 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 if test_failure is None and not preserve_verdict:
                     refs = _fixes_refs(ctx.store, todo_id)
                     handles = ", ".join([*refs[1:], refs[0]])
-                    committed = _commit_for_session(
-                        tree,
-                        todo_id,
-                        fallback_message=f"fix(slice): complete ({handles})\n",
-                    )
+                    try:
+                        committed = _commit_for_session(
+                            tree,
+                            todo_id,
+                            fallback_message=f"fix(slice): complete ({handles})\n",
+                            ctx=ctx,
+                        )
+                    except _IndexLockWait as exc:
+                        return _give_back_index_lock(ctx, todo_id, lane, exc)
                 ctx.set_meta(
                     acceptance_tests={
                         "paths": handle.get("acceptance_tests", []),
@@ -7609,7 +7753,10 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     else None
                 )
                 if paths is None or any(not p.startswith("tests/") for p in paths):
-                    committed = _commit_for_session(tree, todo_id)
+                    try:
+                        committed = _commit_for_session(tree, todo_id, ctx=ctx)
+                    except _IndexLockWait as exc:
+                        return _give_back_index_lock(ctx, todo_id, lane, exc)
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review

@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -416,6 +417,31 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "_signal_group",
         lambda pgid, sig: calls["signals"].append((pgid, sig)),
     )
+    # gr684888: the acceptance cleanup's process-table probes — fake pgids
+    # like 4242/4343 must never reach the host's real ps scan or getpgid:
+    # a stray matching group reads as live, then stalls the suite 5s on a
+    # kill it cannot prove. Default: the group is gone and the leader
+    # slot dead; a test flips ``calls["acceptance_group"]`` (a bool or a
+    # callable, e.g. Mock(side_effect=[True, False])) or names a live
+    # leader in ``calls["leader_pgid"]``.
+    calls["acceptance_group"] = False
+    monkeypatch.setattr(
+        run_slice,
+        "_acceptance_group_running",
+        lambda pgid: (
+            calls["acceptance_group"](pgid)
+            if callable(calls["acceptance_group"])
+            else bool(calls["acceptance_group"])
+        ),
+    )
+
+    def fake_getpgid(pid: int) -> int:
+        pgid = calls.get("leader_pgid")
+        if pgid is None:
+            raise ProcessLookupError(pid)
+        return int(pgid)
+
+    monkeypatch.setattr(run_slice.os, "getpgid", fake_getpgid)
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
     # Host-refusal backoffs (gr571395): a test sets seams["backoff"] =
     # {lane: until}; default none.
@@ -8512,6 +8538,9 @@ def test_devin_acceptance_missing_receipt_fails_closed(
     }
     monkeypatch.setattr(run_slice, "_session_alive", lambda _h: alive)
     monkeypatch.setattr(run_slice.time, "time", lambda: 4000 if alive else 1)
+    # The synthetic pgid must never reach the host's real process table —
+    # a stray group with that id reads as live and stalls the kill wait.
+    monkeypatch.setattr(run_slice, "_acceptance_group_running", lambda _p: False)
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
     handle["acceptance_tests"] = []
@@ -8519,7 +8548,7 @@ def test_devin_acceptance_missing_receipt_fails_closed(
     assert outcome is not None and outcome[0] is True
     assert outcome[1] is not None
     assert ("timed out" if alive else "vanished") in outcome[1]
-    assert signals == ([(4343, signal.SIGKILL)] if alive else [])
+    assert signals == []  # No real group exists for this synthetic handle.
 
 
 def test_slice_kill_stops_detached_acceptance(
@@ -8531,6 +8560,10 @@ def test_slice_kill_stops_detached_acceptance(
     assert handle is not None
     handle["acceptance_handle"] = {"pid": 4343}
     monkeypatch.setattr(run_slice, "_session_alive", lambda _h: True)
+    monkeypatch.setattr(
+        run_slice, "_acceptance_group_running", Mock(side_effect=[True, False])
+    )
+    monkeypatch.setattr(run_slice.os, "getpgid", Mock(side_effect=ProcessLookupError))
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(run_slice, "_signal_group", lambda p, s: signals.append((p, s)))
     run_slice.kill(ctx, handle)
@@ -10189,7 +10222,7 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
 
     key = "sk-commit-note-key"
     note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
-    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
@@ -13837,3 +13870,242 @@ def test_skill_lane_needs_live_mcp() -> None:
         )
     ]
     assert boundary.fit_lanes("skill", table) == ()
+
+
+def _real_slice_repo(tmp_path: Path) -> Path:
+    """A real one-commit repo with an unstaged builder edit."""
+    tree = tmp_path / "slice-tree"
+    tree.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@example.invalid"],
+        ["config", "user.name", "T"],
+    ):
+        subprocess.run(["git", *args], cwd=tree, check=True)
+    (tree / "widget.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tree, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tree, check=True)
+    (tree / "widget.py").write_text("x = 2\n", encoding="utf-8")
+    return tree
+
+
+def test_kill_acceptance_force_reaps_orphans_of_an_exited_run() -> None:
+    """gr684888: a child the acceptance run left behind (it holds the
+    slice's index.lock in the field) dies with the run's group even though
+    the leader already exited."""
+    proc = subprocess.Popen(
+        ["sh", "-c", "sleep 60 & echo $!"],
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    child = int(proc.stdout.readline())
+    proc.wait()
+    handle = {"acceptance_handle": {"pid": proc.pid}}
+    assert run_slice._group_alive(proc.pid)
+    try:
+        assert run_slice._kill_acceptance(handle, force=True) is None
+        assert not run_slice._group_alive(proc.pid)
+    finally:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_commit_for_session_reaps_a_stale_lock_then_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684888: a 0-byte lock the judge proves stale is cleared, the edit
+    lands as a commit on the slice branch."""
+    from precis.workers.job_types import land_slice as ls
+
+    tree = _real_slice_repo(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(ls, "_held_open", lambda _p: False)
+    monkeypatch.setattr(ls, "_git_in_tree", lambda _t: False)
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_STALE_S", "0")
+    ctx = _Ctx(_Store(), {})
+    note = run_slice._commit_for_session(
+        tree, 42, fallback_message="fix(slice): complete (td42)\n", ctx=ctx
+    )
+    assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+    assert not lock.exists()
+    log = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    assert "complete (td42)" in log
+    assert any("reaped stale index.lock" in text for _k, text in ctx.chunks)
+
+
+def test_commit_for_session_unproven_lock_gives_back_attempt_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684888: a lock the judge cannot prove stale is never deleted; the
+    note names path, size and age, nothing commits and the edit stays
+    unstaged."""
+    from precis.workers.job_types import land_slice as ls
+
+    tree = _real_slice_repo(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0")
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_STALE_S", "100000")
+    monkeypatch.setattr(ls, "_lock_holders", lambda _p: ["123"])
+    ctx = _Ctx(_Store(), {})
+    with pytest.raises(run_slice._IndexLockWait) as exc:
+        run_slice._commit_for_session(
+            tree, 42, fallback_message="fix(slice): complete (td42)\n", ctx=ctx
+        )
+    assert str(lock) in str(exc.value) and "0 bytes" in str(exc.value)
+    assert "s old" in str(exc.value) and "pid 123" in str(exc.value)
+    assert lock.exists()
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    assert status.startswith(" M widget.py")
+    lock.unlink()
+    store = _Store()
+    gctx = _Ctx(store, {})
+    store.add_todo(42, "Build")
+    assert run_slice._give_back_index_lock(gctx, 42, "lane", exc.value) is True
+    assert gctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+
+
+def test_commit_for_session_lock_past_the_retry_names_its_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684888: a lock that outlives both judged waits — git's add fails
+    on it twice — raises the attempt-free ``index.lock`` with the lock's
+    path, size, age and holder on it, and the edit stays unstaged."""
+    from precis.workers.job_types import land_slice as ls
+
+    tree = _real_slice_repo(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    stderr = f"fatal: Unable to create '{lock}': File exists."
+    real_git = run_slice._git
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["add", "-A"]:
+            return subprocess.CompletedProcess([], 128, "", stderr)
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", git)
+    # The judge cannot name the gitdir, so its wait is a no-op here and
+    # the lock's report falls back to the path git's own error names.
+    monkeypatch.setattr(ls, "_worktree_gitdir", lambda _t: None)
+    monkeypatch.setattr(ls, "_lock_holders", lambda _p: ["4242"])
+    ctx = _Ctx(_Store(), {})
+    with pytest.raises(run_slice._IndexLockWait) as exc:
+        run_slice._commit_for_session(
+            tree, 42, fallback_message="fix(slice): complete (td42)\n", ctx=ctx
+        )
+    text = str(exc.value)
+    assert str(lock) in text and "0 bytes" in text
+    assert "s old" in text and "pid 4242" in text
+    assert lock.exists()
+    lock.unlink()
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    assert status.startswith(" M widget.py")
+
+
+@pytest.mark.parametrize("second_read", [False, True])
+def test_acceptance_orphan_lock_holder_stops_before_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, second_read: bool
+) -> None:
+    from precis.workers.job_types import land_slice as ls
+
+    tree = _real_slice_repo(tmp_path)
+    lock = tree / ".git" / "index.lock"
+    # An inherited open descriptor models the orphaned git lock holder.
+    proc = subprocess.Popen(
+        ["sh", "-c", "sleep 60 3>.git/index.lock & echo $!"],
+        cwd=tree,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    child = int(proc.stdout.readline())
+    proc.wait()
+    test_handle = {"pid": proc.pid, "started": time.time()}
+    handle: dict[str, Any] = {"acceptance_tests": [], "acceptance_handle": test_handle}
+    monkeypatch.setattr(
+        run_slice, "_read_exit", Mock(side_effect=[None, 0] if second_read else [0])
+    )
+    monkeypatch.setattr(run_slice, "_session_alive", lambda _h: False)
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_STALE_S", "0")
+    monkeypatch.setattr(
+        ls, "_held_open", lambda _p: run_slice._acceptance_group_running(proc.pid)
+    )
+    try:
+        assert run_slice._devin_acceptance_tests(tree, handle, None) == (True, None)
+        assert not run_slice._acceptance_group_running(proc.pid)
+        note = run_slice._commit_for_session(
+            tree,
+            42,
+            fallback_message="fix(slice): complete (td42)\n",
+            ctx=_Ctx(_Store(), {}),
+        )
+        assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+        assert not lock.exists()
+        assert (
+            subprocess.check_output(["git", "status", "--porcelain"], cwd=tree) == b""
+        )
+    finally:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.parametrize("failure", ["identity", "permission", "deadline"])
+def test_acceptance_cleanup_failure_blocks_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    test_handle = {
+        "pid": 4343,
+        "started": time.time(),
+        "boot_id": "boot",
+        "start_time": 12,
+    }
+    handle: dict[str, Any] = {"acceptance_tests": [], "acceptance_handle": test_handle}
+    monkeypatch.setattr(run_slice, "_read_exit", lambda _h: 0)
+    monkeypatch.setattr(run_slice, "_acceptance_group_running", lambda _p: True)
+    monkeypatch.setattr(run_slice.os, "getpgid", lambda _p: 4343)
+    monkeypatch.setattr(
+        run_slice,
+        "_process_identity",
+        lambda _p: ("boot", 13 if failure == "identity" else 12),
+    )
+    signal_group = Mock(
+        side_effect=PermissionError("denied") if failure == "permission" else None
+    )
+    monkeypatch.setattr(run_slice, "_signal_group", signal_group)
+    monkeypatch.setattr(run_slice.time, "monotonic", Mock(side_effect=[0.0, 6.0]))
+    outcome = run_slice._devin_acceptance_tests(tmp_path, handle, None)
+    assert outcome is not None and outcome[0]
+    assert outcome[1] is not None and "cleanup" in outcome[1]
+    if failure == "identity":
+        signal_group.assert_not_called()
+    else:
+        signal_group.assert_called_once_with(4343, signal.SIGKILL)
