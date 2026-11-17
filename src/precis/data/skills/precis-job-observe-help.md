@@ -110,6 +110,22 @@ CLI. The header states the resolved filter + UTC cutoff; each row is
 `ts host handler LEVEL message`; the trailer says `N rows shown of M
 matching`.
 
+The runner logs one line per pass completion; a long pass is silent:
+completion line is not liveness. Before calling a worker starved, read
+unfiltered recent logs (include INFO, omit handler and message filters),
+check the worker's age or restart, and list jobs leased to that host.
+A starvation claim needs a pass with known cadence that stopped meeting
+it, corroborated by a condition alert.
+
+A recurrence of a fixed flood or spin loop means older code is still
+running somewhere: check the deployed sha and enumerate every worker
+(see the `/builds` view below).
+
+Executors that reclaim stale running jobs heal an orphan; the
+`coordinator` executor does not reclaim stale running jobs itself.
+Do not restart workers mid-coordinator run; if a restart is unavoidable,
+re-mint afterwards once the orphan is terminal.
+
 ## Read garden review counts
 
 `get(kind='job', id='/garden', args={'since': '7d'})` reads the

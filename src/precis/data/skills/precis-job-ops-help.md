@@ -209,6 +209,29 @@ Waits whose `wake_when.payload.why` contains `quota` or `pause` (case-insensitiv
 are protected unless you explicitly pass `args={'force': True,
 'reason': '<why>'}`.
 
+## Why is my hand-minted job queued forever?
+
+A hand-minted job is never claimed while its non-terminal parent todo
+carries an open exclusion tag. The set matches `view='doable'`: `halt`,
+`halt:*`, `waiting-for:*`, `ask-user`, `ask-user:*`, `child-failed:*`,
+`hold:no-dispatch`, or an unexpired `claimed-by:*` lease.
+`STATUS:paused` is not in this exclusion set.
+
+Symptom: `STATUS:queued` for hours, the queue hint says nothing is
+running on the executor, no log line, and the job card does not name
+the parent's tag. Inspect the parent before minting another job:
+
+```python
+get(kind='todo', id=<parent>, view='raw')
+# Clear a failed-child park before minting (preferred: retry the failed job).
+put(kind='job', id=<failed_job>, mode='retry')
+# Manual alternative for a child-failed:<job> park:
+tag(kind='todo', id=<parent>, remove=['child-failed:<job>'])
+```
+
+Retry details below cover `child-failed-final`; other exclusion tags
+need their own hold resolved before minting.
+
 ## Re-submit a failed job
 ## Retry a failed job
 ## Re-run a job with a different model
