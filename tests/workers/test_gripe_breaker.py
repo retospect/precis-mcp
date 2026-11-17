@@ -137,8 +137,13 @@ def test_trips_after_k_same_cause_failures_on_one_lane_and_only_that_lane(
         if c.chunk_kind == "todo_body"
     )
     assert all(f"jo{j}" in body for j in jobs) and "http-401" in body
-    # the lane is out of the capacity minted against; the others still mint
-    assert res.extra["lane_capacity"] == 3  # devin 2 + kimi 1
+    # The breaker removes codex from the capacity minted against: host
+    # supply still reads the fixture's four free executor slots, but the
+    # held lane's cap drops the dispatch capacity to three.
+    assert gd.lane_capacity(store) == 3  # devin 2 + kimi 1
+    assert res.extra["lane_capacity"] == 3
+    assert res.extra["free_executor_slots"] == 4
+    assert res.extra["dispatch_capacity"] == 3
     assert res.ok == 3 and sum(1 for g in gripes if _roots_for(store, g)) == 3
     # and out of every lane pick, while the others stay pickable
     assert "codex" in lanes.lane_backoffs(store)
@@ -225,7 +230,14 @@ def test_a_host_streak_across_lanes_holds_those_lanes_out(
     assert (trip["scope"], trip["name"]) == ("host", "sick-host")
     assert trip["lanes"] == ["codex", "devin"]
     assert lb.tripped_lanes(store) == {"codex", "devin"}
-    assert res.extra["lane_capacity"] == 1  # kimi only
+    assert gd.lane_capacity(store) == 1  # kimi only
+    # ...and the held lanes drop their caps from the capacity minted
+    # against: host supply still reads four free executor slots, but only
+    # kimi's one is dispatchable.
+    assert res.extra["free_executor_slots"] == 4
+    assert res.extra["lane_capacity"] == 1
+    assert res.extra["dispatch_capacity"] == 1
+    assert res.extra["slots"] == 1
     ref = store.get_ref(kind="todo", id=trip["ask"])
     assert ref is not None and "host sick-host" in ref.title
     # closing the host's ask resets every lane it held: no re-trip on the

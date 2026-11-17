@@ -24,7 +24,8 @@ Each fire:
   in the census. Every doable node is queued, including builds waiting
   on file overlap; the executor skips held builds and takes the next
   job by score. Capacity is the free executor supply on live code-capable
-  hosts, using the claim loop's caps and reservations. Mint up to
+  hosts, using the claim loop's caps and reservations, less the caps of
+  lanes the breaker holds out. Mint up to
   ``factory.gripe_dispatch.queue_depth`` (default 2) queued builds per
   free slot, less already queued builds (gr702610). This bounds how much
   gripe text is frozen ahead of execution. Parked work costs no seat and
@@ -920,10 +921,7 @@ def build_queue_supply(store: Store) -> tuple[int, int]:
 
     Use the claimer's live host advertisements, executor cap and reserved
     bands. An unavailable host contributes nothing, and a queued or held
-    build consumes no running slot. A lane the breaker holds out
-    (:mod:`precis.plans.lane_breaker` — its newest builds all died of one
-    engine cause) drops its cap from the free count, as :func:`lane_capacity`
-    does.
+    build consumes no running slot.
     """
     from precis.workers.executors import _common as claims
     from precis.workers.service_config import ServiceConfigResolver
@@ -976,14 +974,6 @@ def build_queue_supply(store: Store) -> tuple[int, int]:
             "AND t.namespace = 'STATUS' AND t.value = 'queued'",
             (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchone()
-    held = _lane_breaker.tripped_lanes(store)
-    if held:
-        held_caps = sum(
-            ln.cap
-            for ln in _lanes.load_lanes(store)
-            if ln.name in held and ln.enabled and ln.fits(_BUILD_TASK_CLASS)
-        )
-        free = max(free - held_caps, 0)
     return free, int(row[0]) if row else 0
 
 
@@ -1017,7 +1007,21 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # enqueue below: its fresh job stamps would read as plan movement.
     stalled = sweep_stalled(store, [c for c in census if not c.live])
     enqueue_roots(store, [c.root_id for c in census])
-    capacity, queued = build_queue_supply(store)
+    free, queued = build_queue_supply(store)
+    # A lane the breaker holds out (:mod:`precis.plans.lane_breaker` — its
+    # newest builds all died of one engine cause) drops its cap from the
+    # capacity minted against, as :func:`lane_capacity` reports it.
+    held = _lane_breaker.tripped_lanes(store)
+    held_caps = (
+        sum(
+            ln.cap
+            for ln in _lanes.load_lanes(store)
+            if ln.name in held and ln.enabled and ln.fits(_BUILD_TASK_CLASS)
+        )
+        if held
+        else 0
+    )
+    capacity = max(free - held_caps, 0)
     open_chains = sum(1 for c in census if c.live)
     parked = sum(1 for c in census if not c.live)
     cap_parked = max_parked(store)
@@ -1051,8 +1055,9 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         ),
     ]
     extra: dict[str, Any] = {
-        "lane_capacity": capacity,
-        "free_executor_slots": capacity,
+        "lane_capacity": lane_capacity(store),
+        "free_executor_slots": free,
+        "dispatch_capacity": capacity,
         "queued_builds": queued,
         "queue_depth": depth,
         "open_chains": open_chains,
