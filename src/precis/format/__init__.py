@@ -24,6 +24,11 @@ Public surface
 - :func:`register` — add a new format at runtime. Tests use it;
   operators can too.
 
+Paged MCP tables use :mod:`precis.format.table_lens` to keep complete rows
+and an executable continuation together under the runtime response budget.
+Cursors identify an ordered result set, so changes during paging require a
+fresh read rather than risking duplicate or skipped rows.
+
 The TOON serialiser is also exported as ``precis.format.toon``
 for callers that want to reach for it directly (e.g. tests that
 exercise the dump/load roundtrip).

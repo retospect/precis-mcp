@@ -292,10 +292,20 @@ tail, frontier/gaps panels, servers-lite) — readable without calling
 what varies) rather than band. It renders the compact agent table
 `precis-toon` documents by default;
 `args={'format': 'text'}` swaps in the fixed-width copy the tick
-prompt embeds — "what the next tick would see now". `view='results'`
-and `view='frontier'` are **budgeted** like the tick's copy (2500
-tokens; rows drop from the tail, never the newest ten; the body says
-`(+K … rows omitted)`); `args={'budget': 8000}` widens it. The measure
+prompt embeds. That text copy uses a 2500-token budget, adjustable with
+`args={'format': 'text', 'budget': 8000}`.
+
+## Page candidate tables
+
+The default results, leaderboard and frontier tables accept
+`args={'where': {'band': 'provisional'}, 'columns': ['handle'], 'limit': 10}`.
+Filters accept a value, list of values, or inclusive `{'min': x, 'max': y}`.
+Use `sort=[['energy', 'asc']]` for explicit order or `sort='-energy'` for
+descending order. Copy the footer's `next:` call to continue with its cursor.
+The footer reports total rows and aggregates for hidden rows. If the
+underlying results change, start again without the cursor.
+
+The measure
 columns are the pathway axes plus the quest's declared **objective**
 columns — for a quest with no `meta.rubric_objectives` that is `energy`,
 so a completed structure relax shows its converged result instead of an
@@ -314,6 +324,8 @@ unmeasured last). "Which candidate is trusted AND best" is
 frontier is empty because everything measured is unconfirmed, the
 headline's per-axis counts name the ≤10 handles that DO carry it
 trusted (`barrier ×252 (trusted: st123)`).
+## Read series and measures
+
 `view='series'` re-cuts the same rows as **controlled comparisons**: one
 block per set of candidates that share a base and differ in exactly one
 axis (`dopant · n_dopant · site · coads`), so a difference down a block is

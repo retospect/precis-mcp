@@ -470,7 +470,18 @@ class TestBudgetTruncation:
     def test_truncation_keeps_newest_ten(self, store: Any) -> None:
         qid = _mk_quest(store)
         sids = [
-            _mk_candidate(store, qid, f"Zn n={i}", _dopant_ops("Zn", i + 1))
+            _mk_candidate(
+                store,
+                qid,
+                f"Zn n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Zn",
+                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                    }
+                ],
+            )
             for i in range(15)
         ]
         rows = build_results_rows(store, qid)
@@ -493,7 +504,18 @@ class TestViewBudget:
     def _fifteen(self, store: Any) -> tuple[int, list[int]]:
         qid = _mk_quest(store)
         sids = [
-            _mk_candidate(store, qid, f"Zn n={i}", _dopant_ops("Zn", i + 1))
+            _mk_candidate(
+                store,
+                qid,
+                f"Zn n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Zn",
+                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                    }
+                ],
+            )
             for i in range(15)
         ]
         return qid, sids
@@ -503,26 +525,28 @@ class TestViewBudget:
     ) -> None:
         qid, sids = self._fifteen(store)
         h = QuestHandler(hub=Hub(store=store))
-        body = h.get(id=qid, view="results", args={"budget": 1}).body
+        body = h.get(id=qid, view="results", args={"budget": 1, "format": "text"}).body
         assert "of 15 rows omitted for the 1-token budget" in body
         rows = build_results_rows(store, qid)
         newest_ten = set(sorted(sids, reverse=True)[:10])
         for r in rows:
             present = r["handle"] in body
             assert present == (r["ref_id"] in newest_ten), r["handle"]
-        wide = h.get(id=qid, view="results", args={"budget": 100_000}).body
+        wide = h.get(
+            id=qid, view="results", args={"budget": 100_000, "format": "text"}
+        ).body
         assert "rows omitted" not in wide
         assert all(r["handle"] in wide for r in rows)
 
-    def test_frontier_view_trims_tail_band_first(self, store: Any) -> None:
+    def test_frontier_view_limit_preserves_continuation(self, store: Any) -> None:
         qid, _sids = self._fifteen(store)
         h = QuestHandler(hub=Hub(store=store))
         full = h.get(id=qid, view="frontier").body
         assert "omitted" not in full
-        tight = h.get(id=qid, view="frontier", args={"budget": 30}).body
-        assert "omitted — args={'budget': N} widens" in tight
+        tight = h.get(id=qid, view="frontier", args={"limit": 1}).body
+        assert "next: get(kind='quest'" in tight
         assert tight.startswith("# frontier — quest")
-        assert len(tight) < len(full)
+        assert len(re.findall(r"^  st\d+ ", tight, re.M)) == 1
 
     def test_bad_budget_is_bad_input(self, store: Any) -> None:
         from precis.errors import BadInput
@@ -1142,3 +1166,138 @@ class TestTrustedSortViews:
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
         assert f"barrier ×1 (trusted: {self._handle(a)})" in body
         assert "U_L_abs ×1 (trusted: none)" in body
+
+
+# ── table lens on results / leaderboard (gr592637) ───────────────────────
+
+
+class TestResultsTableLens:
+    def _many(self, store: Any, n: int = 300) -> tuple[int, list[int]]:
+        qid = _mk_quest(store)
+        sids = [
+            _mk_candidate(
+                store,
+                qid,
+                f"Zn n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Zn",
+                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                    }
+                ],
+            )
+            for i in range(n)
+        ]
+        return qid, sids
+
+    def test_results_cursor_reaches_all_rows(self, store: Any) -> None:
+        qid, sids = self._many(store)
+        h = QuestHandler(hub=Hub(store=store))
+        rows = build_results_rows(store, qid)
+        body = h.get(id=qid, view="results").body
+        seen: list[str] = []
+        pages = 0
+        while True:
+            pages += 1
+            seen += [
+                r["handle"] for r in rows if re.search(rf"\b{r['handle']}\b", body)
+            ]
+            m = re.search(r"next: (get\(kind='quest'.*\))", body)
+            if m is None:
+                break
+            assert "view='results'" in m.group(1)
+            cursor = re.search(r"'cursor': '([^']+)'", m.group(1))
+            assert cursor is not None
+            body = h.get(id=qid, view="results", args={"cursor": cursor.group(1)}).body
+            assert pages < 40
+        assert pages > 1
+        assert sorted(seen) == sorted(r["handle"] for r in rows)
+        assert len(set(seen)) == len(seen) == len(sids)
+
+    def test_results_trusted_alias_equals_where(self, store: Any) -> None:
+        qid, sids = self._many(store, 6)
+        _converge(store, sids[0])
+        store.stamp_ref_meta(sids[0], {"barrier": 0.4, "barrier_trusted": True})
+        h = QuestHandler(hub=Hub(store=store))
+        a = h.get(id=qid, view="results", args={"trusted": True}).body
+        b = h.get(id=qid, view="results", args={"where": {"trusted": "yes"}}).body
+        rows = build_results_rows(store, qid)
+        for r in rows:
+            assert (r["handle"] in a) == (r["handle"] in b) == (r["trusted"] == "yes")
+
+    def test_results_sort_columns_where(self, store: Any) -> None:
+        qid, _ = self._many(store, 4)
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid,
+            view="results",
+            args={"columns": ["handle", "dopant"], "sort": "-handle", "limit": 2},
+        ).body
+        assert "left out (2 candidates)" in body
+
+    def test_class_arg_refused(self) -> None:
+        keys = QuestHandler.ARGS_KEYS["get"]
+        assert "class" not in keys
+        assert {"where", "columns", "cursor", "sort", "limit"} <= set(keys)
+
+
+class TestFrontierTableLens:
+    def test_frontier_provisional_paging(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        sids = []
+        for i in range(284):
+            sid = _mk_candidate(
+                store,
+                qid,
+                f"Cu n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Cu",
+                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                    }
+                ],
+            )
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.3 + i / 100, "barrier_trusted": False}
+            )
+            sids.append(sid)
+        h = QuestHandler(hub=Hub(store=store))
+        args: dict[str, Any] = {}
+        seen: list[str] = []
+        for _ in range(40):
+            body = h.get(id=qid, view="frontier", args=args).body
+            assert "── provisional" in body
+            seen += re.findall(r"^  (st\d+) ", body, flags=re.M)
+            m = re.search(r"'cursor': '([^']+)'", body)
+            if m is None:
+                break
+            args = {**args, "cursor": m.group(1)}
+        else:
+            pytest.fail("cursor never ended")
+        from precis.utils import handle_registry
+
+        want = {handle_registry.try_format("structure", s) for s in sids}
+        assert len(seen) == len(set(seen)) == 284
+        assert set(seen) == want
+
+    def test_frontier_projection_and_sort_apply_to_default_view(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store)
+        for i, barrier in enumerate((0.3, 0.5, 0.4)):
+            sid = _mk_candidate(store, qid, f"Candidate {i}", _dopant_ops("Cu", i + 1))
+            _converge(store, sid)
+            store.stamp_ref_meta(sid, {"barrier": barrier, "barrier_trusted": True})
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid,
+            view="frontier",
+            args={"sort": [["barrier", "desc"]], "columns": ["barrier"], "limit": 1},
+        ).body
+        assert "  barrier=0.5" in body
+        assert not re.search(r"\bst\d+\b", body)
+        assert "Candidate " not in body
+        assert "next: get(kind='quest'" in body

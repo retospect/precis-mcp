@@ -492,7 +492,11 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         conn.execute(
             "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (candidates[3].id,)
         )
-    args = {"class": "kinetics_method=no v2 solve", "page_size": 1}
+    args = {
+        "where": {"kinetics_method": "no v2 solve"},
+        "columns": ["pathway"],
+        "limit": 1,
+    }
     handler = QuestHandler(hub=Hub(store=store))
     counts = _counts(handler.get(id=quest.id, view="kinetics-summary").body)
     assert all(sum(values.values()) == 4 for values in counts.values())
@@ -500,12 +504,9 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         handler.get(view="kinetics-summary")
     body = handler.get(id=quest.id, view="kinetics-summary", args=args).body
     assert body == kinetics_summary(store, quest_id=quest.id, args=args)
-    assert f"id='qu{quest.id}'" in body
-    ids = _ids(
-        kinetics_summary(
-            store, quest_id=quest.id, args={"class": "kinetics_method=no v2 solve"}
-        )
-    )
+    assert f"next: get(kind='quest', id='qu{quest.id}'" in body
+    assert "'cursor':" in body
+    ids = _ids(kinetics_summary(store, quest_id=quest.id, args={**args, "limit": 20}))
     assert ids == sorted([by_candidate, by_forward, by_reverse, direct])
     assert outside not in ids and retired_candidate not in ids
     axis_args = {"axis": "kinetics_method", "page_size": 1, "offset": 0}

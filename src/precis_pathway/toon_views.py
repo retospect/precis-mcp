@@ -14,10 +14,13 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
+from precis.format.table_lens import lens_response, parse_lens_args
 from precis.quest.correction_policy import correction_policy, policy_era
+from precis.response import Response
 from precis.utils import pathway_conditions
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
@@ -1873,7 +1876,26 @@ _CONF_LEGEND = (
 )
 
 
-def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
+def compare_toon(
+    candidates: list[dict[str, Any]],
+    *,
+    U: float | None = None,
+    lens_args: dict[str, Any] | None = None,
+    lens_call: Callable[[dict[str, Any]], str] | None = None,
+) -> str:
+    """Render the comparison as text for in-process readers."""
+    return compare_response(
+        candidates, U=U, lens_args=lens_args, lens_call=lens_call
+    ).body
+
+
+def compare_response(
+    candidates: list[dict[str, Any]],
+    *,
+    U: float | None = None,
+    lens_args: dict[str, Any] | None = None,
+    lens_call: Callable[[dict[str, Any]], str] | None = None,
+) -> Response:
     """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
     anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
     gr592665) is the ``st<N> <title>`` cell naming the structure the
@@ -1888,9 +1910,31 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
     that potential and the table ranks by SPAN at U instead (RATE is
     U-independent); a candidate without ``n_H`` stays unshifted and is
-    named in the header."""
+    named in the header.
+
+    ``lens_args`` + ``lens_call`` (gr592637) put the rows through the
+    server-side table lens — ``where``/``sort``/``columns``/``limit``/
+    ``cursor`` — with a footer naming the matched count, the left-out
+    aggregates and the exact next call; both ``None`` keeps the plain dump
+    (unit-level compares). ``sort`` there names a column (``-RATE``); the
+    default order stays RATE (SPAN at ``U``) best-first."""
+    legends = "\n".join((_GATE_LEGEND, _ANCHOR_LEGEND, _CONF_LEGEND))
+
+    def _table(rows: list[dict[str, Any]], schema: list[str], header: str) -> Response:
+        if lens_args is None or lens_call is None:
+            return Response(body=f"{header}{toon.dump(rows, schema=schema)}\n{legends}")
+        return lens_response(
+            rows,
+            parse_lens_args(lens_args, columns=schema),
+            columns=schema,
+            render=lambda rs, cs: toon.dump(rs, schema=cs),
+            call=lens_call,
+            header=f"{header}{legends}\n",
+            row_unit="pathways",
+        )
+
     if not candidates:
-        return "no computed candidates to compare."
+        return Response(body="no computed candidates to compare.")
 
     notes: list[str] = []
     if U is not None:
@@ -1906,7 +1950,8 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
         if unshifted:
             notes.append(
-                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
+                f"# no n_H (pre-CHE run), shown unshifted: {len(unshifted)}"
+                + (f" ({unshifted[0]})" if len(unshifted) == 1 else "")
             )
 
     profiles: list[dict[str, Any]] = []
@@ -1955,28 +2000,10 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     if not aligned:
         rows = [_row_scalars(p) for p in profiles]
         note = "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)\n"
-        return (
-            prefix
-            + note
-            + toon.dump(
-                rows,
-                schema=[
-                    "cand",
-                    "candidate",
-                    "gate",
-                    "anchor",
-                    "lever",
-                    "RATE",
-                    "SPAN",
-                    "conf",
-                ],
-            )
-            + "\n"
-            + _GATE_LEGEND
-            + "\n"
-            + _ANCHOR_LEGEND
-            + "\n"
-            + _CONF_LEGEND
+        return _table(
+            rows,
+            ["cand", "candidate", "gate", "anchor", "lever", "RATE", "SPAN", "conf"],
+            prefix + note,
         )
 
     # aligned: build interleaved columns from the shared coordinate.
@@ -2000,15 +2027,4 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         rows.append(row)
 
     head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
-    return (
-        prefix
-        + head
-        + "\n"
-        + toon.dump(rows, schema=schema)
-        + "\n"
-        + _GATE_LEGEND
-        + "\n"
-        + _ANCHOR_LEGEND
-        + "\n"
-        + _CONF_LEGEND
-    )
+    return _table(rows, schema, f"{prefix}{head}\n")
