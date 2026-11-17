@@ -24,7 +24,11 @@ per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 
 Deterministic/key-gated legs run first (sidestep aggregators' common
 landing-page-as-OA miss on fresh DOIs); identifier-less legs silently
-no-op. Cascade stops at the first PDF; later legs run only after
+no-op. Before publishing a fold manifest, readable PDF opening text is
+checked against the stub title independently of its identifiers. Mismatched
+PDFs and sidecars are removed and the cascade continues. Scanned or
+unreadable text is unverifiable and proceeds to ingest for OCR.
+Cascade stops at the first accepted PDF; later legs run only after
 ``no_oa_version``/``fetch_failed``. Each attempt writes a ``ref_events``
 row (``source='fetcher:<leg>'``).
 
@@ -36,7 +40,9 @@ Sibling worker (plain function), not a ``WorkerHandler`` — same pattern
 as ``chase``/``segment_toc``.
 
 Event vocabulary (shared across sources): ``fetch_ok`` (url+bytes+license
-payload), ``no_oa_version``, ``fetch_failed`` (URL but download failed),
+payload), ``no_oa_version``, ``fetch_failed`` (download failed or PDF title
+mismatched; the latter carries ``reason: title_mismatch`` and ``warnings``,
+and does not count as a provider health failure),
 ``rate_limited`` (the shared limiter refused the leg — provider row
 spent/parked or a server 429; never a provider answer), ``circuit_open``
 (the leg's service breaker stood open at entry — a cooldown-class
@@ -120,7 +126,9 @@ from precis import settings
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
+from precis.identity import is_placeholder_title
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
+from precis.ingest.verify_metadata import verify_metadata
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.http import (
     Policy,
@@ -645,6 +653,7 @@ class StubRef:
     #: which stays fetch-eligible and re-checks every pass — doesn't re-emit
     #: an identical event each time.
     retraction_status: str | None = None
+    title: str | None = None
 
 
 # The default worker batch is 32 refs. One compact summary per ref bounds
@@ -905,7 +914,8 @@ def claim_stubs_to_fetch(
                  WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2_id,
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
-               r.retraction_status                                 AS retraction_status
+               r.retraction_status                                 AS retraction_status,
+               r.title
     """
     from_where = f"""
           FROM refs r
@@ -1068,6 +1078,7 @@ def claim_stubs_to_fetch(
             s2_id=r[3],
             cite_key=r[4],
             retraction_status=r[5],
+            title=r[6],
         )
         for r in rows
     ]
@@ -3781,6 +3792,30 @@ def _run_markup_cascade(
     return None
 
 
+def _pdf_title_warnings(stub: StubRef, path: Path) -> list[str]:
+    """Check opening text before a fetch manifest can bind bytes to a stub.
+
+    Identifiers from aggregators can point at an unrelated paper. Check the
+    title independently: a DOI printed in the PDF must not bypass this gate.
+    Unreadable/scanned PDFs are unverifiable and proceed to ingest for OCR.
+    Sparse text (fewer words than the title) is also insufficient evidence.
+    Titleless stubs retain the ordinary ingest metadata resolution path.
+    """
+    if is_placeholder_title(stub.title):
+        return []
+    try:
+        import fitz
+
+        with fitz.open(str(path)) as doc:
+            text = "\n".join(doc[i].get_text() for i in range(min(2, len(doc))))
+        if len(text.split()) < len((stub.title or "").split()):
+            return []
+        _, warnings = verify_metadata({"title": stub.title}, text)
+        return warnings
+    except Exception:
+        return []
+
+
 def _run_cascade(
     store: Store,
     stub: StubRef,
@@ -4034,9 +4069,25 @@ def _run_cascade(
                 if timing is not None:
                     timing.outcome = "no_identifier"
                 continue
+            # Identity rejection is local; retain the provider transport result.
+            gate.note_outcome(key, outcome.event, outcome.duration_ms)
+            if outcome.event == "fetch_ok":
+                pdf_path = inbox_dir / (_stub_filename(stub) + ".pdf")
+                warnings = _pdf_title_warnings(stub, pdf_path)
+                if warnings:
+                    pdf_path.unlink(missing_ok=True)
+                    sidecar_path(pdf_path).unlink(missing_ok=True)
+                    outcome = dataclasses.replace(
+                        outcome,
+                        event="fetch_failed",
+                        payload={
+                            **outcome.payload,
+                            "reason": "title_mismatch",
+                            "warnings": warnings,
+                        },
+                    )
             if timing is not None:
                 timing.outcome = outcome.event
-            gate.note_outcome(key, outcome.event, outcome.duration_ms)
             _timed_event(
                 store,
                 stub.ref_id,
