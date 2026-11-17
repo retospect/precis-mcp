@@ -4530,7 +4530,18 @@ class DispatchMixin(RuntimeShape):
                 # gr635829: ``args={'title': …}`` is the same near-miss
                 # one layer down — fold it onto text='s first line.
                 _fold_title_kwarg(handler, verb, accepted, extras, args)
-                unknown = self._unknown_extras(method, extras)
+                # gr676945: the args= key gate must use the same MRO-aware
+                # accepted set as the top-level strictness gate (gr593341) —
+                # a key the override forwards through its **kw catch-all to
+                # a base declaring it (memory.search → NumericRefHandler.
+                # search's id_min=/id_max=) is a real kwarg, not an unknown
+                # args= key. Own-signature-only checking refused the list
+                # footer's advertised args={'id_min': N, 'id_max': M} on
+                # every numeric-ref kind.
+                mro_accepted = _handler_accepted_kwargs(
+                    type(handler), verb
+                ) | self._accepted_kwargs(method)
+                unknown = self._unknown_extras(method, extras, mro_accepted)
                 if unknown:
                     # Core params are top-level on the slim schema; list
                     # only what belongs inside args=.
@@ -5102,9 +5113,20 @@ class DispatchMixin(RuntimeShape):
         }
 
     @classmethod
-    def _unknown_extras(cls, method: Any, extras: dict[str, Any]) -> list[str]:
-        """Return the args= keys that aren't on the handler's signature."""
-        accepted = cls._accepted_kwargs(method)
+    def _unknown_extras(
+        cls,
+        method: Any,
+        extras: dict[str, Any],
+        accepted: set[str] | frozenset[str] | None = None,
+    ) -> list[str]:
+        """Return the args= keys the handler verb doesn't accept.
+
+        ``accepted`` defaults to the resolved method's own explicit names;
+        pass the MRO-aware set (gr676945) to also admit keys a ``**kw``
+        catch-all forwards up the cooperative-inheritance chain.
+        """
+        if accepted is None:
+            accepted = cls._accepted_kwargs(method)
         return sorted(k for k in extras if k not in accepted)
 
     @staticmethod

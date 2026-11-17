@@ -1298,3 +1298,27 @@ def test_search_batch_on_a_non_memory_kind_names_the_kind(
         assert "[error:BadInput]" in out, (payload, out)
         assert "batch= is not on kind='paper' yet" in out, out
         assert "kind='memory'" in out, out
+
+
+# ── gr676945: the advertised id range bound applies on every ────────────
+# numeric-ref kind. The list footer teaches
+# ``args={'id_min': N, 'id_max': M}`` on all of them; the args= key gate
+# used to check only the resolved override's own signature, so the keys
+# NumericRefHandler.search declares (and the override forwards through its
+# ``**_kw``) were refused with "keys ['id_min'] not accepted".
+
+_ID_RANGE_KINDS = ["memory", "job", "finding", "quest", "todo", "gripe"]
+
+
+@pytest.mark.parametrize("kind", _ID_RANGE_KINDS)
+def test_id_range_accepted_on_numeric_ref_kinds(
+    runtime_with_store: PrecisRuntime, kind: str
+) -> None:
+    """``search(kind=K, args={'id_min': N, 'id_max': M})`` — the range
+    bound the list footer advertises — returns without BadInput on every
+    numeric-ref kind."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": kind, "__extras__": {"id_min": 1, "id_max": 999_999_999}},
+    )
+    assert "[error" not in out, out

@@ -1306,6 +1306,7 @@ class FindingHandler(AuditedRetirementHandler):
         tags: list[str] | None,
         limit: int,
         mode: str | None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[Ref]:
         """Ref hits for ``q``, fusing the title leg with the claim-body leg.
 
@@ -1314,6 +1315,10 @@ class FindingHandler(AuditedRetirementHandler):
         "do we already have a claim like this?" query must match. The
         ``card_combined`` cards on chase-tree rows are chain snapshots, not
         claims, and would only add noise.
+
+        ``include_ref_ids`` carries a materialized ``id_min``/``id_max``
+        range bound on the ranked paths (gr676945) — the same channel
+        ``cited=``/``uncited=`` arrive on.
         """
         return fused_ref_hits(
             self.store,
@@ -1324,7 +1329,21 @@ class FindingHandler(AuditedRetirementHandler):
             limit=limit,
             mode=mode,
             chunk_kinds=["finding_body"],
+            include_ref_ids=include_ref_ids,
         )
+
+    def _range_include_ids(
+        self, id_lo: int | None, id_hi: int | None
+    ) -> list[int] | None:
+        """Materialize an ``id_min``/``id_max`` bound for the ranked paths.
+
+        Thin wrapper over the base's :meth:`_include_ids_in_range` that
+        no-ops when no bound was given; the wrapper exists so both ranked
+        callers read identically.
+        """
+        if id_lo is None and id_hi is None:
+            return None
+        return self._include_ids_in_range(None, id_lo=id_lo, id_hi=id_hi)
 
     def _postures(
         self, ref_ids: list[int], *, strict: bool = False
@@ -1539,6 +1558,16 @@ class FindingHandler(AuditedRetirementHandler):
         group_by: str | list[str] | None = None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
+        # ``args={'id_min': N}`` / ``args={'id_max': M}`` — bound the
+        # result set to a ref-id range. This override owns every search
+        # path (it never forwards ``**_kw``), so it consumes the bounds
+        # itself: SQL-level on the listing and count views, materialized
+        # into ``include_ref_ids`` on the ranked paths — the same
+        # contract NumericRefHandler.search documents (gr676945: the
+        # list footer advertises the spelling on every numeric-ref kind,
+        # and dispatch now admits it here via the MRO-aware accepted set).
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Hybrid search across findings with a status-axis default.
@@ -1602,6 +1631,9 @@ class FindingHandler(AuditedRetirementHandler):
         ``get(kind='finding', id=N)`` for the full begat chain.
         """
         q = fold_match_all_q(q)
+        from precis.handlers._numeric_ref import _parse_id_range
+
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         base_tags: list[str] = list(tags) if tags else []
         resolved_trust = (trust or "").strip().lower() or None
         if resolved_trust is not None and resolved_trust not in FINDING_TRUST_TIERS:
@@ -1632,6 +1664,8 @@ class FindingHandler(AuditedRetirementHandler):
                 group_by=group_by,
                 since=since,
                 until=until,
+                id_min=id_lo,
+                id_max=id_hi,
             )
 
         if status is None:
@@ -1641,6 +1675,8 @@ class FindingHandler(AuditedRetirementHandler):
                 page_size=page_size,
                 mode=mode,
                 trust=resolved_trust,
+                id_lo=id_lo,
+                id_hi=id_hi,
             )
 
         # Explicit status= (including '*') — exact single-status filter,
@@ -1665,6 +1701,8 @@ class FindingHandler(AuditedRetirementHandler):
                     kind=self.kind,
                     tags=normalized,
                     limit=self._trust_pool(page_size, resolved_trust),
+                    id_min=id_lo,
+                    id_max=id_hi,
                 )
                 refs = self._apply_trust(
                     refs, trust=resolved_trust, page_size=page_size
@@ -1683,6 +1721,7 @@ class FindingHandler(AuditedRetirementHandler):
             tags=normalized,
             limit=self._trust_pool(page_size, resolved_trust),
             mode=mode,
+            include_ref_ids=self._range_include_ids(id_lo, id_hi),
         )
         refs = self._apply_trust(refs, trust=resolved_trust, page_size=page_size)
         if not refs:
@@ -1725,6 +1764,8 @@ class FindingHandler(AuditedRetirementHandler):
         page_size: int,
         mode: str | None = None,
         trust: str | None = None,
+        id_lo: int | None = None,
+        id_hi: int | None = None,
     ) -> Response:
         """The defaulted (``status is None``) search cohort: union of
         ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
@@ -1757,9 +1798,19 @@ class FindingHandler(AuditedRetirementHandler):
         pool = self._trust_pool(page_size, trust)
         if q is None or not q.strip():
             established_refs = self.store.list_refs(
-                kind=self.kind, tags=established_tags, limit=pool
+                kind=self.kind,
+                tags=established_tags,
+                limit=pool,
+                id_min=id_lo,
+                id_max=id_hi,
             )
-            hub_refs = self.store.list_refs(kind=self.kind, tags=hub_tags, limit=pool)
+            hub_refs = self.store.list_refs(
+                kind=self.kind,
+                tags=hub_tags,
+                limit=pool,
+                id_min=id_lo,
+                id_max=id_hi,
+            )
             refs = self._apply_trust(
                 _merge_dedup(established_refs, hub_refs),
                 trust=trust,
@@ -1767,11 +1818,13 @@ class FindingHandler(AuditedRetirementHandler):
             )
             return self._render_finding_table(refs, query=None)
 
+        range_ids = self._range_include_ids(id_lo, id_hi)
         wide = self._hybrid_hits(
             q=q,
             tags=Tag.normalize_filter(list(base_tags), kind=self.kind),
             limit=pool * _COHORT_OVERFETCH,
             mode=mode,
+            include_ref_ids=range_ids,
         )
         members = self._cohort_members([int(r.id) for r in wide])
         ranked = [r for r in wide if int(r.id) in members]
@@ -1780,9 +1833,19 @@ class FindingHandler(AuditedRetirementHandler):
                 ranked,
                 _merge_dedup(
                     self._hybrid_hits(
-                        q=q, tags=established_tags, limit=pool, mode=mode
+                        q=q,
+                        tags=established_tags,
+                        limit=pool,
+                        mode=mode,
+                        include_ref_ids=range_ids,
                     ),
-                    self._hybrid_hits(q=q, tags=hub_tags, limit=pool, mode=mode),
+                    self._hybrid_hits(
+                        q=q,
+                        tags=hub_tags,
+                        limit=pool,
+                        mode=mode,
+                        include_ref_ids=range_ids,
+                    ),
                 ),
             )
         refs = self._apply_trust(ranked, trust=trust, page_size=page_size)
@@ -1830,6 +1893,8 @@ class FindingHandler(AuditedRetirementHandler):
         group_by: Any,
         since: str | datetime | None,
         until: str | datetime | None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """``search(kind='finding', view='count')`` — filtered total +
         the live claim-graph census (gr518170).
@@ -1903,12 +1968,19 @@ class FindingHandler(AuditedRetirementHandler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            id_min=id_min,
+            id_max=id_max,
         )
         filters: list[str] = []
         if q and q.strip():
             filters.append(f"q={q!r}")
         if normalized:
             filters.append(f"tags={normalized!r}")
+        if id_min is not None or id_max is not None:
+            filters.append(
+                f"ids [{id_min if id_min is not None else '…'}, "
+                f"{id_max if id_max is not None else '…'}]"
+            )
         if since_dt is not None or until_dt is not None:
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
