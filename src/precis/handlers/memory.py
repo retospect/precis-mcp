@@ -4446,14 +4446,16 @@ class MemoryHandler(AuditedRetirementHandler):
             # gr631890: the tag's forest — matched nodes whose own
             # part-of parents are unmatched (``spec:*``-shape entries
             # prefix-match inside the view; the exact filter can't
-            # spell them). A listing, so q/mode/scope/status/sort don't
-            # apply; ``under=`` arrives resolved into include_ref_ids.
+            # spell them). A listing, so mode/scope/status/sort don't
+            # apply; ``q=`` filters the roots (gr702042 — agents kept
+            # passing it and meeting a BadInput). ``under=`` arrives
+            # resolved into include_ref_ids.
             from precis.handlers._memory_toc import count_tag_toc, render_tag_toc
 
+            folded_q = fold_match_all_q(q)
             rejected = [
                 name
                 for name, val in (
-                    ("q", fold_match_all_q(q)),
                     ("mode", mode),
                     ("scope", scope),
                     ("status", status),
@@ -4470,6 +4472,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 render_tag_toc(
                     self.store,
                     tags=tags,
+                    q=folded_q,
                     page=page,
                     page_size=page_size,
                     include_ref_ids=include_ref_ids,
@@ -4485,6 +4488,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 count=lambda scope_tags, scope_ids: count_tag_toc(
                     self.store,
                     tags=scope_tags,
+                    q=folded_q,
                     include_ref_ids=scope_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 ),
