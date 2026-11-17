@@ -19,6 +19,7 @@ from precis.errors import BadInput
 from precis.nanopub import registry
 from precis.nanopub.demote import ACTION_SUPERSEDE_REQUIRED, plan_demotion
 from precis.nanopub.supersede import supersede
+from precis.store.types import Tag
 from tests.test_nanopub_supersede import _old
 
 
@@ -229,6 +230,7 @@ def test_publishing_state_header_names_what_happens(store: Any) -> None:
     from precis.nanopub.preflight import publish_preflight
 
     old = _stuck(store)
+    store.add_tag(old.claim_ref_id, Tag.closed("TAPROOT", "claim"), set_by="system")
     ref = store.fetch_refs_by_ids({old.claim_ref_id})[old.claim_ref_id]
     body = render_nanopub_view(store, ref).body
     assert "re-read later" in body
