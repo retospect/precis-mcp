@@ -8,7 +8,7 @@ keyed on the precis ref_id** (`precis:<ref_id>`). That is what makes a re-push
 *update* the existing note in place — preserving its Anki scheduling history —
 instead of creating a duplicate. It is NEVER derived from the card text (a text
 edit must not re-guid, or Anki would treat it as a new card and reset the
-forgetting curve). Notes also carry a human-findable `precis::<ref_id>` tag.
+forgetting curve). Notes also carry a human-findable `precis::id::<ref_id>` tag.
 """
 
 from __future__ import annotations
@@ -46,8 +46,9 @@ def ref_id_from_guid(guid: str) -> int | None:
 
 
 def precis_tag(ref_id: int) -> str:
-    """The human-findable per-ref tag on our notes."""
-    return f"precis::{ref_id}"
+    """The human-findable per-ref tag on our notes; nested under `precis::id`
+    so the Anki GUI collapses them into one tree node."""
+    return f"precis::id::{ref_id}"
 
 
 @dataclass(frozen=True)

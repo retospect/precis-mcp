@@ -108,6 +108,11 @@ def upsert_notes(
                 if name in note.keys() and note[name] != val:  # noqa: SIM118 (anki Note, not a dict)
                     note[name] = val
                     changed = True
+            legacy = f"precis::{spec.ref_id}"
+            if legacy in note.tags:  # fold into the collapsible precis::id tree
+                note.tags = [t for t in note.tags if t != legacy]
+                note.tags.append(precis_tag(spec.ref_id))
+                changed = True
             if changed:
                 col.update_note(note)
                 updated += 1

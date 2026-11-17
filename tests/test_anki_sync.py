@@ -230,6 +230,20 @@ class TestUpsert:
         assert note.guid == guid_for(42)  # identity preserved across the edit
         assert "{{c2::blood}}" in note["Text"]
 
+    def test_legacy_id_tag_folded_under_precis_id(self, col) -> None:
+        from precis.anki.sync import upsert_notes
+
+        specs = _specs((42, {"Text": "The {{c1::heart}} pumps blood."}))
+        upsert_notes(col, specs)
+        note = col.get_note(col.find_notes("deck:Precis")[0])
+        note.tags = ["precis::42", MANAGED_TAG]
+        col.update_note(note)
+        upsert_notes(col, specs)
+        note = col.get_note(col.find_notes("deck:Precis")[0])
+        assert precis_tag(42) == "precis::id::42"
+        assert "precis::42" not in note.tags
+        assert "precis::id::42" in note.tags
+
     def test_two_refs_two_notes(self, col) -> None:
         from precis.anki.sync import upsert_notes
 
