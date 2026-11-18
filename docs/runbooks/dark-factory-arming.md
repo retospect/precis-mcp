@@ -88,9 +88,14 @@ past it (`confirmed` at the same or a later number), and no
 detached with `PRECIS_GRIPE_NOTE=0` — record-only, the shared row is
 never rewritten and the verb's own ancestor-of-prod gate is the proof —
 then launches the cut on exit 0; a refusal fails the job with the log
-tail so the retry-cap ask still fires. Any other shape (an open
-`cut`/`gating`/`fixing`/`green` local record, a shared row that does not
-prove the release) is left alone for the ask.
+tail so the retry-cap ask still fires. For an open
+`cut`/`gating`/`fixing`/`green` record, the cut runs
+`scripts/round cut --abandon` when the shared row disputes it, its origin
+branch head is already on prod, or its branch has disappeared and there
+is no deployment. The verb checks for a deployment journal and unforwarded
+commits before retirement. Before stamping the pass, the cut job also refuses
+a reported head already on prod or a record matching a terminal shared row.
+A fresh cut can reuse a terminal row's number.
 
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists

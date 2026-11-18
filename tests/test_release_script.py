@@ -613,6 +613,8 @@ def test_cut_only_cuts_and_returns_without_waiting(rig: Rig) -> None:
     assert f"release/r1 cut at {s[:9]}" in out.stdout
     assert f"RELEASE_CUT: r1 {s}" in out.stdout.splitlines()
     assert any(ln.startswith("RELEASE_RANGE: ") for ln in out.stdout.splitlines())
+    record = _round_json(rig)["releases"][-1]
+    assert f"RELEASE_CUT_RECORD: {s} {record['cut_at']}" in out.stdout.splitlines()
     assert "waiting for CI" not in out.stdout
     assert rig.origin_ref("release/r1") == s
     assert rig.deploy_log() == []

@@ -1417,11 +1417,12 @@ def test_release_deploy_fails_on_a_refused_deploy(
 # ── the job types write the shared release.round row (gr575362) ────
 
 
-def _cut_log(rn: str = "r7", sha: str = SHA) -> str:
+def _cut_log(rn: str = "r7", sha: str = SHA, *, cut_at: str = "") -> str:
+    record = f"RELEASE_CUT_RECORD: {sha} {cut_at}\n" if cut_at else ""
     return (
         f"release/{rn} cut at {sha[:9]}\n"
         f"RELEASE_CUT: {rn} {sha}\n"
-        f"RELEASE_RANGE: {PREV}..{sha[:12]}\n"
+        f"RELEASE_RANGE: {PREV}..{sha[:12]}\n{record}"
     )
 
 
@@ -1699,7 +1700,7 @@ def _walk_superseded_cut(
     assert handle is not None and handle.get("phase") == "supersede"
     _exit(checkout, 0, "r7 superseded (origin/prod abc is past def)\n")
     assert rc.poll(ctx, handle) is False
-    _exit(checkout, 0, _cut_log())
+    _exit(checkout, 0, _cut_log(cut_at="2026-01-02T00:00:00Z"))
     assert rc.poll(ctx, handle) is True
     return ctx
 
@@ -1746,7 +1747,7 @@ def test_release_cut_supersedes_a_stale_local_round_when_prod_moved_past_it(
     assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
     assert "superseded stale local r7" in ctx.chunks[-1][1]
 
-    _exit(checkout, 0, _cut_log())
+    _exit(checkout, 0, _cut_log(cut_at="2026-01-02T00:00:00Z"))
     assert rc.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     assert "superseded stale local r7, prod moved past it" in ctx.chunks[-1][1]
@@ -2054,7 +2055,7 @@ def test_release_cut_abandons_a_dead_open_round(
     assert checkout["env"][-1] == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
 
-    _exit(checkout, 0, _cut_log())
+    _exit(checkout, 0, _cut_log(cut_at="2026-01-02T00:00:00Z"))
     assert rc.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
@@ -2313,6 +2314,20 @@ def test_branch_head_on_prod_reads_the_remote_and_prod(
     assert rc._branch_head_on_prod(clone, "release/r7") is False
 
 
+@pytest.mark.parametrize(
+    "error", [OSError("git unavailable"), subprocess.TimeoutExpired("git", 120)]
+)
+def test_release_cut_git_probes_fail_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def unavailable(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        raise error
+
+    monkeypatch.setattr(rc, "_tooling_git", unavailable)
+    assert rc._prod_contains(tmp_path, SHA, "release/r7") is None
+    assert rc._branch_head_on_prod(tmp_path, "release/r7") is False
+
+
 # ── release_cut refuses a stale resumed cut (gr724696) ─────────────
 
 
@@ -2334,11 +2349,16 @@ def test_release_cut_refuses_the_corpse_a_terminal_shared_row_proves(
     and printed ``RELEASE_CUT`` — the shared row's terminal r7 proves it
     dead: the job fails with a ``next:`` naming the record, and nothing
     is stamped on the pass."""
-    _seed_round(store, 7, "abandoned")
+    cut_at = "2026-01-01T00:00:00Z"
+    _seed_round(store, 7, "abandoned", cut_at=cut_at)
     mint = T.mint_release_pass(store)
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     handle = rc.submit(ctx, None)
-    _exit(checkout, 0, _resumed_cut_log())
+    _exit(
+        checkout,
+        0,
+        _resumed_cut_log(sha="b" * 40) + f"RELEASE_CUT_RECORD: {SHA} {cut_at}\n",
+    )
     assert rc.poll(ctx, handle) is True
     assert ctx.status is None
     assert "resumed a dead local record" in ctx.failures[0]
@@ -2372,27 +2392,30 @@ def test_release_cut_refuses_the_corpse_origin_prod_proves(
     assert R.release_of(store, mint.ids["deploy"]) is None
 
 
-def test_release_cut_retired_number_is_exempt_from_the_stale_check(
+@pytest.mark.parametrize("retire", [False, True])
+def test_release_cut_accepts_reused_terminal_number(
     store: Store,
     checkout: dict[str, Any],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    retire: bool,
 ) -> None:
-    """The job that abandoned r7 this run may see the next cut re-mint
-    r7: the dead row is the residue the fresh cut supersedes, not proof
-    of a stale resume — ``_walk_superseded_cut``'s shape with the row
-    still terminal."""
+    """A fresh cut can reuse r7 at the same base, including in a clean checkout."""
     monkeypatch.setenv("PRECIS_NODE", "node-a")
     _round_script(checkout)
-    _local_round(tmp_path, monkeypatch, [_open_record()])
-    _seed_round(store, 7, "abandoned")
+    _local_round(tmp_path, monkeypatch, [_open_record()] if retire else [])
+    _seed_round(store, 7, "abandoned", cut_at="2026-01-01T00:00:00Z")
     mint = T.mint_release_pass(store)
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     handle = rc.submit(ctx, None)
-    assert handle is not None and handle["phase"] == "abandon"
-    _exit(checkout, 0, "release/r7 abandoned (abc is on main)\n")
-    assert rc.poll(ctx, handle) is False
-    _exit(checkout, 0, _cut_log())
+    assert handle is not None
+    if retire:
+        assert handle["phase"] == "abandon"
+        _exit(checkout, 0, "release/r7 abandoned (abc is on main)\n")
+        assert rc.poll(ctx, handle) is False
+    else:
+        assert handle.get("phase") is None
+    _exit(checkout, 0, _cut_log(cut_at="2026-01-02T00:00:00Z"))
     assert rc.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
 

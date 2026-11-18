@@ -759,6 +759,10 @@ def live_releases(
     out = []
     for r in rels:
         n = r.get("n")
+        cut_at, db_cut_at = r.get("cut_at"), shared.get("cut_at")
+        same_cut = not (cut_at and db_cut_at) or (
+            cut_at == db_cut_at and r.get("base") == shared.get("base")
+        )
         if (
             r.get("state") in OPEN_STATES
             and type(db_n) is int
@@ -767,7 +771,10 @@ def live_releases(
                 db_n > n
                 or (
                     db_n == n
-                    and (db_terminal or (db_branch and db_branch != r.get("branch")))
+                    and (
+                        (db_terminal and same_cut)
+                        or (db_branch and db_branch != r.get("branch"))
+                    )
                 )
             )
         ):
@@ -2232,7 +2239,8 @@ def dry_run_plan(s: str, n: int, can_ask_cut: bool, *, cut_only: bool = False) -
 def report_cut(branch: str = "") -> int:
     """--cut-only's result: ``RELEASE_CUT: r<N> <head>`` and the verdict
     range (``<prev_prod>..<head>``, the same spelling note_ci_verdict
-    records), then exit 0 without waiting for CI."""
+    records). The base and cut time identify the local record even when
+    the branch head has advanced or a later cut reuses its number."""
     cur = round_state() or {}
     rel = (
         next((r for r in live_releases(cur) if r.get("branch") == branch), {})
@@ -2248,6 +2256,8 @@ def report_cut(branch: str = "") -> int:
     rng = f"{prev[:n]}..{head[:n]}" if prev else head
     say(f"RELEASE_CUT: {branch.rsplit('/', 1)[-1]} {head}")
     say(f"RELEASE_RANGE: {rng}")
+    if rel.get("base") and rel.get("cut_at"):
+        say(f"RELEASE_CUT_RECORD: {rel['base']} {rel['cut_at']}")
     return 0
 
 

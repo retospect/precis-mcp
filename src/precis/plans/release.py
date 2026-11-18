@@ -1449,8 +1449,9 @@ def update_round(
     fills ``state_at`` and ``cut_at`` with ``now`` when the fields do not
     carry them, writes ``fields`` whole when no row exists or the row is
     a lower ``n`` (a re-cut r<N+1> moves the row), and leaves a row for
-    the same or a higher ``n`` alone — a same-``n`` row is the script's
-    own publish, which wins; the one exception is a same-``n`` ``cut``
+    the same or a higher ``n`` alone. A same-``n`` row can be the script's
+    publish or a terminal record from an earlier use of that number.
+    The one exception is a same-``n`` ``cut``
     row lacking ``pass``, where the field's ``pass`` is stamped in and
     nothing else changes, so ``release_poll``'s dropped-pass abandon can
     still fire on it. ``create=False`` is the deploy's merge — and the
@@ -1505,8 +1506,7 @@ def update_round(
             record_round(store, {**row, "pass": stamped})
             return [f"release.round: r{n} already on record (cut); stamped {stamped}"]
         if is_terminal(row):
-            # gr724696: no publish wrote this — a stale resumed cut met a
-            # dead row; say so instead of "the script's publish wins".
+            # A fresh cut can reuse the number of a terminal record.
             return [
                 f"release.round: r{n} already on record "
                 f"({row.get('state', '?')}, terminal); nothing written"

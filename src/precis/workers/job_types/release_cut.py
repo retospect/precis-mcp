@@ -27,16 +27,12 @@ detached submit/poll pair under ``ssh_node``:
   carries ``pass: td<root>`` so ``release_poll`` can abandon it when
   the pass is dropped), and
   succeeds with r<N> and the sha in the
-  summary and ``meta.release_cut``. First it runs the stale-resume
-  check (gr724696): the script's resume path also prints ``RELEASE_CUT``
-  for a leftover local record it found — a dead round's corpse, not a
-  cut made for this pass. The job fails the poll when the shared
-  ``release.round`` row names the reported ``r<N>`` terminally or the
-  reported sha already sits on ``origin/prod`` (the ``r<N>`` a retire
-  phase this job ran is exempt — the dead row is the residue the fresh
-  cut supersedes), with a ``next:`` naming the local record; nothing
-  is stamped, so the next tick's submit can retire the record and
-  re-cut. The round write is best-effort:
+  summary and ``meta.release_cut``. Before stamping the pass, poll
+  refuses a reported head already on ``origin/prod`` or a cut record
+  that matches a terminal shared ``release.round`` row (gr724696).
+  The record's base and cut time identify it across branch-number
+  reuse and subsequent fixes to its head. The refusal names the local
+  record to retire. The round write is best-effort:
   skipped when the cut's host is unknown, a failure a log warning plus a
   summary note — never a job failure, the cut happened. No
   ``RELEASE_CUT`` line (S already live,
@@ -84,16 +80,12 @@ detached ``supersede`` phase — ``scripts/round supersede r<n>`` with
 ``PRECIS_GRIPE_NOTE=0`` so the shared row is never rewritten; the verb's
 own ancestor-of-prod gate is the proof, it touches no remote ref, and a
 refusal fails the job with the log tail (no cut launched). On exit 0 the
-handle swaps onto the usual ``--cut-only`` launch, the supersede note
-carried into the cut's summary. An open ``cut``/``gating``/``fixing``/
-``green`` local record the shared row does NOT dispute is not covered —
-``supersede`` refuses open records, and the false-``RELEASE_CUT``
-hazard they carry needs ``scripts/release``'s resume path, a later
-slice (td575911).
+handle swaps onto the usual ``--cut-only`` launch and carries the
+supersede note into the cut's summary.
 
 A second preflight covers the dropped pass (gr612091, gr724696): a
 local record in an open state provably dead — the shared
-``release.round`` row disputes it (a terminal state such as
+``release.round`` row disputes it (a matching terminal record such as
 ``release_poll``'s ``abandoned`` stamp on a won't-do'd pass, a higher
 ``n``, or a different branch, the same dispute ``scripts/release``'s
 shared-row filter applies) or its own origin branch head already sits
@@ -565,9 +557,13 @@ def _dead_open_round_n(ctx: Any) -> int | None:
         shared = None
     if isinstance(shared, dict):
         db_n = shared.get("n")
+        cut_at, db_cut_at = rel.get("cut_at"), shared.get("cut_at")
+        same_cut = not (cut_at and db_cut_at) or (
+            cut_at == db_cut_at and rel.get("base") == shared.get("base")
+        )
         if type(db_n) is int and (
             db_n > n
-            or (db_n == n and _release.is_terminal(shared))
+            or (db_n == n and same_cut and _release.is_terminal(shared))
             or (
                 db_n == n
                 and str(shared.get("branch") or "") not in ("", str(rel.get("branch")))
@@ -626,33 +622,36 @@ def _prod_contains(root: Path, sha: str, branch: str) -> bool | None:
     release's origin branch) is fetched alongside prod so ``sha``'s
     object is local. ``None`` when the evidence is unreadable — a maybe
     never condemns a cut."""
-    fetched = _tooling_git(
-        root,
-        ["fetch", "-q", "origin", "+refs/heads/prod:refs/remotes/origin/prod"],
-    )
-    if fetched.returncode != 0:
-        return None
-    # Best effort: ``sha`` may already be a local object (a fresh cut is a
-    # main commit); the branch fetch only covers a head main never held.
-    _tooling_git(
-        root,
-        [
-            "fetch",
-            "-q",
-            "origin",
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-        ],
-    )
-    if (
+    try:
+        fetched = _tooling_git(
+            root,
+            ["fetch", "-q", "origin", "+refs/heads/prod:refs/remotes/origin/prod"],
+        )
+        if fetched.returncode != 0:
+            return None
+        # Best effort: ``sha`` may already be a local object (a fresh cut is a
+        # main commit); the branch fetch only covers a head main never held.
         _tooling_git(
-            root, ["rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
-        ).returncode
-        != 0
-    ):
+            root,
+            [
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
+        )
+        if (
+            _tooling_git(
+                root, ["rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
+            ).returncode
+            != 0
+        ):
+            return None
+        cp = _tooling_git(
+            root, ["merge-base", "--is-ancestor", sha, "refs/remotes/origin/prod"]
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    cp = _tooling_git(
-        root, ["merge-base", "--is-ancestor", sha, "refs/remotes/origin/prod"]
-    )
     if cp.returncode == 0:
         return True
     return False if cp.returncode == 1 else None
@@ -664,7 +663,12 @@ def _branch_head_on_prod(root: Path, branch: str) -> bool:
     stands (gr724696). Any read failure is "no"."""
     if not branch:
         return False
-    out = _tooling_git(root, ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
+    try:
+        out = _tooling_git(
+            root, ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"]
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     if out.returncode != 0:
         return False
     head = next((ln.split()[0] for ln in out.stdout.splitlines() if ln.strip()), "")
@@ -1105,7 +1109,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             return _handle_tooling(handle, tooling=tooling, added=added)
         dead = _dead_open_round_n(ctx)
         if dead is not None:
-            # gr612091: the shared row already retired this release —
+            # The shared row or prod history proves this record dead.
             # `cut --abandon` marks the record and deletes the origin
             # branch (its own guards refuse a deploy journal and
             # unforwarded commits). Same detached-phase shape as the
@@ -1152,7 +1156,7 @@ _PHASES: dict[str, tuple[str, str, str]] = {
     ),
     "abandon": (
         "cut --abandon",
-        "abandoned dead local r{n}: the shared round row retired it",
+        "abandoned dead local r{n} before cutting",
         "dead_round_abandoned",
     ),
     "abandon_gone": (
@@ -1205,11 +1209,6 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
     handle.clear()
     handle.update(fresh)
     handle["notes"] = [note]
-    if type(n) is int:
-        # gr724696: the stale-cut check exempts the number this job just
-        # retired — the dead shared row is the residue the fresh cut
-        # supersedes, not proof the new cut is stale.
-        handle["retired_n"] = n
     if tooling:
         handle["tooling"] = tooling
     if added is not None:
@@ -1261,20 +1260,31 @@ def _note_refusal(ctx: Any, refusal: dict[str, str]) -> None:
             log.warning("%s: cut_retarget stamp failed", NAME, exc_info=True)
 
 
+_CUT_RECORD_RE = re.compile(
+    r"^RELEASE_CUT_RECORD: ([0-9a-f]{7,40}) (\S+)$", re.MULTILINE
+)
+
+
+def _terminal_cut_matches(
+    row: dict[str, Any], sha: str, record: re.Match[str] | None
+) -> bool:
+    if record is not None:
+        base, cut_at = record.groups()
+        return row.get("base") == base and row.get("cut_at") == cut_at
+    deploy = row.get("deploy")
+    return sha == row.get("base") or (
+        isinstance(deploy, dict) and sha == deploy.get("sha")
+    )
+
+
 def _stale_cut_why(
-    ctx: Any, root: Path, rn: str, sha: str, retired_n: Any
+    ctx: Any, root: Path, rn: str, sha: str, record: re.Match[str] | None
 ) -> str | None:
-    """Why a ``RELEASE_CUT`` line is a stale resume, not a cut
-    (gr724696), else ``None``. ``scripts/release``'s resume path reports
-    the leftover local record it found, and ``parse_cut`` reads that as
-    a fresh cut — ``record_cut`` would stamp the pass on a release prod
-    already shipped (r333 resumed at a head prod held; the verdict poll
-    then dead-ended on "already on prod"). Two proofs, either enough:
-    the shared ``release.round`` row names this ``r<N>`` terminally, or
-    the reported sha is already on ``origin/prod``. The number this job
-    itself just retired is exempt — a retire phase ran before the cut,
-    so the dead row is the residue the new cut supersedes, not proof it
-    is stale. Reads that fail prove nothing."""
+    """Refuse an already shipped head or a matching terminal cut record.
+
+    Older tooling reported only the head. In those logs the head can
+    identify the record when it matches the row's base or deployed sha.
+    """
     n = int(rn[1:])  # rn is `r\d+` (CUT_RE)
     row: dict[str, Any] | None = None
     if ctx.store is not None:
@@ -1285,8 +1295,9 @@ def _stale_cut_why(
     if (
         isinstance(row, dict)
         and row.get("n") == n
-        and n != retired_n
+        and row.get("branch") == f"release/{rn}"
         and _release.is_terminal(row)
+        and _terminal_cut_matches(row, sha, record)
     ):
         return (
             f"scripts/release --cut-only reported {rn} at {sha[:9]}, but "
@@ -1334,7 +1345,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     params = (ctx.meta or {}).get("params") or {}
     todo_id = params.get("todo_id")
     checkout = str(handle.get("root") or ".")
-    stale = _stale_cut_why(ctx, Path(checkout), rn, sha, handle.get("retired_n"))
+    record = _CUT_RECORD_RE.search(log_text)
+    stale = _stale_cut_why(ctx, Path(checkout), rn, sha, record)
     if stale is not None:
         # gr724696: the pass must not be stamped on a corpse — nothing is
         # recorded, so the next tick's cut retries after the record is
@@ -1378,7 +1390,8 @@ def poll(ctx: Any, handle: Any) -> bool:
                     {
                         "n": int(rn[1:]),
                         "branch": f"release/{rn}",
-                        "base": sha,
+                        "base": record[1] if record else sha,
+                        **({"cut_at": record[2]} if record else {}),
                         "state": "cut",
                         "owner": {"host": host, "checkout": checkout},
                         "pass": f"td{_release.plan_root(ctx.store, todo_id)}",
