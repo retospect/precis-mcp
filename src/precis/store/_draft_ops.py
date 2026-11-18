@@ -5,7 +5,13 @@ Drafts use chunk columns ingest never touches — `handle`, `pos`
 `retired_at` — hence their own composed sub-store, :class:`DraftStore`
 (`store.drafts`), holding a :class:`~precis.store.core.StoreCore` ref
 rather than mixing into ``Store``. Every structural write logs a
-`chunk_events` row.
+`chunk_events` row. Its insert trigger rolls the event time up to the
+owning draft's ``refs.updated_at`` so reader headers and modified-order
+search agree, including metadata-only and structural edits. Machine
+(derived) writes — figure data-package refresh, ``draft_refresh``,
+``doctor_tick`` — also log events, but mark them ``source.derived=true``
+and the trigger skips them, so scheduled refreshes and lazy re-renders
+never masquerade as authored edits.
 
 ``Store`` carries no flat delegation for drafts — reached only as
 ``store.drafts.*`` (the migration this module itself once needed is
@@ -2775,20 +2781,25 @@ class DraftStore(_AbbrevMixin):
         meta: dict[str, Any] | None = None,
         split: bool = True,
         kind: str = "draft",
+        source: dict[str, Any] | None = None,
     ) -> list[DraftChunk]:
         """Add one or more chunks (a multi-paragraph `text` splits at blank
         lines), returned in order. ``meta`` (e.g. a ``term``'s ``{short,
         long}``) is stamped on each. ``kind`` sets the handle namespace
         (``'plan'`` → ``pe<id>``). ``split=False`` inserts ``text``
         verbatim as one chunk — for a derived projection that must not
-        fragment (a ``table``'s markdown render)."""
+        fragment (a ``table``'s markdown render). ``source`` is merged into
+        every created event's ``source`` — machine writers pass
+        ``{"derived": True, ...}`` so their chunks stay out of the draft's
+        ``updated_at`` clock (the chunk_events insert trigger skips
+        derived events)."""
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi, anchor_id = self._resolve_at(conn, ref_id, at)
             self._lock_sections(conn, ref_id, parent)
-            source: dict[str, Any] = {"reason": "add"}
+            event_source: dict[str, Any] = {"reason": "add", **(source or {})}
             if anchor_id is not None:
-                source["anchor"] = anchor_id
+                event_source["anchor"] = anchor_id
             keys = n_keys_between(lo, hi, len(blocks))
             out: list[DraftChunk] = []
             for block, key in zip(blocks, keys, strict=True):
@@ -2813,7 +2824,7 @@ class DraftStore(_AbbrevMixin):
                             pos=key,
                             meta=meta,
                             kind=kind,
-                            source={**source, "from": "markdown-list"},
+                            source={**event_source, "from": "markdown-list"},
                         )
                     )
                     continue
@@ -2825,7 +2836,7 @@ class DraftStore(_AbbrevMixin):
                         text=block,
                         parent_chunk_id=parent,
                         pos=key,
-                        source=source,
+                        source=event_source,
                         meta=meta,
                         kind=kind,
                     )
@@ -3087,7 +3098,9 @@ class DraftStore(_AbbrevMixin):
         export data-package appendix keeps matching the plotted pixels.
         Caption/origin/permission untouched. Optional ``conn`` (like
         :meth:`upsert_chunk_blob`) lets the route swap blob + snapshot in
-        one transaction. Logs an ``edited`` chunk_event."""
+        one transaction. Logs an ``edited`` chunk_event, marked
+        ``derived`` so it does not refresh the draft's ``updated_at``
+        clock — re-rendering a stale figure is not an authored edit."""
 
         def _do(c: psycopg.Connection) -> None:
             row = c.execute(
@@ -3108,7 +3121,10 @@ class DraftStore(_AbbrevMixin):
             c.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "figure-data-package-refresh"})),
+                (
+                    chunk_id,
+                    Jsonb({"reason": "figure-data-package-refresh", "derived": True}),
+                ),
             )
 
         if conn is not None:
