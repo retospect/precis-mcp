@@ -111,7 +111,11 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list.
+  acronym first-use expansion + an auto acronyms list. Captions carry no
+  direct formatting: restyle them in Word by editing the styles `Caption`
+  (figure captions), `Table Caption` (table titles, based on `Caption`),
+  `Caption Label` (the "Figure N:" / "Table N:" label) and `Figure` (the
+  picture paragraph).
 
 ## Audience and data supplement
 

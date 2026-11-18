@@ -963,8 +963,8 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:p>
 <w:p>
 <w:pPr>
-<w:jc w:val="center">
-</w:jc>
+<w:pStyle w:val="Figure">
+</w:pStyle>
 </w:pPr>
 <w:r>
 <w:drawing>
@@ -1013,51 +1013,33 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:p>
 <w:p>
 <w:pPr>
-<w:jc w:val="center">
-</w:jc>
+<w:pStyle w:val="Caption">
+</w:pStyle>
 </w:pPr>
 <w:r>
 <w:rPr>
-<w:b>
-</w:b>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
 </w:rPr>
 <w:t xml:space="preserve">Figure 1: </w:t>
 </w:r>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t xml:space="preserve">A </w:t>
 </w:r>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t>MOF</w:t>
 </w:r>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t xml:space="preserve"> figure </w:t>
 </w:r>
 <w:r>
 <w:rPr>
-<w:i>
-</w:i>
 <w:vertAlign w:val="superscript">
 </w:vertAlign>
 </w:rPr>
 <w:t>[2]</w:t>
 </w:r>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:hyperlink r:id="rId11">
@@ -1074,10 +1056,6 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:hyperlink>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:hyperlink r:id="rId12">
@@ -1094,10 +1072,6 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:hyperlink>
 <w:r>
-<w:rPr>
-<w:i>
-</w:i>
-</w:rPr>
 <w:t>.</w:t>
 </w:r>
 </w:p>
@@ -1347,10 +1321,14 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:p>
 <w:p>
+<w:pPr>
+<w:pStyle w:val="TableCaption">
+</w:pStyle>
+</w:pPr>
 <w:r>
 <w:rPr>
-<w:b>
-</w:b>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
 </w:rPr>
 <w:t>Table 1</w:t>
 </w:r>
@@ -2197,7 +2175,7 @@ sha256 32000b3f86ee8be54e8519f55001ac77a2bd8334be8ff76673e980cbdaaab8e5
 </w14:defaultImageDpi>
 </w:settings>
 == word/styles.xml ==
-sha256 4fbdfa1e7ae0dad85f1e7d386d1d29a4a71a5f0977d8a6d9efe82a2eb2d5a359
+sha256 6f38e6eb6e9c584dc85fdf7c09bf5c240c3ff19f48a1d2868ab464f4fa25e77e
 == word/stylesWithEffects.xml ==
 sha256 3994e251cc031b5e83769658f4af62834429eb239f41d5c9d2fd563e8fda9724
 == word/theme/theme1.xml ==

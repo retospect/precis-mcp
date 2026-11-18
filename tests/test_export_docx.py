@@ -953,6 +953,14 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     paras = [p.text for p in doc.paragraphs]
     assert "Table 1: Issue register" in paras
     assert not any("| ID | Title |" in p for p in paras)
+    # the title is styled, not directly formatted (gr725239)
+    cap = next(p for p in doc.paragraphs if p.text == "Table 1: Issue register")
+    assert cap.style.name == "Table Caption"
+    assert cap.style.base_style.name == "Caption"
+    assert cap.runs[0].style.name == "Caption Label"
+    assert all(r.bold is None for r in cap.runs)
+    assert cap.style.font.bold is True
+    assert cap.style.paragraph_format.keep_with_next is True
 
 
 def test_table_numbers_in_document_order_and_cross_reference(
@@ -2224,8 +2232,11 @@ def test_abbrev_followed_by_subscripted_index_keeps_the_subscript() -> None:
 def test_figure_captions_carry_figure_n_label(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    """Captions open with a bold "Figure N:" in reading order, and a bare
-    [dc<id>] cross-ref to the second figure prints the same number."""
+    """Captions open with "Figure N:" in reading order, and a bare
+    [dc<id>] cross-ref to the second figure prints the same number. The
+    caption's look comes from Word styles alone (gr725239): the paragraph is
+    ``Caption``, the label run ``Caption Label``, and no run carries direct
+    bold or italic, so editing the style in Word restyles every caption."""
     pid = _new_draft_project(hub)
     draft.put(id="dfig", title="T", project=pid)
     ref = hub.live_store.get_ref(kind="draft", id="dfig")
@@ -2255,13 +2266,23 @@ def test_figure_captions_carry_figure_n_label(
     )
     out = tmp_path / "dfig.docx"
     export_docx(hub.live_store, ref, target_path=out)
-    paras = docx.Document(str(out)).paragraphs
+    doc = docx.Document(str(out))
+    paras = doc.paragraphs
     texts = [p.text for p in paras]
     assert "Figure 1: First widget." in texts
     assert "Figure 2: Second widget." in texts
     assert "As in fig. 2." in texts
     cap = next(p for p in paras if p.text.startswith("Figure 1:"))
-    assert cap.runs[0].bold and cap.runs[1].italic and not cap.runs[0].italic
+    assert cap.style.name == "Caption"
+    assert cap.alignment is None
+    assert cap.runs[0].style.name == "Caption Label"
+    assert all(r.bold is None and r.italic is None for r in cap.runs)
+    caption_style = doc.styles["Caption"]
+    assert caption_style.font.italic is True and caption_style.font.bold is False
+    assert caption_style.font.name == "Times New Roman"
+    label_style = doc.styles["Caption Label"]
+    assert label_style.font.bold is True and label_style.font.italic is False
+    assert doc.styles["Figure"].paragraph_format.keep_with_next is True
 
 
 def test_bib_markup_runs_convert_html_and_math_to_styles() -> None:

@@ -130,6 +130,17 @@ _MARGIN_IN = 1.0
 #: 8.5in page width matching python-docx's built-in template.
 _EQ_CENTER_TAB_IN = (8.5 - 2 * _MARGIN_IN) / 2
 _EQ_NUMBER_TAB_IN = 8.5 - 2 * _MARGIN_IN
+#: Caption formatting lives in Word styles, never in direct run formatting,
+#: so an author restyles every caption by editing one style in Word:
+#: ``Caption`` is Word's built-in caption paragraph style (the one *Insert
+#: Caption* and *Table of Figures* use) and carries the figure-caption text;
+#: ``Table Caption`` (based on it) the title above a table; ``Caption Label``
+#: (character) the "Figure N:" / "Table N:" label; ``Figure`` the paragraph
+#: that holds the picture.
+_CAPTION_STYLE = "Caption"
+_TABLE_CAPTION_STYLE = "Table Caption"
+_CAPTION_LABEL_STYLE = "Caption Label"
+_FIGURE_STYLE = "Figure"
 
 
 def _apply_paper_theme(doc: Any) -> None:
@@ -157,12 +168,65 @@ def _apply_paper_theme(doc: Any) -> None:
     for lvl in range(1, _MAX_HEADING_LEVEL + 1):
         _restyle(f"Heading {lvl}", font=_HEADING_FONT)
 
+    _ensure_caption_styles(doc)
+
     margin = Inches(_MARGIN_IN)
     for section in doc.sections:
         section.top_margin = margin
         section.bottom_margin = margin
         section.left_margin = margin
         section.right_margin = margin
+
+
+def _ensure_caption_styles(doc: Any) -> None:
+    """Define the four caption styles (idempotent; see ``_CAPTION_STYLE``).
+
+    The look matches what the export used to apply run by run: figure
+    captions italic and centred under a bold label, table titles bold and
+    left-aligned. ``Figure`` and ``Table Caption`` keep with the next
+    paragraph, so a picture stays on the page of its caption and a title on
+    the page of its table."""
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
+
+    styles = doc.styles
+    if _CAPTION_LABEL_STYLE in styles:
+        return
+
+    def _get_or_add(name: str, style_type: Any) -> Any:
+        return styles[name] if name in styles else styles.add_style(name, style_type)
+
+    try:
+        normal = styles["Normal"]
+    except KeyError:  # pragma: no cover - depends on the docx template
+        normal = None
+
+    # python-docx's template ships ``Caption`` as 9 pt bold accent-blue.
+    caption = _get_or_add(_CAPTION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    caption.base_style = normal
+    caption.font.name = _BODY_FONT
+    caption.font.size = Pt(_BODY_PT)
+    caption.font.color.rgb = RGBColor.from_string(_INK)
+    caption.font.bold = False
+    caption.font.italic = True
+    caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    table_caption = _get_or_add(_TABLE_CAPTION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    table_caption.base_style = caption
+    table_caption.font.bold = True
+    table_caption.font.italic = False
+    table_caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    table_caption.paragraph_format.keep_with_next = True
+
+    figure = _get_or_add(_FIGURE_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    figure.base_style = normal
+    figure.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    figure.paragraph_format.keep_with_next = True
+
+    label = _get_or_add(_CAPTION_LABEL_STYLE, WD_STYLE_TYPE.CHARACTER)
+    label.font.bold = True
+    label.font.italic = False
 
 
 @dataclass
@@ -632,12 +696,12 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     figure degrades to a caption-only paragraph + a warning."""
     from io import BytesIO
 
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches
 
     from precis.render.figure import ensure_rendered
     from precis.utils.figure_source import figure_export_asset
 
+    _ensure_caption_styles(doc)
     render_err = (
         None if chunk.dc in ctx.withheld_figures else ensure_rendered(store, chunk)
     )
@@ -652,9 +716,9 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
             str(perm[k]) for k in ("publisher", "source_paper") if perm.get(k)
         )
         box = doc.add_paragraph(
-            "Figure withheld pending permission" + (f": {who}" if who else "")
+            "Figure withheld pending permission" + (f": {who}" if who else ""),
+            style=_FIGURE_STYLE,
         )
-        box.alignment = WD_ALIGN_PARAGRAPH.CENTER
         _border_paragraph(box)
         ctx.warnings.append(
             f"figure {chunk.dc} withheld (third-party image, permission not granted)"
@@ -668,7 +732,7 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
         data, _ext = asset
         try:
             doc.add_picture(BytesIO(data), width=Inches(5.5))
-            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            doc.paragraphs[-1].style = _FIGURE_STYLE
         except Exception as exc:  # pragma: no cover — pillow/format edge
             ctx.warnings.append(f"figure {chunk.dc} could not embed: {exc}")
         snapshot = collect_entry(chunk)
@@ -683,17 +747,15 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
                     label=chunk.dc, caption=chunk.text or "", snapshot=snapshot
                 )
             )
-    cap = doc.add_paragraph()
-    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # Formatting comes from the ``Caption`` / ``Caption Label`` styles alone
+    # (gr725239): no run here carries direct bold, italic or alignment.
+    cap = doc.add_paragraph(style=_CAPTION_STYLE)
     # "Figure N:" — the same reading-order number a ``[dc<id>]`` cross-ref
     # prints as "fig. N", like LaTeX's ``\\caption`` label.
     number = ctx.xref.get(chunk.dc, ("", ""))[1]
     if number:
-        cap.add_run(f"Figure {number}: ").bold = True
-    first_caption_run = len(cap.runs)
+        cap.add_run(f"Figure {number}: ", style=_CAPTION_LABEL_STYLE)
     _render_inline(chunk.text or "", ctx, cap)
-    for r in cap.runs[first_caption_run:]:
-        r.italic = True
 
 
 # ── table rendering ───────────────────────────────────────────────
@@ -716,13 +778,15 @@ def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
     # prints as "table N", like the figure caption's "Figure N:" (gr592852).
     number = ctx.xref.get(chunk.dc, ("", ""))[1]
     if number or caption:
-        cap = doc.add_paragraph()
+        _ensure_caption_styles(doc)
+        cap = doc.add_paragraph(style=_TABLE_CAPTION_STYLE)
         if number:
-            cap.add_run(f"Table {number}: " if caption else f"Table {number}")
+            cap.add_run(
+                f"Table {number}: " if caption else f"Table {number}",
+                style=_CAPTION_LABEL_STYLE,
+            )
         if caption:
             _render_inline(caption, ctx, cap)
-        for run in cap.runs:
-            run.bold = True
     ncols = len(header)
     table = doc.add_table(rows=1, cols=ncols)
     try:  # built-in style; absent in some templates → fall back to no style
