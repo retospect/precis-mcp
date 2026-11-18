@@ -35,7 +35,7 @@ def test_parallel_scopes_space_and_subtree(hub: Hub) -> None:
 def test_mcp_queue_args(runtime_with_store: PrecisRuntime) -> None:
     edge_id = _edge(runtime_with_store.live_store, {})
     out = runtime_with_store.dispatch(
-        "get", {"kind": "memory", "id": "/links", "args": {"limit": 2}}
+        "get", {"kind": "memory", "id": "/links", "__extras__": {"limit": 2}}
     )
     assert str(edge_id) in out and "shown 1 of 1 missing" in out
 
@@ -76,10 +76,8 @@ def test_structural_defaults_cover_stored_spellings(hub: Hub, relation: str) -> 
 
 
 @pytest.mark.parametrize("view", [None, "raw"])
-def test_missing_filter_requires_queue_view(
-    hub_stateless: Hub, view: str | None
-) -> None:
-    handler = MemoryHandler(hub=hub_stateless)
+def test_missing_filter_requires_queue_view(hub: Hub, view: str | None) -> None:
+    handler = MemoryHandler(hub=hub)
     with pytest.raises(BadInput, match="view='links'"):
         handler.get(id=123, view=view, reason="missing")
 
