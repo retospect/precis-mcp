@@ -637,6 +637,27 @@ def test_cut_only_on_a_foreign_release_prints_no_cut_line(rig: Rig) -> None:
     assert "RELEASE_CUT:" not in out.stdout
 
 
+def test_cut_only_resume_refuses_a_record_whose_head_is_on_prod(
+    rig: Rig,
+) -> None:
+    """gr724696: an abandoned pass left this checkout's open record; prod
+    shipped its head elsewhere. Resuming it must refuse with the retire
+    command — not report the corpse's RELEASE_CUT (release_cut records
+    that as the pass's cut and the verdict poll dead-ends on "already on
+    prod")."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0  # r1 at c3
+    head = _child(rig, rig.shas["c3"], "r1 fix work")
+    _push_branch(rig, "release/r1", head)
+    _push_branch(rig, "prod", head)  # the release shipped elsewhere
+    s2 = _commit(rig.root, "src/c.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = _release(rig, "--cut-only", "--sha", s2, *FAST)
+    assert out.returncode == 4, out.stdout + out.stderr
+    assert f"release/r1 at {head[:9]} is already on origin/prod" in out.stderr
+    assert "scripts/round cut --abandon" in out.stderr
+    assert "RELEASE_CUT:" not in out.stdout
+
+
 def test_cut_only_dry_run_stops_after_the_cut(rig: Rig) -> None:
     out = _release(rig, "--cut-only", "--dry-run", *FAST)
     assert out.returncode == 0, out.stderr

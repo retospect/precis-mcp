@@ -2236,6 +2236,167 @@ def test_release_cut_abandon_failure_fails_the_job_and_cuts_nothing(
     assert len(checkout["argv"]) == 1  # only the abandon launch
 
 
+# ── release_cut abandons an open record whose head is on prod (gr724696) ──
+
+
+def test_release_cut_abandons_an_open_record_whose_head_prod_holds(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr724696: no shared row to dispute the record (the cut host cannot
+    read it — r333's exact hole) — the record's own origin branch head
+    already on origin/prod proves it dead, so the cut abandons it first."""
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    monkeypatch.setattr(rc, "_branch_head_on_prod", lambda root, branch: True)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "abandon"
+    assert checkout["argv"] == [[str(script), "cut", "--abandon"]]
+    assert checkout["env"] == [{"PRECIS_GRIPE_NOTE": "0"}]
+
+
+def test_release_cut_leaves_an_open_record_whose_head_is_not_on_prod(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A head prod does not hold is live work: no abandon, the cut
+    launches as today."""
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    monkeypatch.setattr(rc, "_branch_head_on_prod", lambda root, branch: False)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle.get("phase") is None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+def test_branch_head_on_prod_reads_the_remote_and_prod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real git: the head of a branch prod contains answers True, a head
+    ahead of prod or a missing branch answers False, and a broken
+    remote answers False — never condemns on a maybe."""
+    monkeypatch.setattr(
+        rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    _g(work, "init", "-q", "-b", "main")
+    (work / "f").write_text("x\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "m")
+    _g(work, "branch", "prod")
+    _g(work, "branch", "release/r7")
+    _g(work, "checkout", "-q", "-b", "side")
+    (work / "g").write_text("y\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "side work")
+    _g(work, "branch", "-f", "release/r8", "HEAD")
+    _g(work, "checkout", "-q", "main")
+    origin = tmp_path / "origin.git"
+    _g(tmp_path, "clone", "-q", "--bare", str(work), str(origin))
+    clone = tmp_path / "clone"
+    _g(tmp_path, "clone", "-q", str(origin), str(clone))
+    assert rc._branch_head_on_prod(clone, "release/r7") is True
+    assert rc._branch_head_on_prod(clone, "release/r8") is False
+    assert rc._branch_head_on_prod(clone, "release/r9") is False
+    _g(clone, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    assert rc._branch_head_on_prod(clone, "release/r7") is False
+
+
+# ── release_cut refuses a stale resumed cut (gr724696) ─────────────
+
+
+def _resumed_cut_log(rn: str = "r7", sha: str = SHA) -> str:
+    """``scripts/release`` reporting the leftover record it resumed —
+    the shape ``parse_cut`` misread as a fresh cut in gr724696."""
+    return (
+        f"resuming release release/{rn} at {sha[:9]}: {'d' * 40} is not in "
+        f"it and rides the next release\n"
+        f"RELEASE_CUT: {rn} {sha}\n"
+        f"RELEASE_RANGE: {PREV}..{sha[:12]}\n"
+    )
+
+
+def test_release_cut_refuses_the_corpse_a_terminal_shared_row_proves(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr724696: the script resumed the abandoned r7's leftover record
+    and printed ``RELEASE_CUT`` — the shared row's terminal r7 proves it
+    dead: the job fails with a ``next:`` naming the record, and nothing
+    is stamped on the pass."""
+    _seed_round(store, 7, "abandoned")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    _exit(checkout, 0, _resumed_cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "resumed a dead local record" in ctx.failures[0]
+    assert "next:" in ctx.failures[0]
+    assert "cut --abandon" in ctx.failures[0]
+    assert R.release_of(store, mint.ids["deploy"]) is None
+    assert "release_cut" not in ctx.stamped
+
+
+def test_release_cut_refuses_the_corpse_origin_prod_proves(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No shared row the job can read — the reported sha already on
+    ``origin/prod`` is proof enough."""
+    mint = T.mint_release_pass(store)
+    seen: list[tuple[Path, str, str]] = []
+
+    def probe(root: Path, sha: str, branch: str) -> bool:
+        seen.append((root, sha, branch))
+        return True
+
+    monkeypatch.setattr(rc, "_prod_contains", probe)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    _exit(checkout, 0, _resumed_cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "origin/prod already holds" in ctx.failures[0]
+    assert "next:" in ctx.failures[0]
+    assert seen == [(checkout["root"], SHA, "release/r7")]
+    assert R.release_of(store, mint.ids["deploy"]) is None
+
+
+def test_release_cut_retired_number_is_exempt_from_the_stale_check(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The job that abandoned r7 this run may see the next cut re-mint
+    r7: the dead row is the residue the fresh cut supersedes, not proof
+    of a stale resume — ``_walk_superseded_cut``'s shape with the row
+    still terminal."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(store, 7, "abandoned")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "abandon"
+    _exit(checkout, 0, "release/r7 abandoned (abc is on main)\n")
+    assert rc.poll(ctx, handle) is False
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+
+
 # ── release_cut abandons a never-deployed record whose branch is gone ──
 
 

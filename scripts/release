@@ -2138,7 +2138,7 @@ def run(args: argparse.Namespace) -> int:
                 rel, mine = open_rel, True
             if rel and mine:
                 tip, has = head_containing(s, rel["branch"], rel.get("base", ""))
-                return resume(args, s, rel, tip, has)
+                return resume(args, s, rel, tip, has, prod)
             for r in (open_rel, dep_rel):
                 if not r or r.get("cut_pending"):
                     continue
@@ -2406,7 +2406,12 @@ def finish(args: argparse.Namespace, s: str) -> int:
 
 
 def resume(
-    args: argparse.Namespace, s: str, rel: dict[str, Any], tip: str, has: bool
+    args: argparse.Namespace,
+    s: str,
+    rel: dict[str, Any],
+    tip: str,
+    has: bool,
+    prod: str,
 ) -> int:
     """Act on our own release first; S not in it rides the next release."""
     branch = str(rel["branch"])
@@ -2419,6 +2424,27 @@ def resume(
         # the recorded base, not S: cut refuses a different pending SHA
         rc = cut_and_finish(args, str(rel["base"]), branch)
         return die(1, "scripts/release: lost the pending cut") if rc == -1 else rc
+    if (
+        rel.get("state") in OPEN_STATES
+        and not dep
+        and tip
+        and prod
+        and rev(prod)
+        and rev(tip)
+        and ancestor(tip, prod)
+    ):
+        # gr724696: origin/prod already holds this record's head — the
+        # release is dead (abandoned after ship, or shipped elsewhere),
+        # not in-flight work. Reporting its RELEASE_CUT would stamp a
+        # stale release as the asker's cut (release_cut records the
+        # corpse and the verdict poll dead-ends on "already on prod"), so
+        # refuse the way a stale deploying record's stale_why does.
+        return die(
+            4,
+            f"scripts/release: {branch} at {tip[:9]} is already on origin/prod"
+            f" {prod[:9]} — the local record is dead; next: retire it with"
+            " `scripts/round cut --abandon` in this checkout, then re-run",
+        )
     if has:
         say(f"resuming release {branch} at {tip[:9]}: it ships {s[:9]}")
     else:

@@ -1504,6 +1504,13 @@ def update_round(
         if row.get("state") == "cut" and "pass" not in row and stamped:
             record_round(store, {**row, "pass": stamped})
             return [f"release.round: r{n} already on record (cut); stamped {stamped}"]
+        if is_terminal(row):
+            # gr724696: no publish wrote this — a stale resumed cut met a
+            # dead row; say so instead of "the script's publish wins".
+            return [
+                f"release.round: r{n} already on record "
+                f"({row.get('state', '?')}, terminal); nothing written"
+            ]
         return [
             f"release.round: r{n} already on record "
             f"({row.get('state', '?')}); the script's publish wins"
