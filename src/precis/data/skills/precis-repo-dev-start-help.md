@@ -50,8 +50,8 @@ read. Graph root me474312 → `section:index` hubs; browse mechanics:
 [[precis-memory-help]] owns the shape (one claim per node, hub
 `part-of`, `section:<type>` tags); [[precis-make-memory]] reconciles
 free text before writing; [[precis-fix-memory-gripe-help]] is the lane
-when a recalled memory misled; [[precis-gardener-memory-help]] owns
-gardener passes.
+when a recalled memory misled; [[precis-gardener-memory-help]] owns the
+live gardening pass.
 
 ## Navigate the checkout structurally
 ## Read code and repo docs without grepping first

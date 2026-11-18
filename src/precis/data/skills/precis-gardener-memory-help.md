@@ -2,8 +2,10 @@
 id: precis-gardener-memory-help
 family: memory
 title: precis — the graph gardener's memory detectors
-summary: what the gardener's memory checks flag (anchor rot, restated claims, review debt, titles, undated absence, source drift, entity state, host facts), the actions a reviewer may take, and notation flags
+summary: the interactive gardening pass (live reads first), what the gardener's memory checks flag (anchor rot, restated claims, review debt, titles, undated absence, source drift, entity state, host facts), the actions a reviewer may take, and notation flags
 answers:
+  - what does an unqualified memory gardening request start with?
+  - how do I run a live gardening pass over the memory graph?
   - how does the gardener check memory anchors?
   - how does the gardener detect restated memory claims?
   - how does the gardener detect changed memory sources and entity state?
@@ -11,9 +13,9 @@ answers:
   - how do I audit memory claim coverage?
   - what does a reviewed memory supersede or retire do?
   - how do I fix a memory flagged AUDIT:notation?
-applies-to: get/search (kind='memory'/'job'), reviews ledger
+applies-to: get/search (kind='memory'/'job'/'todo'/'gripe'), reviews ledger
 tags: [workflow]
-kinds: [memory, job]
+kinds: [memory, job, todo, gripe]
 status: active
 ---
 
@@ -22,6 +24,46 @@ status: active
 Gardener proposals and the review ledger: [[precis-gardener-help]]. Every
 memory detector reads DREAM memories as duplicate/merge-only and never
 proposes a rewrite for them.
+
+## An interactive gardening pass
+
+The unqualified "garden the memory graph" request is this pass. It runs
+live over MCP reads — never over the cached node export:
+
+```python
+search(kind='memory', view='smells', args={'under': 'me<hub>'})   # detector roll-up per subtree
+search(kind='memory', view='shape', args={'under': 'me<hub>'})    # computed shape smells
+get(kind='job', id='/garden/proposals')                           # pending ledger proposals
+search(kind='todo', tags=['memory-review', 'STATUS:open'])        # open review todos
+search(kind='gripe', status='open', tags=['project:memory'])      # reader complaints
+```
+
+1. **Scope first.** Name the handles or the subtree up front; an
+   unqualified request scopes the repo-dev graph. Omit `under` for all
+   live memories.
+2. **Survey** with the five reads above — all computed at call time;
+   none reads a file.
+3. **Verify each candidate live** before correcting: the node's
+   `fisheye+1hop`, the detector's pinned evidence, and git/prod where
+   the claim touches them. A finding is evidence to check, never a
+   verdict.
+4. **Correct under the review-ledger protections** (below): anchored
+   `edit` with `reason=`, a `qualifies` caveat or a `supersedes` edge;
+   retire only after still-true claims live elsewhere; hold
+   human-origin nodes; never apply a pending proposal's payload by
+   hand — the ledger's bookkeeping is what makes undo possible.
+5. **Claim only the scope reviewed** — a bounded pass names what it
+   covered and what is left; "the graph is clean" is reserved for a
+   complete fresh audit.
+6. **Record the pass** as a dated entry at the top of the
+   `memory_consolidation_log` node (me474383): date, scope, what
+   changed, counts, and the coverage still unreviewed.
+
+The operator export (`precis memory index --export-dir`) and
+`scripts/memory-lint` over it are a separately requested diagnostic —
+offline hygiene over a snapshot, every finding re-verified live — not
+this workflow and never a reflex refresh. The repo-dev periodic pass
+([[reconsolidate]]) is this same workflow on the repo-dev graph.
 
 ## Memory anchor checks
 

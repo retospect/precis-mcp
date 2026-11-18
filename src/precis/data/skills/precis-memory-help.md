@@ -450,7 +450,9 @@ for all live memories. This is an aggregate, so `q`/`mode`/`scope`/`status`
 and pages beyond 1 are refused. Open a member with the single-node view
 to read its evidence.
 
-These reads create no proposals or reviews.
+These reads create no proposals or reviews. The interactive pass that
+acts on them: [[precis-gardener-memory-help]] § "An interactive
+gardening pass".
 
 ## Review a memory's graph neighbourhood and shape smells
 
