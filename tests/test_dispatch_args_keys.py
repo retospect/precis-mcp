@@ -655,12 +655,14 @@ def test_job_type_search_refuses_sort_on_the_job_path(
 ) -> None:
     """A ``sort=`` the job_type path can't apply still refuses — now
     with the job listing's own message (its ordering is already
-    recency), not the source-search field gate."""
+    recency), not the source-search field gate. ``sort='recency'`` is
+    that natural order and is accepted (b4f03a0c3), so the refused
+    spelling here is ``relevance``."""
     out = runtime_with_store.dispatch(
         "search",
         {
             "kind": "job",
-            "sort": "recency",
+            "sort": "relevance",
             "__extras__": {"job_type": "land_slice"},
         },
     )

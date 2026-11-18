@@ -128,7 +128,6 @@ from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.identity import is_placeholder_title
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
-from precis.ingest.verify_metadata import verify_metadata
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.http import (
     Policy,
@@ -3804,7 +3803,12 @@ def _pdf_title_warnings(stub: StubRef, path: Path) -> list[str]:
     if is_placeholder_title(stub.title):
         return []
     try:
+        # Deferred like ``fitz``: both ship in the ``paper`` extra, and this
+        # module loads on the always-on ``cli.main``/web import path
+        # (``verify_metadata`` pulls ``rapidfuzz``).
         import fitz
+
+        from precis.ingest.verify_metadata import verify_metadata
 
         with fitz.open(str(path)) as doc:
             text = "\n".join(doc[i].get_text() for i in range(min(2, len(doc))))

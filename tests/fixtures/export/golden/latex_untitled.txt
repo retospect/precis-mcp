@@ -41,6 +41,7 @@
 \usepackage{microtype}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
+\usepackage{xcolor}     % coverage warnings must work without optional pdfcomment
 \usepackage{booktabs}
 \usepackage{array}      % >{...}p{} column types for wrapping table cells
 \usepackage{longtable}  % page-breaking data tables (export/latex.py)

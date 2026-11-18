@@ -411,7 +411,7 @@ clears it) — it still counts as the edit's one selector, so it can't ride
 with `table=`/`cell=`/`find=`/`sub=`. The write reply shows the footer
 line before → after — `before: sum(line_cost)=17.0` /
 `after: mean(line_cost)=5.67; count(item)=3` — with the `hash:` and the
-TOON grid; `dry_run=True` previews exactly that reply (never a "no
+table grid; `dry_run=True` previews exactly that reply (never a "no
 change") and writes nothing. Read the results on the `footer:`
 line under the grid, next to `ids:`.
 

@@ -112,3 +112,8 @@ reaches nothing. Put the diagnostic in the `assert` message (or
   K/N`, the gate lanes, attempt-scoped logs, junit artifacts.
 - `docs/conventions/shipping.md` — the ship gate and what a red leg
   means for a land in flight.
+- [[go]] — the release flow whose red gate this recipe diagnoses.
+- [[land]] — the ship-only wrap-up that reads the same `ci-failed`
+  digest.
+- [[flow-stages]] — the stage router; a red gate is its ship stage's
+  failure case.
