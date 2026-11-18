@@ -64,3 +64,27 @@ def merged_cite_numbers(nums: list[int]) -> str:
             parts.extend(str(n) for n in nums[i : j + 1])
         i = j + 1
     return "[" + ", ".join(parts) + "]"
+
+
+def merged_cite_numbers_si(items: list[tuple[int, bool]]) -> str:
+    """The bracket text for a merged run holding an SI cite: ``[9 (SI), 14]``.
+    ``items`` are ``(number, is_si)``; sorted ascending here. The SI mark
+    stays attached to its own number; plain numbers collapse into
+    ``a–b`` ranges as in :func:`merged_cite_numbers`, but never across an
+    SI number."""
+    parts: list[str] = []
+    plain: list[int] = []
+
+    def flush() -> None:
+        if plain:
+            parts.extend(merged_cite_numbers(plain)[1:-1].split(", "))
+            plain.clear()
+
+    for n, si in sorted(items):
+        if si:
+            flush()
+            parts.append(f"{n} (SI)")
+        else:
+            plain.append(n)
+    flush()
+    return "[" + ", ".join(parts) + "]"

@@ -15,6 +15,10 @@ The rules, and why:
   (``h-BN`` is not ``BN``), but a short before one is a compound that
   counts (``CNB-based`` → ``carbon nanobud (CNB)-based``): otherwise a
   short used only in compounds was never defined or listed (L1).
+- A short directly after ``<word>-``, a word of two or more letters, is a
+  use too (``aerosol-CVD``; gr725250). Its first use defines the short
+  after the compound, ``aerosol-CVD (chemical vapour deposition)``, since
+  the long form cannot replace the short inside the hyphenated word.
 - Two shorts joined by a dash or slash, both new (``HOMO–LUMO``), are
   defined together, ``long1–long2 (S1–S2)``, not as two interleaved
   expansions.
@@ -78,7 +82,9 @@ class Use:
     defined. ``capital`` (first only): the long form opens a sentence.
     ``bracket`` (first only): inside parentheses, so ``long [SHORT]``.
     ``pair`` (first only): ``(separator, second short)`` of a jointly
-    defined ``A–B`` pair."""
+    defined ``A–B`` pair. ``prefix``: the word before the hyphen of a
+    ``word-SHORT`` compound (every mode); a first use then reads
+    ``prefix-SHORT (long)``."""
 
     short: str
     plural: bool = False
@@ -86,6 +92,7 @@ class Use:
     capital: bool = False
     bracket: bool = False
     pair: tuple[str, str] | None = None
+    prefix: str = ""
 
 
 Segment = str | Use
@@ -158,6 +165,7 @@ def _patterns(items: tuple[tuple[str, str], ...]) -> _Patterns:
         rf"(?P<prot>{_PROTECTED})"
         r"|\x03(?P<tok>\d+)\x03"
         rf"|(?<![\w-])(?P<a>{alt})(?P<sep>[-–—/])(?P<b>{alt})(?![\w-])"
+        rf"|(?<![\w-])(?!(?:{alt})-)(?P<pre>[^\W\d_]{{2,}})-(?P<s2>{alt})(?P<pl2>s)?(?!\w)"
         rf"|(?<![\w-])(?P<s>{alt})(?P<pl>s)?(?!\w)"
     )
     return _Patterns(spans=spans, lookback=lookback, main=main)
@@ -234,6 +242,16 @@ def expand(
             emit(sep)
             emit(_single(b, False, seen, heading, False, bracket))
             continue
+        if m.group("pre") is not None:
+            short, plural = m.group("s2"), bool(m.group("pl2"))
+            if used is not None:
+                used.add(short)
+            emit(
+                _single(
+                    short, plural, seen, heading, False, bracket, prefix=m.group("pre")
+                )
+            )
+            continue
         # A registered compound (``GNR-FET``) the pair branch matched first.
         short = f"{a}{sep}{b}" if a is not None else m.group("s")
         plural = bool(m.group("pl"))
@@ -258,17 +276,19 @@ def _single(
     capital: bool,
     bracket: bool,
     authored: bool = False,
+    prefix: str = "",
 ) -> Use:
     """The :class:`Use` for one lone occurrence; ``authored``: the long
-    form was written right before ``(SHORT)``."""
+    form was written right before ``(SHORT)``; ``prefix``: the word of a
+    ``word-SHORT`` compound."""
     if heading:
-        return Use(short, plural, "bare")
+        return Use(short, plural, "bare", prefix=prefix)
     if short in seen:
-        return Use(short, plural, "later")
+        return Use(short, plural, "later", prefix=prefix)
     seen.add(short)
     if authored:
-        return Use(short, plural, "unset")
-    return Use(short, plural, "first", capital, bracket)
+        return Use(short, plural, "unset", prefix=prefix)
+    return Use(short, plural, "first", capital, bracket, prefix=prefix)
 
 
 def plain(use: Use, abbrevs: dict[str, str]) -> str:
@@ -276,6 +296,13 @@ def plain(use: Use, abbrevs: dict[str, str]) -> str:
     the bare short otherwise."""
     s = use.short + ("s" if use.plural else "")
     long = abbrevs.get(use.short, "").strip()
+    if use.prefix:
+        s = f"{use.prefix}-{s}"
+        if use.plural and long:
+            long = plural_long(long)
+        if use.mode != "first" or not long:
+            return s
+        return f"{s} [{long}]" if use.bracket else f"{s} ({long})"
     if use.mode != "first" or not long:
         return s
     if use.pair is not None:

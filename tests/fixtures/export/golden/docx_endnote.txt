@@ -368,7 +368,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:fldChar>
 </w:r>
 <w:r>
-<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author4&lt;/Author&gt;&lt;Year&gt;2024&lt;/Year&gt;&lt;RecNum&gt;4&lt;/RecNum&gt;&lt;Suffix&gt; (SI)&lt;/Suffix&gt;&lt;DisplayText&gt;[4] (SI)&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;4&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;4&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author4, A.&lt;/author&gt;&lt;author&gt;Second4, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Parent paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;4-13&lt;/pages&gt;&lt;volume&gt;4&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2024&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author3&lt;/Author&gt;&lt;Year&gt;2022&lt;/Year&gt;&lt;RecNum&gt;3&lt;/RecNum&gt;&lt;DisplayText&gt;[3]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;3&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;3&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author3, A.&lt;/author&gt;&lt;author&gt;Second3, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;No identifier paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;3-12&lt;/pages&gt;&lt;volume&gt;3&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2022&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;Cite&gt;&lt;Author&gt;Author4&lt;/Author&gt;&lt;Year&gt;2024&lt;/Year&gt;&lt;RecNum&gt;4&lt;/RecNum&gt;&lt;Suffix&gt; (SI)&lt;/Suffix&gt;&lt;DisplayText&gt;[4] (SI)&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;4&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;4&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author4, A.&lt;/author&gt;&lt;author&gt;Second4, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Parent paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;4-13&lt;/pages&gt;&lt;volume&gt;4&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2024&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="separate">
@@ -379,32 +379,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[4] (SI)</w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="end">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:t xml:space="preserve"> </w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="begin">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author3&lt;/Author&gt;&lt;Year&gt;2022&lt;/Year&gt;&lt;RecNum&gt;3&lt;/RecNum&gt;&lt;DisplayText&gt;[3]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;3&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;3&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author3, A.&lt;/author&gt;&lt;author&gt;Second3, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;No identifier paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;3-12&lt;/pages&gt;&lt;volume&gt;3&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2022&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="separate">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">[3]</w:t>
+<w:t xml:space="preserve">[3, 4 (SI)]</w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="end">
@@ -531,7 +506,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:fldChar>
 </w:r>
 <w:r>
-<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author3&lt;/Author&gt;&lt;Year&gt;2022&lt;/Year&gt;&lt;RecNum&gt;3&lt;/RecNum&gt;&lt;DisplayText&gt;[3]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;3&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;3&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author3, A.&lt;/author&gt;&lt;author&gt;Second3, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;No identifier paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;3-12&lt;/pages&gt;&lt;volume&gt;3&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2022&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author3&lt;/Author&gt;&lt;Year&gt;2022&lt;/Year&gt;&lt;RecNum&gt;3&lt;/RecNum&gt;&lt;DisplayText&gt;[3]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;3&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;3&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author3, A.&lt;/author&gt;&lt;author&gt;Second3, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;No identifier paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;3-12&lt;/pages&gt;&lt;volume&gt;3&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2022&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;Cite&gt;&lt;Author&gt;Author4&lt;/Author&gt;&lt;Year&gt;2024&lt;/Year&gt;&lt;RecNum&gt;4&lt;/RecNum&gt;&lt;Suffix&gt; (SI)&lt;/Suffix&gt;&lt;DisplayText&gt;[4] (SI)&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;4&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;4&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author4, A.&lt;/author&gt;&lt;author&gt;Second4, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Parent paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;4-13&lt;/pages&gt;&lt;volume&gt;4&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2024&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="separate">
@@ -542,29 +517,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[3]</w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="end">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="begin">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author4&lt;/Author&gt;&lt;Year&gt;2024&lt;/Year&gt;&lt;RecNum&gt;4&lt;/RecNum&gt;&lt;Suffix&gt; (SI)&lt;/Suffix&gt;&lt;DisplayText&gt;[4] (SI)&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;4&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;4&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author4, A.&lt;/author&gt;&lt;author&gt;Second4, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Parent paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;4-13&lt;/pages&gt;&lt;volume&gt;4&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2024&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="separate">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">[4] (SI)</w:t>
+<w:t xml:space="preserve">[3, 4 (SI)]</w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="end">
@@ -817,7 +770,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <wp:inline xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <wp:extent cx="5029200" cy="5029200">
 </wp:extent>
-<wp:docPr id="1" name="Picture 1">
+<wp:docPr descr="A MOF figure." id="1" name="Picture 1">
 </wp:docPr>
 <wp:cNvGraphicFramePr>
 <a:graphicFrameLocks noChangeAspect="1">
@@ -1097,7 +1050,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">Second point, see </w:t>
 </w:r>
 <w:r>
-<w:t>section 2.1</w:t>
+<w:t>above</w:t>
 </w:r>
 <w:r>
 <w:t>.</w:t>
@@ -1176,6 +1129,10 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:gridCol>
 </w:tblGrid>
 <w:tr>
+<w:trPr>
+<w:tblHeader>
+</w:tblHeader>
+</w:trPr>
 <w:tc>
 <w:tcPr>
 <w:tcW w:type="dxa" w:w="4680">
@@ -1660,6 +1617,10 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:gridCol>
 </w:tblGrid>
 <w:tr>
+<w:trPr>
+<w:tblHeader>
+</w:tblHeader>
+</w:trPr>
 <w:tc>
 <w:tcPr>
 <w:tcW w:type="dxa" w:w="2340">
@@ -1907,5 +1868,6 @@ cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
 cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cite 'nobody99': no paper in corpus — plain marker
+figure dc9: 0 dpi at 5.5 in (1 px wide); below 300 dpi
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub reference

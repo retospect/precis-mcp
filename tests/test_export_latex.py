@@ -3246,11 +3246,26 @@ def test_overlapping_cites_dedupe_keys(monkeypatch) -> None:
     assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}"
 
 
-def test_si_cite_not_merged(monkeypatch) -> None:
+def test_si_cite_joins_adjacent_cites_ascending(monkeypatch) -> None:
+    """gr725246: an SI cite next to plain cites is one group, the SI mark on
+    its own key, keys in ascending cite number."""
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + latex._cite("b", ctx, si=True) + latex._cite("c", ctx)
     out = latex._merge_adjacent_cites(s, ctx)
-    assert out == r"\cite{a}\cite[SI]{b}\cite{c}"
+    assert out == r"\cites{a}[SI]{b}{c}\relax"
+    # b was cited earlier (number 1), a is new (number 2): b prints first
+    ctx2 = _link_ctx(monkeypatch)
+    latex._cite("b", ctx2)
+    s = latex._cite("a", ctx2, si=True) + latex._cite("b", ctx2)
+    assert latex._merge_adjacent_cites(s, ctx2) == r"\cites{b}[SI]{a}\relax"
+
+
+def test_same_paper_plain_and_si_stay_two_marks(monkeypatch) -> None:
+    """gr725246: the same-paper rule is unchanged: ``[a]`` then ``[a (SI)]``
+    do not merge into one key."""
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + latex._cite("a", ctx, si=True)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a}\cite[SI]{a}"
 
 
 def test_text_between_cites_prevents_merge(monkeypatch) -> None:
@@ -3301,6 +3316,34 @@ def test_cref_capitalised_at_start_and_after_sentence() -> None:
     assert r"\Cref{chunk:dc4}" in out
 
 
+def test_cref_into_own_section_is_the_word_above_or_below() -> None:
+    """gr725243: the LaTeX ``\\cref`` for a reference into the citing
+    chunk's own section (or an ancestor) is replaced by the literal word,
+    capitalised at a sentence start; other references stay ``\\cref``."""
+    from types import SimpleNamespace as C
+
+    chunks = [
+        C(dc="dc1", chunk_kind="heading", depth=0, text="One"),
+        C(dc="dc2", chunk_kind="paragraph", depth=1, text="Setup."),
+        C(dc="dc3", chunk_kind="heading", depth=1, text="Sub"),
+        C(dc="dc4", chunk_kind="paragraph", depth=2, text="Later."),
+        C(dc="dc5", chunk_kind="heading", depth=0, text="Two"),
+    ]
+    text = "(see [dc2]) and (see [dc4]). [dc2] is setup, [dc5] elsewhere."
+    ctx = _ctx(text)
+    ctx.xref_pass = latex.walker.number_xrefs(
+        chunks, None, equation_of=latex._standalone_equation
+    )
+    ctx.cursor.dc = "dc3"
+    out = latex._render_inline(text, ctx)
+    assert out == (
+        r"(see above) and (see below). Above is setup, \cref{chunk:dc5} elsewhere."
+    )
+    ctx.cursor.dc = "dc5"  # citing from section 2: unchanged
+    assert r"\cref{chunk:dc2}" in latex._render_inline("see [dc2]", ctx)
+    assert "\\precisrel" not in out
+
+
 def test_cref_to_paragraph_heading_uses_nameref() -> None:
     ctx = latex._Ctx(
         keymap={},
@@ -3321,6 +3364,7 @@ def test_render_body_deep_heading_xref_is_nameref(hub) -> None:
     d.put(id="nr", title="T", project=proj)
     ref = store.get_ref(kind="draft", id="nr")
     parent = store.drafts.reading_order(ref.id)[0]
+    title_handle = parent.handle
     deep = ""
     for n in range(4):
         d.put(
@@ -3331,6 +3375,12 @@ def test_render_body_deep_heading_xref_is_nameref(hub) -> None:
         )
         parent = store.drafts.reading_order(ref.id)[-1]
         deep = parent.dc
+    d.put(
+        id="nr",
+        chunk_kind="heading",
+        text="Elsewhere",
+        at={"into": "¶" + title_handle, "last": True},
+    )
     d.put(
         id="nr", chunk_kind="paragraph", text=f"Refer to [{deep}].", at={"last": True}
     )

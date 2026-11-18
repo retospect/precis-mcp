@@ -194,7 +194,7 @@ E = mc^2
 \item Nested step \textbf{bold}.\label{chunk:dc23}
 
 \end{enumerate}
-\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+\item Second point, see above.\label{chunk:dc24}
 
 \end{itemize}
 % label{chunk:dc25}

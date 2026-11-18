@@ -93,9 +93,13 @@ per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
-DOIs are left alone, `CNB-based` counts as a use, and `et al.`/`e.g.` do
+DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
+latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
 not capitalise the next word. Record handles follow the audience choice
-below; draft chunk cross-references retain their section/figure numbers.
+below; draft chunk cross-references retain their section/figure numbers,
+except a section reference into the citing chunk's own section or an
+ancestor, which prints `above` (target first) or `below` (`Above` at a
+sentence start) in both formats.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub

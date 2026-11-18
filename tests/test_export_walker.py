@@ -308,7 +308,12 @@ def test_merge_adjacent_keeps_si_and_text_separators() -> None:
         " ",
         _g("w"),
     ]
-    assert walker.merge_adjacent(items) == items
+    # An SI mark joins the run (gr725246); text between marks still splits it.
+    assert walker.merge_adjacent(items) == [
+        walker.CiteGroup(("x", "p", "z"), (1, 1, 1), (False, True, False)),
+        " ",
+        _g("w"),
+    ]
 
 
 def test_cite_run_collapses_same_paper_across_whitespace_only() -> None:
@@ -335,3 +340,56 @@ def test_cite_run_collapses_same_paper_across_whitespace_only() -> None:
 )
 def test_trim_before_dropped_strips_stranded_joiner(prose: str, want: str) -> None:
     assert walker.trim_before_dropped(prose) == want
+
+
+def _section_chunks() -> list[Any]:
+    from types import SimpleNamespace as C
+
+    return [
+        C(dc="dc1", chunk_kind="heading", depth=0, text="One"),
+        C(dc="dc2", chunk_kind="paragraph", depth=1, text="Setup."),
+        C(dc="dc3", chunk_kind="heading", depth=1, text="Sub"),
+        C(dc="dc4", chunk_kind="paragraph", depth=2, text="First."),
+        C(dc="dc5", chunk_kind="paragraph", depth=2, text="Second."),
+        C(dc="dc6", chunk_kind="figure", depth=2, text="cap"),
+        C(dc="dc7", chunk_kind="paragraph", depth=2, text="$$x$$"),
+        C(dc="dc8", chunk_kind="heading", depth=0, text="Two"),
+        C(dc="dc9", chunk_kind="paragraph", depth=1, text="Other."),
+        C(dc="dc10", chunk_kind="heading", depth=0, text="Acknowledgements"),
+        C(dc="dc11", chunk_kind="paragraph", depth=1, text="Thanks."),
+    ]
+
+
+def test_relative_word_for_a_reference_into_the_own_section() -> None:
+    """gr725243: a section reference to the citing chunk's own section or an
+    ancestor is "above" / "below"; figures, equations, other sections and
+    back matter keep their numbers."""
+    nums = walker.number_xrefs(
+        _section_chunks(), None, equation_of=latex._standalone_equation
+    )
+
+    def rel(target: str, citing: str) -> str | None:
+        return walker.relative_word(target, citing, nums)
+
+    assert rel("dc4", "dc5") == "above"  # same section, earlier
+    assert rel("dc5", "dc4") == "below"  # same section, later
+    assert rel("dc4", "dc4") == "above"  # the citing chunk itself
+    assert rel("dc2", "dc5") == "above"  # an ancestor section (1 holds 1.1)
+    assert rel("dc3", "dc5") == "above"  # the section's own heading
+    assert rel("dc9", "dc4") is None  # another section
+    assert rel("dc4", "dc2") is None  # a subsection of the citing section
+    assert rel("dc6", "dc5") is None  # a figure
+    assert rel("dc7", "dc5") is None  # a standalone equation
+    assert rel("dc4", "dc11") is None  # citing chunk is in back matter
+    assert rel("dc11", "dc4") is None  # target is in back matter
+    assert walker.relative_word("dc4", "", nums) is None  # no citing chunk
+    xr = walker.resolve_xref(
+        "dc5", None, live=None, numbers=nums, warnings=[], citing="dc4"
+    )
+    assert xr.relative == "below" and xr.label is None
+    assert (
+        walker.resolve_xref(
+            "dc5", "see", live=None, numbers=nums, warnings=[], citing="dc4"
+        ).relative
+        is None
+    )  # an authored surface wins

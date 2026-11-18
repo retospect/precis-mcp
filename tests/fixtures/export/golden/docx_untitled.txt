@@ -528,24 +528,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:vertAlign w:val="superscript">
 </w:vertAlign>
 </w:rPr>
-<w:t>[4]</w:t>
-</w:r>
-<w:r>
-<w:rPr>
-<w:vertAlign w:val="superscript">
-</w:vertAlign>
-</w:rPr>
-<w:t xml:space="preserve"> (SI)</w:t>
-</w:r>
-<w:r>
-<w:t xml:space="preserve"> </w:t>
-</w:r>
-<w:r>
-<w:rPr>
-<w:vertAlign w:val="superscript">
-</w:vertAlign>
-</w:rPr>
-<w:t>[3]</w:t>
+<w:t>[3, 4 (SI)]</w:t>
 </w:r>
 <w:r>
 <w:t>.</w:t>
@@ -687,21 +670,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:vertAlign w:val="superscript">
 </w:vertAlign>
 </w:rPr>
-<w:t>[3]</w:t>
-</w:r>
-<w:r>
-<w:rPr>
-<w:vertAlign w:val="superscript">
-</w:vertAlign>
-</w:rPr>
-<w:t>[4]</w:t>
-</w:r>
-<w:r>
-<w:rPr>
-<w:vertAlign w:val="superscript">
-</w:vertAlign>
-</w:rPr>
-<w:t xml:space="preserve"> (SI)</w:t>
+<w:t>[3, 4 (SI)]</w:t>
 </w:r>
 <w:r>
 <w:rPr>
@@ -971,7 +940,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <wp:inline xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <wp:extent cx="5029200" cy="5029200">
 </wp:extent>
-<wp:docPr id="1" name="Picture 1">
+<wp:docPr descr="A MOF figure." id="1" name="Picture 1">
 </wp:docPr>
 <wp:cNvGraphicFramePr>
 <a:graphicFrameLocks noChangeAspect="1">
@@ -1285,7 +1254,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">Second point, see </w:t>
 </w:r>
 <w:r>
-<w:t>section 0.2.1</w:t>
+<w:t>above</w:t>
 </w:r>
 <w:r>
 <w:t>.</w:t>
@@ -1349,6 +1318,10 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:gridCol>
 </w:tblGrid>
 <w:tr>
+<w:trPr>
+<w:tblHeader>
+</w:tblHeader>
+</w:trPr>
 <w:tc>
 <w:tcPr>
 <w:tcW w:type="dxa" w:w="4680">
@@ -1955,6 +1928,10 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:gridCol>
 </w:tblGrid>
 <w:tr>
+<w:trPr>
+<w:tblHeader>
+</w:tblHeader>
+</w:trPr>
 <w:tc>
 <w:tcPr>
 <w:tcW w:type="dxa" w:w="2340">
@@ -2193,5 +2170,6 @@ us123
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
 cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+figure dc9: 0 dpi at 5.5 in (1 px wide); below 300 dpi
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub reference
