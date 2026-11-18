@@ -1119,6 +1119,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "gripe_validate",
     "diagnose_gripe",
     "graph_garden",
+    "skill_garden",
     "secret_status",
     "good_search",
     "good_search_triage",
@@ -1321,6 +1322,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         return _REGISTRY["diagnose_gripe"]
     if name == "graph_garden":
         from precis.workers.job_types.graph_garden import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "skill_garden":
+        # Monthly skill-rules review vs rulings — proposals-only into the
+        # reviews ledger, job_inproc plugin dispatch (gr658419).
+        from precis.workers.job_types.skill_garden import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

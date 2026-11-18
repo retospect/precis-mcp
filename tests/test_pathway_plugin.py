@@ -1300,10 +1300,10 @@ def test_intermediates_and_steps_surface_structure_handles() -> None:
 
 
 def test_pathway_skill_discoverable() -> None:
-    import precis.handlers.skill as sk
+    from precis.utils import skill_common
 
-    sk._SKILLS_MAP_CACHE = None  # re-scan so the bundled skill is seen
-    body = sk._load_skills_map().get("precis-pathway-help", "")
+    skill_common.skills_map_cache_clear()  # re-scan so the bundled skill is seen
+    body = skill_common.load_skills_map().get("precis-pathway-help", "")
     # The skill writes its example with double quotes (house style:
     # `view="compare"`), matching every other precis skill — assert that
     # form, not the single-quoted variant the test originally carried.
