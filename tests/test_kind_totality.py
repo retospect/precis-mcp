@@ -62,9 +62,6 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         # live external fetch, no local persistent-ref row to address
         "web",
         "youtube",
-        "wikipedia",
-        "chem",  # identifier resolver, addressed by the name/CAS queried
-        "semanticscholar",
         "perplexity-reasoning",
         "perplexity-research",
         "websearch",

@@ -124,6 +124,9 @@ agent-facing copy.
 | python | `py` | — | | message | `ms` | `mb` |
 | gripe | `gr` | `gc` | | tag | `tg` | — |
 | skill | `sk` | — | | alias | `as` | — |
+| wikipedia | `wp` | — | | | | |
+| semanticscholar | `ss` | — | | | | |
+| chem | `ch` | — | | | | |
 
 - **`skill`** anchors round-trip as `sk<ref_id>` in `get` and `link`; the
   canonical `skill:<slug>` form also works. **`python` / `tag`** keep their
@@ -132,7 +135,12 @@ agent-facing copy.
   forms (every `put(kind='draft', …)` returns `dc`-form handles). The
   ADR-0033 legacy `¶<base58>` form still *resolves* as an accepted alias
   during the transition, but write new references in `dc` form.
-- **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
+- **Fetch-cache providers** (`wikipedia` → `wp`, `semanticscholar` → `ss`,
+  `chem` → `ch`) persist a refs row + chunks on every read, so they *are*
+  handle-coded — cite them as `wp5` in prose and they show inbound links.
+  The handle routes by ref id, never the slug: a wikipedia slug is derived
+  from the query text, not the article title.
+- **Providers** (`web`, `youtube`, `websearch`,
   `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
   `random`) have **no handle** — addressed by URL / query / compute.
 - **A string with no handle** (a long URL, an external id, a path you keep

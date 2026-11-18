@@ -79,10 +79,15 @@ log = logging.getLogger(__name__)
 
 
 def _cite_pointer(kind: str, ref_id: int) -> str | None:
-    """A ``<kind>:<id>`` self-reference token a caller can paste into a
-    note/memory body to auto-link *this exact cached answer*.
+    """A self-reference token a caller can paste into a note/memory body
+    to auto-link *this exact cached answer*.
 
-    These provider kinds are query-addressed and carry no 2-char handle
+    A handle-coded cache kind (``wikipedia`` ``wp``, ``semanticscholar``
+    ``ss``, ``chem`` ``ch``, ``news`` ``nw`` — gr702974) prints its
+    bracketed universal handle (``[wp12]``), the form the write-time
+    autolinker resolves.
+
+    The other provider kinds are query-addressed and carry no 2-char handle
     (``handle_registry`` excludes web/perplexity/etc.), and their slugs
     contain ``~`` which ``REF_PATTERN`` can't parse as one token — so a
     caller who *reads* a search/perplexity answer previously had no printed
@@ -92,9 +97,14 @@ def _cite_pointer(kind: str, ref_id: int) -> str | None:
     resolve, through the write-time autolinker's numeric path
     (``mentions.resolve_handle_ref``), for any kind on the
     :data:`~precis.utils.mentions.LINKIFY_KINDS` allowlist. Kinds off the
-    allowlist (``wikipedia``, ``semanticscholar``) get no line rather than a
-    token that wouldn't link.
+    allowlist get no line rather than a token that wouldn't link.
     """
+    handle = handle_registry.try_format(kind, ref_id)
+    if handle is not None:
+        return (
+            f"- cite as `[{handle}]` "
+            "— paste into a note/memory to auto-link this answer"
+        )
     if kind not in LINKIFY_KINDS:
         return None
     return (
@@ -317,7 +327,7 @@ class CacheBackedHandler(Handler):
     #: Fetch results land as live refs + chunks — the eye refusal on
     #: handle-less cache kinds (web/youtube/…) says "stored refs, no
     #: universal handle" instead of "not a stored ref" (gr498108).
-    #: Handle-coded cache kinds (news, orcid) render their eye normally;
+    #: Handle-coded cache kinds (news, orcid, wikipedia, …) render their eye;
     #: the flag is only read on the no-handle refusal branch.
     stores_cached_refs: ClassVar[bool] = True
 
@@ -349,6 +359,14 @@ class CacheBackedHandler(Handler):
     #: ``https://host/~user`` URL, a ``~10 items`` query) keeps its
     #: ordinary query semantics.
     tilde_id_is_address: ClassVar[bool] = False
+
+    #: ``True`` when this kind's universal handle addresses the ref id, not
+    #: the slug (gr702974): the dispatcher rewrites ``wp<id>`` to
+    #: ``id='<id>'`` and ``get`` reads a bare-digit id as that ref id
+    #: before treating it as a query. Set on kinds whose slug is lossy or
+    #: query-derived (a wikipedia slug comes from the query text, not the
+    #: article title), so a slug round-trip could land on a re-fetch.
+    handle_routes_by_ref_id: ClassVar[bool] = False
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
@@ -442,6 +460,10 @@ class CacheBackedHandler(Handler):
         id: str | int | None = None,
         q: str | None = None,
         view: str | None = None,
+        cursor: str | None = None,
+        limit: Any = None,
+        rel: str | None = None,
+        of_kind: str | None = None,
         tags: list[str] | None = None,
         untags: list[str] | None = None,
         mode: str | None = None,
@@ -471,6 +493,12 @@ class CacheBackedHandler(Handler):
         # so the view can never fire a provider call. Any other non-None
         # view that reaches a cache-backed ``get`` is unknown — the
         # dispatcher consumes eye-ladder labels before this method runs.
+        # ``view='links'`` is the stored ref's edge graph (gr702974) — also
+        # read-only, resolved from the store alone.
+        if view == "links":
+            return self._render_links_view(
+                id, cursor=cursor, limit=limit, rel=rel, of_kind=of_kind
+            )
         if view is not None and view != "body":
             # gr613469: ``body`` is the only view — the corrected call is
             # unambiguous, so it always leads (the caller's own args
@@ -489,7 +517,7 @@ class CacheBackedHandler(Handler):
             )
             raise BadInput(
                 f"unknown view={view!r} for kind={self.spec.kind!r}",
-                options=["body"],
+                options=["body", "links"],
                 next=nexts,
             )
 
@@ -609,6 +637,26 @@ class CacheBackedHandler(Handler):
             for s in untags or []:
                 Tag.parse_strict(s, kind=self.spec.kind)
 
+        # A handle-routed kind reads a bare ref id (what ``wp<id>`` routes
+        # to) as that stored ref first; only a miss is a query (gr702974).
+        if (
+            self.handle_routes_by_ref_id
+            and not literal
+            and not (isinstance(q, str) and q.strip())
+        ):
+            by_ref_id = self._entry_by_ref_id(id)
+            if by_ref_id is not None:
+                return self._serve_stored(
+                    *by_ref_id,
+                    view=view,
+                    no_fetch=no_fetch,
+                    force_refresh=force_refresh,
+                    tags=tags,
+                    untags=untags,
+                    ttl_seconds_override=ttl_seconds_override,
+                    ttl_override_active=ttl_override_active,
+                )
+
         # Slug round-trip: ``/recent`` listings advertise slugs and
         # ``tag`` / ``link`` accept them; without this fallback,
         # ``get`` shoves the slug through ``_canonical_key`` and
@@ -643,41 +691,16 @@ class CacheBackedHandler(Handler):
                             kind=self.spec.kind, slug=slug
                         )
                     if cached is not None:
-                        ref, cache = cached
-                        if no_fetch:
-                            # Read-only view (web detail page): serve the
-                            # stored body — fresh or stale — never fetch.
-                            self._apply_tag_ops_if_any(ref.id, tags, untags)
-                            return self._render_view(ref, cache, hit=True, view=view)
-                        if force_refresh:
-                            recovered = self._recover_key(ref, cache)
-                            if recovered is None:
-                                raise BadInput(
-                                    f"refresh by slug not supported on "
-                                    f"kind={self.spec.kind!r} - pass q= "
-                                    f"with the original query",
-                                    next=(
-                                        f"get(kind={self.spec.kind!r}, "
-                                        f"q=<original query>, mode='refresh')"
-                                    ),
-                                ) from canonical_err
-                            return self._refetch_in_place(
-                                ref=ref,
-                                key=recovered,
-                                tags=tags,
-                                untags=untags,
-                                ttl_seconds_override=ttl_seconds_override,
-                                ttl_override_active=ttl_override_active,
-                            )
-                        # A stored row resolved by ref-id or slug still
-                        # serves when stale — the alternative is the
-                        # canonicalise error below ("not a valid URL"
-                        # for an address that exists). The footer marks
-                        # it CACHE:stale; mode='refresh' above is the
-                        # re-fetch path. Born-stale citation stubs
-                        # (gr548801) rely on this to be readable at all.
-                        self._apply_tag_ops_if_any(ref.id, tags, untags)
-                        return self._render_view(ref, cache, hit=True, view=view)
+                        return self._serve_stored(
+                            *cached,
+                            view=view,
+                            no_fetch=no_fetch,
+                            force_refresh=force_refresh,
+                            tags=tags,
+                            untags=untags,
+                            ttl_seconds_override=ttl_seconds_override,
+                            ttl_override_active=ttl_override_active,
+                        )
             raise canonical_err
 
         request_hash = self._hash(key)
@@ -787,6 +810,111 @@ class CacheBackedHandler(Handler):
         self._apply_tag_ops_if_any(ref.id, tags, untags)
         self._attribute_touch(ref.id)
         return self._render_view(ref, cache, hit=False, view=view)
+
+    # ── stored-row reads (ref id / slug / handle) ─────────────────────
+
+    def _serve_stored(
+        self,
+        ref: Ref,
+        cache: CacheEntry,
+        *,
+        view: str | None,
+        no_fetch: bool,
+        force_refresh: bool,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        ttl_seconds_override: int | None,
+        ttl_override_active: bool,
+    ) -> Response:
+        """Serve a row ``get`` resolved by ref id or slug, not by request hash."""
+        if no_fetch:
+            # Read-only view (web detail page): serve the
+            # stored body — fresh or stale — never fetch.
+            self._apply_tag_ops_if_any(ref.id, tags, untags)
+            return self._render_view(ref, cache, hit=True, view=view)
+        if force_refresh:
+            recovered = self._recover_key(ref, cache)
+            if recovered is None:
+                raise BadInput(
+                    f"refresh by slug not supported on "
+                    f"kind={self.spec.kind!r} - pass q= "
+                    f"with the original query",
+                    next=(
+                        f"get(kind={self.spec.kind!r}, "
+                        f"q=<original query>, mode='refresh')"
+                    ),
+                )
+            return self._refetch_in_place(
+                ref=ref,
+                key=recovered,
+                tags=tags,
+                untags=untags,
+                ttl_seconds_override=ttl_seconds_override,
+                ttl_override_active=ttl_override_active,
+            )
+        # A stored row resolved by ref-id or slug still
+        # serves when stale — the alternative is the
+        # canonicalise error below ("not a valid URL"
+        # for an address that exists). The footer marks
+        # it CACHE:stale; mode='refresh' above is the
+        # re-fetch path. Born-stale citation stubs
+        # (gr548801) rely on this to be readable at all.
+        self._apply_tag_ops_if_any(ref.id, tags, untags)
+        return self._render_view(ref, cache, hit=True, view=view)
+
+    def _entry_by_ref_id(self, id: str | int | None) -> tuple[Ref, CacheEntry] | None:
+        """``id`` as this kind's ref id — an int, bare digits, its own record
+        handle (``wp12``) or ``<kind>:<digits>`` — else ``None``."""
+        if id is None or isinstance(id, bool):
+            return None
+        ident = str(id).strip()
+        parsed = handle_registry.parse(ident)
+        if parsed is not None and parsed[0] == self.spec.kind and not parsed[1]:
+            ref_id = parsed[2]
+        else:
+            ident = ident.removeprefix(f"{self.spec.kind}:").strip()
+            if not (ident.isascii() and ident.isdigit()):
+                return None
+            ref_id = int(ident)
+        return self.store.get_cache_entry_by_ref_id(kind=self.spec.kind, ref_id=ref_id)
+
+    def _render_links_view(
+        self,
+        id: str | int | None,
+        *,
+        rel: str | None = None,
+        of_kind: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """``view='links'`` — the cached ref's outbound + inbound edge graph.
+
+        Shared by every cache-backed kind (gr702974). Resolves the stored
+        row by ref id / handle, then slug; never fetches, so a links read
+        on an uncached query is a clean ``NotFound``.
+        """
+        from precis.handlers._links_render import render_links_view
+
+        entry = self._entry_by_ref_id(id)
+        if entry is None and isinstance(id, str) and id.strip():
+            entry = self.store.get_cache_entry_by_slug(
+                kind=self.spec.kind, slug=id.strip()
+            )
+        if entry is None:
+            raise NotFound(
+                f"{self.spec.kind} {id!r} is not cached — view='links' reads "
+                "a stored ref and never fetches",
+                next=f"get(kind={self.spec.kind!r}, id='/recent') lists cached refs",
+            )
+        return render_links_view(
+            self.store,
+            entry[0],
+            rel=rel,
+            of_kind=of_kind,
+            limit=limit,
+            cursor=cursor,
+        )
 
     # ── refresh / tag helpers ─────────────────────────────────────────
 
@@ -927,6 +1055,12 @@ class CacheBackedHandler(Handler):
         the original text, not the ~150-char echoes.
         """
         cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        if cached is None and slug.isdigit():
+            # ``<ref_id>~<ord>`` — the shape a ``wp<id>~3`` handle routes to
+            # on a kind whose handle addresses the ref id (gr702974).
+            cached = self.store.get_cache_entry_by_ref_id(
+                kind=self.spec.kind, ref_id=int(slug)
+            )
         if cached is None:
             raise NotFound(
                 f"{self.spec.kind} {slug!r} not found",
@@ -1467,6 +1601,10 @@ class CacheBackedHandler(Handler):
                     f"tag(kind={self.spec.kind!r}, id='<slug>', add=['topic:<name>'])"
                 ),
             )
+        if self.handle_routes_by_ref_id:
+            by_ref_id = self._entry_by_ref_id(slug)
+            if by_ref_id is not None:
+                return by_ref_id[0].slug or slug, by_ref_id[0].id
         ref = resolve_live_slug_ref(
             self.store,
             kind=self.spec.kind,

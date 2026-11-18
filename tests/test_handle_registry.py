@@ -19,9 +19,9 @@ from precis.runtime import PrecisRuntime
 from precis.utils import handle_registry as hr
 
 # Mirror of the addressable persistent-ref kinds registered in
-# ``dispatch.boot()`` (providers web/youtube/wikipedia/semanticscholar/
-# perplexity-* and stateless tools calc/math/provenance/random are
-# addressed by URL/query/compute, not handles). ``random`` is a stateless
+# ``dispatch.boot()`` (providers web/youtube/perplexity-* and stateless
+# tools calc/math/provenance/random are addressed by URL/query/compute,
+# not handles). ``random`` is a stateless
 # generator — no row, no handle. TODO: derive from the live hub registry
 # so this can never drift, once a lightweight kind-list accessor exists
 # that doesn't boot the heavy handler graph.
@@ -76,6 +76,10 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "checklist",
         "profile",
         "alias",
+        # handle-coded fetch caches (gr702974)
+        "wikipedia",
+        "semanticscholar",
+        "chem",
         "machine",
     }
 )

@@ -5740,7 +5740,13 @@ class DispatchMixin(RuntimeShape):
             # like another kind's handle (``dr00``, gr524004).
             args["id"] = str(resolved.ref_id) + suffix
             return True
-        args["id"] = resolved.public_id + suffix
+        handler = self.hub.handler_for(resolved.kind) if self.hub else None
+        if getattr(handler, "handle_routes_by_ref_id", False) is True:
+            # A query-derived slug (wikipedia's) reads as a fresh query on
+            # the cache handler; the ref id is the exact stored row (gr702974).
+            args["id"] = str(resolved.ref_id) + suffix
+        else:
+            args["id"] = resolved.public_id + suffix
         parsed = handle_registry.parse(normalized)
         if (
             verb == "get"

@@ -104,7 +104,7 @@ fetches the body (`full=true` is the deprecated spelling).
 focuses one section — `view='toc'` lists the `dc<id>` handles); a
 **measure** (a row of a run, not a node — fish-eye its paper or quest);
 **`web`** and the other query/URL-addressed providers (`calc`, `math`,
-`wikipedia`, `youtube`, …: no stored ref, no handle); **`md`**
+`youtube`, …: no stored ref, no handle); **`md`**
 (file-backed, no refs row); **`tag`** (a vocabulary row). **`python`**
 has its own code eye (callers/callees/module members/tests at the same
 rungs — `precis-python-help`).

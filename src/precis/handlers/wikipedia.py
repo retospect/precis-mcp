@@ -128,6 +128,8 @@ class WikipediaHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "CRISPR gene editing"
+    # The ``wp<id>`` handle routes by ref id (gr702974).
+    handle_routes_by_ref_id: ClassVar[bool] = True
 
     # ── cache key + slug ──────────────────────────────────────────────
 

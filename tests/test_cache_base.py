@@ -407,9 +407,9 @@ def test_cite_pointer_gates_on_linkify_kinds() -> None:
     line = _cite_pointer("websearch", 12345)
     assert line is not None
     assert "`websearch:12345`" in line
-    # `wikipedia` / `semanticscholar` are query-addressed but NOT in
-    # LINKIFY_KINDS, so no self-pointer (it would dangle).
-    assert _cite_pointer("wikipedia", 999) is None
+    # A kind off the allowlist with no handle code gets no self-pointer
+    # (it would dangle).
+    assert _cite_pointer("time", 999) is None
 
 
 def test_render_self_pointer_actually_autolinks(
