@@ -943,6 +943,17 @@ def test_get_view_brief_and_tags_read_as_the_card(handler: TodoHandler) -> None:
         assert "project:x" in body
 
 
+def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
+    todo_id = _id_of(handler.put(text="Check todo status.").body)
+    handler.tag(id=todo_id, add=["STATUS:doing"])
+    plain = handler.get(id=todo_id)
+    assert "STATUS:doing" in plain.body
+    status = handler.get(id=todo_id, view="status")
+    assert status.body == (
+        "interpreted: view='status' read as the default view\n" + plain.body
+    )
+
+
 def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None:
     """gr547804: an unknown get view lists todo's own get views —
     'comments' and 'tree' on top of the base views — and its ``next=``
@@ -990,6 +1001,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         "full",
         "brief",
         "tags",
+        "status",
         # Todo's own get views.
         "comments",
         "tree",

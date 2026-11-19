@@ -510,13 +510,15 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: body + comments + links; ``view='body'`` is the bounded body-only
 #: read, gr554136). ``'brief'`` and ``'tags'`` (gr547804) read as the
 #: same card — a todo card is the brief and carries its ``tags:``
-#: line. ``None`` maps to the default view; each alias runs the
+#: line, including the lifecycle status requested by ``'status'``
+#: (gr709768). ``None`` maps to the default view; each alias runs the
 #: canonical call and names the reading via
 #: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
     "brief": None,
     "tags": None,
+    "status": None,
 }
 
 #: Reserved *virtual* link relation. ``link(rel='parent')`` is a
