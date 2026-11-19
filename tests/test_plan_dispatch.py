@@ -4657,7 +4657,12 @@ def test_route_fix_body_shape(store: Store) -> None:
         assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)
     text = _body_text(store, body.ids["measure"])
     assert f"td{loop}" in text and "`measure: <origin/main sha>`" in text
-    assert T.ROUTE_ANSWER in text and T.ROUTE_GATE_CMD in text
+    assert T.ROUTE_ANSWER in text
+    command = (
+        'PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" '
+        'scripts/test tests/test_pcb_examples_route.py -m "slow or not slow"'
+    )
+    assert text.count(f"`{command}`") == 2
     assert "iteration 2 of 6" in text
     assert text.rstrip().endswith("Spec hub: me1.")
     assert "review: LAND" in _body_text(store, body.ids["review"])
