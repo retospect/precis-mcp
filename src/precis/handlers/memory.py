@@ -206,6 +206,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._links_ops import MACHINE_EDGE_META_KEYS
 from precis.store._search_cut import semantic_fold_distance
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
@@ -618,6 +619,7 @@ _OPS_KEYS = frozenset(
 )
 _OPS_KINDS = ("find-replace", "insert", "append")
 _MEMORY_TYPES = ("user", "feedback", "project", "reference")
+_CREATE_EDGE_META_KEYS = frozenset((*MACHINE_EDGE_META_KEYS, "evidence"))
 
 
 def _validate_meta(
@@ -1768,6 +1770,8 @@ class MemoryHandler(AuditedRetirementHandler):
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
+        When ``link=`` is supplied, ``meta.model``, ``prompt_version``,
+        ``run_id``, ``why`` and ``evidence`` describe the creation edge.
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1861,6 +1865,10 @@ class MemoryHandler(AuditedRetirementHandler):
         is_ruling = any(
             isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
         )
+        edge_meta: dict[str, Any] = {}
+        if link is not None and isinstance(meta, dict):
+            edge_meta = {k: v for k, v in meta.items() if k in _CREATE_EDGE_META_KEYS}
+            meta = {k: v for k, v in meta.items() if k not in _CREATE_EDGE_META_KEYS}
         create_meta = (
             _validate_meta(meta or {}, ruling=is_ruling)
             if meta is not None or is_ruling
@@ -1879,6 +1887,10 @@ class MemoryHandler(AuditedRetirementHandler):
                 text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
             )
 
+        if edge_meta:
+            # Carry the edge annotation separately through the shared put
+            # plumbing. The store admits and writes it in the create transaction.
+            create_meta["edge_meta"] = edge_meta
         base_put = super().put  # zero-arg super() can't see self inside create()
 
         def create() -> Response:
@@ -2170,6 +2182,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
+                    meta=create_meta.get("edge_meta"),
                     conn=conn,
                 )
             if misses:
