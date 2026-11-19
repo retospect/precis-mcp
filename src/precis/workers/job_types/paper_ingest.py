@@ -9,6 +9,10 @@ rides the same ingest path ``put(kind='paper', doi=…)`` uses
 (``Store.upsert_stub_paper`` + ``Store.pin_stub_for_fetch`` → the
 ``fetch_oa`` worker), and the ack names the job instead of apologising.
 
+Only single or batch paper gets without a view can mint this job.
+An explicit view requests stored data, including default-renderer
+aliases such as ``meta``, ``text``, ``body``, and ``full`` (gr715493).
+
 The get does no network work and no fetch: minting the row is the whole
 call — idem key ``paper_ingest:<canonical doi>`` makes repeat gets
 dedupe onto the same row, and a terminal job inside

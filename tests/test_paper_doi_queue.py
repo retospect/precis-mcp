@@ -10,7 +10,9 @@ untouched non-DOI/malformed/held paths, and the job's own dispatch
 does no network work. The review pass adds the spend/refusal bounds:
 the fleet rolling-24h mint cap, the 5-per-batch cap, the read-only and
 retired doors, and the real-dispatch ``finished_at`` stamp the requeue
-window reads.
+window reads. gr715493 adds the view door: a get naming a view is a
+read, so an unheld DOI answers the NotFound (no mint) — plain and
+batch, including aliases for the default renderer.
 """
 
 from __future__ import annotations
@@ -287,6 +289,80 @@ class TestUnheldDoiGate:
         assert len(_jobs(store)) == 1
         assert "STATUS:cancelled" in resp.body
         assert "not requeueing" in resp.body
+
+
+class TestViewGetDoesNotQueue:
+    """gr715493: a get that names a view is a read of stored data — for
+    an unheld DOI there is nothing to render, so the miss answers the
+    NotFound with the acquire hint ("does not queue") and no job row
+    lands. The gr551840 queue door opens only for a view-less get."""
+
+    def test_bibtex_view_miss_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested") as excinfo:
+            handler.get(id=DOI, view="bibtex")
+        nxt = excinfo.value.next
+        assert isinstance(nxt, str)
+        assert "does not queue" in nxt
+        assert f"put(kind='paper', doi='{DOI}')" in nxt
+        assert _jobs(store) == []
+
+    def test_view_path_alias_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested"):
+            handler.get(id=DOI, view="cite/bib")
+        assert _jobs(store) == []
+
+    @pytest.mark.parametrize("view", ["meta", "text", "body", "full"])
+    def test_default_renderer_alias_does_not_queue(
+        self, store: Store, handler: PaperHandler, view: str
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested") as excinfo:
+            handler.get(id=DOI, view=view)
+        assert "does not queue" in (excinfo.value.next or "")
+        assert _jobs(store) == []
+
+    def test_find_in_ref_with_view_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``q=`` plus a view is refused by the find-in-ref preflight
+        before any DOI resolution, so no job can be minted."""
+        with pytest.raises(BadInput, match="doesn't combine with view"):
+            handler.get(id=DOI, view="bibtex", q="x")
+        assert _jobs(store) == []
+
+    def test_view_get_on_retired_doi_shows_tombstone(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The tombstone answer is a read too — a view get on a retired
+        DOI still gets it, without queueing anything."""
+        ref_id = _seed_paper(store, doi=DOI)
+        store.retire_ref(ref_id)
+        resp = handler.get(id=DOI, view="bibtex")
+        assert "deleted paper" in resp.body
+        assert f"pa{ref_id}" in resp.body
+        assert _jobs(store) == []
+
+    @pytest.mark.parametrize("view", ["bibtex", "meta", "text", "body", "full"])
+    def test_batch_with_view_does_not_queue_or_ask_confirm(
+        self, store: Store, handler: PaperHandler, view: str
+    ) -> None:
+        """A view batch is a read: no confirm_bulk pre-scan demand and
+        no per-element mints — every unheld DOI reads as not-found."""
+        dois: list[str | int] = [f"10.1021/viewcap{i}" for i in range(7)]
+        resp = handler.get(id=dois, view=view)
+        assert "confirm_bulk" not in resp.body
+        assert resp.body.count("not found") == 7
+        assert _jobs(store) == []
+
+    def test_batch_without_view_still_queues(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        resp = handler.get(id=[DOI])
+        assert "queued ingest job" in resp.body
+        assert len(_jobs(store)) == 1
 
 
 class TestUnaffectedGetPaths:

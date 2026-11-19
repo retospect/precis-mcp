@@ -123,11 +123,11 @@ bar.
    ```
 
 **Queue last.** `put(kind='paper', doi='<verified DOI>')` (or
-`arxiv=`/`title=`; an unheld-DOI `get(kind='paper', id='<DOI>')` queues
-the same bounded ingest) only *after* the candidate clears the
-identity bar — every one of these mints a stub the `fetch_oa` worker
-spends budget chasing. Queueing first inverts verification: a false
-positive burns a fetch slot and lands a wrong "paper we need".
+`arxiv=`/`title=`) only *after* the candidate clears the identity bar.
+A single or batch paper `get` without a view can queue bounded ingest
+for unheld DOIs. Supplying `view=` disables that queueing, including
+with `meta`, `text`, `body`, or `full`. Queueing before verification
+can burn a fetch slot and leave a stub for the wrong paper.
 
 ## Which providers are native, and what when one can't answer?
 

@@ -52,7 +52,7 @@ held handle (possibly a stub) or not held. Pass `id=[...]` to check a batch.
 
 ## The DOI isn't indexed yet — how do I get the paper?
 
-`get` on a well-formed DOI that is not held queues a `paper_ingest` job
+`get` without a view on a well-formed unheld DOI queues a `paper_ingest` job
 and returns its handle — `not ingested yet; queued ingest job jo<N> for
 <doi>; retry get in a few minutes`. Repeating the `get` reuses the same
 job (any DOI spelling — bare, `doi:`, doi.org URL, any case), so polling
@@ -61,13 +61,18 @@ failure instead of requeueing. The worker verifies the DOI against
 Semantic Scholar / the DOI registries, mints the stub, and pins it to
 the open-access fetch pass — no fetch runs inside the `get` call.
 
+An explicit `view=` makes a single or batch DOI lookup read-only for
+ingest, including the default-renderer aliases `meta`, `text`, `body`,
+and `full`. An unheld DOI returns a miss. Omit the view or use
+`put(kind="paper", doi=…)` to request acquisition.
+
 The queue is bounded — an ingest job can reach the paid OpenAlex fetch
 leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
 a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no
-queue at all for a DOI whose paper was deleted or on a read-only serve.
-`view='abstract'` on an unheld DOI never queues, single or batch, with
-or without `confirm_bulk`: it is a read-only existence check and answers
-not found. To acquire, use a plain `get` or an explicit `put`.
+queue at all for a DOI whose paper was deleted, on a read-only serve,
+or behind a `view=` (a view is a read: an unheld DOI answers not found,
+single or batch, with or without `confirm_bulk`). To acquire, use a
+plain `get` or an explicit `put`.
 Past a bound the `get` answers the plain `not ingested` text — use
 `put(kind="paper", doi=…)` to ingest explicitly regardless.
 

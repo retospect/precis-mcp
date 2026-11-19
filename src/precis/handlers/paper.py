@@ -2595,14 +2595,19 @@ class PaperHandler(Handler):
                 result_count=len(id),
             )
         find_preflight(kind=self.spec.kind, id=id, view=view, q=q)
+        # gr715493: a view names a read, so the queue door stays shut here
+        # too (same rule as the plain get below).
+        queues = view is None
         try:
-            raw_id = _maybe_resolve_doi(self.store, str(id))
+            raw_id = _maybe_resolve_doi(self.store, str(id), will_queue=queues)
         except NotFound:
             # gr551840: an unheld well-formed DOI queues ingest, same
             # door as the plain get below (the batch loop shares its
-            # mint budget through ``_queue_budget``). An abstract view
-            # is an existence check and never queues (gr717456).
-            queued = _queue_doi_ingest(self.store, str(id), budget=_queue_budget)
+            # mint budget through ``_queue_budget``). A view is a read
+            # and never queues (gr717456, gr715493).
+            queued = _queue_doi_ingest(
+                self.store, str(id), budget=_queue_budget, queue=queues
+            )
             if queued is not None:
                 return queued
             raise
@@ -2707,17 +2712,16 @@ class PaperHandler(Handler):
             # Check availability before the DOI miss can request acquisition.
             return self._fetch_status_view([str(id)])
         id = self._rewrite_chunk_handle(id)
+        # gr715493: an explicit view requests a read of stored data.
+        # Even aliases for the default renderer disable DOI ingest.
+        queues = view is None
         try:
-            raw_id = _maybe_resolve_doi(self.store, str(id))
+            raw_id = _maybe_resolve_doi(self.store, str(id), will_queue=queues)
         except NotFound:
             # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
             # holds earns an ingest job, not a repeated error — the ack
             # names it and the retry lands on the same door.
-            # Abstract lookups are existence checks, not acquisition
-            # requests (gr717456); preserve the resolver's read-only miss.
-            if _normalise_view(view) == "abstract":
-                raise
-            queued = _queue_doi_ingest(self.store, str(id))
+            queued = _queue_doi_ingest(self.store, str(id), queue=queues)
             if queued is not None:
                 return queued
             raise
@@ -2941,8 +2945,11 @@ class PaperHandler(Handler):
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
         confirm_bulk = bool((args or {}).get("confirm_bulk"))
-        abstract_only = _normalise_view(view) == "abstract"
-        if not confirm_bulk and not abstract_only:
+        # gr715493: with a view the batch renders reads, so nothing will
+        # mint — skip the confirm_bulk pre-scan and shut the per-element
+        # queue door (same rule as the single-id get).
+        queues = view is None
+        if not confirm_bulk and queues:
             pending = 0
             for elem in ids:
                 try:
@@ -2988,11 +2995,11 @@ class PaperHandler(Handler):
                 # views, read-only per gr717456) — bounded per
                 # call by _BATCH_DOI_QUEUE_CAP (the review's N-paid-legs
                 # hole): past it the element reads as plain
-                # not-ingested with the explicit-put hint.
-                queued = (
-                    None
-                    if abstract_only
-                    else _queue_doi_ingest(self.store, shown, budget=queue_budget)
+                # not-ingested with the explicit-put hint. A batch
+                # carrying a view is a read, so the door stays shut
+                # (gr715493) and the element reads as plain not-found.
+                queued = _queue_doi_ingest(
+                    self.store, shown, budget=queue_budget, queue=queues
                 )
                 blocks.append(
                     queued.body if queued is not None else f"{shown}  not found"
@@ -12427,7 +12434,7 @@ def resolve_paper_slug(
     return ref.slug or str(ref.id), ref.id
 
 
-def _maybe_resolve_doi(store: Store, raw: str) -> str:
+def _maybe_resolve_doi(store: Store, raw: str, *, will_queue: bool = True) -> str:
     """Translate an identifier-form paper id to its slug form.
 
     When an agent hands us a paper identifier — a DOI
@@ -12457,7 +12464,9 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
     Raises :class:`NotFound` when the identifier is well-formed but no
     live paper carries it; the error carries an acquire hint rather
     than falling through to the generic ``"illegal character"``
-    message the slug regex would emit.
+    message the slug regex would emit. ``will_queue=False`` (the get
+    named a view — gr715493 — or the scope is read-only) makes the
+    hint say ``get`` does not queue the ingest, since this call won't.
     """
     base, sep, sel = raw.partition("~")
     if not base:
@@ -12495,13 +12504,15 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         # an unheld-DOI get queues a bounded ingest — a fleet-wide
         # rolling-24h cap (PRECIS_GET_DOI_QUEUE_DAILY, default 50) plus
         # _BATCH_DOI_QUEUE_CAP per batch — and lands here when a cap is
-        # spent, the scope is read-only, or the DOI is malformed. The
-        # non-DOI schemes never queue: the hint text keeps that split
-        # honest. Kept short: the MCP client already appends the tool
-        # schema on isError, so a long hint lands twice (gr516710).
+        # spent, the scope is read-only, the DOI is malformed, or the
+        # get named a view (gr715493: a view get is a read of stored
+        # data and never mints). The non-DOI schemes never queue: the
+        # hint text keeps that split honest. Kept short: the MCP client
+        # already appends the tool schema on isError, so a long hint
+        # lands twice (gr516710).
         from precis.runtime.scope import current_scope
 
-        if scheme == "doi" and current_scope() != "read":
+        if scheme == "doi" and current_scope() != "read" and will_queue:
             queue_wording = (
                 "to mint a stub — get also queues a bounded ingest for "
                 "an unheld DOI (fleet daily cap, 5/batch): the fetch "
@@ -12566,7 +12577,11 @@ def _retired_paper_id_for_doi(store: Store, doi: str) -> int | None:
 
 
 def _queue_doi_ingest(
-    store: Store, raw: str, *, budget: list[int] | None = None
+    store: Store,
+    raw: str,
+    *,
+    budget: list[int] | None = None,
+    queue: bool = True,
 ) -> Response | None:
     """gr551840 (Reto ruling 2026-11-02): a well-formed DOI no live paper
     holds earns an ingest job, not a repeated "not ingested" — the gripe
@@ -12596,7 +12611,13 @@ def _queue_doi_ingest(
     the read-only / privilege errors — ``get`` is in
     ``READ_ONLY_VERBS``, so on a read-only serve or a read-only DB role
     the caller's original NotFound with the acquire hint is the honest
-    answer."""
+    answer.
+
+    ``queue=False`` (gr715493: the get named a view, so the call is a
+    read of stored data) skips every mint door — the tombstone answer
+    still renders, everything else returns ``None`` so the caller
+    re-raises the original NotFound with the acquire hint.
+    """
     doi = _queueable_doi(raw)
     if doi is None:
         return None
@@ -12617,6 +12638,8 @@ def _queue_doi_ingest(
                 )
             )
         )
+    if not queue:
+        return None
     from precis.runtime.scope import current_scope
 
     if current_scope() == "read":
