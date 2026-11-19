@@ -59,8 +59,10 @@ Barrel legality does not imply stub legality. Remaining certified planter
 points run only after all established single-site/endpoint searches across
 every size; this preserves successful fanouts' room for later pads.
 Dynamic-index identity/version keys the full survivor cache; single-point
-callers retain their first choice. Up to 64 nearest outward zone-boundary
-proposals per size follow all portal failures. Shared pad/web, environment,
+callers retain their first choice. The cache weakly owns retry indices and
+keeps only their current mutation version, so abandoned grows release their
+copper trees and verdict arrays during a long route. Up to 64 nearest outward
+zone-boundary proposals per size follow all portal failures. Shared pad/web, environment,
 drill and dynamic predicates certify each center before whole-stub/join/cap
 checks; proposal buffers grant no overlapping-zone exemption. This bounded
 fallback makes no completeness claim.
