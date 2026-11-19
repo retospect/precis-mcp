@@ -2,11 +2,11 @@
 id: land
 family: work
 title: precis — land the worktree branch on main
-summary: end-of-session worktree wrap-up — commit WIP, sync onto main, gate on GitHub CI via scripts/ship --remote, squash-merge, then close what the ship resolved
+summary: end-of-session worktree wrap-up — commit WIP, sync onto main, gate via scripts/ship --quick (--remote for harness diffs), squash-merge, then close what the ship resolved
 answers:
   - how do I ship my worktree branch to main at the end of a session?
-  - what do I do when scripts/ship --remote reports a red gate or a merge conflict?
-  - how do I wait on the remote gate without blocking the session?
+  - what do I do when scripts/ship reports a red gate or a merge conflict?
+  - how do I wait on the --remote gate without blocking the session?
   - what happens to open gripes and residual bugs after a green land?
 applies-to: end-of-session repo-dev wrap-up — commit, sync, gate, squash-merge to main
 status: active
@@ -77,46 +77,43 @@ when no subagent runtime exists.
 
 4. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly. **Run it in the background with output redirected to a log**
-   (the remote gate takes ~90 min green, longer when queued; a foreground
-   run would block the session and raw output would flood context):
+   (a foreground run would block the session and raw output would flood
+   context). Pick the lane by what the diff touches:
    ```
-   scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
+   scripts/ship --quick "<message>" > /tmp/ship.log 2>&1    # code, skills, tests, docs
+   scripts/ship --remote "<message>" > /tmp/ship.log 2>&1   # harness diffs only
    ```
-   Wait on it with `scripts/ship-wait /tmp/ship.log` in the background —
-   it exits on green, red or cancelled with the verdict and the first
-   failure line, nonzero on red or cancelled. That watcher is the only
-   way to wait on the gate: no polling subagents, no log-tail loops.
+   `--quick` is the default lane: ruff + secret scan + fast DB-free guards +
+   changed-file mypy, then the squash-merge. Full mypy, import contracts and
+   pytest wait for the release gate (`scripts/release`, run after the
+   landings). `--remote` is only for harness diffs (`scripts/ship`,
+   `scripts/test`, `scripts/lib/`, `.github/`); on any other diff ship
+   refuses with "✖ --remote is for harness diffs … Re-run
+   scripts/ship --quick". See `docs/conventions/shipping.md`.
+
+   `--remote` gates on **GitHub's computers**: the synced branch goes to
+   `ci/<branch>`, the check.yml gate runs there (~90 min green, longer when
+   queued), and only a green run reaches `main` via the atomic CAS
+   squash-push. Wait on it with `scripts/ship-wait /tmp/ship.log` in the
+   background — it exits on green, red or cancelled with the verdict and the
+   first failure line. That watcher is the only way to wait on the gate: no
+   polling subagents, no log-tail loops. If main moves during the wait, a
+   tree that adds a migration or touches `safe_fetch.py` re-runs CI once on
+   the integrated tree; any other tree gets one CI run, then lands by an
+   in-lock forward merge ("not a deploy warrant", no `.ship-sha`).
+   `--quick` has no wait: it returns in minutes.
+
    Output is quiet by default (gr497896): `/tmp/ship.log` captures the
    epilogue — ✖ lines, a conflict's file list, the printed `/tmp/ship-*.log`
    full-transcript path, and a final `SHIP_STATUS:` token. Tail the printed
    log for the live gate output; `--verbose` restores the old stream.
-   `--remote` gates on **GitHub's computers**: the synced branch goes to
-   `ci/<branch>`, the check.yml gate shape (lint · mypy · the test shards of
-   Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of
-   the shards; 3.12 · macOS are nightly-only) runs there, and only
-   a green run reaches
-   `main` — via the same atomic CAS squash-push. The ship lock covers only
-   that push (seconds), never the CI wait or a gate. A full-gate ship lands
-   an exactly-tested tree, or says it did not and pins nothing. If main
-   moves during the wait (siblings keep landing meanwhile), the race budget
-   decides: a tree that adds a migration or touches `safe_fetch.py` re-syncs
-   and re-runs CI on the integrated tree once (~90 min), because an
-   exactly-tested land is worth a second gate there; any other tree gets one
-   CI run. When the budget is spent, ship lands by an in-lock forward merge of
-   main, prints "not a deploy warrant", writes no `.ship-sha`, and trails
-   the squash with `Gate: forward-merged over N commits`.
-   Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
-   local impacted container gate FIRST, before spending a CI cycle.
-   (`scripts/ship --impacted` without `--remote` is the legacy local-gate
-   ship — still valid when GitHub is down.)
 
-   `scripts/ship --remote` does, in order: refuse-if-on-main → refuse a
-   dirty tree (outside `.claude/`) → sync (`git fetch` + `git merge` origin/main) → push to
-   `ci/<branch>` → **poll the check.yml run to conclusion** → squash-merge
-   to `main` via `commit-tree` + a `--force-with-lease` CAS push → delete
-   the remote feature + ci branches → reset the feature branch to the
-   shipped `main` (zero divergence) → fast-forward the local `main` → print
-   the new `main` sha.
+   Either lane does, in order: refuse-if-on-main → refuse a dirty tree
+   (outside `.claude/`) → sync (`git fetch` + `git merge` origin/main) →
+   gate → squash-merge to `main` via `commit-tree` + a `--force-with-lease`
+   CAS push → delete the remote feature branch → reset the feature branch to
+   the shipped `main` → fast-forward the local `main` → print the new `main`
+   sha.
 
 ## Procedure — failures
 
@@ -124,7 +121,7 @@ when no subagent runtime exists.
    on something it can't do mechanically:
    - **Merge conflict during sync** — resolve the conflict, then
      `git add -A && git commit`, then re-run `scripts/ship`.
-   - **Red remote gate** — ship prints the failing jobs and the
+   - **Red remote gate** (`--remote`) — ship prints the failing jobs and the
      `scripts/ci-failed <id>` pointer. Diagnose from the run log,
      fix, re-run `scripts/ship --remote`. Reproduce locally with
      `scripts/test <path or -k>`; remember the matrix covers macOS/Windows
@@ -236,8 +233,9 @@ workflow's own list, folded in):
 - **Run ship in the background with output to a log**, never piped — a pipe
   reports the filter's status, so a red gate would read as exit 0:
   ```
-  scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
+  scripts/ship --quick "<message>" > /tmp/ship.log 2>&1
   ```
+  (`--remote` only for harness diffs.)
 - **Prod writes default to go.** Filing a `gripe`/`todo` — like other
   additive writes through the precis MCP verbs — lands in PROD without
   asking (`docs/conventions/thresholds.md`); ask only for destructive,
