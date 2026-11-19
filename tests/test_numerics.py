@@ -167,3 +167,12 @@ def test_wide_reads_tex_micro_with_double_space():
 def test_wide_leaves_dollar_amounts_alone():
     assert extract_numerics_wide("costs $5 and $10 each") == []
     assert extract_numerics_wide("a $5 nm rope") == ["5 nm"]
+
+
+def test_degree_glyph_variants_normalise_to_degree_sign() -> None:
+    """gr719090: ``450 ∘C`` (ring operator) grounds a ``450 °C`` claim."""
+    from precis.utils.numerics import extract_numerics_wide, normalize_spellings
+
+    for raw in ("450 ∘C", "450∘C", "450 ˚C", "450 º C", "450 ° C", "450℃"):
+        assert "450 °C" in extract_numerics_wide(raw), raw
+    assert normalize_spellings("at 90∘ tilt") == "at 90° tilt"

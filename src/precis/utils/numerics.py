@@ -158,6 +158,12 @@ _TEX_SYMBOLS = (
     (re.compile(r"\\approx(?![A-Za-z])"), "≈"),
     (re.compile(r"\\%"), "%"),
 )
+#: Degree glyph variants PDF extractors emit: ring operator ``∘`` (U+2218),
+#: ring above ``˚`` (U+02DA), ordinal ``º`` (U+00BA), and the one-glyph ``℃``/``℉``;
+#: all read as ``°`` (``450 ∘C`` / ``450 ° C`` -> ``450 °C``).
+_DEGREE_UNIT_RE = re.compile(r"(?<=\d)\s*[°∘˚º]\s*(?=[CF](?!\w))")
+_DEGREE_LONE_RE = re.compile(r"(?<=\d)\s*[∘˚º](?![\w])")
+_DEGREE_LIGATURE_RE = re.compile(r"\s*([℃℉])")
 _PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
 #: PDF micro: ``$\mu$ m`` / ``\mu m`` / Greek ``μm`` all read as ``µm`` (U+00B5).
 _TEX_MU_RE = re.compile(r"\$?\\mu\$?\s*(?=[mAMgs]\b)")
@@ -320,6 +326,9 @@ def normalize_spellings(text: str) -> str:
     for rx, sym in _TEX_SYMBOLS:
         norm = rx.sub(sym, norm)
     norm = _MATH_INLINE_RE.sub(_unwrap_math, norm)
+    norm = _DEGREE_LIGATURE_RE.sub(lambda m: "°C" if m.group(1) == "℃" else "°F", norm)
+    norm = _DEGREE_UNIT_RE.sub("°", norm)
+    norm = _DEGREE_LONE_RE.sub("°", norm)
     norm = _PLUS_MINUS_RE.sub(" and ", norm)
     return norm.replace("μ", "µ")  # Greek mu (U+03BC) → micro sign (U+00B5)
 
