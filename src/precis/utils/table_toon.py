@@ -1135,7 +1135,8 @@ def _insert_at(
     items: list[dict[str, Any]], at: Any, *, what: str
 ) -> tuple[int, str | None, str | None]:
     """``at='end'|'start'|{'after':id}|{'before':id}`` → ``(index,
-    prev_pos, next_pos)`` for a :func:`key_between` mint."""
+    prev_pos, next_pos)`` for a :func:`key_between` mint. Column anchors
+    also accept names; row anchors remain id-only."""
     if at is None or at == "end":
         return len(items), (items[-1].get("pos") if items else None), None
     if at == "start":
@@ -1143,9 +1144,13 @@ def _insert_at(
     if isinstance(at, dict):
         for key, idx in (("after", 1), ("before", 0)):
             if key in at:
-                i = next(
-                    (i for i, e in enumerate(items) if e.get("id") == at[key]),
-                    None,
+                i = (
+                    _col_index(items, at[key])
+                    if what == "column"
+                    else next(
+                        (i for i, e in enumerate(items) if e.get("id") == at[key]),
+                        None,
+                    )
                 )
                 if i is None:
                     raise BadInput(
@@ -1159,8 +1164,10 @@ def _insert_at(
                     items[j - 1].get("pos") if j else None,
                     items[j].get("pos") if j < len(items) else None,
                 )
+    anchor = "id or name" if what == "column" else "id"
     raise BadInput(
-        f"at={at!r} — use 'end', 'start', {{'after': '<id>'}} or {{'before': '<id>'}}",
+        f"at={at!r} — use 'end', 'start', "
+        f"{{'after': '<{anchor}>'}} or {{'before': '<{anchor}>'}}",
         next="at='end' (default) or at={'after': 'r2k7'}",
     )
 
@@ -1285,10 +1292,15 @@ def op_move_column(table: dict[str, Any], ref: Any, at: Any) -> dict[str, Any]:
     i = _col_index(columns, ref)
     if isinstance(at, dict):
         tgt = at.get("after") or at.get("before")
-        if tgt == columns[i].get("id"):
+        # The anchor may name the moved column, not only id it — the
+        # refusal must not fall through to ``_col_index`` on the rest
+        # list reporting the live column as missing.
+        if tgt is not None and (
+            tgt == columns[i].get("id") or tgt == columns[i].get("name")
+        ):
             raise BadInput(
                 "can't move a column relative to itself",
-                next="at={'after': '<other column id>'}",
+                next="at={'after': '<other column id or name>'}",
             )
     new_cols, j, pos = _move(columns, i, at or "end", what="column")
     new_cols[j]["pos"] = pos

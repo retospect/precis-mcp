@@ -4655,6 +4655,7 @@ class DraftHandler(Handler):
         combines with the data args — one source per write."""
         tobj: Any = table
         md_caption: str | None = None
+        coercions: list[str] = []
         if tobj is None and columns is None and rows is None and footer is None:
             if text is not None and str(text).strip():
                 parsed = strict_markdown_table(str(text))
@@ -4676,6 +4677,17 @@ class DraftHandler(Handler):
                     "header": parsed["header"],
                     "rows": [[infer_scalar(c) for c in r] for r in parsed["rows"]],
                 }
+                from precis.utils.table_data import cell_text
+
+                header = parsed["header"]
+                for ri, literals in enumerate(parsed["rows"]):
+                    for ci, literal in enumerate(literals):
+                        stored = tobj["rows"][ri][ci]
+                        if cell_text(stored) != literal:
+                            col = header[ci] if ci < len(header) else f"col {ci + 1}"
+                            coercions.append(
+                                f"row {ri + 1} {col}: {literal!r} stored as {stored!r}"
+                            )
                 md_caption = parsed.get("caption")
             else:
                 raise BadInput(
@@ -4718,6 +4730,13 @@ class DraftHandler(Handler):
             # that resolves to no column refuses (a typo must not land).
             declared={c["id"] for c in norm.get("columns") or [] if c.get("formula")},
         )
+        if coercions:
+            input_notes.append(
+                "coercions: "
+                + "; ".join(coercions[:5])
+                + (f" (+{len(coercions) - 5} more)" if len(coercions) > 5 else "")
+                + "; send table= rows as JSON strings to keep literals"
+            )
         eval_notes = input_notes + eval_notes
         # caption= wins over the markdown ``**…**`` caption line; an
         # explicit empty caption= clears it.
@@ -5299,6 +5318,9 @@ class DraftHandler(Handler):
                 rows2[ri][ci] = cell_scalar(new_value)
                 norm = {**cur_table, "rows": rows2}
                 ctrl_note = f"; note: {hint}"
+            ri, _ci = resolve_cell(cur_table, cell)
+            reply_rows = [norm["rowmeta"][ri]["id"]]
+            op_reply = f"edited table {chunk.dc}{ctrl_note}"
         elif find is not None or sub is not None:
             if not cur_table:
                 raise no_data_err
@@ -5717,6 +5739,9 @@ class DraftHandler(Handler):
         structure op's reply can't drop them (a drop_column that
         orphans a formula must still say so)."""
         body = f"{op_reply}; hash: {new_hash}{eval_tail}"
+        footer_line = table_footer_line(norm)
+        if footer_line:
+            body += "\n" + footer_line
         n = len(norm.get("rows") or [])
         if rows is None and cols is None and n > REPLY_ROW_CAP:
             sel = [rm["id"] for rm in (norm.get("rowmeta") or [])[:20]]
@@ -7356,7 +7381,9 @@ class DraftHandler(Handler):
         """``dc<N>~<sel>`` — read inside a table chunk by stable ids
         (spreadsheet-tables 1a): ``<rowid>.<colid>`` one cell, ``<id>``
         one row or column, ``<id>..<id>`` a row/column range in current
-        order. A deleted id reports as dangling."""
+        order. A cell's column may also be named; resolve it to its stable
+        id before rendering so both spellings return the same address.
+        A deleted id reports as dangling."""
         from precis.utils import handle_registry as _hr
         from precis.utils.table_data import cell_text
 
@@ -7388,6 +7415,14 @@ class DraftHandler(Handler):
         # follow-up ``cell=`` needs.
         _ids = table_ids_line(tbl)
         ids_tail = f"\n{_ids}" if _ids else ""
+        if "." in sel and ".." not in sel:
+            row_ref, col_ref = sel.split(".", 1)
+            # IDs win over names, matching every table edit resolver.
+            col = next((c for c in columns if c.get("id") == col_ref), None)
+            if col is None:
+                col = next((c for c in columns if c.get("name") == col_ref), None)
+            if col is not None:
+                sel = f"{row_ref}.{col['id']}"
         if not re.fullmatch(_hr.TABLE_SEL_PATTERN, sel):
             raise BadInput(
                 f"~{sel!r} is not a table selector — <rowid>.<colid>, "

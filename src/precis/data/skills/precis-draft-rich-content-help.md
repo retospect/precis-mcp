@@ -273,7 +273,11 @@ be the table (a stray prose line refuses — put prose in its own
 paragraph chunk), `text=` never rides with `table=`/`columns=`/`rows=`/
 `footer=` (one data source per write; the legend is `caption=`), and
 `text=` is a *create* input only — on `edit` it's still rejected, use
-the edit forms below.
+the edit forms below. The create reply names the cells whose stored
+value no longer prints back as the literal sent (up to five) —
+`row 1 zip: '02134' stored as 2134` — so a silent coercion is visible
+at write time; send `table=` rows as JSON strings to keep a literal
+verbatim.
 
 Editing: change the data, not the rendered text (`text=` is rejected on a
 table chunk); the four forms are `table={'header':…, 'rows':…}` (whole

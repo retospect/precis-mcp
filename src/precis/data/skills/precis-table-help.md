@@ -119,9 +119,10 @@ shipped yet. `drop_column` takes the column's footer aggregate with
 it.)
 
 `at=` positions inserts/moves: `'end'` (default) | `'start'` |
-`{'after': '<id>'}` | `{'before': '<id>'}`. One op per edit — passing
-two selectors refuses. Each reply carries the new grid (filtered to
-the touched part past 200 rows) and the new `hash:`.
+`{'after': '<id>'}` | `{'before': '<id>'}` — a column anchor may
+also be the column's name; a row anchor stays row-id-only. One op per
+edit — passing two selectors refuses. Each reply carries the new grid
+(filtered to the touched part past 200 rows) and the new `hash:`.
 
 ## base= — don't clobber a concurrent write
 

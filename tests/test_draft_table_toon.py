@@ -32,6 +32,66 @@ from precis.utils.table_toon import (
 )
 
 
+def test_column_name_anchors_and_cell_reads(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    draft.edit(id=tc.dc, move_column="qty", at={"before": "gap"})
+    assert [c["name"] for c in _meta(hub, tc)["columns"]] == ["el", "qty", "gap"]
+    draft.edit(id=tc.dc, add_column={"name": "extra"}, at={"after": "gap"})
+    assert _meta(hub, tc)["columns"][-1]["name"] == "extra"
+    assert (
+        draft.get(id=f"{tc.dc}~{rows[0]}.gap").body
+        == draft.get(id=f"{tc.dc}~{rows[0]}.{cols[1]}").body
+    )
+    with pytest.raises(BadInput, match="no row id"):
+        draft.edit(id=tc.dc, move_row=rows[0], at={"after": "gap"})
+    # self-move refuses by name too — not as a misleading "no column"
+    with pytest.raises(BadInput, match="relative to itself"):
+        draft.edit(id=tc.dc, move_column="gap", at={"after": "gap"})
+    _ids_now = [c["id"] for c in _meta(hub, tc)["columns"]]
+    draft.edit(id=tc.dc, move_column="gap", at={"after": _ids_now[0]})
+    assert [c["id"] for c in _meta(hub, tc)["columns"]][1] == _ids_now[2]
+
+
+def test_cell_reply_hash_and_dependents(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    rows, _cols = _ids(hub, tc)
+    draft.edit(id=tc.dc, add_column={"name": "twice", "formula": "qty * 2"})
+    reply = draft.edit(id=tc.dc, cell=f"{rows[0]}.qty", text="7")
+    assert "hash: " in reply.body
+    assert rows[0] in reply.body and rows[1] not in reply.body
+    assert "twice" in reply.body and "14" in reply.body
+    reply = draft.edit(id=tc.dc, footer={"qty": "sum"})
+    assert "hash: " in reply.body and "footer: " in reply.body
+
+
+def test_markdown_create_names_coercions(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="d", title="T", project=_proj(hub))
+    reply = draft.put(
+        id="d",
+        chunk_kind="table",
+        text="| zip | pop |\n|---|---|\n| 02134 | 2e3 |",
+        at={"last": True},
+    )
+    assert "zip: '02134' stored as 2134" in reply.body
+    assert "pop: '2e3' stored as 2000.0" in reply.body
+    assert "JSON strings" in reply.body
+
+
+def test_markdown_create_overwide_row_refuses(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="d", title="T", project=_proj(hub))
+    # A body row wider than the header still reaches normalize_table's
+    # clean refusal — the coercion scan must not IndexError on the
+    # overflow cell first (gr685381 review).
+    with pytest.raises(BadInput, match="every row must align to header"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            text="| a | b |\n|---|---|\n| x | y | 02134 |",
+            at={"last": True},
+        )
+
+
 @pytest.fixture
 def draft(hub: Hub) -> DraftHandler:
     return DraftHandler(hub=hub)

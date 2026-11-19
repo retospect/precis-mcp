@@ -1789,8 +1789,8 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """``cell=`` dry_run on an ordinary (markdown-canonical, not
-    LaTeX-recovered) table chunk previews the re-derived markdown and
-    writes neither the text nor ``meta.table``."""
+    LaTeX-recovered) table chunk previews the write's op reply (touched
+    row + hash) and writes neither the text nor ``meta.table``."""
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)
     draft.put(
@@ -1806,7 +1806,10 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
 
     rows, cols = _table_ids(hub, tc)
     r = draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="Ge", dry_run=True)
-    assert "[dry-run]" in r.body
+    # gr685381: a cell= dry-run previews the SAME op-reply shape as the
+    # write (verb line + hash + touched row) — not the old text-diff form.
+    assert r.body.startswith("dry-run — nothing written")
+    assert "edited table" in r.body and "hash: " in r.body
     assert "Ge" in r.body
 
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
