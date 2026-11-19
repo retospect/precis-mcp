@@ -239,7 +239,7 @@ def test_resolve_xref_downgrades_dead_and_skips_unnumbered() -> None:
     assert walker.resolve_xref("dc2", "see", **kw).surface == "see"
 
 
-def test_merge_xref_runs_joins_whitespace_separated_refs() -> None:
+def test_merge_xref_runs_joins_refs_separated_by_connectors() -> None:
     items: list[str | tuple[str, ...]] = [
         "a ",
         ("x",),
@@ -247,10 +247,12 @@ def test_merge_xref_runs_joins_whitespace_separated_refs() -> None:
         ("y",),
         "",
         ("z",),
-        ", ",
+        ", and ",
         ("w",),
+        " or ",
+        ("v",),
     ]
-    assert walker.merge_xref_runs(items) == ["a ", ("x", "y", "z"), ", ", ("w",)]
+    assert walker.merge_xref_runs(items) == ["a ", ("x", "y", "z", "w"), " or ", ("v",)]
 
 
 def test_number_xrefs_reads_structure_only() -> None:
@@ -588,3 +590,299 @@ def test_same_work_warning_for_unmergeable_records() -> None:
         "references [1] and [3] look like the same work (a1, c3)",
         "references [2] and [3] look like the same work (b2, c3)",
     ]
+
+
+# ── merged cross-reference runs ───────────────────────────────────────
+
+_XREF_KINDS = {
+    "s": ("section", "Section"),
+    "u": ("subsection", "Section"),
+    "w": ("subsubsection", "Section"),
+    "f": ("figure", "Figure"),
+    "t": ("table", "Table"),
+    "e": ("equation", ""),
+}
+
+
+def _xr(spec: str) -> walker.Xref:
+    """``f3`` a figure numbered 3, ``u2.1`` a subsection, ``e1`` an equation;
+    ``s1/b`` another target (``b``) that prints section 1 too."""
+    ref = spec.partition("/")[0]
+    kind, noun = _XREF_KINDS[ref[0]]
+    number = ref[1:]
+    if kind == "equation":
+        return walker.Xref(spec, None, live=True, equation=int(number), kind=kind)
+    return walker.Xref(spec, None, live=True, label=(noun, number), kind=kind)
+
+
+def _printed(parts: list[walker.XrefPart]) -> str:
+    return "".join(p.text or p.number for p in parts)
+
+
+#: ``(references in source order, cleveref's print, sentence start)``. The
+#: prints are what ``pdflatex`` + cleveref (TeX Live 2026) gave for
+#: ``\cref{...}`` / ``\Cref{...}`` over the same labels and the preamble's
+#: ``\crefname`` lines.
+_CLEVEREF = [
+    (["s1"], "Section 1", False),
+    (["s1", "s2"], "Sections 1 and 2", False),
+    (["s1", "s2", "s4"], "Sections 1, 2 and 4", False),
+    (["s1", "s2", "s3"], "Sections 1 to 3", False),
+    (["f3", "f1", "f2"], "Figures 1 to 3", False),
+    (["f4", "f2"], "Figures 2 and 4", False),
+    (["f2", "f4", "f1"], "Figures 1, 2 and 4", False),
+    (["f1", "f2", "f4", "f5"], "Figures 1, 2, 4 and 5", False),
+    (["f10", "f9", "f2", "f1"], "Figures 1, 2, 9 and 10", False),
+    (["s1", "s2", "s3", "s5"], "Sections 1 to 3 and 5", False),
+    (["f1", "f2", "f3", "f5", "f7"], "Figures 1 to 3, 5 and 7", False),
+    (["f1", "f2", "f3", "f5", "f6", "f7"], "Figures 1 to 3 and 5 to 7", False),
+    (["s1", "s2", "f3"], "Sections 1 and 2 and Figure 3", False),
+    (["f3", "s2", "s1"], "Figure 3 and Sections 1 and 2", False),
+    (["f1", "s1", "f2", "s2"], "Figures 1 and 2 and Sections 1 and 2", False),
+    (["t1", "t2"], "Tables 1 and 2", False),
+    (["t1", "f1", "e1", "s1"], "Table 1, Figure 1, Eq. (1), and Section 1", False),
+    (
+        ["t1", "t2", "f1", "s1", "s2"],
+        "Tables 1 and 2, Figure 1, and Sections 1 and 2",
+        False,
+    ),
+    # the section counters are separate cleveref types, each with its name
+    (["s2", "u2.1"], "Section 2 and Section 2.1", False),
+    (["s2", "u2.1", "w2.1.1"], "Section 2, Section 2.1, and Section 2.1.1", False),
+    (["u12.9", "u12.10", "u12.11"], "Sections 12.9 to 12.11", False),
+    (["u1.2", "u1.3", "u2.1"], "Sections 1.2, 1.3 and 2.1", False),
+    (["u1.1", "u1.2", "u1.3"], "Sections 1.1 to 1.3", False),
+    (["e1", "e2"], "Eqs. (1) and (2)", False),
+    (["e1", "e2", "e3"], "Eqs. (1) to (3)", False),
+    (["e1", "e2", "e3", "e5"], "Eqs. (1) to (3) and (5)", False),
+    (["e1", "e2", "e3"], "Equations (1) to (3)", True),
+    (["e1"], "Equation (1)", True),
+    (["s1", "e1"], "Section 1 and Eq. (1)", True),
+    (["e1", "s1"], "Equation (1) and Section 1", True),
+    (["f1", "e1", "e2"], "Figure 1 and Eqs. (1) and (2)", True),
+    (["f1", "s1"], "Figure 1 and Section 1", True),
+    # repeats: a target twice is one number; two targets printing one number
+    # are one number too; every reference counts toward a three-long stretch
+    (["s1", "s1"], "Section 1", False),
+    (["s1", "s1/b"], "Section 1", False),
+    (["s1", "s2", "s1"], "Sections 1 to 2", False),
+    (["s1", "s1/b", "s2"], "Sections 1 to 2", False),
+    (["s1", "s1/b", "s1/c"], "Section 1", False),
+    (["s1", "s1/b", "s4"], "Sections 1 and 4", False),
+    (["s1", "s1/b", "s2", "s2/b", "s5", "s6"], "Sections 1 to 2, 5 and 6", False),
+]
+
+
+@pytest.mark.parametrize(("specs", "printed", "sentence"), _CLEVEREF)
+def test_format_xref_run_prints_what_cleveref_prints(
+    specs: list[str], printed: str, sentence: bool
+) -> None:
+    parts = walker.format_xref_run([_xr(s) for s in specs], sentence_start=sentence)
+    assert _printed(parts) == printed
+
+
+def test_format_xref_run_numbers_are_fields_to_the_first_and_last_target() -> None:
+    parts = walker.format_xref_run([_xr("f3"), _xr("f1"), _xr("f2")])
+    assert [(p.dc, p.number, p.noun) for p in parts if p.dc] == [
+        ("f1", "1", "Figure"),
+        ("f3", "3", "Figure"),
+    ]  # the middle figure gets none
+    parts = walker.format_xref_run([_xr("s1"), _xr("s2"), _xr("s4"), _xr("f1")])
+    assert [p.dc for p in parts if p.dc] == ["s1", "s2", "s4", "f1"]
+    assert not [p for p in parts if p.dc and p.text]
+    parts = walker.format_xref_run([_xr("e2"), _xr("e1")])
+    assert [(p.dc, p.noun) for p in parts if p.dc] == [("e1", ""), ("e2", "")]
+
+
+def test_xref_names_are_the_preambles_crefnames() -> None:
+    pre = latex._template_text("preamble.tex")
+    for kind, (one, many) in walker.XREF_NAMES.items():
+        assert rf"\crefname{{{kind}}}{{{one}}}{{{many}}}" in pre
+    for kind, (one, many) in walker.XREF_NAMES_CAPITAL.items():
+        assert rf"\Crefname{{{kind}}}{{{one}}}{{{many}}}" in pre
+
+
+def test_only_typed_numbered_live_references_may_merge() -> None:
+    from types import SimpleNamespace as C
+
+    chunks = [
+        C(dc="dc1", chunk_kind="heading", depth=0, text="T"),
+        C(dc="dc2", chunk_kind="heading", depth=1, text="One"),
+        C(dc="dc3", chunk_kind="paragraph", depth=2, text="Setup."),
+        C(dc="dc4", chunk_kind="heading", depth=2, text="Sub"),
+        C(dc="dc5", chunk_kind="paragraph", depth=3, text="In the sub."),
+        C(dc="dc6", chunk_kind="item", depth=3, text="an item"),
+        C(dc="dc7", chunk_kind="listing", depth=3, text="code"),
+        C(dc="dc8", chunk_kind="heading", depth=4, text="Run-in"),
+        C(dc="dc9", chunk_kind="figure", depth=3, text="cap"),
+        C(dc="dc10", chunk_kind="paragraph", depth=3, text="$$x$$"),
+        C(dc="dc11", chunk_kind="heading", depth=0, text="Acknowledgements"),
+    ]
+    nums = walker.number_xrefs(chunks, "T", equation_of=latex._standalone_equation)
+    kw: dict[str, Any] = {"live": None, "numbers": nums, "warnings": []}
+
+    def kind(dc: str, **extra: Any) -> str | None:
+        return walker.resolve_xref(dc, None, **kw, **extra).kind
+
+    assert kind("dc2") == "section"
+    assert kind("dc3") == "section"  # a paragraph takes its section's type
+    assert kind("dc4") == "subsection" and kind("dc5") == "subsection"
+    assert kind("dc9") == "figure" and kind("dc10") == "equation"
+    assert kind("dc6") is None and kind("dc7") is None  # item, listing
+    assert kind("dc8") is None  # a run-in heading (LaTeX: \nameref)
+    assert kind("dc11") is None  # back matter prints its name
+    assert kind("dc1") is None  # the title: no number
+    assert walker.resolve_xref("dc2", "the intro", **kw).kind is None  # surface
+    assert kind("dc3", placement=nums, citing="dc3") is None  # "above"
+    dead = walker.resolve_xref("dc99", None, live={"dc2"}, numbers=nums, warnings=[])
+    assert dead.kind is None
+
+
+def test_merge_xref_runs_is_broken_by_prose_cites_and_own_section_words() -> None:
+    items: list[str | tuple[str, ...]] = [
+        ("a",),
+        " ",
+        ("b",),
+        " or ",
+        ("c",),
+        r"\cite{k} ",
+        ("d",),
+        " \\precisrel{above} ",
+        ("e",),
+    ]
+    assert walker.merge_xref_runs(items) == [
+        ("a", "b"),
+        " or ",
+        ("c",),
+        r"\cite{k} ",
+        ("d",),
+        " \\precisrel{above} ",
+        ("e",),
+    ]
+
+
+# ── Word and PDF merge the same references ───────────────────────────
+
+_PARITY_CHUNKS = [
+    ("dc1", "heading", 0, "T"),
+    ("dc2", "heading", 1, "A"),  # section 1
+    ("dc3", "heading", 1, "B"),  # 2
+    ("dc4", "heading", 2, "B1"),  # 2.1
+    ("dc5", "heading", 1, "C"),  # 3
+    ("dc6", "heading", 1, "D"),  # 4
+    ("dc7", "figure", 2, "one"),  # Figure 1
+    ("dc8", "figure", 2, "two"),
+    ("dc9", "figure", 2, "three"),
+    ("dc10", "table", 2, "| A |\n|---|\n| 1 |"),  # Table 1
+    ("dc11", "paragraph", 2, "$$x$$"),  # Eq. (1)
+    ("dc12", "paragraph", 2, "$$y$$"),  # Eq. (2)
+    ("dc13", "heading", 1, "E"),  # 5
+    ("dc14", "paragraph", 2, "The citing paragraph."),  # in section 5
+]
+
+#: ``(source, what Word prints)``; every run LaTeX merges must print the same
+#: in Word, and what LaTeX leaves apart (``or``, a semicolon, a reference
+#: into the citing chunk's own section) stays apart there too.
+_PARITY = [
+    ("see [dc2] [dc3]", "see Sections 1 and 2"),
+    ("see [dc2][dc3] [dc6]", "see Sections 1, 2 and 4"),
+    ("see [dc2] [dc3] [dc5]", "see Sections 1 to 3"),
+    ("see [dc9] [dc7] [dc8]", "see Figures 1 to 3"),
+    ("see [dc2] [dc3] [dc9]", "see Sections 1 and 2 and Figure 3"),
+    ("see [dc10] [dc7] [dc11] [dc3]", "see Table 1, Figure 1, Eq. (1), and Section 2"),
+    ("see [dc3] [dc4]", "see Section 2 and Section 2.1"),
+    ("[dc11] [dc12] hold.", "Equations (1) and (2) hold."),
+    ("by [dc11] [dc12]", "by Eqs. (1) and (2)"),
+    ("see [dc2] [dc13] [dc3]", "see Section 1 above Section 2"),
+    ("see [dc7]", "see Figure 1"),
+    ("see [dc2] and [dc3]", "see Sections 1 and 2"),
+    ("see [dc2], [dc3]", "see Sections 1 and 2"),
+    ("see [dc2], [dc3] and [dc6]", "see Sections 1, 2 and 4"),
+    ("see [dc2], [dc3], and [dc5]", "see Sections 1 to 3"),
+    ("see [dc7] and [dc10]", "see Figure 1 and Table 1"),
+    ("[dc7] and [dc8] show", "Figures 1 and 2 show"),
+    ("see [dc2] or [dc3]", "see Section 1 or Section 2"),
+    ("see [dc2]; [dc3]", "see Section 1; Section 2"),
+    ("see [dc2] and [dc13]", "see Section 1 and above"),
+    ("see [dc13] and [dc2]", "see above and Section 1"),
+    ("[dc2] [dc3] show it.", "Sections 1 and 2 show it."),
+]
+
+
+@pytest.mark.parametrize(("source", "printed"), _PARITY)
+def test_word_and_pdf_merge_the_same_cross_references(
+    source: str, printed: str
+) -> None:
+    import re
+    from types import SimpleNamespace as C
+
+    chunks = [C(dc=dc, chunk_kind=k, depth=d, text=t) for dc, k, d, t in _PARITY_CHUNKS]
+    nums = walker.number_xrefs(chunks, "T", equation_of=latex._standalone_equation)
+    handles = {c.dc for c in chunks}
+
+    lctx = latex._Ctx(keymap={}, known_handles=handles, xref_pass=nums)
+    lctx.cursor.dc = "dc14"
+    tex = latex._render_inline(source, lctx)
+
+    dctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref=nums.labels,
+        xref_types=nums.types,
+        xref_order=nums.order,
+        xref_section=nums.section,
+        numbered_headings=nums.numbered_headings,
+        eq_numbers=nums.equations,
+        dc_handles=handles,
+    )
+    dctx.cursor.dc = "dc14"
+    paragraph = docx.Document().add_paragraph()
+    dx._render_inline(source, dctx, paragraph)
+    assert paragraph.text == printed
+
+    # LaTeX's \cref arguments, printed by the one formatter: the same members
+    # in the same groups and order as Word's runs.
+    def cleveref(m: re.Match[str]) -> str:
+        run = [
+            walker.resolve_xref(
+                a.removeprefix("chunk:"), None, live=None, numbers=nums, warnings=[]
+            )
+            for a in m.group(2).split(",")
+        ]
+        return _printed(walker.format_xref_run(run, sentence_start=m.group(1) == "C"))
+
+    assert re.sub(r"\\([cC])ref\{([^{}]*)\}", cleveref, tex) == printed
+
+
+@pytest.mark.parametrize(
+    ("gap", "joins"),
+    [
+        ("", True),
+        (" ", True),
+        ("\n", True),
+        (",", True),
+        (", ", True),
+        (" and ", True),
+        (", and ", True),
+        (" ,  and  ", True),
+        (" or ", False),
+        (", or ", False),
+        (" & ", False),
+        ("; ", False),
+        (" to ", False),
+        (" through ", False),
+        (" \u2013 ", False),
+        (" and also ", False),
+        (" and, ", False),
+        ("and", False),
+        (",and ", False),
+        (" And ", False),
+        (".", False),
+        ("\n\n", False),
+        (", and\n\n", False),
+    ],
+)
+def test_xref_connectors_that_join_a_run(gap: str, joins: bool) -> None:
+    out = walker.merge_xref_runs([("a",), gap, ("b",)])
+    assert (out == [("a", "b")]) is joins
+    assert walker.xref_connector(gap) is joins

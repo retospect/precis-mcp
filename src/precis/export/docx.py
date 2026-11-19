@@ -378,8 +378,8 @@ def running_authors(byline: dict[str, Any]) -> str:
 def _add_field(
     paragraph: Any, instr: str, cached: str, *, style: str | None = None
 ) -> None:
-    """Append a live Word field (``PAGE``, ``NUMPAGES``, ``SEQ``, ``REF``)
-    with its cached result, as the hand-written EndNote fields are
+    """Append a live Word field (``PAGE``, ``SEQ``, ``REF``) with its
+    cached result, as the hand-written EndNote fields are
     (:mod:`.endnote`). ``style``: a character style every run of the field
     carries (the caption label's)."""
     from docx.enum.style import WD_STYLE_TYPE
@@ -462,11 +462,12 @@ def _unlink_dangling_refs(doc: Any) -> None:
 
 
 def _header_footer(doc: Any, title: str | None, byline: dict[str, Any]) -> None:
-    """Footer on every page ("Page N of M", live ``PAGE`` / ``NUMPAGES``
-    fields) and a running header on every page after the first (title at
-    the left, ``Family et al.`` at the right margin). Both take Word's
-    built-in ``Header`` / ``Footer`` styles, which carry the alignment: the
-    footer is centred, the header has one right tab stop at the text edge."""
+    """Footer on every page ("Page N", a live ``PAGE`` field; no page count,
+    so trailing pages can be left out of a printout unnoticed) and a
+    running header on every page after the first (title at the left,
+    ``Family et al.`` at the right margin). Both take Word's built-in
+    ``Header`` / ``Footer`` styles, which carry the alignment: the footer
+    is centred, the header has one right tab stop at the text edge."""
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
     from docx.shared import Inches
 
@@ -487,8 +488,6 @@ def _header_footer(doc: Any, title: str | None, byline: dict[str, Any]) -> None:
             par.style = footer_style
             par.add_run("Page ")
             _add_field(par, "PAGE", "1")
-            par.add_run(" of ")
-            _add_field(par, "NUMPAGES", "1")
         # The first page keeps an explicitly empty header.
         first = section.first_page_header
         first.is_linked_to_previous = False
@@ -512,6 +511,17 @@ class DocxResult:
     #: ``target_path`` (draft-pathway-figures-data-package.md). ``None``
     #: when no figure carried a snapshot.
     data_package_path: Path | None = None
+
+
+@dataclass
+class _XrefRun:
+    """The cross-reference run last printed into ``paragraph``: its
+    ``members`` and the paragraph children (``elements``) it wrote, so an
+    adjacent reference can take them out and print the longer run."""
+
+    paragraph: Any
+    members: list[walker.Xref]
+    elements: list[Any]
 
 
 @dataclass
@@ -607,6 +617,11 @@ class _Ctx:
     #: section prints "above" / "below" (:func:`walker.relative_word`).
     xref_order: dict[str, int] = field(default_factory=dict)
     xref_section: dict[str, str] = field(default_factory=dict)
+    #: dc handle → cleveref type of its label (:attr:`walker.XrefNumbers.types`),
+    #: and the cross-reference run last printed into a paragraph
+    #: (:class:`_XrefRun`), which an adjacent reference extends.
+    xref_types: dict[str, str] = field(default_factory=dict)
+    _xref_run: _XrefRun | None = field(default=None, repr=False)
     cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: every live ``dc`` handle (cross-ref liveness) and legacy ``¶`` handle →
     #: ``dc`` — mirrors ``export/latex.py``'s ``known_handles``/``legacy_to_dc``.
@@ -881,6 +896,7 @@ def export_docx(
         numbered_headings=nums.numbered_headings,
         xref_order=nums.order,
         xref_section=nums.section,
+        xref_types=nums.types,
         dc_handles={c.dc for c in chunks},
         legacy_to_dc=walker.legacy_map(chunks),
         abbrevs=store.drafts.defined_abbrevs(ref.id),
@@ -1239,7 +1255,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     # one closed on lost its mark entirely.
     ctx.cite_run.interrupt()
     ctx._marks = walker.RepeatMarks(enabled=not ctx.repeat_cites)
-    ctx._kept_field = ctx._dropped_mark = None
+    ctx._kept_field = ctx._dropped_mark = ctx._xref_run = None
     last = 0
     dropped = False  # the previous reference was a cite dropped for no source
     plain = ""  # source so far, a display link as its surface text
@@ -1920,6 +1936,48 @@ def _at_sentence_start(paragraph: Any) -> bool:
     return _abbrev.at_sentence_start(paragraph.text)
 
 
+def _plain_run_text(element: Any) -> str | None:
+    """The text of a plain run (no formatting, nothing but text); ``None``
+    for anything else (a field mark, a math span, a hyperlink, a styled
+    run)."""
+    from docx.oxml.ns import qn
+
+    if element.tag != qn("w:r"):
+        return None
+    text = ""
+    for child in element:
+        if child.tag != qn("w:t"):
+            return None
+        text += child.text or ""
+    return text
+
+
+def _reopen_run(prior: _XrefRun, paragraph: Any, xref: walker.Xref) -> bool:
+    """Does ``xref`` extend the cross-reference run ``prior`` printed into
+    ``paragraph``, with only a connector since (whitespace, ``,``, ``and``,
+    ``, and``)? Then take the run's elements and the connector out of the
+    paragraph and say so: the
+    caller prints the longer run in their place. The join is
+    :func:`walker.merge_xref_runs`, the rule LaTeX merges ``\\cref`` marks by."""
+    if prior.paragraph is not paragraph:
+        return False
+    p = paragraph._p
+    if any(e.getparent() is not p for e in prior.elements):
+        return False  # something took the run's elements out since
+    tail = list(prior.elements[-1].itersiblings())
+    gaps = [_plain_run_text(e) for e in tail]
+    if any(g is None for g in gaps):
+        return False
+    items = walker.merge_xref_runs(
+        [tuple(m.dc for m in prior.members), "".join(g or "" for g in gaps), (xref.dc,)]
+    )
+    if len(items) != 1:
+        return False
+    for element in [*prior.elements, *tail]:
+        p.remove(element)
+    return True
+
+
 def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:
     """An intra-draft cross-ref to chunk ``dc``. An authored surface wins;
     otherwise print what LaTeX's ``\\cref`` would — ``Section 1.5.5``,
@@ -1938,6 +1996,7 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
             ctx.eq_numbers,
             ctx.xref_order,
             ctx.xref_section,
+            ctx.xref_types,
         ),
         warnings=ctx.warnings,
         dead=lambda d: walker.dead_xref(
@@ -2304,7 +2363,8 @@ class DocxRenderer:
         word), ``Eq. (3)`` (``Equation`` at a sentence start); a back-matter
         target prints its name; a reference into the citing chunk's own
         section prints ``above`` / ``below`` (``Above``). Nothing when there
-        is no number."""
+        is no number. References joined by whitespace, a comma or "and" print as one
+        run (``Sections 1 and 2``; :meth:`_print_xref`)."""
         if not xref.live or xref.surface:
             text = xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
         elif xref.relative is not None:
@@ -2312,18 +2372,16 @@ class DocxRenderer:
             text = xref.relative
             if _at_sentence_start(sink):
                 text = text[0].upper() + text[1:]
-        elif xref.equation is not None:
-            lead = "Equation" if _at_sentence_start(sink) else "Eq."
-            _flush_cites(self.ctx, sink)
-            sink.add_run(f"{lead} (")
-            self._ref_field(sink, xref.dc, str(xref.equation), None)
-            sink.add_run(")")
+        elif xref.kind is not None:
+            self._print_xref(sink, xref)
             return
         elif xref.label is not None:
             noun, number = xref.label
             if not noun:
                 text = number  # unnumbered back matter: its name, like \nameref
             else:
+                # A target whose cleveref type is unknown (a list item, a
+                # listing): the label word and number alone, never merged.
                 _flush_cites(self.ctx, sink)
                 sink.add_run(f"{noun} ")
                 self._ref_field(sink, xref.dc, number, noun)
@@ -2332,6 +2390,29 @@ class DocxRenderer:
             return  # front matter / glossary / before section 1: nothing to print
         _flush_cites(self.ctx, sink)
         sink.add_run(text)
+
+    def _print_xref(self, sink: Any, xref: walker.Xref) -> None:
+        """Print ``xref`` as ``\\cref`` would. A reference that follows the
+        paragraph's last one across only a connector (whitespace, ``,``,
+        ``and``; :func:`walker.merge_xref_runs`, the rule ``\\cref{a,b}`` follows)
+        takes the earlier one's runs out and prints the whole run at once
+        (:func:`walker.format_xref_run`: ``Sections 1 and 2``,
+        ``Figures 1 to 3``); each number stays its own ``REF`` field."""
+        ctx = self.ctx
+        _flush_cites(ctx, sink)
+        members = [xref]
+        prior = ctx._xref_run
+        if prior is not None and _reopen_run(prior, sink, xref):
+            members = [*prior.members, xref]
+        n_before = len(sink._p)
+        for part in walker.format_xref_run(
+            members, sentence_start=_at_sentence_start(sink)
+        ):
+            if part.dc:
+                self._ref_field(sink, part.dc, part.number, part.noun or None)
+            else:
+                sink.add_run(part.text)
+        ctx._xref_run = _XrefRun(sink, members, list(sink._p)[n_before:])
 
     def _ref_field(self, sink: Any, dc: str, number: str, noun: str | None) -> None:
         """The number of a cross-reference as a ``REF _Ref_<dc> \\h`` field

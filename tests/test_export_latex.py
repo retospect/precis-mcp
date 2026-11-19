@@ -2693,7 +2693,7 @@ def test_export_table_numbers_like_figures_and_cross_refs(hub, tmp_path) -> None
     assert body.count("\\refstepcounter{table}") == 2
     assert "\\textbf{Table \\thetable: first}" in body
     assert "\\textbf{Table \\thetable}" in body  # no caption → label only
-    assert f"\\cref{{chunk:{t1_dc}}}" in body and f"\\cref{{chunk:{t2_dc}}}" in body
+    assert f"\\cref{{chunk:{t1_dc},chunk:{t2_dc}}}" in body  # "and" joins them
     # a table's label binds the table counter, not the enclosing section
     t1_lines = [ln for ln in body.splitlines() if f"chunk:{t1_dc}" in ln]
     assert any("\\refstepcounter{table}" in ln for ln in t1_lines)
@@ -3296,8 +3296,9 @@ def test_glsify_collapses_long_form_containing_another_short() -> None:
 
 def test_adjacent_crefs_merge() -> None:
     out, _ = _inline("See [dc1][dc2] and [dc3] [dc4].")
-    assert r"\cref{chunk:dc1,chunk:dc2}" in out
-    assert r"\cref{chunk:dc3,chunk:dc4}" in out
+    assert r"\cref{chunk:dc1,chunk:dc2,chunk:dc3,chunk:dc4}" in out
+    out, _ = _inline("See [dc1], [dc2], and [dc3]; [dc4] or [dc5].")
+    assert r"\cref{chunk:dc1,chunk:dc2,chunk:dc3}; \cref{chunk:dc4} or" in out
 
 
 def test_preamble_names_cross_references_with_capitalised_words() -> None:

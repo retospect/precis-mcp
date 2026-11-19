@@ -2601,9 +2601,11 @@ def _field_instrs(xml: str) -> list[str]:
     return re.findall(r"<w:instrText[^>]*>([^<]*)</w:instrText>", xml)
 
 
-def test_footer_page_n_of_m_fields_on_every_page(
+def test_footer_page_n_field_on_every_page(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
+    """ "Page N" only: no page count, so a printout can leave out trailing
+    pages (Reto, 2026-11-19)."""
     pid = _new_draft_project(hub)
     draft.put(id="dft", title="Paper", project=pid)
     ref = hub.live_store.get_ref(kind="draft", id="dft")
@@ -2617,11 +2619,11 @@ def test_footer_page_n_of_m_fields_on_every_page(
         assert par.style.name == "Footer"
         assert par.alignment is None  # centred by the style, not the paragraph
         xml = par._p.xml
-        assert [i.strip() for i in _field_instrs(xml)] == ["PAGE", "NUMPAGES"]
-        assert par.text == "Page 1 of 1"  # cached results
-        assert xml.count('w:fldCharType="begin"') == 2
-        assert xml.count('w:fldCharType="separate"') == 2
-        assert xml.count('w:fldCharType="end"') == 2
+        assert [i.strip() for i in _field_instrs(xml)] == ["PAGE"]
+        assert par.text == "Page 1"  # cached result
+        assert xml.count('w:fldCharType="begin"') == 1
+        assert xml.count('w:fldCharType="separate"') == 1
+        assert xml.count('w:fldCharType="end"') == 1
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     assert doc.styles["Footer"].paragraph_format.alignment == WD_ALIGN_PARAGRAPH.CENTER
@@ -2864,7 +2866,7 @@ def test_numbers_and_cross_references_are_word_fields(
 
     # visible text: as before fields existed
     assert (
-        "See Figure 1, Table 1, Section 2 and Eq. (1). Equation (1) holds."
+        "See Figure 1, Table 1, Section 2, and Eq. (1). Equation (1) holds."
         " Above, above is this section." in texts
     )
     assert "Figure 1: First widget." in texts
@@ -2944,6 +2946,158 @@ def test_numbers_and_cross_references_are_word_fields(
 
     with zipfile.ZipFile(out) as z:
         assert b"updateFields" not in z.read("word/settings.xml")
+
+
+def test_adjacent_cross_references_print_as_one_run_of_fields(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr725244: references separated by whitespace only print as the PDF's
+    ``\\cref{a,b}`` does ("Sections 1 and 2", "Figures 1 to 3", "Sections 2
+    and 3 and Figure 1"), every number its own ``REF`` field to an existing
+    bookmark; a range has fields for its first and last target only; a
+    reference into the citing section ("above") or an "or" ends the run;
+    commas and "and" between references merge them."""
+    pytest.importorskip("latex2mathml")
+    import re
+
+    from docx.oxml.ns import qn
+
+    def handle(resp) -> str:
+        m = re.search(r"dc\d+", resp.body)
+        assert m is not None
+        return m.group(0)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="drun", title="Runs", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="drun")
+    assert ref is not None
+    drafts = hub.live_store.drafts
+    title_h = drafts.reading_order(ref.id)[0].handle
+    sections = {}
+    for name in ("Intro", "Methods", "Results", "Discussion"):
+        sections[name] = handle(
+            draft.put(
+                id="drun",
+                chunk_kind="heading",
+                text=name,
+                at={"into": title_h, "last": True},
+            )
+        )
+    figs = [
+        drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="figure",
+            text=f"Widget {n}.",
+            at={"into": sections["Results"], "last": True},
+            split=False,
+        )[0].dc
+        for n in (1, 2, 3)
+    ]
+    intro, methods, results, discussion = (
+        sections[n] for n in ("Intro", "Methods", "Results", "Discussion")
+    )
+    f1, f2, f3 = figs
+    sources = [
+        f"See [{intro}] [{methods}].",
+        f"See [{f3}] [{f1}][{f2}].",
+        f"See [{methods}] [{f1}] [{results}].",
+        f"See [{intro}] [{discussion}] [{methods}].",  # the own section breaks it
+        f"See [{intro}], [{methods}] and [{results}].",  # commas and "and" join
+        f"See [{intro}] or [{methods}].",  # "or" does not
+    ]
+    for source in sources:
+        draft.put(
+            id="drun",
+            chunk_kind="paragraph",
+            text=source,
+            at={"into": discussion, "last": True},
+        )
+    out = tmp_path / "drun.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    body = doc.element.body
+    names = {b.get(qn("w:name")) for b in body.iter(qn("w:bookmarkStart"))}
+
+    def para(prefix: str) -> Any:
+        return next(p for p in doc.paragraphs if p.text.startswith(prefix))
+
+    def fields(p: Any) -> list[str]:
+        return [i.text.strip() for i in p._p.iter(qn("w:instrText"))]
+
+    tail = r"\h \* MERGEFORMAT"
+    sec_head = {n: f"REF _Ref_{h} {tail}" for n, h in sections.items()}
+
+    p = para("See Sections 1 and 2")
+    assert p.text == "See Sections 1 and 2."
+    assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
+
+    p = para("See Figures")
+    assert p.text == "See Figures 1 to 3."
+    assert fields(p) == [f"REF _Ref_{f1} {tail}", f"REF _Ref_{f3} {tail}"]
+
+    p = para("See Sections 2")
+    assert p.text == "See Sections 2 and 3 and Figure 1."
+    assert fields(p) == [
+        sec_head["Methods"],
+        sec_head["Results"],
+        f"REF _Ref_{f1} {tail}",
+    ]
+
+    p = para("See Section 1 above")
+    assert p.text == "See Section 1 above Section 2."
+    assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
+
+    p = para("See Sections 1 to 3")
+    assert p.text == "See Sections 1 to 3."
+    assert fields(p) == [sec_head["Intro"], sec_head["Results"]]
+
+    p = para("See Section 1 or")
+    assert p.text == "See Section 1 or Section 2."
+    assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
+
+    every = [i.text.strip() for i in body.iter(qn("w:instrText"))]
+    refs = [i for i in every if i.startswith("REF ")]
+    assert refs and all(r.split()[1] in names for r in refs)
+    # a field is whole: begin, instruction, separate, result, end
+    for p in body.iter(qn("w:p")):
+        marks = [f.get(qn("w:fldCharType")) for f in p.iter(qn("w:fldChar"))]
+        assert marks == ["begin", "separate", "end"] * (len(marks) // 3)
+
+
+def test_merged_run_survives_a_missing_bookmark_and_a_span_between() -> None:
+    """A reference to a withheld target loses its field, not its number
+    (:func:`docx._unlink_dangling_refs`); math, a link or any other prose
+    between two references keeps them apart."""
+    from docx.oxml.ns import qn
+
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref={"dc1": ("Figure", "1"), "dc2": ("Figure", "2"), "dc3": ("Figure", "3")},
+        xref_types={"dc1": "figure", "dc2": "figure", "dc3": "figure"},
+        dc_handles={"dc1", "dc2", "dc3"},
+    )
+    d = docx.Document()
+    par = d.add_paragraph()
+    dx._render_inline("See [dc1] [dc2] [dc3].", ctx, par)
+    assert par.text == "See Figures 1 to 3."
+    instrs = [i.text.strip() for i in par._p.iter(qn("w:instrText"))]
+    assert instrs == [
+        r"REF _Ref_dc1 \h \* MERGEFORMAT",
+        r"REF _Ref_dc3 \h \* MERGEFORMAT",
+    ]
+    dx._unlink_dangling_refs(d)  # no bookmarks were written in this document
+    assert par.text == "See Figures 1 to 3."
+    assert not list(par._p.iter(qn("w:instrText")))
+    assert not list(par._p.iter(qn("w:fldChar")))
+
+    ctx.xref_types.pop("dc2")  # a target whose type is unknown prints alone
+    assert _render_text("See [dc1] [dc2].", ctx) == "See Figure 1 Figure 2."
+    ctx.xref_types["dc2"] = "figure"
+    shown = _render_text("See [dc1] $x$ [dc2].", ctx)  # the math span is OMML
+    assert "Figures" not in shown and "Figure 1" in shown and "Figure 2" in shown
 
 
 def test_ref_to_a_missing_bookmark_keeps_plain_number() -> None:

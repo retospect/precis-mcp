@@ -775,10 +775,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:fldChar>
 </w:r>
 <w:r>
-<w:t xml:space="preserve"> and </w:t>
-</w:r>
-<w:r>
-<w:t>Eq. (</w:t>
+<w:t xml:space="preserve"> and Eq. (</w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -1056,34 +1053,6 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> opens a sentence. Runs </w:t>
-</w:r>
-<w:r>
-<w:t xml:space="preserve">Section </w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="begin">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="separate">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">1</w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="end">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:r>
 <w:t xml:space="preserve">Section </w:t>
@@ -2129,31 +2098,6 @@ sha256 ada4b4c453c903f5e93436aad8a5b6ac41c1f495386650164ad7af0a63c5f581
 <w:fldChar w:fldCharType="end">
 </w:fldChar>
 </w:r>
-<w:r>
-<w:t xml:space="preserve"> of </w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="begin">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:instrText xml:space="preserve"> NUMPAGES </w:instrText>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="separate">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">1</w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="end">
-</w:fldChar>
-</w:r>
 </w:p>
 </w:ftr>
 == word/footer2.xml ==
@@ -2172,31 +2116,6 @@ sha256 ada4b4c453c903f5e93436aad8a5b6ac41c1f495386650164ad7af0a63c5f581
 </w:r>
 <w:r>
 <w:instrText xml:space="preserve"> PAGE </w:instrText>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="separate">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">1</w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="end">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:t xml:space="preserve"> of </w:t>
-</w:r>
-<w:r>
-<w:fldChar w:fldCharType="begin">
-</w:fldChar>
-</w:r>
-<w:r>
-<w:instrText xml:space="preserve"> NUMPAGES </w:instrText>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="separate">

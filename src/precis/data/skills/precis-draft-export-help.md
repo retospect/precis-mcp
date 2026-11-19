@@ -97,9 +97,10 @@ DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
 latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
 not capitalise the next word. Record handles follow the audience choice
 below; chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
-(`Eq. (1)`), except a section reference into the citing chunk's own section or an
-ancestor, which prints `above` (target first) or `below` (`Above` at a
-sentence start) in both formats.
+(`Eq. (1)`); ones joined by whitespace, `,` or `and` merge (`Sections 1 and 2`,
+`Figures 1 to 3`; not `or`); a reference into the citing chunk's own section or an
+ancestor prints `above` (target first) or `below` (`Above` at a sentence
+start) and ends a run; same in both formats.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
@@ -151,7 +152,7 @@ restyle a whole class of text by editing one style in Word.
 | Acronym entry "SHORT: long form" | `Definition`; the label in `Definition Term` (character) |
 | Published claim artifact entry: sentence, source numbers, linked word "link", "(under embargo)" until public | `Published Claim` |
 | "Abstract" label above the prose before the first heading (Word only; no number, not a heading) | `Abstract Title`; the paragraphs in `Abstract` until a "Keywords:" paragraph |
-| Page footer "Page N of M" (live fields, centred) | `Footer` |
+| Page footer "Page N" (live field, centred; no page count) | `Footer` |
 | Header from page 2: short title left, first author's family name (or "A and B", "A et al.") right | `Header` |
 
 ## Audience and data supplement

@@ -43,8 +43,10 @@ Cross-references: :func:`number_xrefs` is the numbering pre-pass over chunk
 structure (sections, figures, tables, equations; it reads no inline text,
 so it cannot renumber a cite); :func:`resolve_xref` decides liveness, the
 downgrade warning and what number to print; :func:`merge_xref_runs` joins
-whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
-count at compile time; docx prints the pre-pass numbers. A section
+whitespace-separated refs (LaTeX's ``\\cref{a,b}``) and
+:func:`format_xref_run` prints such a run the way cleveref does ("Sections
+1 and 2", "Figures 1 to 3"). LaTeX lets cleveref count and print at compile
+time; docx prints the pre-pass numbers through :func:`format_xref_run`. A section
 reference into the citing chunk's own section (or an ancestor) is the
 word above/below in both (:func:`relative_word`). A legacy ``¶``
 handle is still mapped to its ``dc`` in each backend's reference dispatch,
@@ -813,13 +815,28 @@ class XrefNumbers:
     ``equations`` maps a standalone equation's dc to its number. ``order``
     (dc -> reading-order index) and ``section`` (dc -> the numbered section
     the chunk sits in; absent in front and back matter) place a reference
-    relative to its citing chunk (:func:`relative_word`)."""
+    relative to its citing chunk (:func:`relative_word`). ``types`` maps a
+    dc to the cleveref type its ``\\label`` carries (``figure``, ``table``,
+    ``section`` / ``subsection`` / ``subsubsection``) for the targets whose
+    type is known, so a run of references to them can print as cleveref
+    would (:func:`format_xref_run`); a list item, a code listing, an aside,
+    a run-in heading or a back-matter heading is not in it."""
 
     labels: dict[str, tuple[str, str]]
     numbered_headings: set[str]
     equations: dict[str, int]
     order: dict[str, int] = field(default_factory=dict)
     section: dict[str, str] = field(default_factory=dict)
+    types: dict[str, str] = field(default_factory=dict)
+
+
+#: The cleveref type of a heading by its numbered depth.
+XREF_SECTION_TYPES = ("section", "subsection", "subsubsection")
+
+#: Chunk kinds whose ``\\label`` carries a type of its own in LaTeX (a list
+#: item's ``enumi``, a listing, an aside box): a reference to one is never
+#: part of a merged run, as :func:`format_xref_run` cannot name its type.
+XREF_UNTYPED_KINDS = frozenset({"term", "item", "code", "listing", "aside", "box"})
 
 
 def number_xrefs(
@@ -842,6 +859,7 @@ def number_xrefs(
     the next equation number. Reads chunk structure only: no inline text
     is resolved here, so no cite is numbered."""
     labels: dict[str, tuple[str, str]] = {}
+    types: dict[str, str] = {}
     shown: set[str] = set()
     counters = [0] * NUMBERED_DEPTHS
     figs = 0
@@ -865,9 +883,11 @@ def number_xrefs(
         if c.chunk_kind == "figure":
             figs += 1
             labels[c.dc] = ("Figure", str(figs))
+            types[c.dc] = "figure"
         elif c.chunk_kind == "table":
             tabs += 1
             labels[c.dc] = ("Table", str(tabs))
+            types[c.dc] = "table"
         elif c.chunk_kind == "heading":
             if is_glossary_heading(c) or c.dc == title_dc:
                 continue
@@ -881,12 +901,17 @@ def number_xrefs(
                     counters[i] = 0
                 shown.add(c.dc)
                 current = ".".join(str(n) for n in counters[: d + 1])
+                types[c.dc] = XREF_SECTION_TYPES[d]
             # else: run-in paragraph heading — resolves to the enclosing section
             labels[c.dc] = ("Section", current)
             if not in_back:
                 section[c.dc] = current
         elif c.chunk_kind not in ("ulist", "olist") and current:
             labels[c.dc] = ("Section", current)
+            if c.chunk_kind not in XREF_UNTYPED_KINDS:
+                # A \\label in a paragraph takes the type of the sectioning
+                # counter last stepped: the enclosing section's depth.
+                types[c.dc] = XREF_SECTION_TYPES[current.count(".")]
     equations: dict[str, int] = {}
     for c in chunks:
         if c.chunk_kind in EQ_SKIP_KINDS:
@@ -901,6 +926,7 @@ def number_xrefs(
         equations=equations,
         order=order,
         section=section,
+        types=types,
     )
 
 
@@ -926,6 +952,10 @@ class Xref:
     #: Neutral text for a dead target with no authored surface (a retired
     #: chunk prints "a removed figure", never the bare ``dc…`` — gr493181).
     fallback: str | None = None
+    #: The cleveref type of the printed number (``XrefNumbers.types``;
+    #: ``"equation"`` for an equation) when a run of such references may
+    #: merge (:func:`format_xref_run`); ``None``: the reference prints alone.
+    kind: str | None = None
 
 
 #: Placeholder for a dead ``[dc]`` cross-ref whose target is unknown or
@@ -998,11 +1028,11 @@ def resolve_xref(
         return Xref(dc, surface, live=True)
     eq = numbers.equations.get(dc)
     if eq is not None:
-        return Xref(dc, None, live=True, equation=eq)
+        return Xref(dc, None, live=True, equation=eq, kind="equation")
     label = numbers.labels.get(dc)
     if label is None or not label[1]:
         return Xref(dc, None, live=True)
-    return Xref(dc, None, live=True, label=label)
+    return Xref(dc, None, live=True, label=label, kind=numbers.types.get(dc))
 
 
 def relative_word(dc: str, citing: str, nums: XrefNumbers | None) -> str | None:
@@ -1121,17 +1151,31 @@ def _dc_of(store: Any, raw: Any, live_set: Collection[str]) -> str | None:
     return getattr(chunk, "dc", None) if chunk is not None else None
 
 
+#: What may sit between two cross-references of one run: nothing, ``,``,
+#: ``and`` or ``, and`` (spaces around; a line break is fine, a blank line
+#: is a paragraph break and is not). ``or``, ``&``, ``;``, ``to``, a dash
+#: or any other word ends the run.
+_XREF_CONNECTOR = re.compile(r"(?:\s*|\s*,\s*|\s+and\s+|\s*,\s+and\s+)")
+
+
+def xref_connector(gap: str) -> bool:
+    """Do the words ``gap`` between two references let them join one run?"""
+    return _XREF_CONNECTOR.fullmatch(gap) is not None and not re.search(r"\n\s*\n", gap)
+
+
 def merge_xref_runs(
     items: Sequence[str | tuple[str, ...]],
 ) -> list[str | tuple[str, ...]]:
-    """Cross-refs separated by nothing but whitespace become one multi-ref
-    (``\\cref{a,b}``: cleveref prints "sections 1 and 2"); the whitespace
-    between them is dropped. ``items`` are prose strings and label tuples."""
+    """Cross-refs separated by nothing, whitespace, ``,``, ``and`` or
+    ``, and`` (:func:`xref_connector`) become one multi-ref (``\\cref{a,b}``:
+    cleveref prints "Sections 1 and 2" and supplies its own conjunctions);
+    the connector between them is dropped. ``items`` are prose strings and
+    label tuples."""
     out: list[str | tuple[str, ...]] = []
     for item in items:
         if isinstance(item, tuple):
             gap = out[-1] if out else None
-            if isinstance(gap, str) and not gap.strip() and len(out) >= 2:
+            if isinstance(gap, str) and xref_connector(gap) and len(out) >= 2:
                 if isinstance(out[-2], tuple):
                     out.pop()
             prev = out[-1] if out else None
@@ -1139,6 +1183,149 @@ def merge_xref_runs(
                 out[-1] = prev + item
                 continue
         out.append(item)
+    return out
+
+
+#: cleveref's singular / plural name of each label type: the ``\\crefname``
+#: lines of ``data/templates/draft/preamble.tex`` (a test keeps them equal).
+XREF_NAMES = {
+    "figure": ("Figure", "Figures"),
+    "table": ("Table", "Tables"),
+    "section": ("Section", "Sections"),
+    "subsection": ("Section", "Sections"),
+    "subsubsection": ("Section", "Sections"),
+    "equation": ("Eq.", "Eqs."),
+}
+
+#: The preamble's ``\\Crefname`` lines: the names ``\\Cref`` prints for the
+#: first type of a run at the start of a sentence.
+XREF_NAMES_CAPITAL = {"equation": ("Equation", "Equations")}
+
+
+@dataclass(frozen=True, slots=True)
+class XrefPart:
+    """One piece of a printed reference run: literal ``text``, or the
+    ``number`` of target ``dc`` (``noun``: its label word, ``""`` for an
+    equation) that a backend prints as a live cross-reference field."""
+
+    text: str = ""
+    dc: str = ""
+    number: str = ""
+    noun: str = ""
+
+
+def _xref_number(xref: Xref) -> str:
+    if xref.equation is not None:
+        return str(xref.equation)
+    return xref.label[1] if xref.label is not None else ""
+
+
+def _number_key(number: str) -> tuple[int, ...]:
+    return tuple(int(p) if p.isdigit() else 0 for p in number.split("."))
+
+
+def _follows(prev: tuple[int, ...], key: tuple[int, ...]) -> bool:
+    """Does ``key`` repeat ``prev`` or step its last component by one (the
+    next section of the same parent, the next figure)?"""
+    return key[:-1] == prev[:-1] and key[-1] - prev[-1] in (0, 1)
+
+
+def _xref_units(group: Sequence[Xref]) -> list[tuple[Xref, Xref]]:
+    """One type's references as cleveref's ``sort&compress`` prints them:
+    sorted by number; a stretch of three or more references whose numbers
+    each repeat or follow the one before (counted per reference, a repeated
+    target included) is a range ``(first, last)``, a shorter one lists its
+    distinct numbers. Checked against cleveref 2.x in TeX Live 2026."""
+    ordered = sorted(group, key=lambda x: _number_key(_xref_number(x)))
+    units: list[tuple[Xref, Xref]] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and _follows(
+            _number_key(_xref_number(ordered[j])),
+            _number_key(_xref_number(ordered[j + 1])),
+        ):
+            j += 1
+        stretch = ordered[i : j + 1]
+        if len(stretch) >= 3:
+            units.append((stretch[0], stretch[-1]))
+        else:
+            for x in stretch:
+                if not units or _xref_number(units[-1][1]) != _xref_number(x):
+                    units.append((x, x))
+        i = j + 1
+    return units
+
+
+def _number_parts(x: Xref) -> list[XrefPart]:
+    noun = x.label[0] if x.label is not None else ""
+    part = XrefPart(dc=x.dc, number=_xref_number(x), noun=noun)
+    if x.kind == "equation":
+        return [XrefPart(text="("), part, XrefPart(text=")")]
+    return [part]
+
+
+def _conjoin(items: list[list[XrefPart]], pair: str, last: str) -> list[XrefPart]:
+    """``items`` joined the cleveref way: ``a``; ``a<pair>b``;
+    ``a, b<last>c`` (the separator before the final item is ``last``)."""
+    out: list[XrefPart] = []
+    for i, item in enumerate(items):
+        if i:
+            out.append(
+                XrefPart(
+                    text=pair
+                    if len(items) == 2
+                    else (last if i == len(items) - 1 else ", ")
+                )
+            )
+        out += item
+    return out
+
+
+def format_xref_run(
+    run: Sequence[Xref], *, sentence_start: bool = False
+) -> list[XrefPart]:
+    """What cleveref prints for ``\\cref{a,b,…}`` over ``run`` (live,
+    numbered references in source order; every ``kind`` set), in the
+    preamble's names: references group by type, the types in order of
+    first appearance, one label word per type (plural when it holds more
+    than one number); numbers sort within a type and compress to ``1 to 3``
+    (:func:`_xref_units`); a type's numbers read ``1 and 2`` / ``1, 2 and
+    4``, the types ``Sections 1 and 2 and Figure 3`` / ``A, B, and C``.
+    An equation's number sits in parentheses. ``sentence_start`` is
+    ``\\Cref``: the first type's name from :data:`XREF_NAMES_CAPITAL`.
+    The pieces come back with their numbers as :class:`XrefPart` fields
+    for the backend to print."""
+    groups: dict[str, list[Xref]] = {}
+    for x in run:
+        groups.setdefault(x.kind or "", []).append(x)
+    printed: list[list[XrefPart]] = []
+    for n, (kind, members) in enumerate(groups.items()):
+        units = _xref_units(members)
+        many = len(units) > 1 or _xref_number(units[0][0]) != _xref_number(units[0][1])
+        names = XREF_NAMES[kind]
+        if sentence_start and n == 0:
+            names = XREF_NAMES_CAPITAL.get(kind, names)
+
+        rendered: list[list[XrefPart]] = []
+        for first, last in units:
+            if _xref_number(first) == _xref_number(last):
+                rendered.append(_number_parts(first))
+            else:
+                rendered.append(
+                    _number_parts(first) + [XrefPart(text=" to ")] + _number_parts(last)
+                )
+        printed.append(
+            [XrefPart(text=f"{names[1 if many else 0]} ")]
+            + _conjoin(rendered, " and ", " and ")
+        )
+    parts = _conjoin(printed, " and ", ", and ")
+    out: list[XrefPart] = []
+    for part in parts:  # one text run where pieces of literal text meet
+        if out and not part.dc and not out[-1].dc:
+            out[-1] = XrefPart(text=out[-1].text + part.text)
+        else:
+            out.append(part)
     return out
 
 
