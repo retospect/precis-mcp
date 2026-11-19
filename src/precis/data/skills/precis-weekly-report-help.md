@@ -62,12 +62,14 @@ are [[precis-draft-export-help]].
 5. The week's findings.
 6. Leads.
 7. Compute and HPC.
-8. Gripes fixed.
-9. Build lane.
-10. Ticks and jobs, by category.
-11. Plan and issues.
-12. Reproduce.
-13. Glossary.
+8. What an outside source would change — a paper, tutorial or method
+   read this week, and what it would change about the current read.
+9. Gripes fixed.
+10. Build lane.
+11. Ticks and jobs, by category.
+12. Plan and issues.
+13. Reproduce.
+14. Glossary.
 
 The order is fixed so a reader can find a section by position. Do not
 reorder or drop a section because the week was quiet — write "no
