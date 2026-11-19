@@ -2702,6 +2702,7 @@ class PaperHandler(Handler):
         ):
             # Check availability before the DOI miss can request acquisition.
             return self._fetch_status_view([str(id)])
+        id = self._rewrite_chunk_handle(id)
         try:
             raw_id = _maybe_resolve_doi(self.store, str(id))
         except NotFound:
@@ -3008,6 +3009,31 @@ class PaperHandler(Handler):
             ]
         )
         return Response(body=body, result_count=len(ids))
+
+    def _rewrite_chunk_handle(self, raw: str | int) -> str | int:
+        """A bare ``pc<id>`` chunk handle → ``<slug>~<ord>``.
+
+        Dispatch rewrites a chunk handle before the handler sees it
+        (``_maybe_infer_kind_from_handle``); a direct ``get(id='pc…')``
+        on the handler must read the same chunk, as the batch path
+        already does in :meth:`_resolve_batch_element`. Anything that is
+        not a live paper chunk handle comes back unchanged.
+        """
+        # A ``~`` selector (table row/col) is not a bare handle — leave it.
+        if not isinstance(raw, str) or "~" in raw:
+            return raw
+        normalized = handle_registry.normalize(raw.strip())
+        if not handle_registry.is_well_formed(normalized):
+            return raw
+        resolved = self.store.resolve_handle(normalized)
+        if (
+            resolved is None
+            or resolved.kind != self.spec.kind
+            or resolved.chunk_id is None
+            or resolved.chunk_ord is None
+        ):
+            return raw
+        return f"{resolved.public_id}~{resolved.chunk_ord}"
 
     def _resolve_batch_element(
         self, elem: Any
