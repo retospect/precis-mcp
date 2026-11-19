@@ -123,6 +123,17 @@ refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
 recorded, and the tick notes "not dispatched" each pass. To deploy later,
 add a new `answer: deploy r<N>` comment.
 
+A deploy that `scripts/deploy` refuses ahead of its reachability ping,
+before any rollout step — the backup window, a checkout with no overlay,
+the overlay sync, the rollback guard, the deploy lock — exits 75 through
+`scripts/round deploy` and `scripts/release` (gr730609). The local record
+goes back to what it was before the leg. On a first leg that is open with
+no journal: the job fails, the release takes fixes again, a retry deploys
+it, and a dropped pass's record is one `scripts/round cut --abandon` (or
+the next cut's own abandon phase) can retire. A resumed leg returns to its
+prior state and journal, so an earlier launched rollout stays a partial
+rollout. A leg adds the launch marker only when it reaches the ping.
+
 The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
 heartbeat `code_sha`, read from the store with no network, must equal the

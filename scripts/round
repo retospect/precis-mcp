@@ -121,7 +121,13 @@ A separate advisory lifecycle lock serializes round mutations and release
 fix final sections; main lands never take it. Kernel ownership avoids age
 steals during slow rollout, and the deploy child inherits ownership if the
 controller dies. The ship lock remains narrow and independent. A pinned
-deployment journal survives partial failure. Release deploy requires the
+deployment journal survives partial failure — except a leg `scripts/deploy`
+refused ahead of its reachability ping, before any rollout step (its exit
+75): `deploy` puts the record back as it stood before that leg and returns
+75, so the refused leg adds no launch marker. A first leg leaves the record
+open with no journal (`fail` refuses it, `cut --abandon` takes it, a re-run
+deploys it); a resumed leg returns to its prior state and journal, so an
+earlier launched rollout stays a live partial rollout. Release deploy requires the
 existing deploy's health/convergence path, zero exit, fresh success marker
 and exact origin/prod, then awaits the coordinator's actual live runtime
 observation (exit 3).
@@ -221,6 +227,30 @@ def _is_terminal(rel: dict[str, Any]) -> bool:
             and (dep.get("started_epoch") or dep.get("rollout_at"))
         )
     return state in _TERMINAL_STATES
+
+
+#: `scripts/deploy`'s exit code for a refusal ahead of its reachability ping,
+#: before any rollout step (its DEPLOY_RC_UNTOUCHED, gr730609).
+#: scripts/release and release_deploy.py restate it; a test pins the four.
+DEPLOY_RC_UNTOUCHED = 75
+
+
+def _unjournal_leg(rel: dict[str, Any], before: tuple[str, Any, Any]) -> None:
+    """Put ``rel`` back as it stood before a deploy leg that `scripts/deploy`
+    refused before any rollout step (gr730609): the prior state, ``state_at``
+    and journal. A first leg had no journal, so the record reads open again;
+    a resumed partial rollout keeps the journal that carries its launch
+    markers."""
+    state, state_at, journal = before
+    rel["state"] = state
+    if state_at is None:
+        rel.pop("state_at", None)
+    else:
+        rel["state_at"] = state_at
+    if journal is None:
+        rel.pop("deployment", None)
+    else:
+        rel["deployment"] = journal
 
 
 # check.yml `plan`'s docs-lane classifier: a commit touching only paths that
@@ -2600,6 +2630,11 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
                 f"dry-run: would tag deployed/r{rel['n']}, forward merge and lease-retire {rel['branch']}"
             )
         return 0
+    # The record before this leg: a deploy refused before any rollout step
+    # goes back to it (gr730609).
+    before_leg = (
+        (str(rel["state"]), rel.get("state_at"), rel.get("deployment")) if rel else None
+    )
     if rel:
         rel["deployment"] = {
             "sha": cand,
@@ -2675,6 +2710,19 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         check=False,
         pass_fds=(lock_fd,),
     ).returncode
+    if rel and before_leg is not None and rc == DEPLOY_RC_UNTOUCHED:
+        # The launch marker above was written for a rollout that never
+        # began. Kept, it makes a `failed` record read as a live partial
+        # rollout no cut may supersede and no abandon may take (r333).
+        _unjournal_leg(rel, before_leg)
+        _write(state / "round.json", cur)
+        print(
+            f"scripts/round: deploy refused before any rollout — no host was"
+            f" touched; {rel['branch']} is {rel['state']} again, resolve the"
+            " reason above and re-run",
+            file=sys.stderr,
+        )
+        return rc
     if not rel or rc:
         if rel and _deploy_receipt(root, cand, started, require_prod=False):
             print(

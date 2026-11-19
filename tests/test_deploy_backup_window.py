@@ -752,6 +752,50 @@ def test_deploy_refuses_migration_on_a_live_dump_outside_the_window(
     assert deploy_fx.ansible_called() == set()
 
 
+def test_a_refusal_before_any_host_exits_with_the_untouched_code(
+    deploy_fx: DeployFixture,
+) -> None:
+    """gr730609: a `die` ahead of the reachability ping exits 75, the code
+    `scripts/round` reads as "no host was touched"."""
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="03:40")
+    assert r.returncode == 75, r.stdout + r.stderr
+    assert deploy_fx.ansible_called() == set()
+
+
+def _failing_playbook(deploy_fx: DeployFixture, rc: int) -> None:
+    """Replace the fake playbook with one that records its call and exits
+    `rc` — a rollout that dies after the ping reached the hosts."""
+    body = (
+        "#!/usr/bin/env bash\n"
+        'touch "$PRECIS_TEST_CALLED_DIR/ansible-playbook"\n'
+        "echo 'fatal: rollout died' >&2\n"
+        f"exit {rc}\n"
+    )
+    play = deploy_fx.fakebin / "ansible-playbook"
+    play.write_text(body, encoding="utf-8")
+    play.chmod(0o755)
+
+
+def test_a_failure_after_the_ping_exits_one(deploy_fx: DeployFixture) -> None:
+    """Past the first host contact no failure may read as untouched: the
+    rollout failing exits 1, not 75."""
+    _failing_playbook(deploy_fx, 2)
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="12:00")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ansible" in deploy_fx.ansible_called()
+
+
+def test_a_playbook_exiting_75_still_makes_deploy_exit_one(
+    deploy_fx: DeployFixture,
+) -> None:
+    """The EXIT-trap rule: a command after the ping that happens to return
+    75 must not leak out as "no host was touched"."""
+    _failing_playbook(deploy_fx, 75)
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="12:00")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ansible-playbook" in deploy_fx.ansible_called()
+
+
 def test_prune_local_sweeps_incomplete_dump_dirs_and_nas_partials() -> None:
     """A killed pg_dump leaves a toc.dat-less dir; prune_local must reclaim it
     (and stale NAS partials) without touching a running or current dump
