@@ -51,6 +51,10 @@ is on.
 |---------------------|-----------------|-----------------------------------------------|
 | `release_poll`      | `job_inproc`    | Release loop starter + observation-only stuck watchdog: first, at any hour, it files at most one `ask-user` ruling todo per `(round, stage)` when the `release.round` record has sat in a stage past that stage's deadline, naming only the hand verbs — deploys, supersedes and cuts stay human. Then mints one `release-pass` plan only when its gates pass — the clock is outside the no-release windows (default `03:00-04:20` UTC), no `release-pass`-tagged todo is open, the shared `release.round` record names no open round, main is ahead of prod and not diverged or behind, no `release/r<N>` head is in flight (in flight unless its `deployed/r<N>` tag exists AND prod contains the head — or the head is already on main), and no `release-main:<sha12>`-tagged root already claims main's head, so a new pass needs main to move. Else it writes one `blocked — <why>` line and mints nothing. Params: optional `dry_run`, `repo`. The kill switch covers the watchdog's ask write (it files nothing, only a `would file` note) — the mint itself is not covered: it only mints, the plan runs when `plan_dispatch` is armed |
 
+## Reading a release pass — one call
+
+`get(kind='todo', id=<pass root or any node in it>, view='release')` prints the pass on one screen from stored data only (no git, no network): the header (`r<N>`, branch, cut and head sha, cut host), the state, the newest CI verdict on the head, `head on main` / `on prod` (`unknown` when no record says), one line per node in pass order with its newest job and age, an indented `held:` line (the deploy's stored refusal and the review units it waits on, keyed `td<id>` or `sha:<sha12>`), and `asks:` with who must answer. A todo outside a pass is refused; `view='tree'` reads any subtree.
+
 ## See also
 
 - [[precis-job-factory-help]] — run_slice / land_slice / plan ticks / PR lanes

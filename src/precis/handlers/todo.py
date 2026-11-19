@@ -26,7 +26,7 @@ shape with four first-class extensions:
    :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
    dispatch table maps each to a renderer in
    :mod:`precis.todo.views`), plus ``view='tree'`` / ``'comments'`` /
-   ``'body'`` / ``'scratch'`` on ``get``.
+   ``'body'`` / ``'scratch'`` / ``'release'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
    and halted todos.
@@ -44,7 +44,7 @@ Views via ``view='<name>'`` on search / get (the canonical surface):
                               |'waiting'|'blocked'|'ask-user'|'attention'
                               |'active'|'doing'|'done'|'work'|'asks'|'reto-queue'
                               |'coordinator')
-    get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch')
+    get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch'|'release')
 
 ``view='comments'`` is selectable: ``args={'comment': K}`` reads one
 comment, ``args={'comments': K}`` the newest K, ``args={'comments':
@@ -71,6 +71,11 @@ tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 blocked-by link from that slice and makes the row a showstopper); answer
 it with a comment ``answer: …`` and ``tag`` ``STATUS:done`` + remove
 ``ask-user``.
+
+``view='release'`` (gr735230) is a release pass on one screen — header,
+CI verdict, one line per pass node with its newest job, the stored hold
+reason and the open asks; any node inside a pass resolves to its root
+(:func:`precis.todo.release_view.render_release`).
 
 ``view='scratch'`` (gr605672) is the task-scratch index: one line per
 live ``SPACE:scratch`` memory the todo owns through ``scratch-for:td<N>``
@@ -129,6 +134,7 @@ from precis.todo import (
     TERMINAL_TODO_STATUSES,
     asks_view,
     guards,
+    release_view,
     views,
     work_view,
 )
@@ -764,6 +770,16 @@ class TodoHandler(NumericRefHandler):
                 )
             ref_id = self._coerce_id(id)
             return views.render_tree(self.store, ref_id)
+        if view == "release":
+            # gr735230: the release pass on one screen — resolves any
+            # node inside a pass to its root; reads stored data only.
+            if id is None:
+                raise BadInput(
+                    "view='release' requires id=",
+                    next="get(kind='todo', id=N, view='release')",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return release_view.render_release(self.store, ref.id)
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
@@ -825,7 +841,15 @@ class TodoHandler(NumericRefHandler):
             # 'brief', 'tags') without an id fall through to the
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
-            views_list = ["body", "comments", "scratch", "tree", "full", *_BASE_VIEWS]
+            views_list = [
+                "body",
+                "comments",
+                "scratch",
+                "tree",
+                "release",
+                "full",
+                *_BASE_VIEWS,
+            ]
             near = nearest_option(view, views_list)
             lead = f"nearest is view={near!r}. " if near else ""
             # gr613469: lead with the corrected call — the caller's own
@@ -847,7 +871,8 @@ class TodoHandler(NumericRefHandler):
                 lead + "get(kind='todo', id=<id>) — the card (text, "
                 "tags, status); view='body' the untruncated details "
                 "body; view='comments' the timeline; view='meta' the "
-                "raw meta dict; view='tree' the subtree; list views "
+                "raw meta dict; view='tree' the subtree; view='release' a "
+                "release pass on one screen; list views "
                 "are search-side: "
                 "search(kind='todo', view='projects'|'doable'|'active')"
             )
