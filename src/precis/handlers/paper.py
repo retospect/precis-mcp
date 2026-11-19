@@ -2180,11 +2180,15 @@ class PaperHandler(Handler):
                     # ``feynman99``. The registry is authoritative for
                     # what the DOI names; when it vouches for the same
                     # title its year wins. A registry fault or a
-                    # non-matching title keeps S2's year.
-                    try:
-                        crosscheck = _lookup_doi_registry(id_pair[1])
-                    except Exception:
-                        crosscheck = None
+                    # non-matching title keeps S2's year. Only an S2 year
+                    # is cross-checked: with none there is nothing to
+                    # correct, so the requested DOI costs no registry call.
+                    crosscheck = None
+                    if isinstance(meta.get("year"), int):
+                        try:
+                            crosscheck = _lookup_doi_registry(id_pair[1])
+                        except Exception:
+                            crosscheck = None
                     if crosscheck is not None:
                         from precis.ingest._text_norm import best_jaccard
 
