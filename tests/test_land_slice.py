@@ -6970,6 +6970,11 @@ def test_stale_index_lock_is_reaped_with_a_log_line(
     assert handle is not None and seams["launch"]
     assert not lock.exists()
     assert "reaped stale index.lock" in _job_events(ctx)
+    # gr684320: the land-side reap counts toward the re-formed-lock
+    # escalation too — job meta plus a todo comment, like run_slice's.
+    reaped = ctx.meta_set["index_lock_reaped"]
+    assert reaped["forced"] is False and reaped["why"] == "stale"
+    assert any("index.lock reaped" in c for c in store.comments(42))
 
 
 def test_linked_worktree_primary_index_lock_is_also_reaped(
@@ -7001,8 +7006,10 @@ def test_live_index_lock_waits_then_fails_retryable(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A live index.lock is waited on briefly, then the job fails
-    attempt-free (``infra-land`` — the tick re-mints the land) with a
-    clear message, never the branch-charging red path."""
+    attempt-free ``"index-lock"`` VERBATIM (gr684320: a plain wait is
+    self-clearing — exempt from the re-land cap and the free-failure
+    ask — and the tick re-mints the land like an infra red), never the
+    branch-charging red path."""
     gitdir = Path(seams["gitdir"])
     (gitdir / "index.lock").write_bytes(b"")
     monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
@@ -7015,9 +7022,9 @@ def test_live_index_lock_waits_then_fails_retryable(
     assert handle is None and ctx.status == "failed"
     assert seams["launch"] == []
     assert "index.lock" in (ctx.failure or "")
-    assert ctx.meta_set["attempt_free"] == "infra-land"
-    assert ctx.meta_set["red_class"] == "index-lock"
-    # The live lock is never removed, and no attempt:<n> burned.
+    assert ctx.meta_set["attempt_free"] == "index-lock"
+    assert "red_class" not in ctx.meta_set
+    assert "attempt:1" not in store.tag_strings(42)
     assert (gitdir / "index.lock").exists()
     assert "attempt:1" not in store.tag_strings(42)
 
@@ -7164,7 +7171,8 @@ def test_index_lock_replaced_between_judgement_and_unlink_is_kept(
     assert handle is None and ctx.status == "failed"
     assert seams["launch"] == []
     assert lock.exists() and lock.read_bytes() == b"live writer's lock"
-    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["attempt_free"] == "index-lock"
+    assert "red_class" not in ctx.meta_set
     assert "attempt:1" not in store.tag_strings(42)
 
 

@@ -1462,6 +1462,49 @@ def test_stuck_index_lock_asks_at_two(store: Store) -> None:
         )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    title = str(ask_ref.title)
+    assert f"x{pd.INDEX_LOCK_STUCK_CAP}" in title and "x6" not in title
+    # No reap evidence: the escalation ask stays open and the node stays
+    # parked — it never closes on its context alone (review td700716).
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and _status(store, ask) not in ("done", "won't-do")
+
+
+def test_index_lock_ask_closes_on_reap_evidence(store: Store) -> None:
+    """Recovery evidence — a job of the blocked node recording
+    ``index_lock_reaped`` after the ask was raised — closes the ask
+    acknowledged and re-arms the node."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
+        _index_lock_job(store, task, "index-lock-stuck")
+    pd.run_pass(store)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    _index_lock_job(
+        store,
+        task,
+        "index-lock",
+        index_lock_reaped={
+            "age_s": 4000,
+            "why": "held-by-git",
+            "forced": True,
+            "holders": ["1 00:40 git add"],
+        },
+    )
+    res = pd.run_pass(store)
+    assert _status(store, ask) == "done"
+    notes = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert any("reaper (gr684320)" in str(t) for t in notes)
+    assert res.dispatched == 1
 
 
 def test_reformed_index_lock_parks_the_node(store: Store) -> None:
@@ -1486,6 +1529,10 @@ def test_reformed_index_lock_parks_the_node(store: Store) -> None:
 
 
 def test_old_index_lock_ask_closes_itself(store: Store) -> None:
+    """A legacy pre-reaper ask (``attempt_free 'index-lock' x6``) has no
+    reap evidence, so the tick bootstrap-closes it exactly once, with an
+    explicit note, to let the owning host's reaper act — it does not
+    close on the context prefix alone (review td700716)."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     for _ in range(pd.INDEX_LOCK_STUCK_CAP):
@@ -1503,6 +1550,12 @@ def test_old_index_lock_ask_closes_itself(store: Store) -> None:
     )
     res = pd.run_pass(store)
     assert res.dispatched == 1
+    notes = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert any("bootstrap close (gr684320)" in str(t) for t in notes)
 
 
 @pytest.mark.parametrize("no_lanes", [False, True])

@@ -28,12 +28,7 @@ the todo roots that `serves` it below, their slices below those. A
 starts with a handle, so any row is a `get` away.
 
 Read one section with `get(kind='skill', id='precis-work-help~<n>')`;
-list them with `get(kind='skill', id='precis-work-help/toc')`. The
-design behind the tree, when a row's shape surprises you:
-
-```python
-get(kind="md", id="me692430~decisions-reto-2026-10-30")
-```
+list them with `get(kind='skill', id='precis-work-help/toc')`.
 
 ## What is in flight right now, and who is on it?
 ## Show me the work tree with agents and leases
@@ -68,12 +63,12 @@ Blocks, top to bottom:
 | `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root |
 | `hosts` | each fleet host and its last report; `none reported` means no agent count is real |
 
-A job resolves to a quest two ways: its `parent_id` chain walks up to
-the nearest ancestor that `serves` one, else its own meta answers
-(`params.quest_id`, `coordinator_state.quest_id`, or its structure's
-`quest:<id>` tag). A resolved job outside its quest's served trees still
-joins that quest's job lines; a todo serving a quest and sitting inside
-another served root renders once, in the larger tree.
+A job resolves to a quest by its `parent_id` chain walking up to the
+nearest `serves` ancestor, else its own meta (`params.quest_id`,
+`coordinator_state.quest_id`, or a `quest:<id>` structure tag); it then
+joins that quest's job lines even outside its served trees. A todo
+serving a quest inside another served root renders once, in the larger
+tree.
 
 Blocked-only quests leave the idle group and sort by who can unblock
 them (gr573557): a quest with every live leaf blocked lands in
@@ -152,12 +147,10 @@ To raise one: write a question for the owner (next section), or tag
 `waiting-for:reto` on the slice you hold when you cannot continue (a
 showstopper). On a gripe, tag it `needs:ruling` and comment the question.
 
-Triage marks an item that waits on Reto specifically with
-`for-reto:<ruling|spec|review|other>` (agents write plain needs-spec;
-this tag is Reto's alone). `search(kind="todo", view="reto-queue")` lists
-every such row plus the asks and `waiting-for:reto` rows across todos,
-gripes and alerts, most blocked first then oldest, each with context,
-options (recommended first) and impact.
+Only Reto's triage writes `for-reto:<ruling|spec|review|other>` (agents
+write plain needs-spec); `search(kind="todo", view="reto-queue")` lists
+those rows plus every ask and `waiting-for:reto` row, most blocked first
+then oldest, each with context, options (recommended first) and impact.
 
 ## How do I ask the owner a question?
 ## Where does a question for Reto go, and how is it answered?

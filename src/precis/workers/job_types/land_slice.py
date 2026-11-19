@@ -145,7 +145,14 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   attempt-free (``meta.attempt_free = "infra-land"`` + ``red_class``, the
   lease back clean, no ``attempt:<n>``) with ``meta.land_again_cap``
   set: ``plan_dispatch`` goes to the re-land ask — never an automatic
-  re-land (the same 137 can be the branch's own memory). The branch and
+  re-land (the same 137 can be the branch's own memory). The one
+  exception is a plain ``index.lock`` wait (gr684320): the lander never
+  force-reaps (that is the slice submit's, D2), so a lock still held
+  past the brief wait fails attempt-free ``"index-lock"`` *verbatim* —
+  the dispatcher reads a plain wait as self-clearing (exempt from the
+  re-land cap and the free-failure ask) and re-mints the land; every
+  reap, either side, records job meta ``index_lock_reaped`` for the
+  re-formed-lock escalation. The branch and
   worktree stay for that session. A ✖ about *main* (:func:`is_main_refusal`:
   the drift guard's two refusals) is a deferral, not a red: poll counts it
   (``handle.main_refusals``), parks the handle for
@@ -2307,6 +2314,7 @@ def _fail(
     *,
     handoff: str,
     attempt_free: str | None = None,
+    verbatim: bool = False,
 ) -> None:
     """The red path: a ``handoff:`` for the next build session, the lease
     released (``attempt:<n>``), the job failed with ``reason``. The comment
@@ -2320,7 +2328,11 @@ def _fail(
     ``plan_dispatch`` re-mints a land — never a builder — and the lease
     goes back clean (``unclaim_todo``, no ``attempt:<n>``). A caller that
     also stamped ``meta.land_again_cap`` (a capped exit-137) parks the run
-    at the ask instead: the tick does not re-land it on its own."""
+    at the ask instead: the tick does not re-land it on its own.
+    ``verbatim=True`` (gr684320: a plain index.lock wait) stamps
+    ``meta.attempt_free`` with the given reason itself — the dispatcher
+    reads a plain lock wait as self-clearing, exempt from the re-land
+    cap — while the lease still goes back clean."""
     attempt = None
     try:
         _rs._append_comment(
@@ -2329,7 +2341,12 @@ def _fail(
     except Exception:  # pragma: no cover — the job outcome still lands
         log.warning("land_slice: handoff comment on td%d failed", todo_id)
     if attempt_free is not None:
-        ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "infra-land"}, red_class=attempt_free)
+        if verbatim:
+            ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: attempt_free})
+            suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
+        else:
+            ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "infra-land"}, red_class=attempt_free)
+            suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
         try:
             _rs.unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
         except Exception:  # pragma: no cover — defensive; the job still fails
@@ -2338,8 +2355,6 @@ def _fail(
             )
         if (standing := _rs._terminal_status(ctx.store, todo_id)) is not None:
             suffix = f"; todo td{todo_id} stays STATUS:{standing} (result discarded)"
-        else:
-            suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
     else:
         try:
             attempt = _rs.release_todo(ctx.store, todo_id, str(lane) if lane else None)
@@ -3277,23 +3292,34 @@ def _clear_index_locks(
     red, jo650356's main-sync red) wedges ship's first write and every
     retry after it; a live one is a git in flight ship must wait out,
     not collide with. Each pair of :func:`_index_lock_pairs` gets the
-    same rule: provably dead → removed with a job_event line; live or
-    unjudgeable → the brief :func:`index_lock_wait_s` wait, then a
-    retryable ``attempt_free`` fail — never the red path, which would
-    charge the branch for infra that is not its fault (the tick
-    re-mints the land under ``infra-land``)."""
+    same rule: provably dead → removed with a job_event line and
+    :func:`run_slice._record_reap` (job meta ``index_lock_reaped`` + a
+    todo comment — the dispatcher's re-formed-lock accounting counts
+    land-side reaps too, gr684320); live or unjudgeable → the brief
+    :func:`index_lock_wait_s` wait, then an explicit ``attempt_free =
+    "index-lock"`` fail (verbatim, not ``infra-land`` — a plain wait
+    clears itself, it must never hit the re-land cap or park the node)
+    — never the red path, which would charge the branch for infra that
+    is not its fault."""
     deadline = time.monotonic() + index_lock_wait_s()
     for lock, checkout in _index_lock_pairs(gitdir, tree):
         while True:
             state, judged = _index_lock_state(lock, checkout)
             if state == "absent":
                 break
-            if (
-                state == "stale"
-                and judged is not None
-                and _reap_index_lock(ctx, lock, judged)
-            ):
-                break
+            if state == "stale" and judged is not None:
+                _s, _j, _w, ignored = _index_lock_judge(lock, checkout)
+                if _reap_index_lock(ctx, lock, judged):
+                    _rs._record_reap(
+                        ctx,
+                        lock,
+                        judged,
+                        why="stale",
+                        forced=False,
+                        holders=[f"{pid} {cmd}" for pid, cmd in ignored],
+                        todo_id=todo_id,
+                    )
+                    break
             if time.monotonic() >= deadline:
                 _fail(
                     ctx,
@@ -3311,6 +3337,7 @@ def _clear_index_locks(
                         "that checkout."
                     ),
                     attempt_free="index-lock",
+                    verbatim=True,
                 )
                 return False
             time.sleep(1.0)

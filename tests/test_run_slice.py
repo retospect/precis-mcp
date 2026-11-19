@@ -8552,7 +8552,7 @@ def test_devin_acceptance_artifacts_survive_worktree_reset(
     )
     supplied = "def test_widget():\n    assert widget() == 42\n"
 
-    def reset_tree(root: Path, todo_id: int) -> Path:
+    def reset_tree(root: Path, todo_id: int, **kw: Any) -> Path:
         # Model the real reset's clean -fd: untracked tests do not survive.
         shutil.rmtree(tree / "tests")
         (tree / "tests").mkdir()
@@ -8631,7 +8631,7 @@ def test_devin_acceptance_artifacts_refuse_symlink_parent(
     outside = tmp_path / "outside"
     outside.mkdir()
 
-    def reset_tree(root: Path, todo_id: int) -> Path:
+    def reset_tree(root: Path, todo_id: int, **kw: Any) -> Path:
         (tree / "tests").mkdir(parents=True)
         (tree / "tests" / "linked").symlink_to(outside, target_is_directory=True)
         return tree
@@ -10062,6 +10062,35 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
         assert note not in summary
         assert store.comments(42) == [_WITHHELD]
     _assert_no_keys(pctx, handle, store, key)
+
+
+def test_kimi_poll_lock_blocked_commit_waits_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr684320 (review td700716): a worker commit that met a held
+    index.lock fails the poll attempt-free "index-lock" — never "no
+    commit", even with commits already ahead (its uncommitted edits
+    would otherwise read as nothing and land on an unfinished tree) —
+    and the lease goes back via unclaim_todo: no ``attempt:<n>``."""
+    note = f"{run_slice.COMMIT_SKIPPED_LOCK} (Unable to create '.git/index.lock')"
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["ahead"] = "abc1234 fix: work"  # the branch already holds commits
+    _finish(handle, 0, '{"role":"assistant","content":"tests: ran"}\n')
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert pctx.meta_set["commit_skipped"] == "index-lock"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert seams["lands"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+    assert "attempt:1" not in store.tag_strings(42)
 
 
 def test_kimi_noop_verdict_withholds_when_unscrubbed(
@@ -13589,7 +13618,7 @@ def test_submit_force_reaps_a_lock_a_non_git_holder_pins(
     )
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: None)
     killed: list[Any] = []
-    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree: [])
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree, age_s: [])
     monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
@@ -13605,14 +13634,21 @@ def test_submit_force_reaps_a_lock_a_non_git_holder_pins(
 def test_submit_force_reap_kills_a_git_holder(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A git holder over the cap is signalled (identity-confirmed, the
+    kill returning True) and the lock is removed over it."""
     lock = _reused_tree_with_lock(
         seams, tmp_path, age_s=run_slice.INDEX_LOCK_HARD_S + 600
     )
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
     procs = [(99999, "01:00:00", "git add -A")]
-    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree: procs)
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree, age_s: procs)
     killed: list[Any] = []
-    monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
+
+    def _fake_kill(p: list[tuple[int, str, str]]) -> bool:
+        killed.append(p)
+        return True
+
+    monkeypatch.setattr(run_slice, "_kill_git_procs", _fake_kill)
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
 
@@ -13621,6 +13657,156 @@ def test_submit_force_reap_kills_a_git_holder(
     assert handle is not None and not lock.exists()
     assert killed == [procs]
     assert "git add -A" in ctx.meta_set["index_lock_reaped"]["holders"][0]
+
+
+def test_submit_force_reap_keeps_the_lock_when_a_holder_wont_die(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td700716: an unconfirmed exit never reaches the unlink —
+    the lock stays and the submit waits attempt-free, plain
+    ("index-lock", not "stuck"), for the next retry to re-judge."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=run_slice.INDEX_LOCK_HARD_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    procs = [(99999, "01:00:00", "git add -A")]
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree, age_s: procs)
+    monkeypatch.setattr(run_slice, "_kill_git_procs", lambda p: False)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and lock.exists()
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] != "index-lock-stuck"
+
+
+def test_forced_reap_verifies_the_linked_gitdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock whose path is not the tree's linked gitdir's is never
+    forced: nothing is signalled, nothing unlinked."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    lock = tmp_path / "elsewhere" / "index.lock"
+    lock.parent.mkdir()
+    lock.write_bytes(b"")
+    then = time.time() - run_slice.INDEX_LOCK_HARD_S - 600
+    os.utime(lock, (then, then))
+    judged = lock.stat()
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / "gitdir")
+    killed: list[Any] = []
+    monkeypatch.setattr(run_slice, "_kill_git_procs", killed.append)
+    ctx = _RecCtx()
+
+    ok = run_slice._forced_reap_index_lock(ctx, lock, tree, judged, "held-by-git")
+
+    assert ok is False
+    assert lock.exists() and killed == []
+
+
+def test_forced_reap_keeps_the_lock_when_inspection_cannot_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inconclusive holder inspection (lsof/ps failed) never reaches
+    the unlink — keep-on-doubt holds at the hard cap too."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    gitdir = tree / "gitdir"
+    gitdir.mkdir()
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    then = time.time() - run_slice.INDEX_LOCK_HARD_S - 600
+    os.utime(lock, (then, then))
+    judged = lock.stat()
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / "gitdir")
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree, age_s: None)
+    ctx = _RecCtx()
+
+    ok = run_slice._forced_reap_index_lock(ctx, lock, tree, judged, "held-by-git")
+
+    assert ok is False and lock.exists()
+
+
+def test_forced_reap_stuck_only_when_the_dead_holders_lock_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "index-lock-stuck" wait is exact: holders confirmed dead, the
+    very same lock file un-unlinkable. Here the reap simply loses the
+    race (the lock vanishes first) — a reaped True, no raise."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    gitdir = tree / "gitdir"
+    gitdir.mkdir()
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    then = time.time() - run_slice.INDEX_LOCK_HARD_S - 600
+    os.utime(lock, (then, then))
+    judged = lock.stat()
+    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / "gitdir")
+    monkeypatch.setattr(run_slice, "_tree_git_procs", lambda lock, tree, age_s: [])
+
+    def _vanishes(ctx: Any, lock: Path, st: os.stat_result, *, who: str) -> bool:
+        lock.unlink()
+        return False
+
+    monkeypatch.setattr(land_slice, "_reap_index_lock", _vanishes)
+    ctx = _RecCtx()
+
+    assert run_slice._forced_reap_index_lock(ctx, lock, tree, judged, "x") is True
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize(
+    "etime,seconds",
+    [
+        ("00:05", 5),
+        ("05:30", 330),
+        ("01:05:30", 3930),
+        ("2-01:05:30", 176730),
+    ],
+)
+def test_etime_parsing(etime: str, seconds: int) -> None:
+    assert run_slice._etime_s(etime) == seconds
+    assert run_slice._etime_s(f" {etime} ") == seconds
+    assert run_slice._etime_s("garbage") is None
+
+
+def test_kill_git_procs_revalidates_identity_before_signalling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid whose command line no longer names git is never signalled
+    (it cannot be the lock's git writer anymore — it drops out, no kill
+    needed), and an identity ps cannot answer fails closed (no signal,
+    the caller keeps the lock)."""
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(run_slice, "_git_pid_cmd", lambda pid: "/usr/bin/python3")
+    assert run_slice._kill_git_procs([(4242, "01:00:00", "git add -A")]) is True
+    assert sent == []
+
+    monkeypatch.setattr(run_slice, "_git_pid_cmd", lambda pid: None)
+    assert run_slice._kill_git_procs([(4242, "01:00:00", "git add -A")]) is False
+    assert sent == []
+
+    monkeypatch.setattr(run_slice, "_git_pid_cmd", lambda pid: "")
+    assert run_slice._kill_git_procs([(4242, "01:00:00", "git add -A")]) is True
+    assert sent == []
+
+
+def test_tree_git_procs_skips_a_git_younger_than_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock's age bounds the kill list: a git started after the lock
+    cannot be its writer and is never signalled (review td700716)."""
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    procs = run_slice._tree_git_procs(lock, tmp_path, age_s=3600)
+    assert procs is None or all(
+        (_s := run_slice._etime_s(etime)) is not None and _s >= 3600
+        for _pid, etime, _cmd in procs
+    )
 
 
 def test_submit_waits_on_a_live_git_under_the_cap(
@@ -13670,6 +13856,9 @@ def test_commit_for_session_reaps_a_stale_lock_and_commits(
 def test_commit_for_session_keeps_edits_behind_a_live_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The note alone never authorizes anything — the stamp that does is
+    the poll's job meta (review td700716); the tree's edits stay as they
+    were, and no session-writable marker is written."""
     tree = tmp_path / "tree"
     subprocess.run(["git", "init", "-q", str(tree)], check=True)
     (tree / "f.txt").write_text("x\n", encoding="utf-8")
@@ -13681,7 +13870,10 @@ def test_commit_for_session_keeps_edits_behind_a_live_lock(
     note = run_slice._commit_for_session(tree, 1)
 
     assert note is not None and note.startswith(run_slice.COMMIT_SKIPPED_LOCK)
-    assert (tree / run_slice.COMMIT_SKIPPED_MARKER).exists()
+    assert (tree / "f.txt").read_text(encoding="utf-8") == "x\n"
+    # Nothing in the session-writable tree authorizes a later salvage —
+    # the stamp is the poll's job meta, not a file.
+    assert not (tree / "scratch" / ".commit-skipped").exists()
 
 
 class _RecCtx(run_slice._NullCtx):
@@ -13757,22 +13949,22 @@ def test_commit_time_never_kills_a_holder_over_the_hard_cap(
 def test_salvage_commits_with_the_stored_fallback_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Devin's worker-generated fallback survives the stamp: no
-    ``scratch/commit-msg.txt`` is needed to salvage."""
+    """The poll-recorded fallback (job meta, worker-owned) is the message
+    a salvage commits with when the session left no
+    ``scratch/commit-msg.txt`` — nothing in the session-writable tree
+    can authorize a salvage."""
     tree = _tree_with_finished_edits(tmp_path, message=False)
-    lock = tree / ".git" / "index.lock"
-    lock.write_bytes(b"")
     monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
-    first = run_slice._commit_for_session(
-        tree, 1, fallback_message="fix(slice): complete (gr9)\n"
+    monkeypatch.setattr(
+        run_slice, "_skipped_commit_stamp", lambda store, todo_id: "fix(x): y (td1)\n"
     )
-    assert first is not None and first.startswith(run_slice.COMMIT_SKIPPED_LOCK)
-    lock.unlink()
+    monkeypatch.setattr(
+        run_slice, "_deny_reason", lambda tree, deny, base="origin/main": (None, [])
+    )
 
-    note = run_slice._salvage_skipped_commit(tree, 1)
+    note = run_slice._salvage_skipped_commit(tree, 1, store=_Store())
 
     assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
-    assert not (tree / run_slice.COMMIT_SKIPPED_MARKER).exists()
     log = subprocess.run(
         ["git", "-C", str(tree), "log", "-1", "--format=%s"],
         capture_output=True,
@@ -13780,7 +13972,58 @@ def test_salvage_commits_with_the_stored_fallback_message(
         encoding="utf-8",
         check=True,
     ).stdout.strip()
-    assert log == "fix(slice): complete (gr9)"
+    assert log == "fix(x): y (td1)"
+
+
+def test_salvage_ignores_a_tree_without_the_worker_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session-written marker is not the stamp: with no
+    ``commit_skipped`` on the newest job the tree is not committed at
+    all — reuse resets it as any other dirty tree would be."""
+    tree = _tree_with_finished_edits(tmp_path)
+    monkeypatch.setattr(run_slice, "_skipped_commit_stamp", lambda store, todo_id: None)
+
+    note = run_slice._salvage_skipped_commit(tree, 1, store=_Store())
+
+    assert note is None
+    head = subprocess.run(
+        ["git", "-C", str(tree), "rev-list", "--all", "--count"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert head == "0"
+
+
+def test_salvage_refuses_a_deny_path_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stamp is revalidated before committing: a deny-path hit
+    returns a refusal note — the edits are never committed and the
+    caller routes it as a real failure, not an infra wait."""
+    tree = _tree_with_finished_edits(tmp_path)
+    monkeypatch.setattr(
+        run_slice, "_skipped_commit_stamp", lambda store, todo_id: "fix(x): y (td1)\n"
+    )
+    monkeypatch.setattr(
+        run_slice,
+        "_deny_reason",
+        lambda tree, deny, base="origin/main": ("touched deploy/x", []),
+    )
+
+    note = run_slice._salvage_skipped_commit(tree, 1, store=_Store())
+
+    assert note is not None and note.startswith("salvage refused")
+    out = subprocess.run(
+        ["git", "-C", str(tree), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    assert "f.txt" in out  # uncommitted still
 
 
 def test_ensure_worktree_withholds_the_reset_when_salvage_fails(
@@ -13793,7 +14036,9 @@ def test_ensure_worktree_withholds_the_reset_when_salvage_fails(
     tree.mkdir(parents=True)
     monkeypatch.setattr(run_slice, "_adopt_legacy_branch", lambda r, t: None)
     monkeypatch.setattr(
-        run_slice, "_salvage_skipped_commit", lambda t, i: "worker commit failed (x)"
+        run_slice,
+        "_salvage_skipped_commit",
+        lambda t, i, **kw: "worker commit failed (x)",
     )
     reset: list[Any] = []
     monkeypatch.setattr(

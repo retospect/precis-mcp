@@ -360,8 +360,19 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``"infra-land"``, gr570187) and likewise burned no attempt — a
    sustained run of the SAME free reason backs off exponentially from
    the newest failure's mint and parks behind a coordinator ask at
-   :data:`FREE_RUN_CAP`, since the retry bound never sees it (gr662077);
-   an
+   :data:`FREE_RUN_CAP`, since the retry bound never sees it (gr662077).
+   The gr684320 index.lock family is exempt from that parking: a plain
+   ``"index-lock"`` wait (run submit or land, either side) clears
+   itself — the forced reap tops out at the same 30 min the backoff
+   does — so it never asks; ``"index-lock-stuck"`` (a forced reap whose
+   holders died yet the lock survived) asks at two in a row, and three
+   ``meta.index_lock_reaped`` records on one node's jobs since its
+   re-arm floor raise ``index.lock re-formed x3`` — both body texts
+   carry the jobs' lock meta, and an index.lock ask closes itself
+   ``acknowledged`` once a newer job records a reap
+   (:func:`_step_index_lock_asks`); a legacy pre-reaper ask is
+   bootstrapped closed once, explicitly, so the re-armed node's next
+   job runs the reaper on the owning host. An
    operator-cancelled job is likewise free — its node re-queues on the
    next dispatch, but only when the job's type is on
    :data:`_REQUEUE_ON_CANCEL` (the default op plus confirmed
@@ -662,7 +673,11 @@ _REQUEUE_ON_CANCEL = frozenset({DEFAULT_OP, "ci_verdict_poll"})
 #: one-way (a test pins the two spellings equal). A job carrying the key
 #: failed for a reason outside the slice's diff and burned no attempt:
 #: ``"lane-wait"`` (the lane never freed a slot, gr572118), ``"index-lock"``
-#: (a live git's lock in the reused slice tree, gr650484), ``"infra-land"``
+#: (a live git's lock in the reused slice tree, gr650484 — gr684320 made
+#: it self-clearing: the reaper force-reaps past the hard cap, so a plain
+#: wait never parks; the lander stamps the same reason verbatim for its
+#: own lock waits), ``"index-lock-stuck"`` (the forced reap killed the
+#: holders yet the lock survived — asks at two in a row), ``"infra-land"``
 #: (the gate's own machinery killed the land, gr570187).
 ATTEMPT_FREE_KEY = "attempt_free"
 
@@ -4649,9 +4664,15 @@ def _free_run(plan: _Plan, n: _Node) -> tuple[str | None, int]:
 
 
 def _free_done(plan: _Plan, n: _Node) -> str | None:
-    """The identical ``attempt_free`` reason whose consecutive run hit
-    :data:`FREE_RUN_CAP` — what :func:`_capped` turns into the
-    coordinator ask — or ``None`` while under the cap (gr662077)."""
+    """The signature that parks the node behind a coordinator ask, or
+    ``None`` while the node may keep retrying (gr662077, gr684320): the
+    identical ``attempt_free`` reason whose consecutive run hit
+    :data:`FREE_RUN_CAP` — except the gr684320 index.lock family, where
+    a plain ``"index-lock"`` wait never parks (it clears itself; the
+    backoff tops out at the reaper's hard cap), ``"index-lock-stuck"``
+    parks at :data:`INDEX_LOCK_STUCK_CAP`, and
+    :data:`INDEX_LOCK_REFORMED_KEY` parks at :data:`INDEX_LOCK_REAP_CAP`
+    recorded reaps since the re-arm floor."""
     reason, run = _free_run(plan, n)
     if reason == INDEX_LOCK_WAIT_KEY:
         # gr684320 D4: a plain wait clears itself (backoff tops out at
@@ -4674,8 +4695,17 @@ INDEX_LOCK_STUCK_KEY = "index-lock-stuck"
 INDEX_LOCK_REFORMED_KEY = "index-lock-reformed"
 INDEX_LOCK_STUCK_CAP = 2
 INDEX_LOCK_REAP_CAP = 3
-#: Prefix of an ask context :func:`_step_index_lock_asks` closes itself.
+#: Prefix of a LEGACY index-lock ask context (``attempt_free 'index-lock'
+#: x6`` — minted before the reaper existed). New escalation asks carry
+#: :data:`INDEX_LOCK_STUCK_CONTEXT` / :data:`INDEX_LOCK_REFORMED_CONTEXT`.
 INDEX_LOCK_ASK_CONTEXT = "attempt_free 'index-lock'"
+#: Contexts of the gr684320 escalation asks.
+INDEX_LOCK_STUCK_CONTEXT = "index.lock stuck after a forced reap"
+INDEX_LOCK_REFORMED_CONTEXT = "index.lock re-formed"
+
+
+#: The gr684320 signatures minted by :func:`_free_done`'s escalation arm.
+_INDEX_LOCK_SIGS = frozenset({INDEX_LOCK_STUCK_KEY, INDEX_LOCK_REFORMED_KEY})
 
 
 def _index_lock_reaps(plan: _Plan, n: _Node) -> list[dict[str, Any]]:
@@ -4685,6 +4715,21 @@ def _index_lock_reaps(plan: _Plan, n: _Node) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for j in plan.jobs(n):
         if floor is not None and j.id <= floor:
+            continue
+        rec = j.meta.get("index_lock_reaped")
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _index_lock_reaps_since(
+    plan: _Plan, n: _Node, since: datetime
+) -> list[dict[str, Any]]:
+    """The reap records of ``n``'s jobs minted after ``since`` — the
+    recovery evidence an index-lock ask closes itself on."""
+    out: list[dict[str, Any]] = []
+    for j in plan.jobs(n):
+        if j.created_at <= since:
             continue
         rec = j.meta.get("index_lock_reaped")
         if isinstance(rec, dict):
@@ -4709,28 +4754,67 @@ def _index_lock_ask_detail(plan: _Plan, n: _Node, sig: str) -> str:
 
 
 def _step_index_lock_asks(plan: _Plan, w: _Writer, res: PassResult) -> None:
-    """gr684320 (c): an open coordinator ask whose context starts
-    ``attempt_free 'index-lock'`` is closed ``acknowledged`` by the tick —
-    the reaper clears the lock itself, no human needs to. :func:`_step_rearm`
-    then gives the node its fresh budget."""
+    """gr684320 (c): an open coordinator ask about a held slice-tree
+    ``index.lock`` closes itself ``acknowledged`` on recovery EVIDENCE —
+    a job of the blocked node recorded ``meta.index_lock_reaped`` after
+    the ask was raised: the reaper cleared the lock, no human needed, and
+    :func:`_step_rearm` then gives the node its fresh budget. An ask with
+    no reap evidence yet is either an escalation ask (stuck / re-formed —
+    the reaper already failed there; a human looks, it stays open) or a
+    legacy pre-reaper ask, which the tick bootstraps closed exactly once,
+    with an explicit note: the re-armed node's next job runs the reaper
+    on the owning host, and a lock that re-forms re-raises the escalation
+    ask from the reap records."""
+    owner_of: dict[int, int] = {}
+    for n in plan.nodes.values():
+        if n.kind != "todo" or _closed(n):
+            continue
+        for b in plan.blockers.get(n.id, []):
+            if b.is_ask:
+                owner_of.setdefault(b.id, n.id)
     for m in plan.nodes.values():
         if _closed(m) or not _is_ask_node(m):
             continue
         ask = m.meta.get("ask")
         ctx = str(ask.get("context") or "") if isinstance(ask, dict) else ""
-        if not ctx.startswith(INDEX_LOCK_ASK_CONTEXT):
-            continue
-        if w.dry_run:
-            res.notes.append(f"td{m.id}: would close the index-lock ask")
-            continue
-        w.comment(
-            m,
-            "answer: acknowledged — the index.lock reaper (gr684320) clears "
-            "a held slice-tree lock itself; the node re-arms with a fresh "
-            "retry budget.",
+        legacy = ctx.startswith(INDEX_LOCK_ASK_CONTEXT)
+        escalation = ctx.startswith(INDEX_LOCK_STUCK_CONTEXT) or ctx.startswith(
+            INDEX_LOCK_REFORMED_CONTEXT
         )
+        if not (legacy or escalation):
+            continue
+        owner = owner_of.get(m.id)
+        owner_node = plan.nodes.get(owner) if owner is not None else None
+        reaps = (
+            _index_lock_reaps_since(plan, owner_node, m.created_at)
+            if owner_node is not None
+            else []
+        )
+        if reaps:
+            note = (
+                f"answer: acknowledged — the index.lock reaper (gr684320) "
+                f"recorded {len(reaps)} reap(s) on this node's jobs after "
+                "this ask was raised; the node re-arms with a fresh retry "
+                "budget."
+            )
+            action = "index-lock ask closed acknowledged (reap evidence)"
+        elif legacy:
+            note = (
+                "answer: acknowledged — bootstrap close (gr684320): this "
+                "ask predates the index.lock reaper. It closes so the "
+                "re-armed node's next job runs the reaper on the owning "
+                "host; a lock that re-forms re-raises the escalation ask "
+                "from the reap records, with the holder's command line."
+            )
+            action = "legacy index-lock ask bootstrap-closed"
+        else:
+            continue  # an escalation ask without recovery evidence stays
+        if w.dry_run:
+            res.notes.append(f"td{m.id}: would close the {action}")
+            continue
+        w.comment(m, note)
         w.set_status(m, "done")
-        res.notes.append(f"td{m.id}: index-lock ask closed acknowledged")
+        res.notes.append(f"td{m.id}: {action}")
 
 
 def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
@@ -4747,8 +4831,9 @@ def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
 
 def _reland_params(plan: _Plan, n: _Node, store: Any) -> dict[str, Any] | None:
     """The failed land job's own ``params`` when the tick should re-mint
-    ``land_slice`` — the newest job is an infra-land failure and the run
-    is under :data:`LAND_AGAIN_CAP` — else ``None``. The lander re-runs
+    ``land_slice`` — the newest job is an infra-land failure or a plain
+    index.lock wait (stamped ``"index-lock"`` verbatim, gr684320) and the
+    run is under :data:`LAND_AGAIN_CAP` — else ``None``. The lander re-runs
     ship on the same branch; no builder is asked to fix what the gate's
     environment broke. On the first tick after an answered re-land ask
     (the newest ended job is still ``meta.rearmed_after_job``) the
@@ -4762,7 +4847,13 @@ def _reland_params(plan: _Plan, n: _Node, store: Any) -> dict[str, Any] | None:
     if not (
         j.status in ("failed", "timed-out")
         and j.meta.get("job_type") == "land_slice"
-        and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+        and (
+            j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+            # gr684320: a land's plain index.lock wait is stamped
+            # verbatim ("index-lock", self-clearing, exempt from the
+            # re-land cap) — it re-lands exactly like an infra red.
+            or j.meta.get(ATTEMPT_FREE_KEY) == INDEX_LOCK_WAIT_KEY
+        )
     ):
         return None
     if _infra_red_lands(plan, n) >= LAND_AGAIN_CAP:
@@ -8363,41 +8454,62 @@ def _step_hygiene(
                 block_node=True,
             )
         elif free_sig is not None:
-            # gr662077: the node's last :data:`FREE_RUN_CAP` jobs all
-            # died on the same ``attempt_free`` reason — an infra wait
-            # no retry changes (a live git's ``index.lock`` in the slice
-            # worktree, a lane that never frees). Backoff already gave
-            # the holder its window; finding and clearing it is the
-            # coordinator's call. The ``blocked-by`` edge re-arms the
-            # node on the answer.
+            # gr662077 / gr684320: the node's tail died on the same
+            # ``attempt_free`` reason, or its lock kept re-forming — an
+            # infra wait no retry changes (a live git's ``index.lock``
+            # in the slice worktree, a lane that never frees). Backoff
+            # already gave the holder its window; finding and clearing
+            # it is the coordinator's call. The ``blocked-by`` edge
+            # re-arms the node on the answer.
+            if free_sig == INDEX_LOCK_REFORMED_KEY:
+                title = (
+                    f"td{n.id}: index.lock re-formed x{INDEX_LOCK_REAP_CAP}"
+                    " — a coordinator call"
+                )
+                context = f"{INDEX_LOCK_REFORMED_CONTEXT} x{INDEX_LOCK_REAP_CAP}"
+                count_why = (
+                    f"the lock reaper fired {INDEX_LOCK_REAP_CAP} times on "
+                    "this node's jobs since its re-arm floor — the lock "
+                    "keeps re-forming"
+                )
+            elif free_sig == INDEX_LOCK_STUCK_KEY:
+                title = (
+                    f"td{n.id}: index.lock stuck past the forced reap "
+                    f"x{INDEX_LOCK_STUCK_CAP} — a coordinator call"
+                )
+                context = f"{INDEX_LOCK_STUCK_CONTEXT} x{INDEX_LOCK_STUCK_CAP}"
+                count_why = (
+                    f"its last {INDEX_LOCK_STUCK_CAP} jobs could not clear "
+                    "the lock even by killing its git holders"
+                )
+            else:
+                title = (
+                    f"td{n.id}: '{free_sig}' failure x{FREE_RUN_CAP} "
+                    "in a row — a coordinator call"
+                )
+                context = f"attempt_free '{free_sig}' x{FREE_RUN_CAP} consecutive"
+                count_why = (
+                    f"its last {FREE_RUN_CAP} jobs all failed outside "
+                    f"the diff with attempt_free='{free_sig}'"
+                )
             ask_id = _mint_coordinator_ask(
                 w.store,
                 plan,
                 n,
-                title=(
-                    f"td{n.id}: index.lock re-formed x{INDEX_LOCK_REAP_CAP}"
-                    if free_sig == INDEX_LOCK_REFORMED_KEY
-                    else f"td{n.id}: '{free_sig}' failure x{FREE_RUN_CAP} "
-                    "in a row — a coordinator call"
-                ),
+                title=title,
                 body=(
                     f"The plan tick stopped dispatching td{n.id} "
                     f"({n.title.splitlines()[0] if n.title else ''}): "
-                    f"its last {FREE_RUN_CAP} jobs all failed outside "
-                    f"the diff with attempt_free='{free_sig}' — an "
-                    "infra wait that never cleared (gr662077). No "
-                    "ladder rung or same-rung retry changes it: find "
-                    "and clear the holder — a live git's index.lock in "
-                    "the slice worktree, a lane that never frees, a "
-                    "dead rerun path — or drop the node. Closing this "
-                    f"ask `acknowledged` re-arms td{n.id} with a fresh "
-                    "retry budget. " + _index_lock_ask_detail(plan, n, free_sig)
+                    f"{count_why} — an infra wait that never cleared "
+                    "(gr662077, gr684320). No ladder rung or same-rung "
+                    "retry changes it: find and clear the holder — a "
+                    "live git's index.lock in the slice worktree, a lane "
+                    "that never frees, a dead rerun path — or drop the "
+                    f"node. Closing this ask `acknowledged` re-arms "
+                    f"td{n.id} with a fresh retry budget. "
+                    + _index_lock_ask_detail(plan, n, free_sig)
                 ),
-                context=(
-                    f"attempt_free '{free_sig}' x{FREE_RUN_CAP} consecutive"
-                    if free_sig != INDEX_LOCK_REFORMED_KEY
-                    else f"index.lock re-formed x{INDEX_LOCK_REAP_CAP}"
-                ),
+                context=context,
                 now=now,
                 block_node=True,
             )
@@ -8427,6 +8539,8 @@ def _step_hygiene(
             else "can't finish — ladder spent"
             if no_commit
             else f"identical '{free_sig}' wait x{FREE_RUN_CAP}"
+            if free_sig and free_sig not in _INDEX_LOCK_SIGS
+            else f"index.lock escalation ({free_sig})"
             if free_sig
             else "no enabled lane"
             if lane_gap
