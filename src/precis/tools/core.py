@@ -2301,19 +2301,15 @@ def put(
     put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
     only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
     takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
-    fields are per kind (precis-put-help). `mode=`: file kinds 'create';
-    paid-import kinds 'import'; paper 'fetch-si'; structure
-    'rerun'/'neb'/'md'/'analyze'/'trust'; machine 'sync'; numeric-ref
-    kinds mostly omit it. Exceptions: gripe 'create'/'comment' confirm
-    id= selection; job 'retry'/'retarget'/'setting'/'wake'/'extend'/
-    'garden-reject'; memory 'process'; measure 'recheck'; fleet 'report';
-    todo 'plan' (outside the declared gate). `text=`/`body=`
-    alias a kind's single prose field (finding says `body=`; both at once
-    errors); memory reads both as title/prose. `todo` and `gripe` declare
-    both — `text=` title/first line, `body=` details, either or
-    both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
+    fields are per kind. `mode=` picks a kind's write door ('create',
+    'import', 'retry', 'plan', ...; numeric-ref kinds mostly omit it) —
+    the per-kind table is precis-put-help's. `text=`/`body=` alias a
+    kind's prose slot (finding says `body=`; both at once errors); memory
+    reads them as title/prose, todo and gripe as title/details.
+    `tags=`/`untags=` add/remove; `link=`/`unlink=` take
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs a recent exact `get`).
+    `text={'$ref': '<handle>'}` reuses that handle's body (needs a recent
+    exact `get`).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2766,10 +2762,9 @@ def edit(
     `replace` with `id='slug~selector'` rewrites one chunk.
 
     `mode=` defaults to `find-replace`; kinds excluding it refuse with
-    options. todo uses `text=`/`body=`, memory also takes
-    `ops=[{find,text,...}]`; quest takes `replace` (explicit), `pause`,
-    `resume`; finding takes `replace`/`find-replace`; fleet and learning
-    take `replace`; paper and structure ignore it.
+    options. todo uses `text=`/`body=`; memory takes `ops=[{find,text,...}]`;
+    quest wants 'replace' (explicit). Other kinds' sets are per kind —
+    the table is precis-edit-help's; paper, structure ignore it.
 
     Draft accepts `mode='replace-content'` for a block rewrite and
     `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`

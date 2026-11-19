@@ -63,6 +63,8 @@ PASSTHROUGH = [
     ("datasheet", "edit"),
     ("youtube", "put"),
     ("pres", "edit"),
+    # handle.get's spoken-name resolve door reads args{'kind'} (gr634708).
+    ("handle", "get"),
     # llm.put's owner account door reads args{'account'} (0280, td568204)
     ("llm", "put"),
     # Plugin handlers (entry point group ``precis.handlers``).
