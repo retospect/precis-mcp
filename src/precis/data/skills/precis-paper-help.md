@@ -579,9 +579,11 @@ well-formed pipe grid renders raw rather than being guessed at.
 `args={'match': 'sticking prefactor'}` keeps tables whose header,
 caption or row labels hold any of the words.
 
-`view='measures'` lists live outputs grouped by table (`T<n>`), then prose,
-using measure search's live-row filters. It matches the paper as subject or anchor
-owner. `view='tables'` counts unsuperseded outputs anchored in each table chunk.
+`view='measures'` lists outputs grouped by table (`T<n>`), then prose,
+with the same eligibility as default paper-scoped measure search. It
+matches the paper as subject or anchor owner and includes flagged outputs
+with their `escalated: <rule>` reasons. `view='tables'` counts unsuperseded
+outputs anchored in each table chunk.
 Read a result with `get(kind='measure', id=…)` for its table-cell anchor.
 
 ```python

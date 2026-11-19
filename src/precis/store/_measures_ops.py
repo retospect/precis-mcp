@@ -407,12 +407,12 @@ _PAPER_SCOPE_SQL = (
     f"AND sl.meta->>'role' = '{SI_PDF_ROLE}' AND sr.pdf_role = '{SI_PDF_ROLE}'"
     "))))"
 )
-_LIVE_MEASURE_SQL = (
+_PAPER_INVENTORY_SQL = (
     "m.superseded_by IS NULL AND "
     "m.measurand_status IS DISTINCT FROM 'ambiguous' AND "
-    "NOT (m.meta ? 'escalation') AND "
     "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)"
 )
+_LIVE_MEASURE_SQL = f"{_PAPER_INVENTORY_SQL} AND NOT (m.meta ? 'escalation')"
 #: A row's numeric extent as SQL: a point is [v, v], an interval [low, high], an
 #: upper bound ``<x`` runs from -inf to x and a lower bound from x to +inf.
 _LO_SQL = (
@@ -2111,13 +2111,12 @@ class MeasuresMixin:
         return {int(r[0]) for r in rows}
 
     def measures_for_paper(self, paper_ref_id: int) -> list[dict[str, Any]]:
-        """Every live output about or anchored in this paper.
+        """Current outputs about or anchored in this paper.
 
-        Reuse search's live-row eligibility so the paper view does not
-        present ambiguous, escalated or anchor-lost measured outputs.
+        Share the paper search inventory, including escalated outputs.
         """
         rows = self._measure_rows(
-            f"m.direction = 'output' AND {_LIVE_MEASURE_SQL} AND {_PAPER_SCOPE_SQL}",
+            f"m.direction = 'output' AND {_PAPER_INVENTORY_SQL} AND {_PAPER_SCOPE_SQL}",
             {"paper": paper_ref_id},
         )
         by_run = self._conditions_by_run([r["run_key"] for r in rows])
@@ -2149,6 +2148,7 @@ class MeasuresMixin:
         paper_ref_id: int | None = None,
         serving_ref_id: int | None = None,
         include_all: bool = False,
+        include_escalated: bool = False,
         scan_cap: int = 5000,
         bound_currency: tuple[str, int | None] | None = None,
     ) -> MeasureSearch:
@@ -2161,6 +2161,7 @@ class MeasuresMixin:
         left out (only ``measured`` drops its claim with the link — see
         :meth:`best_measure`; other tiers stay, marked ``anchor_lost``).
         Scans at most ``scan_cap`` candidate rows (``truncated`` says so).
+        With ``include_escalated``, keep otherwise eligible flagged outputs.
 
         Paper and quest scopes match either the subject or the anchoring
         chunk's paper, so promoting a subject keeps its source discoverable.
@@ -2178,7 +2179,9 @@ class MeasuresMixin:
         where = ["m.direction = 'output'"]
         params: dict[str, Any] = {"cap": scan_cap + 1}
         if not include_all:
-            where.append(_LIVE_MEASURE_SQL)
+            where.append(
+                _PAPER_INVENTORY_SQL if include_escalated else _LIVE_MEASURE_SQL
+            )
         if measurand is not None:
             where.append("m.measurand_ref_id = ANY(%(cover)s)")
             params["cover"] = self._measurand_cover(measurand)

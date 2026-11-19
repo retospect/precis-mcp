@@ -333,7 +333,7 @@ def result_line(
     row: dict[str, Any], *, unit: str | None = None, money: MoneyTables | None = None
 ) -> str:
     """One line per row: id, subject, measurand and value, conditions, tier,
-    paper handle (plus any flag, shown only for ``status='all'`` rows)."""
+    paper handle, plus any flags."""
     mx = handle_registry.format_handle("measure", int(row["id"]))
     parts = [
         mx,

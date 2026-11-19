@@ -73,10 +73,15 @@ printed value (for example, `transform: log10 (printed 13)`).
 | `q=` | condition terms and subject words (below) |
 | `args={'paper': …}` | subject or anchor chunk belongs to this paper; handle, id or cite-key slug |
 | `args={'serves': 'quest:<id>'}` | subject or anchor paper serves the quest, directly or through sub-quests |
-| `status='all'` | also superseded, ambiguous, escalated and anchor-lost rows, each marked; default is live rows only |
+| `status=` | `'live'` limits results to live rows. `'all'` also includes superseded, ambiguous, escalated and anchor-lost rows, each marked. Omit for live rows plus escalated rows in paper-scoped searches, marked `escalated: <rule>` |
 
 These scope args work without `property=` or `q=` and intersect with each
 other, measurand, range and condition filters.
+
+`get(kind='paper', id=…, view='measures')` also lists escalated rows with
+their flag reasons.
+
+## Filter by conditions and subject text
 
 `q=` terms are `name=value`, `name<value`, `name>value` (also `<=`, `>=`),
 matched against the run's input rows by condition name (the row's own
@@ -102,7 +107,7 @@ review state
 from the taxon's `higher_is_better`; a group without it shows its row count and
 no best. Per-area and per-mass yields, RHE and SHE potentials, or EUR and USD
 costs, are separate
-lines: groups are never compared. Left out of every ranking: ambiguous
+lines: groups are never compared. Quest rankings exclude ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
 `trusted = false`, rows whose newest current review is `rejected`,
 `origin='ml_prediction'` rows (a predicted value never outranks an

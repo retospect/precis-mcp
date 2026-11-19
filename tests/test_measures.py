@@ -14,7 +14,10 @@ from typing import Any
 import psycopg
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.measure import MeasureHandler
+from precis.handlers.paper import PaperHandler
 from precis.ingest.dedup import merge_refs
 from precis.store import Migrator, Store
 from precis.store._measures_ops import ConditionFilter, MeasureAnchor, MeasureSpec
@@ -1119,13 +1122,36 @@ def test_an_order_of_magnitude_outlier_escalates_for_review(
             MeasureSpec(world["energy"], v, world["paper"], reported_unit="eV"),
             actor="reader",
         )
+    paper = seed_ref(store, title="Paper reporting an outlier", kind="paper")
     outlier = store.insert_measure(
-        MeasureSpec(world["energy"], "1", world["paper"], reported_unit="MeV"),
+        MeasureSpec(world["energy"], "1", paper, reported_unit="MeV"),
         actor="reader",
     )
     (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
     assert esc["rule"] == "implausible_value" and esc["decades"] > 5
     assert esc["median"] == pytest.approx(2.45, rel=0.01)
+    hub = Hub(store=store)
+    paper_handle = f"pa{paper}"
+    measure_handle = f"mx{outlier.output_id}"
+    inventory = PaperHandler(hub=hub).get(id=paper_handle, view="measures")
+    assert inventory.result_count == 1
+    assert f"{measure_handle} |" in inventory.body
+    assert "escalated: implausible_value" in inventory.body
+
+    handler = MeasureHandler(hub=hub)
+    scope = {"paper": paper_handle}
+    found = handler.search(args=scope).body
+    assert "including escalated" in found.splitlines()[0]
+    assert f"{measure_handle} |" in found
+    assert "escalated: implausible_value" in found
+    live = handler.search(args=scope, status="live").body
+    assert "no measures match" in live
+    assert "including escalated" not in live
+    assert (
+        f"{measure_handle} |"
+        not in handler.search(property=f"tn{world['energy']}").body
+    )
+    assert "no measures match" in handler.search(args=scope, q="unmatched").body
     # flagged, not dropped: the row lands live; an in-distribution value
     # written afterwards stays clean
     clean = store.insert_measure(
