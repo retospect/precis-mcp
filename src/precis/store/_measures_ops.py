@@ -152,7 +152,7 @@ from precis.taxonomy.money import (
 )
 from precis.taxonomy.nodes import slugify
 from precis.utils.glyph_health import glyph_suspected
-from precis.utils.text import markup_surface
+from precis.utils.text import markup_surface, sci_anchor_pattern
 
 log = logging.getLogger(__name__)
 
@@ -610,11 +610,17 @@ def _squash(text: str) -> str:
 def _literal_in(span_text: str, literal: str) -> bool:
     """Does the literal occur in the span text, on number boundaries? A digit
     run must not be preceded by a digit (or ``digit.``) nor followed by a digit
-    (or ``.digit``): "5" and "95" are not in "1950"."""
+    (or ``.digit``): "5" and "95" are not in "1950".
+
+    A scientific literal also matches the ingest-flattened prints of its
+    exponents — the PDF text layer drops the superscript raise, so
+    ``5 × 10¹²`` extracts as ``5 × 1012`` or ``5 × 10 12`` — via
+    :func:`precis.utils.text.sci_anchor_pattern` (gr715568). Plain
+    literals match verbatim only."""
     lit = _squash(literal)
     if not lit:
         return False
-    pattern = re.escape(lit)
+    pattern = sci_anchor_pattern(lit) or re.escape(lit)
     if lit[0].isdigit():
         pattern = r"(?<!\d)(?<!\d\.)" + pattern
     if lit[-1].isdigit():
