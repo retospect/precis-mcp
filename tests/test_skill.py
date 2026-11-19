@@ -192,13 +192,48 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
     assert out.result_budget_hint is None
 
 
+def _shipped_cross_section_mention() -> tuple[str, int, int]:
+    """``(slug, i, j)``: a shipped skill whose section ``~i`` names its
+    sibling section ``~j`` (``j != i``, in bounds, a lone handle).
+
+    Picks the pair from the skill's real content so re-sectioning or
+    re-wording a skill can't strand the test on a hard-coded number.
+    """
+    from precis.handlers.skill import (
+        _SKILL_CHUNK_MENTION_RE,
+        _list_skills,
+        _load_skill,
+    )
+    from precis.runtime.scope import current_scope
+    from precis.skill_index.chunker import chunk_by_h2
+    from precis.utils.skill_scope import render as scope_render
+
+    for slug in _list_skills():
+        text = _load_skill(slug)
+        if text is None:
+            continue
+        chunks = chunk_by_h2(scope_render(text, current_scope())[0])
+        for i, chunk in enumerate(chunks):
+            for m in _SKILL_CHUNK_MENTION_RE.finditer(chunk.text):
+                j = int(m.group(2))
+                if (
+                    m.group(1) == slug
+                    and m.group(3) is None
+                    and j != i
+                    and j < len(chunks)
+                ):
+                    return slug, i, j
+    pytest.fail("no shipped skill section names a sibling section handle")
+
+
 def test_skill_chunk_next_lifts_a_referenced_section(skill: SkillHandler) -> None:
     """gr626104: a lone ``~N`` serve has no "below" — a sibling-section
     handle the chunk names rides the ``Next:`` trailer as a direct call,
-    and the prose names it too (``precis-paper-help~5`` → ``~6``)."""
-    out = skill.get(id="precis-paper-help~5")
-    assert "`precis-paper-help~6`" in out.body
-    assert "get(kind='skill', id='precis-paper-help~6')" in out.body
+    and the prose names it too (``slug~i`` → ``slug~j``)."""
+    slug, i, j = _shipped_cross_section_mention()
+    out = skill.get(id=f"{slug}~{i}")
+    assert f"`{slug}~{j}`" in out.body
+    assert f"get(kind='skill', id='{slug}~{j}')" in out.body
 
 
 def test_skill_chunk_next_skips_handles_inside_the_served_range(
@@ -206,8 +241,10 @@ def test_skill_chunk_next_skips_handles_inside_the_served_range(
 ) -> None:
     """A range serve already includes a self-referenced chunk — the
     trailer doesn't re-advertise it."""
-    out = skill.get(id="precis-paper-help~5..6")
-    assert "get(kind='skill', id='precis-paper-help~6')" not in out.body
+    slug, i, j = _shipped_cross_section_mention()
+    lo, hi = sorted((i, j))
+    out = skill.get(id=f"{slug}~{lo}..{hi}")
+    assert f"get(kind='skill', id='{slug}~{j}')" not in out.body
 
 
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:
