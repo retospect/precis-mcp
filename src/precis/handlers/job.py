@@ -6231,6 +6231,51 @@ class JobHandler(NumericRefHandler):
             **kw,
         )
 
+    def _bare_listing(
+        self,
+        *,
+        status: str | None,
+        mode: str | None,
+        group_by: str | list[str] | None,
+        compact: str | None,
+        page: int,
+        page_size: int,
+        row_tag_prefixes: tuple[str, ...] | None = None,
+    ) -> Response | None:
+        """A bare ``search(kind='job')`` — "what ran lately" (gr709769:
+        the call-errors cluster kept re-issuing ``search(kind='job',
+        page=1, page_size=…)`` / ``view='index'`` into the refusal).
+        Serve the same plain filtered listing a queryless
+        ``since=``/``until=`` takes (``_search_by_job_type`` with
+        ``job_type=None``): recency-ordered, all statuses unless
+        ``status=`` narrows, tag chips filtered to a requested
+        ``args={'tag_prefixes': …}`` selection. ``group_by=`` and the
+        folded ``view='ids'``/``'list'`` keep the refusal — they name a
+        shape this listing doesn't render."""
+        if group_by is not None or compact is not None:
+            return None
+        return self._search_by_job_type(
+            None,
+            q=None,
+            view=None,
+            status=status,
+            tags=None,
+            link=None,
+            page_size=page_size,
+            page=page,
+            group_by=None,
+            agg=None,
+            since=None,
+            until=None,
+            exclude_ref_ids=None,
+            include_ref_ids=None,
+            sort=None,
+            mode=mode,
+            id_min=None,
+            id_max=None,
+            row_tag_prefixes=row_tag_prefixes,
+        )
+
     def _search_under(
         self,
         *,
@@ -6551,6 +6596,7 @@ class JobHandler(NumericRefHandler):
         mode: Any,
         id_min: Any = None,
         id_max: Any = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
         """``search(kind='job', args={'job_type': ...})`` — jobs of one
         ``meta.job_type`` (gr502653: the watch question "how many
@@ -6560,7 +6606,9 @@ class JobHandler(NumericRefHandler):
         ``since=``/``until=`` stays on the job listing path (dispatch
         keeps only the queryless call here; a ``q=``-bearing call goes
         to the source-search primitive, and the base listing path
-        refuses those bounds).
+        refuses those bounds) and by the base ``_bare_listing`` hook
+        for a truly bare ``search(kind='job')`` (gr709769 — the dated
+        and the unwindowed caller share this one listing).
 
         The filtered set runs through :func:`filtered_ref_clauses` —
         the same builder ``view='count'`` uses — so the listing's
@@ -6572,14 +6620,21 @@ class JobHandler(NumericRefHandler):
         path doesn't run and still refuses (gr608736: callers kept
         repeating the refused ``mode='lexical'`` call). ``view='count'``
         delegates to the shared aggregate, so ``group_by='state'``
-        gives the status facets.
+        gives the status facets. ``row_tag_prefixes`` — the base
+        search's parsed ``args={'tag_prefixes': …}`` selection, set
+        only by the bare-listing hook — filters the row tag chips the
+        hits table renders; other callers leave it ``None`` and get
+        the default chip set.
         """
-        # job_type=None is the plain dated listing, not a job_type
-        # search — its refusals describe that shape, not "job_type-".
+        # job_type=None is the plain listing — dated when since=/until=
+        # rode in, bare otherwise (the ``_bare_listing`` fallback,
+        # gr709769) — its refusals describe that shape, not "job_type-".
         label = (
             "a job_type-filtered job search"
             if job_type is not None
             else "the dated job listing"
+            if since is not None or until is not None
+            else "the bare job listing"
         )
         if view is not None and view != "count":
             raise BadInput(
@@ -6722,7 +6777,7 @@ class JobHandler(NumericRefHandler):
                 )
             )
             return Response(body="\n".join(parts), result_count=0)
-        parts.append(self._render_hits_table(refs))
+        parts.append(self._render_hits_table(refs, row_tag_prefixes=row_tag_prefixes))
         parts.append(
             render_next_section(
                 [

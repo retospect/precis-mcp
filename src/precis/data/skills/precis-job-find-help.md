@@ -205,7 +205,8 @@ what used to need `refs.meta->>'job_type'` SQL.
 listing too — `search(kind='job', args={'since': '2026-10-20'},
 status='*')` is the same recency-ordered listing without a `job_type=`
 filter (adding `q=` makes it a ranked search and `sort=`/`mode=` legal
-again).
+again). A bare `search(kind='job')` — no window, no filter — is the
+same listing over every job: "what ran lately".
 
 `view='count'` facet rows also name each group's newest/oldest member
 (`jo<N>` + created bounds) — "when did the last <type> run, how far

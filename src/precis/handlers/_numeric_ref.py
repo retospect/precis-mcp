@@ -1754,6 +1754,24 @@ class NumericRefHandler(Handler):
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
+            # A kind may answer a truly bare ``search(kind=<K>)`` with
+            # its natural recency listing instead of the refusal below
+            # (gr709769: callers re-issued ``search(kind='job', page=1,
+            # …)`` asking "what ran lately"). Reached only when every
+            # listing-firing filter came back empty, so the override
+            # sees at most page=/page_size=, a folded view='ids'/'list'
+            # (``compact``) and a no-op status= spelling ('*'/'any').
+            bare = self._bare_listing(
+                status=status,
+                mode=mode,
+                group_by=group_by,
+                compact=compact,
+                page=page,
+                page_size=page_size,
+                row_tag_prefixes=row_tag_prefixes,
+            )
+            if bare is not None:
+                return bare
             raise BadInput(
                 "search requires q= or tags= or link=",
                 next=(
@@ -1920,6 +1938,31 @@ class NumericRefHandler(Handler):
             result_count=len(hit_refs),
             result_ids=[int(r.id) for r in hit_refs],
         )
+
+    def _bare_listing(
+        self,
+        *,
+        status: str | None,
+        mode: str | None,
+        group_by: str | list[str] | None,
+        compact: str | None,
+        page: int,
+        page_size: int,
+        row_tag_prefixes: tuple[str, ...] | None = None,
+    ) -> Response | None:
+        """A truly bare ``search(kind=<K>)`` — no ``q=``/``tags=``/``link=``
+        or any other narrowing filter — as a listing, or ``None`` to keep
+        the "requires q= or tags= or link=" refusal.
+
+        Called from :meth:`search` only after every listing-firing filter
+        came back empty, so an override never steals a shape the ranked /
+        tag / link paths already serve (gr709769). Job answers with its
+        plain filtered listing — the same recency page a queryless
+        ``since=``/``until=`` takes. ``row_tag_prefixes`` is the parsed
+        ``args={'tag_prefixes': …}`` row selection, already validated by
+        :meth:`search`; an override that renders tag chips must honor it
+        rather than silently drop it."""
+        return None
 
     def _fold_project_arg(
         self,
