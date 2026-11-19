@@ -684,6 +684,7 @@ other doors (`fetch-si`, `pdf_url`, `record_type`, `restore`).
 tag(kind="paper", id="pa40", add=["topic:photocatalysis"])
 tag(kind="paper", id="pa40", add=["SRC:primary"])
 tag(kind="paper", id="pa40", remove=["topic:photocatalysis"])
+tag(kind="paper", id="pa40", remove=["quest:164903"], reason="backfill: quest retired")
 
 link(kind="paper", id="pa40", target="pa57", rel="cites")  # target is also a handle
 ```
@@ -692,6 +693,11 @@ Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
 (`topic:x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
 are rejected. Tag and link operate at the paper level — chunk
 selectors and view paths are rejected.
+
+Pass `reason=` on a retag to say why — one `agent/retagged` row per
+affected paper lands on `ref_events`, visible in
+`get(kind="paper", id="pa40", view="log")`; omit it and the retag
+stays silent.
 
 ## See a paper's link graph
 ## What is this paper linked to — cites, cited-by, related-to?
