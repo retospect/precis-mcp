@@ -2458,9 +2458,19 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         if isinstance(id, list):
             return self._get_batch(id, view=view, args=args)
+        bibliography = _normalise_view(view) in (
+            "bibtex",
+            "ris",
+            "endnote",
+            "bibliography",
+        )
         try:
-            raw_id = _maybe_resolve_doi(self.store, str(id))
+            raw_id = _maybe_resolve_doi(
+                self.store, str(id), allow_acquisition=not bibliography
+            )
         except NotFound:
+            if bibliography:
+                raise
             # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
             # holds earns an ingest job, not a repeated error — the ack
             # names it and the retry lands on the same door.
@@ -2657,7 +2667,8 @@ class PaperHandler(Handler):
         many elements would actually mint before touching any of
         them; past the cap it asks for ``args={'confirm_bulk': True}``
         up front instead, so a legitimate large batch goes through in
-        one call.
+        one call. Bibliographic batches never acquire missing DOIs and
+        bypass this confirmation regardless of ``confirm_bulk``.
         """
         kind = self.spec.kind
         if not ids:
@@ -2677,8 +2688,14 @@ class PaperHandler(Handler):
             # same table — the caller already had the list, just on the
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
+        bibliography = _normalise_view(view) in (
+            "bibtex",
+            "ris",
+            "endnote",
+            "bibliography",
+        )
         confirm_bulk = bool((args or {}).get("confirm_bulk"))
-        if not confirm_bulk:
+        if not confirm_bulk and not bibliography:
             pending = 0
             for elem in ids:
                 try:
@@ -2719,6 +2736,9 @@ class PaperHandler(Handler):
                 )
                 blocks.append(self._batch_summary(ref))
             except NotFound:
+                if bibliography:
+                    blocks.append(f"{shown}  not ingested; no ingest queued")
+                    continue
                 # gr551840: an unheld well-formed DOI element queues its
                 # ingest job like the single-id get does — bounded per
                 # call by _BATCH_DOI_QUEUE_CAP (the review's N-paid-legs
@@ -12093,7 +12113,9 @@ def resolve_paper_slug(
     return slug, ref.id
 
 
-def _maybe_resolve_doi(store: Store, raw: str) -> str:
+def _maybe_resolve_doi(
+    store: Store, raw: str, *, allow_acquisition: bool = True
+) -> str:
     """Translate an identifier-form paper id to its slug form.
 
     When an agent hands us a paper identifier — a DOI
@@ -12119,6 +12141,10 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
     no-op on slug-form ids. Bare digits (``_PUBMED_RE``-shaped) that
     resolve to nothing also pass through, so the slug resolver's
     digits→ref_id fallback keeps working.
+
+    ``allow_acquisition=False`` gives bibliographic reads a read-only
+    missing-record error with an explicit-put hint, without suggesting
+    automatic acquisition. The caller must also suppress ingest queueing.
 
     Raises :class:`NotFound` when the identifier is well-formed but no
     live paper carries it; the error carries an acquire hint rather
@@ -12152,6 +12178,11 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             scheme,
             "put(kind='paper', title='<title>')",
         )
+        if not allow_acquisition:
+            raise NotFound(
+                f"paper with {scheme.upper()} {base!r} not ingested; no ingest queued",
+                next=f"{mint} to ingest explicitly, then retry the bibliographic read",
+            )
         # Point at the two paths that actually work: mint the stub
         # directly, or register the claim now in acquisition mode
         # (``wants=``/``provenance=`` — a bare ``cited_in='doi:'`` is

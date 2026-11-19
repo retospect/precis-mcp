@@ -55,6 +55,12 @@ failure instead of requeueing. The worker verifies the DOI against
 Semantic Scholar / the DOI registries, mints the stub, and pins it to
 the open-access fetch pass — no fetch runs inside the `get` call.
 
+Bibliographic views (`bibtex`, `ris`, `endnote`, their `cite/` aliases,
+and `bibliography` for inbound citations) never queue ingest. An unheld
+DOI returns `not ingested; no ingest queued`; batches report each miss
+and bypass `confirm_bulk`. Use `put(kind="paper", doi=…)` to acquire it
+explicitly.
+
 The queue is bounded — an ingest job can reach the paid OpenAlex fetch
 leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
 a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no

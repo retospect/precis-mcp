@@ -35,6 +35,46 @@ from tests.extract_helpers import fake_ctx
 DOI = "10.1021/ja01019a011"
 
 
+@pytest.mark.parametrize(
+    "view", ["bibtex", "ris", "endnote", "bibliography", "cite/bib", "cite/ris"]
+)
+@pytest.mark.parametrize("prefix", ["", "doi:", "https://doi.org/"])
+def test_bibliographic_miss_never_queues(
+    store: Store, handler: PaperHandler, view: str, prefix: str
+) -> None:
+    """gr715627: citation checks must not acquire an unheld DOI."""
+    with pytest.raises(NotFound, match="no ingest queued") as exc:
+        handler.get(id=prefix + DOI, view=view)
+    assert "put(kind='paper'" in (exc.value.next or "")
+    assert _jobs(store) == []
+    assert _stub_for_doi(store, DOI) is None
+
+
+@pytest.mark.parametrize(
+    "view", ["bibtex", "ris", "endnote", "bibliography", "cite/bib"]
+)
+@pytest.mark.parametrize("confirm_bulk", [False, True])
+def test_bibliographic_batch_misses_never_queue(
+    store: Store, handler: PaperHandler, view: str, confirm_bulk: bool
+) -> None:
+    """Citation batches bypass acquisition and its bulk confirmation."""
+    _seed_paper(store)
+    missing = [f"10.9999/citation-check-{i}" for i in range(7)]
+    response = handler.get(
+        id=["10.1111/jnc.13915", *missing],
+        view=view,
+        args={"confirm_bulk": confirm_bulk},
+    )
+    assert (
+        "held2020paper bibliography" if view == "bibliography" else "A held paper"
+    ) in response.body
+    for doi in missing:
+        assert f"{doi}  not ingested; no ingest queued" in response.body
+        assert _stub_for_doi(store, doi) is None
+    assert "resubmit" not in response.body
+    assert _jobs(store) == []
+
+
 def _seed_paper(
     store: Store, *, slug: str = "held2020paper", doi: str = "10.1111/jnc.13915"
 ) -> int:

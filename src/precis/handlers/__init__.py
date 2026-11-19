@@ -59,6 +59,7 @@ timelines show the newest comment in full and summarize older rows
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
 
 Paper identity warnings exclude misleading issue-page prefixes.
+Bibliographic views never acquire missing DOIs, keeping citation checks read-only.
 
 Memory body writes lock the ref and anchored writes recheck the snapshot.
 Anchors retry folded on a literal miss to handle retyped prose.
