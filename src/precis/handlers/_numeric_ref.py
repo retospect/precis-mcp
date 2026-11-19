@@ -837,6 +837,10 @@ class NumericRefHandler(Handler):
     #: untouched — an alias is a *read* shorthand, not a stored value.
     status_aliases: ClassVar[dict[str, str]] = {}
 
+    #: Kind-owned ``view=`` spellings the unknown-view refusal lists after
+    #: the shared ``count``/``meta``/``tags`` (job: ``parked``).
+    extra_search_views: ClassVar[tuple[str, ...]] = ()
+
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
     browse_default_sort: ClassVar[str] = "recency"
@@ -1627,7 +1631,7 @@ class NumericRefHandler(Handler):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count", "meta", "tags"],
+                    options=["count", "meta", "tags", *self.extra_search_views],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
                         "args={'group_by': 'state'}) · view='meta' "

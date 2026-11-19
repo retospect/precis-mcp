@@ -405,14 +405,30 @@ def test_job_since_with_link_stays_on_the_job_listing(
 def test_job_since_with_explicit_sort_still_routes_to_source_search(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """An explicit ``sort=`` still asks for the source-search primitive —
-    the job exemption covers the bare-window call shape only."""
+    """An explicit ``sort='relevance'`` still asks for the source-search
+    primitive — the job exemption covers the bare-window call shape and
+    ``sort='recency'``, which the job listing orders itself (gr735229)."""
     out = runtime_with_store.dispatch(
         "search",
-        {"kind": "job", "q": "zz_no_such_token_zz", "sort": "recency"},
+        {"kind": "job", "q": "zz_no_such_token_zz", "sort": "relevance"},
     )
     assert "[error" not in out, out
     assert "matches" in out.lower(), out
+
+
+def test_job_sort_recency_routes_to_the_job_listing(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr735229: ``sort='recency'`` (and its ``'recent'`` spelling) on a
+    job search is the job handler's newest-created listing, not the source
+    primitive's date-sorted relevance pool."""
+    for sort in ("recency", "recent"):
+        out = runtime_with_store.dispatch(
+            "search",
+            {"kind": "job", "q": "zz_no_such_token_zz", "sort": sort},
+        )
+        assert "[error" not in out, out
+        assert "no job entries" in out, out
 
 
 def test_job_since_with_q_routes_to_source_search(
@@ -459,14 +475,14 @@ def test_job_search_nested_sort_routes_to_source_search(
     routing check never saw it and the extras gate refused it as
     ``keys ['sort'] not accepted by job.search`` (JobHandler.search
     forwards ``sort`` instead of declaring it). The hoist makes the
-    nested call the top-level call: it routes to the source-search
-    primitive like ``sort='recency'`` always did."""
+    nested call the top-level call: it routes like ``sort='relevance'``
+    always did (source-search primitive)."""
     out = runtime_with_store.dispatch(
         "search",
         {
             "kind": "job",
             "q": "zz_no_such_token_zz",
-            "__extras__": {"sort": "recency"},
+            "__extras__": {"sort": "relevance"},
         },
     )
     assert "[error" not in out, out
