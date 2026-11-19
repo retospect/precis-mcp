@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from precis.config import PrecisConfig
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.skill import (
@@ -146,6 +147,21 @@ def test_registered_alias_find_in_ref(skill: SkillHandler) -> None:
     """``get(id=<alias>, q=…)`` scans the canonical skill's body."""
     out = skill.get(id="precis-part-help", q="Basic")
     assert "Basic" in out.body
+
+
+def test_verbatim_skill_query_finds_passages() -> None:
+    hub = Hub()
+    SkillHandler(hub=hub)._register_with(hub)
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    payload = {"kind": "skill", "id": "precis-link-help", "q": "machine"}
+
+    body, is_error = runtime.dispatch_with_status(
+        "get", {**payload, "extent": "verbatim", "__extras__": {"context": 0}}
+    )
+
+    assert is_error is False
+    assert "# find 'machine' in precis-link-help" in body
+    assert "machine-writer context" in body
 
 
 def test_registered_alias_is_noted_on_the_canonical_row(

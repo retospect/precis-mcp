@@ -13,6 +13,10 @@ stored bytes and one-hour read receipts persisted by authenticated credential.
 Without a bound principal, receipts remain session-local in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
 
+A queried verbatim skill read uses find-in-ref so it searches the served
+body even when the default read shows a section index. Fisheye queries
+continue to select neighbor groups.
+
 Table refusals select table help from explicit arguments or a best-effort chunk
 lookup for ambiguous edits, so prose and table edits retain specific recovery.
 

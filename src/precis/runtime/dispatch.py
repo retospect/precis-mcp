@@ -4325,6 +4325,18 @@ class DispatchMixin(RuntimeShape):
             extent, reading = _eye_extent(args)
             if reading is not None:
                 readings.append(reading)
+            # A verbatim skill read with a query scans the served skill body.
+            # Neighbor-group queries still use the eye ladder.
+            skill_id = args.get("id")
+            if (
+                kind == "skill"
+                and extent == "verbatim"
+                and args.get("q") is not None
+                and isinstance(skill_id, str)
+                and skill_id.strip()
+            ):
+                extent = None
+                args.pop("view", None)
             if extent is not None:
                 # ``ring=`` narrows the rings a link/doc eye renders
                 # (``fisheye-everywhere.md`` in-scope 1); popped like
@@ -4421,7 +4433,9 @@ class DispatchMixin(RuntimeShape):
             self._bump_ref_read(kind, args.get("id"))
             if kind_was_defaulted:
                 response = self._tag_defaulted_kind(response, kind)
-            return response
+            from precis.handlers._interpret import interpreted
+
+            return interpreted(response, readings)
 
         # Creation identity is server-owned, including on edits and through
         # args={meta: ...}. Reject before any handler can merge caller data.
