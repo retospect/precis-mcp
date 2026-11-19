@@ -17,6 +17,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from psycopg import sql
+
 from precis.store import Tag
 from precis.workers.chunk_keywords import KEYWORDS_VERSION
 from precis_web.routes.status import (
@@ -62,24 +64,37 @@ def test_hosts_has_covering_liveness_and_partial_problem_index_paths(
 ) -> None:
     """Check eligibility, not tiny-fixture cost choices, for the actual SQL.
 
-    The planner prefers the bare-``ts`` index (0315) for the 7-day liveness
-    range, so each index is made the only viable path in turn: the host/ts
-    index must be usable as a covering index-only scan for liveness, and the
-    partial level/ts index for the problem count.
+    gr735138: scan-method switches do not select a particular index. The
+    bare-ts index can beat host/ts, and host/ts can beat the partial index
+    on an empty fixture. Remove competing indexes transactionally instead
+    of asserting those cost choices. Rollback restores every index, even
+    when EXPLAIN fails; the production query and schema stay unchanged.
     """
 
-    def plan(*off: str) -> str:
+    def plan(index: str) -> str:
         with store.pool.connection() as conn:
-            with conn.transaction():
-                for setting in off:
-                    conn.execute(f"SET LOCAL {setting} = off")
+            with conn.transaction(force_rollback=True):
+                indexes = conn.execute(
+                    "SELECT indexrelid::regclass::text FROM pg_index "
+                    "WHERE indrelid = 'worker_logs'::regclass "
+                    "AND NOT indisprimary AND NOT indisunique"
+                ).fetchall()
+                for (name,) in indexes:
+                    if name != index:
+                        conn.execute(
+                            sql.SQL("DROP INDEX {}").format(sql.Identifier(name))
+                        )
+                conn.execute("SET LOCAL enable_seqscan = off")
+                conn.execute("SET LOCAL enable_bitmapscan = off")
+                conn.execute("SET LOCAL enable_indexscan = on")
+                conn.execute("SET LOCAL enable_indexonlyscan = on")
                 return "\n".join(
                     row[0] for row in conn.execute("EXPLAIN " + _HOSTS_SQL)
                 )
 
-    liveness = plan("enable_seqscan", "enable_bitmapscan", "enable_indexscan")
+    liveness = plan("worker_logs_host_ts_idx")
     assert "Index Only Scan using worker_logs_host_ts_idx" in liveness, liveness
-    problems = plan("enable_seqscan")
+    problems = plan("worker_logs_level_ts_idx")
     assert "worker_logs_level_ts_idx" in problems, problems
 
 
