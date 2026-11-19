@@ -1,0 +1,37 @@
+# Discovery eval task for the todo family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: todo
+skill: precis-todo-help
+tasks:
+  - id: queue-a-review
+    variants:
+      - |
+        Add a queue item in precis: review section 3 of
+        abazari2024design, and give it priority 3 so it doesn't sit at
+        the default.
+      - |
+        I need to come back to abazari2024design — section 3 wants a
+        proper review. Put it on the precis work queue at priority 3.
+    expect:
+      calls:
+        - verb: put
+          kind: todo
+          args: {text: 're:(?is).*abazari2024design.*', args: {prio: 3}}
+      record: {kind: todo}
+    forbid:
+      calls:
+        - {verb: put, kind: memory}      # a queue item is not a note
+        - {verb: put, kind: gripe}       # or a bug report
+    fake:
+      calls:
+        - verb: put
+          kind: todo
+          args:
+            text: Review section 3 of abazari2024design.
+            args: {prio: 3}
+      record: {kind: todo}
+      answer: >
+        put(kind='todo', text='Review section 3 of abazari2024design.',
+        args={'prio': 3}) — the server assigns the td<id> handle and
+        defaults STATUS:open.
