@@ -160,7 +160,8 @@ claim at `partial` and sets `needs_source_review`.
 Passage-verified `supported` empirical claims get a bounded conflict probe
 (`conflict`, at most 2 claims per memory, 6 verify calls each, ranked by
 the conflict sweep's `read_first`/distance selection): `contradicted`,
-`none_found`, or `unknown`. `none_found` records scope (method version,
+`none_found`, `unknown`, or `not_probed` (no embedder wired, ineligible claim or
+probe budget spent). `none_found` records scope (method version,
 kinds, queries, UTC date), the checked passages' identities and unknowns —
 never proof of support, and never reported after a retrieval or verify
 outage (those are `unknown`).
