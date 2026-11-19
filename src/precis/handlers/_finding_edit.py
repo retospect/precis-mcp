@@ -13,17 +13,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from precis.errors import BadInput, Gone, NotFound
+from psycopg.errors import DeadlockDetected, LockNotAvailable
+
+from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.handlers.plaintext import _require_find_and_text
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
+from precis.store.pool import connection_is_pinned
 from precis.store.types import Tag
 from precis.taproot import authoring, hub
 from precis.taproot.consumer_review import render_users
 from precis.taproot.seniority import is_claim_hub
 from precis.taproot.sentence_lint import lint_scope
+from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -143,7 +147,12 @@ def edit(
     write door that keeps ``refs.title``, the ``finding_body`` chunk, and
     the content-derived ``pub_id`` in sync when a hub's claim sentence is
     reworded (fixing a claim-quality issue, e.g. a dangling
-    demonstrative). A plain (non-hub) finding has no ``edit(title=…)``
+    demonstrative). The write runs under bounded lock-contention retry
+    (gr716316): a concurrent read pass holding the hub's rows past
+    ``lock_timeout`` retries in-process instead of failing the rename. A
+    pinned atomic batch instead aborts on contention so the caller can
+    retry the whole request after releasing all its locks. A
+    plain (non-hub) finding has no ``edit(title=…)``
     door — mutate its claim via a fresh ``put()``.
 
     **Rescope a hub.** ``meta={'scope': {...}}`` is the write door for a
@@ -657,13 +666,13 @@ def _rescope_hub(
             )
         )
     try:
-        result = hub.refine_claim_sentence(
+        result = _refine_retried(
             store,
-            hub_ref_id,
-            new_title,
+            hub_ref_id=hub_ref_id,
+            sentence=title,
             scope=scope,
-            set_by="agent",
             attribution=attribution,
+            what="meta={'scope': …}",
         )
     except BadInput:
         raise
@@ -744,8 +753,13 @@ def _retitle_hub(
             ),
         )
     try:
-        result = hub.refine_claim_sentence(
-            store, hub_ref_id, title, set_by="agent", attribution=attribution
+        result = _refine_retried(
+            store,
+            hub_ref_id=hub_ref_id,
+            sentence=title,
+            scope=None,
+            attribution=attribution,
+            what="title=…",
         )
     except BadInput:
         raise
@@ -774,6 +788,66 @@ def _retitle_hub(
             + render_users(result["needs_review"])
         )
     )
+
+
+def _refine_retried(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    sentence: str | None,
+    scope: dict[str, Any] | None,
+    attribution: dict[str, str] | None,
+    what: str,
+) -> dict[str, Any]:
+    """Run :func:`~precis.taproot.hub.refine_claim_sentence` under bounded
+    lock-contention retry (gr716316).
+
+    An interactive retitle/rescope lost its whole turn to a bare
+    ``LockNotAvailable`` when a concurrent paper-reading pass held the
+    hub's rows past ``lock_timeout`` — the write opens its own
+    ``store.tx()`` per attempt (``retry_locked``'s hard contract), so a
+    replay re-reads the row and lands cleanly once the pass releases. An
+    exhausted budget refuses ``Upstream`` naming the retry instead of
+    leaking the psycopg error to the caller. Pinned transactions get one
+    attempt: only their outer owner can release earlier items' locks.
+    """
+
+    def _do() -> dict[str, Any]:
+        return hub.refine_claim_sentence(
+            store,
+            hub_ref_id,
+            sentence,
+            scope=scope,
+            set_by="agent",
+            attribution=attribution,
+        )
+
+    # Savepoint retries retain locks acquired by earlier batch items. Let
+    # the outer owner roll back the whole request instead of sleeping with
+    # those locks held.
+    pinned = connection_is_pinned()
+    try:
+        if pinned:
+            return _do()
+        return retry_locked(_do, label=f"finding {what} fi{hub_ref_id}")
+    except (LockNotAvailable, DeadlockDetected) as exc:
+        if pinned:
+            raise Upstream(
+                f"edit(kind='finding', id='fi{hub_ref_id}', {what}) hit lock "
+                "contention inside an atomic request; no per-item retry",
+                next="retry the entire atomic request so all its locks are released first",
+            ) from exc
+        raise Upstream(
+            f"edit(kind='finding', id='fi{hub_ref_id}', {what}) exhausted its "
+            "lock-retry budget — another writer (a concurrent read pass over "
+            "the hub's paper, or a sibling session's hub edit) held its rows "
+            f"past every retry: {exc}",
+            next=(
+                f"retry edit(kind='finding', id='fi{hub_ref_id}', {what}) — "
+                "the rename is idempotent and the rows are short-held; if it "
+                "fails again, file a gripe naming the id"
+            ),
+        ) from exc
 
 
 def _sharpen_hypothesis(
