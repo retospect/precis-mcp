@@ -194,36 +194,37 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
 
 def _shipped_cross_section_mention() -> tuple[str, int, int]:
     """``(slug, i, j)``: a shipped skill whose section ``~i`` names its
-    sibling section ``~j`` (``j != i``, in bounds, a lone handle).
+    sibling section ``~j`` as a backticked lone ``slug~j`` (``j != i``,
+    in bounds); the pair with the smallest span ``|j - i|``, first on a tie.
 
     Picks the pair from the skill's real content so re-sectioning or
-    re-wording a skill can't strand the test on a hard-coded number.
+    re-wording a skill can't strand the test on a hard-coded number. The
+    mention pattern is written here, not borrowed from the lift code, so a
+    broken detector can't quietly choose its own pair.
     """
-    from precis.handlers.skill import (
-        _SKILL_CHUNK_MENTION_RE,
-        _list_skills,
-        _load_skill,
-    )
+    import re
+
+    from precis.handlers.skill import _list_skills, _load_skill
     from precis.runtime.scope import current_scope
     from precis.skill_index.chunker import chunk_by_h2
     from precis.utils.skill_scope import render as scope_render
 
+    best: tuple[int, str, int, int] | None = None
     for slug in _list_skills():
         text = _load_skill(slug)
         if text is None:
             continue
+        mention = re.compile(rf"`{re.escape(slug)}~(\d+)`")
         chunks = chunk_by_h2(scope_render(text, current_scope())[0])
         for i, chunk in enumerate(chunks):
-            for m in _SKILL_CHUNK_MENTION_RE.finditer(chunk.text):
-                j = int(m.group(2))
-                if (
-                    m.group(1) == slug
-                    and m.group(3) is None
-                    and j != i
-                    and j < len(chunks)
-                ):
-                    return slug, i, j
-    pytest.fail("no shipped skill section names a sibling section handle")
+            for m in mention.finditer(chunk.text):
+                j = int(m.group(1))
+                if j != i and j < len(chunks):
+                    if best is None or abs(j - i) < best[0]:
+                        best = (abs(j - i), slug, i, j)
+    if best is None:
+        pytest.fail("no shipped skill section names a sibling section handle")
+    return best[1], best[2], best[3]
 
 
 def test_skill_chunk_next_lifts_a_referenced_section(skill: SkillHandler) -> None:
@@ -244,6 +245,9 @@ def test_skill_chunk_next_skips_handles_inside_the_served_range(
     slug, i, j = _shipped_cross_section_mention()
     lo, hi = sorted((i, j))
     out = skill.get(id=f"{slug}~{lo}..{hi}")
+    # positive half: the served range carries the mention itself …
+    assert f"`{slug}~{j}`" in out.body
+    # … and the Next trailer doesn't re-advertise the handle it already holds
     assert f"get(kind='skill', id='{slug}~{j}')" not in out.body
 
 
