@@ -297,6 +297,11 @@ body with `find=` writes the replacement exactly, including when paired
 with `args={'title': ...}`; a hidden legacy title line is not retained.
 The generated `referenced entities` footer is not editable body text.
 Use `get(kind='memory', id='me42~body')` for body-only anchors.
+When the complete literal anchor yields no candidates, memory edits retry
+`find`, `before` and `after` with folded whitespace and typography, including
+curly quotes, dashes and ligatures. The same match policy applies and the
+edit uses whole characters from the stored body. Each anchored batch op
+uses this retry too.
 An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is
 refused, never taken as a whole-body overwrite.

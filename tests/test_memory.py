@@ -1439,6 +1439,113 @@ def test_edit_yielding_empty_body_is_bad_input(
 
 
 # ---------------------------------------------------------------------------
+# gr688478 — relaxed anchor retry for retype drift
+# ---------------------------------------------------------------------------
+
+
+def test_find_replace_relaxed_whitespace_drift(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The body holds a double space; the agent retyped one — the folded
+    retry still finds the anchor and splices the raw span."""
+    mid = _make(handler, "alpha  path\nbeta line\ngamma tail")
+    handler.edit(id=mid, mode="find-replace", find="alpha path", text="new")
+    assert _body(handler, store, mid) == "new\nbeta line\ngamma tail"
+
+
+def test_find_replace_relaxed_quotes_and_nbsp(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "it’s “quoted”\u00a0text tail")
+    handler.edit(id=mid, mode="find-replace", find='it\'s "quoted" text', text="X")
+    assert _body(handler, store, mid) == "X tail"
+
+
+def test_insert_relaxed_anchor(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    handler.edit(id=mid, mode="insert", find="beta  line", text=" INS", where="after")
+    assert (
+        _body(handler, store, mid) == "alpha path /old/dir\nbeta line INS\ngamma tail"
+    )
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_find_replace_retries_when_only_context_drifts(
+    handler: MemoryHandler, store: Store, batch: bool
+) -> None:
+    mid = _make(handler, "prefix target suffix\nother target suffix")
+    if batch:
+        handler.edit(
+            id=mid,
+            ops=[
+                {
+                    "find": "target",
+                    "text": "new",
+                    "after": "  suffix",
+                    "before": "prefix ",
+                }
+            ],
+        )
+    else:
+        handler.edit(
+            id=mid, mode="find-replace", find="target", text="new", before="prefix  "
+        )
+    assert _body(handler, store, mid) == "prefix new suffix\nother target suffix"
+
+
+def test_find_replace_prefers_complete_literal_anchor(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "prefix  target\nprefix target")
+    handler.edit(
+        id=mid, mode="find-replace", find="target", text="new", before="prefix "
+    )
+    assert _body(handler, store, mid) == "prefix  target\nprefix new"
+
+
+def test_find_replace_relaxed_ambiguity_still_errors(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "foo\u00a0one\nfoo  two\nbar")
+    with pytest.raises(BadInput, match="2 matches"):
+        handler.edit(id=mid, mode="find-replace", find="foo", text="x")
+    assert _body(handler, store, mid) == "foo\u00a0one\nfoo  two\nbar"
+
+
+def test_find_replace_relaxed_exact_body_drops_echo(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A folded find covering the whole displayed body is still the
+    full-body rewrite: the hidden title echo does not survive it."""
+    mid = _derived(handler, "Echo Title\n\nrest prose")
+    handler.edit(id=mid, mode="find-replace", find="rest  prose", text="new body")
+    assert _body(handler, store, mid) == "new body"
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "Echo Title"
+
+
+def test_find_replace_relaxed_miss_still_errors(handler: MemoryHandler) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="not found"):
+        handler.edit(id=mid, mode="find-replace", find="totally absent words", text="x")
+
+
+def test_find_replace_miss_on_title_points_at_title_arg(handler: MemoryHandler) -> None:
+    mid = id_of(handler.put(text="body prose here", title="A distinct title").body)
+    with pytest.raises(BadInput, match="title") as exc:
+        handler.edit(id=mid, mode="find-replace", find="A distinct title", text="x")
+    assert "title=" in str(exc.value)
+
+
+def test_find_replace_ellipsis_anchor_explains_truncation(
+    handler: MemoryHandler,
+) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="ellipsis"):
+        handler.edit(id=mid, mode="find-replace", find="gamma tail…", text="x")
+
+
+# ---------------------------------------------------------------------------
 # gr538501 — a body edit that moves the first line re-derives a derived title
 # ---------------------------------------------------------------------------
 

@@ -60,11 +60,9 @@ Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
 
 Paper identity warnings exclude misleading issue-page prefixes.
 
-Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
-all handler body writes lock the owning ref, and anchored writes also
-compare the previous body with the resolver's snapshot inside the
-transaction. Lock choice, the pre-commit ``INTRANS`` check and the
-call-local ``put_meta`` payload: :mod:`precis.handlers.memory`.
+Memory body writes lock the ref and anchored writes recheck the snapshot.
+Anchors retry folded on a literal miss to handle retyped prose.
+Transaction and resolver details live in :mod:`precis.handlers.memory`.
 
 Stored-route/ledger-count rationale: :mod:`precis.handlers.llm`,
 :mod:`precis.handlers.job`.

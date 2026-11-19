@@ -213,11 +213,16 @@ from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
     EditResult,
-    apply_edit,
+    _nearest_lines,
+    find_candidates,
+    fold_anchor,
     format_unified_diff,
     normalize_dry_run,
+    relaxed_candidates,
     render_dry_run_full,
     render_dry_run_header,
+    select_candidates,
+    splice_edit,
 )
 from precis.utils.link_tag_ops import merge_link_reason
 from precis.utils.link_target import parse_link_target
@@ -2549,7 +2554,7 @@ class MemoryHandler(AuditedRetirementHandler):
         - ``mode='replace'`` (the default for a direct handler call):
           ``text=`` is the whole new body; ``title=`` optionally updates the
           header (omit to keep it).
-        - ``mode='find-replace'``: ``find=`` locates literal text in the body
+        - ``mode='find-replace'``: ``find=`` locates an anchored span in the body
           and ``text=`` replaces it (``text=''`` deletes the span).
         - ``mode='insert'``: ``text=`` goes ``where='before'|'after'`` the
           ``find=`` match.
@@ -2572,7 +2577,10 @@ class MemoryHandler(AuditedRetirementHandler):
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
         ``dry_run=True`` (unified diff, nothing written) — resolved by the
         shared :mod:`precis.utils.edit_resolve`, so a one-word fix in a large
-        body needs no re-send. ``title=`` / ``rule=`` / ``warrant=`` /
+        body needs no re-send. A ``find`` that misses verbatim is retried
+        folded (whitespace, quotes, dashes, ligatures — gr688478) before
+        the error fires, so a retyped span still lands. ``title=`` /
+        ``rule=`` / ``warrant=`` /
         ``meta=`` ride every mode's one transaction (gr506768) — a retitle
         or an argument-label fix pairs with an anchored body edit in one
         call; ``title=`` alone (with ``mode='replace'``) is the retitle
@@ -3938,7 +3946,7 @@ class MemoryHandler(AuditedRetirementHandler):
         ref: Ref,
         echo_title: str,
     ) -> tuple[str, tuple[tuple[int, int], ...], bool]:
-        """One ``'find-replace'``/``'insert'`` dict through ``apply_edit``."""
+        """Resolve one ``'find-replace'``/``'insert'`` dict against the current body."""
         find = raw.get("find")
         if not isinstance(find, str) or not find:
             raise BadInput(
@@ -3979,13 +3987,16 @@ class MemoryHandler(AuditedRetirementHandler):
                 "'nth' must be an int",
                 next="pass 'nth' as an int with 'match': 'nth', or leave it out",
             )
+        # find/before/after are locators, like the single-op path's — they
+        # address already-stored text and never land in the body, so
+        # masking them would only break a legitimate anchor (gr688478).
         op = EditOp(
             op="edit" if op_kind == "find-replace" else "insert",
-            find=mask_secrets(find),
+            find=find,
             text=mask_secrets(text),
-            before=mask_secrets(cast(str, before)),
-            after=mask_secrets(cast(str, after)),
-            where=cast("Any", mask_secrets(where) if isinstance(where, str) else where),
+            before=cast(str, before),
+            after=cast(str, after),
+            where=cast("Any", where),
             match=cast("Any", match or "unique"),
             nth=nth,
             region_label=label,
@@ -4093,30 +4104,89 @@ class MemoryHandler(AuditedRetirementHandler):
         authored body, so its invisible prefix cannot survive the rewrite.
         A delete is not a rewrite: it stays on the raw buffer.
         Generated headers and entity footers never enter either buffer.
+
+        A literal miss retries folded (gr688478): the agent retyped a span
+        it saw and drifted on whitespace, quotes, dashes or ligatures —
+        ``relaxed_candidates`` maps the folded hit back to raw offsets, so
+        the splice still lands real bytes under the same match policy.
         """
-        if op.find not in buffer:
-            raise BadInput(
-                f"anchor not found in memory {ref.id} body; generated headers "
-                "and referenced entities footers are not editable",
-                next=(
-                    f"get(kind='memory', id='me{ref.id}~body'), then retry "
-                    "with an anchor from the body prose"
-                ),
-            )
         if echo_title is None:
             echo_title = self._body_echo_title(buffer, ref.title or "", ref.meta or {})
         visible = self._strip_title_echo(buffer, echo_title)
-        exact_body = bool(
+        whole_visible = (
             op.op == "edit"
-            and op.text
-            and visible
-            and op.find == visible
+            and bool(op.text)
+            and bool(visible)
             and op.match == "unique"
             and op.nth is None
             and not op.before
             and not op.after
         )
-        return apply_edit(visible if exact_body else buffer, op), exact_body
+        exact_body = whole_visible and op.find == visible
+        basis = visible if exact_body else buffer
+        candidates = find_candidates(basis, op)
+        if not candidates:
+            exact_body = whole_visible and fold_anchor(op.find) == fold_anchor(visible)
+            basis = visible if exact_body else buffer
+            candidates = relaxed_candidates(basis, op)
+        if not candidates:
+            raise self._anchor_miss(ref, buffer, op)
+        chosen = select_candidates(candidates, op, buffer=basis)
+        return splice_edit(basis, op, chosen, n_matches=len(candidates)), exact_body
+
+    def _anchor_miss(self, ref: Ref, buffer: str, op: EditOp) -> BadInput:
+        """The 'anchor not found' BadInput, with a diagnosis when one shows.
+
+        The read the agent copied from renders more than the body — the
+        ``# memory N:`` header, a ``tags:`` line, the referenced-entities
+        courtesy footer — none of it editable through the body anchor.
+        Name the likely culprit and list the nearest real body lines the
+        way the file kinds' not-found error does.
+        """
+        notes: list[str] = []
+        if "…" in op.find or "..." in op.find:
+            notes.append(
+                "find= carries an ellipsis — anchors need the complete "
+                "stored span, not a copy cut by a truncated view"
+            )
+        title = (ref.title or "").strip()
+        if title and title in op.find and title not in buffer:
+            notes.append(
+                "find= matches the title — it lives in the generated "
+                "'# memory N:' header, not the body"
+            )
+        if "# memory" in op.find or "referenced entities" in op.find:
+            notes.append(
+                "the '# memory N:' header and referenced-entities footer "
+                "are rendered on read, not stored in the body"
+            )
+        nearest = _nearest_lines(buffer, op.find, base_line=1)
+        if nearest:
+            notes.append("nearest body lines:")
+            notes.extend(
+                "  "
+                + (
+                    f"L{ln}  "
+                    + (txt if len(txt) <= 80 else txt[:77].rstrip() + "…")
+                    + f"  ({ratio:.0%} similar)"
+                )
+                for ln, txt, ratio in nearest
+            )
+        title_next = (
+            " or pass title= to retitle"
+            if title and title in op.find and title not in buffer
+            else ""
+        )
+        cause = f"anchor not found in memory {ref.id} body"
+        if notes:
+            cause += "\n" + "\n".join(notes)
+        return BadInput(
+            cause,
+            next=(
+                f"get(kind='memory', id='me{ref.id}~body'), then retry "
+                f"with an anchor from the body prose{title_next}"
+            ),
+        )
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Search-hit text: the body prose, even when the best-ranked chunk
