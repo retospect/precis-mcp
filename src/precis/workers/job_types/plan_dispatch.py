@@ -2407,7 +2407,10 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
     ``None`` (the corrective lands on main). The deploy gate wants a
     FIX/REVERT's corrective ON the release branch (release-train T4),
     so a corrective minted for main would hold the deploy until a human
-    answers. Any read fault reads ``None``."""
+    answers. A main commit the branch repeats patch for patch
+    (``release_poll._branch_carries``) is in the scope too: the gate
+    judges the branch's copy by that commit's review, so its corrective
+    belongs on the branch as well. Any read fault reads ``None``."""
     if not shas:
         return None
     from precis.workers.job_types import release_poll as _rp
@@ -2420,14 +2423,12 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
         if rel is None or _release.deploy_started(store, root) is not None:
             return None
         lands = _rp._release_lands(rel)
+        picked, _undone, _notes = _rp._branch_carries(rel, lands)
     except Exception:
         log.warning("plan_dispatch: release scope unreadable", exc_info=True)
         return None
-    for land in lands:
-        if any(
-            land.sha.startswith(s.lower()) or s.lower().startswith(land.sha)
-            for s in shas
-        ):
+    for sha in [land.sha for land in lands] + [src.sha for src in picked.values()]:
+        if any(sha.startswith(s.lower()) or s.lower().startswith(sha) for s in shas):
             return _release.release_branch(str(rel["rN"]))
     return None
 

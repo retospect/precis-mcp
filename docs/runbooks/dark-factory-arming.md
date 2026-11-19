@@ -135,6 +135,11 @@ it, and a dropped pass's record is one `scripts/round cut --abandon` (or
 the next cut's own abandon phase) can retire. A resumed leg returns to its
 prior state and journal, so an earlier launched rollout stays a partial
 rollout. A leg adds the launch marker only when it reaches the ping.
+One thing does survive the refused leg: it had already moved
+`origin/gated` to the release head, and the record keeps that sha
+(`gated_seen` in the local `round.json`). A retry refuses when
+`origin/gated` has since been deleted or moved back; the bound belongs
+to the record, so `scripts/round cut --abandon` is what drops it.
 
 The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
@@ -1042,7 +1047,17 @@ Known limits:
   that commit, landing the commit on the release branch clears the hold
   without an answer. While the gate holds a deploy, the tick writes the
   refusal as a comment on the `release_deploy` node, once per distinct
-  text (gr702442).
+  text (gr702442). Two kinds of commit on `release/r<N>` bring no code
+  of their own and get no review of their own (Reto 2026-11-19): a
+  commit that repeats a main commit patch for patch (a cherry-pick) is
+  judged by that main land's review, and carries it for the hold above;
+  an exact revert of a commit of the same release drops out together
+  with the commit it undoes. Both are proved on the trees, not read
+  from a subject or trailer: replaying the main commit onto the branch
+  commit's parent (or the undone commit backwards) must give the branch
+  commit's tree exactly. A revert of code prod already runs, a revert of
+  a revert, and any commit with a change of its own — an indentation
+  change included — keep their review.
 - The file-overlap hold is bounded. A started, unlanded build keeps
   other builds that touch its files out of the claim (td603849), but
   only for `factory.overlap_hold_max_runs` ended `run_slice` runs

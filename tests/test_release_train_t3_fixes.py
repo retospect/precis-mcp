@@ -53,6 +53,39 @@ def test_a_corrective_for_a_land_inside_the_release_targets_its_branch(
     assert pd._release_scope_target(store, []) is None
 
 
+def test_a_corrective_for_a_main_commit_the_branch_repeats_targets_its_branch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    x, m = "a" * 40, "b" * 40
+    monkeypatch.setattr(release_poll, "_open_pass_id", lambda store: mint.root_id)
+    monkeypatch.setattr(
+        release_poll,
+        "_release_lands",
+        lambda rel: [
+            release_poll._GitLand(
+                sha=x,
+                subject="",
+                committed_at=None,
+                paths=("scripts/ship",),
+                branch_only=True,
+            )
+        ],
+    )
+    main_land = release_poll._GitLand(
+        sha=m, subject="", committed_at=None, paths=("scripts/ship",)
+    )
+    monkeypatch.setattr(
+        release_poll, "_branch_carries", lambda rel, lands: ({x: main_land}, set(), [])
+    )
+    assert pd._release_scope_target(store, [m[:12]]) == "release/r7"
+    # Control: with nothing picked, M is outside the release's scope.
+    monkeypatch.setattr(
+        release_poll, "_branch_carries", lambda rel, lands: ({}, set(), [])
+    )
+    assert pd._release_scope_target(store, [m[:12]]) is None
+
+
 def test_a_started_deploy_sends_the_corrective_to_main(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

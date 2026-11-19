@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -3852,3 +3854,494 @@ def test_the_hold_caps_at_twenty_lines_plus_a_count(store: Store) -> None:
     lines = [f"engine land td{i} has no reviewer; the release waits" for i in range(25)]
     rp.note_cut_hold(store, mint.ids["cut"], lines, now=NOW)
     assert _cut_hold(store, mint.root_id)["lines"] == [*lines[:20], "+5 more"]
+
+
+# ── branch carries: cherry-picks and reverts add no code to review ──
+#
+# A commit that exists only on release/r<N> and repeats a main commit's
+# patch is judged as that main land; an exact revert of a commit of the
+# same release drops out together with it (``rp._branch_carries``).
+
+_BRANCH_X = "e" * 40
+_MAIN_M = "f" * 40
+
+
+def _branch_release(store: Store) -> tuple[int, dict[str, Any]]:
+    """A cut r7 (deploy id, release dict) for the gate-level carry tests."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "9" * 12 + ".." + "c" * 12)
+    rel = R.release_of(store, mint.ids["deploy"])
+    assert rel is not None
+    return mint.ids["deploy"], rel
+
+
+def _branch_x() -> Any:
+    """The engine commit that exists only on the release branch."""
+    return rp._GitLand(
+        sha=_BRANCH_X,
+        subject="fix(gate): the branch copy",
+        committed_at=NOW,
+        paths=("scripts/ship",),
+        branch_only=True,
+    )
+
+
+def _main_m(subject: str = "fix(gate): the main land (td42)") -> Any:
+    """The main commit (after the cut) the branch copy repeats."""
+    return rp._GitLand(
+        sha=_MAIN_M, subject=subject, committed_at=NOW, paths=("scripts/ship",)
+    )
+
+
+def _set_carries(
+    monkeypatch: pytest.MonkeyPatch,
+    picked: dict[str, Any] | None = None,
+    undone: set[str] | None = None,
+    notes: list[str] | None = None,
+) -> None:
+    monkeypatch.setattr(
+        rp,
+        "_branch_carries",
+        lambda rel, lands: (dict(picked or {}), set(undone or ()), list(notes or ())),
+    )
+
+
+def test_a_picked_branch_commit_is_judged_by_its_main_lands_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel = _branch_release(store)
+    _REL_LANDS.append(_branch_x())
+    note = "engine review: r7 eeeeeeeeeeee repeats main's ffffffffffff patch"
+    _set_carries(monkeypatch, picked={_BRANCH_X: _main_m()}, notes=[note])
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    lines, notes = rp.engine_review_blockers(store, rel=rel, file_asks=True)
+    assert lines == []
+    assert note in notes
+    assert rp.deploy_review_blockers(store, deploy) == []
+    assert not [k for k in _reviewer_keys(store) if k.startswith("sha:")]
+    units, _pin, scanned, gnotes = rp._gate_lands(store, rel)
+    assert [(u.sha12, u.todo_id) for u in units] == [(_MAIN_M[:12], 42)]
+    assert gnotes == [note]
+    assert _BRANCH_X in scanned and _MAIN_M in scanned
+
+
+def test_a_picked_branch_commit_whose_main_land_has_no_review_blocks_on_main(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel = _branch_release(store)
+    _REL_LANDS.append(_branch_x())
+    _set_carries(monkeypatch, picked={_BRANCH_X: _main_m()})
+    [held] = rp.deploy_review_blockers(store, deploy)
+    assert "td42" in held and _BRANCH_X[:12] not in held
+    lines, _notes = rp.engine_review_blockers(store, rel=rel, file_asks=True)
+    assert len(lines) == 1 and "td42" in lines[0] and _BRANCH_X[:12] not in lines[0]
+    assert f"sha:{_BRANCH_X[:12]}" not in _reviewer_keys(store)
+
+
+def test_an_undone_pair_needs_no_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel = _branch_release(store)
+    r_sha = "1" * 40
+    _REL_LANDS.append(
+        rp._GitLand(
+            sha=r_sha,
+            subject="fix(gate): in the cut range",
+            committed_at=NOW,
+            paths=("scripts/ship",),
+        )
+    )
+    _REL_LANDS.append(_branch_x())
+    _set_carries(monkeypatch, undone={_BRANCH_X, r_sha})
+    assert rp.deploy_review_blockers(store, deploy) == []
+    lines, _notes = rp.engine_review_blockers(store, rel=rel, file_asks=True)
+    assert lines == []
+    assert _reviewer_keys(store) == []
+    units, _pin, scanned, _n = rp._gate_lands(store, rel)
+    assert units == [] and _BRANCH_X not in scanned and r_sha not in scanned
+
+
+def test_without_carries_the_branch_commit_is_its_own_unit(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel = _branch_release(store)
+    r_sha = "1" * 40
+    _REL_LANDS.append(
+        rp._GitLand(
+            sha=r_sha,
+            subject="fix(gate): in the cut range",
+            committed_at=NOW,
+            paths=("scripts/ship",),
+        )
+    )
+    _REL_LANDS.append(_branch_x())
+    _set_carries(monkeypatch)
+    held = "; ".join(rp.deploy_review_blockers(store, deploy))
+    assert _BRANCH_X[:12] in held and r_sha[:12] in held
+    rp.engine_review_blockers(store, rel=rel, file_asks=True)
+    assert f"sha:{_BRANCH_X[:12]}" in _reviewer_keys(store)
+    assert f"sha:{r_sha[:12]}" in _reviewer_keys(store)
+
+
+def test_a_picked_fix_on_the_branch_satisfies_the_carry_hold(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review's corrective commit F is on main only; the branch
+    carries its cherry-pick X, so the release does carry the fix."""
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    _REL_LANDS.append(_branch_x())
+    fix_land = rp._GitLand(
+        sha="b" * 40, subject="fix(gate): fix", committed_at=NOW, paths=()
+    )
+    # Control: nothing picked, so the fix is missing from the release.
+    _set_carries(monkeypatch)
+    assert any(rp._CARRY_MARK in ln for ln in rp.deploy_review_blockers(store, deploy))
+    _set_carries(monkeypatch, picked={_BRANCH_X: fix_land})
+    verdicts, _n, fatal, _pin, scanned = rp._engine_verdicts(store, rel=rel, now=NOW)
+    assert fatal is None and verdicts is not None
+    assert [v for v in verdicts if rp._carry_missing(v, scanned)] == []
+    assert not [
+        ln for ln in rp.deploy_review_blockers(store, deploy) if rp._CARRY_MARK in ln
+    ]
+
+
+# Real-git cases for ``rp._branch_carries``: a main line P, prev, R1, R2
+# (the cut), M and a docs commit past the cut; release/r7 built from the cut.
+
+_ENGINE_FILE = "scripts/lib/e.sh"
+_DUP_T_FILE = "scripts/lib/dup_t.sh"
+_DUP_M_FILE = "scripts/lib/dup_m.sh"
+_INDENT_FILE = "scripts/lib/indent.sh"
+_AGAIN_FILE = "scripts/lib/again.sh"
+
+
+def _real_git(args: list[str], cwd: Any) -> Any:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+class _Repo:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.shas: dict[str, str] = {}
+
+    def git(self, *args: str) -> str:
+        proc = _real_git(list(args), self.root)
+        assert proc.returncode == 0, f"git {args}: {proc.stderr}"
+        return proc.stdout.strip()
+
+    def head(self) -> str:
+        return self.git("rev-parse", "HEAD")
+
+    def edit(self, line: int, tag: str, msg: str) -> str:
+        path = self.root / _ENGINE_FILE
+        rows = path.read_text(encoding="utf-8").splitlines()
+        rows[line - 1] = f"line {line:03d} {tag}"
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.head()
+
+    def _rewrite(self, rel_path: str, rows: list[str], msg: str) -> str:
+        (self.root / rel_path).write_text("\n".join(rows) + "\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.head()
+
+    def insert(
+        self, rel_path: str, after: str, text: str, msg: str, *, nth: int = 0
+    ) -> str:
+        """Commit ``text`` as a new line after the ``nth`` line equal
+        to ``after`` (whitespace-insensitive)."""
+        rows = (self.root / rel_path).read_text(encoding="utf-8").splitlines()
+        hits = [i for i, r in enumerate(rows) if r.strip() == after]
+        rows.insert(hits[nth] + 1, text)
+        return self._rewrite(rel_path, rows, msg)
+
+    def remove(self, rel_path: str, text: str, msg: str) -> str:
+        """Commit the removal of the LAST line equal to ``text``."""
+        rows = (self.root / rel_path).read_text(encoding="utf-8").splitlines()
+        hits = [i for i, r in enumerate(rows) if r.strip() == text]
+        del rows[hits[-1]]
+        return self._rewrite(rel_path, rows, msg)
+
+    def on_main(self, fn: Any) -> Any:
+        """Run ``fn`` (one commit) on main, move ``origin/main`` to it
+        and come back to the release branch."""
+        self.git("checkout", "-q", "main")
+        out = fn()
+        sha = self.head()
+        self.git("update-ref", "refs/remotes/origin/main", sha)
+        self.git("checkout", "-q", "rel")
+        return out if out is not None else sha
+
+    def docs(self, msg: str) -> str:
+        path = self.root / "docs" / "x.md"
+        path.parent.mkdir(exist_ok=True)
+        old = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(old + msg + "\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.head()
+
+
+def _carry_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_Repo, dict[str, Any]]:
+    """The repo up to the cut and main past it, HEAD on a branch ``rel``
+    at the cut; the release dict returned. Real ``git`` replaces the stub."""
+    root = tmp_path / "repo"
+    (root / "scripts" / "lib").mkdir(parents=True)
+    repo = _Repo(root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.name", "T")
+    repo.git("config", "user.email", "t@example.invalid")
+    repo.git("config", "commit.gpgsign", "false")
+    (root / _ENGINE_FILE).write_text(
+        "".join(f"line {i:03d}\n" for i in range(1, 201)), encoding="utf-8"
+    )
+    pad = [f"pad{i}" for i in range(5)]
+    mid = [f"mid{i}" for i in range(10)]
+    block = ["x1", "x2", "x3", "x4", "x5", "x6"]
+    files = {
+        # block 2 already carries the "ins" line block 1 gains in T
+        _DUP_T_FILE: [*pad, *block, *mid, "x1", "x2", "x3", "ins", "x4", "x5", "x6"],
+        _DUP_M_FILE: [*pad, *block, *mid, *block],
+        _INDENT_FILE: ["f() {", *(f"    a{i}" for i in range(1, 7)), "}"],
+        _AGAIN_FILE: [*pad, "y1", "y2", "y3", "y4", "y5", "y6"],
+    }
+    for name, rows in files.items():
+        (root / name).write_text("\n".join(rows) + "\n", encoding="utf-8")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "base")
+    s = repo.shas
+    s["P"] = repo.edit(150, "p", "P: before the range")
+    s["prev"] = repo.docs("prev")
+    s["R1"] = repo.edit(10, "r1", "R1")
+    s["T"] = repo.insert(_DUP_T_FILE, "x3", "ins", "T: block 1 gains a line")
+    s["R2"] = repo.edit(40, "r2", "R2")
+    s["cut"] = s["R2"]
+    s["M"] = repo.edit(80, "m", "M: main after the cut")
+    repo.docs("N: docs after the cut")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.head())
+    repo.git("checkout", "-q", "-b", "rel", s["cut"])
+    monkeypatch.setattr(rs, "_git", _real_git)
+    monkeypatch.setattr(rs, "slice_root", lambda: root)
+    rel = {
+        "rN": "r7",
+        "cut_sha": s["cut"],
+        "sha": s["cut"],
+        "cut_range": f"{s['prev']}..{s['cut']}",
+        "range": f"{s['prev']}..{s['cut']}",
+    }
+    return repo, rel
+
+
+def _carries(repo: _Repo, rel: dict[str, Any]) -> tuple[Any, Any, Any, list[Any]]:
+    repo.git("update-ref", "refs/remotes/origin/release/r7", repo.head())
+    cut = rel["cut_sha"]
+    lands = rp._log_lands(repo.root, rel["cut_range"]) + [
+        replace(land, branch_only=True)
+        for land in rp._log_lands(repo.root, f"{cut}..refs/remotes/origin/release/r7")
+    ]
+    picked, undone, notes = rp._branch_carries(rel, lands)
+    return picked, undone, notes, lands
+
+
+def test_a_cherry_pick_of_a_main_commit_is_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    # A docs commit first: M's parent is the cut, and picking it straight
+    # onto the cut would recreate M itself (same parent, tree and dates).
+    repo.docs("branch note")
+    repo.git("cherry-pick", repo.shas["M"])
+    x = repo.head()
+    picked, undone, notes, _lands = _carries(repo, rel)
+    assert {k: v.sha for k, v in picked.items()} == {x: repo.shas["M"]}
+    assert undone == set()
+    assert len(notes) == 1
+    assert f"{x[:12]} repeats main's {repo.shas['M'][:12]} patch" in notes[0]
+
+
+def test_a_cherry_pick_onto_a_file_both_sides_changed_elsewhere_is_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The picked commit's file is not the same on the two sides: main
+    carries M in it before the source, the branch its own edit. The
+    proof merges the contents the way cherry-pick does and still finds
+    the copy; the branch's own edit stays a unit."""
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    m2 = repo.on_main(lambda: repo.edit(120, "m2", "M2: main, another region"))
+    own = repo.edit(20, "own", "branch: a change of its own")
+    repo.git("cherry-pick", m2)
+    x = repo.head()
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert {k: v.sha for k, v in picked.items()} == {x: m2}
+    assert own not in picked and undone == set()
+
+
+def test_a_revert_of_a_commit_of_the_cut_range_is_undone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    repo.git("revert", "--no-edit", repo.shas["R1"])
+    x = repo.head()
+    picked, undone, notes, _lands = _carries(repo, rel)
+    assert undone == {x, repo.shas["R1"]}
+    assert picked == {}
+    assert len(notes) == 1 and "exact revert of" in notes[0]
+
+
+def test_a_revert_of_code_prod_already_runs_stays_a_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    repo.git("revert", "--no-edit", repo.shas["P"])
+    picked, undone, notes, _lands = _carries(repo, rel)
+    assert picked == {} and undone == set() and notes == []
+
+
+def test_a_revert_of_a_revert_reapplies_code_and_stays_a_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    repo.git("revert", "--no-edit", repo.shas["R1"])
+    first = repo.head()
+    repo.git("revert", "--no-edit", first)
+    second = repo.head()
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert undone == {first, repo.shas["R1"]}
+    assert second not in undone and second not in picked
+
+
+def test_a_branch_commit_with_its_own_change_is_in_neither_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    x = repo.edit(120, "new", "X: new change on the branch")
+    picked, undone, notes, _lands = _carries(repo, rel)
+    assert x not in picked and x not in undone
+    assert picked == {} and undone == set() and notes == []
+
+
+def test_a_cherry_pick_reverted_on_the_branch_is_undone_not_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    # A docs commit first: M's parent is the cut, and picking it straight
+    # onto the cut would recreate M itself (same parent, tree and dates).
+    repo.docs("branch note")
+    repo.git("cherry-pick", repo.shas["M"])
+    x = repo.head()
+    repo.git("revert", "--no-edit", x)
+    y = repo.head()
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert undone == {x, y}
+    assert picked == {}
+
+
+def test_branch_carries_without_git_returns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The autouse fixture's failing ``rs._git`` stub stays in place.
+    monkeypatch.setattr(rs, "slice_root", lambda: tmp_path)
+    land = rp._GitLand(
+        sha="1" * 40,
+        subject="fix(gate): x",
+        committed_at=NOW,
+        paths=("scripts/ship",),
+        branch_only=True,
+    )
+    rel = {"rN": "r7", "cut_sha": "c" * 40, "cut_range": "9" * 12 + ".." + "c" * 12}
+    assert rp._branch_carries(rel, [land]) == ({}, set(), [])
+
+
+# Cases a patch-id alone gets wrong: it ignores whitespace and line
+# numbers, so the tree (``rp._replays_as``) is the proof.
+
+
+def _stable_patch_id(repo: _Repo, sha: str) -> str:
+    shown = repo.git("show", "--format=", sha)
+    ids = rs._patch_id(shown + "\n", repo.root)
+    assert ids.returncode == 0 and ids.stdout.split(), ids.stderr
+    return ids.stdout.split()[0]
+
+
+def test_a_copy_at_another_indentation_is_not_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    m = repo.on_main(
+        lambda: repo.insert(_INDENT_FILE, "a3", "    the new line", "M: indented")
+    )
+    repo.docs("branch note")
+    x = repo.insert(_INDENT_FILE, "a3", "  the new line", "X: indented less")
+    # Same stable patch-id: only the tree tells the two apart.
+    assert _stable_patch_id(repo, x) == _stable_patch_id(repo, m)
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert picked == {} and undone == set()
+
+
+def test_the_same_lines_in_another_block_are_not_an_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    repo.docs("branch note")
+    x = repo.remove(_DUP_T_FILE, "ins", "X: removes the line from block 2")
+    # X's inverse patch is T's patch (same context in both blocks).
+    inverse = rs._patch_id(repo.git("diff", x, f"{x}^") + "\n", repo.root)
+    assert inverse.stdout.split()[0] == _stable_patch_id(repo, repo.shas["T"])
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert undone == set() and picked == {}
+
+
+def test_the_same_line_in_another_block_is_not_picked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    m = repo.on_main(lambda: repo.insert(_DUP_M_FILE, "x3", "ins", "M: block 1"))
+    repo.docs("branch note")
+    x = repo.insert(_DUP_M_FILE, "x3", "ins", "X: block 2", nth=1)
+    assert _stable_patch_id(repo, x) == _stable_patch_id(repo, m)
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert picked == {} and undone == set()
+
+
+def test_a_merge_commit_on_the_branch_is_in_neither_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    repo.git("checkout", "-q", "-b", "side", repo.shas["cut"])
+    repo.edit(120, "side", "side: a change")
+    repo.git("checkout", "-q", "rel")
+    repo.docs("branch note")
+    repo.git("merge", "--no-ff", "-q", "-m", "merge side", "side")
+    merge = repo.head()
+    picked, undone, _notes, lands = _carries(repo, rel)
+    assert any(land.sha == merge and land.branch_only for land in lands)
+    assert picked == {} and undone == set()
+
+
+def test_a_patch_main_made_twice_is_picked_from_one_of_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    first = repo.on_main(lambda: repo.insert(_AGAIN_FILE, "y3", "again", "M: add"))
+    repo.on_main(lambda: repo.git("revert", "--no-edit", first))
+    second = repo.on_main(lambda: repo.insert(_AGAIN_FILE, "y3", "again", "M: re-add"))
+    assert _stable_patch_id(repo, first) == _stable_patch_id(repo, second)
+    repo.docs("branch note")
+    repo.git("cherry-pick", second)
+    x = repo.head()
+    picked, undone, _notes, _lands = _carries(repo, rel)
+    assert list(picked) == [x] and undone == set()
+    assert picked[x].sha in {first, second}

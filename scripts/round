@@ -235,12 +235,41 @@ def _is_terminal(rel: dict[str, Any]) -> bool:
 DEPLOY_RC_UNTOUCHED = 75
 
 
+#: The record's own lower bound on ``origin/gated``, outside the rollout
+#: journal: the authoritative gated shas a refused leg read. A leg moves
+#: ``gated`` to the candidate BEFORE `scripts/deploy` runs, so a refusal
+#: with exit 75 follows a publication; dropping the leg's journal must not
+#: drop what it saw, or a retry would accept a ``gated`` deleted or moved
+#: back in between as its starting point (review td731692 of gr730609).
+GATED_SEEN_KEY = "gated_seen"
+
+
+def _gated_seen(rel: dict[str, Any]) -> list[Any]:
+    """The gated observations ``rel`` keeps for `_refresh_release_pointers`.
+    A value that is not a list comes back as one entry that function
+    refuses — a damaged bound is a refusal, never no bound."""
+    seen = rel.get(GATED_SEEN_KEY)
+    if seen is None:
+        return []
+    return list(seen) if isinstance(seen, list) else [None]
+
+
 def _unjournal_leg(rel: dict[str, Any], before: tuple[str, Any, Any]) -> None:
     """Put ``rel`` back as it stood before a deploy leg that `scripts/deploy`
     refused before any rollout step (gr730609): the prior state, ``state_at``
     and journal. A first leg had no journal, so the record reads open again;
     a resumed partial rollout keeps the journal that carries its launch
-    markers."""
+    markers. The refused leg's ``gated`` observations move to
+    :data:`GATED_SEEN_KEY` first — the bound outlives the journal."""
+    seen = _gated_seen(rel)
+    refused = rel.get("deployment")
+    if isinstance(refused, dict):
+        for key in ("gated_before", "gated_after"):
+            sha = refused.get(key)
+            if sha and sha not in seen:
+                seen.append(sha)
+    if seen:
+        rel[GATED_SEEN_KEY] = seen
     state, state_at, journal = before
     rel["state"] = state
     if state_at is None:
@@ -1937,7 +1966,7 @@ def _gate_facts(root: Path) -> dict[str, Any]:
             facts.update(candidate="", candidate_state="unreadable")
             return facts
         journal = rel.get("deployment", {})
-        observed_gated = [
+        observed_gated = _gated_seen(rel) + [
             journal[k] for k in ("gated_before", "gated_after") if k in journal
         ]
         if not _refresh_release_pointers(root, facts, observed_gated):
@@ -2606,8 +2635,9 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         if not _release_unchanged(root, rel["branch"], cand):
             return _deploy_refuse("release head moved during the CI lookup")
     # Release facts above came from the first authoritative remote snapshot.
-    # Its bound persists even when a later snapshot still relates to candidate.
-    observed_gated = [f["origin_gated"]] if rel else []
+    # Its bound persists even when a later snapshot still relates to candidate,
+    # and so does what a leg refused before any rollout saw (GATED_SEEN_KEY).
+    observed_gated = [*_gated_seen(rel), f["origin_gated"]] if rel else []
     if rel:
         if not _refresh_release_pointers(root, f, observed_gated):
             return _deploy_refuse(
