@@ -734,6 +734,67 @@ class TestViews:
             verb, _kwargs = parse_command(hint)  # must not raise
             assert verb == "get"
 
+    def test_references_preserves_parsed_markers(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO paper_bib_entries (ref_id, marker, raw_text, parse_version) "
+                "VALUES (%s, 12, 'Second reference', 1), (%s, 4, 'First reference', 1)",
+                (ref_id, ref_id),
+            )
+
+        handle = f"pa{ref_id}"
+        response = handler.get(id=handle, view="references")
+        assert response.result_count == 2
+        assert "[4] First reference\n\n[12] Second reference" in response.body
+
+        bibliography = handler.get(id=handle, view="bibliography")
+        assert "0 citations on file" in bibliography.body
+        assert f"get(id='{handle}', view='references')" in bibliography.body
+        assert "First reference" not in bibliography.body
+
+    def test_references_falls_back_to_source_chunks(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, blocks=["Introduction.", "Methods.", "Results."])
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO paper_bib_entries "
+                "(ref_id, marker, raw_text, parse_version, source) "
+                "VALUES (%s, -1, 'OpenAlex candidate', 0, 'openalex')",
+                (ref_id,),
+            )
+        store.chunks.insert_chunks(
+            ref_id,
+            [
+                ChunkInsert(ord=3, text="# References"),
+                ChunkInsert(ord=4, text="[7] Smith, J. A numbered reference."),
+                ChunkInsert(
+                    ord=5,
+                    text="An unnumbered entry.",
+                    meta={"chunk_kind": "references"},
+                ),
+            ],
+        )
+        handle = f"pa{ref_id}"
+        body = handler.get(id=handle, view="references").body
+        assert "(source chunks)" in body
+        assert f"{handle}~4" in body
+        assert "[7] Smith, J. A numbered reference." in body
+        assert "An unnumbered entry." in body
+        assert "Methods." not in body
+        assert "OpenAlex candidate" not in body
+
+    def test_references_without_stored_entries(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store)
+        body = handler.get(id=f"pa{ref_id}", view="references").body
+        assert "No reference entries found" in body
+        assert "view='toc'" in body
+
     def test_list_view_open_hint_interpolates_first_handle(
         self, store: Store, handler: PaperHandler
     ) -> None:

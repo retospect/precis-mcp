@@ -29,6 +29,10 @@ DOI status reads use the fetch-status table before acquisition handling.
 An unheld DOI reports unresolved there, while an ordinary DOI get can
 request acquisition.
 
+The references view reads the paper's published entries and falls back to
+stored reference chunks while parsed rows are unavailable. Bibliography
+follows incoming verifier citations.
+
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
 Superseded-handle resolution on link/edit/put/tag emits a per-call footer
@@ -378,6 +382,7 @@ _SUPPORTED_VIEWS = (
     "summaries",
     "health",
     "bibliography",
+    "references",
     "log",
     "abbrevs",
     "links",
@@ -10722,6 +10727,9 @@ class PaperHandler(Handler):
         if view == "bibliography":
             return self._render_bibliography(ref)
 
+        if view == "references":
+            return self._render_references(ref)
+
         if view == "claims":
             # Taproot claim hubs THIS paper grounds — not to be confused
             # with the patent kind's ``view='claims'`` (that one is the
@@ -10884,6 +10892,38 @@ class PaperHandler(Handler):
             lines += [f"  {t}: {n}" for t, n in stats["by_section"].items()]
         return Response(body="\n".join(lines), result_count=stats["total"])
 
+    def _render_references(self, ref: Ref) -> Response:
+        """Read the paper's own references with their published numbering."""
+        from precis.utils.boilerplate import ChunkClass, classify_chunks
+
+        heading = f"# {_pa(ref)} — references"
+        # OpenAlex-only rows carry synthetic negative markers.
+        entries = [
+            entry for entry in self.store.list_bib_entries(ref.id) if entry.marker >= 0
+        ]
+        if entries:
+            lines = [f"[{entry.marker}] {entry.raw_text}" for entry in entries]
+            return Response(
+                body=f"{heading}\n\n" + "\n\n".join(lines),
+                result_count=len(entries),
+            )
+
+        chunks = self.store.chunks.list_chunks_for_ref(ref.id)
+        classified = classify_chunks([chunk.text for chunk in chunks])
+        blocks = [
+            f"### {_pa(ref)}~{chunk.ord}\n\n{chunk.text}"
+            for chunk, role in zip(chunks, classified.classes, strict=True)
+            if chunk.chunk_kind == "references" or role is ChunkClass.REFERENCES
+        ]
+        if blocks:
+            return Response(body=f"{heading} (source chunks)\n\n" + "\n\n".join(blocks))
+
+        body = f"{heading}\n\nNo reference entries found in the stored paper."
+        body += render_next_section(
+            [(f"get(id='{_pa(ref)}', view='toc')", "browse the stored paper")]
+        )
+        return Response(body=body)
+
     def _render_bibliography(self, ref: Ref) -> Response:
         """``view='bibliography'`` — citations referencing this paper.
 
@@ -10904,6 +10944,10 @@ class PaperHandler(Handler):
             body = f"# {slug} bibliography — 0 citations on file"
             body += render_next_section(
                 [
+                    (
+                        f"get(id='{_pa(ref)}', view='references')",
+                        "read the paper's own reference list",
+                    ),
                     (
                         f"get(id='{_pa(ref)}', view='toc')",
                         "browse segments to find drillable claims",
