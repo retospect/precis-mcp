@@ -727,6 +727,11 @@ put(
 
 The memory survives the cache's TTL and carries your own framing.
 
+When `link=` is given, `meta` keys `model`, `prompt_version`, `run_id`, `why`
+and `evidence` annotate the creation edge, not the memory (a machine-written
+edge needs the first four); other keys such as `hook` and `type` stay on the
+memory.
+
 ## Bump confidence as evidence accumulates
 ## Upgrade a tentative note to strong
 ## Change confidence-moderate to confidence-certain
