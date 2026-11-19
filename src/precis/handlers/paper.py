@@ -12353,7 +12353,7 @@ def _render_citation_candidates(citation: str, cands: list[dict[str, Any]]) -> s
 def resolve_paper_slug(
     store: Store, id: str | int, *, kind: str = "paper"
 ) -> tuple[str, int]:
-    """Coerce a paper id to a ``(slug, ref_id)`` pair — the module-level home
+    """Coerce a paper id to a ``(canonical slug, ref_id)`` pair — the module-level home
     of what ``PaperHandler._resolve_paper_slug`` used to do inline, shared
     with ``precis paper fetch-si``.
 
@@ -12393,7 +12393,7 @@ def resolve_paper_slug(
         next_hint=(f"search(kind='{kind}', q='...') to find existing slugs"),
         options=lambda: _suggest_paper_slugs(slug, store=store, kind=kind),
     )
-    return slug, ref.id
+    return ref.slug or str(ref.id), ref.id
 
 
 def _maybe_resolve_doi(store: Store, raw: str) -> str:
