@@ -146,6 +146,19 @@ _CAPTION_STYLE = "Caption"
 _TABLE_CAPTION_STYLE = "Table Caption"
 _CAPTION_LABEL_STYLE = "Caption Label"
 _FIGURE_STYLE = "Figure"
+#: The reference list and the acronym list are styled the same way.
+#: ``Bibliography`` is Word's built-in name; in EndNote mode the list takes
+#: ``EndNote Bibliography``, the name EndNote gives the list it regenerates,
+#: so the author's changes to the style outlive an EndNote update.
+#: ``Definition`` is one "SHORT: long form" entry, ``Definition Term``
+#: (character) its "SHORT:" label.
+_BIBLIOGRAPHY_STYLE = "Bibliography"
+_ENDNOTE_BIBLIOGRAPHY_STYLE = "EndNote Bibliography"
+_DEFINITION_STYLE = "Definition"
+_DEFINITION_TERM_STYLE = "Definition Term"
+#: hanging indent of a reference entry, inches: every line but the first is
+#: indented, and the tab after "[n]" lands the first line's text on it too.
+_BIB_HANGING_IN = 0.5
 
 
 def _apply_paper_theme(doc: Any) -> None:
@@ -186,9 +199,8 @@ def _apply_paper_theme(doc: Any) -> None:
 def _ensure_caption_styles(doc: Any) -> None:
     """Define the four caption styles (idempotent; see ``_CAPTION_STYLE``).
 
-    The look matches what the export used to apply run by run: figure
-    captions italic and centred under a bold label, table titles bold and
-    left-aligned. ``Figure`` and ``Table Caption`` keep with the next
+    Figure captions are italic under a bold label, table titles bold; both
+    are left-aligned. ``Figure`` and ``Table Caption`` keep with the next
     paragraph, so a picture stays on the page of its caption and a title on
     the page of its table."""
     from docx.enum.style import WD_STYLE_TYPE
@@ -215,13 +227,12 @@ def _ensure_caption_styles(doc: Any) -> None:
     caption.font.color.rgb = RGBColor.from_string(_INK)
     caption.font.bold = False
     caption.font.italic = True
-    caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     table_caption = _get_or_add(_TABLE_CAPTION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
     table_caption.base_style = caption
     table_caption.font.bold = True
     table_caption.font.italic = False
-    table_caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
     table_caption.paragraph_format.keep_with_next = True
 
     figure = _get_or_add(_FIGURE_STYLE, WD_STYLE_TYPE.PARAGRAPH)
@@ -232,6 +243,43 @@ def _ensure_caption_styles(doc: Any) -> None:
     label = _get_or_add(_CAPTION_LABEL_STYLE, WD_STYLE_TYPE.CHARACTER)
     label.font.bold = True
     label.font.italic = False
+
+
+def _bibliography_style(doc: Any, name: str) -> Any:
+    """The reference-list paragraph style ``name``, defined on first use:
+    based on ``Normal`` with a hanging indent (see ``_BIBLIOGRAPHY_STYLE``)."""
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.shared import Inches
+
+    styles = doc.styles
+    if name in styles:
+        return styles[name]
+    style = styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+    if "Normal" in styles:
+        style.base_style = styles["Normal"]
+    style.paragraph_format.left_indent = Inches(_BIB_HANGING_IN)
+    style.paragraph_format.first_line_indent = Inches(-_BIB_HANGING_IN)
+    return style
+
+
+def _definition_styles(doc: Any) -> tuple[Any, Any]:
+    """The ``Definition`` paragraph style and the ``Definition Term``
+    character style, defined on first use (see ``_DEFINITION_STYLE``)."""
+    from docx.enum.style import WD_STYLE_TYPE
+
+    styles = doc.styles
+    if _DEFINITION_STYLE in styles:
+        para = styles[_DEFINITION_STYLE]
+    else:
+        para = styles.add_style(_DEFINITION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+        if "Normal" in styles:
+            para.base_style = styles["Normal"]
+    if _DEFINITION_TERM_STYLE in styles:
+        term = styles[_DEFINITION_TERM_STYLE]
+    else:
+        term = styles.add_style(_DEFINITION_TERM_STYLE, WD_STYLE_TYPE.CHARACTER)
+        term.font.bold = True
+    return para, term
 
 
 @dataclass
@@ -2269,6 +2317,10 @@ def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
             out += [(t, st | ital) for t, st in _bib_markup_runs(booktitle)]
         parts = [field("publisher")]
         if entry_type != "book":
+            # A chapter in a numbered series volume ("In: IUTAM Bookseries,
+            # vol. 13, 109-121.", gr725252).
+            volume = field("volume")
+            parts.insert(0, f"vol. {volume}" if volume else "")
             parts.append(field("pages"))
         extra = ", ".join(x for x in parts if x)
         if extra:
@@ -2294,7 +2346,8 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
 
     A plain Word section (heading + numbered paragraphs), deliberately
     *not* native endnote fields: a paper cited many times must reuse one
-    number, and a Word endnote can be referenced only once."""
+    number, and a Word endnote can be referenced only once. Each entry is
+    one paragraph in the bibliography style, "[n]", a tab, then the line."""
     if not ctx.cited:
         return
     doc.add_heading("References", level=1)
@@ -2305,14 +2358,18 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
         from precis.export.endnote import add_reflist_field
 
         cached = [
-            f"[{i}] " + _format_reference(ctx.store, slug, ctx.warnings)
+            (f"[{i}]", _format_reference(ctx.store, slug, ctx.warnings))
             for i, slug in enumerate(ctx.cited, start=1)
         ]
-        add_reflist_field(doc, cached)
+        add_reflist_field(
+            doc, cached, style=_bibliography_style(doc, _ENDNOTE_BIBLIOGRAPHY_STYLE)
+        )
         return
+    style = _bibliography_style(doc, _BIBLIOGRAPHY_STYLE)
     for i, slug in enumerate(ctx.cited, start=1):
-        p = doc.add_paragraph()
-        p.add_run(f"[{i}] ").bold = True
+        p = doc.add_paragraph(style=style)
+        p.add_run(f"[{i}]").bold = True
+        p.add_run("\t")
         for text, styles in _reference_runs(ctx.store, slug, ctx.warnings):
             run = p.add_run(text)
             if "i" in styles:
@@ -2329,15 +2386,18 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
 
 def _append_acronyms(doc: Any, ctx: _Ctx) -> None:
     """An "Acronyms" list of every abbreviation actually used in the prose
-    (auto-built, like the LaTeX glossaries acronym list) — SHORT → long."""
+    (auto-built, like the LaTeX glossaries acronym list), one "SHORT: long
+    form" paragraph each. The look comes from the ``Definition`` and
+    ``Definition Term`` styles alone, no run carries direct formatting."""
     used = walker.acronym_list(ctx.used_acr, ctx.abbrevs)
     if not used:
         return
     doc.add_heading("Acronyms", level=1)
+    para_style, term_style = _definition_styles(doc)
     for short in used:
-        p = doc.add_paragraph()
-        p.add_run(short).bold = True
-        p.add_run(f" — {ctx.abbrevs[short]}")
+        p = doc.add_paragraph(style=para_style)
+        p.add_run(f"{short}: ", style=term_style)
+        p.add_run(ctx.abbrevs[short])
 
 
 def _append_unverified_claims(doc: Any, ctx: _Ctx) -> None:

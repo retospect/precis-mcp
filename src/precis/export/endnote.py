@@ -346,25 +346,28 @@ def add_citation_field(
     p.append(_fld_char("end"))
 
 
-def add_reflist_field(doc: Any, cached_lines: list[str]) -> None:
+def add_reflist_field(
+    doc: Any, cached_lines: list[tuple[str, str]], style: Any = None
+) -> None:
     """Append the ``ADDIN EN.REFLIST`` bibliography field. EndNote
     regenerates the list on update, so ``cached_lines`` is just placeholder
-    text shown until then (one paragraph per reference, matching how EndNote
-    lays the formatted list out)."""
+    text shown until then: one ``(label, line)`` pair per reference, each
+    its own paragraph in ``style`` (label, a tab, the line), matching how
+    EndNote lays the formatted list out. The field opens in the first
+    paragraph and closes in the last."""
     from docx.oxml import OxmlElement
 
-    para = doc.add_paragraph()
-    p = para._p
-    p.append(_fld_char("begin"))
-    p.append(_instr_text(" ADDIN EN.REFLIST "))
-    p.append(_fld_char("separate"))
-    for i, line in enumerate(cached_lines):
-        if i:
-            br = OxmlElement("w:r")
-            br.append(OxmlElement("w:br"))
-            p.append(br)
+    paras = [doc.add_paragraph(style=style) for _ in cached_lines or [("", "")]]
+    first = paras[0]._p
+    first.append(_fld_char("begin"))
+    first.append(_instr_text(" ADDIN EN.REFLIST "))
+    first.append(_fld_char("separate"))
+    for para, (label, line) in zip(paras, cached_lines, strict=False):
+        p = para._p
+        p.append(_cached_run(label))
+        p.append(_run(OxmlElement("w:tab")))
         p.append(_cached_run(line))
-    p.append(_fld_char("end"))
+    paras[-1]._p.append(_fld_char("end"))
 
 
 # ── document-level EndNote state (docVars EndNote reads) ──────────────

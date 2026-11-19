@@ -187,7 +187,7 @@ def test_cite_group_formats_only() -> None:
 
 def test_back_matter_formats_only() -> None:
     assert _latex_output("back_matter") == r"\printglossaries"
-    assert _docx_output("back_matter") == "Acronyms\nMOF — metal-organic framework"
+    assert _docx_output("back_matter") == "Acronyms\nMOF: metal-organic framework"
 
 
 def test_back_matter_blocks_follow_mode_and_order() -> None:

@@ -282,15 +282,23 @@ def test_glossary_terms_become_a_sorted_used_only_acronym_list(
     ref = hub.live_store.get_ref(kind="draft", id="dgl")
     out = tmp_path / "dgl.docx"
     export_docx(hub.live_store, ref, target_path=out)
-    texts = [p.text for p in docx.Document(str(out)).paragraphs]
+    doc = docx.Document(str(out))
+    texts = [p.text for p in doc.paragraphs]
     assert "Glossary" not in texts
     i = texts.index("Acronyms")
     assert texts[i + 1 :] == [
-        "CNT — carbon nanotube",
-        "ha — hexylamine",
-        "pG — pristine graphene",
+        "CNT: carbon nanotube",
+        "ha: hexylamine",
+        "pG: pristine graphene",
     ]
     assert not any(t.startswith("DFT") for t in texts)  # never used in the body
+    # The look lives in two styles, not in direct run formatting.
+    entry = doc.paragraphs[i + 1]
+    assert entry.style.name == "Definition"
+    assert entry.runs[0].text == "CNT: "
+    assert entry.runs[0].style.name == "Definition Term"
+    assert all(r.bold is None for r in entry.runs)
+    assert doc.styles["Definition Term"].font.bold is True
 
 
 def test_missing_paper_warns_but_exports(
@@ -335,7 +343,7 @@ def test_acronym_first_use_expansion(
     assert "MOFs appear" in text  # plural, not expanded
     # The used abbreviation lands in the generated Acronyms list.
     assert "Acronyms" in text
-    assert "MOF — metal-organic framework" in text
+    assert "MOF: metal-organic framework" in text
     assert "Glossary" not in text
 
 
@@ -2294,6 +2302,10 @@ def test_figure_captions_carry_figure_n_label(
     assert cap.runs[0].style.name == "Caption Label"
     assert all(r.bold is None and r.italic is None for r in cap.runs)
     caption_style = doc.styles["Caption"]
+    assert (
+        caption_style.paragraph_format.alignment
+        == docx.enum.text.WD_ALIGN_PARAGRAPH.LEFT
+    )
     assert caption_style.font.italic is True and caption_style.font.bold is False
     assert caption_style.font.name == "Times New Roman"
     label_style = doc.styles["Caption Label"]
@@ -2373,9 +2385,96 @@ def test_references_section_renders_sub_and_italic_runs(tmp_path: Path) -> None:
     doc = docx.Document()
     dx._append_references(doc, ctx)
     p = doc.paragraphs[-1]
-    assert p.text == "[1] Doe, Jane (2020). On C60. Carbon 7."
+    assert p.text == "[1]\tDoe, Jane (2020). On C60. Carbon 7."
     assert any(r.font.subscript and r.text == "60" for r in p.runs)
     assert any(r.italic and r.text == "Carbon" for r in p.runs)
+    # A hanging indent from the style: every line but the first is indented.
+    assert p.style.name == "Bibliography"
+    fmt = p.style.paragraph_format
+    assert fmt.left_indent == docx.shared.Inches(0.5)
+    assert fmt.first_line_indent == docx.shared.Inches(-0.5)
+    assert p.paragraph_format.left_indent is None
+
+
+def test_endnote_reference_list_is_one_styled_paragraph_per_entry() -> None:
+    """The cached ``EN.REFLIST`` text is one paragraph per reference in the
+    ``EndNote Bibliography`` style, the field opening in the first and
+    closing in the last (gr725245); it used to be one paragraph of breaks."""
+    from types import SimpleNamespace
+
+    from docx.oxml.ns import qn
+
+    from precis.export import docx as dx
+
+    papers = {
+        ("paper", slug): SimpleNamespace(
+            id=n,
+            slug=slug,
+            kind="paper",
+            title=f"Title {n}",
+            authors=[{"name": "Doe, Jane"}],
+            year=2020 + n,
+            meta={"journal": "Carbon", "volume": str(n)},
+        )
+        for n, slug in enumerate(["doe21", "doe22", "doe23"], start=1)
+    }
+    ctx = dx._Ctx(
+        store=_RefStore(papers),
+        known_handles=set(),
+        cited=["doe21", "doe22", "doe23"],
+        endnote=True,
+    )
+    doc = docx.Document()
+    dx._append_references(doc, ctx)
+    entries = doc.paragraphs[-3:]
+    assert [p.style.name for p in entries] == ["EndNote Bibliography"] * 3
+    assert [p.text for p in entries] == [
+        "[1]\tDoe, Jane (2021). Title 1. Carbon 1.",
+        "[2]\tDoe, Jane (2022). Title 2. Carbon 2.",
+        "[3]\tDoe, Jane (2023). Title 3. Carbon 3.",
+    ]
+    hanging = doc.styles["EndNote Bibliography"].paragraph_format
+    assert hanging.first_line_indent == docx.shared.Inches(-0.5)
+
+    def kinds(p: Any) -> list[str]:
+        return [fc.get(qn("w:fldCharType")) for fc in p._p.iter(qn("w:fldChar"))]
+
+    assert kinds(entries[0]) == ["begin", "separate"]
+    assert kinds(entries[1]) == []
+    assert kinds(entries[2]) == ["end"]
+    assert not list(doc.element.body.iter(qn("w:br")))
+
+
+def test_reference_line_of_a_book_chapter_carries_its_volume() -> None:
+    """A chapter in a numbered series prints the volume the record holds
+    (gr725252): it used to read "In: IUTAM Bookseries, 109-121."."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference
+
+    chapter = SimpleNamespace(
+        id=692,
+        slug="baowan09",
+        kind="paper",
+        title="Two Minimisation Approximations",
+        authors=[{"name": "Baowan, Duangkamon"}],
+        year=2009,
+        meta={
+            "entry_type": "book-chapter",
+            "container_title": "IUTAM Bookseries",
+            "volume": "13",
+            "pages": "109-121",
+        },
+    )
+    store = _RefStore({("paper", "baowan09"): chapter})
+    assert _format_reference(store, "baowan09", []) == (
+        "Baowan, Duangkamon (2009). Two Minimisation Approximations."
+        " In: IUTAM Bookseries, vol. 13, 109-121."
+    )
+    chapter.meta.pop("volume")
+    assert _format_reference(store, "baowan09", []).endswith(
+        " In: IUTAM Bookseries, 109-121."
+    )
 
 
 def test_title_page_has_date_line_no_abstract_heading(

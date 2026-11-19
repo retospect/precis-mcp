@@ -1477,6 +1477,10 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:p>
 <w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
 <w:r>
 <w:fldChar w:fldCharType="begin">
 </w:fldChar>
@@ -1493,62 +1497,138 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[1] Author1, A.; Second1, B. (2020). Amine uptake in MOFs. J. Golden 1, 1-10. doi:10.1000/golden.1</w:t>
+<w:t xml:space="preserve">[1]</w:t>
 </w:r>
 <w:r>
-<w:br>
-</w:br>
-</w:r>
-<w:r>
-<w:rPr>
-<w:noProof>
-</w:noProof>
-</w:rPr>
-<w:t xml:space="preserve">[2] Author2, A.; Second2, B. (2021). Arxiv-only preprint. J. Golden 2, 2-11. arXiv:2101.00002</w:t>
-</w:r>
-<w:r>
-<w:br>
-</w:br>
+<w:tab>
+</w:tab>
 </w:r>
 <w:r>
 <w:rPr>
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[3] Author3, A.; Second3, B. (2022). No identifier paper. J. Golden 3, 3-12.</w:t>
+<w:t xml:space="preserve">Author1, A.; Second1, B. (2020). Amine uptake in MOFs. J. Golden 1, 1-10. doi:10.1000/golden.1</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[2]</w:t>
 </w:r>
 <w:r>
-<w:br>
-</w:br>
+<w:tab>
+</w:tab>
 </w:r>
 <w:r>
 <w:rPr>
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[4] Author4, A.; Second4, B. (2024). Parent paper. J. Golden 4, 4-13.</w:t>
+<w:t xml:space="preserve">Author2, A.; Second2, B. (2021). Arxiv-only preprint. J. Golden 2, 2-11. arXiv:2101.00002</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[3]</w:t>
 </w:r>
 <w:r>
-<w:br>
-</w:br>
+<w:tab>
+</w:tab>
 </w:r>
 <w:r>
 <w:rPr>
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[5] [missing source nobody99] (cited slug not in corpus)</w:t>
+<w:t xml:space="preserve">Author3, A.; Second3, B. (2022). No identifier paper. J. Golden 3, 3-12.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[4]</w:t>
 </w:r>
 <w:r>
-<w:br>
-</w:br>
+<w:tab>
+</w:tab>
 </w:r>
 <w:r>
 <w:rPr>
 <w:noProof>
 </w:noProof>
 </w:rPr>
-<w:t xml:space="preserve">[6] (2019). Capture device.</w:t>
+<w:t xml:space="preserve">Author4, A.; Second4, B. (2024). Parent paper. J. Golden 4, 4-13.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[5]</w:t>
+</w:r>
+<w:r>
+<w:tab>
+</w:tab>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[missing source nobody99] (cited slug not in corpus)</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="EndNoteBibliography">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[6]</w:t>
+</w:r>
+<w:r>
+<w:tab>
+</w:tab>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">(2019). Capture device.</w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="end">
@@ -1565,27 +1645,35 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:p>
 <w:p>
+<w:pPr>
+<w:pStyle w:val="Definition">
+</w:pStyle>
+</w:pPr>
 <w:r>
 <w:rPr>
-<w:b>
-</w:b>
+<w:rStyle w:val="DefinitionTerm">
+</w:rStyle>
 </w:rPr>
-<w:t>FMOF</w:t>
+<w:t xml:space="preserve">FMOF: </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve"> — functionalized MOF</w:t>
+<w:t>functionalized MOF</w:t>
 </w:r>
 </w:p>
 <w:p>
+<w:pPr>
+<w:pStyle w:val="Definition">
+</w:pStyle>
+</w:pPr>
 <w:r>
 <w:rPr>
-<w:b>
-</w:b>
+<w:rStyle w:val="DefinitionTerm">
+</w:rStyle>
 </w:rPr>
-<w:t>MOF</w:t>
+<w:t xml:space="preserve">MOF: </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve"> — metal-organic framework</w:t>
+<w:t>metal-organic framework</w:t>
 </w:r>
 </w:p>
 <w:p>
@@ -1849,7 +1937,7 @@ sha256 32000b3f86ee8be54e8519f55001ac77a2bd8334be8ff76673e980cbdaaab8e5
 </w14:defaultImageDpi>
 </w:settings>
 == word/styles.xml ==
-sha256 6f38e6eb6e9c584dc85fdf7c09bf5c240c3ff19f48a1d2868ab464f4fa25e77e
+sha256 29f90e71186c92b97ac6f3ee75011b0c7cea20f38aa458e87cf4351135cfd918
 == word/stylesWithEffects.xml ==
 sha256 3994e251cc031b5e83769658f4af62834429eb239f41d5c9d2fd563e8fda9724
 == word/theme/theme1.xml ==

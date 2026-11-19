@@ -115,11 +115,21 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list. Captions carry no
-  direct formatting: restyle them in Word by editing the styles `Caption`
-  (figure captions), `Table Caption` (table titles, based on `Caption`),
-  `Caption Label` (the "Figure N:" / "Table N:" label) and `Figure` (the
-  picture paragraph).
+  acronym first-use expansion + an auto acronyms list; styles below.
+
+## Word styles
+
+The Word export puts its look in named styles, not in direct formatting:
+restyle a whole class of text by editing one style in Word.
+
+| Text | Style |
+|---|---|
+| Figure caption (left-aligned) | `Caption` |
+| Table title | `Table Caption` (based on `Caption`) |
+| "Figure N:" / "Table N:" label | `Caption Label` (character) |
+| Picture paragraph | `Figure` |
+| Reference entry: "[n]", a tab, the entry; hanging indent | `Bibliography`; `EndNote Bibliography` when citations are EndNote fields |
+| Acronym entry "SHORT: long form" | `Definition`; the label in `Definition Term` (character) |
 
 ## Audience and data supplement
 
