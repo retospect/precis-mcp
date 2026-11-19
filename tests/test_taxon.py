@@ -39,6 +39,28 @@ def _created_id(resp: Any) -> int:
 
 
 class TestTaxonPut:
+    @pytest.mark.parametrize("separator", [" — ", "—", " – ", "\n"])
+    def test_put_preserves_internal_en_dash(self, store: Any, separator: str) -> None:
+        name = "Lennard–Jones reduced temperature"
+        definition = "dimensionless thermal energy kBT/ε relative to ε."
+        h = _handler(store)
+        ref = store.get_ref(
+            kind="taxon",
+            id=_created_id(
+                h.put(
+                    text=f"{name}{separator}{definition}",
+                    meta={
+                        "dimension_kind": "dimensionless",
+                        "canonical_unit": "1",
+                        "aliases": ["LJ reduced temperature"],
+                    },
+                )
+            ),
+        )
+        assert ref.title == name
+        assert ref.meta["name"] == name
+        assert ref.meta["definition"] == definition
+
     def test_put_mints_proposed_node_with_card_and_no_body(self, store: Any) -> None:
         h = _handler(store)
         ref = store.get_ref(kind="taxon", id=_created_id(h.put(text=TOF)))

@@ -41,9 +41,10 @@ put(kind="taxon",
           "canonical_unit": "1/s", "aliases": ["TOF"]})
 ```
 
-`text` is `<name> — <definition>` (em-dash, en-dash or newline between). The
-definition becomes the searchable card, so write it to be matched by meaning,
-not by the name.
+`text` is `<name> — <definition>`: an em-dash, a whitespace-surrounded
+en-dash or a newline splits the two — an unspaced en-dash inside a name
+(`Lennard–Jones`) stays in the name. The definition becomes the searchable
+card, so write it to be matched by meaning, not by the name.
 
 A put that looks like an existing node is refused, naming it (`tn12 turnover
 frequency (rate/turnover-frequency)`) with the reason. Candidates are: same
