@@ -3527,7 +3527,20 @@ class NumericRefHandler(Handler):
         # the returned order rather than re-sorting by score.
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
-            best_by_ref.setdefault(ref.id, (block, ref, rank))
+            representative, _ref, _rank = best_by_ref.setdefault(
+                ref.id, (block, ref, rank)
+            )
+            if rerank and block.id != representative.id:
+                # Rescue ranks refs, not chunks: the best fused chunk can
+                # be a lexical match while a sibling is semantic rank one.
+                # Keep that sibling's evidence through deduplication.
+                distance, corroborated = fold_info.get(block.id, (None, False))
+                previous, prev_corrob = fold_info.get(representative.id, (None, False))
+                distances = [d for d in (previous, distance) if d is not None]
+                fold_info[representative.id] = (
+                    min(distances) if distances else None,
+                    prev_corrob or corroborated,
+                )
         pool = list(best_by_ref.values())
         extra = 0
         if rerank:
