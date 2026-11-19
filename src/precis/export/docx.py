@@ -67,6 +67,7 @@ from precis.export._nanopub_appendix import (
     published_claim_entries,
 )
 from precis.export._patent_cite import (
+    patent_number,
     render_paper_inline_citation,
     render_patent_citation,
 )
@@ -100,6 +101,8 @@ from precis.export.latex import (
     preprocess_draft_inline,
     record_bib_type,
 )
+from precis.export.wordcite import WordCitations
+from precis.export.zoterocite import ZoteroCitations, csl_markup
 from precis.nanopub import pin_lint
 from precis.utils import adsorbate_star, handle_registry
 from precis.utils.authors import build_byline
@@ -554,6 +557,16 @@ class _Ctx:
     #: ``export/latex.py``'s ``_Ctx.dropped_cite``).
     dropped_cite: bool = False
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
+    #: Emit Word's own ``CITATION`` / ``BIBLIOGRAPHY`` fields
+    #: (:mod:`.wordcite`) instead of plain ``[n]``; never with ``endnote``.
+    word: bool = False
+    word_cites: WordCitations = field(default_factory=WordCitations, repr=False)
+    #: Emit Zotero ``ADDIN ZOTERO_ITEM`` / ``ZOTERO_BIBL`` fields
+    #: (:mod:`.zoterocite`) instead of plain ``[n]``; never with the others.
+    zotero: bool = False
+    zotero_cites: ZoteroCitations = field(default_factory=ZoteroCitations, repr=False)
+    #: EndNote records carry the cited passage as ``<research-notes>``.
+    research_notes: bool = True
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
     #: Append the doi hyperlink run after each plain ``[n]`` citation
@@ -832,6 +845,7 @@ def export_docx(
     record_override: bool = False,
     audience: str = "dev",
     repeat_cites: bool = False,
+    research_notes: bool = True,
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -843,6 +857,22 @@ def export_docx(
     * ``"endnote"`` — native EndNote *Cite While You Write* fields
       (``ADDIN EN.CITE`` + ``EN.REFLIST``), so EndNote recognizes and can
       reformat / manage the citations (see :mod:`precis.export.endnote`).
+
+    * ``"word"`` — Word's own ``CITATION`` fields over a sources part stored
+      in the document and a ``BIBLIOGRAPHY`` field, for co-authors without
+      EndNote (see :mod:`precis.export.wordcite`).
+
+    * ``"zotero"`` — Zotero's ``ADDIN ZOTERO_ITEM CSL_CITATION`` /
+      ``ZOTERO_BIBL`` fields carrying each item as embedded CSL JSON, so a
+      co-author with the Zotero plugin can keep citing (see
+      :mod:`precis.export.zoterocite`).
+
+    Any other value is an input error
+    (:data:`precis.export.IMPLEMENTED_CITATION_MODES`).
+
+    ``research_notes=False`` leaves ``<research-notes>`` out of every
+    EndNote record (including notes merged from a dropped repeat); no
+    effect in the other modes.
 
     ``doi_links=False`` / ``library_links=False`` independently turn off
     the small doi / library-search hyperlink runs normally appended after
@@ -866,10 +896,15 @@ def export_docx(
     and ``supplement.zip`` beside the document; private prose URLs refuse."""
     from docx import Document
 
-    from precis.export import guard_exportable, guard_no_secrets
+    from precis.export import (
+        guard_citation_mode,
+        guard_exportable,
+        guard_no_secrets,
+    )
     from precis.export.audience import for_export, guard_artifacts, guard_audience
     from precis.export.supplement import write_supplement
 
+    guard_citation_mode(citations)
     progress.report("reading the draft")
     guard_exportable(ref)
     guard_no_secrets(store, ref)
@@ -901,6 +936,9 @@ def export_docx(
         legacy_to_dc=walker.legacy_map(chunks),
         abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
+        word=(citations == "word"),
+        zotero=(citations == "zotero"),
+        research_notes=research_notes,
         doc_type=doc_type,
         eq_numbers=nums.equations,
         doi_links=doi_links,
@@ -961,9 +999,15 @@ def export_docx(
         back, patent=ctx.patent_mode, claim_appendix=claim_appendix
     ):
         renderer.back_matter(doc, name, block)
+    bib_style = ""
+    if (ctx.endnote or ctx.zotero) and ctx.cited:
+        from precis.export.latex import resolve_bib_style
+
+        bib_style, style_warn = resolve_bib_style(ws.style if ws else "")
+        if style_warn:
+            ctx.warnings.append(style_warn)
     if ctx.endnote and ctx.cited:
         from precis.export.endnote import endnote_style, install_document_vars
-        from precis.export.latex import resolve_bib_style
 
         # EN.Libraries lists only the refs that actually resolved (an
         # unresolved slug prints its plain [n] stub and never lands a
@@ -971,10 +1015,13 @@ def export_docx(
         rec_ids = [
             ctx.resolved[s]["rec_number"] for s in ctx.cited if s in ctx.resolved
         ]
-        bib_style, style_warn = resolve_bib_style(ws.style if ws else "")
-        if style_warn:
-            ctx.warnings.append(style_warn)
         install_document_vars(doc, rec_ids, style=endnote_style(bib_style))
+    if ctx.word and ctx.cited:
+        _install_word_sources(doc, ctx)
+    if ctx.zotero and ctx.cited:
+        from precis.export.zoterocite import install_prefs
+
+        install_prefs(doc, ctx.zotero_cites.session(ctx.cited), bib_style)
 
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
@@ -1329,10 +1376,30 @@ def _script_minus(text: str, *, sup: bool = False) -> str:
 _CLOSING_PUNCT = walker.CLOSING_PUNCT
 
 
+def _paragraph_text(paragraph: Any) -> str:
+    """``paragraph.text``, plus the text a Word citation mark holds: python-docx
+    reads only the runs and links directly under the paragraph, not the ones
+    inside a ``w:sdt`` content control (:mod:`.wordcite`)."""
+    from docx.oxml.ns import qn
+
+    p = paragraph._p
+    if p.find(qn("w:sdt")) is None:
+        return str(paragraph.text)
+    return "".join(
+        str(e.text) for e in p.xpath("w:r | w:hyperlink | w:sdt/w:sdtContent/w:r")
+    )
+
+
 def _rstrip_last_run(paragraph: Any) -> None:
     """Trim the paragraph's last run before a dropped citation mark (its
     leading space, a stranded ``and``)."""
+    from docx.oxml.ns import qn
+
     runs = paragraph.runs
+    # A Word citation mark is a content control, not a run: the last run is
+    # then the one before it, which the mark does not follow directly.
+    if len(paragraph._p) and paragraph._p[-1].tag == qn("w:sdt"):
+        return
     if runs and not _is_field_run(runs[-1]):
         runs[-1].text = walker.trim_before_dropped(runs[-1].text)
 
@@ -1528,7 +1595,7 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
         ctx.abbrevs,
         ctx.seen_acr,
         ctx.used_acr,
-        preceding=paragraph.text,
+        preceding=_paragraph_text(paragraph),
         heading=ctx.in_heading,
     )
     renderer = DocxRenderer(ctx)
@@ -1933,7 +2000,7 @@ def _at_sentence_start(paragraph: Any) -> bool:
     """Is the next run the first word of a sentence (paragraph start, or
     right after ``. ``/``? ``/``! `` but not ``e.g. ``)? Drives
     first-letter capitalisation."""
-    return _abbrev.at_sentence_start(paragraph.text)
+    return _abbrev.at_sentence_start(_paragraph_text(paragraph))
 
 
 def _plain_run_text(element: Any) -> str | None:
@@ -2179,6 +2246,42 @@ def _emit_cites(ctx: _Ctx, paragraph: Any, *groups: walker.CiteGroup | None) -> 
             renderer.cite_group(paragraph, group)
 
 
+def _emit_mark(
+    ctx: _Ctx, sink: Any, group: walker.CiteGroup, *, si: bool, mixed: bool
+) -> None:
+    """Write the printed mark of ``group`` in the export's citation mode: the
+    one place that says how a mark is encoded. What the mark says (numbers,
+    ranges, the SI postnote) is decided before; the mode only picks plain
+    runs, an EndNote field or a Word citation. Sets ``ctx._kept_field`` (the
+    EndNote field a later dropped repeat adds its notes to)."""
+    if ctx.endnote:
+        entries = list(zip(group.keys, group.numbers, group.chunk_ids, strict=True))
+        ctx._kept_field = _cite_endnote(
+            entries,
+            ctx,
+            sink,
+            suffix=" (SI)" if si and not mixed else "",
+            suffixes=[" (SI)" if s else "" for s in group.si] if mixed else None,
+        )
+    elif ctx.word:
+        _cite_word(group, ctx, sink, si=si, mixed=mixed)
+    elif ctx.zotero:
+        _cite_zotero(group, ctx, sink, si=si, mixed=mixed)
+    elif mixed:
+        sink.add_run(
+            merged_cite_numbers_si(list(zip(group.numbers, group.si, strict=True)))
+        ).font.superscript = True
+        for slug in group.keys:
+            _cite_link_group(slug, ctx, sink)
+    else:
+        # biblatex sorts the keys of a merged cite before printing it.
+        sink.add_run(merged_cite_numbers(sorted(group.numbers))).font.superscript = True
+        if si:
+            sink.add_run(" (SI)").font.superscript = True
+        for slug in group.keys:
+            _cite_link_group(slug, ctx, sink)
+
+
 class DocxRenderer:
     """The docx :class:`walker.Renderer`: formats resolved values as
     python-docx runs (or EndNote fields) into a paragraph sink; the block
@@ -2325,30 +2428,7 @@ class DocxRenderer:
             # A mark directly after "[n] (SI)" reads as one blob without a
             # separator ("(SI)[4]" — gr491600's nit).
             sink.add_run(" ")
-        if ctx.endnote:
-            entries = list(zip(group.keys, group.numbers, group.chunk_ids, strict=True))
-            ctx._kept_field = _cite_endnote(
-                entries,
-                ctx,
-                sink,
-                suffix=" (SI)" if si and not mixed else "",
-                suffixes=[" (SI)" if s else "" for s in group.si] if mixed else None,
-            )
-        elif mixed:
-            sink.add_run(
-                merged_cite_numbers_si(list(zip(group.numbers, group.si, strict=True)))
-            ).font.superscript = True
-            for slug in group.keys:
-                _cite_link_group(slug, ctx, sink)
-        else:
-            # biblatex sorts the keys of a merged cite before printing it.
-            sink.add_run(
-                merged_cite_numbers(sorted(group.numbers))
-            ).font.superscript = True
-            if si:
-                sink.add_run(" (SI)").font.superscript = True
-            for slug in group.keys:
-                _cite_link_group(slug, ctx, sink)
+        _emit_mark(ctx, sink, group, si=si, mixed=mixed)
         if si and not mixed:
             ctx._si_mark = (sink, len(sink.runs))
 
@@ -2495,6 +2575,7 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
     except Exception:  # pragma: no cover — identifier lookup best-effort
         pass
     meta = pref.meta or {}
+    venue = meta.get("journal") or meta.get("venue") or meta.get("container_title")
     url = (
         f"https://doi.org/{doi}"
         if doi
@@ -2514,16 +2595,42 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         ),
         "authors": pref.authors,
         "title": pref.title or slug,
+        # The title and venue with their markup, as Zotero's CSL fields take it.
+        "title_csl": csl_markup(_bib_markup_runs(pref.title or slug)),
+        "venue_csl": csl_markup(_bib_markup_runs(str(venue or ""))),
         "year": pref.year,
-        "journal": meta.get("journal")
-        or meta.get("venue")
-        or meta.get("container_title"),
+        "journal": venue,
         "volume": meta.get("volume"),
         "number": meta.get("number"),
         "pages": meta.get("pages"),
+        "publisher": meta.get("publisher")
+        or (meta.get("vendor") if pref.kind == "datasheet" else None),
+        "institution": meta.get("institution"),
+        # A datasheet has no byline; its vendor stands in as the author.
+        "vendor": meta.get("vendor") if pref.kind == "datasheet" else None,
+        # The publication number the patent bibliography line prints.
+        "patent_number": patent_number(meta) if pref.kind == "patent" else None,
         "doi": doi,
         "url": url,
     }
+
+
+def _cite_source(ctx: _Ctx, slug: str, year_note: str) -> dict[str, Any] | None:
+    """The resolved source of a cited slug, resolved once per export and kept
+    in ``ctx.resolved``: the one place every field mode (EndNote, Word,
+    Zotero) gathers a record's fields. None when the corpus has no paper for
+    it (a warning is recorded and the caller writes a plain marker); a source
+    without a year warns what the mode does about it (``year_note``)."""
+    source = ctx.resolved.get(slug)
+    if source is None:
+        source = _resolve_source(ctx.store, slug)
+        if source is None:
+            ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
+            return None
+        if not source.get("year"):
+            ctx.warnings.append(f"cite {slug!r}: no year — {year_note}")
+        ctx.resolved[slug] = source
+    return source
 
 
 @dataclass
@@ -2544,8 +2651,9 @@ class _EndnoteField:
 
 
 def _chunk_note(ctx: _Ctx, chunk_id: int | None) -> str | None:
-    """The cited passage's text (``pc<id>``), best effort."""
-    if chunk_id is None or ctx.store is None:
+    """The cited passage's text (``pc<id>``), best effort; None when the
+    export leaves research notes out."""
+    if not ctx.research_notes or chunk_id is None or ctx.store is None:
         return None
     try:
         return ctx.store.chunks.chunk_text_by_id(chunk_id)
@@ -2602,18 +2710,12 @@ def _cite_endnote(
     cite_suffixes: list[str] = []
     keys: list[str] = []
     for i, (slug, n, chunk_id) in enumerate(run):
-        source = ctx.resolved.get(slug)
+        source = _cite_source(ctx, slug, "empty <Year/>")
         if source is None:
-            source = _resolve_source(ctx.store, slug)
-            if source is None:
-                ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
-                paragraph.add_run(
-                    f"[{n}]{suffixes[i] if suffixes else suffix}"
-                ).font.superscript = True
-                continue
-            if not source.get("year"):
-                ctx.warnings.append(f"cite {slug!r}: no year — empty <Year/>")
-            ctx.resolved[slug] = source
+            paragraph.add_run(
+                f"[{n}]{suffixes[i] if suffixes else suffix}"
+            ).font.superscript = True
+            continue
         cites.append((source, _chunk_note(ctx, chunk_id), n))
         cite_suffixes.append(suffixes[i] if suffixes else suffix)
         keys.append(slug)
@@ -2623,6 +2725,92 @@ def _cite_endnote(
     instr = add_citation_field(paragraph, cites, suffix, sufs)
     notes = [[note] if note else [] for _source, note, _n in cites]
     return _EndnoteField(instr, cites, keys, suffix, sufs, notes)
+
+
+def _cite_word(
+    group: walker.CiteGroup, ctx: _Ctx, paragraph: Any, *, si: bool, mixed: bool
+) -> None:
+    """Emit a citation run as ONE Word ``CITATION`` field in a content control
+    (:func:`precis.export.wordcite.add_citation`): the sources behind ``\\m``,
+    an SI source's postnote as the ``\\s`` switch right after its own tag (a
+    switch after a tag belongs to that source, so a mixed run stays one
+    field). The cached text is the mark every mode prints. An unresolved
+    slug degrades to a plain superscript marker."""
+    from precis.export.wordcite import add_citation
+
+    cites: list[tuple[str, int, bool]] = []
+    for slug, n, is_si in zip(group.keys, group.numbers, group.si, strict=True):
+        if _cite_source(ctx, slug, "no <b:Year> element written") is None:
+            paragraph.add_run(
+                f"[{n}]{' (SI)' if is_si else ''}"
+            ).font.superscript = True
+            continue
+        cites.append((slug, n, is_si))
+    if not cites:
+        return
+    cites.sort(key=lambda c: c[1])
+    if mixed:
+        mark = merged_cite_numbers_si([(n, is_si) for _s, n, is_si in cites])
+    else:
+        mark = merged_cite_numbers([n for _s, n, _si in cites]) + (
+            " (SI)" if si else ""
+        )
+    wc = ctx.word_cites
+    add_citation(
+        paragraph,
+        wc,
+        [wc.tag(slug) for slug, _n, _si in cites],
+        mark,
+        [" (SI)" if is_si else "" for _s, _n, is_si in cites],
+    )
+
+
+def _cite_zotero(
+    group: walker.CiteGroup, ctx: _Ctx, paragraph: Any, *, si: bool, mixed: bool
+) -> None:
+    """Emit a citation run as ONE Zotero ``ADDIN ZOTERO_ITEM CSL_CITATION``
+    field (:func:`precis.export.zoterocite.add_citation`), one citation item
+    per resolved source, the SI postnote as the ``suffix`` of its own item
+    (the JSON binds it to the item, so a mixed run stays one field). The
+    cached text is the mark every mode prints. An unresolved slug degrades
+    to a plain superscript marker."""
+    from precis.export.zoterocite import add_citation
+
+    items: list[tuple[dict[str, Any], int, bool]] = []
+    for slug, n, is_si in zip(group.keys, group.numbers, group.si, strict=True):
+        source = _cite_source(ctx, slug, "no issued date written")
+        if source is None:
+            paragraph.add_run(
+                f"[{n}]{' (SI)' if is_si else ''}"
+            ).font.superscript = True
+            continue
+        items.append((source, n, is_si))
+    if not items:
+        return
+    items.sort(key=lambda item: item[1])
+    if mixed:
+        mark = merged_cite_numbers_si([(n, is_si) for _s, n, is_si in items])
+    else:
+        mark = merged_cite_numbers([n for _s, n, _si in items]) + (
+            " (SI)" if si else ""
+        )
+    add_citation(paragraph, ctx.zotero_cites, items, mark)
+
+
+def _install_word_sources(doc: Any, ctx: _Ctx) -> None:
+    """Store the cited sources in the document (``/customXml/item1.xml``)
+    that the ``CITATION`` / ``BIBLIOGRAPHY`` fields name by tag; one entry per
+    reference number, in cite order. A slug no mark resolved yet resolves
+    here; one with no source in the corpus has none (its list line is a
+    stub)."""
+    from precis.export.wordcite import install_sources
+
+    entries = []
+    for n, slug in enumerate(ctx.cited, start=1):
+        source = ctx.resolved.get(slug) or _resolve_source(ctx.store, slug)
+        if source is not None:
+            entries.append((ctx.word_cites.tag(slug), n, source))
+    install_sources(doc, entries)
 
 
 # ── references + glossary sections ────────────────────────────────
@@ -2886,6 +3074,37 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
     if not ctx.cited:
         return
     doc.add_heading("References", level=1)
+    if ctx.word:
+        # Word regenerates this list on a field update from the sources
+        # stored in the document; the plain lines are the cached text.
+        from precis.export.wordcite import add_bibliography
+
+        add_bibliography(
+            doc,
+            ctx.word_cites,
+            [
+                (f"[{i}]", _format_reference(ctx.store, slug, ctx.warnings))
+                for i, slug in enumerate(ctx.cited, start=1)
+            ],
+            style=_bibliography_style(doc, _BIBLIOGRAPHY_STYLE),
+        )
+        return
+    if ctx.zotero:
+        # Zotero regenerates this list on "Refresh" from the items embedded in
+        # the in-text fields; the plain lines are the cached text.
+        from precis.export.endnote import add_reflist_field
+        from precis.export.zoterocite import BIBL_INSTR
+
+        add_reflist_field(
+            doc,
+            [
+                (f"[{i}]", _format_reference(ctx.store, slug, ctx.warnings))
+                for i, slug in enumerate(ctx.cited, start=1)
+            ],
+            style=_bibliography_style(doc, _BIBLIOGRAPHY_STYLE),
+            instr=BIBL_INSTR,
+        )
+        return
     if ctx.endnote:
         # EndNote regenerates this list on "Update Citations and Bibliography"
         # from the records embedded in the in-text fields; the plain lines are

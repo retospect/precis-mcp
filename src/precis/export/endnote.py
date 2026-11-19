@@ -364,9 +364,13 @@ def set_citation_payload(
 
 
 def add_reflist_field(
-    doc: Any, cached_lines: list[tuple[str, str]], style: Any = None
+    doc: Any,
+    cached_lines: list[tuple[str, str]],
+    style: Any = None,
+    instr: str = " ADDIN EN.REFLIST ",
 ) -> None:
-    """Append the ``ADDIN EN.REFLIST`` bibliography field. EndNote
+    """Append the ``ADDIN EN.REFLIST`` bibliography field (``instr`` swaps
+    the instruction: the Zotero list is the same field shape). EndNote
     regenerates the list on update, so ``cached_lines`` is just placeholder
     text shown until then: one ``(label, line)`` pair per reference, each
     its own paragraph in ``style`` (label, a tab, the line), matching how
@@ -377,7 +381,7 @@ def add_reflist_field(
     paras = [doc.add_paragraph(style=style) for _ in cached_lines or [("", "")]]
     first = paras[0]._p
     first.append(_fld_char("begin"))
-    first.append(_instr_text(" ADDIN EN.REFLIST "))
+    first.append(_instr_text(instr))
     first.append(_fld_char("separate"))
     for para, (label, line) in zip(paras, cached_lines, strict=False):
         p = para._p

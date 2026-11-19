@@ -5,9 +5,15 @@ sha256 887452abd23127b28a6e015489dff730b30bf2ef64aa53ce3d9d0007f58e2921
 == customXml/_rels/item1.xml.rels ==
 sha256 063ebdfb492f3221c720768ab6a64a325287ab9c430b47edfe4d61e8870bd10b
 == customXml/item1.xml ==
-sha256 3b323b63cf6821593c4ac38fe77b9c7215ec20a082dd52d6142603bd98aedda2
+<b:Sources xmlns="http://schemas.openxmlformats.org/officeDocument/2006/bibliography" xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography" SelectedStyle="/APA.XSL" StyleName="APA">
+</b:Sources>
 == customXml/itemProps1.xml ==
-sha256 70d69093dbcbc62862da21373b740b00ef122777124f4cbd75a8d5855ff38932
+<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{EF278816-EC6F-A645-907D-7F25AECB1D4A}">
+  <ds:schemaRefs>
+    <ds:schemaRef ds:uri="http://schemas.openxmlformats.org/officeDocument/2006/bibliography">
+</ds:schemaRef>
+  </ds:schemaRefs>
+</ds:datastoreItem>
 == docProps/app.xml ==
 sha256 354963f871a62036002da5cce819cb615291e6803926031f67cf0b6dc6608ae5
 == docProps/thumbnail.jpeg ==

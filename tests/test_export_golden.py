@@ -1,7 +1,7 @@
 """Byte-identical safety net for the export-parity walker
 (export-latex-docx-parity): one synthetic golden draft,
 exported end to end through ``export_draft`` (plain, patent, reMarkable
-footnote mode) and ``export_docx`` (plain, EndNote, patent), compared with
+footnote mode) and ``export_docx`` (plain, EndNote, Word citations, Zotero fields, patent), compared with
 the checked-in baseline under ``tests/fixtures/export/golden/``.
 
 DB-free: a fake store answers every lookup, so ids, handles and numbering
@@ -464,6 +464,8 @@ def test_latex_export_matches_golden(
 _DOCX_MODES: dict[str, dict[str, Any]] = {
     "docx_plain": {},
     "docx_endnote": {"citations": "endnote"},
+    "docx_word": {"citations": "word"},
+    "docx_zotero": {"citations": "zotero"},
     "docx_patent": {"doc_type": "patent"},
     "docx_untitled": {"_untitled": True},
 }
@@ -473,7 +475,14 @@ _DOCX_SKIP = frozenset({"docProps/core.xml"})
 #: Parts the exporter writes per draft, kept as canonical XML text; every
 #: other part (template styles, theme, fonts) is compared by its c14n hash.
 _DOCX_TEXT = frozenset(
-    {"word/document.xml", "word/settings.xml", "word/_rels/document.xml.rels"}
+    {
+        "word/document.xml",
+        "word/settings.xml",
+        "word/_rels/document.xml.rels",
+        "customXml/item1.xml",
+        "customXml/itemProps1.xml",
+        "docProps/custom.xml",
+    }
 )
 
 

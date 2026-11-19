@@ -137,6 +137,29 @@ Two cited records with the same DOI share one number and one list entry
 (the export warns once). Records with equal title, year and first author
 but no shared DOI are not merged; the export only warns.
 
+## Word citation machinery
+
+The export dialog's dropdown (web `?citations=`) picks how the Word file
+encodes citations; every choice prints the same marks and list. Offered
+today: **EndNote fields** (default, `endnote`: `ADDIN EN.CITE` fields with
+embedded records, `EN.REFLIST`), **Word citations** (`word`: Word's own
+`CITATION` fields over the sources stored in the document, and a
+`BIBLIOGRAPHY` field; a co-author needs no EndNote, numbering stays live
+in Word's own style), **Zotero fields** (`zotero`: `ADDIN ZOTERO_ITEM`
+fields carrying each item as embedded CSL JSON, an `ADDIN ZOTERO_BIBL`
+list and the document preferences the Zotero plugin needs; a co-author
+with the plugin keeps citing and refreshes) and **plain text** (`plain`:
+no citation fields). Cross-references and the page number stay fields in
+every choice. A group with an SI source stays one mark in every choice
+(`[1 (SI), 2]`); in Word citations and Zotero fields the SI postnote is
+bound to its own source. The draft's bibliography style picks the
+EndNote and Zotero style.
+
+The **research notes** box (web `?notes=0|1`, job param
+`research_notes`) applies to EndNote fields only. On puts each cited
+passage into its record's Research Notes; off leaves them out, also for
+a dropped repeat. Default: on for **dev**, off for **external**.
+
 ## Word styles
 
 The Word export puts its look in named styles, not in direct formatting:

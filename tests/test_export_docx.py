@@ -4175,6 +4175,111 @@ def test_endnote_dropped_mark_adds_its_passage_to_the_kept_record(monkeypatch) -
     assert notes == "First passage. Second passage."
 
 
+def test_endnote_records_carry_no_notes_when_research_notes_off(monkeypatch) -> None:
+    """``research_notes=False``: the kept field's records have no
+    ``<research-notes>`` element, neither from their own cite nor through the
+    merged-notes path of a dropped repeat; the cites still print as before."""
+    from lxml import etree
+
+    from precis.export import docx as dx
+
+    ctx = _passage_ctx(monkeypatch)
+    ctx.research_notes = False
+    para = docx.Document().add_paragraph()
+    dx._render_inline("First [pc10] then more [pc11] again [pc10].", ctx, para)
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    instrs = [e.text or "" for e in para._p.iter(w + "instrText")]
+    assert len(instrs) == 1
+    assert para.text == "First [1] then more again."
+    payload = instrs[0].strip()[len("ADDIN EN.CITE ") :]
+    (cite,) = etree.fromstring(payload.encode("utf-8"))
+    assert cite.find("record") is not None
+    assert cite.find("record/research-notes") is None
+    assert "research-notes" not in payload
+    assert "passage" not in payload
+
+
+def test_export_docx_research_notes_switch(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """End to end: a ``[pc<id>]`` cite embeds its passage by default and
+    ``research_notes=False`` drops it; plain mode never had it either way."""
+    import zipfile
+
+    store = hub.live_store
+    store.insert_ref(
+        kind="paper", slug="nn07", title="Notes paper", year=2007, provider="manual"
+    )
+    pref = store.get_ref(kind="paper", id="nn07")
+    assert pref is not None
+    store.chunks.insert_chunks(
+        pref.id, [ChunkInsert(ord=0, text="Passage about junction sp3.", slug="b0")]
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "ORDER BY ord LIMIT 1",
+            (pref.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="nsw", title="T", project=pid)
+    draft.put(
+        id="nsw",
+        chunk_kind="paragraph",
+        text=f"Junctions [pc{chunk_id}] again [pc{chunk_id}].",
+        at={"last": True},
+    )
+    ref = store.get_ref(kind="draft", id="nsw")
+
+    def body_of(name: str, **kw: Any) -> str:
+        out = tmp_path / f"{name}.docx"
+        export_docx(store, ref, target_path=out, **kw)
+        return zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+
+    on = body_of("on", citations="endnote")
+    default = body_of("default", citations="endnote", research_notes=True)
+    off = body_of("off", citations="endnote", research_notes=False)
+    plain = body_of("plain", citations="plain", research_notes=False)
+    assert "&lt;research-notes&gt;" in on and "junction sp3" in on
+    assert on == default
+    assert " ADDIN EN.CITE " in off
+    assert "research-notes" not in off and "junction sp3" not in off
+    assert "ADDIN EN.CITE" not in plain
+
+
+@pytest.mark.parametrize("mode", ["word", "zotero"])
+def test_export_docx_named_but_unbuilt_citation_modes_refuse(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every mode is built now; a named mode missing from the constant still
+    refuses before anything is written."""
+    import precis.export as export
+    from precis.errors import BadInput
+
+    monkeypatch.setattr(export, "IMPLEMENTED_CITATION_MODES", ("endnote", "plain"))
+    none: Any = None  # the mode is refused before the store or the ref is read
+    with pytest.raises(BadInput, match="not available yet"):
+        export_docx(none, none, target_path=tmp_path / "x.docx", citations=mode)
+    assert not (tmp_path / "x.docx").exists()
+
+
+@pytest.mark.parametrize("mode", ["EndNote", "", "bibtex"])
+def test_export_docx_unknown_citation_mode_refuses(mode: str, tmp_path: Path) -> None:
+    from precis.errors import BadInput
+
+    none: Any = None  # the mode is refused before the store or the ref is read
+    with pytest.raises(BadInput, match="unknown citations mode"):
+        export_docx(none, none, target_path=tmp_path / "x.docx", citations=mode)
+
+
 def test_repeated_cite_dropped_in_caption_and_cell() -> None:
     from precis.export import docx as dx
 
