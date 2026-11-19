@@ -136,7 +136,11 @@ from precis.utils.block_selector import (
 )
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
-from precis.utils.glyph_health import glyph_caveat
+from precis.utils.glyph_health import (
+    glyph_caveat,
+    glyph_suspected,
+    passage_glyph_caveat,
+)
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -11209,6 +11213,7 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         pointers = self._figure_pointer_lines(ref, blocks)
+        has_glyph_caveat = glyph_suspected(ref.meta)
         block_spans: list[tuple[int, int]] = []  # (ord, end line index)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
@@ -11217,6 +11222,11 @@ class PaperHandler(Handler):
             lines.append(
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
+            if b.ord >= 0 and not has_glyph_caveat:
+                caveat = passage_glyph_caveat(b.text)
+                if caveat:
+                    lines.append(_glyph_damage_banner(caveat))
+                    lines.append("")
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
@@ -11965,6 +11975,10 @@ def _retraction_banner(ref: Ref) -> str | None:
     return " ".join(parts)
 
 
+def _glyph_damage_banner(caveat: str) -> str:
+    return f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}"
+
+
 def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
@@ -11978,7 +11992,7 @@ def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
-        lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+        lines.append(_glyph_damage_banner(caveat))
     one_page = (
         store.is_one_page_preview(ref) if store is not None else ref.is_one_page_pdf
     )

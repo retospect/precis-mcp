@@ -1233,6 +1233,24 @@ class TestBatchGet:
         assert "first" in resp.body
         assert "second" in resp.body
 
+    def test_legacy_glyph_damage_warns_on_the_matching_passage(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        clean = "The study used 608 samples at 10 mA/cm2 and reported ¼ of them."
+        damaged = "The temperature was 2,000 8C and v ¼ 84:68."
+        paper = _seed_paper(
+            store, slug="legacy-glyph", title="Legacy paper", blocks=[clean, damaged]
+        )
+
+        response = handler.get(id=f"pa{paper}~0..1").body
+        assert response.count("GLYPH-DAMAGED SOURCE") == 1
+        assert response.index(clean) < response.index("GLYPH-DAMAGED SOURCE")
+        assert response.index("GLYPH-DAMAGED SOURCE") < response.index(damaged)
+
+        pc = chunk_handle(store, "legacy-glyph", ord=1)
+        assert "GLYPH-DAMAGED SOURCE" in handler.get(id=pc).body
+        assert "GLYPH-DAMAGED SOURCE" not in handler.get(id=f"pa{paper}~0").body
+
     def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:
         with pytest.raises(BadInput, match="empty"):
             handler.get(id=[])
