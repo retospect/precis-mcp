@@ -49,6 +49,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
 from precis.utils.llm.quota import quota_retry_at
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -463,6 +464,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # and the pinned-lane guard — every adapter's bin resolves by
     # default; a test names the absent ones in ``calls["bins_absent"]``.
     calls["bins_absent"] = set()
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: True)
+    monkeypatch.setattr(capability_probe, "codex_login_present", lambda: True)
     monkeypatch.setattr(
         run_slice,
         "adapter_bin_present",
@@ -1082,8 +1087,15 @@ def test_devin_brief_forbids_ending_turn_to_poll(
     )
     assert ("Do not end your turn to wait" in brief) == (adapter == "devin_tree")
     if adapter == "devin_tree":
-        assert "scripts/ship --await" in brief
-        assert "scripts/test --await <run-id>" in brief
+        if other_repo:
+            # gr709133: a repo-profile brief must not leak the precis
+            # repo's own scripts/ poll commands (the profile names its own
+            # lint/test commands instead).
+            assert "scripts/ship --await" not in brief
+            assert "scripts/test --await <run-id>" not in brief
+        else:
+            assert "scripts/ship --await" in brief
+            assert "scripts/test --await <run-id>" in brief
         assert "do not post progress-only messages" in brief
         assert "your first final message ends the session" in brief
 
@@ -2098,7 +2110,7 @@ def test_submit_unpinned_child_uses_lane_default_model(
 
 
 def test_submit_env_is_an_allowlist(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("PRECIS_DB_DSN", "dbname=precis user=agent_rw")
     monkeypatch.setenv("DATABASE_URL", "postgresql:///precis")
@@ -2106,6 +2118,9 @@ def test_submit_env_is_an_allowlist(
     monkeypatch.setenv("VAULT_TOKEN", "v")
     monkeypatch.setenv("PRECIS_MCP_TOKEN", "mcp-token")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    # A HOME with no ``.local/bin/uv`` keeps the gr702380 fallback inert
+    # — the allowlist's PATH assertion stays about pass-through.
+    monkeypatch.setenv("HOME", str(tmp_path))
     store = _Store()
     store.add_todo(42, "t")
     _submit(store, seams, effort="low")
@@ -2295,15 +2310,58 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+def test_submit_rechecks_a_breaker_held_pinned_lane(seams: dict[str, Any]) -> None:
+    """A breaker-held lane reports ``now + lanes.BREAKER_HOLD`` — "until
+    its ask closes", not a time. A job pinned to it re-checks on the
+    refusal cadence instead of sleeping the year: four jobs did, past an
+    ask that closed the same day. A real refusal window still parks to
+    its end."""
+    store = _Store()
+    store.add_todo(42, "t")
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    now = datetime.now(UTC)
+    seams["backoff"] = {"claude-sub": now + lanes.BREAKER_HOLD}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "lane-breaker ask" in note and "after a host refusal" not in note
+    assert wake - now < lanes.HOST_REFUSAL_BACKOFF + timedelta(minutes=6)
+    assert ctx.failure is None and seams["launch"] == []
+
+    deferred.clear()
+    end = now + timedelta(minutes=20)
+    seams["backoff"] = {"claude-sub": end}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "after a host refusal" in note
+    assert end <= wake <= end + timedelta(minutes=5)
+
+
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
 ) -> None:
     """gr676054: a lane pin landing on a host without the lane's binary
     parks as a lane wait — the ``builder`` placement floor passed the
     host on SOME lane binary, so the pin holds for a host that carries
     this one. It is a host gap, not a lane failure: no
     ``meta.host_refusal`` stamp, so no fleet-wide lane backoff."""
-    seams["bins_absent"] = {"claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
@@ -2326,8 +2384,9 @@ def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     assert seams["launch"] == []
 
 
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_pick_filters_lanes_to_host_bins(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     """gr676054: the unpinned pick offers only lanes whose adapter binary
     this host can exec — a builder host carrying a subset must not pick
@@ -2345,7 +2404,12 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
 
     # Every fit lane's bin absent → nothing is pickable; the job parks.
-    seams["bins_absent"] = {"devin_tree", "claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"devin_tree", "claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     ctx2 = _Ctx(store, {"todo_id": 42})
     deferred: list[tuple[Any, str]] = []
 
@@ -2359,6 +2423,21 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert "no enabled lane" in deferred[0][1]
     assert ctx2.meta_set["lane_wait"] == []
     assert ctx2.failure is None
+
+
+@pytest.mark.parametrize("adapter", ["claude_p", "codex_exec"])
+def test_adapter_readiness_requires_login(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    from precis.workers import capability_probe
+
+    probe = "claude_auth_present" if adapter == "claude_p" else "codex_login_present"
+    monkeypatch.setattr(capability_probe, probe, lambda: False)
+    assert run_slice._adapter_ready(adapter) is False
+    monkeypatch.setattr(capability_probe, probe, lambda: True)
+    assert run_slice._adapter_ready(adapter) is True
+    seams["bins_absent"] = {adapter}
+    assert run_slice._adapter_ready(adapter) is False
 
 
 def test_lane_full_park_names_the_lanes_to_wake_on(seams: dict[str, Any]) -> None:
@@ -2899,6 +2978,76 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
     assert "The branch head is" not in target
 
 
+def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td707034: the hidden-ref fetch failed, nothing checked its exit
+    code, and the brief named the tracking ref of two days earlier as
+    "the branch head" — the reviewer judged it. With the pushed tip
+    known (``pending_land.head``) a head that is not it retries the
+    fetch once; still off after a failed fetch, the brief names no head
+    to judge and asks for no verdict, so the tick re-runs the review."""
+    old, new = "5" * 40, "7" * 40
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        meta={"pending_land": {"todo_id": 7, "branch": "slice/7", "head": new}},
+    )
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+    hidden = "+refs/factory/slice/7:refs/remotes/origin/slice/7"
+    state = {"hidden_fetches": 0, "ok_from": 99}
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["fetch"] and args[-1] == hidden:
+            state["hidden_fetches"] += 1
+            if state["hidden_fetches"] < state["ok_from"]:
+                return subprocess.CompletedProcess(
+                    [], 128, stdout="", stderr="fatal: unable to access origin\n"
+                )
+        if args[:1] == ["rev-parse"]:
+            fresh = state["hidden_fetches"] >= state["ok_from"]
+            return _proc(f"{new if fresh else old}\n")
+        return _proc()
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert state["hidden_fetches"] == 2
+    assert "STALE CHECKOUT" in target and "fatal: unable to access origin" in target
+    assert new in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
+
+    # The retry reaches the pushed tip: the usual brief, naming it.
+    state.update(hidden_fetches=0, ok_from=2)
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "STALE CHECKOUT" not in target
+    assert f"The branch head is `{new}`" in target
+
+    # A clean fetch that disagrees with the stamp is no safer than a
+    # failed one (td730820): the branch moved after the defer stamped
+    # the tip, and judging the read head would let a LAND release a land
+    # for a commit the review never read — the brief says judge nothing
+    # and the tick re-runs the review.
+    monkeypatch.setattr(
+        run_slice,
+        "_git",
+        lambda args, cwd: _proc(f"{old}\n") if args[:1] == ["rev-parse"] else _proc(),
+    )
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert "STALE CHECKOUT" in target
+    assert "after a clean fetch" in target
+    assert new in target and old in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3012,9 +3161,36 @@ def test_submit_refused_launch_is_attempt_free(
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
-    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "admission"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "lane-wait"
     assert "host at capacity" in (ctx.failure or "")
     assert seams["launch"] == []
+
+
+def test_submit_refused_launch_parks_on_lane_wait(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr708204: a capacity deferral parks the job (the busy-lane shape)
+    instead of failing it, so the free-failure run never reaches the
+    showstopper ask."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("full")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "host at capacity" in deferred[0][1]
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert ctx.meta_set["wait_parks"] == 1
 
 
 def test_launch_goes_through_spawn(
@@ -3769,6 +3945,34 @@ def test_slice_env_minted_token_without_the_oauth_login(
     env = run_slice.slice_env(42, "low", mcp=False)
     assert "PRECIS_MCP_TOKEN" not in env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_slice_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702380: the session env reaches uv in ``~/.local/bin`` when a
+    non-login coder unit's PATH lacks it — the same fallback
+    ``land_env`` gives its children, precedence preserved."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = run_slice.slice_env(42, "low", mcp=False)
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
 
 
 def test_render_brief_read_mcp_paragraphs() -> None:
@@ -4698,6 +4902,71 @@ def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "Commit: worker committed the session's working tree" in summary
     assert "1 commit(s) ahead of origin/main" in summary
+
+
+def test_poll_commits_a_blocked_commit_without_a_message(
+    seams: dict[str, Any],
+) -> None:
+    """gr702644 (td700755): a codex slice under a read-only ``.git``
+    sandbox finishes real work, reports the commit blocked and writes no
+    ``scratch/commit-msg.txt`` — the worker commits with a generated
+    subject instead of counting a no-commit run and relaunching."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    tree = Path(handle["worktree"])
+    seams["porcelain"] = " M a.py\n M b.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(slice): complete (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Commit blocked by read-only `.git`; changes "
+                "remain in the worktree.\ntests: ran",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert ["add", "-A"] in [a for a, _cwd in seams["git"]]
+    commits = [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["commit_text"] == "fix(slice): complete (td42)\n"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert seams["land_checked"] == [True]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert (
+        "Commit: worker committed the session's working tree with "
+        "a worker-generated subject" in summary
+    )
+
+
+def test_poll_a_dirty_tree_without_a_blocked_report_commits_nothing(
+    seams: dict[str, Any],
+) -> None:
+    """The fallback is gated on the session's own report: a clean exit
+    that left edits but never said its commit was refused keeps the
+    no-commit ruling — stray leftovers are not the lander's business."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Done; tree left as-is."}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert not [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
 
 
 def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
@@ -10214,7 +10483,7 @@ def test_kimi_worker_commit_note_scrubs_or_withholds(
 
     key = "sk-commit-note-key"
     note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
-    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
@@ -13959,3 +14228,130 @@ def test_skill_lane_needs_live_mcp() -> None:
         )
     ]
     assert boundary.fit_lanes("skill", table) == ()
+
+
+@pytest.fixture
+def recovery_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[_Ctx, Path]:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    ctx = _Ctx(
+        _Store(),
+        {"todo_id": 7},
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    attempt = run_slice.run_dir(7) / ("a" * 32)
+    attempt.mkdir()
+    return ctx, attempt
+
+
+def test_reconcile_adopts_the_recorded_handle(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "pgid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {**recorded, "recovered_exit": True}
+
+
+def test_reconcile_pid_only_preserves_launch_baselines(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx, attempt = recovery_attempt
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    original = "1" * 40
+    baseline = {
+        "worktree": str(tree),
+        "exit_file": str(attempt / "exit"),
+        "review": {"head": original},
+        "acceptance_tests": ["tests/test_once.py"],
+        "acceptance_tests_missing": ["tests/test_once.py"],
+    }
+    run_slice._write_launch_record(attempt / "baseline", baseline)
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+
+    # Both mutable inputs have changed since spawn.
+    monkeypatch.setattr(run_slice, "_git", lambda *_: _proc("2" * 40))
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_once.py").touch()
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {
+        **baseline,
+        "pid": 4321,
+        "pgid": 4321,
+        "recovered_exit": True,
+    }
+
+
+def test_reconcile_pid_without_verified_identity_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, attempt = recovery_attempt
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    monkeypatch.setattr(run_slice, "_launch_pid_identity", lambda *_: None)
+    monkeypatch.setattr(run_slice, "_darwin_launch_identity", lambda *_: None)
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_missing_evidence_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    assert run_slice.reconcile(ctx) is None
+    # The worker may have died after spawn, before the child wrote its PID.
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_ignores_prior_attempt_and_legacy_evidence(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    prior = attempt.parent / ("b" * 32)
+    prior.mkdir()
+    (prior / "exit").write_text("0", encoding="utf-8")
+    recorded = {"pid": 4242, "exit_file": str(prior / "exit")}
+    run_slice._write_launch_record(prior / "handle", recorded)
+    run_slice._write_launch_record(attempt.parent / "run_slice.handle", recorded)
+    (attempt.parent / "run_slice.pid").write_text("4242", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_rejects_evidence_from_another_host(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+    ctx.meta["submit_host"] = "another-worker"
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_stale_record_mismatched_pid_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    run_slice._write_launch_record(attempt / "handle", {"pid": 4242})
+    (attempt / "pid").write_text("5555", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None

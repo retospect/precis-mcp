@@ -12,6 +12,7 @@ import pytest
 
 import precis.ingest.paper_meta_enrich as paper_meta_enrich
 from precis.identity import PLACEHOLDER_TITLE
+from precis.ingest import journal_record
 from precis.ingest.paper_meta_enrich import (
     RESOLVED_AT_KEY,
     SOURCE_KEY,
@@ -20,6 +21,11 @@ from precis.ingest.paper_meta_enrich import (
 from precis.store import Store
 
 _VALID_ORCID = "0000-0002-1825-0097"
+
+
+@pytest.fixture(autouse=True)
+def _journal_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(journal_record, "fetch_journal", lambda issn, mailto: None)
 
 
 def _paper(
@@ -782,6 +788,108 @@ class TestDoiLessHeuristic:
         assert outcome.authors_source == "heuristic"
         ref = _ref(store, rid)
         assert ref.authors == [{"given": "Alice", "family": "Jones"}]
+
+
+class TestVenueTitleOfRecord:
+    """gr685099: one ISSN prints one venue name, whatever the per-paper
+    ``container-title`` casing says."""
+
+    def _enrich(self, store: Store, slug: str, doi: str, journal: str) -> dict:
+        rid = _paper(store, slug=slug, doi=doi)
+        msg = _crossref_msg(doi=doi, journal=journal)
+        msg["ISSN"] = ["2575-0356"]
+        enrich_paper(
+            store,
+            rid,
+            doi=doi,
+            crossref_fn=lambda d, m: msg,
+            openalex_fn=lambda d, **k: None,
+        )
+        return _ref(store, rid).meta or {}
+
+    def test_issn_title_of_record_replaces_variants(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        def fetch(issn: str, mailto: str) -> dict[str, Any]:
+            calls.append(issn)
+            return {"ISSN": [issn], "title": "Energy & Environmental Materials"}
+
+        monkeypatch.setattr(journal_record, "fetch_journal", fetch)
+        a = self._enrich(
+            store, "v1", "10.1002/eem2.1", "ENERGY & ENVIRONMENTAL MATERIALS"
+        )
+        b = self._enrich(
+            store, "v2", "10.1002/eem2.2", "Energy and Environmental Materials"
+        )
+        assert a["journal"] == b["journal"] == "Energy & Environmental Materials"
+        assert "ENERGY & ENVIRONMENTAL MATERIALS" in a["journal_aliases"]
+        assert calls == ["2575-0356"]
+        assert a["journal_source"] == "crossref-journals"
+        from precis.export.docx import _resolve_source, _venue_runs
+        from precis.export.latex import build_bib
+
+        ref = store.get_ref(kind="paper", id="v1")
+        assert ref is not None
+        store.update_paper_fields(ref.id, meta_patch={"venue": "RAW VENUE"})
+        source = _resolve_source(store, "v1")
+        assert source is not None
+        assert source["journal"] == a["journal"]
+        runs = _venue_runs({**a, "venue": "RAW VENUE"}, "article")
+        assert "Energy & Environmental Materials" in "".join(t for t, _ in runs)
+        bib = build_bib(store, ["v1", "v2"], [])
+        assert bib.count("journaltitle = {Energy \\& Environmental Materials}") == 2
+        assert "RAW VENUE" not in bib
+
+    def test_unrelated_record_files_one_review_todo(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            journal_record,
+            "fetch_journal",
+            lambda issn, mailto: {"ISSN": [issn], "title": "Some Other Journal"},
+        )
+        meta = self._enrich(store, "v3", "10.1002/eem2.3", "ENERGY MATERIALS")
+        assert meta["journal"] == "ENERGY MATERIALS"
+        self._enrich(store, "v4", "10.1002/eem2.4", "Energy Materials")
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND meta->>'source'='journal-record'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    def test_metrics_title_is_not_a_journal_record(self, store: Store) -> None:
+        store.upsert_venue_metrics(
+            [{"issn": "2575-0356", "year": 2024, "sjr": 1.5, "title": "Wrong Title"}]
+        )
+        meta = self._enrich(store, "v5", "10.1002/eem2.5", "ENERGY MATERIALS")
+        assert meta["journal"] == "ENERGY MATERIALS"
+
+    def test_escaped_all_caps_container_title_converges(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr685099's exact shape: Crossref works serves the container
+        title escaped and ALL CAPS; the ISSN record settles it without a
+        human todo."""
+        monkeypatch.setattr(
+            journal_record,
+            "fetch_journal",
+            lambda issn, mailto: {
+                "ISSN": [issn],
+                "title": "Energy & Environmental Materials",
+            },
+        )
+        meta = self._enrich(
+            store, "v6", "10.1002/eem2.6", "ENERGY &amp; ENVIRONMENTAL MATERIALS"
+        )
+        assert meta["journal"] == "Energy & Environmental Materials"
+        assert "ENERGY &amp; ENVIRONMENTAL MATERIALS" in meta["journal_aliases"]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND meta->>'source'='journal-record'"
+            ).fetchall()
+        assert rows == []
 
 
 class TestJournalCrossrefPrecedence:

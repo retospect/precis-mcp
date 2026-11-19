@@ -366,6 +366,21 @@ def _doable_under_ids(store: Store, raw: Any) -> list[int]:
     return [r.id for r in live]
 
 
+def _under_doable_next(raw: Any) -> list[str]:
+    """gr676953: an ``under=`` on a view that is not ``doable`` used to
+    be pointed at a single next call that only listed the claimable
+    leaves — and spelled ``under=`` top-level, the form the same
+    response called deprecated. Point at both reads instead: the
+    subtree (``get`` view='tree') first, then the claimable-leaf
+    search, interpolating the caller's own id when known.
+    """
+    ident = repr(raw) if raw is not None else "<todo id>"
+    return [
+        f"get(kind='todo', id={ident}, view='tree')",
+        f"search(kind='todo', view='doable', args={{'under': {ident}}})",
+    ]
+
+
 def _dict_in_q(q: Any) -> dict[str, Any] | None:
     """A dict smuggled through ``q=``, decoded — else ``None``.
 
@@ -495,13 +510,15 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: body + comments + links; ``view='body'`` is the bounded body-only
 #: read, gr554136). ``'brief'`` and ``'tags'`` (gr547804) read as the
 #: same card — a todo card is the brief and carries its ``tags:``
-#: line. ``None`` maps to the default view; each alias runs the
+#: line, including the lifecycle status requested by ``'status'``
+#: (gr709768). ``None`` maps to the default view; each alias runs the
 #: canonical call and names the reading via
 #: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
     "brief": None,
     "tags": None,
+    "status": None,
 }
 
 #: Reserved *virtual* link relation. ``link(rel='parent')`` is a
@@ -558,7 +575,7 @@ class TodoHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "search": ArgsSpec({"under"}),
+        "search": ArgsSpec({"under", "ids"}),
         "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
     #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
@@ -930,6 +947,7 @@ class TodoHandler(NumericRefHandler):
         view: str | None = None,
         args: dict[str, Any] | None = None,
         under: str | int | None = None,
+        ids: list[str | int] | None = None,
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
@@ -970,6 +988,22 @@ class TodoHandler(NumericRefHandler):
             args = {**(args or {}), **q_args}
             q = None
             readings.append(f"q={q_args!r} read as args={q_args!r}")
+        rest = dict(args or {})
+        nested_ids = rest.pop("ids", None)
+        if ids is None:
+            ids = nested_ids
+        if ids is not None:
+            selected = set(self._coerce_ids(ids)) if ids else set()
+            included = _kw.get("include_ref_ids")
+            _kw["include_ref_ids"] = sorted(
+                selected if included is None else selected & set(included)
+            )
+            if view is not None and view != "count":
+                raise BadInput(
+                    "ids= filters ordinary todo search and view='count'",
+                    next="search(kind='todo', ids=['td123'])",
+                )
+        args = rest or None
         # ``view='count'`` is the shared numeric-ref aggregate (total +
         # group_by facets) — it takes no tree args, so under= (todo's
         # own subtree scope) is refused rather than silently dropped.
@@ -1030,7 +1064,7 @@ class TodoHandler(NumericRefHandler):
             if view != "doable":
                 raise BadInput(
                     "under= requires view='doable' on todo search",
-                    next="search(kind='todo', view='doable', under='<todo id>')",
+                    next=_under_doable_next(under),
                 )
             if (
                 args is not None
@@ -1051,7 +1085,7 @@ class TodoHandler(NumericRefHandler):
         if view != "doable" and args is not None and args.get("under") is not None:
             raise BadInput(
                 "under= requires view='doable' on todo search",
-                next="search(kind='todo', view='doable', under='<todo id>')",
+                next=_under_doable_next(args["under"]),
             )
         if view is not None:
             try:

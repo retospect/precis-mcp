@@ -117,8 +117,9 @@ def test_newer_establishes_edge_blocks_sign(store: Any) -> None:
     assert len(stale) == 1
     assert f"link {link}" in stale[0].message
     assert f"pc{chunk2}" in stale[0].message
-    assert "precis nanopub reopen" in stale[0].message
-    assert "--accept-newer-evidence" in stale[0].message
+    assert "person" in stale[0].message and "reopen" in stale[0].message
+    assert "accept-newer-evidence checkbox" in stale[0].message
+    assert "CLI" not in stale[0].message
     assert _row(store, hub).state == "reviewed"  # nothing signed
 
 

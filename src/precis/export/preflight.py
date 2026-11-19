@@ -110,6 +110,7 @@ def draft_export_preflight(
     *,
     ignore_retractions: bool = False,
     placeholder_figures: bool = False,
+    retraction_report: Any | None = None,
 ) -> ExportPreflight:
     """Run both draft-level export gates and return one combined verdict.
 
@@ -122,7 +123,13 @@ def draft_export_preflight(
     from precis.utils.figure_clearance import partition_uncleared
 
     progress.report("checking cited papers for retractions")
-    report = _safe_retraction_report(store, ref)
+    report = (
+        retraction_report
+        if retraction_report is not None
+        else _safe_retraction_report(store, ref)
+    )
+    if report is not None:
+        progress.report(report.coverage_summary())
     retraction_blocked: list[Any] = []
     retraction_override: list[Any] = []
     if report is not None and report.blocks_export:

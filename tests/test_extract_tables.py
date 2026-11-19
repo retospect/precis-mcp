@@ -468,6 +468,7 @@ class TestHeaderUnit:
             ("expt", None),
             ("Wichtendahl et al. <sup>56</sup>", None),
             ("rate (blorf)", None),
+            ("rate [s/(]", None),
         ],
     )
     def test_units(self, header: str, unit: str | None) -> None:

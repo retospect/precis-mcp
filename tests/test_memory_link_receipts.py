@@ -324,24 +324,24 @@ def test_renderer_distinguishes_generated_and_explicit_edges(
 def test_codeless_target_uses_its_public_address(
     handler: MemoryHandler, store: Store
 ) -> None:
-    target = store.insert_ref(kind="web", slug="receipt-source", title="Source")
-    source = _memory(handler, "Evidence web:receipt-source")
+    target = store.insert_ref(kind="math", slug="receipt-source", title="Source")
+    source = _memory(handler, "Evidence math:receipt-source")
     before = store.links_for(source, direction="out")
     assert {link.dst_ref_id for link in before} == {target.id}
 
     receipt = handler.edit(
         id=source,
         mode="find-replace",
-        find="web:receipt-source",
+        find="math:receipt-source",
         text="the source account",
     ).body
 
     assert (
-        f"- removed related-to me{source} -> web:receipt-source "
+        f"- removed related-to me{source} -> math:receipt-source "
         "(generated mention edge)"
     ) in receipt
     assert (
-        f"link(kind='memory', id={source}, target='web:receipt-source', "
+        f"link(kind='memory', id={source}, target='math:receipt-source', "
         "rel='related-to', meta={'auto': 'mention'})"
     ) in receipt
     assert not store.links_for(source, direction="out")

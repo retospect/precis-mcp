@@ -1188,3 +1188,18 @@ class TestRateLimitUnaffected:
             assert rate_limit.refusal_counts().get("llm:codex:weekly", 0) == 1
         finally:
             rate_limit.close()
+
+
+def test_accounts_view_shows_promo_models_rank(store: Any) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_account SET promo_expiry = DATE '2027-01-15', "
+            "models = ARRAY['model-a', 'model-b'], lane_rank = 17 WHERE name = 'codex'"
+        )
+        conn.execute(
+            "UPDATE llm_account SET promo_expiry = NULL, models = '{}', lane_rank = 100 "
+            "WHERE name = 'claude-sub'"
+        )
+    body = _handler(store).get(id="/accounts").body
+    assert "promo_expiry=2027-01-15 models=model-a,model-b lane_rank=17" in body
+    assert "promo_expiry=none models=unknown lane_rank=100" in body

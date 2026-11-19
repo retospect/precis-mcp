@@ -358,6 +358,44 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
     return out
 
 
+_COUNT_AGG_GRAMMAR = (
+    "agg='<avg|sum|min|max>:meta.<key>[.<key>…][,…]' with view='count' and group_by="
+)
+_COUNT_AGG_TERM = re.compile(
+    r"(avg|sum|min|max):meta\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)"
+)
+
+
+def _require_count_agg_view(agg: Any, view: str | None) -> None:
+    if agg is not None and view != "count":
+        raise BadInput("agg= applies only to view='count'", next=_COUNT_AGG_GRAMMAR)
+
+
+def _parse_count_aggs(agg: Any, facets: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if agg is None:
+        return []
+    if not facets or not isinstance(agg, str):
+        raise BadInput("agg= requires group_by= and a string", next=_COUNT_AGG_GRAMMAR)
+    out = []
+    for term in agg.split(","):
+        match = _COUNT_AGG_TERM.fullmatch(term.strip())
+        if match is None:
+            raise BadInput(f"invalid aggregate {term!r}", next=_COUNT_AGG_GRAMMAR)
+        spec = (match[1], match[2])
+        if spec not in out:
+            out.append(spec)
+    return out
+
+
+def _count_agg_cells(
+    aggs: list[tuple[str, str]], values: tuple[tuple[float | None, int], ...]
+) -> str:
+    return "".join(
+        f" · {fn}(meta.{path})={value if value is None else format(value, '.15g')} (n={n})"
+        for (fn, path), (value, n) in zip(aggs, values, strict=True)
+    )
+
+
 def _count_facet_label(spec: tuple[str, str]) -> str:
     """Header label for one facet spec: ``meta.job_type``/``state``/``tag:area``."""
     ftype, key = spec
@@ -815,6 +853,8 @@ class NumericRefHandler(Handler):
     #: already has (gr572710). The eye header is not a row surface: it
     #: renders the full set.
     list_row_tag_prefixes: ClassVar[tuple[str, ...] | None] = None
+    #: Omit these columns only when every cell on the page is empty or zero.
+    list_drop_constant_cols: ClassVar[tuple[str, ...]] = ()
 
     #: Open-tag axis (``'cluster'`` → ``cluster:*``) a queryless list that
     #: overflows its page summarises under the header — group counts over
@@ -1136,9 +1176,56 @@ class NumericRefHandler(Handler):
         depth: int | str | None = None,
         limit: int | str | None = None,
         cursor: str | None = None,
+        reason: str | None = None,
+        relation: str | None = None,
+        src_kind: str | None = None,
+        dst_kind: str | None = None,
+        include_structural: bool | None = None,
+        count: bool | None = None,
+        space: str | None = None,
+        under: str | int | None = None,
+        endpoint: str | None = None,
         tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
+        missing_queue = id == "/links" or (view == "links" and reason == "missing")
+        if reason is not None and (reason != "missing" or not missing_queue):
+            raise BadInput(
+                "reason='missing' requires view='links' or id='/links'",
+                next=f"get(kind={self.kind!r}, id={id!r}, view='links', args={{'reason': 'missing'}})",
+            )
+        if missing_queue:
+            if q is not None or of_kind is not None:
+                raise BadInput(
+                    "missing reasons take src_kind/dst_kind, not q/of_kind",
+                    next="get(kind='memory', id='/links', args={'src_kind': 'memory'})",
+                )
+            if id == "/links":
+                self._check_list_id_view(id, view)
+            from precis.handlers._links_missing_reason import render_missing_reasons
+
+            focus = (
+                None
+                if id == "/links"
+                else self._resolve_live_ref(self._coerce_id(id)).id
+            )
+            return render_missing_reasons(
+                self.store,
+                kind=self.kind,
+                id_arg=str(id),
+                focus_ref_id=focus,
+                relation=relation or rel,
+                src_kind=src_kind,
+                dst_kind=dst_kind,
+                include_structural=include_structural,
+                count=count,
+                space=space,
+                under=under,
+                endpoint=endpoint,
+                direction=direction,
+                cursor=cursor,
+                limit=limit,
+            )
         if (closed_since is not None or closed_until is not None) and not (
             isinstance(id, str) and id.startswith("/")
         ):
@@ -1399,6 +1486,7 @@ class NumericRefHandler(Handler):
         # they route to the cross-kind source-search primitive upstream.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         # ``str`` parses via ``_parse_window_bound`` (ISO); kinds that
         # resolve their own bound spellings (job's hours/days age,
         # gr536316) pass the already-parsed datetime through.
@@ -1441,6 +1529,7 @@ class NumericRefHandler(Handler):
         # Fold the ``q='*'`` match-all spelling before any view dispatch
         # (gr538071) — the shared helper's docstring says why. One door
         # for every numeric-ref kind that funnels through this search.
+        _require_count_agg_view(agg, view)
         row_tag_prefixes = self._parse_tag_prefixes(tag_prefixes)
         q = fold_match_all_q(q)
         # ``view='ids'`` renders the same filtered set as one bare handle
@@ -1552,6 +1641,7 @@ class NumericRefHandler(Handler):
                 status_note=status_note,
                 link=link,
                 group_by=group_by,
+                agg=agg,
                 sort=sort,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
@@ -1664,6 +1754,24 @@ class NumericRefHandler(Handler):
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
+            # A kind may answer a truly bare ``search(kind=<K>)`` with
+            # its natural recency listing instead of the refusal below
+            # (gr709769: callers re-issued ``search(kind='job', page=1,
+            # …)`` asking "what ran lately"). Reached only when every
+            # listing-firing filter came back empty, so the override
+            # sees at most page=/page_size=, a folded view='ids'/'list'
+            # (``compact``) and a no-op status= spelling ('*'/'any').
+            bare = self._bare_listing(
+                status=status,
+                mode=mode,
+                group_by=group_by,
+                compact=compact,
+                page=page,
+                page_size=page_size,
+                row_tag_prefixes=row_tag_prefixes,
+            )
+            if bare is not None:
+                return bare
             raise BadInput(
                 "search requires q= or tags= or link=",
                 next=(
@@ -1830,6 +1938,31 @@ class NumericRefHandler(Handler):
             result_count=len(hit_refs),
             result_ids=[int(r.id) for r in hit_refs],
         )
+
+    def _bare_listing(
+        self,
+        *,
+        status: str | None,
+        mode: str | None,
+        group_by: str | list[str] | None,
+        compact: str | None,
+        page: int,
+        page_size: int,
+        row_tag_prefixes: tuple[str, ...] | None = None,
+    ) -> Response | None:
+        """A truly bare ``search(kind=<K>)`` — no ``q=``/``tags=``/``link=``
+        or any other narrowing filter — as a listing, or ``None`` to keep
+        the "requires q= or tags= or link=" refusal.
+
+        Called from :meth:`search` only after every listing-firing filter
+        came back empty, so an override never steals a shape the ranked /
+        tag / link paths already serve (gr709769). Job answers with its
+        plain filtered listing — the same recency page a queryless
+        ``since=``/``until=`` takes. ``row_tag_prefixes`` is the parsed
+        ``args={'tag_prefixes': …}`` row selection, already validated by
+        :meth:`search`; an override that renders tag chips must honor it
+        rather than silently drop it."""
+        return None
 
     def _fold_project_arg(
         self,
@@ -2079,6 +2212,7 @@ class NumericRefHandler(Handler):
         status_note: str,
         link: str | None,
         group_by: Any,
+        agg: str | None = None,
         sort: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
@@ -2129,6 +2263,7 @@ class NumericRefHandler(Handler):
                 next=f"search(kind={self.kind!r}, view='count', args={{'group_by': 'state'}})",
             )
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
         closed_after_dt = _parse_window_bound(closed_since, "closed_since")
@@ -2156,6 +2291,7 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -2232,7 +2368,10 @@ class NumericRefHandler(Handler):
             offset = (pg - 1) * ps
             window = groups[offset : offset + ps]
             for row in window:
-                parts.append(self._count_group_line(row, facets))
+                parts.append(
+                    self._count_group_line(row, facets)
+                    + _count_agg_cells(aggs, row[2].aggregates)
+                )
             hidden_rows = groups[offset + len(window) :]
             if hidden_rows:
                 parts.append(
@@ -2257,7 +2396,9 @@ class NumericRefHandler(Handler):
                             include_ref_ids=include_ref_ids,
                             exclude_ref_ids=exclude_ref_ids,
                             extra_top=next_top,
-                            extra_args=next_args,
+                            extra_args={**(next_args or {}), "agg": agg}
+                            if agg is not None
+                            else next_args,
                             drop=next_drop,
                         ),
                         sql_capped=len(groups) == _COUNT_GROUP_LIMIT,
@@ -4899,6 +5040,10 @@ class NumericRefHandler(Handler):
 
     # ── batch forms (``id=[...]``) ─────────────────────────────────
 
+    def _batch_extra_line(self, ref: Ref, tags: list[tuple[str, str]]) -> str | None:
+        """Optional kind-specific detail for a batch summary."""
+        return None
+
     def _get_batch(
         self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
     ) -> Response:
@@ -4994,6 +5139,9 @@ class NumericRefHandler(Handler):
                 bits.append(sz)
             summary, _rest = _extract_summary(ref.title or "")
             blocks.append("  ".join(bits) + "\n" + summary)
+            extra = self._batch_extra_line(ref, tag_rows.get(rid, []))
+            if extra is not None:
+                blocks[-1] += "\n" + extra
         body = f"# {len(ref_ids)} {self._sense()} (batch)\n\n" + "\n\n".join(blocks)
         # The read-one hint names the kind's complete read
         # (:data:`complete_get_view`) — the summary blocks are titles
@@ -5492,8 +5640,9 @@ class NumericRefHandler(Handler):
     ) -> str:
         """Render a list of refs as a single TOON table.
 
-        Columns: ``id | status? | tags? | summary | remaining_words |
-        links | age | size``.
+        Columns: ``id | status? | tags? | summary | remaining_words? |
+        links? | age? | size?``. A column in ``list_drop_constant_cols``
+        is omitted when every row on the page has an empty or zero value.
         Columns:
           - ``id``: the universal handle (``gr5``, ``me158``) — the one
             address form; no separate ``kind`` column, it is constant
@@ -5592,6 +5741,13 @@ class NumericRefHandler(Handler):
             schema.insert(2 if lifecycle else 1, "tags")
         if marks:
             schema.append("stale")
+        schema = [
+            col
+            for col in schema
+            if col not in self.list_drop_constant_cols
+            or any(row[col] not in ("", "0") for row in rows)
+        ]
+        rows = [{col: row[col] for col in schema} for row in rows]
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:
@@ -5810,7 +5966,10 @@ class NumericRefHandler(Handler):
             rows: list[dict[str, str]] = []
             for r in refs:
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
-                row: dict[str, str] = {"id": str(r.id), "preview": preview}
+                row: dict[str, str] = {
+                    "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    "preview": preview,
+                }
                 if any_tagged:
                     row["tags"] = " ".join(str(t) for t in tags_per_ref[r.id])
                 rows.append(row)

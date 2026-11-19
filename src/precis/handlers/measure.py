@@ -352,12 +352,7 @@ class MeasureHandler(Handler):
         if low is not None and high is not None:
             text = f"{low:.6g}–{high:.6g}"
         elif num is not None:
-            prefix = {
-                "upper_bound": "< ",
-                "lower_bound": "> ",
-                "approximate_point": "~",
-            }.get(form or "", "")
-            text = prefix + f"{num:.6g}"
+            text = render.bound_sign(r) + f"{num:.6g}"
             if r.get("value_err") is not None:
                 text += f" ± {r['value_err']:.6g}"
         else:
@@ -730,7 +725,8 @@ class MeasureHandler(Handler):
         if status not in (None, "all", "live"):
             raise BadInput(
                 f"status {status!r} is not 'all' or 'live'",
-                next="status='all' includes superseded, escalated, ambiguous and anchor-lost rows",
+                next="use status='live' for live rows only or status='all' to include "
+                "superseded, escalated, ambiguous and anchor-lost rows",
             )
         taxon_id: int | None = None
         taxon_meta: dict[str, Any] = {}
@@ -767,6 +763,7 @@ class MeasureHandler(Handler):
             )
         min_si = self._to_si(min, unit, taxon_meta)
         max_si = self._to_si(max, unit, taxon_meta)
+        include_escalated = paper is not None and status is None
         found = self.store.search_measures(
             taxon_id,
             min_si=min_si,
@@ -776,13 +773,23 @@ class MeasureHandler(Handler):
             paper_ref_id=paper,
             serving_ref_id=serving,
             include_all=status == "all",
+            include_escalated=include_escalated,
             bound_currency=self._bound_currency(unit, taxon_meta),
         )
         rows = found.rows
         size = page_size if page_size > 0 else _DEFAULT_PAGE_SIZE
         page = page if page >= 1 else 1
         shown = rows[(page - 1) * size : page * size]
-        head = self._header(len(rows), taxon_meta, min, max, unit, q, status)
+        head = self._header(
+            len(rows),
+            taxon_meta,
+            min,
+            max,
+            unit,
+            q,
+            status,
+            include_escalated=include_escalated,
+        )
         if paper is not None:
             head += f" · paper: {handle_registry.format_handle('paper', paper)}"
         if serving is not None:
@@ -856,6 +863,8 @@ class MeasureHandler(Handler):
         unit: str | None,
         q: str | None,
         status: str | None,
+        *,
+        include_escalated: bool = False,
     ) -> str:
         bits = []
         if taxon_meta:
@@ -869,6 +878,8 @@ class MeasureHandler(Handler):
             bits.append(f"q={q.strip()!r}")
         if status == "all":
             bits.append("including superseded/escalated/anchor-lost")
+        elif include_escalated:
+            bits.append("including escalated")
         what = ", ".join(bits) or "all"
         if n == 0:
             return f"no measures match ({what})"

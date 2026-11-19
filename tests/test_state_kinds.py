@@ -875,9 +875,41 @@ class TestJob:
         assert seen_limits == [2]  # bounded to page_size, not the full 6-edge set
         assert links_for_calls == []  # never falls back to the unbounded reader
 
-    def test_search_no_q_no_tags_no_link_still_raises(self, job: JobHandler) -> None:
-        with pytest.raises(BadInput, match="search requires q= or tags= or link="):
-            job.search()
+    def test_search_no_q_no_tags_no_link_lists_jobs(
+        self, job: JobHandler, store: Store
+    ) -> None:
+        """gr709769: a bare ``search(kind='job', page=1, page_size=…)`` —
+        the call shape the call-errors cluster kept re-issuing — is
+        "what ran lately": the plain filtered listing
+        (``_search_by_job_type`` with no ``job_type``), not the
+        "requires q= or tags= or link=" refusal other kinds keep."""
+        from precis.utils import handle_registry
+
+        j = store.insert_ref(kind="job", slug=None, title="bare listing job")
+        resp = job.search(page=1, page_size=25)
+        assert "job entr" in resp.body
+        assert handle_registry.format_handle("job", j.id) in resp.body
+        assert "bare listing job" in resp.body
+
+    def test_search_bare_listing_honors_tag_prefixes(
+        self, job: JobHandler, store: Store
+    ) -> None:
+        """review td727851: ``args={'tag_prefixes': …}`` is validated by
+        the base search but was dropped at the bare-listing hook — the
+        listing rendered the default chips anyway. The bare job listing
+        must honor the requested prefixes (the job_type-filtered and
+        dated spellings still refuse the option explicitly)."""
+        j = store.insert_ref(kind="job", slug=None, title="tagged listing job")
+        store.add_tag(j.id, Tag.open("fix:gr709769"), set_by="system")
+        store.add_tag(j.id, Tag.open("area:workers"), set_by="system")
+
+        default = job.search(page=1, page_size=25).body
+        assert "[area:workers]" in default
+        assert "[fix:gr709769]" in default
+
+        body = job.search(page=1, page_size=25, tag_prefixes="fix").body
+        assert "[fix:gr709769]" in body
+        assert "[area:workers]" not in body
 
 
 # ── OracleHandler — slug-addressed, read-only ────────────────────────

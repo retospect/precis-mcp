@@ -209,7 +209,7 @@ class TestJobTypeListing:
 
     def test_sort_rejected(self, jobs: JobHandler) -> None:
         with pytest.raises(BadInput, match="sort="):
-            jobs.search(job_type="sweep", sort="recency")
+            jobs.search(job_type="sweep", sort="relevance")
 
     def test_refuses_unapplied_kw_with_working_next(
         self, jobs: JobHandler, runtime_with_store: PrecisRuntime
@@ -333,7 +333,7 @@ class TestJobTypeCount:
         "job_type-filtered" — the caller never named one — and the
         next= must be a call that works."""
         cases: list[tuple[dict[str, Any], str, str]] = [
-            ({"sort": "recency"}, "sort=", "q="),
+            ({"sort": "relevance"}, "sort=", "q="),
             ({"mode": "semantic"}, "mode=", "q="),
             ({"view": "tree"}, "unknown view", "view='count'"),
         ]

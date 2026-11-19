@@ -276,14 +276,23 @@ def _canon_runs(text: str) -> set[str]:
     return set(_runs(text))
 
 
+# Extracted prose can wrap a value, its unit, or just its decimal point.
+_DECIMAL_POINT_EMPHASIS_RE = re.compile(r"(?<=\d)(\*{1,3}|_{1,3})\.\1(?=\d)")
+_QUANTITY_EMPHASIS_RE = re.compile(
+    r"(?<![\w\\*_])(\*{1,3}|_{1,3})(?=[^\s*_])([^\n]+?)(?<![\s\\*_])\1(?![\w*_])"
+)
+
+
 def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
     """:class:`Evidence` of free text (or of numerics tokens joined by space).
 
     Read generously (this is the side that grounds, never the side that
     flags): list members share the trailing unit, table cells take their
-    header's unit."""
+    header's unit. Read emphasized values as rendered before tokenizing."""
     units: set[tuple[str, str]] = set()
     tokens: list[str] = []
+    text = _DECIMAL_POINT_EMPHASIS_RE.sub(".", text)
+    text = _QUANTITY_EMPHASIS_RE.sub(r"\2", text)
     norm = normalize_spellings(text)
     for variant in {text, norm}:
         spans = _quantities(variant)

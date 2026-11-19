@@ -16,10 +16,14 @@ from precis.utils.edit_resolve import (
     apply_edit,
     classify_diff_hunks,
     find_candidates,
+    fold_anchor,
     format_unified_diff,
     normalize_dry_run,
+    relaxed_candidates,
     render_dry_run_full,
     render_dry_run_header,
+    select_candidates,
+    splice_edit,
 )
 
 # ---------------------------------------------------------------------------
@@ -559,3 +563,115 @@ def test_dry_run_full_falls_back_when_no_spans() -> None:
         region_label="x",
     )
     assert "no edited spans" in body or "view='raw'" in body
+
+
+# ---------------------------------------------------------------------------
+# relaxed_candidates — folded matching for retype drift (gr688478)
+# ---------------------------------------------------------------------------
+
+
+def test_fold_anchor_normalizes_punctuation_and_whitespace() -> None:
+    assert fold_anchor("it’s  —\u00a0done…") == "it's - done..."
+    assert fold_anchor("a → b") == "a -> b"
+    assert fold_anchor("plain") == "plain"
+
+
+def test_relaxed_candidates_finds_nbsp_drift() -> None:
+    """Body holds a non-breaking space; the agent retyped a plain one."""
+    op = EditOp(op="edit", find="foo bar", text="x")
+    cands = relaxed_candidates("a foo\u00a0bar b", op)
+    assert len(cands) == 1
+    assert cands[0].start == 2
+    assert cands[0].end == 9  # raw span covers the NBSP
+
+
+def test_relaxed_candidates_empty_when_fold_changes_nothing() -> None:
+    """No folded match either — the literal miss was honest."""
+    op = EditOp(op="edit", find="missing", text="x")
+    assert relaxed_candidates("plain body text", op) == []
+
+
+def test_relaxed_candidates_empty_when_find_folds_to_nothing() -> None:
+    op = EditOp(op="edit", find=" \u200b ", text="x")
+    assert relaxed_candidates("any body", op) == []
+
+
+def test_relaxed_candidates_span_maps_past_ligature_expansion() -> None:
+    """An NFKC expansion (``ﬁ`` → ``fi``) keeps one raw index per char, so
+    the mapped span covers exactly the ligature."""
+    op = EditOp(op="edit", find="fi", text="X")
+    cands = relaxed_candidates("a ﬁle", op)
+    assert len(cands) == 1
+    assert cands[0].start == 2
+    assert cands[0].end == 3
+    result = splice_edit("a ﬁle", op, cands)
+    assert result.new_buffer == "a Xle"
+
+
+def test_relaxed_candidates_folded_quotes_and_arrow() -> None:
+    op = EditOp(op="edit", find='a "quoted" -> thing', text="X")
+    buf = "it’s a “quoted” → thing here"
+    cands = relaxed_candidates(buf, op)
+    assert len(cands) == 1
+    result = splice_edit(buf, op, cands)
+    assert result.new_buffer == "it’s X here"
+
+
+def test_relaxed_candidates_whitespace_run_folds_to_one_space() -> None:
+    op = EditOp(op="edit", find="alpha beta", text="X")
+    buf = "alpha \n\n  beta tail"
+    cands = relaxed_candidates(buf, op)
+    assert len(cands) == 1
+    result = splice_edit(buf, op, cands)
+    assert result.new_buffer == "X tail"
+
+
+@pytest.mark.parametrize(
+    ("body", "find"), [("a → b", "-"), ("a … b", ".."), ("a ﬁle", "i")]
+)
+def test_relaxed_candidates_reject_partial_expansions(body: str, find: str) -> None:
+    op = EditOp(op="edit", find=find, text="X", match="all")
+    assert relaxed_candidates(body, op) == []
+
+
+def test_relaxed_candidates_match_whole_expansions_once() -> None:
+    op = EditOp(op="edit", find="...", text="X", match="all")
+    body = "a …… b"
+    candidates = relaxed_candidates(body, op)
+    assert [(c.start, c.end) for c in candidates] == [(2, 3), (3, 4)]
+    assert splice_edit(body, op, candidates).new_buffer == "a XX b"
+
+
+def test_relaxed_candidates_reject_context_inside_expansions() -> None:
+    op = EditOp(op="edit", find="word", text="X", before="> ", after=" .")
+    assert relaxed_candidates("→ word …", op) == []
+    assert relaxed_candidates("→ word .", op) == []
+    assert relaxed_candidates("> word …", op) == []
+
+
+def test_relaxed_candidates_cover_entire_trailing_whitespace_run() -> None:
+    op = EditOp(op="edit", find="alpha ", text="X")
+    body = "  alpha\t  beta"
+    candidates = relaxed_candidates(body, op)
+    assert splice_edit(body, op, candidates).new_buffer == "  Xbeta"
+
+
+def test_relaxed_candidates_respect_match_policy() -> None:
+    op = EditOp(op="edit", find="foo bar", text="x")
+    buf = "one foo\u00a0bar\ntwo foo  bar"
+    cands = relaxed_candidates(buf, op)
+    assert len(cands) == 2
+    with pytest.raises(BadInput, match="2 matches"):
+        select_candidates(cands, op, buffer=buf)
+
+
+def test_relaxed_candidates_before_anchor_in_folded_space() -> None:
+    """Anchors fold too — a retyped ``before`` still disambiguates, and a
+    trailing space still demands a whitespace run like literal matching."""
+    op = EditOp(op="edit", find="bar", text="X", before="baz ")
+    buf = "baz\u00a0bar\nfoo bar"
+    cands = relaxed_candidates(buf, op)
+    assert len(cands) == 1
+    assert cands[0].start == 4
+    result = splice_edit(buf, op, cands)
+    assert result.new_buffer == "baz\u00a0X\nfoo bar"

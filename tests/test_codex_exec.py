@@ -271,6 +271,12 @@ def test_codex_login_present_requires_chatgpt(
         tmp_path, monkeypatch, "#!/bin/sh\necho 'Logged in using ChatGPT'\n"
     )
     assert cx.codex_login_present() is True
+    # The real CLI also writes successful login status to stderr.
+    cx._bust_login_probe()
+    _write_codex_stub(
+        tmp_path, monkeypatch, "#!/bin/sh\necho 'Logged in using ChatGPT' >&2\n"
+    )
+    assert cx.codex_login_present() is True
     # An API-key-only login is the billed path, not the subscription lane.
     cx._bust_login_probe()
     _write_codex_stub(

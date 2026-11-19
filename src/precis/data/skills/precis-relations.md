@@ -203,8 +203,7 @@ link(kind="perplexity-research", id=88, target="todo:14", rel="derived-from")
 ```
 
 `derived-from` records that A's content was produced from B —
-summaries, distillations, chase-pipeline outputs, manual notes
-extracted from a passage.
+summaries, distillations, chase outputs, manual notes.
 
 ## Express abstraction level
 ## A is broader / narrower than B
@@ -232,8 +231,9 @@ link(kind="todo", id=141, target="todo:158", rel="blocked-by")
 link(kind="todo", id=158, target="gripe:7", rel="blocks")
 ```
 
-`blocks` / `blocked-by` is the workflow-filter pair. Targets are
-usually `todo` or `gripe`. The `todo` list view filters on these.
+`blocks` / `blocked-by` sequences the work (gr656970): either kind on
+either side waits — undispatched and unclaimed — until the blocker
+reaches a terminal STATUS; `view='blocked'` names it.
 
 ## Mark a retraction, correction, or concern
 ## A retracts / corrects / raises concern about B

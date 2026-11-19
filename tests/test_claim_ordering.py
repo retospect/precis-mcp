@@ -115,6 +115,279 @@ def _advertise(store: Store, host: str, slots: dict[str, int | None]) -> None:
         conn.commit()
 
 
+def test_dispatch_score_orders_before_fifo_and_preserves_release_band(
+    store: Store,
+) -> None:
+    """gr702610: host claims use dispatch scores, within the release band."""
+    executor = "score_order_test"
+    low = _queue_job(store, executor=executor, prio=5, extra_meta={"dispatch_score": 1})
+    high = _queue_job(
+        store, executor=executor, prio=5, extra_meta={"dispatch_score": 100}
+    )
+    release = _queue_job(
+        store,
+        executor=executor,
+        prio=5,
+        extra_meta={"dispatch_score": 2, "claim_band": "release"},
+    )
+    assert _claim_order(store, executor) == [release, high, low]
+
+
+def test_claim_skips_overlap_and_takes_unrelated_build(store: Store) -> None:
+    """A held prefix longer than overfetch cannot hide unrelated work."""
+    from precis.plans import templates
+    from precis.workers.executors import _common as common
+    from precis.workers.job_types import plan_dispatch as pd
+
+    def plan(body: str) -> int:
+        def build(m: templates._Minter) -> None:
+            m.node("root", "Plan", {"auto_close": True})
+            m.node("task", "Build", {"op": "run_slice"}, body=body)
+
+        return templates._run(store, None, build).ids["task"]
+
+    def job(todo: int, score: int) -> int:
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="build",
+            parent_id=todo,
+            meta={
+                "executor": "ssh_node",
+                "job_type": "run_slice",
+                "params": {"todo_id": todo},
+                "dispatch_score": score,
+            },
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+        return int(ref.id)
+
+    host = "maple"
+    _advertise(store, host, {"builder": 1, "repo_checkout": 1, "git": 1})
+    holder = plan("Edit src/precis/a.py")
+    holder_job = job(holder, 100)
+    store.add_tag(
+        holder_job, Tag.closed("STATUS", "running"), set_by="agent", replace_prefix=True
+    )
+    # More held jobs than the claim window, each hotter than the clean one.
+    held = [
+        job(plan("Edit src/precis/a.py"), 90)
+        for _ in range(common._CLAIM_OVERFETCH + 1)
+    ]
+    clean_todo = plan("Edit src/precis/b.py")
+    clean = job(clean_todo, 1)
+    assert clean_todo not in pd.live_nodes(store, [clean_todo])
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id=host
+        )
+        assert [r[0] for r in claimed] == [clean]
+        conn.commit()
+    for ref_id in held:
+        ref = store.get_ref(kind="job", id=ref_id)
+        assert ref is not None
+        assert ref.meta.get("lease_host") is None
+    # Ending the holder lifts the hold without requeueing or reminting.
+    store.add_tag(
+        holder_job, Tag.closed("STATUS", "failed"), set_by="agent", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id=host
+        )
+        assert claimed[0][0] == held[0]
+        conn.rollback()
+
+
+def test_claim_batch_does_not_start_two_overlapping_builds(store: Store) -> None:
+    """The second pick sees the first pick's uncommitted running stamp."""
+    from precis.plans import templates
+
+    def build(m: templates._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        for key in ("a", "b"):
+            m.node(key, key, {"op": "run_slice"}, body="Edit src/precis/shared.py")
+
+    minted = templates._run(store, None, build)
+    for key in ("a", "b"):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=key,
+            parent_id=minted.ids[key],
+            meta={"executor": "ssh_node", "job_type": "run_slice", "params": {}},
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=2, reserve_host_id="maple"
+        )
+        assert len(claimed) == 1
+        conn.rollback()
+
+
+def _slice_task(store: Store, body: str) -> int:
+    """A one-build plan's ``run_slice`` task id."""
+    from precis.plans import templates
+
+    def build(m: templates._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "Build", {"op": "run_slice"}, body=body)
+
+    return templates._run(store, None, build).ids["task"]
+
+
+def _slice_job(store: Store, todo: int) -> int:
+    """A queued ``run_slice`` job under ``todo``, the dispatcher's shape."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="build",
+        parent_id=todo,
+        meta={
+            "executor": "ssh_node",
+            "job_type": "run_slice",
+            "params": {"todo_id": todo},
+        },
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="agent")
+    return int(ref.id)
+
+
+def test_claim_rechecks_a_blocked_by_todo_linked_after_mint(
+    store: Store,
+) -> None:
+    """gr656970 review: ``plan.blocked`` ran at mint, so a ``blocked-by``
+    edge linked afterwards never gated the job — the claim re-runs the
+    read and the build stays queued while a free build claims, then
+    claims itself once the blocker closes."""
+    held_task = _slice_task(store, "Edit src/precis/held.py")
+    held_job = _slice_job(store, held_task)
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker")
+    store.add_link(src_ref_id=held_task, dst_ref_id=blocker.id, relation="blocked-by")
+    free_task = _slice_task(store, "Edit src/precis/free.py")
+    free_job = _slice_job(store, free_task)
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert [r[0] for r in claimed] == [free_job]
+        conn.rollback()
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "done"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        # The freed build is the older queued row — one fresh build per
+        # claim batch, so it wins the single pick ahead of the free one.
+        assert [r[0] for r in claimed] == [held_job]
+        conn.rollback()
+
+
+def test_claim_rechecks_a_blocked_by_gripe_linked_after_mint(
+    store: Store,
+) -> None:
+    """The gripe half of the same recheck: an open gripe blocker holds
+    the queued build; ``wontfix`` is blocker-terminal and releases it."""
+    from tests._refs import insert_gripe
+
+    task = _slice_task(store, "Edit src/precis/held.py")
+    job = _slice_job(store, task)
+    blocker = insert_gripe(store, "The blocker gripe")
+    store.add_link(src_ref_id=task, dst_ref_id=blocker.id, relation="blocked-by")
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert claimed == []
+        conn.rollback()
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "wontfix"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert [r[0] for r in claimed] == [job]
+        conn.rollback()
+
+
+def test_claim_rechecks_the_source_gripes_blocked_by(
+    store: Store,
+) -> None:
+    """gr656970 review: the chain root reaches its source gripe over a
+    ``related-to`` edge, outside the plan — a ``blocked-by`` linked on
+    the GRIPE after mint holds the queued build too, and releases once
+    the blocker goes blocker-terminal."""
+    from precis.plans.templates import mint_gripe_fix_direct
+    from tests._refs import insert_gripe
+
+    gid = int(insert_gripe(store, "the blocked source").id)
+    build = mint_gripe_fix_direct(store, gripe_id=gid).ids["build"]
+    job = _slice_job(store, build)
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker")
+    store.add_link(src_ref_id=gid, dst_ref_id=blocker.id, relation="blocked-by")
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert claimed == []
+        conn.rollback()
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "done"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert [r[0] for r in claimed] == [job]
+        conn.rollback()
+
+
+def test_claim_loads_the_build_plan_once_for_both_holds(
+    store: Store, monkeypatch: Any
+) -> None:
+    """gr656970 review: the overlap and sequencing holds share one
+    ``_queued_build_plan`` load per claim pass — the queue filter and
+    the ``_finish_claim`` gate no longer fetch the same subtrees twice.
+    """
+    from precis.workers.executors import _common as common
+
+    task = _slice_task(store, "Edit src/precis/x.py")
+    _slice_job(store, task)
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    calls = {"n": 0}
+    real = common._queued_build_plan
+
+    def spy(conn: Any, parent_ids: Any = None) -> Any:
+        calls["n"] += 1
+        return real(conn, parent_ids)
+
+    monkeypatch.setattr(common, "_queued_build_plan", spy)
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert len(claimed) == 1
+        conn.rollback()
+    assert calls["n"] == 1
+
+
 def test_lower_prio_claimed_first(store: Store) -> None:
     ex = "test_order_prio_first"
     low_number_urgent = _queue_job(store, executor=ex, prio=1)

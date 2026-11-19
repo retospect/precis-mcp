@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from precis.budget import meter
+from precis.store.store import Store
 from precis.utils import outbound_policy, rate_limit
 from precis.utils.llm import openai_tools
 from precis.workers import admission
@@ -841,6 +842,77 @@ def test_spawn_releases_admission_when_popen_raises(
         )
     assert _holds(store, host) == []
     assert _free(store, host) == {"cpu_milli": 4000, "mem_mb": 8192}
+
+
+def test_spawn_writes_the_childs_own_pid_file(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr708457: ``pid_file`` is written by the CHILD's first act, not the
+    caller — a worker dead between ``spawn`` returning and persisting
+    the handle still leaves the compute named on disk. A real /bin/sh
+    here; the fake child never runs the script."""
+    host = "sp6"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    pid_file = tmp_path / "child.pid"
+    exit_file = tmp_path / "child.exit"
+    pid = admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn6",
+        ["true"],
+        log_path=tmp_path / "run.log",
+        exit_file=exit_file,
+        pid_file=pid_file,
+    )
+    deadline = time.monotonic() + 10
+    while not exit_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert exit_file.read_text(encoding="utf-8").strip() == "0"
+    assert int(pid_file.read_text(encoding="utf-8").strip()) == pid
+
+
+def test_spawn_pid_file_rides_the_env(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shell writes RS_PID and exposes the same path as its launch marker."""
+    host = "sp7"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    captured: dict[str, object] = {}
+
+    def popen(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        captured["argv"] = args[0]
+        return _FakeChild(pid=4500, timeouts=0)
+
+    child_pid_file = tmp_path / "c.pid"
+    admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn7",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        pid_file=child_pid_file,
+        popen=popen,
+    )
+    env = captured["env"]
+    assert isinstance(env, dict) and env["RS_PID"] == str(child_pid_file)
+    argv = captured["argv"]
+    assert isinstance(argv, list) and argv[3] == str(child_pid_file)
+    admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn8",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=popen,
+    )
+    env = captured["env"]
+    assert isinstance(env, dict) and env["RS_PID"] == os.devnull
 
 
 # ── remote LLM calls: one llm-api slot, counted refusals (gr657245 S2) ─────

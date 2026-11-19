@@ -232,7 +232,10 @@ def _probe_login_status(binary: str, *, timeout_s: float = 15.0) -> bool:
         return False
     if res.returncode != 0:
         return False
-    return "chatgpt" in (res.stdout or "").lower()
+    return (
+        "logged in using chatgpt"
+        in ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
+    )
 
 
 _login_lock = threading.Lock()

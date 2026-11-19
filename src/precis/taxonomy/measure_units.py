@@ -31,6 +31,13 @@ absolute temperatures.
 ``pint`` does not know ``%`` as a unit symbol in every build, so the
 canonical-unit strings ``%`` / ``percent`` / ``mol%`` are mapped to ``percent``
 up front.
+
+A **named physical constant** may serve as a display unit when a field
+reports in its multiples — ``boltzmann_constant`` (``k_B``) for an entropy
+stored as ``J/K`` (gr721110). Pint supplies the exact SI scale
+(1.380649e-23 J/K). The name is matched as a whole token before the
+basis-label strip, so its underscore never reads as a ``per constant``
+label.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from tokenize import TokenError
 from typing import Any, Final
 
 import pint
@@ -60,9 +68,11 @@ from precis.utils.text import markup_surface, markup_unit
 
 _UREG: pint.UnitRegistry | None = None
 
-#: pint parse failures that mean "not a unit" (see ``census._UNIT_PARSE_ERRORS``).
+#: Pint can leak the tokenizer's error for incomplete expressions such as
+#: ``s/(`` in an extracted table header (gr718774).
 _PARSE_ERRORS: Final[tuple[type[Exception], ...]] = (
     pint.PintError,
+    TokenError,
     TypeError,
     ValueError,
     SyntaxError,
@@ -164,7 +174,18 @@ def _registry() -> pint.UnitRegistry:
         # one stand-in currency unit: make_converter's currency branch swaps
         # the ISO token for `money` so pint scales only the unit's remainder
         _UREG.define(MONEY_DEFINITION)
+        # Printed atomic energies use Ha; retain that spelling on the row
+        # while letting pint supply the hartree definition and dimensions.
+        _UREG.define("@alias hartree = Ha")
     return _UREG
+
+
+#: The canonical spelling each named constant is matched by, case-insensitively,
+#: on the WHOLE unit text — the lookup happens before the basis-label strip so
+#: the token's underscore never reads as a ``_label`` suffix.
+_NAMED_CONSTANT_UNITS: Final[dict[str, str]] = {
+    "boltzmann_constant": "boltzmann_constant",
+}
 
 
 def is_log_unit(unit: str | None) -> bool:
@@ -512,6 +533,11 @@ def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
     # fold flattens them to bare digits — 'cm²' -> 'cm^2', not 'cm2'.
     text = _normalize_unit_candidate(text)
     text, _reference = split_reference(text)
+    if text.casefold() in _NAMED_CONSTANT_UNITS:
+        # a named constant display unit (gr721110): return the canonical
+        # spelling pint knows, before the basis-label strip turns the
+        # token's underscore into a 'per constant' label
+        return _NAMED_CONSTANT_UNITS[text.casefold()], None, None
     stripped, label = split_basis_label(text)
     text = _normalize_unit_candidate(stripped)
     text = _SQ_CUBED_RE.sub(r"\1^\2", text)

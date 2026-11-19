@@ -17,6 +17,7 @@ from precis.export import latex as lx
 AB = {
     "BN": "boron nitride",
     "CNB": "carbon nanobud",
+    "CVD": "chemical vapour deposition",
     "DFT": "density functional theory",
     "DOS": "density of states",
     "FCNB": "functionalized CNB",
@@ -157,6 +158,59 @@ def test_hyphen_compound_counts_as_the_use_and_lists_the_short() -> None:
     assert dout == ["Carbon nanobud (CNB)-based films grow.", "A CNB film."]
     assert tout[1] == r"A \glstip{cnb} film."
     assert "CNB" in dctx.used_acr
+
+
+def test_prefixed_compound_is_the_first_use_and_defines_short_first() -> None:
+    """gr725250: ``aerosol-CVD`` is a use of CVD; the first one reads
+    ``aerosol-CVD (chemical vapour deposition)``, later ones stay short."""
+    dout, tout, dctx = _both(
+        "The aerosol-CVD route works. More aerosol-CVD here, then CVD graphene."
+    )
+    assert dout == [
+        "The aerosol-CVD (chemical vapour deposition) route works."
+        " More aerosol-CVD here, then CVD graphene."
+    ]
+    assert tout == [
+        r"The aerosol-\glsxtrshort{cvd} (\glsxtrlong{cvd})\glsadd{cvd}\glsunset{cvd}"
+        r" route works. More aerosol-\glstip{cvd} here, then \glstip{cvd} graphene."
+    ]
+    assert "CVD" in dctx.used_acr
+
+
+def test_prefixed_compound_edge_cases() -> None:
+    """gr725250: bracketed inside parentheses, plural, sentence start, a
+    one-letter prefix is not a word (``h-BN``), a heading stays bare."""
+    dout, tout, _ = _both(
+        "(see aerosol-CVD) ok", "Aerosol-CVDs run.", "on h-BN and sp2-BN"
+    )
+    assert dout == [
+        "(see aerosol-CVD [chemical vapour deposition]) ok",
+        "Aerosol-CVDs run.",
+        "on h-BN and sp2-BN",
+    ]
+    assert tout[0] == (
+        r"(see aerosol-\glsxtrshort{cvd} {[}\glsxtrlong{cvd}{]}"
+        r"\glsadd{cvd}\glsunset{cvd}) ok"
+    )
+    assert tout[1] == r"Aerosol-\glspltip{cvd} run."
+    assert tout[2] == "on h-BN and sp2-BN"
+    dctx = _docx_ctx()
+    head = docx.Document().add_paragraph()
+    dctx.in_heading = True
+    dx._render_inline("Aerosol-CVD growth", dctx, head)
+    assert head.text == "Aerosol-CVD growth"
+    assert "CVD" not in dctx.seen_acr
+
+
+def test_prefix_that_is_itself_a_short_is_not_swallowed() -> None:
+    """gr725250: in ``HOMO-LUMO-gap`` the pair branch declines (a hyphen
+    follows), and the prefix branch must not take ``HOMO`` for a plain
+    word: HOMO is still defined here, at its first use."""
+    dout, _, dctx = _both("The HOMO-LUMO-gap is small. HOMO is high.")
+    assert dout == [
+        "The highest occupied molecular orbital (HOMO)-LUMO-gap is small. HOMO is high."
+    ]
+    assert "LUMO" not in dctx.seen_acr
 
 
 def test_heading_prints_the_bare_short_and_keeps_the_first_use() -> None:

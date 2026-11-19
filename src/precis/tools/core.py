@@ -1168,14 +1168,13 @@ def get(
                 and (id == "/traces" or id.startswith("/traces?"))
             )
             # view='logbook' (gr592279) reads args['q'] as its in-window
-            # text filter — the one documented args= key that shares a
-            # name with an explicit kwarg. Top-level q= on get() stays
+            # text filter. Top-level q= on get() stays
             # find-in-ref's door, so the two never collide inside the
             # handler — but a call passing both is ambiguous and refuses.
             logbook_q = kind == "quest" and view == "logbook"
             reserved = (
                 ("id", "view", "q")
-                if trace_filters
+                if trace_filters or kind == "handle"
                 else ("kind", "id", "view")
                 if logbook_q
                 else ("kind", "id", "view", "q")
@@ -1540,7 +1539,11 @@ def search(
                 BadInput(
                     f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
-                        f"narrow with scope= or refine q=; "
+                        f"retry with page_size={_SEARCH_PAGE_SIZE_MAX}; "
+                        "use args={'under': '<taxon>', 'depth': 1, 'axis': '<axis>'} "
+                        "to narrow descendants, or refine q="
+                        if kind == "taxon"
+                        else f"narrow with scope= or refine q=; "
                         f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
@@ -2102,6 +2105,13 @@ def put(
     # position). Declared at the verb level (the gr262482 pattern) so
     # strict-schema MCP clients don't strip it.
     terms: list[dict[str, Any]] | None = None,
+    # draft chunk batch: put(kind='draft', id=<slug>, chunks=[{'text': …,
+    # 'chunk_kind': …, 'meta': {…}, 'at': {…}}, ...]) writes many chunks of
+    # any kind in one transaction (≤50; a rejected entry rolls the call
+    # back and names chunks[i]). Verb-level chunk_kind=/meta=/at= are
+    # per-batch defaults. Declared at the verb level (gr262482 pattern).
+    # Keep entries raw so the draft handler can report indexed shape errors.
+    chunks: list[Any] | None = None,
     # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
@@ -2298,13 +2308,15 @@ def put(
     put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
     only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
     takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
-    fields are per kind (precis-put-help). `mode=`: file kinds 'create';
-    paid-import kinds 'import'; numeric-ref kinds omit it. `text=`/`body=`
-    alias a kind's single prose field (finding says `body=`; both at once
-    errors); `todo` declares both — `text=` title, `body=` details, either or
-    both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
+    fields are per kind. `mode=` picks a kind's write door ('create',
+    'import', 'retry', 'plan', ...; numeric-ref kinds mostly omit it) —
+    the per-kind table is precis-put-help's. `text=`/`body=` alias a
+    kind's prose slot (finding says `body=`; both at once errors); memory
+    reads them as title/prose, todo and gripe as title/details.
+    `tags=`/`untags=` add/remove; `link=`/`unlink=` take
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs a recent exact `get`).
+    `text={'$ref': '<handle>'}` reuses that handle's body (needs a recent
+    exact `get`).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2415,6 +2427,7 @@ def put(
                 "until": until,
                 "scratch_for": scratch_for,
                 "terms": terms,
+                "chunks": chunks,
                 "table": table,
                 "caption": caption,
                 "regen": regen,
@@ -2757,9 +2770,15 @@ def edit(
     `replace` with `id='slug~selector'` rewrites one chunk.
 
     `mode=` defaults to `find-replace`; kinds excluding it refuse with
-    options. todo uses `text=`/`body=`, memory also takes
-    `ops=[{find,text,...}]`; quest needs `mode='replace'`; draft takes
-    `'replace-content'`; paper, structure ignore it.
+    options. todo uses `text=`/`body=`; memory takes `ops=[{find,text,...}]`;
+    quest wants 'replace' (explicit). Other kinds' sets are per kind —
+    the table is precis-edit-help's; paper, structure ignore it.
+
+    Draft accepts `mode='replace-content'` for a block rewrite and
+    `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`
+    to insert text around an anchor within a chunk. To add a paragraph
+    next to a chunk, use `put(kind='draft', id='<draft>', text='…',
+    args={'at': {'before': 'dc<id>'}})` (or use `after`).
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
@@ -2949,7 +2968,7 @@ def delete(
 def tag(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # A list is the batch form (gripe/alert/todo): the same edit on every
+    # A list is the batch form (e.g. paper/gripe/alert/todo): the same edit on every
     # id in one transaction.
     id: str | int | list[str | int] | None = None,
     add: list[str] | None = None,
@@ -2968,7 +2987,7 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
-    # numeric-ref kinds (gr504803): why the tag change — recorded as an
+    # paper and numeric-ref kinds: why the tag change — recorded as an
     # ``agent/retagged`` ref_events row per affected ref (view='log'),
     # so a mass fold/cleanup says why. Same handler-declared door as
     # delete()'s reason= (gr503546); kinds whose tag doesn't declare it
@@ -2996,6 +3015,8 @@ def tag(
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.
     `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
+    `id=[...]` on paper applies the same edit to every paper in one
+    transaction. Use paper slugs, record handles, or numeric ref ids.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.
@@ -3144,8 +3165,11 @@ _PUT_HELP: dict[str, str] = {
     "kind": "Which kind to write to.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'create' (only). "
     "Paid-cache kinds (websearch/perplexity-reasoning/perplexity-research): "
-    "'import' registers a free web-UI answer. Numeric-ref kinds "
-    "(memory/todo/gripe/...): omit — an explicit mode= is rejected.",
+    "'import' registers a free web-UI answer. paper 'fetch-si'; structure "
+    "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
+    "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
+    "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
+    "measure recheck; fleet report; todo plan (outside the declared gate).",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
@@ -3159,12 +3183,13 @@ _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
-    "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
-    "'replace' only — the default 'find-replace' is rejected there; "
-    "memory: 'replace' | 'find-replace' | 'insert' | 'append' — or "
-    "ops=[{find,text,...}] for several anchored ops in one call. "
-    "Most other kinds don't branch on mode= (silently ignored) or don't "
-    "support edit at all.",
+    "(default) | 'append' | 'insert' | 'replace'. todo: "
+    "replace/find-replace/insert/delete/gate; quest: replace (explicit)/pause/resume; "
+    "memory: replace/find-replace/insert/append/delete — or "
+    "ops=[{find,text,...}] for several anchored ops in one call; "
+    "finding: replace/find-replace; fleet/learning: replace. "
+    "Draft: replace-content or insert (requires find=, text= and where=); "
+    "paper/structure ignore mode=.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",

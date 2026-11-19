@@ -39,7 +39,7 @@ get(kind="math", q="population of Ireland")  # compute
 
 | Arg | Type | Meaning |
 |---|---|---|
-| `kind` | str | Required. Which kind to read from. |
+| `kind` | str | Optional when `id=` self-identifies (handle, bare ref id, slug, DOI, `kind:id`); otherwise required. Which kind to read from. |
 | `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Papers also accept a DOI (`id='10.x/y'`). Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). A fisheye-ladder label here (`view='fisheye+1hop'`) is the deprecated spelling of `extent=`; `full=` is the deprecated spelling of `extent='verbatim'` — both still route and announce the read on `interpreted:`. |
 | `q` | str | Free-text query for compute-style kinds. |

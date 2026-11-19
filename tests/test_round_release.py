@@ -2260,6 +2260,80 @@ def test_a_resumed_failed_leg_keeps_started_epoch_on_a_refusal(rig: Rig) -> None
     assert out.returncode == 1 and "partial rollout" in out.stderr
 
 
+def test_a_deploy_refused_before_any_host_is_not_journaled(rig: Rig) -> None:
+    """gr730609: `scripts/deploy` exits 75 from a guard ahead of its first
+    host contact. `round deploy` puts the record back as it was before the
+    leg — no journal — so `fail` has nothing to mark and a re-run deploys."""
+    head = _cut(rig)
+    before = _rel(_round_json(rig), 1)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+    after = _rel(_round_json(rig), 1)
+    assert after == before
+    assert after["state"] == before["state"]
+    assert after.get("state_at") == before.get("state_at")
+    assert "deployment" not in after
+    out = rig.round("fail")
+    assert out.returncode == 1
+    assert "never started a rollout" in out.stderr
+    out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+def test_a_deploy_refused_before_any_host_can_be_abandoned(rig: Rig) -> None:
+    """The restored record carries no journal, so `cut --abandon` takes it
+    (a journaled record refuses — see
+    test_release_zero_exit_without_health_or_prod_never_retires)."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    out = rig.round("cut", "--abandon")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_a_resumed_leg_refused_before_any_host_keeps_the_partial_rollout(
+    rig: Rig,
+) -> None:
+    """A `failed` record whose journal shows a launched rollout gets that
+    journal (launch marker included) back when the resumed leg is refused
+    with no host contacted: the earlier partial rollout stays live."""
+    head = _failed_deploy(rig)
+    journal = dict(_rel(_round_json(rig), 1)["deployment"])
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"] == journal
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "partial rollout" in out.stderr
+
+
+def test_the_untouched_exit_code_is_one_number() -> None:
+    """scripts/deploy, scripts/round, scripts/release and release_deploy.py
+    each restate the "no host was touched" exit code; they must agree."""
+    import re
+
+    from precis.workers.job_types.release_deploy import UNTOUCHED_EXIT
+
+    def _read(name: str) -> str:
+        return (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+
+    in_deploy = re.search(r"^DEPLOY_RC_UNTOUCHED=(\d+)$", _read("deploy"), re.M)
+    assert in_deploy, "scripts/deploy lost DEPLOY_RC_UNTOUCHED"
+    codes = [int(in_deploy.group(1)), UNTOUCHED_EXIT]
+    for name in ("round", "release"):
+        m = re.search(r"^DEPLOY_RC_UNTOUCHED = (\d+)$", _read(name), re.M)
+        assert m, f"scripts/{name} lost DEPLOY_RC_UNTOUCHED"
+        codes.append(int(m.group(1)))
+    assert codes == [75, 75, 75, 75]
+
+
 def test_supersede_refuses_a_terminal_failed_record(rig: Rig) -> None:
     """`failed` whose rollout never launched is already terminal: the next
     `cut` supersedes it — `supersede` reports nothing to do."""

@@ -57,7 +57,8 @@ put(
 ```
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
-starting with `asa-`) cannot create or mutate them. CLI sessions,
+starting with `asa-` or `fleet-`) cannot create or mutate them. CLI
+sessions,
 interactive Python, and the precis-web UI (`web:owner`) pass through.
 Promoting/demoting an *existing* todo's facets after creation goes
 through `tag(meta={...})` (`tag()` already carries non-tag state via
@@ -193,6 +194,13 @@ new descendants inherit the updated block.
 ```python
 get(kind="todo", id=42, view="tree")  # ASCII subtree under td42
 ```
+
+"Everything under this todo" is two different reads:
+`get(kind='todo', id=N, view='tree')` answers **the subtree** — every
+level, status icons, one call; `search(kind='todo', view='doable',
+args={'under': N})` answers **what can I claim under it** — the open
+leaf set only. An `under=` on a search view that is not `doable`
+refuses with a next: list pointing at both (gr676953).
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 `⏸` waiting / paused / ask-user · `✓` done · `✗` won't-do ·

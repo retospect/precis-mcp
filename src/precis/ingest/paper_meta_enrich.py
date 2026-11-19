@@ -1,4 +1,4 @@
-"""Paper metadata enrichment — one Crossref (+OpenAlex) fetch per paper.
+"""Paper metadata enrichment — Crossref works plus shared ISSN journal records.
 
 Legacy ``refs.authors`` rows are flat ``{"name"}`` strings in mixed
 formats that no parser can reliably fix, but Crossref/OpenAlex return the
@@ -47,15 +47,14 @@ What lands where:
   the LaTeX ``.bib`` / EndNote exporters read. Papers visited before
   these fields existed get them via ``precis enrich-rearm`` (clears the
   visited stamp).
-* **``meta.journal``** — the one corrective field. Crossref's
-  ``container-title`` is authoritative for a DOI-registered work, so a
-  stored value that differs is replaced (gr606459 — S2's ``venue`` is
-  lossy: it minted "Applications of Surface Science" for a paper in
-  "Applied Surface Science", "Angewandte Chemie" for "Angewandte Chemie
-  International Edition"). The displaced string is kept in
-  ``meta.journal_aliases`` so the S2 name still resolves for a human;
-  a ``human_verified_at`` ref keeps its journal (a hand correction
-  wins). A blank fills the same as the other fields.
+* **``meta.journal``** — Crossref works supplies a provisional container
+  title. The shared ISSN record in :mod:`precis.ingest.journal_record`
+  supplies its authoritative spelling from Crossref journals. Equivalent
+  casing, punctuation and ampersand variants converge; substantive source
+  disagreements file a deduplicated review todo. Displaced spellings remain
+  in ``meta.journal_aliases``. Human-verified journals stay unchanged.
+  Metrics titles never supply journal identity. The worker also revisits
+  already-enriched ISSN papers once per resolution version and every 30 days.
 * **``ref_identifiers``** — OpenAlex's id cluster (``openalex``,
   ``pubmed``, ``mag``) is pulled *only* when a DOI resolved via Crossref
   (an OpenAlex-only fetch adds identifiers, nothing else in scope here)
@@ -108,8 +107,8 @@ postdates most of the stamped placeholder backlog, so
 ``_claim_batch``'s recovery leg re-selects a stamped placeholder only
 while its pin is below the current version — each still-blank row gets
 exactly one recovery per version, never a pass-every-hour retry. The
-worker pass otherwise selects on ``authors_resolved_at IS NULL``, so a
-second run over the same rows is a no-op.
+worker pass also selects stale ISSN journal receipts; otherwise it selects on
+``authors_resolved_at IS NULL``, so a second run over the same rows is a no-op.
 
 Ordering: the stamp is written **last**, only after the authors/meta
 update, the ORCID mint+link, and the card rebuild have all completed —
@@ -147,6 +146,12 @@ from precis.ingest import orcid as orcid_api
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.ingest.crossref import _normalize as _crossref_normalize
 from precis.ingest.crossref import fetch_message as _fetch_crossref_message
+from precis.ingest.journal_record import (
+    RESOLUTION_VERSION,
+    flag_disagreement,
+    title_of_record,
+    venue_key,
+)
 from precis.ingest.openalex_meta import _authorships as _openalex_authorships
 from precis.ingest.openalex_meta import _short_id as _short_openalex_id
 from precis.ingest.openalex_meta import fetch_openalex_work
@@ -714,10 +719,9 @@ def enrich_paper(
         if crossref_journal and not existing_journal:
             meta_patch["journal"] = crossref_journal
         elif crossref_journal and crossref_journal != existing_journal and not verified:
-            # gr606459: Crossref's ``container-title`` is authoritative for
-            # a DOI-registered work — an S2 ``venue`` minted onto the stub
-            # ("Applications of Surface Science" for a paper in "Applied
-            # Surface Science") loses. The displaced string is kept as a
+            # gr606459: a DOI's provisional ``container-title`` replaces
+            # an S2 ``venue`` minted onto the stub ("Applications of Surface
+            # Science" for a paper in "Applied Surface Science"). The displaced string is kept as a
             # journal alias; a human-verified ref keeps its journal.
             meta_patch["journal"] = crossref_journal
             meta_patch["journal_aliases"] = _journal_aliases_with(
@@ -761,6 +765,32 @@ def enrich_paper(
 
         if crossref_authors is not None:
             crossref_orcid_authors = [a for a in crossref_authors if a.get("orcid")]
+
+    # Resolve even without a DOI/works response: old, already-enriched papers
+    # can carry an ISSN and a raw venue from another metadata provider.
+    issn_key = str(meta_patch.get("issn") or current_meta.get("issn") or "")
+    journal_now = str(
+        meta_patch.get("journal")
+        or current_meta.get("journal")
+        or current_meta.get("venue")
+        or ""
+    )
+    if issn_key and not verified:
+        record = title_of_record(store, issn_key, mailto)
+        if record and (not journal_now or venue_key(record) == venue_key(journal_now)):
+            meta_patch["journal"] = record
+            meta_patch["journal_source"] = "crossref-journals"
+            meta_patch["journal_issn"] = issn_key
+            if journal_now:
+                meta_patch["journal_aliases"] = _journal_aliases_with(
+                    {**current_meta, **meta_patch},
+                    displaced=journal_now,
+                    canonical=record,
+                )
+            if journal_now != record:
+                outcome.journal_corrected = record
+        elif record:
+            flag_disagreement(store, issn_key, journal_now, record, paper_ref_id=ref_id)
 
     # gr658887: the placeholder Crossref couldn't fill (a miss, a fetch
     # error, a DOI-less ref, or a registry message with no usable title)
@@ -884,6 +914,8 @@ def enrich_paper(
     # next pass retries it (safe: every side effect above is itself
     # idempotent/get-or-create).
     stamp: dict[str, Any] = {RESOLVED_AT_KEY: now.isoformat()}
+    stamp["journal_resolution_v"] = RESOLUTION_VERSION
+    stamp["journal_resolved_at"] = now.isoformat()
     if was_placeholder:
         # gr658887: pin the recovery version alongside. A placeholder
         # stamped before the front-matter leg existed carries no pin, so

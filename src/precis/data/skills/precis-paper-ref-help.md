@@ -99,9 +99,14 @@ every later re-resolution.
 `author=` search does, **plus** an optional bracketed ORCID iD per line
 — the row grammar `Family, Given Middle [0000-0002-1825-0097]` (the
 bracket is optional; an invalid iD is dropped silently and the name is
-kept). This always writes `source='human'` and stamps the paper's
-`human_verified_at` sign-off — a manual byline correction *is* the
-review that stamp records.
+kept). New or changed rows get `source='human'`. Rows with the same
+case-sensitive normalized name and ORCID at the same position keep their
+source tier, `verified_at`, and `person_ref_id`. Omitting
+`openalex_author_id` on a matching row preserves its stored OpenAlex link.
+Inserting a name earlier in the byline rewrites shifted rows that differ
+from the authors previously at those positions. The edit
+stamps the paper's `human_verified_at` sign-off when at least one author
+survives normalization.
 
 ## Edit paper metadata — title, venue, year, DOI
 ## Repair a stub's metadata in place — title, identifiers, venue

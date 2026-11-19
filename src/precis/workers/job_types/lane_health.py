@@ -303,9 +303,9 @@ def _probe_codex_exec() -> tuple[str, str | None]:
         )
     except (OSError, subprocess.SubprocessError):
         return "unprobed", "unverifiable"
-    if res.returncode == 0 and "chatgpt" in (res.stdout or "").lower():
-        return "ok", None
     out = f"{res.stdout}\n{res.stderr}".lower()
+    if res.returncode == 0 and "logged in using chatgpt" in out:
+        return "ok", None
     if "not logged in" in out or "logged out" in out:
         return "auth", "not-logged-in"
     return "unprobed", "unverifiable"

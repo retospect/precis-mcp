@@ -45,6 +45,69 @@ from precis.utils.mentions import strip_page_anchor_links
 
 log = logging.getLogger(__name__)
 
+_MARKER_PAGE_SEPARATOR = "-" * 48
+_MARKER_PAGE_RE = re.compile(rf"(?m)^\{{(\d+)\}}{_MARKER_PAGE_SEPARATOR}[ \t]*$")
+_LEADING_AD_RE = re.compile(
+    r"(?im)^\W*(?:advertisements?[ \t]*$|"
+    r"4[-‐– ]channel\s+configurable\s+open\s+rf\s+engine\b)"
+)
+_ABSTRACT_RE = re.compile(r"(?im)^[ \t#*]*abstract\b")
+# Match three or more literal copies of a substantial sentence. A pair can
+# be intentional, and table cells, equations and code never use this filter.
+_OCR_LOOP_RE = re.compile(r"(?<!\S)([^.!?\n]{39,500}[.!?])(?:\s+\1){2,}")
+
+
+def _strip_ocr_loops(text: str) -> str:
+    """Remove exact sentence loops, including a truncated final copy."""
+    parts: list[str] = []
+    end = 0
+    for match in _OCR_LOOP_RE.finditer(text):
+        parts.append(text[end : match.start()])
+        end = match.end()
+        tail = text[end:].strip()
+        if tail and match[1].startswith(tail):
+            end = len(text)
+    parts.append(text[end:])
+    return "".join(parts).strip()
+
+
+def _trim_leading_adverts(
+    blocks: list[dict[str, Any]], title: str
+) -> list[dict[str, Any]]:
+    """Drop positively identified advert pages ahead of the article opening.
+
+    The title and abstract must appear on the first non-advert page. A
+    publisher cover, a scan, and byline-first front matter can all lack
+    the paper title on page one, so title absence alone proves nothing.
+    """
+    title_words = re.findall(r"\w+", title.casefold())
+    if len(title_words) < 3:
+        return blocks
+    start = 0
+    inherited_section: list[str] = []
+    for _page, group in itertools.groupby(blocks, key=lambda block: block["page"]):
+        page = list(group)
+        text = "\n".join(block["text"] for block in page)
+        abstract = _ABSTRACT_RE.search(text)
+        if abstract:
+            head = " ".join(re.findall(r"\w+", text[: abstract.start()].casefold()))
+            if f" {' '.join(title_words)} " in f" {head} ":
+                if not start:
+                    return blocks
+                kept = blocks[start:]
+                # A plain-text title may still inherit the advert heading.
+                for block in kept:
+                    if block.get("section_path") != inherited_section:
+                        break
+                    block["section_path"] = []
+                return kept
+        if not _LEADING_AD_RE.search(text):
+            break
+        start += len(page)
+        inherited_section = page[-1].get("section_path", [])
+    return blocks
+
+
 # Ligature normalization map
 _LIGATURES = {
     "\ufb00": "ff",
@@ -479,6 +542,7 @@ def extract_blocks_marker(
     glyph_health: dict[str, Any] | None = None,
     ocr_context: str | None = None,
     kind: str = "paper",
+    target_title: str = "",
 ) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -515,6 +579,8 @@ def extract_blocks_marker(
     caller stores it on ``PaperToWrite.meta`` so flagged documents can be
     routed to recovery and a grounding audit can tell an ingest scar apart
     from a wrong claim. ``None`` (the default) skips the analysis entirely.
+
+    For papers, ``target_title`` enables advert removal before block merging.
     """
     try:
         if timeout_s and timeout_s > 0:
@@ -542,6 +608,8 @@ def extract_blocks_marker(
         if fallback_info is not None:
             fallback_info["used_fallback"] = True
             fallback_info["reason"] = str(exc)
+    if kind == "paper" and target_title:
+        blocks = _trim_leading_adverts(blocks, target_title)
     merged = _merge_small_blocks(blocks, paper_id=paper_id)
     # Printed margin line numbers (gr524015): detect per block page
     # after the merge consolidated the page's text. Idempotent — the
@@ -804,7 +872,10 @@ def _marker_extract(
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
 
-    converter = PdfConverter(artifact_dict=create_model_dict())
+    converter = PdfConverter(
+        artifact_dict=create_model_dict(),
+        config={"paginate_output": True, "page_separator": _MARKER_PAGE_SEPARATOR},
+    )
     _saved_prompts: dict[str, str] = {}
     _saved_labels: dict[str, Any] = {}
     try:
@@ -825,31 +896,27 @@ def _marker_extract(
     # path performed on every page; the asymmetry meant Marker-extracted
     # papers showed up in search with garbled δ-bonds while fitz-extracted
     # ones were clean. (See test_clean_text_chemistry_corpus.)
-    md = _clean_text(rendered.markdown)
-    images = rendered.images or {}
-    metadata = rendered.metadata or {}
+    return _parse_marker_markdown(
+        _clean_text(rendered.markdown),
+        rendered.images or {},
+        rendered.metadata or {},
+        paper_id,
+    )
 
-    # Build page boundary map from metadata
-    toc = metadata.get("table_of_contents", [])
-    page_stats = metadata.get("page_stats", [])
-    total_pages = len(page_stats) if page_stats else 1
 
-    # Split markdown into raw blocks (double newline separated)
-    raw_chunks = re.split(r"\n{2,}", md)
-
+def _parse_marker_markdown(
+    markdown: str, images: dict[str, Any], metadata: dict[str, Any], paper_id: str
+) -> list[dict[str, Any]]:
+    """Build ingest blocks from rendered Marker markdown and crops."""
     blocks: list[dict[str, Any]] = []
     current_section: list[str] = []
     block_counts: dict[int, int] = {}
 
-    # Estimate page assignment: distribute chunks across pages
-    page_assignments = _assign_pages(raw_chunks, total_pages, toc)
-
-    for i, chunk in enumerate(raw_chunks):
+    for page_num, chunk in _marker_page_chunks(markdown, metadata):
         chunk = chunk.strip()
         if not chunk:
             continue
 
-        page_num = page_assignments[i] if i < len(page_assignments) else 0
         block_type, text = _classify_chunk(chunk)
 
         # Collapse Marker's inert page-anchor citation links
@@ -869,6 +936,11 @@ def _marker_extract(
             # Still emit the heading as a block
         elif block_type == "skip":
             continue
+        elif block_type in ("text", "list", "figure"):
+            cleaned = _strip_ocr_loops(text)
+            if text and not cleaned and block_type != "figure":
+                continue
+            text = cleaned
 
         # Type-aware chunking. After this branch, every entry in
         # ``sub_texts`` is structurally appropriate (paragraphs split
@@ -931,6 +1003,28 @@ def _marker_extract(
     blocks = _mark_junk(blocks)
 
     return blocks
+
+
+def _marker_page_chunks(
+    markdown: str, metadata: dict[str, Any]
+) -> list[tuple[int, str]]:
+    """Split Marker markdown at physical page markers, then at block breaks."""
+    pages = _MARKER_PAGE_RE.split(markdown)
+    if len(pages) > 1:
+        return [
+            (int(page_id), block)
+            for page_id, text in zip(pages[1::2], pages[2::2], strict=True)
+            for block in re.split(r"\n{2,}", text)
+        ]
+    chunks = re.split(r"\n{2,}", markdown)
+    total_pages = len(metadata.get("page_stats") or []) or 1
+    return list(
+        zip(
+            _assign_pages(chunks, total_pages, metadata.get("table_of_contents", [])),
+            chunks,
+            strict=True,
+        )
+    )
 
 
 def _classify_chunk(chunk: str) -> tuple[str, str]:

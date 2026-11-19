@@ -18,8 +18,10 @@ import pytest
 from precis.errors import BadInput, Denied
 from precis.mcp_identity import (
     CAP_TOKEN_PREFIX,
+    CREDENTIAL_CLASSES,
     CapabilityIdentity,
     capability_call_allowed,
+    credential_classes,
     list_capability_tokens,
     mint_capability_token,
     parse_capability_scopes,
@@ -104,10 +106,48 @@ def test_label_validation(store: Store) -> None:
     assert list_capability_tokens(store, alice.id)[0].label == "ok"
 
 
+@pytest.mark.parametrize("value", [None, "", "   ", "\n\t"])
+def test_credential_classes_blank_means_every_class(value: str | None) -> None:
+    assert credential_classes(value) == frozenset(CREDENTIAL_CLASSES)
+    assert set(CREDENTIAL_CLASSES) == {
+        "install",
+        "slice",
+        "personal",
+        "capability",
+        "oauth",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("oauth", {"oauth"}),
+        ("oauth,install", {"oauth", "install"}),
+        ("oauth install", {"oauth", "install"}),
+        (" oauth ,\tslice\n capability ", {"oauth", "slice", "capability"}),
+        ("OAuth, PERSONAL", {"oauth", "personal"}),
+        ("oauth,oauth", {"oauth"}),
+    ],
+)
+def test_credential_classes_separators_and_case(value: str, expected: set[str]) -> None:
+    assert credential_classes(value) == frozenset(expected)
+
+
+@pytest.mark.parametrize(
+    "value", ["bearer", "oauth,bearer", "oauth;install", "oauth:", ",", " , ,\n"]
+)
+def test_credential_classes_unknown_name_names_the_variable(value: str) -> None:
+    with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES") as err:
+        credential_classes(value)
+    for name in CREDENTIAL_CLASSES:
+        assert name in str(err.value)
+
+
 def test_scope_parser_accepts_the_grammar_and_dedupes() -> None:
     assert parse_capability_scopes("") == ("read",)
     assert parse_capability_scopes("  , ") == ("read",)
-    assert parse_capability_scopes("read,feed,read") == ("read", "feed")
+    assert parse_capability_scopes("feed") == ("feed",)
+    assert parse_capability_scopes("feed, feed") == ("feed",)
     assert parse_capability_scopes(["write:memory", "read:paper"]) == (
         "write:memory",
         "read:paper",
@@ -123,6 +163,32 @@ def test_scope_parser_accepts_the_grammar_and_dedupes() -> None:
     ):
         with pytest.raises(BadInput):
             parse_capability_scopes(bad)
+
+
+def test_scope_parser_keeps_feed_exclusive() -> None:
+    """``feed`` rides in a URL, so it never shares a token with an MCP
+    scope (gr730564); the refusal points at a separate feed-only mint."""
+    for bad in (
+        "read,feed",
+        "feed,read",
+        "feed,write:memory",
+        "feed,read:paper",
+        ["write:memory", "feed"],
+    ):
+        with pytest.raises(BadInput, match="feed") as exc:
+            parse_capability_scopes(bad)
+        assert "separate feed-only token" in (exc.value.next or "")
+
+
+def test_the_minter_keeps_feed_exclusive_too() -> None:
+    """A caller that skips the parser (gr730564) cannot mint a mixed token:
+    the refusal fires before the store is touched."""
+    store = Mock()
+    for bad in (("read", "feed"), ("feed", "write:memory"), ("feed", "read:paper")):
+        with pytest.raises(BadInput, match="feed") as exc:
+            mint_capability_token(cast(Any, store), 1, "listener", bad)
+        assert "separate feed-only token" in (exc.value.next or "")
+    store.pool.connection.assert_not_called()
 
 
 def test_scope_parser_refuses_private_kinds() -> None:
@@ -189,6 +255,50 @@ def test_cap_minted_feed_scope_resolves_on_the_podcast_path(store: Store) -> Non
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     found = store.get_web_user_by_feed_token(digest)
     assert found is not None and found.id == alice.id
+
+
+def _insert_mixed_feed_row(store: Store, user_id: int, scopes: list[str]) -> str:
+    """A legacy row minted before feed turned exclusive: feed plus an MCP scope."""
+    _, digest = mint_feed_token()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO web_user_capability_tokens"
+            " (user_id, label, token_sha256, scopes) VALUES (%s, %s, %s, %s)",
+            (user_id, "legacy mix", digest, scopes),
+        )
+    return digest
+
+
+def test_feed_only_row_authenticates_and_sets_has_feed_token(store: Store) -> None:
+    alice = _user(store)
+    _, raw = mint_capability_token(store, alice.id, "phone app", ("feed",))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    found = store.get_web_user_by_feed_token(digest)
+    assert found is not None and found.has_feed_token
+
+
+def test_mixed_scope_row_is_not_a_feed_credential(store: Store) -> None:
+    alice = _user(store)
+    for scopes in (["read", "feed"], ["feed", "write:memory"], ["feed", "read:paper"]):
+        digest = _insert_mixed_feed_row(store, alice.id, scopes)
+        assert store.get_web_user_by_feed_token(digest) is None, scopes
+    reloaded = store.get_web_user("alice")
+    assert reloaded is not None and not reloaded.has_feed_token
+
+
+def test_rotating_the_feed_token_still_revokes_a_mixed_row(store: Store) -> None:
+    alice = _user(store)
+    digest = _insert_mixed_feed_row(store, alice.id, ["read", "feed"])
+    _, fresh = mint_feed_token()
+    assert store.set_web_user_feed_token("alice", fresh)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT revoked_at IS NOT NULL FROM web_user_capability_tokens"
+            " WHERE token_sha256 = %s",
+            (digest,),
+        ).fetchone()
+    assert row == (True,)
+    assert store.get_web_user_by_feed_token(fresh) is not None
 
 
 def test_dispatch_backstop_judges_the_normalized_kinds() -> None:

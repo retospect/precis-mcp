@@ -1439,6 +1439,113 @@ def test_edit_yielding_empty_body_is_bad_input(
 
 
 # ---------------------------------------------------------------------------
+# gr688478 — relaxed anchor retry for retype drift
+# ---------------------------------------------------------------------------
+
+
+def test_find_replace_relaxed_whitespace_drift(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The body holds a double space; the agent retyped one — the folded
+    retry still finds the anchor and splices the raw span."""
+    mid = _make(handler, "alpha  path\nbeta line\ngamma tail")
+    handler.edit(id=mid, mode="find-replace", find="alpha path", text="new")
+    assert _body(handler, store, mid) == "new\nbeta line\ngamma tail"
+
+
+def test_find_replace_relaxed_quotes_and_nbsp(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "it’s “quoted”\u00a0text tail")
+    handler.edit(id=mid, mode="find-replace", find='it\'s "quoted" text', text="X")
+    assert _body(handler, store, mid) == "X tail"
+
+
+def test_insert_relaxed_anchor(handler: MemoryHandler, store: Store) -> None:
+    mid = _make(handler)
+    handler.edit(id=mid, mode="insert", find="beta  line", text=" INS", where="after")
+    assert (
+        _body(handler, store, mid) == "alpha path /old/dir\nbeta line INS\ngamma tail"
+    )
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_find_replace_retries_when_only_context_drifts(
+    handler: MemoryHandler, store: Store, batch: bool
+) -> None:
+    mid = _make(handler, "prefix target suffix\nother target suffix")
+    if batch:
+        handler.edit(
+            id=mid,
+            ops=[
+                {
+                    "find": "target",
+                    "text": "new",
+                    "after": "  suffix",
+                    "before": "prefix ",
+                }
+            ],
+        )
+    else:
+        handler.edit(
+            id=mid, mode="find-replace", find="target", text="new", before="prefix  "
+        )
+    assert _body(handler, store, mid) == "prefix new suffix\nother target suffix"
+
+
+def test_find_replace_prefers_complete_literal_anchor(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "prefix  target\nprefix target")
+    handler.edit(
+        id=mid, mode="find-replace", find="target", text="new", before="prefix "
+    )
+    assert _body(handler, store, mid) == "prefix  target\nprefix new"
+
+
+def test_find_replace_relaxed_ambiguity_still_errors(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler, "foo\u00a0one\nfoo  two\nbar")
+    with pytest.raises(BadInput, match="2 matches"):
+        handler.edit(id=mid, mode="find-replace", find="foo", text="x")
+    assert _body(handler, store, mid) == "foo\u00a0one\nfoo  two\nbar"
+
+
+def test_find_replace_relaxed_exact_body_drops_echo(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A folded find covering the whole displayed body is still the
+    full-body rewrite: the hidden title echo does not survive it."""
+    mid = _derived(handler, "Echo Title\n\nrest prose")
+    handler.edit(id=mid, mode="find-replace", find="rest  prose", text="new body")
+    assert _body(handler, store, mid) == "new body"
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "Echo Title"
+
+
+def test_find_replace_relaxed_miss_still_errors(handler: MemoryHandler) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="not found"):
+        handler.edit(id=mid, mode="find-replace", find="totally absent words", text="x")
+
+
+def test_find_replace_miss_on_title_points_at_title_arg(handler: MemoryHandler) -> None:
+    mid = id_of(handler.put(text="body prose here", title="A distinct title").body)
+    with pytest.raises(BadInput, match="title") as exc:
+        handler.edit(id=mid, mode="find-replace", find="A distinct title", text="x")
+    assert "title=" in str(exc.value)
+
+
+def test_find_replace_ellipsis_anchor_explains_truncation(
+    handler: MemoryHandler,
+) -> None:
+    mid = _make(handler)
+    with pytest.raises(BadInput, match="ellipsis"):
+        handler.edit(id=mid, mode="find-replace", find="gamma tail…", text="x")
+
+
+# ---------------------------------------------------------------------------
 # gr538501 — a body edit that moves the first line re-derives a derived title
 # ---------------------------------------------------------------------------
 
@@ -3238,3 +3345,102 @@ def test_put_thread_node_no_hint_on_a_fresh_prefix(
         tags=["SPACE:repo-dev"],
     )
     assert "already covers" not in plain.body
+
+
+def test_put_inline_link_routes_edge_annotation_to_the_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314: ``put(link=, rel='derived-from', meta={model, prompt_version,
+    run_id, why, evidence})`` annotates the new edge; the node's meta keeps
+    only its own allowlisted keys."""
+    src = id_of(handler.put(text="the source memory").body)
+    edge = {
+        "model": "m1",
+        "prompt_version": "v1",
+        "run_id": "r1",
+        "why": "setup read from the paper",
+        "evidence": "pc1",
+    }
+    new = id_of(
+        handler.put(
+            text="a derived setup",
+            link=f"memory:{src}",
+            rel="derived-from",
+            meta={"hook": "setup note", **edge},
+        ).body
+    )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    assert "link_meta" not in node_meta
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (new, src),
+        ).fetchone()
+    assert row is not None and edge.items() <= row[0].items()
+
+
+def test_put_edge_annotation_without_link_still_refused(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="not writable"):
+        handler.put(text="no link", meta={"run_id": "r1"})
+
+
+def test_put_inline_link_to_paper_chunk_under_machine_writer(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314's reported shape, end to end: a worker's setup put targets
+    an actual paper chunk (a ``pc…`` handle) under a model writer context.
+    All five annotation keys land on the chunk edge — admitted by the
+    machine-edge gate — while the memory node keeps only its own meta."""
+    from precis.store.revision_context import revision_context
+    from precis.utils import handle_registry
+
+    paper = store.insert_ref(kind="paper", slug="gr715314-setup-paper", title="p")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 0, 'paragraph', 'methods chunk', '{}'::jsonb) "
+            "RETURNING chunk_id",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    pin = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    edge = {
+        "model": "gpt-6-astra",
+        "prompt_version": "read-paper-v2",
+        "run_id": "run-gr715314",
+        "why": "the setup is stated in this methods chunk",
+        "evidence": [pin],
+    }
+    with revision_context(trust_origin="generated", model="gpt-6-astra"):
+        new = id_of(
+            handler.put(
+                text="Setup: DFT PBE+U (VASP)",
+                link=pin,
+                rel="derived-from",
+                meta={"hook": "setup note", **edge},
+            ).body
+        )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT l.meta, dc.ord AS dst_ord, l.dst_chunk_id "
+            "FROM links l LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s",
+            (new, paper.id),
+        ).fetchone()
+    assert row is not None
+    link_meta, dst_ord, dst_chunk_id = row
+    assert edge.items() <= link_meta.items()
+    assert dst_ord == 0
+    assert dst_chunk_id == chunk_id

@@ -15,7 +15,11 @@ can't silently drop the gate.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from precis.runtime import PrecisRuntime
+from precis.utils import kind_facts
 
 
 def test_job_put_rejects_a_mode_outside_its_one_element_vocabulary(
@@ -122,3 +126,30 @@ def test_todo_edit_mode_replace_still_works_through_the_wrapper_default(
         },
     )
     assert "[error:" not in park_out, park_out
+
+
+def test_documented_modes_match_handlers() -> None:
+    """gr676983: the skill mode tables must match current handler declarations.
+
+    Both directions: every table row names exactly the declared set, and
+    every kind with a non-empty declared tuple appears in the table — an
+    omitted kind reads as "mode= is rejected here" and sends a reader
+    the wrong way.
+    """
+    specs = {spec.kind: spec for spec in kind_facts.all_declared_specs()}
+    skills = Path(__file__).resolve().parents[1] / "src/precis/data/skills"
+    for verb, attribute in (("put", "modes"), ("edit", "edit_modes")):
+        prose = (skills / f"precis-{verb}-help.md").read_text(encoding="utf-8")
+        rows = re.findall(r"^\| ([a-z-]+) \| ((?:`[^ `]+`.*)) \|$", prose, re.MULTILINE)
+        assert rows, f"{verb}: missing documented mode table"
+        documented_kinds = {kind for kind, _ in rows}
+        for kind, cell in rows:
+            documented = set(re.findall(r"`([^`]+)`", cell))
+            declared = getattr(specs[kind], attribute)
+            assert declared is not None, f"{verb} {kind}: no declared mode gate"
+            assert documented == set(declared), (verb, kind, documented, declared)
+        with_modes = {spec.kind for spec in specs.values() if getattr(spec, attribute)}
+        missing = with_modes - documented_kinds
+        assert not missing, (
+            f"{verb}: kinds with declared modes missing from table: {sorted(missing)}"
+        )

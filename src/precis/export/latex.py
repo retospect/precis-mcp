@@ -35,7 +35,7 @@ import json
 import re
 import shutil
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -869,6 +869,19 @@ def _heading_glsadd(ctx: _Ctx) -> str:
 def _gls_use(use: _abbrev.Use, keymap: dict[str, str]) -> str:
     """One :class:`~precis.export._abbrev.Use` as a glossary call."""
     key, pl = keymap[use.short], "pl" if use.plural else ""
+    if use.prefix:
+        # ``word-SHORT``: the word is literal text, the short defines itself
+        # after the compound (the long form cannot replace it mid-word).
+        head = _encode_unicode(_latex_escape(use.prefix)) + "-"
+        if use.mode == "first":
+            o, c = ("{[}", "{]}") if use.bracket else ("(", ")")
+            return (
+                f"{head}\\glsxtrshort{pl}{{{key}}} "
+                f"{o}\\glsxtrlong{pl}{{{key}}}{c}"
+                f"\\glsadd{{{key}}}\\glsunset{{{key}}}"
+            )
+        use = replace(use, prefix="")
+        return head + _gls_use(use, keymap)
     if use.mode == "bare":
         return f"\\glsfmtshort{pl}{{{key}}}"
     if use.mode == "later":
@@ -985,6 +998,11 @@ class _Ctx:
     #: ``dc`` handles of heading chunks that render as unnumbered
     #: ``\\paragraph`` — cross-referenced with ``\\nameref``, not ``\\cref``.
     paragraph_handles: frozenset[str] = frozenset()
+    #: The numbering pre-pass and the chunk being rendered: only used to
+    #: tell a reference into the citing chunk's own section
+    #: (:func:`walker.relative_word`; cleveref still numbers the rest).
+    xref_pass: walker.XrefNumbers | None = None
+    cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
     #: ``(replacement dc | None, neutral text)`` (gr493181).
     _dead_xref_cache: dict[str, tuple[str | None, str]] = field(
@@ -1111,6 +1129,11 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
 
+    # Remaining prose stars are literal (including adsorbate notation).
+    # Use the same glyph as the author's \* escape; math and inline code
+    # remain in the stash so their stars retain their original meaning.
+    s = s.replace("*", r"\textasteriskcentered{}")
+
     # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
     #     reads that as a display-math opener ("Display math should end with
     #     $$"; nano-computer's authored ``$∼$$2^30$``). Separate adjacent
@@ -1197,6 +1220,8 @@ def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
         dead=lambda d: walker.dead_xref(
             ctx.store, d, ctx.known_handles, ctx._dead_xref_cache
         ),
+        placement=ctx.xref_pass,
+        citing=ctx.cursor.dc,
     )
     sink: list[str] = []
     LatexRenderer(ctx).xref(sink, xref)
@@ -1213,7 +1238,7 @@ def _polish_xrefs(s: str) -> str:
     space a ``\\cref`` off a directly preceding ``\\cite`` mark (and its
     ``{\\scriptsize …}`` link run), and capitalise to ``\\Cref`` at the
     start of the chunk or a sentence (the :func:`_glsify` rule)."""
-    if "\\cref{" not in s:
+    if "\\cref{" not in s and "\\precisrel{" not in s:
         return s
     items: list[str | tuple[str, ...]] = []
     last = 0
@@ -1227,7 +1252,7 @@ def _polish_xrefs(s: str) -> str:
     )
     out: list[str] = []
     pos = 0
-    for m in re.finditer(r"\\cref\{", s):
+    for m in re.finditer(r"\\cref\{|\\precisrel\{(above|below)\}", s):
         pre = s[pos : m.start()]
         head = "".join(out) + pre
         if head.endswith("}"):
@@ -1248,7 +1273,10 @@ def _polish_xrefs(s: str) -> str:
                 pre += " "
                 head += " "
         out.append(pre)
-        if _abbrev.at_sentence_start(head):
+        if m.group(1):  # the word for a reference into the own section
+            word = m.group(1)
+            out.append(word.capitalize() if _abbrev.at_sentence_start(head) else word)
+        elif _abbrev.at_sentence_start(head):
             out.append("\\Cref{")
         else:
             out.append("\\cref{")
@@ -1676,7 +1704,10 @@ class LatexRenderer:
 
     def xref(self, sink: list[str], xref: walker.Xref) -> None:
         """``\\cref`` (cleveref numbers it), ``\\hyperref`` around the
-        author's surface, neutral text for a dead target."""
+        author's surface, neutral text for a dead target; a reference into
+        the citing chunk's own section is the word ``above`` / ``below``
+        (a private mark :func:`_polish_xrefs` turns into text, capitalised
+        at a sentence start)."""
         dc = xref.dc
         if not xref.live:
             sink.append(
@@ -1689,6 +1720,8 @@ class LatexRenderer:
         elif xref.surface:
             surface = _encode_unicode(_latex_escape(xref.surface))
             sink.append(f"\\hyperref[chunk:{dc}]{{{surface}}}")
+        elif xref.relative is not None:
+            sink.append(f"\\precisrel{{{xref.relative}}}")
         elif dc in self.ctx.paragraph_handles:
             # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
             # section's number, so name the heading instead.
@@ -2357,7 +2390,8 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
 #: biblatex prints a single ``[1, 2]`` bracket rather than ``[1][2]``. The
 #: adjacency comes from folding a multi-key ``\\cite{a,b}`` through the
 #: one-key-per-bracket grammar; cites the author spaced apart keep their
-#: separator and are left alone. ``\\cite[SI]{…}`` never matches.
+#: separator and are left alone. An SI mark joins the run as
+#: ``\\cites{a}[SI]{b}``.
 #: The grouping itself is :func:`walker.merge_adjacent`.
 _CITE_MARKER = re.compile(r"\x01<(\d+)>\x01")
 
@@ -2673,6 +2707,9 @@ def render_body(
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
         paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
+        xref_pass=walker.number_xrefs(
+            chunks, getattr(ref, "title", None), equation_of=_standalone_equation
+        ),
     )
     # Export-level advisories (gr592892: unset PRECIS_WEB_BASE_URL →
     # every dev record-handle link is path-only).
@@ -2745,6 +2782,7 @@ def _render_chunk_lines(
         back_matter=back_matter,
         equation_of=_standalone_equation,
         on_chunk=flush_notes,
+        cursor=ctx.cursor,
     )
     lines.extend(_flush_supplement_notes(ctx))
     return lines
@@ -3139,8 +3177,8 @@ def build_bib(
             # source dict) so both renderers agree on the venue string.
             meta = pref.meta or {}
             journal = str(
-                meta.get("venue")
-                or meta.get("journal")
+                meta.get("journal")
+                or meta.get("venue")
                 or meta.get("container_title")
                 or ""
             ).strip()
@@ -3894,6 +3932,8 @@ def export_draft(
     doc_type: str | None = None,
     remarkable: bool = False,
     retraction_override: list[Any] | None = None,
+    retraction_check: str = "none",
+    retraction_report: Any = None,
     doi_links: bool = True,
     library_links: bool = True,
     bib_style: str | None = None,
@@ -4041,7 +4081,23 @@ def export_draft(
             source_bundle, rendered.warnings, retraction_override=retraction_override
         )
 
+    from precis.export.retraction import (
+        draft_retraction_report,
+        retraction_coverage_entries,
+    )
+
+    coverage = retraction_coverage_entries(
+        retraction_report
+        if retraction_report is not None
+        else draft_retraction_report(mstore, ref, cited_slugs=rendered.cited_slugs),
+        retraction_check,
+    )
     unverified_tex = build_unverified_claims_section(rendered.trust)
+    if coverage:
+        unverified_tex += "\n\\section*{Retraction coverage}\n"
+        for text, red in coverage:
+            line = _tex(text)
+            unverified_tex += ("\\textcolor{red}{" + line + "}" if red else line) + "\n"
     published_tex = (
         build_published_claims_section(mstore, rendered.trust, rendered.claim_cites)
         if claim_appendix

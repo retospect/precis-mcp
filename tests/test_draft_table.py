@@ -477,6 +477,49 @@ def test_keyword_column_id_refused() -> None:
             )
 
 
+def test_pulled_column_from_refused() -> None:
+    """gr685370 — a 'from' pull spec has no resolver yet: the schema
+    refuses it at normalize instead of minting an empty column nobody
+    can fill. One gate covers table=/columns=/add_column=/toon=."""
+    with pytest.raises(BadInput, match="pulled columns are not available yet"):
+        normalize_table(
+            {
+                "columns": [
+                    {"name": "a"},
+                    {"name": "zip", "from": "table:dc6579686~kgv5"},
+                ],
+                "rows": [[1, None]],
+            }
+        )
+
+
+def test_pulled_column_from_refused_on_write(draft: DraftHandler, hub: Hub) -> None:
+    """gr685370 — put columns=, edit table= and add_column= all refuse a
+    'from' spec instead of writing the dead column."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            columns=[{"name": "a"}, {"name": "zip", "from": "table:dc1~kgv5"}],
+            rows=[[1, None]],
+        )
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[1]]},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, add_column={"name": "zip", "from": "table:dc1~kgv5"})
+    tbl = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    tbl["columns"][0]["from"] = "vendor:price@qty"
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, table=tbl)
+
+
 def test_footer_non_string_func_refused() -> None:
     """footer={'a': ['sum']} must be a BadInput with next=, not a bare
     TypeError on the unhashable list."""
@@ -1746,8 +1789,8 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """``cell=`` dry_run on an ordinary (markdown-canonical, not
-    LaTeX-recovered) table chunk previews the re-derived markdown and
-    writes neither the text nor ``meta.table``."""
+    LaTeX-recovered) table chunk previews the write's op reply (touched
+    row + hash) and writes neither the text nor ``meta.table``."""
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)
     draft.put(
@@ -1763,7 +1806,10 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
 
     rows, cols = _table_ids(hub, tc)
     r = draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="Ge", dry_run=True)
-    assert "[dry-run]" in r.body
+    # gr685381: a cell= dry-run previews the SAME op-reply shape as the
+    # write (verb line + hash + touched row) — not the old text-diff form.
+    assert r.body.startswith("dry-run — nothing written")
+    assert "edited table" in r.body and "hash: " in r.body
     assert "Ge" in r.body
 
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)

@@ -19,6 +19,11 @@ trust itself; ``precis garden restore`` supplies the operator context and
 resolves the raw loser. No MCP/web restore door is exposed, and the store
 and worker layers never import handlers.
 
+Grouped ref counts deduplicate facet membership per ref before aggregating
+numeric JSON values. Repeated join rows from tag facets therefore cannot
+weight a ref's contribution, and absent or non-numeric JSON values leave
+the member count intact while reducing the numeric sample size.
+
 Typing the seam: functions that need only a sliver of the Store take a
 role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
@@ -30,10 +35,24 @@ and reason commit together; filesystem moves remain best-effort, keeping
 the old storage path on failure because a database transaction cannot
 roll back a corpus filesystem operation.
 
+Stub acquisition refuses an identifier hit with substantial, disjoint title
+tokens. An identifier on a corrupt row must not silently claim another work
+is held; sparse or placeholder titles provide too little evidence to refuse.
+This guard preserves the row for operator repair rather than guessing which
+of its metadata, body and links belongs to the requested paper.
+
+Human byline edits keep rows with the same normalized name and ORCID at
+the same position. The edit form omits OpenAlex IDs, so a missing ID on
+an otherwise unchanged row preserves its index link alongside its
+source tier and verification stamp. Retention by position avoids moving
+identity evidence between co-authors with the same name.
+
 Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
 matches while retaining strict-AND eligibility and the existing RRF weights;
 multi-query search inherits the same ranking through its lexical legs.
+Taxon lexical legs fetch chunks by ref first so an OR retry over common
+terms only tests taxon chunks.
 
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and
@@ -73,6 +92,10 @@ successor; its predecessor obligation survives and reattaches atomically on
 restaging. No signed bytes or timestamp proofs are rewritten.
 
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
+Missing-rationale link scans use physical edge IDs rather than offsets, so
+backfilling a page cannot shift the remaining queue. They are live reads:
+higher IDs can join later pages; late lower-ID commits need a fresh scan.
+Reason and legacy why payloads are inspected without refreshing fingerprints.
 Part-selection records are memory refs linked by ``selects`` / ``rejects``
 to parts or components. Link admission requires a nonblank rejection reason
 so a rejected candidate remains reusable evidence. PCB instance reads resolve

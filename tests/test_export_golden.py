@@ -261,6 +261,12 @@ class _Drafts:
     def universal_chunk(self, handle: str) -> dict[str, str] | None:
         return {"text": f"Passage of {handle}."} if handle.startswith("pc") else None
 
+    def figure_canvas_ref(self, _chunk_id: int) -> None:
+        return None  # the golden figure's asset is a raster, not a canvas
+
+    def get_chunk_blob(self, _handle: str) -> None:
+        return None
+
     def chunk_text_at(self, ref_id: int, ordinal: int) -> str:
         return f"Chunk {ordinal} of paper {ref_id}."
 

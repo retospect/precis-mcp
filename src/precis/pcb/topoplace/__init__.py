@@ -18,6 +18,8 @@ same anneal (Decision 10's cost ladder).
 Authored copper uses outward polygon boundaries as mesh obstacles. Each
 disconnected polygon becomes its own zone with the row's net and layer:
 dropping a multipart row loses copper, while hulling it blocks empty gaps.
+Frozen routed pieces are unioned by net and layer before pad clipping so
+overlapping internal boundaries cannot strand mesh constraint recovery.
 
 **The search.** The pairwise part map (``pairmap.py``) scores every
 net-connected pair: clique strength 1/(k−1) per shared net, and the

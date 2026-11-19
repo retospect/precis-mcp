@@ -94,6 +94,7 @@ the whole call back. `mode='remove'` takes the same id list.
 | `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
 | `mode` | str | `add` | `add` or `remove`. |
 | `reason` | str | — | The edge's why (`links.meta.reason`), on kinds whose `link` takes `meta=` (memory/finding/paper/taxon/todo/gripe — except `rel='parent'`, which is a virtual edge with nowhere to store it). `'.'` marks reviewed-obvious; a sentence records what the edge adds beyond what the row already shows. A `considered` edge carries its why inside the verdict block (`meta`), not `reason=`. |
+| `note` | str | — | On `kind='finding'`: an alias for `reason=` — the edge's why under the annotation name. It errors when it disagrees with `reason=` or `meta['reason']` and is refused on `mode='remove'`. `kind='structure'` has its own `note=` (a provenance `meta.note`, not this); other kinds reject `note=`. |
 
 ## Record that a candidate was considered and rejected
 
@@ -175,6 +176,14 @@ A move that would form a cycle or nest deeper than the tree's depth
 cap is rejected. The current parent shows under `## parent` in
 `get(kind='todo', id=141, view='links')`. See `precis-todo-help` for
 the full tree workflow.
+
+## Read links on cached provider answers
+
+YouTube (`yt`), web (`wb`), websearch (`wx`), perplexity-research (`rr`),
+and perplexity-reasoning (`rz`) answers carry record handles. Open a
+handle with `get(id='wx123', view='links')` for inbound and outbound
+edges, or use `extent='fisheye+1hop'` to see the linked neighbours.
+The default cached read includes a Links section when edges exist.
 
 ## Machine-written edges
 

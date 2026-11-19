@@ -37,7 +37,12 @@ Two guards keep the channel honest (gr646881, gr646528):
 * A need that cites its own earlier gripe (``… (gr<N>, gripe gr<N>)``)
   is the same need — :func:`tool_key` drops handle citations before
   slugging, so the decoration lands on the open marker gripe's key
-  instead of minting a duplicate.
+  instead of minting a duplicate. The 60-character cap can also land
+  inside a citation tail (``…-fo``, ``…-for-qu``) and pre-strip markers
+  can carry a literal ``-for``; those stubs re-key to the base too —
+  the cap runs first, so a filed key re-keys to itself (gr685371:
+  qu509651 filed the same lane three times before its parked gripe
+  ever bumped).
 
 Two pieces:
 
@@ -283,14 +288,43 @@ def _other_handle_re() -> re.Pattern[str]:
     return _OTHER_HANDLE_RE
 
 
+#: Terminal stubs left when the 60-character cap lands inside a
+#: "for qu<N>"/"gr<N>" citation tail — the digit-carrying remainders
+#: (``-gr5``, ``-for-qu12``) are caught by the citation regexes, these
+#: are the digit-less ones (gr685371's family, from prod markers like
+#: ``…-provisioning-fo`` and ``…-provisioning-gr``).
+_CAPPED_STUB = re.compile(r"-(?:f|fo|for|for-q|for-qu|g|gr)$")
+
+#: The pre-citation-strip code removed ``qu<N>``/``gr<N>`` but left the
+#: literal ``for``: "X for qu<N>" with a ≤55-char base filed an ``X-for``
+#: marker that re-keyed to itself while the re-worded need keyed to
+#: ``X`` — one duplicate filing per such marker.
+_LEGACY_FOR_STUB = re.compile(r"-for$")
+
+
 def tool_key(tool: str) -> str:
     """Normalise a tool name for dedup/tagging: lowercase, drop handle
-    citations (:data:`_HANDLE_CITATION` plus the rest of the handle
-    registry at :func:`_other_handle_re`), every run of non-alphanumerics
-    becomes one ``-``, capped to a tag-safe length."""
-    cleaned = _other_handle_re().sub(" ", tool.lower())
+    citations and their ``for qu…`` decoration (:data:`_HANDLE_CITATION`
+    plus the rest of the handle registry at :func:`_other_handle_re`),
+    every run of non-alphanumerics becomes one ``-``, capped to a
+    tag-safe length, with citation-tail stubs re-keyed to the base.
+
+    The cap runs BEFORE the stub strip so filing and marker re-key
+    agree: a need whose key caps onto ``-fo`` files under the base, and
+    the stored base re-keys to itself (:func:`tool_key` is a fixpoint on
+    its own output)."""
+    cleaned = re.sub(r"\bfor[\s-]+qu\d+\b", " ", tool.lower())
+    cleaned = _other_handle_re().sub(" ", cleaned)
     cleaned = _HANDLE_CITATION.sub(" ", cleaned)
-    return re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")[:60]
+    key = re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")[:60]
+    # Old 60-character markers can end halfway through "for qu…" or
+    # "gr…"; pre-citation-strip code left a literal "-for" tail at any
+    # length. Both are decoration, not capability name — strip exact
+    # stubs only, never fuzzy-match capability prefixes, which can hide
+    # distinct lanes behind the same gripe.
+    if len(key) == 60:
+        key = _CAPPED_STUB.sub("", key)
+    return _LEGACY_FOR_STUB.sub("", key)
 
 
 def parse_needs(raw: Any) -> tuple[list[Need], int]:

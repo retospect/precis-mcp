@@ -881,6 +881,77 @@ def _insert_job(store: Store, *, meta: dict, status: str) -> int:
     return ref.id
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "hint"),
+    [
+        (
+            {"__extras__": {"executor": "codex"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"state": "failed"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"parent": "td123"}},
+            "search(kind='job', under='td123')",
+        ),
+        (
+            {"sort": "oldest"},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+        (
+            {"__extras__": {"sort": "newest"}},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+    ],
+)
+def test_job_search_refusals_name_working_call(
+    runtime_with_store: PrecisRuntime, kwargs: dict[str, Any], hint: str
+) -> None:
+    body = runtime_with_store.dispatch("search", {"kind": "job", **kwargs})
+    assert "[error:BadInput]" in body, body
+    assert "next:" in body and hint in body, body
+
+
+@pytest.mark.parametrize("extras", [{"job_type": "run_slice"}, {"since": "2000-01-01"}])
+def test_sort_recency_accepted_on_job_type_listing(
+    runtime_with_store: PrecisRuntime, store: Store, extras: dict[str, str]
+) -> None:
+    _insert_job(store, meta={"job_type": "run_slice"}, status="running")
+    query = {"kind": "job", "status": "*", "__extras__": extras}
+    default = runtime_with_store.dispatch("search", query)
+    sorted_body = runtime_with_store.dispatch("search", {**query, "sort": "recency"})
+    assert "# 1 job entry" in default, default
+    assert "# 1 job entry" in sorted_body, sorted_body
+    assert default.splitlines()[0] == sorted_body.splitlines()[0]
+
+
+@pytest.mark.parametrize("view", ["error", "body"])
+def test_view_error_aliases_status_card(
+    runtime_with_store: PrecisRuntime, store: Store, view: str
+) -> None:
+    job_id = _insert_job(store, meta={"error": "seed failure"}, status="failed")
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "job", "id": job_id, "view": view}
+    )
+    assert "error: seed failure" in body, body
+    assert f"view={view!r} read as the default status card" in body, body
+
+
+def test_under_listing_footer_has_no_page_arg(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    parent = store.insert_ref(kind="todo", slug=None, title="parent", meta={})
+    for title in ("first", "second"):
+        store.insert_ref(kind="job", slug=None, title=title, parent_id=parent.id)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "job", "under": f"td{parent.id}", "page_size": 1}
+    )
+    assert "raise page_size= or narrow with job_type=/since=" in body, body
+    assert "page=" not in body, body
+
+
 def test_job_card_leads_with_describe_sentence(jobs: JobHandler, store: Store) -> None:
     """The card's first content line is the per-type sentence (td573331),
     with ``job_type:`` still present below it."""
@@ -1044,6 +1115,77 @@ def test_wake_args_reach_handler(
     assert f"woke jo{job_id}" in body
     assert "quota restored" in body
     assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
+
+
+def test_failed_card_states_error_once(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"job_type": "fake", "error": "error text"}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "error text")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert body.count("error text") == 1
+    assert body.count("Short summary") == 1
+    assert "## event" not in body
+
+
+def test_succeeded_card_keeps_summary_and_events(
+    jobs: JobHandler, store: Store
+) -> None:
+    job_id = _insert_job(store, meta={"job_type": "fake"}, status="succeeded")
+    append_chunk(store, job_id, "job_event", "Progress report")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert "## summary\nShort summary" in body
+    assert "Progress report" in body
+
+
+@pytest.mark.parametrize("status", ["failed", "timed-out"])
+def test_batch_get_shows_error_for_failed_jobs(
+    jobs: JobHandler, store: Store, status: str
+) -> None:
+    failed = _insert_job(store, meta={"error": "batch reason"}, status=status)
+    succeeded = _insert_job(store, meta={"error": "stale reason"}, status="succeeded")
+    body = jobs.get(id=[failed, succeeded]).body
+    assert body.count("error: batch reason") == 1
+    assert "stale reason" not in body
+
+
+def test_batch_get_uses_failure_boundary_event(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"finished_at": datetime.now(UTC).isoformat()}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "boundary failure")
+    body = jobs.get(id=[job_id]).body
+    assert "error: boundary failure" in body
+
+
+def test_job_type_listing_drops_dead_columns_and_tallies(
+    jobs: JobHandler, store: Store
+) -> None:
+    for status in ("queued", "failed", "failed"):
+        _insert_job(store, meta={"job_type": "listing_fixture"}, status=status)
+    _insert_job(store, meta={"job_type": "other_fixture"}, status="running")
+    body = jobs.search(job_type="listing_fixture", page_size=1).body
+    assert "failed 2" in body
+    assert "queued 1" in body
+    assert "running 1" not in body
+    table_header = next(line for line in body.splitlines() if "summary" in line)
+    for column in ("remaining_words", "links", "age", "size"):
+        assert column not in table_header
+
+    filtered = jobs.search(job_type="listing_fixture", status="failed").body
+    assert "failed 2" in filtered
+    assert "queued 1" not in filtered
+
+
+def test_job_listing_keeps_nonzero_columns(jobs: JobHandler, store: Store) -> None:
+    ref = store.insert_ref(
+        kind="job", slug=None, title="First line\nAdditional detail", meta={}
+    )
+    table = jobs._render_hits_table([ref])
+    assert "remaining_words" in table.splitlines()[0]
+    assert "links" not in table.splitlines()[0]
 
 
 class TestJobCardErrorLine:

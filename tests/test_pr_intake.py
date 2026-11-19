@@ -746,7 +746,14 @@ def test_dep_check_job_pins_the_land(
     )
     seen: dict[str, Any] = {}
 
-    def launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> int:
+    def launch(
+        argv: list[str],
+        *,
+        cwd: Path,
+        log_path: Path,
+        exit_file: Path,
+        store: Any = None,
+    ) -> int:
         seen.update(argv=argv, log=log_path, exit=exit_file)
         return 999_999
 

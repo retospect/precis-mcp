@@ -1239,6 +1239,31 @@ def test_export_pdf_override_dispatches_job(
     assert args["params"]["ignore_retractions"] is True
 
 
+@pytest.mark.parametrize("scope", ["all", "stale", "none"])
+def test_export_pdf_threads_retraction_scope(
+    draft_client: TestClient,
+    draft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    monkeypatch.setattr(
+        retraction_mod,
+        "draft_retraction_report",
+        lambda *a, **kw: DraftRetractionReport(),
+    )
+    response = draft_client.post(
+        "/drafts/nt/export.pdf",
+        data={"retraction_check": scope},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    params = draft_runtime.calls[-1][1]["params"]
+    if scope == "none":
+        assert "retraction_check" not in params
+    else:
+        assert params["retraction_check"] == scope
+
+
 def test_export_pdf_no_override_omits_ignore_retractions_param(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
@@ -3661,3 +3686,48 @@ def test_new_draft_poster_profile_without_user_refused(
     r = _post_poster(draft_client, "7")
     assert r.status_code == 400
     assert draft_runtime.calls == []
+
+
+@pytest.mark.parametrize("scope", ["none", "stale", "all"])
+def test_pdf_preflight_uses_refreshed_report(
+    monkeypatch: pytest.MonkeyPatch, scope: str
+) -> None:
+    """Use the check result for the gate even when memoized refs predate it."""
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from precis_web.routes import drafts
+
+    checked = DraftRetractionReport(papers=[_cited("paper", "retracted")])
+    seen: dict[str, Any] = {}
+
+    def check(store: Any, ref: Any, **kwargs: Any) -> DraftRetractionReport:
+        seen.update(kwargs)
+        return checked
+
+    def gate(store: Any, ref: Any, **kwargs: Any) -> Any:
+        assert kwargs["retraction_report"] is checked
+        return SimpleNamespace(blocked=True)
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", check)
+    monkeypatch.setattr(drafts, "draft_export_preflight", gate)
+    monkeypatch.setattr(drafts, "_crossref_mailto", lambda: "crossref@example.org")
+    request = Request(
+        {
+            "type": "http",
+            "path": "/drafts/nt/export/start",
+            "query_string": f"retraction_check={scope}".encode(),
+        }
+    )
+    store: Any = object()
+    assert drafts._export_preflight(
+        store, object(), request, check_retractions=True
+    ).blocked
+    assert seen == {
+        "check": scope != "none",
+        "force": scope == "all",
+        "mailto": "crossref@example.org",
+    }
+    assert request.scope["retraction_report"] is checked
+    assert request.scope["retraction_check"] == scope

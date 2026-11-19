@@ -1,5 +1,10 @@
 """Taproot — the evidence-grounded claim graph.
 
+Explicit setup mismatches are excluded before seniority and citation selection
+(see ``support.setup_mismatch``). Missing comparisons remain unknown; lexical
+similarity cannot establish scientific identity. Evidence rendering keeps every
+passage pointer because one paper may ground a claim at several passages.
+
 A claim lives on one **claim hub**: a ``finding`` tagged ``TAPROOT:claim`` +
 ``STATUS:canonical`` (off the ``chase`` STATUS lifecycle, so a re-picked
 finding is never mistaken for a hub). Papers attach as evidence edges. An
@@ -109,6 +114,10 @@ addressed as ``fi<id>``; the signed artifact carries the sentence hash.
 ``get(view='similar')`` and the web review page's "Nearest claims" panel
 (``precis_web/nanopub_render.py``, with the guarded merge door) expose the
 same neighbourhood to an agent and to the approving human.
+
+The judge requires overlapping conditions and comparable methods for a
+contradiction. This prevents automatic ``disputes`` edges between compatible
+claims, such as opposite trends in adjacent pressure regimes.
 
 Module map (detail lives in each module's own docstring):
 

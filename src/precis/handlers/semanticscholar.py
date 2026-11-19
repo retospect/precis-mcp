@@ -271,6 +271,8 @@ class SemanticScholarHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "carbon nanotube field-effect transistors"
+    # The ``ss<id>`` handle routes by ref id (gr702974).
+    handle_routes_by_ref_id: ClassVar[bool] = True
     #: Per-call cost — the public tier is free, partner tier charges
     #: per query but it's tiny. Record None so the dashboard doesn't
     #: invent a per-call dollar figure.

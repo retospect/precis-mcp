@@ -3,14 +3,17 @@
 An explicit ``reason=`` on either verb lands as an ``agent/deleted`` /
 ``agent/retagged`` row on each affected ref's ``ref_events`` log, so a
 mass cleanup (soft-deleting refs, folding tags) says why. The row only
-fires for numeric-ref kinds when the caller passed a reason: silent
-writes, file/slug kinds, and comment hide/restore (which has its own
-``comment_hidden`` row) stay off the log.
+fires when the caller passed a reason: silent writes and comment
+hide/restore (which has its own ``comment_hidden`` row) stay off the
+log. Tag ``reason=`` covers the numeric-ref kinds and paper (gr688475);
+other slug kinds' tag doesn't declare the door and refuses it loudly.
 """
 
 from __future__ import annotations
 
 import re
+
+import pytest
 
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -141,6 +144,109 @@ def test_tag_reason_batch_writes_one_row_per_ref(
     assert "[error" not in out, out
     assert _reason_events(store, a, "retagged") == ["folded into me1"]
     assert _reason_events(store, b, "retagged") == ["folded into me1"]
+
+
+def test_paper_tag_reason_lands_on_the_event_log(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr688475: ``tag(kind='paper')`` declares ``reason=`` like the
+    numeric kinds. A mass fold removing a quest tag from a sweep of
+    papers used to die on the strict-kwargs gate (``does not accept
+    ['reason']``) because ``PaperHandler.tag`` never declared the
+    door — the call-errors cluster's exact shape."""
+    ref = store.insert_ref(
+        kind="paper", slug="wang2020state", title="T", provider="manual", meta={}
+    )
+    out = runtime_with_store.dispatch(
+        "tag",
+        {
+            "kind": "paper",
+            "id": "wang2020state",
+            "remove": ["quest:164903"],
+            "reason": "quest:164903 folded into quest:164900",
+        },
+    )
+    assert "[error" not in out, out
+    assert _reason_events(store, ref.id, "retagged") == [
+        "quest:164903 folded into quest:164900"
+    ]
+    # Reasonless paper tags stay off the log, same as the numeric kinds.
+    out = runtime_with_store.dispatch(
+        "tag", {"kind": "paper", "id": "wang2020state", "add": ["topic:noxrr"]}
+    )
+    assert "[error" not in out, out
+    assert _reason_events(store, ref.id, "retagged") == [
+        "quest:164903 folded into quest:164900"
+    ]
+
+
+@pytest.mark.parametrize("explicit_kind", [True, False])
+def test_paper_tag_batch(
+    runtime_with_store: PrecisRuntime, store: Store, explicit_kind: bool
+) -> None:
+    first = store.insert_ref(
+        kind="paper", slug="batch-first", title="First", provider="manual"
+    )
+    second = store.insert_ref(
+        kind="paper", slug="batch-second", title="Second", provider="manual"
+    )
+    for ref in (first, second):
+        runtime_with_store.dispatch(
+            "tag", {"kind": "paper", "id": ref.id, "add": ["old-reading-list"]}
+        )
+    ids: list[str | int] = [f"pa{first.id}", f"pa{second.id}"]
+    kind = {"kind": "paper"} if explicit_kind else {}
+    if explicit_kind:
+        ids.extend(["batch-first", second.id])
+    else:
+        ids.append("batch-first")
+    out = runtime_with_store.dispatch(
+        "tag",
+        {
+            **kind,
+            "id": ids,
+            "add": ["aixmat-2026"],
+            "remove": ["old-reading-list"],
+            "reason": "  conference reading list  ",
+        },
+    )
+    assert "tagged 2 paper refs in one transaction" in out
+    assert out.count("batch-first") == 1
+    assert out.count("batch-second") == 1
+    for ref in (first, second):
+        tags = {tag.value for tag in store.tags_for(ref.id)}
+        assert "aixmat-2026" in tags
+        assert "old-reading-list" not in tags
+        assert _reason_events(store, ref.id, "retagged") == ["conference reading list"]
+
+
+def test_paper_tag_batch_rejects_empty_list(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch(
+        "tag", {"kind": "paper", "id": [], "add": ["aixmat-2026"]}
+    )
+    assert "[error:BadInput]" in out
+    assert "id=[] is empty" in out
+
+
+def test_paper_tag_batch_rejects_missing_paper_before_writes(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(
+        kind="paper", slug="batch-first", title="First", provider="manual"
+    )
+    out = runtime_with_store.dispatch(
+        "tag",
+        {
+            "kind": "paper",
+            "id": [ref.id, "absent-paper"],
+            "add": ["aixmat-2026"],
+            "reason": "conference reading list",
+        },
+    )
+    assert "[error:NotFound]" in out
+    assert "absent-paper" in out
+    assert "aixmat-2026" not in {tag.value for tag in store.tags_for(ref.id)}
+    assert _reason_events(store, ref.id, "retagged") == []
 
 
 def test_reasonless_writes_leave_no_audit_rows(

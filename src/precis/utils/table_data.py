@@ -58,8 +58,10 @@ _ID_FULL_RE = re.compile(rf"^(?:{TABLE_ID_PATTERN})$")
 _SEL_FULL_RE = re.compile(rf"^(?:{TABLE_SEL_PATTERN})$")
 
 #: ``meta.table.columns`` entries may carry these keys (only ``name`` is
-#: required; ``formula``/``from``/``role``/``key`` land semantics in later
-#: slices — the schema accepts and preserves them now).
+#: required; ``formula``/``key`` have live semantics, ``role`` is
+#: accepted-and-preserved for a later slice, and ``from`` — a pulled
+#: column — refuses at write until slice 3a's resolver lands: accepting
+#: it minted an empty column nothing could fill (gr685370)).
 _COLUMN_KEYS = frozenset(
     {"id", "pos", "name", "type", "unit", "formula", "from", "role", "key", "align"}
 )
@@ -119,8 +121,9 @@ def fresh_table_id(used: Iterable[str], *, avoid: Iterable[str] = ()) -> str:
 
 def _normalize_column(col: Any, i: int) -> dict[str, Any]:
     """Validate one caller-supplied ``columns`` entry (an ``{id?, pos?,
-    name, type?, unit?, formula?, from?, role?, key?, align?}`` dict);
-    returns a shallow copy with only known keys."""
+    name, type?, unit?, formula?, role?, key?, align?}`` dict —
+    ``from``/pulled columns refuse, they aren't built yet); returns a
+    shallow copy with only known keys."""
     nxt = "columns=[{'name': 'gap_eV', 'type': 'number', 'unit': 'eV'}]"
     if not isinstance(col, dict):
         raise BadInput(f"table.columns[{i}] must be an object", next=nxt)
@@ -129,6 +132,12 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
         raise BadInput(
             f"table.columns[{i}] has unknown key(s) {sorted(unknown)}",
             next=f"allowed: {sorted(_COLUMN_KEYS)}",
+        )
+    if col.get("from") is not None:
+        raise BadInput(
+            f"table.columns[{i}].from — pulled columns are not available yet",
+            next="drop the 'from' key — a plain column fills via "
+            "patch=/cell=; a stored one drops with drop_column='<id|name>'",
         )
     name = col.get("name")
     if not isinstance(name, str) or not name:
@@ -146,11 +155,11 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
             f"{sorted(_COLUMN_ALIGNS)}",
             next=nxt,
         )
-    for k in ("id", "pos", "unit", "formula", "from", "role"):
+    for k in ("id", "pos", "unit", "formula", "role"):
         v = col.get(k)
         if v is not None and not isinstance(v, str):
             raise BadInput(f"table.columns[{i}].{k} must be a string", next=nxt)
-    for k in ("name", "id", "pos", "unit", "formula", "from", "role"):
+    for k in ("name", "id", "pos", "unit", "formula", "role"):
         v = col.get(k)
         if isinstance(v, str) and TABLE_CTRL_RE.search(v):
             raise BadInput(
@@ -245,9 +254,10 @@ def normalize_table(obj: Any, *, notes: list[str] | None = None) -> dict[str, An
 
     The canonical shape is ``{header, rows, columns, rowmeta}``:
 
-    - ``columns`` — ``[{id, pos, name, type?, unit?, formula?, from?,
-      role?, key?, align?}]``, the column schema; ``name`` is unique per
-      table so a column may be named by id or name.
+    - ``columns`` — ``[{id, pos, name, type?, unit?, formula?, role?,
+      key?, align?}]``, the column schema; ``name`` is unique per
+      table so a column may be named by id or name. A ``from`` key
+      (pulled column) refuses — pulls aren't built yet.
     - ``rowmeta`` — ``[{id, pos}]``, parallel to ``rows`` (row identity +
       order live here, cells in ``rows``).
     - ``header`` — the derived column-name list kept for back-compat

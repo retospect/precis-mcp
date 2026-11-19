@@ -14,7 +14,7 @@ around again. This chapter is about seeing what it did.
 
 ## The dashboard
 
-Open a quest from **Browse → Quests**, or go to `/refs/quest/<id>`.
+Open a quest from the **Quests** nav link, or go to `/refs/quest/<id>`.
 Reading top to bottom:
 
 **Header** — the striving itself, its status and priority, and a

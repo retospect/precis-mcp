@@ -20,19 +20,14 @@ Each fire:
   ``op`` node of a :data:`_BUILD_OPS` type under the root, non-terminal,
   whose ``task_class`` resolves to ``code``. A chain parked on the
   sha-in-prod gate, on validate or on the non-blocking review holds no
-  slot (gr584410). Of the unlanded chains only those whose build is
-  **live** hold a slot (gr687946): a non-terminal job, a ``claimed-by:``
-  tag, or doable by ``plan_dispatch``'s own predicate
-  (``plan_dispatch.live_nodes``: open, no ``ask-user``, ``waiting-for:*``,
-  ``child-failed:*``, ``halt``, ``rescue:`` or ``hold:no-dispatch`` tag on
-  it or an ancestor, not blocked, not paused, and not waiting in
-  ``plan_dispatch``'s file-overlap hold on a started build). A parked
-  build — a rescue ask answered and never re-armed, a spent ladder,
-  ``STATUS:paused``, a child-failed bubble, a build held behind another
-  build's files (gr701628) — holds none, so idle build hosts get work. Capacity
-  = the summed ``cap`` of the enabled lanes that fit the ``code`` task
-  class (``plans/lanes.py``). Slots = capacity minus live chains — one
-  tick may fill every free build slot. Parked work costs no seat and
+  slot (gr584410). Only running jobs and explicit claims count as live
+  in the census. Every doable node is queued, including builds waiting
+  on file overlap; the executor skips held builds and takes the next
+  job by score. Capacity is the free executor supply on live code-capable
+  hosts, using the claim loop's caps and reservations. Mint up to
+  ``factory.gripe_dispatch.queue_depth`` (default 2) queued builds per
+  free slot, less already queued builds (gr702610). This bounds how much
+  gripe text is frozen ahead of execution. Parked work costs no seat and
   is never thrown away by a timer (Reto 2026-11-16: "put a todo on the
   thing, park the branch, use the slot otherwise"), so the count of
   parked chains is no longer a brake: :data:`MAX_PARKED_KEY` (default
@@ -46,8 +41,8 @@ Each fire:
   quota/rate/budget/transport classes, ``failure_class=infra``, a host
   refusal) across at least two build nodes, ONE ask-user todo names the
   lane or host, the cause and the job ids, and new builds stop going to
-  it: its cap leaves :func:`lane_capacity` and ``lanes.lane_backoffs``
-  holds it out of every lane pick. Every other lane and host keeps
+  it: ``lanes.lane_backoffs`` holds it out of every lane pick and its
+  host out of the claim. Every other lane and host keeps
   dispatching. Closing the ask resets the breaker.
 * **Stall sweep** (:func:`sweep_stalled`, before minting). A parked chain
   whose whole plan has stalled — no node under the root is live (a build
@@ -68,7 +63,10 @@ Each fire:
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
   2026-11-10), waiting :data:`_MIN_AGE_MINUTES`
   since the latest ``STATUS:triaged`` or fix-class attachment (filing
-  time only if neither timestamp is known), with no live todo
+  time only if neither timestamp is known), with no open ``blocked-by``
+  target of any kind — a todo or gripe blocker that has not reached a
+  blocker-terminal STATUS holds the gripe out of dispatch, and it
+  returns once the blocker closes (gr656970) —, with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
   holds the gripe out, gr609044), none
@@ -129,10 +127,15 @@ Each fire:
   and the mint/write gates downstream still refuse a build that
   actually writes a deny path (gr645524).
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
-  (unpinned: the build picks its lane at dispatch, devin first by table
-  order) and one ``dispatch:`` comment on the gripe naming the root. The
+  (unpinned: the build picks its cheapest fitting free lane at claim)
+  and one ``dispatch:`` comment on the gripe naming the root. The
   ``related-to`` link the template writes is the idempotency marker: a
-  re-fire sees the gripe linked and skips it, so a doubled tick converges.
+  re-fire sees the gripe linked and skips it, so a doubled tick
+  converges. The pick's ``blocked-by`` read re-runs at each mint — a
+  blocker linked between the candidate query and the mint holds the
+  chain back (gr656970) — and again on the queued build's claim, which
+  follows the ``related-to`` edge back to the gripe
+  (:func:`precis.workers.executors._common.build_blocked_holds`).
 
 The pass bills no model call and holds no transaction across the mint
 (each mint is the template's own transaction).
@@ -155,7 +158,8 @@ from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
+from precis.todo.blocked import open_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
@@ -324,6 +328,8 @@ def lane_capacity(
     store: Store | None, lanes: tuple[_lanes.Lane, ...] | None = None
 ) -> int:
     """Summed cap of the enabled lanes that fit the build's task class —
+    no longer the minting capacity (free executor slots are:
+    :func:`build_queue_supply`); kept for diagnostics —
     less a lane the breaker holds out (:mod:`precis.plans.lane_breaker`:
     its newest builds all died of one engine cause and an ask is open)."""
     table = _lanes.load_lanes(store) if lanes is None else lanes
@@ -344,8 +350,9 @@ class Chain:
     #: Non-terminal :data:`_BUILD_OPS` nodes of the chain (task class code).
     build_ids: tuple[int, ...]
     #: Some build node is live (:func:`precis.workers.job_types.
-    #: plan_dispatch.live_nodes`: not parked, not file-overlap held) and
-    #: so holds a build slot.
+    #: plan_dispatch.live_nodes`): a running job or an explicit claim. A
+    #: queued, undispatched or file-overlap-held build is not live; it
+    #: counts as parked in the census (:data:`MAX_PARKED_KEY`).
     live: bool
     #: Every todo of the plan (tagged ``plan:<root>``, root included).
     plan_ids: tuple[int, ...] = ()
@@ -439,10 +446,11 @@ def _unlanded_chains(
 
 
 def chains(store: Store) -> list[Chain]:
-    """Every unlanded chain, each marked live or parked. Liveness is
-    ``plan_dispatch``'s own predicate (a live job, a ``claimed-by:`` tag,
-    or a doable node the file-overlap hold is not skipping); a load failure reads every chain live — the
-    pre-gr687946 count — so a blip never over-mints."""
+    """Every unlanded chain, marked running or waiting/parked.
+
+    A load failure conservatively reads every chain live. Queue supply is
+    counted separately, so a waiting chain never consumes an executor slot.
+    """
     rows = _unlanded_chains(store)
     if not rows:
         return []
@@ -875,6 +883,14 @@ def _candidate_picks(
            AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
                             WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
                               AND h.value = ANY(%s))
+           AND NOT EXISTS (SELECT 1 FROM links bl JOIN refs bt ON bt.ref_id = bl.dst_ref_id
+                            WHERE bl.src_ref_id = r.ref_id AND bl.relation = 'blocked-by'
+                              AND bt.retired_at IS NULL
+                              AND COALESCE((SELECT t.value FROM ref_tags rt
+                                                    JOIN tags t ON t.tag_id = rt.tag_id
+                                             WHERE rt.ref_id = bt.ref_id
+                                               AND t.namespace = 'STATUS' LIMIT 1),
+                                           'open') NOT IN {blocker_terminal_sql()})
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
                             WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
                               AND t.kind = 'todo' AND t.retired_at IS NULL
@@ -916,8 +932,69 @@ def _candidate_picks(
     ]
 
 
+def build_queue_supply(store: Store) -> tuple[int, int]:
+    """Free host executor slots and queued builds; lane caps are not capacity.
+
+    Use the claimer's live host advertisements, executor cap and reserved
+    bands. An unavailable host contributes nothing, and a queued or held
+    build consumes no running slot.
+    """
+    from precis.workers.executors import _common as claims
+    from precis.workers.service_config import ServiceConfigResolver
+
+    with store.pool.connection() as conn:
+        advertised = claims.advertised_by_host(conn)
+        build_cap = claims.job_type_running_caps(conn).get("run_slice")
+        free = 0
+        for host, tokens in advertised.items():
+            if "builder" not in tokens:
+                continue
+            if not ServiceConfigResolver(store, host).enabled(
+                "job_ssh_node", default_on=True
+            ):
+                continue
+            if claims.reserve_active(conn, host):
+                continue
+            cap, reserve = claims.executor_lane_limits(conn, "ssh_node", host)
+            if cap is None:
+                continue
+            rows = conn.execute(
+                "SELECT r.meta->>'job_type', count(*) FROM refs r "
+                "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+                "JOIN tags t USING (tag_id) WHERE r.kind = 'job' "
+                "AND r.retired_at IS NULL AND r.meta->>'executor' = 'ssh_node' "
+                "AND r.meta->>'lease_host' = %s "
+                "AND t.namespace = 'STATUS' AND t.value = 'running' GROUP BY 1",
+                (host,),
+            ).fetchall()
+            running = {str(jt): int(n) for jt, n in rows}
+            total = sum(running.values())
+            own = reserve.get("run_slice", 0)
+            available = max(cap - (sum(reserve.values()) - own) - total, 0)
+            available = max(available, own - running.get("run_slice", 0))
+            available = max(0, min(cap - total, available))
+            if build_cap is not None:
+                available = min(
+                    available, max(build_cap - running.get("run_slice", 0), 0)
+                )
+            free += available
+        row = conn.execute(
+            "SELECT count(*) FROM refs r JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t USING (tag_id) WHERE r.kind = 'job' "
+            "AND r.retired_at IS NULL AND r.meta->>'job_type' = 'run_slice' "
+            "AND EXISTS (SELECT 1 FROM refs b WHERE b.ref_id = r.parent_id "
+            "AND b.retired_at IS NULL AND NOT COALESCE(b.meta ? 'generate', FALSE) "
+            "AND NOT EXISTS (SELECT 1 FROM ref_tags bt JOIN tags s USING (tag_id) "
+            "WHERE bt.ref_id = b.ref_id AND s.namespace = 'STATUS' "
+            "AND s.value = ANY(%s))) "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (sorted(TERMINAL_TODO_STATUSES),),
+        ).fetchone()
+    return free, int(row[0]) if row else 0
+
+
 def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchResult:
-    """One fire: free slots → candidates → one chain each. ``claimed`` is
+    """One fire: queue deficit → candidates → one chain each. ``claimed`` is
     the number of gripes the tick tried, ``ok`` the chains minted."""
     if not gripe_dispatch_enabled(store, host=host):
         log.info("gripe_dispatch: dark — no live service_config row; no-op")
@@ -938,15 +1015,22 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # of one engine cause stops taking builds (its ask is the only record),
     # before the capacity below is read.
     breaker = _run_breaker(store)
-    capacity = lane_capacity(store)
+    from precis.workers.job_types.plan_dispatch import enqueue_roots
+
     census = chains(store)
     # gr687946: ask about stalled chains — nothing is closed, nothing thrown
-    # away; the ask keeps the chain out of the next sweep.
+    # away; the ask keeps the chain out of the next sweep. Before the
+    # enqueue below: its fresh job stamps would read as plan movement.
     stalled = sweep_stalled(store, [c for c in census if not c.live])
+    enqueue_roots(store, [c.root_id for c in census])
+    capacity, queued = build_queue_supply(store)
     open_chains = sum(1 for c in census if c.live)
     parked = sum(1 for c in census if not c.live)
     cap_parked = max_parked(store)
-    slots = max(capacity - open_chains, 0)
+    depth = max(
+        1, psettings.get_int("factory.gripe_dispatch.queue_depth", store=store) or 2
+    )
+    slots = max(depth * capacity - queued, 0)
     parked_full = parked >= cap_parked
     if parked_full:
         log.info(
@@ -974,6 +1058,9 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     ]
     extra: dict[str, Any] = {
         "lane_capacity": capacity,
+        "free_executor_slots": capacity,
+        "queued_builds": queued,
+        "queue_depth": depth,
         "open_chains": open_chains,
         "parked": parked,
         "max_parked": cap_parked,
@@ -989,6 +1076,19 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # own posture (the mint gates fail closed downstream).
     deny = _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
     for c in picks:
+        # gr656970: the candidate read judged ``blocked-by`` at pick
+        # time — a blocker linked between then and the mint still holds
+        # the chain; the read re-runs here, and ``candidates`` skips the
+        # gripe next pass until the blocker closes. The claim re-gates
+        # it too (``executors._common.build_blocked_holds`` follows the
+        # chain's ``related-to`` edge back to the gripe).
+        if open_blocked_by(store, [c.gripe_id]):
+            log.info(
+                "gripe_dispatch: gr%d blocked since the pick — no mint",
+                c.gripe_id,
+            )
+            extra.setdefault("held", []).append(c.gripe_id)
+            continue
         # gr645163: work no builder lane may write — the report asks to
         # write a deny path, or the fix is prod-graph only — skips the
         # chain and files the one coordinator ask with the report
@@ -1060,11 +1160,13 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
             log.warning(
                 "gripe_dispatch: comment on gr%d failed", c.gripe_id, exc_info=True
             )
+    enqueue_roots(store, [m["root"] for m in extra["minted"]])
     log.info(
-        "gripe_dispatch: capacity=%d open=%d parked=%d slots=%d minted=%d failed=%d",
+        "gripe_dispatch: capacity=%d open=%d parked=%d queued=%d slots=%d minted=%d failed=%d",
         capacity,
         open_chains,
         parked,
+        queued,
         slots,
         ok,
         failed,

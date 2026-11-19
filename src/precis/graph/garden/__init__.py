@@ -141,6 +141,8 @@ Review rows and trust acts retain the original model string.
    closes it with a ``resolved:`` comment once the deterministic pass
    holds (gr561873).
 
+Grounding audits pin provisional coverage to content SHA and retry paused windows.
+
 **Memory reconciliation.** Memory candidates (including ``dup_pair``) and
 interactive ``precis-make-memory`` share packaged memory-help policy via
 :mod:`precis.utils.memory_reconcile`. Proposer, consumer and sampled reviewers

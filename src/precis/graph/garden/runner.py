@@ -284,6 +284,21 @@ def run_garden_tick(
     def _one(cand: GardenCandidate) -> bool:
         """Propose one candidate; True when a proposal row was written.
         Sets ``out.paused`` on a window-scoped pause."""
+        if cand.detector == "grounding_audit":
+            from precis.graph.garden.grounding import GroundingPaused, audit_candidate
+
+            try:
+                audit_id = audit_candidate(store, cand)
+            except GroundingPaused:
+                out.paused = True
+                return False
+            if audit_id is None:
+                return False
+            out.proposals += 1
+            out.proposals_by_detector[cand.detector] = (
+                out.proposals_by_detector.get(cand.detector, 0) + 1
+            )
+            return True
         prompt_version = (
             MEMORY_PROMPT_VERSION
             if uses_memory_policy(cand.detector, cand.evidence, cand.payload)
@@ -430,6 +445,11 @@ def run_garden_tick(
                 _one(queue.popleft())
             if not turned:
                 break
+    if out.paused or queues.get("grounding_audit"):
+        from precis.graph.garden.grounding import CURSOR_KEY
+
+        # An omitted cursor carries the saved window forward for retry.
+        out.cursors.pop(CURSOR_KEY, None)
     return out
 
 

@@ -170,6 +170,7 @@ class TestClaimStubs:
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
         assert stubs[0].doi == "10.1234/a"
+        assert stubs[0].title == "An Example Paper"
         assert stubs[0].cite_key == "smith2024example"
 
     def test_multi_identifier_does_not_raise_cardinality(self, store: Store) -> None:
@@ -2702,6 +2703,9 @@ class TestTryEuropepmc:
 class TestRunCascade:
     @pytest.fixture(autouse=True)
     def _enable_oa_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # These orchestration tests download synthetic magic bytes, not
+        # readable PDFs. Real PDF identity checks live in test_fetch_title_guard.
+        monkeypatch.setattr(fetch_oa, "_pdf_title_warnings", lambda *args: [])
         # run_oa_fetch_pass is env-gated (PRECIS_OA_FETCH) so the
         # fetcher only runs on one cluster host. Enable it for the
         # cascade tests; the off-by-default behaviour has its own test.

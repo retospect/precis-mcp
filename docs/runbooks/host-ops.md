@@ -30,6 +30,15 @@ Allow line pending Reto in `.claude/settings.json`, next to
 | `play` | The pinned-checkout ansible wrapper: refuses unless `PROD_CHECKOUT` (same `<main-checkout>-prod` derivation / `PRECIS_PROD_CHECKOUT` override as pin-prod) is exactly `origin/prod` (after a fetch), clean, and contains the host-lanes commit `932364d0a` (`HOST_LANES_SHA` env overrides the gate sha). <!-- sha-gate: allow — a gate value the play wrapper checks, not a freshness stamp --> Then runs `ansible-playbook -i <overlay hosts.yml> --vault-password-file deploy/.vault-pass -e precis_{worker,web,embedder}_git_ref=<prod sha> "$@"` from `$PROD_CHECKOUT/deploy` — the SHA_ARGS pin is what keeps a playbook from installing `main` (the 2026-10-15 local-serving-node venv break came from a run out of the main checkout). |
 | `nas-hostkey-check` | ssh-keyscan the NAS (`nas_host`:`nas_ssh_port` from the overlay) and compare the offered ed25519/ecdsa host-key SHA256 fingerprints to the `nas_hostkey_sha256_*` overlay pins. rc 0 = every pinned type prints `OK`; `MISMATCH`/`MISSING`/unreachable exits 1. A scanned type with no pin prints `UNPINNED <type> SHA256:…` — the line to copy into the overlay. |
 
+## Hand-running a play
+
+`scripts/deploy` renders only `redeploy-precis.yml`; every other play is
+applied by hand through `play`, with its own traps (pgbouncer drops every
+client even at `changed=0`, autocatpath needs its wheels passed
+explicitly, macOS groups/handlers/plists, overlay discipline). The fixed
+checklist is the `host-play` skill (`src/precis/data/skills/host-play.md`)
+— read it before the first hand-run play, not after the first outage.
+
 ## OS-update run order
 
 the GPU node → the second DGX node → the local-serving node, strictly one host at a time — the reserve CLI

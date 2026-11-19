@@ -126,9 +126,11 @@
        Identity keys (email/API-key contacts) are vault-overridden via
        precis_identity_env (gr204873). #}
     {# One environment for web and public MCP. Daemon guards win last, so a
-       shared setting cannot enable auto-migration or replace its token. #}
-    {% set oauth_env = precis_mcp_public_oauth_env | default({}) if precis_mcp_public_enabled | default(false) else {} %}
-    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({})) | combine(oauth_env) | combine(precis_web_daemon_env | default({}))).items() if env_key not in ['PRECIS_DATABASE_URL', 'PRECIS_PROCESS', 'PRECIS_SOURCE'] %}
+       shared setting cannot enable auto-migration or replace its token. The
+       OAuth settings and the accepted MCP credential classes ride together:
+       the web account page reads the classes, the public daemon enforces them. #}
+    {% set public_mcp_env = (precis_mcp_public_oauth_env | default({}) | combine({'PRECIS_MCP_CREDENTIAL_CLASSES': precis_mcp_public_credential_classes | default('oauth') | string})) if precis_mcp_public_enabled | default(false) else {} %}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({})) | combine(public_mcp_env) | combine(precis_web_daemon_env | default({}))).items() if env_key not in ['PRECIS_DATABASE_URL', 'PRECIS_PROCESS', 'PRECIS_SOURCE'] %}
     <key>{{ env_key }}</key>
     <string>{{ env_val | string | e }}</string>
     {% endfor %}

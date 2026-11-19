@@ -12,16 +12,16 @@ answers:
 applies-to: get/put/edit/search (kind='checklist'); put (kind='todo' with auto_check checklist_clean)
 status: active
 tags: [workflow, design]
-kinds: [checklist, pcb, todo]
+kinds: [checklist, pcb, memory, todo]
 ---
 
 # precis-checklist-help — argued, invalidating check ledgers
 
 A checklist is a named set of **items**, each stating the failure it
-prevents. A target (a `pcb` design today; cad, se, deploy later) is
-**assigned** checklists, and per-target **verdicts** accumulate in an
-append-only ledger instead of restarting on every review. Two kinds of
-item, deliberately distinct:
+prevents. A target (a `pcb` design or a `memory` node today; cad, se,
+deploy later) is **assigned** checklists, and per-target **verdicts**
+accumulate in an append-only ledger instead of restarting on every
+review. Two kinds of item, deliberately distinct:
 
 - **tool** items bridge to the target kind's own encoded rules (DRC,
   route status, netlist exceptions). Their status is read **live** off
@@ -110,9 +110,14 @@ edit(kind='checklist', id='pcb-tapeout', target='pcb:sensor-node',
   defaults to human (sticky); `origin='machine'` marks a disposable
   verdict an automated pass produced.
 
-Kinds without a fingerprint bridge accept an opaque `fingerprint='…'`
-string instead of `anchors`; pass the same string to `get(...,
-fingerprint=...)` to detect change yourself.
+Kinds with a fingerprint bridge — `pcb` and `memory` — compute the
+fingerprint for you: on a pcb over the anchored sub-objects, on a memory
+node over the root's body plus its `part-of` subtree, so a verdict on a
+plan root goes stale when any section under it moves. A memory target
+takes the handle form `memory:me<id>` (e.g. `memory:me676794`) and does
+not accept `anchors=`. Kinds without a bridge accept an opaque
+`fingerprint='…'` string instead of `anchors`; pass the same string to
+`get(..., fingerprint=...)` to detect change yourself.
 
 ## Forget machine verdicts so a pass re-derives them
 

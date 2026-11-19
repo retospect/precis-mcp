@@ -327,8 +327,11 @@ def test_a_secret_scan_hit_withholds_the_push_and_keeps_the_snapshot_local(
     # same-host resume works from it; no other host can see it
     run_slice._ensure_worktree(rig.a, TD, keep_wip=True, saved_head=rec["head"])
     assert _rg(tree, "rev-parse", "HEAD") == rec["head"]
-    b_tree = run_slice._ensure_worktree(rig.b, TD, keep_wip=True)
-    assert _rg(b_tree, "rev-parse", "HEAD") == rig.main
+    # no other host can see it: td702498 refuses the parked resume there
+    # rather than silently cutting a fresh build from origin/main
+    with pytest.raises(RuntimeError, match="resume on the saving host"):
+        run_slice._ensure_worktree(rig.b, TD, keep_wip=True, saved_head=rec["head"])
+    assert not (run_slice.worktrees_dir(rig.b) / run_slice.slice_name(TD)).exists()
 
 
 def test_a_hit_in_committed_work_withholds_too_and_the_job_event_says_so(

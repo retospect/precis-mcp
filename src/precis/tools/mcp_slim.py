@@ -175,7 +175,9 @@ def _removed_search_arg_error(
         # the other:-tail next: call is issued with the same filters
         # plus args={'page': N+1} (td595880). The sort=/since=/until=
         # source-search primitive pages the same way (gr608577), and so
-        # does the todo reto-queue window (gr673370).
+        # does the todo reto-queue window (gr673370). view='toc' pages
+        # its tag forest too (gr692939) — the footer's own next: call
+        # must replay, with or without a q narrowing.
         count_view = str(kwargs.get("view") or args.get("view") or "").strip() == (
             "count"
         )
@@ -221,15 +223,20 @@ def _reto_queue_call(kind: Any, kwargs: dict[str, Any], args: dict[str, Any]) ->
 def _memory_listing_call(
     kind: Any, kwargs: dict[str, Any], args: dict[str, Any]
 ) -> bool:
-    """True for memory's q-less ``index`` and ``reads`` listings.
+    """True for memory's bounded-enumeration listings.
 
-    These bounded inventories take ``args={'page': N}`` (gr538490,
-    gr563563). ``q='*'`` folds to no-q, so it exempts too; a real query
-    stays on the no-paginate refusal.
+    ``view='index'`` and ``view='reads'`` take ``args={'page': N}``
+    (gr538490, gr563563). ``q='*'`` folds to no-q, so it exempts too; a
+    real query stays on the no-paginate refusal — those views rank.
+    ``view='toc'`` always pages (gr692939): its forest is a bounded
+    enumeration and its ``q=`` narrows that enumeration rather than
+    ranking it, so the listing pages with or without a query.
     """
     if not (isinstance(kind, str) and kind.strip().lower() == "memory"):
         return False
     view = kwargs.get("view") or args.get("view")
+    if view == "toc":
+        return True
     if view not in ("index", "reads"):
         return False
     q = kwargs.get("q") or args.get("q")

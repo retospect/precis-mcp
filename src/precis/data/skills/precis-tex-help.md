@@ -229,3 +229,7 @@ put(
 - [[precis-paper-help]] — citation-graph navigation
 - [[precis-markdown-help]] — .md block grammar for prose notes
 - [[precis-search-help]] — search mechanics
+
+## Preview a deletion
+
+`delete(kind='tex', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview deleting the whole file; a preview needs no confirmation.

@@ -41,13 +41,17 @@ put(kind="taxon",
           "canonical_unit": "1/s", "aliases": ["TOF"]})
 ```
 
-`text` is `<name> — <definition>` (em-dash, en-dash or newline between). The
-definition becomes the searchable card, so write it to be matched by meaning,
-not by the name.
+`text` is `<name> — <definition>`: an em-dash, a whitespace-surrounded
+en-dash or a newline splits the two — an unspaced en-dash inside a name
+(`Lennard–Jones`) stays in the name. The definition becomes the searchable
+card, so write it to be matched by meaning, not by the name.
 
 A put that looks like an existing node is refused, naming it (`tn12 turnover
 frequency (rate/turnover-frequency)`) with the reason. Candidates are: same
-name, alias or slug as the new node's name or aliases; then, when the
+name or alias as the new node's name or aliases, with case and separators
+folded (`dedupe-turnover` == `dedupe turnover`) but symbols kept — a shared
+slug alone is not a duplicate (`DimeNet` and `DimeNet++` both slug to
+`dimenet` and stay distinct); then, when the
 embedder is up, a node whose card is within cosine distance 0.25 (lexical
 only when it is down). A candidate with a different dimension is never
 offered: both nodes carry `dimension_kind` and the kinds differ, or both are
@@ -75,7 +79,7 @@ Only these are accepted; any other key is refused and the allowed set is listed.
 | `dimension_kind` | `si`, `currency`, `count`, `dimensionless`, `scale` or `categorical`; omit if unknown |
 | `si_vector` | seven comma-separated integers (SI base exponents), e.g. `"0,0,-1,0,0,0,0"`. Required with `dimension_kind='si'`, refused without it |
 | `canonical_unit`, `value_type`, `allowed_values`, `standard_ref`, `higher_is_better` | descriptive, stored as given |
-| `display_unit` | the unit people expect for a measurand (`Å`, `eV`, `%`, `µmol h⁻¹ cm⁻²`); measures are stored in SI (`canonical_unit`) and shown in this unit. A unit pint reads with the same dimension as `canonical_unit`; a `canonical_unit` pint cannot convert (`USD`, `pH`) allows only itself. See `precis-measure-help` |
+| `display_unit` | the unit people expect for a measurand (`Å`, `eV`, `%`, `µmol h⁻¹ cm⁻²`); measures are stored in SI (`canonical_unit`) and shown in this unit. A unit pint reads with the same dimension as `canonical_unit`; a named physical constant (`boltzmann_constant` — multiples of k_B, for a `J/K` canonical) is also accepted (gr721110); a `canonical_unit` pint cannot convert (`USD`, `pH`) allows only itself. See `precis-measure-help` |
 | `includes`, `excludes` | lists of non-empty strings: boundary examples that belong, and near-misses that do not (each naming the node it belongs to). Shown on `get`, not searched. How to write them: `precis-classify-help` |
 | `start`, `contract` | `start=true` marks a root; `contract={"required_keys": [...]}` only on a start node |
 | `legacy_source`, `applies_to_ref` | provenance and a pointer to the subject node |
@@ -91,7 +95,8 @@ is the same edge.
 
 ```python
 put(kind="taxon", text="faradaic efficiency — the fraction of charge that goes to the product",
-    meta={"dimension_kind": "dimensionless"},
+    meta={"dimension_kind": "si", "si_vector": "0,0,0,0,0,0,0",
+          "canonical_unit": "dimensionless"},
     link="taxon:12", rel="specialises")
 link(kind="taxon", id=40, target="taxon:12", rel="specialises",
      meta={"axis": "composition"})
@@ -179,8 +184,11 @@ values per axis are shown, the rest as `+N values (M items)`. Narrow with
 In `get`, `search(under=)` and `link(kind='taxon', target='taxon:...')`:
 `42`, `tn42`, `taxon:42`, or a path of names, slugs or aliases joined by `/`
 and never starting with one: `measurand/temperature` means a node
-`temperature` whose parent is `measurand`. A lone `temperature` is a plain
-term lookup. Several matches are refused with each candidate's handle and
+`temperature` whose parent is `measurand`. A slug segment resolves even
+when it drops the name's symbols (`dimenet` still addresses `DimeNet++` —
+and becomes ambiguous once a `DimeNet` node shares the slug). A lone
+`temperature` is a plain term lookup. Several matches are refused with each
+candidate's handle and
 path; no match lists near candidates. A leading `/` is a list view
 (`/unrooted`, `/unmapped`, `/recent`, `/coverage`). A link from another kind
 (`rel='instance-of'`) and create-time `put(link=)` take the id only.
@@ -189,8 +197,10 @@ path; no match lists near candidates. A leading `/` is a list view
 
 `search(kind="taxon", q=...)` matches the name and the definition, lexically
 and by meaning; a word that appears only in the definition finds the node
-even with the embedder down. When nothing matches by name, slug, alias or
-lexically, the first line reads `no taxon named '<q>'; nearest by meaning:` and
+even with the embedder down. A `q` equal to a node's name or alias leads the
+page with `exact: tn12 …`; a slug-only hit (symbols dropped, as `DimeNet`
+vs `DimeNet++`) ranks normally instead. When `q` names no node and nothing
+matches lexically, the first line reads `no taxon named '<q>'; nearest by meaning:` and
 at most 3 semantic hits follow (synonym queries still land).
 
 ```python

@@ -748,6 +748,25 @@ def test_mixed_point_range_does_not_fire_on_negative_number() -> None:
     assert not any("mixed-point-range" in w for w in warnings)
 
 
+def test_mixed_point_range_does_not_fire_on_model_identifier() -> None:
+    # `6-27b` inside `qwen3.6-27b-q8_0` is a model-id hyphen, not a unit
+    # range -- the same `(?<![-\w.])` guard as notation.py's detectors
+    # (gr695785). Without it `70b` misreads as a stray point beside one.
+    warnings = lint_claim_sentence(
+        "Benchmarks find the qwen3.6-27b-q8_0 model beats the 70b baseline."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_identifier_point() -> None:
+    # The bare-point probe is identifier-guarded too: `70b` in `qwen70b`
+    # is part of a model id, not a point beside the 9-12 b range.
+    warnings = lint_claim_sentence(
+        "Benchmarks find throughput spanning 9-12 b, and the qwen70b model leads."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
 # ── all-caps-artifact (gr245768) ──────────────────────────────────────────
 # The taproot extraction LLM (Tier.SMALL) occasionally capitalizes an
 # ordinary common noun ("The GLYMPHATIC system..."); nothing between

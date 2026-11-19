@@ -31,6 +31,7 @@ from precis.taproot.hub import EVIDENCE_SRC_KINDS, PATHWAY_EVIDENCE_KINDS
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import apply_link_ops
 from precis.utils.relations import validate_relation
+from tests._refs import insert_gripe
 
 #: Relations with seeded endpoint, cardinality or cycle constraints.
 SEEDED = frozenset(
@@ -55,6 +56,19 @@ SEEDED = frozenset(
 
 
 def _ref(store: Store, kind: str, title: str, slug: str | None = None) -> int:
+    """``insert_ref`` honouring the kind's addressing: numeric kinds take no
+    slug (``kinds.is_numeric``), slug-addressed ones require one."""
+    if kind == "gripe":  # commit-time STATUS-tag constraint (migration 0176)
+        return insert_gripe(store, title).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT is_numeric FROM kinds WHERE slug = %s", (kind,)
+        ).fetchone()
+    assert row is not None, kind
+    if row[0]:
+        slug = None
+    elif slug is None:
+        slug = title.replace(" ", "-")
     return store.insert_ref(kind=kind, slug=slug, title=title).id
 
 
@@ -63,6 +77,16 @@ def _links(store: Store, src: int) -> list[tuple[int, str]]:
         (link.dst_ref_id, link.relation)
         for link in store.links_for(src, direction="out")
     ]
+
+
+def _read_as(store: Store, ref: int, relation: str) -> set[tuple[int, int, str]]:
+    """Stored rows that read as ``relation`` going out of ``ref``. One row is
+    stored per link; the inverse spelling is a read-time rewrite
+    (``Store.links_for``), not a second row."""
+    return {
+        (link.src_ref_id, link.dst_ref_id, link.relation)
+        for link in store.links_for(ref, direction="out", relation=relation)
+    }
 
 
 @pytest.mark.parametrize("source_kind", ["gripe", "todo", "memory", "markdown"])
@@ -79,7 +103,7 @@ def test_prior_art_endpoints(
     )
     assert (target, relation) in _links(store, source)
     if relation == "inspired-by":
-        assert (source, "inspired") in _links(store, target)
+        assert (source, target, relation) in _read_as(store, target, "inspired")
     else:
         assert _links(store, target) == []
 
@@ -90,7 +114,7 @@ def test_gripe_prior_art_link_and_readback(store: Store, hub: Hub) -> None:
     handler = GripeHandler(hub=hub)
     handler.link(id=source, target=f"pa{target}", rel="inspired-by")
     assert "inspired-by" in handler.get(id=source).body
-    assert (source, "inspired") in _links(store, target)
+    assert (source, target, "inspired-by") in _read_as(store, target, "inspired")
     handler.link(id=source, target=f"pa{target}", rel="inspired-by", mode="remove")
     assert _links(store, source) == _links(store, target) == []
 
@@ -117,7 +141,7 @@ def test_inspired_inverse_write(store: Store) -> None:
     paper = _ref(store, "paper", "prior art", slug="art")
     idea = _ref(store, "todo", "idea")
     apply_link_ops(store, paper, link=f"todo:{idea}", unlink=None, rel="inspired")
-    assert (paper, "inspired-by") in _links(store, idea)
+    assert (paper, idea, "inspired") in _read_as(store, idea, "inspired-by")
 
 
 # ── AC1: the seeded rows ────────────────────────────────────────────

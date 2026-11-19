@@ -57,21 +57,21 @@ is ``draft_eyes.expand_around``.
 
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have
-no roles or per-route ACLs. ``/healthz`` is the probe exemption. ``/podcast``
-self-authenticates and accepts a per-user ``?t=`` token because podcast
-clients handle Basic inconsistently on enclosure URLs. Empty roster → 503
+no roles or per-route ACLs. ``/healthz`` is the probe exemption.
+``/podcast`` self-authenticates only with a per-user ``?t=`` token (podcast
+clients handle Basic inconsistently on enclosure URLs). Empty roster → 503
 with ``precis users add``. State-changing Origin/Referer mismatch → 403:
 Basic has no ``SameSite`` CSRF defense. A signed ``SameSite=Lax`` cookie is
 also accepted because Safari won't replay Basic into iframe subnavigations.
-Presented 401s log login + peer; ``FailureTracker`` locks a login or address
-after 10 failures in 15 min (429 + ``Retry-After``, before scrypt), while
-success clears only the login window. Outermost ``security_headers.py``
+Presented 401s log login + peer; ``FailureTracker`` locks a (login, address)
+pair after 10 failures in 15 min, an address after 50, a login after 100
+(429 + ``Retry-After``, before scrypt); success clears the pair. Outermost ``security_headers.py``
 allows same-origin framing because the UI embeds its own PDF.js viewer;
 ``PRECIS_WEB_AUTH=off`` is local-dev only. ``/account`` handles password,
 profile (ORCID attributed by local nanopubs), sign-out and podcast URL. The
 row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
-deletes the session cookie.
+ends the login's sessions, as does a password change.
 
 **OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` authenticates authorization before reserving capacity.
 
@@ -90,10 +90,14 @@ PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
-(Drive, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
-preset the retired ToDo tab's dashboard list became, gr664410 — the
-``/todo/{id}`` workbench stays per-item — Schedules, Clusters,
-Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,
+(Drive, Design); plain links (Quests → ``/refs/quest``, Clusters,
+Reactions → the ``/rxn`` ledger — kept top-level rather than folded
+into Drive's New form, gr664411). The former Browse ▾ kind presets are
+Drive's sidebar "Saved views" (``drive_views.py``: Drafts, Papers,
+Schedules, Structures, CAD, PCB, Figures, Mermaid, plus the Nanopubs
+workbench link); the Todos ``queue=doable`` preset the retired ToDo
+tab's dashboard list became (gr664410 — the ``/todo/{id}`` workbench
+stays per-item) is a Drive facet. Attention (Needs you, Gripes, Alerts,
 badged); Manual (top-level and unbadged because it is the no-idea-where tab);
 Ops ▾ (System, Categorizers, Agent Logs, Console, Env, Secrets); search submits
 to ``/drive``; "?" launches a tour only when the path matches a manifest

@@ -29,7 +29,10 @@ leg that ran and exited non-zero marks the record `failed` (via
 `scripts/round fail`) — terminal while its journal shows `scripts/deploy`
 never launched, so the next cut supersedes it; a launched rollout's
 `failed` record stays a live partial rollout the leg resumes. A refusal
-before any work — no deployment journal — never marks it.
+before any work — no deployment journal — never marks it, and neither does
+`scripts/deploy` refusing ahead of its reachability ping, before any rollout
+step (exit 75, passed through): `scripts/round deploy` has put the record
+back, so the release stays live and a later --deploy-only r<N> deploys it.
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
@@ -143,6 +146,9 @@ ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
 OPEN_STATES = ("cut", "gating", "fixing", "green")
 DEPLOYING_STATES = ("deploying", "deployed")
+#: `scripts/deploy`'s exit code for a refusal before any rollout step, as
+#: `scripts/round deploy` passes it on (gr730609); a test pins the copies.
+DEPLOY_RC_UNTOUCHED = 75
 # Terminality is a predicate, not a set (gr593418 review): `failed` counts
 # terminal only while its journal shows `scripts/deploy` never launched —
 # no `started_epoch`, no `rollout_at`. A failed record whose rollout
@@ -790,9 +796,12 @@ def live_releases(
 def stale_why(rel: dict[str, Any], prod: str) -> str:
     """The stale-blocker reason for `rel`, or "" when it is not provably
     stale — a deploying/deployed record `round supersede --dry-run`
-    accepts because origin/prod already moved past its pin (gr573151)."""
+    accepts because origin/prod already moved past its pin (gr573151). A
+    `failed` record whose rollout launched is judged the same way
+    (gr724696): prod past its pin makes it a corpse, not a partial rollout
+    to resume; the verb refuses a terminal `failed` one."""
     if not (
-        rel.get("state") in DEPLOYING_STATES
+        rel.get("state") in (*DEPLOYING_STATES, "failed")
         and not rel.get("cut_pending")
         and rel.get("branch")
     ):
@@ -1861,6 +1870,16 @@ def deploy_and_close(
                 "release finish refused — see the reason above; next: resolve it "
                 "and re-run scripts/round deploy --finish-pointer",
             )
+        if rc == DEPLOY_RC_UNTOUCHED:
+            # gr730609: scripts/deploy refused before any rollout step and
+            # `round deploy` put the record back — there is no failed leg to
+            # mark, and the release must stay live for the re-run.
+            return die(
+                rc,
+                "deploy refused before any rollout — no host was touched and "
+                "the release record is unchanged; resolve the reason above and "
+                "re-run scripts/release (it resumes) or scripts/round deploy",
+            )
         if getattr(args, "deploy_only", ""):
             # gr593418: the deploy leg ran and died — `failed` marks it:
             # terminal while its journal shows `scripts/deploy` never
@@ -2240,8 +2259,11 @@ def report_cut(branch: str = "") -> int:
         else _release_by_state(cur, OPEN_STATES)
     )
     branch = str(rel.get("branch") or branch or f"release/r{cur.get('n')}")
-    head = remote(f"refs/heads/{branch}") or str(rel.get("base") or "")
+    head = remote(f"refs/heads/{branch}")
+    if head is None:  # origin unreadable: the record's base stands in
+        head = str(rel.get("base") or "")
     if not head:
+        # gr724696: absent on origin is not a cut — never the record's base.
         return die(1, f"scripts/release: {branch} has no head on origin after the cut")
     prev = rev("origin/prod")
     n = LANDED_SHA_LEN
@@ -2412,6 +2434,16 @@ def resume(
     branch = str(rel["branch"])
     dep = rel.get("deployment") or {}
     if rel.get("cut_pending"):
+        if getattr(args, "sha", "") and not has:
+            # gr724696: the pending cut pins another sha — reconciling it
+            # would push a branch the caller cannot record as its cut.
+            say(
+                f"release in flight: {branch} (a pending cut at "
+                f"{str(rel.get('base'))[:9]}; drop it with `scripts/round cut "
+                "--abandon`)"
+            )
+            say(f"{s[:9]} rides the next cut")
+            return 0
         say(f"resuming: {branch} has a pending cut — reconciling")
         if args.dry_run:
             say("would reconcile the cut, wait for CI, deploy")
@@ -2476,6 +2508,18 @@ def resume(
                         f"scripts/release: re-cut of {branch} refused — see above",
                     )
             return rc
+        if not has and (
+            getattr(args, "sha", "") or rel.get("state") not in OPEN_STATES
+        ):
+            # gr724696: RELEASE_CUT names the release that ships S. A caller
+            # that asked for S by sha, or a record already past its cut
+            # (deploying, deployed, a failed partial rollout), must not be
+            # handed another release's head as its cut — r333's old base was
+            # gated and nearly deployed that way. Only the no-sha re-run on
+            # this tree's own open release reports it (below).
+            say(f"release in flight: {branch}")
+            say(f"{s[:9]} rides the next cut")
+            return 0
         return 0 if args.dry_run else report_cut(branch)
     if dep.get("converged") and not dep.get("rollout_at"):
         if args.dry_run:

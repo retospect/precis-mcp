@@ -37,6 +37,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from precis.errors import Conflict
 from precis.store import Store, as_background_actor
 from precis.store.types import Tag
 
@@ -120,8 +121,12 @@ def run_watch_pass(
                     len(cited) - max_per_seed,
                 )
             for citing in cited[:max_per_seed]:
-                if _mint_stub(store, citing, seed_slug=seed_slug):
-                    minted += 1
+                try:
+                    if _mint_stub(store, citing, seed_slug=seed_slug):
+                        minted += 1
+                except Conflict as exc:
+                    log.warning("watch_poll: skipping citer for %s: %s", seed_slug, exc)
+                    failed += 1
             # Rotate the seed out so the next pass picks a different
             # salient paper — the dreamer's anti-repeat, reused.
             store.chunks.touch_attended("watch", [chunk_id])

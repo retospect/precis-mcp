@@ -306,8 +306,10 @@ def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
         for g in (dense, sparse, body_hit)
     }
     assert set(qual) == want
-    # the densest lexical match leads
-    assert _h(dense) in qual[0]
+    # best match first: td703300 length-normalises the lexical rank, so the
+    # short chunk that is exactly the query leads and a longer title that
+    # merely repeats a word no longer outranks it
+    assert [c.split("'")[3] for c in qual] == [_h(g) for g in (body_hit, sparse, dense)]
     for g in (off, partial, runbook, linked):
         assert not any(_h(g) in c for c in qual)
 
@@ -798,3 +800,18 @@ def test_hub_eye_over_cap_names_the_members_continuation(
     )
     assert "… truncated" in out
     assert f"next: get(kind='memory', id={root}, view='members')" in out
+
+
+def test_members_page_size(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    members = [_note(handler, f"Member {i}") for i in range(5)]
+    for member in members:
+        _part_of(hub.live_store, member, root)
+    first = handler.get(id=root, view="members", page_size=3)
+    assert len(_member_rows(first.body)) == 3
+    assert _next_offset(first.body) == 3
+    assert "'page_size': 3" in first.body
+    second = handler.get(id=root, view="members", page_size=3, offset=3)
+    assert len(_member_rows(second.body)) == 2
+    assert not set(first.result_ids or []) & set(second.result_ids or [])

@@ -9,10 +9,14 @@ optional). Types:
 - ``sha_in_prod`` — ``value`` a hex sha; met when it is in the recorded
   prod head (``release.prod_head``, read by the wake pass via
   :func:`precis.plans.gates` — the server has no git).
-- ``spec_landed`` — ``value`` a ``docs/backlog/<slug>.md`` path; met when
-  the spec is ready or gone (shipped). The DB-only wake pass cannot see
-  the repo, so it reports the condition "not evaluable here" — a human
-  unparks, or a ``text`` condition covers it.
+- ``spec_landed`` — ``value`` a spec root handle (``me<N>``) or one of
+  its plan/slice todo handles (``td<N>``); met when the resolved todo
+  reaches ``STATUS:done`` — the slice landed. ``won't-do`` and
+  ``auto-timeout`` are terminal for dispatch but are not a landing, so
+  they do not satisfy the condition. Specs live in graph memory (ruling
+  me568168), so a ``me<N>`` value resolves through the spec's
+  ``plan-of`` link to its plan root todo at wake time and the DB-only
+  pass evaluates it from the graph alone (gr696034).
 - ``date`` — ``value`` an ISO-8601 date/datetime; met when UTC now
   reaches it.
 - ``text`` — ``value`` free text; the wake pass asks the cheapest LLM
@@ -20,8 +24,9 @@ optional). Types:
   ``unsure`` counts as not met.
 
 ``until=`` also takes a shorthand string on the parking calls:
-``gr<N>``/``td<N>`` → ``ref_done``, a 9-40-hex sha → ``sha_in_prod``, an
-ISO date → ``date``, anything else → ``text``.
+``gr<N>``/``td<N>`` → ``ref_done``, ``me<N>`` → ``spec_landed``, a 9-40-
+hex sha → ``sha_in_prod``, an ISO date → ``date``, anything else →
+``text``.
 """
 
 from __future__ import annotations
@@ -41,9 +46,9 @@ UNTIL_TYPES: frozenset[str] = frozenset(
 )
 
 _REF_RE = re.compile(r"^(gr|td)(\d+)$", re.IGNORECASE)
+_ME_RE = re.compile(r"^me(\d+)$", re.IGNORECASE)
 _SHA_RE = re.compile(rf"^[0-9a-f]{{{MIN_SHA_LEN},40}}$", re.IGNORECASE)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([Tt ].*)?$")
-_SPEC_RE = re.compile(r"^docs/backlog/[\w.-]+\.md$")
 
 
 def parse_until_date(raw: str) -> datetime:
@@ -76,6 +81,8 @@ def until_shorthand(text: str) -> dict[str, Any]:
         kind, _pk = _ref_kind(s)
         handle = ("gr" if kind == "gripe" else "td") + s[2:]
         return {"type": "ref_done", "value": handle}
+    if (m := _ME_RE.match(s)) is not None:
+        return {"type": "spec_landed", "value": "me" + m.group(1)}
     if _SHA_RE.match(s) and len(s) >= 9:
         return {"type": "sha_in_prod", "value": s.lower()}
     if _DATE_RE.match(s):
@@ -131,12 +138,36 @@ def normalize_until(raw: Any, *, store: Store | None = None) -> dict[str, Any]:
             )
         out["value"] = value.lower()
     elif typ == "spec_landed":
-        if _SPEC_RE.match(value) is None:
-            raise BadInput(
-                f"until spec_landed value {value!r} is not a docs/backlog *.md path",
-                next="until={'type': 'spec_landed', 'value': 'docs/backlog/<slug>.md'}",
-            )
-        out["value"] = value
+        if (m := _ME_RE.match(value)) is not None:
+            if (
+                store is not None
+                and store.get_ref(kind="memory", id=int(m.group(1))) is None
+            ):
+                raise BadInput(
+                    f"until spec_landed: {value} does not exist — "
+                    "park on a live spec root",
+                    next="list candidates: search(kind='memory', "
+                    "tags=['spec:*'], view='toc')",
+                )
+            out["value"] = "me" + m.group(1)
+        else:
+            m = _REF_RE.match(value)
+            if m is None or m.group(1).lower() != "td":
+                which = "is a gripe handle" if m is not None else "is not a spec handle"
+                raise BadInput(
+                    f"until spec_landed value {value!r} {which} — "
+                    "name the spec root (me<N>) or its plan todo (td<N>)",
+                    next="until={'type': 'spec_landed', 'value': 'me<spec root>'}",
+                )
+            ref_id = int(m.group(2))
+            if store is not None and store.get_ref(kind="todo", id=ref_id) is None:
+                raise BadInput(
+                    f"until spec_landed: {value} does not exist — "
+                    "park on a live plan todo",
+                    next="the spec root body names its plan todo: "
+                    "get(kind='memory', id='me<N>')",
+                )
+            out["value"] = f"td{ref_id}"
     elif typ == "date":
         out["value"] = parse_until_date(value).isoformat()
     else:  # text

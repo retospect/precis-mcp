@@ -65,20 +65,37 @@ WIN is a window name (``claude-x``) or a wave NAME (resolved to its
 list, never a shell string. Nothing is stored in the repo except the
 spec-claim commit described next.
 
-Spec claims (gr509461). ``ready`` in docs/backlog means *unclaimed*, so
-``launch`` enforces the convention where the fleet starts work: every
+Spec claims (gr509461, gr696034). ``ready`` in docs/backlog means
+*unclaimed*, so ``launch`` enforces the convention where the fleet
+starts work. Two shapes, one per where the spec lives. A
 ``docs/backlog/<slug>.md`` the brief names and whose front matter is
 still ``status: ready`` is flipped to ``status: in-progress`` +
 ``claimed-by: <name>``, committed on main in the primary checkout and
-pushed — the laptop fixer reads those files on this machine. The new
+pushed — that file convention now covers only the one residual file
+(``se-protein-interface-first.md``); the transferred specs live in
+graph memory, so a brief that names a spec by handle claims the plan
+root todo's ``claimed-by:`` lease instead, through
+``scripts/prod-precis tools``: ``td<N>`` names the plan todo directly
+and ``me<N>`` (the spec root) resolves through its ``plan-of`` link.
+A todo whose claim is refused — already leased by another tree, no
+plan-of todo, unknown id — is skipped with a warning; a failed claim
+never blocks the launch (the inflight purpose/branch check in the
+fixer still covers the tree). The claim calls run under
+``PRECIS_SOURCE=fleet-wave``, an explicit worker source: the lease CAS
+then *refuses* a live lease another tree holds instead of an inherited
+``cli`` default letting an owner-takeover replace it (review td706868).
+The todo lease expires 4 h after its
+last re-assert, so a long build re-claims from its sweep. The new
 tree's ``.claude/purpose`` is seeded with the claim so ``inflight``'s
 PURPOSE column shows it before the builder writes its own line. The
 claim history is an append-only TSV at ``$FLEET_STATE/claims.tsv``.
-``close`` releases: a removed tree's claimed specs flip back to
+``close`` releases: a removed tree's file specs flip back to
 ``ready`` the same way (also when the tree is already gone — the
-abandoned/reaped-unmerged path). A spec that is dirty in the primary,
-not ``ready``, or claimed by another tree is left alone; a flip that
-can't be pushed is rolled back rather than left diverging local main.
+abandoned/reaped-unmerged path), and a graph claim drops its todo
+lease, driven by the ledger rows the claim recorded. A spec that is
+dirty in the primary, not ``ready``, or claimed by another tree is
+left alone; a flip that can't be pushed is rolled back rather than
+left diverging local main.
 ``launch`` also warns (never blocks) when the brief cites a commit that
 is not an ancestor of ``origin/main`` — a cite of unlanded or
 squash-landed work (gr515489, gr515506).
@@ -880,6 +897,13 @@ _NON_SPEC_STEMS = frozenset({"readme", "template", "index"})
 #: Leading ``--- … ---`` front-matter block (same shape as the fixer's
 #: intake parser — kept local, fleet-wave is a standalone script).
 _FM_RE = re.compile(r"\A(---\s*\n)(.*?)(\n---\s*\n)", re.DOTALL)
+#: Graph work-item handles in a brief (gr696034): ``td<N>`` names a plan
+#: todo directly; ``me<N>`` (a spec root) resolves through its
+#: ``plan-of`` link to the plan root todo. Any mention counts as claim
+#: intent — the same loose convention the docs/backlog path form always
+#: had — and a handle that resolves to nothing is skipped with a warning.
+_TODO_HANDLE_RE = re.compile(r"\btd(\d{1,9})\b")
+_MEM_HANDLE_RE = re.compile(r"\bme(\d{1,9})\b")
 
 
 def _git_rc(*argv: str, cwd: Path) -> int:
@@ -988,14 +1012,11 @@ def _claims_ledger(f: Fleet) -> Path:
     return f.state / "claims.tsv"
 
 
-def _ledger_append(f: Fleet, action: str, name: str, slug: str) -> None:
+def _ledger_append(f: Fleet, action: str, name: str, item: str) -> None:
     path = _claims_ledger(f)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(
-            "\t".join([utc_stamp(), action, _tsv(name), f"docs/backlog/{slug}.md"])
-            + "\n"
-        )
+        fh.write("\t".join([utc_stamp(), action, _tsv(name), item]) + "\n")
 
 
 def _sync_main(f: Fleet, what: str) -> bool:
@@ -1061,13 +1082,142 @@ def _commit_to_main(f: Fleet, rel_paths: list[str], msg: str) -> bool:
     return False
 
 
-def _claim_specs(f: Fleet, name: str, brief: str) -> list[str]:
-    """Flip brief-named ``ready`` specs to ``in-progress`` + ``claimed-by``.
+def _spec_claim_cmd() -> list[str]:
+    """The ``precis tools`` command prefix for graph claims: prod by
+    default (spec state lives on the prod graph), ``FLEET_SPEC_CLAIM_CMD``
+    for a test fake (mirrors :func:`_gripe_fix_cmd`)."""
+    override = os.environ.get("FLEET_SPEC_CLAIM_CMD", "")
+    if override:
+        return shlex.split(override)
+    return [str(SCRIPTS / "prod-precis"), "tools"]
+
+
+#: The worker source graph claims run under (review td706868): the
+#: claim-lease CAS (``guards.check_claim_takeover``) reads ``PRECIS_SOURCE``
+#: and treats ``cli`` (the unset default) as owner authority, under which a
+#: live lease another tree holds is *replaced*, not refused. prod-precis
+#: only sets ``PRECIS_CURRENT_SOURCE`` (the route-log label), so without
+#: this the fleet's claims ran as owner.
+CLAIM_SOURCE = "fleet-wave"
+
+
+def _tools_call(args: list[str]) -> tuple[int, str]:
+    """One prod-precis tools call; returns ``(rc, combined output)``.
+
+    Runs under :data:`CLAIM_SOURCE` — an explicit worker source, so the
+    lease CAS refuses a live claim held by another tree instead of an
+    owner-takeover silently replacing it.
+    """
+    env = {**os.environ, "PRECIS_SOURCE": CLAIM_SOURCE}
+    proc = subprocess.run(
+        [*_spec_claim_cmd(), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        env=env,
+    )
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+
+
+def _plan_roots(handle: str) -> list[int]:
+    """The plan-root ``td<N>`` ids a spec root ``me<N>`` resolves to.
+
+    Through the prod CLI — fleet-wave runs ``--no-project`` and cannot
+    import the store. The links view's ``rel`` filter keeps only
+    ``plan-of`` rows, so any ``td`` token in the output is a plan root.
+    """
+    rc, out = _tools_call(
+        [
+            "get",
+            "--kind",
+            "memory",
+            "--id",
+            handle,
+            "--view",
+            "links",
+            "--args",
+            '{"rel": "plan-of", "of_kind": "todo"}',
+        ]
+    )
+    if rc != 0:
+        print(
+            f"fleet-wave: {handle} plan lookup failed — not claimed: {out[:200]}",
+            file=sys.stderr,
+        )
+        return []
+    ids = sorted({int(m.group(1)) for m in _TODO_HANDLE_RE.finditer(out)})
+    if not ids:
+        print(
+            f"fleet-wave: {handle} has no plan-of todo — not claimed",
+            file=sys.stderr,
+        )
+    return ids
+
+
+def _claim_plan_todo(todo_id: int, name: str) -> bool:
+    """Take the ``claimed-by:`` lease on one plan root todo.
+
+    The tag handler is the CAS — a live lease held by another tree
+    refuses, and the refusal (never an exception) is the skip signal.
+    """
+    rc, out = _tools_call(
+        [
+            "tag",
+            "--kind",
+            "todo",
+            "--id",
+            str(todo_id),
+            "--add",
+            f"claimed-by:{name}",
+        ]
+    )
+    if rc != 0:
+        print(
+            f"fleet-wave: td{todo_id} claim refused — not claimed: {out[:200]}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _claim_graph_specs(f: Fleet, name: str, brief: str) -> list[str]:
+    """Claim the plan-root todo leases the brief's graph handles name.
+
+    ``td<N>`` names the todo directly; ``me<N>`` (a spec root) resolves
+    through its ``plan-of`` link. Each claimed todo gets one claims.tsv
+    row keyed ``todo:td<N>`` so ``close`` can drop the lease from the
+    ledger. No handles — no calls: briefs that name only files or
+    gripes never touch the prod CLI.
+    """
+    todo_ids: list[int] = []
+    for handle in dict.fromkeys(_MEM_HANDLE_RE.findall(brief)):
+        for todo_id in _plan_roots(f"me{handle}"):
+            if todo_id not in todo_ids:
+                todo_ids.append(todo_id)
+    for handle in dict.fromkeys(_TODO_HANDLE_RE.findall(brief)):
+        todo_id = int(handle)
+        if todo_id not in todo_ids:
+            todo_ids.append(todo_id)
+    claimed: list[str] = []
+    for todo_id in todo_ids:
+        if not _claim_plan_todo(todo_id, name):
+            continue
+        _ledger_append(f, "claim", name, f"todo:td{todo_id}")
+        claimed.append(f"td{todo_id}")
+    if claimed:
+        print(f"claimed for {name}: {', '.join(claimed)}")
+    return claimed
+
+
+def _claim_file_specs(f: Fleet, name: str, brief: str) -> list[str]:
+    """Flip brief-named ``ready`` file specs to ``in-progress`` + ``claimed-by``.
 
     One commit on main per launch (pushed), plus claims.tsv rows. A spec
     that is missing, not ``ready``, or dirty in the primary checkout is
-    skipped — a failed claim warns but never blocks the launch (the
-    inflight purpose/branch check in the fixer still covers the tree).
+    skipped — the residual file under docs/backlog is the only spec this
+    form can still claim (gr696034: the transferred specs live in graph
+    memory and are claimed on their plan todo instead).
     """
     if not _sync_main(f, "spec claim"):
         return []
@@ -1098,23 +1248,87 @@ def _claim_specs(f: Fleet, name: str, brief: str) -> list[str]:
         _git_rc("checkout", "-q", "--", *rels, cwd=f.main)
         return []
     for slug, _rel, _flipped in flips:
-        _ledger_append(f, "claim", name, slug)
+        _ledger_append(f, "claim", name, f"docs/backlog/{slug}.md")
     print(f"claimed for {name}: {', '.join(s for s, _r, _f in flips)}")
     return [s for s, _r, _f in flips]
+
+
+def _claim_specs(f: Fleet, name: str, brief: str) -> list[str]:
+    """Claim the brief's specs, wherever they live (gr509461, gr696034).
+
+    Returns the display items (``docs/backlog/<slug>.md`` paths and
+    ``td<N>`` handles) for the purpose seed.
+    """
+    claimed = [f"docs/backlog/{s}.md" for s in _claim_file_specs(f, name, brief)]
+    claimed.extend(_claim_graph_specs(f, name, brief))
+    return claimed
+
+
+def _release_graph_claims(f: Fleet, name: str) -> list[str]:
+    """Drop the todo leases this name's open ledger rows recorded.
+
+    Ledger-driven, unlike the file half (which reads the files
+    themselves — a deleted file is simply absent): a todo has no
+    checkout to inspect. The lease may already be gone (expired, or
+    dropped when the todo finished) and the remove then refuses; the
+    release row is still appended — the ledger records the intent and
+    the 4 h TTL reaps the lease row anyway.
+    """
+    path = _claims_ledger(f)
+    if not path.is_file():
+        return []
+    open_items: list[str] = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        parts = ln.split("\t")
+        if len(parts) < 4 or parts[2] != name:
+            continue
+        item = parts[3]
+        if not item.startswith("todo:"):
+            continue
+        if parts[1] == "claim" and item not in open_items:
+            open_items.append(item)
+        elif parts[1] == "release" and item in open_items:
+            open_items.remove(item)
+    released: list[str] = []
+    for item in open_items:
+        rc, out = _tools_call(
+            [
+                "tag",
+                "--kind",
+                "todo",
+                "--id",
+                item.removeprefix("todo:td"),
+                "--remove",
+                f"claimed-by:{name}",
+            ]
+        )
+        if rc != 0:
+            print(
+                f"fleet-wave: {item} release refused: {out[:200]}",
+                file=sys.stderr,
+            )
+        _ledger_append(f, "release", name, item)
+        released.append(item)
+    if released:
+        print(f"unclaimed {name}: {', '.join(released)}")
+    return released
 
 
 def _release_claims(f: Fleet, name: str) -> list[str]:
     """Flip ``name``'s claimed specs back to ``ready``; the un-claim half.
 
-    Driven by the files themselves (``claimed-by: <name>`` + still
-    ``in-progress``), not the ledger — a spec that shipped (deleted) or
-    moved on is simply absent. Called from ``close`` on both removal
-    paths: the tree got reaped by hand (``no tree``) or was just removed
-    here (an abandoned builder lands nothing, so its claim must not
-    starve the fixer and later waves forever).
+    The file half is driven by the files themselves (``claimed-by:
+    <name>`` + still ``in-progress``), not the ledger — a spec that
+    shipped (deleted) or moved on is simply absent. The graph half is
+    the opposite: ledger-driven, since a plan todo lease leaves no file
+    trace. Called from ``close`` on both removal paths: the tree got
+    reaped by hand (``no tree``) or was just removed here (an abandoned
+    builder lands nothing, so its claim must not starve the fixer and
+    later waves forever).
     """
+    released = _release_graph_claims(f, name)
     if not _sync_main(f, "spec unclaim"):
-        return []
+        return released
     flips: list[tuple[str, str, str]] = []
     for path in sorted((f.main / "docs" / "backlog").glob("*.md")):
         try:
@@ -1132,7 +1346,7 @@ def _release_claims(f: Fleet, name: str) -> list[str]:
             continue
         flips.append((path.stem, rel, flipped))
     if not flips:
-        return []
+        return released
     for _slug, rel, flipped in flips:
         (f.main / rel).write_text(flipped, encoding="utf-8")
     rels = [rel for _slug, rel, _flipped in flips]
@@ -1140,11 +1354,12 @@ def _release_claims(f: Fleet, name: str) -> list[str]:
     msg = f"chore(backlog): unclaim {', '.join(slugs)} ({name} closed)"
     if not _commit_to_main(f, rels, msg):
         _git_rc("checkout", "-q", "--", *rels, cwd=f.main)
-        return []
+        return released
     for slug in slugs:
-        _ledger_append(f, "release", name, slug)
+        _ledger_append(f, "release", name, f"docs/backlog/{slug}.md")
     print(f"unclaimed {name}: {', '.join(slugs)}")
-    return slugs
+    released.extend(f"docs/backlog/{s}.md" for s in slugs)
+    return released
 
 
 def _mark_claim_purpose(f: Fleet, name: str, claimed: list[str]) -> None:
@@ -1163,9 +1378,9 @@ def _mark_claim_purpose(f: Fleet, name: str, claimed: list[str]) -> None:
     if not tree.is_dir() or purpose.exists():
         return
     purpose.parent.mkdir(parents=True, exist_ok=True)
-    specs = ", ".join(f"docs/backlog/{s}.md" for s in claimed)
     purpose.write_text(
-        f"{name}: building {specs} (fleet-wave claim)\n", encoding="utf-8"
+        f"{name}: building {', '.join(claimed)} (fleet-wave claim)\n",
+        encoding="utf-8",
     )
 
 

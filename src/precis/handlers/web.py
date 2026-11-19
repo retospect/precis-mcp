@@ -114,6 +114,9 @@ class WebHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _WEB_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "https://example.com/article"
+    # The ``wb<id>`` handle routes by ref id (gr702962) — a slug is a
+    # canonicalised form of the URL, not an address.
+    handle_routes_by_ref_id: ClassVar[bool] = True
 
     # ── canonicalization & cache key ──────────────────────────────────
 
@@ -618,7 +621,12 @@ class WebHandler(CacheBackedHandler):
                     break
         if block is not None:
             return self._render_chunk_selector(
-                slug, block.ord, block.ord, tags=tags, untags=untags, view=view
+                f"{self.spec.kind}:{ref.id}",
+                block.ord,
+                block.ord,
+                tags=tags,
+                untags=untags,
+                view=view,
             )
         return super()._render_named_section(
             ref, slug, section, tags=tags, untags=untags, view=view

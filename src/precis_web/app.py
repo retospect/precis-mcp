@@ -11,6 +11,7 @@ DB connect.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from precis.budget.work_class import WorkClass, work_class_scope
+from precis.mcp_identity import CREDENTIAL_CLASSES_ENV, credential_classes
 from precis_web.access_log import install_access_token_redaction
 from precis_web.bootsha import BOOT_SHA, BOOT_SHA_HEADER
 from precis_web.config import WebConfig
@@ -105,6 +107,12 @@ def create_app(
     from precis.oauth.config import OAuthConfig
 
     app.state.oauth_config = OAuthConfig.from_env()
+    # Which MCP bearer classes this deployment's gate accepts: the account
+    # page only offers to mint the ones that would authenticate. A bad value
+    # fails app start, as it does the daemon.
+    app.state.mcp_credential_classes = credential_classes(
+        os.environ.get(CREDENTIAL_CLASSES_ENV)
+    )
     if runtime is not None:
         app.state.runtime = runtime
 
@@ -131,8 +139,11 @@ def create_app(
     # WebConfig.auth_required for why the dataclass default differs from
     # the from_env default.
     if cfg.auth_required:
-        from precis_web.auth import BasicAuthMiddleware
+        from precis_web.auth import BasicAuthMiddleware, SessionTokens
 
+        # Shared with /account/logout, which sets the sign-out mark on it;
+        # the middleware prefers this instance over its own.
+        app.state.session_tokens = SessionTokens()
         app.add_middleware(BasicAuthMiddleware)
     else:
         log.warning(

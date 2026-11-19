@@ -316,7 +316,13 @@ def run(
     # append avoids the retire/cascade edge cases a wholesale
     # replace would need on a single-section draft.
     store.drafts.add_chunks(
-        ref_id=ref.id, chunk_kind="paragraph", text=body, split=True
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text=body,
+        split=True,
+        # The day's report is machine-appended on the 8h cadence — derived
+        # events stay out of the draft's updated_at clock (gr687836).
+        source={"reason": "doctor-tick", "derived": True},
     )
 
     return DoctorTickOutcome(

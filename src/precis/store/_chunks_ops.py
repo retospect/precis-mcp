@@ -695,8 +695,11 @@ _OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
 #: flattens a ``-negated`` term or a ``"quoted phrase"`` into positive OR
 #: terms, inverting the query's intent. A bare ``or`` needs no guard —
 #: plainto drops it as a stopword, so the retry ORs the same term set
-#: websearch did.
-_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
+#: websearch did. A hyphen before an uppercase letter or digit ('-NH',
+#: '-OH', '-1') is group notation in scientific text, not a negation —
+#: guarding on it silently killed the whole recall fallback (gr681469),
+#: so only a lowercase ``-word`` counts as an operator.
+_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-(?![A-Z0-9])\S')
 
 #: Minimum words before an *unscoped* query earns the OR retry
 #: (gr614169). Inside one ref any multi-word query retries — every term
@@ -705,6 +708,21 @@ _TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
 #: alone); three or more words is where natural-language questions —
 #: and the spread-terms failure the bench measured — begin.
 _OR_RETRY_MIN_WORDS = 3
+
+
+def _lexical_chunk_source(kind: str | None) -> str:
+    """Fetch taxon chunks by ref before applying full-text predicates.
+
+    Taxa are a small fraction of the corpus. OFFSET 0 keeps a long query's
+    OR fallback from driving the join through the corpus-wide tsv index.
+    """
+    if kind == "taxon":
+        return (
+            "refs r CROSS JOIN LATERAL ("
+            "SELECT c.* FROM chunks c WHERE c.ref_id = r.ref_id OFFSET 0"
+            ") c"
+        )
+    return "chunks c JOIN refs r ON r.ref_id = c.ref_id"
 
 
 def _or_retry(q: str, scope_ref_id: int | None) -> bool:
@@ -1437,13 +1455,13 @@ class ChunkStore:
         params.append(offset)
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        source = _lexical_chunk_source(kind if kinds is None else None)
 
         def _sql(tsquery_expr: str) -> str:
             return (
                 f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
                 f"       ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) AS rank "
-                "FROM chunks c "
-                "JOIN refs r ON r.ref_id = c.ref_id, "
+                f"FROM {source}, "
                 f"{tsquery_expr} qq(qq) "
                 f"WHERE {' AND '.join(clauses)} "
                 # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
@@ -1479,8 +1497,7 @@ class ChunkStore:
                     # inherits the stale cap (gr664954, td665127).
                     apply_checkout_budget(conn)
                     probe = conn.execute(
-                        "SELECT EXISTS(SELECT 1 FROM chunks c "
-                        "JOIN refs r ON r.ref_id = c.ref_id, "
+                        f"SELECT EXISTS(SELECT 1 FROM {source}, "
                         "websearch_to_tsquery('english', %s) qq(qq) "
                         f"WHERE {' AND '.join(clauses)})",
                         params[:-2],
@@ -2042,6 +2059,7 @@ class ChunkStore:
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
         or_leg = _or_retry(q, scope_ref_id)
+        lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 
         with self.pool.connection() as conn:
@@ -2052,8 +2070,7 @@ class ChunkStore:
                 # inherits the checkout-time cap (gr664954, td665127).
                 apply_checkout_budget(conn)
                 row = conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM chunks c "
-                    "JOIN refs r ON r.ref_id = c.ref_id, "
+                    f"SELECT EXISTS(SELECT 1 FROM {lexical_source}, "
                     "websearch_to_tsquery('english', %s) qq(qq) "
                     f"WHERE c.tsv @@ qq.qq{where_extra})",
                     [lexical_q(q), *params],
@@ -2082,7 +2099,7 @@ class ChunkStore:
                        row_number() OVER (
                            ORDER BY ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      (SELECT {_OR_TSQUERY}) oq(oq)
                 WHERE c.tsv @@ oq.oq
                       {where_extra}
@@ -2184,7 +2201,7 @@ class ChunkStore:
                            -- search_chunks_lexical (rank ties shuffle).
                            ORDER BY ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      websearch_to_tsquery('english', %s) qq(qq)
                 WHERE c.tsv @@ qq.qq
                       {where_extra}

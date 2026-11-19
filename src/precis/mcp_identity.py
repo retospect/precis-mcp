@@ -13,7 +13,10 @@ never binds a personal principal. Each carries a ``scopes`` allow-list —
 ``read`` (the full ``get``/``search`` read surface, the mint default),
 ``read:<kind>``/``write:<kind>`` for a named kind, and ``feed`` for the
 podcast ``?t=`` credential that was this class's informal first instance
-(its digest migrated here by 0332). On the MCP transport they ride
+(its digest migrated here by 0332). ``feed`` is exclusive (gr730564): a
+token is either the feed URL credential or an MCP bearer, never both, so
+a corpus-read bearer never sits in a URL; mixes are refused at mint and
+a mixed legacy row does not authenticate the feed. On the MCP transport they ride
 ``Authorization: Bearer`` only — the MCP authorization rules and the
 claude.ai connector's own guidance forbid credentials in the query
 string; URL-embedded carriage stays on the ``/podcast`` feed routes,
@@ -43,6 +46,38 @@ TOKEN_PREFIX = "precis_user_"
 _TOKEN_SHAPE = re.compile(r"precis_user_[A-Za-z0-9_-]{43,128}\Z")
 CAP_TOKEN_PREFIX = "precis_cap_"
 _CAP_TOKEN_SHAPE = re.compile(r"precis_cap_[A-Za-z0-9_-]{43,128}\Z")
+
+#: Bearer classes a network MCP gate can accept, and the variable that
+#: narrows them per deployment. The server gate and the web account page
+#: both read it, so the parser lives here.
+CREDENTIAL_CLASSES_ENV = "PRECIS_MCP_CREDENTIAL_CLASSES"
+CREDENTIAL_CLASSES = ("install", "slice", "personal", "capability", "oauth")
+
+
+def credential_classes(value: str | None) -> frozenset[str]:
+    """Parse a ``PRECIS_MCP_CREDENTIAL_CLASSES`` value.
+
+    Names are separated by commas and/or whitespace and case-insensitive.
+    ``None`` or blank means every class (the unrestricted default); an
+    unknown name, or a value that is only separators, raises ``ValueError``
+    naming the variable.
+    """
+    if value is None or not value.strip():
+        return frozenset(CREDENTIAL_CLASSES)
+    names = [n.lower() for n in re.split(r"[,\s]+", value) if n]
+    unknown = [n for n in names if n not in CREDENTIAL_CLASSES]
+    if unknown or not names:
+        problem = (
+            f"unknown credential class {', '.join(map(repr, unknown))}"
+            if unknown
+            else "no credential class named"
+        )
+        raise ValueError(
+            f"{CREDENTIAL_CLASSES_ENV}: {problem}; valid names: "
+            f"{', '.join(CREDENTIAL_CLASSES)}"
+        )
+    return frozenset(names)
+
 
 #: Verbs a capability scope may name — the seven-verb surface, nothing else.
 _READ_VERBS = frozenset({"get", "search"})
@@ -168,7 +203,9 @@ def parse_capability_scopes(text: str | list[str] | tuple[str, ...]) -> tuple[st
     ``read:<kind>`` (the read verbs on one kind), ``write:<kind>``
     (read + ``put``/``edit``/``delete``/``tag``/``link`` on one kind —
     there is no whole-corpus write capability) and ``feed`` (the
-    podcast ``?t=`` credential — no MCP verb). A private kind can never
+    podcast ``?t=`` credential — no MCP verb) which stands alone: it
+    rides in a URL, so combining it with any other scope is refused — mint
+    a separate feed-only token. A private kind can never
     be named: a capability token binds no personal principal, so the
     call would refuse at dispatch — refuse it at mint instead.
     """
@@ -194,7 +231,21 @@ def parse_capability_scopes(text: str | list[str] | tuple[str, ...]) -> tuple[st
                 "consumer, never a person",
                 next="use a personal MCP token or an OAuth connection for private data",
             )
-    return tuple(dict.fromkeys(scopes))
+    unique = tuple(dict.fromkeys(scopes))
+    _refuse_mixed_feed(unique)
+    return unique
+
+
+def _refuse_mixed_feed(scopes: tuple[str, ...]) -> None:
+    """``feed`` stands alone. Shared by the parser and the minter, so a
+    caller that skips the parser cannot mint a mixed token either."""
+    if "feed" in scopes and len(set(scopes)) > 1:
+        raise BadInput(
+            "the feed scope cannot be combined with other scopes — it is "
+            "a URL credential and must never double as an MCP bearer",
+            next="mint a separate feed-only token (scope feed) and a "
+            "second token for the read/write scopes",
+        )
 
 
 def _scope_covers(scope: str, verb: str, kind: str) -> bool:
@@ -242,6 +293,7 @@ def mint_capability_token(
             "capability token needs at least one scope",
             next="use read, read:<kind>, write:<kind> or feed",
         )
+    _refuse_mixed_feed(scopes)
     raw = CAP_TOKEN_PREFIX + secrets.token_urlsafe(32)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     with store.pool.connection() as conn:

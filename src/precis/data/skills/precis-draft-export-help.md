@@ -40,6 +40,18 @@ Pull the same lists any time without exporting:
 `get(kind='draft', id=<slug>, view='hygiene')`.
 
 
+## Retraction checks
+
+The export pane offers `retraction_check`: `stale` (default; check citations
+older than 30 days or never checked), `all` (ignore the persisted TTL), or
+`none` (read stored state only). PDF jobs check the whole draft, then block
+retracted citations unless `ignore_retractions=True` explicitly waives the
+gate. The pane button has a per-press cap; PDF jobs do not. Progress and the
+pane show "N of M checked within 30 d". Word exports never contact Crossref.
+Both formats place a Retraction coverage block after Unverified claims when
+coverage is incomplete or checks were skipped; its first line is red for
+`none` or any never-checked citation.
+
 ## Export — LaTeX, PDF, Word, reMarkable
 
 ```
@@ -81,9 +93,13 @@ per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
-DOIs are left alone, `CNB-based` counts as a use, and `et al.`/`e.g.` do
+DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
+latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
 not capitalise the next word. Record handles follow the audience choice
-below; draft chunk cross-references retain their section/figure numbers.
+below; draft chunk cross-references retain their section/figure numbers,
+except a section reference into the citing chunk's own section or an
+ancestor, which prints `above` (target first) or `below` (`Above` at a
+sentence start) in both formats.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
@@ -99,7 +115,11 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list.
+  acronym first-use expansion + an auto acronyms list. Captions carry no
+  direct formatting: restyle them in Word by editing the styles `Caption`
+  (figure captions), `Table Caption` (table titles, based on `Caption`),
+  `Caption Label` (the "Figure N:" / "Table N:" label) and `Figure` (the
+  picture paragraph).
 
 ## Audience and data supplement
 

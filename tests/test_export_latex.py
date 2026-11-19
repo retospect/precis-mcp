@@ -445,7 +445,7 @@ def test_italic_single_star_to_emph() -> None:
     out, _ = _inline("a *directly bonded* pair, **not** 2 * 3, and $a*b$ math")
     assert r"\emph{directly bonded}" in out
     assert r"\textbf{not}" in out and r"\emph{not}" not in out
-    assert "2 * 3" in out  # spaced multiplication untouched
+    assert r"2 \textasteriskcentered{} 3" in out  # literal multiplication
     assert "$a*b$" in out  # star inside math not turned into emphasis
 
 
@@ -453,14 +453,18 @@ def test_adsorbate_star_stays_literal() -> None:
     # gr674905: surface-chemistry star notation (*NO, *H, *OH, H*, O*, Pd*)
     # is literal prose — the italic rule and the house-style lint read it
     # the same way (utils/adsorbate_star).
-    out, _ = _inline("*NO3- dissociation to *NO2- + O* is more favorable")
+    out, _ = _inline("*NO₃⁻ dissociation to *NO₂⁻ + O* is more favorable")
     assert r"\emph{" not in out
-    assert "*NO" in out and "O*" in out
+    assert r"\textasteriskcentered{}NO" in out
+    assert r"O\textasteriskcentered{}" in out
+    assert out.count(r"\textasteriskcentered{}") == 3
     out, _ = _inline("adsorbed *H and *OH on the surface, plus Pd* and O*")
-    assert r"\emph{" not in out and "*H" in out and "Pd*" in out
+    assert r"\emph{" not in out
+    assert r"\textasteriskcentered{}H" in out
+    assert r"Pd\textasteriskcentered{}" in out
     # A trailing adsorbate star can't close a real italic either.
     out, _ = _inline("a *word* and O* adsorbate")
-    assert r"\emph{word}" in out and "O*" in out
+    assert r"\emph{word}" in out and r"O\textasteriskcentered{}" in out
 
 
 def test_escaped_star_renders_literal_asterisk() -> None:
@@ -2043,7 +2047,7 @@ def test_build_bib_article_emits_journaltitle_from_meta_journal() -> None:
     assert "journaltitle = {Surface Science}" in bib
 
 
-def test_build_bib_article_venue_wins_over_journal() -> None:
+def test_build_bib_article_canonical_journal_wins_over_venue() -> None:
     store = _BibStore(
         {
             ("paper", "p1"): _bibref(
@@ -2057,8 +2061,8 @@ def test_build_bib_article_venue_wins_over_journal() -> None:
         }
     )
     bib = latex.build_bib(store, ["p1"], [])
-    assert "journaltitle = {Venue Name}" in bib
-    assert "Journal Name" not in bib
+    assert "journaltitle = {Journal Name}" in bib
+    assert "Venue Name" not in bib
 
 
 def test_build_bib_article_no_journal_omits_field() -> None:
@@ -3242,11 +3246,26 @@ def test_overlapping_cites_dedupe_keys(monkeypatch) -> None:
     assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}"
 
 
-def test_si_cite_not_merged(monkeypatch) -> None:
+def test_si_cite_joins_adjacent_cites_ascending(monkeypatch) -> None:
+    """gr725246: an SI cite next to plain cites is one group, the SI mark on
+    its own key, keys in ascending cite number."""
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + latex._cite("b", ctx, si=True) + latex._cite("c", ctx)
     out = latex._merge_adjacent_cites(s, ctx)
-    assert out == r"\cite{a}\cite[SI]{b}\cite{c}"
+    assert out == r"\cites{a}[SI]{b}{c}\relax"
+    # b was cited earlier (number 1), a is new (number 2): b prints first
+    ctx2 = _link_ctx(monkeypatch)
+    latex._cite("b", ctx2)
+    s = latex._cite("a", ctx2, si=True) + latex._cite("b", ctx2)
+    assert latex._merge_adjacent_cites(s, ctx2) == r"\cites{b}[SI]{a}\relax"
+
+
+def test_same_paper_plain_and_si_stay_two_marks(monkeypatch) -> None:
+    """gr725246: the same-paper rule is unchanged: ``[a]`` then ``[a (SI)]``
+    do not merge into one key."""
+    ctx = _link_ctx(monkeypatch)
+    s = latex._cite("a", ctx) + latex._cite("a", ctx, si=True)
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a}\cite[SI]{a}"
 
 
 def test_text_between_cites_prevents_merge(monkeypatch) -> None:
@@ -3297,6 +3316,34 @@ def test_cref_capitalised_at_start_and_after_sentence() -> None:
     assert r"\Cref{chunk:dc4}" in out
 
 
+def test_cref_into_own_section_is_the_word_above_or_below() -> None:
+    """gr725243: the LaTeX ``\\cref`` for a reference into the citing
+    chunk's own section (or an ancestor) is replaced by the literal word,
+    capitalised at a sentence start; other references stay ``\\cref``."""
+    from types import SimpleNamespace as C
+
+    chunks = [
+        C(dc="dc1", chunk_kind="heading", depth=0, text="One"),
+        C(dc="dc2", chunk_kind="paragraph", depth=1, text="Setup."),
+        C(dc="dc3", chunk_kind="heading", depth=1, text="Sub"),
+        C(dc="dc4", chunk_kind="paragraph", depth=2, text="Later."),
+        C(dc="dc5", chunk_kind="heading", depth=0, text="Two"),
+    ]
+    text = "(see [dc2]) and (see [dc4]). [dc2] is setup, [dc5] elsewhere."
+    ctx = _ctx(text)
+    ctx.xref_pass = latex.walker.number_xrefs(
+        chunks, None, equation_of=latex._standalone_equation
+    )
+    ctx.cursor.dc = "dc3"
+    out = latex._render_inline(text, ctx)
+    assert out == (
+        r"(see above) and (see below). Above is setup, \cref{chunk:dc5} elsewhere."
+    )
+    ctx.cursor.dc = "dc5"  # citing from section 2: unchanged
+    assert r"\cref{chunk:dc2}" in latex._render_inline("see [dc2]", ctx)
+    assert "\\precisrel" not in out
+
+
 def test_cref_to_paragraph_heading_uses_nameref() -> None:
     ctx = latex._Ctx(
         keymap={},
@@ -3317,6 +3364,7 @@ def test_render_body_deep_heading_xref_is_nameref(hub) -> None:
     d.put(id="nr", title="T", project=proj)
     ref = store.get_ref(kind="draft", id="nr")
     parent = store.drafts.reading_order(ref.id)[0]
+    title_handle = parent.handle
     deep = ""
     for n in range(4):
         d.put(
@@ -3327,6 +3375,12 @@ def test_render_body_deep_heading_xref_is_nameref(hub) -> None:
         )
         parent = store.drafts.reading_order(ref.id)[-1]
         deep = parent.dc
+    d.put(
+        id="nr",
+        chunk_kind="heading",
+        text="Elsewhere",
+        at={"into": "¶" + title_handle, "last": True},
+    )
     d.put(
         id="nr", chunk_kind="paragraph", text=f"Refer to [{deep}].", at={"last": True}
     )

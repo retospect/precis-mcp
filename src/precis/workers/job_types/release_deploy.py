@@ -28,6 +28,9 @@ gate read error refuses — fail closed.
 on ``meta.release``; the tick mints this job with ``params.target_node`` =
 that host, :func:`validate_submit` refuses any other (or no) node, and
 :func:`submit` refuses a worker whose ``PRECIS_NODE`` or checkout differs.
+The first cut has no host yet: plan_dispatch pins it to ``release.cut_host``
+(held when unset) and ``release_cut`` refuses a checkout with no deploy
+overlay, so the host recorded here is one that can deploy (gr713351).
 
 **Shared release policy** (gr702332). :func:`_refusal` calls
 :func:`precis.plans.release.may_release` at dispatch and launch:
@@ -419,6 +422,13 @@ def _pin_prod(root: Path, sha: str = "") -> str:
 #: backup-window refusal, scripts/deploy): no host moved.
 _NO_HOST_TOUCHED = "no host was touched"
 
+#: ``scripts/deploy``'s exit code for the same refusal — every guard ahead
+#: of its reachability ping, whatever the wording (gr730609).
+#: ``scripts/round`` and ``scripts/release`` pass it through; a test pins
+#: the copies. The words above still cover a checkout whose scripts
+#: predate the code.
+UNTOUCHED_EXIT = 75
+
 
 def poll(ctx: Any, handle: Any) -> bool:
     done = _rc.finish_run(ctx, handle, NAME)
@@ -426,10 +436,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         return not isinstance(handle, dict)
     exit_code, log_text = done
     if exit_code not in (0, 3):
-        if _NO_HOST_TOUCHED in log_text:
+        if exit_code == UNTOUCHED_EXIT or _NO_HOST_TOUCHED in log_text:
             # release-train T3 review F5: the script refused before any
-            # host moved (the backup window, a pin refusal) — the release
-            # is not deploying, so it takes fixes again.
+            # host moved (the backup window, a pin refusal, a checkout
+            # with no overlay) — the release is not deploying, so it
+            # takes fixes again.
             if _WINDOW_REFUSAL in log_text:
                 # gr697664: a window refusal is no failed attempt.
                 ctx.set_meta(**{WINDOW_FREE_REASON_KEY: WINDOW_FREE_REASON})
