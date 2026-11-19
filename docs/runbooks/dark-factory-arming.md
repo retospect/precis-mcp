@@ -1040,7 +1040,8 @@ Known limits:
 - The file-overlap hold is bounded. A started, unlanded build keeps
   other builds that touch its files out of the claim (td603849), but
   only for `factory.overlap_hold_max_runs` ended `run_slice` runs
-  (default 3; cancelled runs and attempt-free failures are no turn).
+  (default 3; cancelled runs, host refusals and attempt-free failures
+  leave the hold budget intact).
   After that it holds only while its `land_slice` is live, and a real
   conflict with the work that went ahead rebuilds at its land. `0`
   restores the unbounded hold. The hold writes nothing on the held job:

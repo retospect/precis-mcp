@@ -9757,6 +9757,9 @@ def test_a_build_out_of_turns_holds_only_while_landing(
     _slice_job(
         store, build, "run_slice", "failed", meta={pd.ATTEMPT_FREE_KEY: "lane-wait"}
     )
+    _slice_job(
+        store, build, "run_slice", "failed", meta={"host_refusal": {"lane": "codex"}}
+    )
     assert pd._started_slices(store)[build].state == "in pre-land review"
     _slice_job(store, build, "run_slice", "failed")
     assert build not in pd._started_slices(store)
@@ -9775,6 +9778,24 @@ def test_a_build_out_of_turns_holds_only_while_landing(
     # The land itself always holds: two lands on one file must not race.
     _slice_job(store, build, "land_slice", "running")
     assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_overlap_claim_survives_a_settings_sql_error(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import settings
+    from precis.workers.executors._common import build_overlap_holds
+
+    key = "factory.overlap_hold_max_runs"
+    settings.invalidate(key)
+    monkeypatch.delenv("PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS", raising=False)
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as conn:
+        # Shadow the real table with one whose SELECT fails in this transaction.
+        conn.execute("CREATE TEMP TABLE app_settings (key text) ON COMMIT DROP")
+        assert waiting in build_overlap_holds(conn, [waiting])
+        assert conn.execute("SELECT 1 FROM pg_temp.app_settings").fetchall() == []
 
 
 def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(

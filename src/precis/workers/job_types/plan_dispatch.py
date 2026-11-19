@@ -6466,8 +6466,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     The hold is bounded (:func:`_overlap_hold_max_runs`): a build whose
     ``run_slice`` runs ended that many times without a land has had its
     turns and holds only while it is ``landing``. A cancelled run and an
-    attempt-free failure (a lane wait, a refused launch —
-    :data:`ATTEMPT_FREE_KEY`) are no turn. Three builds that did
+    attempt-free failure or host-refused launch are no turn. Three builds that did
     not converge with their pre-land reviewers (seven runs on one) held
     30 queued builds, the oldest for 23 hours, on 2026-11-19; a real
     conflict with the work that went ahead rebuilds at their land."""
@@ -6517,6 +6516,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                        AND j.parent_id = r.ref_id
                        AND j.meta->>'job_type' = %s
                        AND NOT COALESCE(j.meta ? %s, FALSE)
+                       AND NOT COALESCE(j.meta ? 'host_refusal', FALSE)
                        AND EXISTS (
                              SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                               WHERE rt.ref_id = j.ref_id

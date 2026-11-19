@@ -53,6 +53,11 @@ matching the regular check gate.
 Plan dispatch and executor claims use the same brief selection as build
 and land to resolve overlap targets. This keeps brief-only release fixes
 isolated from main while holding overlapping work on the same branch.
+The overlap cap counts ended build runs that used a turn. A host refusal
+never launched a build, so it leaves the hold budget intact. The settings
+read uses a savepoint to preserve the claim transaction on read failure.
+The wake runner requeues legacy year-long pinned-lane parks so submit can
+recheck the current lane breaker.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot
