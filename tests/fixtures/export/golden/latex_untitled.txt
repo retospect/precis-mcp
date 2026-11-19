@@ -68,6 +68,16 @@
 \hypersetup{pdfauthor={precis}}
 \usepackage{cleveref}
 
+% A cross-reference to a figure, table or section reads "Figure 1",
+% "Table 1", "Section 5.4" (capitalised full word, also mid-sentence; the
+% plural for a merged reference: "Sections 1 and 2"). Equations keep
+% "Eq. (N)" below; \Cref at a sentence start prints "Equation (N)".
+\crefname{figure}{Figure}{Figures}
+\crefname{table}{Table}{Tables}
+\crefname{section}{Section}{Sections}
+\crefname{subsection}{Section}{Sections}
+\crefname{subsubsection}{Section}{Sections}
+
 % Numbered display equations (export/latex.py's standalone-equation
 % detection wraps a display-math-only paragraph in \begin{equation}, label
 % inside). Cleveref infers a label's TYPE from the counter active at
@@ -155,9 +165,9 @@
 
 A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20} and run \cite{smith20,jones21,lee22} end.\label{chunk:dc3}
 
-Collapse \cite{smith20} \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
+Collapse \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
 
-Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cites{lee22}[SI]{parent24}\relax.\label{chunk:dc5}
+Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cites{lee22}[SI]{parent24}\relax.\label{chunk:dc5}
 
 \subsection{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 

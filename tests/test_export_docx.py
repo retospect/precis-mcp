@@ -1028,7 +1028,7 @@ def test_table_numbers_in_document_order_and_cross_reference(
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "Table 1: first legend" in text
     assert "Table 2" in text  # caption-less table still shows its number
-    assert "Compare table 1 with table 2 here." in text
+    assert "Compare Table 1 with Table 2 here." in text
 
 
 def test_render_byline_names_marks_and_ror_link() -> None:
@@ -1931,16 +1931,16 @@ def test_xref_numbers_follow_latex_section_counting() -> None:
     ]
     xref, shown = _xref_numbers(chunks, "  title ")
     assert "dc1" not in xref  # the seeded title heading is not a section
-    assert xref["dc2"] == ("section", "1")
-    assert xref["dc4"] == ("section", "2")
-    assert xref["dc6"] == ("section", "2.2")
-    assert xref["dc7"] == ("section", "2.2.1")
+    assert xref["dc2"] == ("Section", "1")
+    assert xref["dc4"] == ("Section", "2")
+    assert xref["dc6"] == ("Section", "2.2")
+    assert xref["dc7"] == ("Section", "2.2.1")
     # sections beside the title at depth 0 (no lift): nothing is shifted
     flat = [ch("dc1", "heading", 0, "Title"), ch("dc2", "heading", 0, "Intro")]
-    assert _xref_numbers(flat, "Title")[0]["dc2"] == ("section", "1")
+    assert _xref_numbers(flat, "Title")[0]["dc2"] == ("Section", "1")
     # an untitled lookup keeps the old behaviour: depth-0 heading counts
-    assert _xref_numbers(chunks)[0]["dc1"] == ("section", "1")
-    assert xref["dc3"] == ("fig.", "1") and xref["dc8"] == ("fig.", "2")
+    assert _xref_numbers(chunks)[0]["dc1"] == ("Section", "1")
+    assert xref["dc3"] == ("Figure", "1") and xref["dc8"] == ("Figure", "2")
     assert "dc9" not in xref and "dc11" not in shown and "dc7" in shown
 
 
@@ -1970,13 +1970,13 @@ def test_xref_numbers_resolve_paragraphs_and_back_matter_like_latex() -> None:
     ]
     xref, shown = _xref_numbers(chunks, "Paper")
     assert "abs" not in xref  # front matter: nothing to print
-    assert xref["p1"] == ("section", "1")
-    assert xref["p2"] == ("section", "1.1")
-    assert xref["it"] == ("section", "2") and "ul" not in xref
+    assert xref["p1"] == ("Section", "1")
+    assert xref["p2"] == ("Section", "1.1")
+    assert xref["it"] == ("Section", "2") and "ul" not in xref
     assert xref["bm"] == ("", "Author Information")
     assert xref["bm1"] == ("", "Notes")
     assert "bm" not in shown and "bm1" not in shown
-    assert xref["p3"] == ("section", "2")  # \section* does not step the counter
+    assert xref["p3"] == ("Section", "2")  # \section* does not step the counter
 
 
 def test_docx_without_seeded_title_chunk_prints_ref_title_first(
@@ -2012,26 +2012,51 @@ def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
     ctx = dx._Ctx(
         store=None,
         known_handles=set(),
-        xref={"dc4": ("section", "1.5.5"), "dc3": ("fig.", "1")},
+        xref={"dc4": ("Section", "1.5.5"), "dc3": ("Figure", "1")},
         dc_handles={"dc3", "dc4", "dc5"},
         legacy_to_dc={"Abc": "dc4"},
     )
     assert (
         _render_text("(see [dc4]) and [¶dc4]", ctx)
-        == "(see section 1.5.5) and section 1.5.5"
+        == "(see Section 1.5.5) and Section 1.5.5"
     )
-    assert _render_text("Shown in [dc3].", ctx) == "Shown in fig. 1."
+    assert _render_text("Shown in [dc3].", ctx) == "Shown in Figure 1."
     # sentence start capitalises
     assert (
         _render_text("[dc4] covers it. [dc3] too", ctx)
-        == "Section 1.5.5 covers it. Fig. 1 too"
+        == "Section 1.5.5 covers it. Figure 1 too"
     )
-    assert _render_text("via [¶Abc]", ctx) == "via section 1.5.5"
+    assert _render_text("via [¶Abc]", ctx) == "via Section 1.5.5"
     # authored surface wins; a non-live chunk downgrades with a warning
     # and a neutral placeholder — never the bare handle (gr493181)
     assert _render_text("[the intro](dc4)", ctx) == "the intro"
     assert _render_text("see [dc99]", ctx) == "see (removed)"
     assert any("dc99" in w for w in ctx.warnings)
+
+
+def test_crossref_words_are_capitalised_everywhere_equations_keep_eq() -> None:
+    """gr725244: a reference to a figure, table or section prints the full
+    capitalised word mid-sentence too; an equation keeps ``Eq. (N)`` and
+    reads ``Equation (N)`` only at a sentence start."""
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref={
+            "dc1": ("Figure", "2"),
+            "dc2": ("Table", "1"),
+            "dc3": ("Section", "5.4"),
+        },
+        eq_numbers={"dc4": 1},
+        dc_handles={"dc1", "dc2", "dc3", "dc4"},
+    )
+    assert (
+        _render_text("in [dc1], [dc2] and [dc3]", ctx)
+        == "in Figure 2, Table 1 and Section 5.4"
+    )
+    assert _render_text("by [dc4]", ctx) == "by Eq. (1)"
+    assert _render_text("Done. [dc4] holds", ctx) == "Done. Equation (1) holds"
 
 
 def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
@@ -2083,7 +2108,7 @@ def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
     ctx = dx._Ctx(
         store=store,
         known_handles=set(),
-        xref={"dc5": ("fig.", "2"), "dc6": ("fig.", "3")},
+        xref={"dc5": ("Figure", "2"), "dc6": ("Figure", "3")},
         dc_handles={"dc5", "dc6"},
         doi_links=False,
         library_links=False,
@@ -2094,9 +2119,9 @@ def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
         "models of a removed figure here"
     )
     # meta.superseded_by → the live replacement's number
-    assert _render_text("models of [dc98] here", ctx) == "models of fig. 2 here"
+    assert _render_text("models of [dc98] here", ctx) == "models of Figure 2 here"
     # a chunk-level supersedes link resolves the same way
-    assert _render_text("models of [dc97] here", ctx) == "models of fig. 3 here"
+    assert _render_text("models of [dc97] here", ctx) == "models of Figure 3 here"
     assert any("dc99" in w for w in ctx.warnings)
     assert any("resolved to its replacement dc5" in w for w in ctx.warnings)
     assert any("resolved to its replacement dc6" in w for w in ctx.warnings)
@@ -2156,8 +2181,8 @@ def test_export_numbers_headings_and_resolves_crossrefs(
     out = tmp_path / "dxr.docx"
     export_docx(hub.live_store, ref, target_path=out)
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
-    assert "As argued in section" in text
-    assert "(see section" in text
+    assert "As argued in Section" in text
+    assert "(see Section" in text
     assert "Intro" in text
 
 
@@ -2295,7 +2320,7 @@ def test_figure_captions_carry_figure_n_label(
     texts = [p.text for p in paras]
     assert "Figure 1: First widget." in texts
     assert "Figure 2: Second widget." in texts
-    assert "As in fig. 2." in texts
+    assert "As in Figure 2." in texts
     cap = next(p for p in paras if p.text.startswith("Figure 1:"))
     assert cap.style.name == "Caption"
     assert cap.alignment is None
@@ -2477,9 +2502,13 @@ def test_reference_line_of_a_book_chapter_carries_its_volume() -> None:
     )
 
 
-def test_title_page_has_date_line_no_abstract_heading(
+def test_title_page_has_date_line_and_abstract_label(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
+    """The prose between the title block and the first heading gets an
+    "Abstract" label in the ``Abstract Title`` paragraph style (not a heading:
+    no number, not in the outline) and sets in ``Abstract``. The label is
+    deliberate in Word (gr725248, superseding gr491601 L4); the PDF has none."""
     from datetime import UTC, datetime
 
     pid = _new_draft_project(hub)
@@ -2494,10 +2523,209 @@ def test_title_page_has_date_line_no_abstract_heading(
     today = datetime.now(UTC)
     date_line = f"{today:%B} {today.day}, {today.year}"
     assert texts[1] == date_line  # right under the title (no byline here)
-    # No synthetic "Abstract" heading — the PDF has none (gr491601 L4).
-    assert "Abstract" not in texts
-    assert texts.index("The abstract.") == 2
     assert texts[0] == "Paper"
+    assert texts[2:4] == ["Abstract", "The abstract."]
+    assert paras[2].style.name == "Abstract Title"
+    assert paras[3].style.name == "Abstract"
+    assert paras[2].style.font.bold is True
+    assert paras[2].style.base_style.name == "Normal"
+    assert paras[3].style.base_style.name == "Normal"
+    assert not paras[2].style.name.startswith("Heading")
+    assert texts.count("Abstract") == 1
+
+
+def test_abstract_ends_at_keywords_and_first_heading(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    pid = _new_draft_project(hub)
+    draft.put(id="dkw", title="Paper", project=pid)
+    for text in ("First abstract para.", "Second one.", "KEYWORDS: a; b", "After."):
+        draft.put(id="dkw", chunk_kind="paragraph", text=text, at={"last": True})
+    draft.put(id="dkw", chunk_kind="heading", text="Intro", at={"last": True})
+    draft.put(id="dkw", chunk_kind="paragraph", text="Body.", at={"last": True})
+    ref = hub.live_store.get_ref(kind="draft", id="dkw")
+    out = tmp_path / "dkw.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    styles = {p.text: p.style.name for p in docx.Document(str(out)).paragraphs}
+    assert styles["Abstract"] == "Abstract Title"
+    assert styles["First abstract para."] == "Abstract"
+    assert styles["Second one."] == "Abstract"
+    assert styles["KEYWORDS: a; b"] == "Normal"
+    assert styles["After."] == "Normal"
+    assert styles["Body."] == "Normal"
+
+
+def test_no_abstract_label_without_prose_before_first_heading(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    pid = _new_draft_project(hub)
+    draft.put(id="dna", title="Paper", project=pid)
+    draft.put(id="dna", chunk_kind="heading", text="Intro", at={"last": True})
+    draft.put(id="dna", chunk_kind="paragraph", text="Body.", at={"last": True})
+    ref = hub.live_store.get_ref(kind="draft", id="dna")
+    out = tmp_path / "dna.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    assert "Abstract" not in [p.text for p in doc.paragraphs]
+    assert "Abstract" not in [s.name for s in doc.styles]
+    # a "Keywords:" paragraph straight after the title block is no abstract
+    draft.put(id="dna2", title="Paper2", project=_new_draft_project(hub))
+    draft.put(id="dna2", chunk_kind="paragraph", text="keywords: x", at={"last": True})
+    ref2 = hub.live_store.get_ref(kind="draft", id="dna2")
+    out2 = tmp_path / "dna2.docx"
+    export_docx(hub.live_store, ref2, target_path=out2)
+    assert "Abstract" not in [p.text for p in docx.Document(str(out2)).paragraphs]
+
+
+def test_no_abstract_label_in_a_draft_without_sections(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Opening prose is an abstract only when a section follows it: a note
+    that is all paragraphs is not one long abstract."""
+    pid = _new_draft_project(hub)
+    draft.put(id="dnote", title="Note", project=pid)
+    for text in ("First point.", "Second point."):
+        draft.put(id="dnote", chunk_kind="paragraph", text=text, at={"last": True})
+    ref = hub.live_store.get_ref(kind="draft", id="dnote")
+    out = tmp_path / "dnote.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    paras = {p.text: p.style.name for p in doc.paragraphs}
+    assert "Abstract" not in paras
+    assert paras["First point."] == "Normal" and paras["Second point."] == "Normal"
+
+
+def _field_instrs(xml: str) -> list[str]:
+    import re
+
+    return re.findall(r"<w:instrText[^>]*>([^<]*)</w:instrText>", xml)
+
+
+def test_footer_page_n_of_m_fields_on_every_page(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    pid = _new_draft_project(hub)
+    draft.put(id="dft", title="Paper", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dft")
+    out = tmp_path / "dft.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    sec = doc.sections[0]
+    assert sec.different_first_page_header_footer is True
+    for footer in (sec.footer, sec.first_page_footer):
+        par = footer.paragraphs[0]
+        assert par.style.name == "Footer"
+        assert par.alignment is None  # centred by the style, not the paragraph
+        xml = par._p.xml
+        assert [i.strip() for i in _field_instrs(xml)] == ["PAGE", "NUMPAGES"]
+        assert par.text == "Page 1 of 1"  # cached results
+        assert xml.count('w:fldCharType="begin"') == 2
+        assert xml.count('w:fldCharType="separate"') == 2
+        assert xml.count('w:fldCharType="end"') == 2
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    assert doc.styles["Footer"].paragraph_format.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert "w:b/" not in sec.footer.paragraphs[0]._p.xml  # no direct formatting
+
+
+def test_header_running_title_and_authors_after_first_page(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from docx.enum.text import WD_TAB_ALIGNMENT
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhd", title="Surface chemistry: a long subtitle", project=pid)
+    draft.edit(
+        id="dhd",
+        authors=[{"name": "Doe, Jane"}, {"name": "Roe, John"}, {"name": "X, Y"}],
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dhd")
+    out = tmp_path / "dhd.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    sec = doc.sections[0]
+    par = sec.header.paragraphs[0]
+    assert par.style.name == "Header"
+    assert par.text == "Surface chemistry\tDoe et al."
+    # the first-page header stays empty
+    assert sec.first_page_header.paragraphs[0].text == ""
+    tabs = list(doc.styles["Header"].paragraph_format.tab_stops)
+    assert [(t.alignment, t.position.inches) for t in tabs] == [
+        (WD_TAB_ALIGNMENT.RIGHT, 6.5)
+    ]
+
+
+def test_running_title_cuts() -> None:
+    from precis.export.docx import running_title
+
+    assert running_title("Short title") == "Short title"
+    assert running_title("Main part: and a subtitle") == "Main part"
+    assert running_title("Main part - and a subtitle") == "Main part"
+    assert running_title("Main part \u2013 sub") == "Main part"
+    assert running_title("Main part \u2014 sub") == "Main part"
+    assert running_title("Well-known fact about CO<sub>2</sub>") == (
+        "Well-known fact about CO2"
+    )
+    long = " ".join(["word"] * 30)
+    cut = running_title(long)
+    assert cut.endswith("\u2026") and len(cut) <= 61
+    assert cut[:-1] == " ".join(["word"] * 12)  # whole words, 59 chars
+    assert running_title(None) == ""
+
+
+def test_running_title_of_a_title_that_starts_with_a_separator() -> None:
+    from precis.export.docx import running_title
+
+    assert running_title(": a subtitle on its own") == ": a subtitle on its own"
+    assert running_title("\u2014 on its own") == "\u2014 on its own"
+    assert running_title("- on its own") == "- on its own"
+    long = ": " + " ".join(["word"] * 30)
+    cut = running_title(long)
+    assert cut.endswith("\u2026") and len(cut) <= 61  # the 60-character rule
+
+
+def test_running_authors_forms() -> None:
+    from precis.export.docx import running_authors
+    from precis.utils.authors import build_byline
+
+    def run(*names: str) -> str:
+        return running_authors(build_byline([{"name": n} for n in names]))
+
+    assert run() == ""
+    assert run("Lipin, Raju") == "Lipin"
+    assert run("Lipin, Raju", "Doe, Jane") == "Lipin and Doe"
+    assert run("Lipin, Raju", "Doe, Jane", "Roe, John") == "Lipin et al."
+
+
+def test_byline_affiliation_number_then_thin_space_then_orcid() -> None:
+    from precis.export.docx import _render_byline
+    from precis.utils.authors import build_byline
+
+    doc = docx.Document()
+    doc.add_heading("Title", level=0)
+    _render_byline(
+        doc,
+        build_byline(
+            [
+                {
+                    "name": "Lipin, Raju",
+                    "affiliation": "MIT",
+                    "orcid": "0000-0002-1825-0097",
+                },
+                {"name": "Roe, John", "affiliation": "Caltech"},
+            ]
+        ),
+    )
+    names_p = doc.paragraphs[1]
+    assert names_p.text == "Raju Lipin1\u2009iD, John Roe2"
+    runs = names_p.runs
+    sup = next(r for r in runs if r.text == "1")
+    assert sup.font.superscript is True
+    thin = next(r for r in runs if r.text == "\u2009")
+    assert not thin.font.superscript
+    # order in the XML: number run, thin-space run, then the iD hyperlink
+    xml = names_p._p.xml
+    assert xml.index(">1<") < xml.index("\u2009") < xml.index(">iD<")
 
 
 def test_nested_layout_numbers_sections_from_one(
@@ -2549,9 +2777,228 @@ def test_nested_layout_numbers_sections_from_one(
     paras = docx.Document(str(out)).paragraphs
     texts = [p.text for p in paras]
     assert "Nested" in texts and "1 Introduction" in texts and "1.1 Scope" in texts
-    assert "See section 1.1." in texts
+    assert "See Section 1.1." in texts
     head = next(p for p in paras if p.text == "1.1 Scope")
     assert head.style.name == "Heading 2"
+
+
+def test_numbers_and_cross_references_are_word_fields(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr725244: caption and equation numbers are ``SEQ`` fields, every
+    number is bookmarked ``_Ref_<dc>``, every cross-reference is a ``REF``
+    field to an existing bookmark, and the visible text is exactly what the
+    static export printed."""
+    pytest.importorskip("latex2mathml")
+    import re
+    import zipfile
+
+    from docx.oxml.ns import qn
+
+    def handle(resp) -> str:
+        m = re.search(r"dc\d+", resp.body)
+        assert m is not None
+        return m.group(0)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dfld", title="Fields", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dfld")
+    assert ref is not None
+    drafts = hub.live_store.drafts
+    title_h = drafts.reading_order(ref.id)[0].handle
+    intro = handle(
+        draft.put(
+            id="dfld",
+            chunk_kind="heading",
+            text="Intro",
+            at={"into": title_h, "last": True},
+        )
+    )
+    methods = handle(
+        draft.put(
+            id="dfld",
+            chunk_kind="heading",
+            text="Methods",
+            at={"into": title_h, "last": True},
+        )
+    )
+    fig = drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="figure",
+        text="First widget.",
+        at={"into": methods, "last": True},
+        split=False,
+    )[0]
+    tbl = handle(
+        draft.put(
+            id="dfld",
+            chunk_kind="table",
+            table={"header": ["a"], "rows": [[1]]},
+            caption="Legend",
+            at={"into": methods, "last": True},
+        )
+    )
+    eq = handle(
+        draft.put(
+            id="dfld",
+            chunk_kind="paragraph",
+            text="$$E = mc^2$$",
+            at={"into": methods, "last": True},
+        )
+    )
+    # In Intro, so every target but the section-1 one comes later (a forward
+    # reference); [methods] is another section than the citing one.
+    draft.put(
+        id="dfld",
+        chunk_kind="paragraph",
+        text=(
+            f"See [{fig.dc}], [{tbl}], [{methods}] and [{eq}]. [{eq}] holds."
+            f" Above, [{intro}] is this section."
+        ),
+        at={"into": intro, "last": True},
+    )
+    out = tmp_path / "dfld.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    texts = [p.text for p in doc.paragraphs]
+
+    # visible text: as before fields existed
+    assert (
+        "See Figure 1, Table 1, Section 2 and Eq. (1). Equation (1) holds."
+        " Above, above is this section." in texts
+    )
+    assert "Figure 1: First widget." in texts
+    assert "Table 1: Legend" in texts
+    assert "1 Intro" in texts and "2 Methods" in texts
+    assert any(t.endswith("(1)") and t.startswith("\t") for t in texts)
+
+    body = doc.element.body
+    instrs = [i.text.strip() for i in body.iter(qn("w:instrText"))]
+    assert r"SEQ Figure \* ARABIC" in instrs
+    assert r"SEQ Table \* ARABIC" in instrs
+    assert r"SEQ Equation \* ARABIC" in instrs
+
+    # bookmarks: unique legal names and ids
+    marks = list(body.iter(qn("w:bookmarkStart")))
+    names = [b.get(qn("w:name")) for b in marks]
+    ids = [b.get(qn("w:id")) for b in marks]
+    assert len(set(names)) == len(names) and len(set(ids)) == len(ids)
+    assert all(re.fullmatch(r"_Ref_\w+", n) and len(n) <= 40 for n in names)
+    assert all(i.isdigit() for i in ids)
+    ends = [b.get(qn("w:id")) for b in body.iter(qn("w:bookmarkEnd"))]
+    assert sorted(ends) == sorted(ids)
+    assert {f"_Ref_{d}" for d in (fig.dc, tbl, eq, intro, methods)} <= set(names)
+
+    # every REF names an existing bookmark; Section 2 points at its heading
+    refs = [i for i in instrs if i.startswith("REF ")]
+    assert refs and all(r.split()[1] in names for r in refs)
+    # MERGEFORMAT: an update keeps the citing text's formatting, not the
+    # bold caption label's or the heading's.
+    tail = r"\h \* MERGEFORMAT"
+    assert refs.count(f"REF _Ref_{methods} {tail}") == 1
+    assert refs.count(f"REF _Ref_{eq} {tail}") == 2
+    assert f"REF _Ref_{fig.dc} {tail}" in refs and f"REF _Ref_{tbl} {tail}" in refs
+
+    # each bookmark opens and closes in one paragraph, start before end
+    for p in body.iter(qn("w:p")):
+        kids = list(p)
+        opened = [k.get(qn("w:id")) for k in kids if k.tag == qn("w:bookmarkStart")]
+        closed = [k.get(qn("w:id")) for k in kids if k.tag == qn("w:bookmarkEnd")]
+        assert opened == closed
+        for k in kids:
+            if k.tag == qn("w:bookmarkStart"):
+                after = kids[kids.index(k) + 1 :]
+                assert any(
+                    a.tag == qn("w:bookmarkEnd")
+                    and a.get(qn("w:id")) == k.get(qn("w:id"))
+                    for a in after
+                )
+
+    # the cached number of a reference is the cached number of its target
+    def cached_after(instr_el: Any) -> str:
+        run = instr_el.getparent().getnext().getnext()  # separate, then result
+        return "".join(t.text or "" for t in run.iter(qn("w:t")))
+
+    cached = {i.text.strip(): cached_after(i) for i in body.iter(qn("w:instrText"))}
+    assert cached[r"SEQ Figure \* ARABIC"] == cached[f"REF _Ref_{fig.dc} {tail}"]
+    assert cached[r"SEQ Table \* ARABIC"] == cached[f"REF _Ref_{tbl} {tail}"]
+    assert cached[r"SEQ Equation \* ARABIC"] == cached[f"REF _Ref_{eq} {tail}"]
+
+    # the figure caption: label word, field and colon all ``Caption Label``;
+    # the bookmark holds the field only, not the word
+    cap = next(p for p in doc.paragraphs if p.text == "Figure 1: First widget.")
+    label_runs = cap.runs[:7]
+    assert all(r.style.name == "Caption Label" for r in label_runs)
+    kids = [c.tag for c in cap._p]
+    start = kids.index(qn("w:bookmarkStart"))
+    end = kids.index(qn("w:bookmarkEnd"))
+    assert end - start == 6  # start, five field runs, end
+    assert cap.runs[0].text == "Figure "
+    # a heading's typed number is bookmarked on its own
+    head = next(p for p in doc.paragraphs if p.text == "2 Methods")
+    kids = list(head._p)
+    mark = next(c for c in kids if c.tag == qn("w:bookmarkStart"))
+    inner = mark.getnext()
+    assert inner is not None and inner.text == "2"
+    assert inner.getnext().tag == qn("w:bookmarkEnd")
+
+    with zipfile.ZipFile(out) as z:
+        assert b"updateFields" not in z.read("word/settings.xml")
+
+
+def test_ref_to_a_missing_bookmark_keeps_plain_number() -> None:
+    from docx.oxml.ns import qn
+
+    from precis.export import docx as dx
+
+    d = docx.Document()
+    par = d.add_paragraph()
+    par.add_run("see Figure ")
+    dx._add_field(par, r"REF _Ref_dc9 \h \* MERGEFORMAT", "3")
+    par.add_run(" here")
+    dx._unlink_dangling_refs(d)
+    assert par.text == "see Figure 3 here"
+    assert not list(d.element.body.iter(qn("w:instrText")))
+    assert not list(d.element.body.iter(qn("w:fldChar")))
+
+
+def test_unrecoverable_table_keeps_its_number_field() -> None:
+    """A table chunk whose table cannot be recovered prints as a paragraph,
+    but the walk numbered it: it keeps "Table N" with the ``SEQ`` field and
+    the bookmark, so a field update does not renumber the later tables."""
+    from docx.oxml.ns import qn
+
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(store=_RefStore({}), known_handles=set())
+    ctx.xref["dc7"] = ("Table", "1")
+    d = docx.Document()
+    chunk = SimpleNamespace(dc="dc7", text="not a table", meta=None)
+    dx._render_table(d, chunk, ctx)
+    assert [p.text for p in d.paragraphs][-2:] == ["Table 1", "not a table"]
+    body = d.element.body
+    assert [i.text.strip() for i in body.iter(qn("w:instrText"))] == [
+        r"SEQ Table \* ARABIC"
+    ]
+    assert [b.get(qn("w:name")) for b in body.iter(qn("w:bookmarkStart"))] == [
+        "_Ref_dc7"
+    ]
+
+
+def test_field_after_a_dropped_mark_is_not_cleared() -> None:
+    """A cross-reference number ends a paragraph's runs with the field's end
+    mark; trimming the prose before a dropped citation must leave it."""
+    from docx.oxml.ns import qn
+
+    from precis.export import docx as dx
+
+    d = docx.Document()
+    par = d.add_paragraph()
+    par.add_run("Figure ")
+    dx._add_field(par, r"REF _Ref_dc9 \h", "3")
+    dx._rstrip_last_run(par)
+    assert par.text == "Figure 3"
+    assert len(list(par._p.iter(qn("w:fldChar")))) == 3
 
 
 def test_crossref_into_own_section_prints_above_or_below(
@@ -2624,7 +3071,7 @@ def test_crossref_into_own_section_prints_above_or_below(
     export_docx(hub.live_store, ref, target_path=out)
     texts = [p.text for p in docx.Document(str(out)).paragraphs]
     assert (
-        "(see above) and (see below). Above is the setup; section 2 is elsewhere."
+        "(see above) and (see below). Above is the setup; Section 2 is elsewhere."
         in texts
     )
 
@@ -2729,8 +3176,9 @@ def test_heading_and_table_header_citations_number(
 def test_no_spurious_abstract_heading(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    """gr491601 L4: prose between title and first heading gets NO
-    "Abstract" heading — the PDF has none."""
+    """gr491601 L4 / gr725248: prose between title and first heading gets no
+    "Abstract" HEADING (no number, no outline entry); the Word label is a
+    plain ``Abstract Title`` paragraph and the PDF has none."""
     pid = int(
         TodoHandler(hub=hub)
         .put(text="proj")
@@ -2746,7 +3194,11 @@ def test_no_spurious_abstract_heading(
     out = tmp_path / "ab.docx"
     export_docx(hub.live_store, ref, target_path=out)
     doc = docx.Document(str(out))
-    assert "Abstract" not in [p.text for p in doc.paragraphs]
+    assert not [
+        p
+        for p in doc.paragraphs
+        if p.text == "Abstract" and p.style.name != "Abstract Title"
+    ]
     assert "Abstract body text." in [p.text for p in doc.paragraphs]
 
 
@@ -3338,3 +3790,330 @@ def test_other_mu_and_omega_spans_stay_math() -> None:
         para = docx.Document().add_paragraph()
         dx._render_inline(src, ctx, para)
         assert para._p.xpath(".//m:oMath"), src
+
+
+# ── repeated citations in one block (gr725253) ─────────────────────────
+
+
+def _repeat_ctx(**kw: Any):
+    from precis.export import docx as dx
+
+    return dx._Ctx(
+        store=_FindingFake({}),
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+        **kw,
+    )
+
+
+def test_repeated_cite_in_a_paragraph_prints_once() -> None:
+    ctx = _repeat_ctx()
+    text = _render_text(
+        "Alpha [§a1] one. Beta [§a1]. Gamma [§b2] then [§a1] end [§a1].", ctx
+    )
+    # first mark stays; an equal one after prose goes; a different mark in
+    # between resets the comparison
+    assert text == "Alpha [1] one. Beta. Gamma [2] then [1] end."
+    assert ctx.cited == ["a1", "b2"]  # a dropped mark still counts as cited
+
+
+def test_dropped_cite_closes_up_the_prose() -> None:
+    ctx = _repeat_ctx()
+    assert (
+        _render_text("as shown [§a1], and then [§a1], and so on [§a1] and [§a1]", ctx)
+        == "as shown [1], and then, and so on and [1]"  # "and [1]" leans
+    )
+    ctx = _repeat_ctx()
+    assert _render_text("text [§a1]. More [§a1]. Then [§a1] more.", ctx) == (
+        "text [1]. More. Then more."
+    )
+
+
+#: ``(source after a first printed mark, output with the mark as {c})``: the
+#: sentence leans on a repeated mark and keeps it, or it is dropped and the
+#: prose closes up. The Word and LaTeX tests below render the same table.
+_LEANING_REPEATS = [
+    ("B (see [§a1]).", "B (see {c})."),
+    ("B ([§a1]).", "B ({c})."),
+    ("as in ref. [§a1].", "as in ref. {c}."),
+    ("(Fig. 2, [§a1])", "(Fig. 2, {c})"),
+    ("the model [§a1]'s core", "the model {c}'s core"),
+    ("It ended. [§a1] shows that", "It ended. {c} shows that"),
+    ("text [§a1]. More", "text. More"),
+    ("text [§a1], and", "text, and"),
+    ("text [§a1] more", "text more"),
+    ("(text [§a1])", "(text)"),
+]
+
+
+@pytest.mark.parametrize(("source", "expected"), _LEANING_REPEATS)
+def test_a_repeat_the_sentence_leans_on_is_kept(source: str, expected: str) -> None:
+    text = _render_text("First [§a1] here. " + source, _repeat_ctx())
+    assert text == "First [1] here. " + expected.format(c="[1]")
+
+
+def test_a_kept_repeat_is_what_the_next_repeat_is_compared_with() -> None:
+    ctx = _repeat_ctx()
+    assert _render_text("A [§a1]. B (see [§a1]) C [§a1] D [§b2] E [§a1].", ctx) == (
+        "A [1]. B (see [1]) C D [2] E [1]."
+    )
+
+
+def test_each_block_starts_its_own_comparison() -> None:
+    ctx = _repeat_ctx()
+    assert _render_text("one [§a1].", ctx) == "one [1]."
+    assert _render_text("two [§a1].", ctx) == "two [1]."
+
+
+def test_repeat_cites_true_prints_every_mark() -> None:
+    ctx = _repeat_ctx(repeat_cites=True)
+    text = "Beta [§a1]. Gamma [§a1] then [§a1]."
+    assert _render_text(text, ctx) == "Beta [1]. Gamma [1] then [1]."
+
+
+def test_si_mark_differs_from_the_plain_reference(monkeypatch) -> None:
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    out = _render_text("A [§parent24] x [§parent24si] y [§parent24si] z.", ctx)
+    assert out == "A [1] x [1] (SI) y z."
+
+
+def test_trust_marked_cite_is_never_dropped(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    monkeypatch.setattr(dx, "_finding_cite_keys_pinned", lambda *_a: ["a1"])
+    ctx = _repeat_ctx()
+    labels = {7: "unverified", 8: "clean"}
+    ctx.trust = SimpleNamespace(
+        resolve=lambda pk: SimpleNamespace(label=labels[pk], note="")
+    )
+    out = _render_text("A [fi7] x [fi7] y [fi8] z [fi8] w [§a1] v.", ctx)
+    # both trust-marked cites print, then the comparison starts over: the
+    # clean cite prints once, its repeat and the plain [§a1] after it go
+    assert out == "A [1] [unverified] x [1] [unverified] y [1] z w v."
+
+
+def _passage_ctx(monkeypatch):
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    passages = {10: "First passage.", 11: "Second passage."}
+    store = SimpleNamespace(
+        get_ref=lambda **_k: None,
+        resolve_handle=lambda h: SimpleNamespace(
+            public_id="a1", chunk_id=int(h[2:]), cite_public_id=None
+        ),
+        chunks=SimpleNamespace(chunk_text_by_id=lambda cid: passages[cid]),
+    )
+    monkeypatch.setattr(
+        dx,
+        "_resolve_source",
+        lambda _s, slug: {
+            "rec_number": 1,
+            "title": slug,
+            "authors": ["Doe, J."],
+            "year": 2024,
+            "slug": slug,
+        },
+    )
+    return dx._Ctx(
+        store=store,
+        known_handles=set(),
+        endnote=True,
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+
+
+def _two_record_passage_ctx(monkeypatch):
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    passages = {
+        10: "First passage.",
+        11: "Second passage.",
+        12: "First",  # a substring of the first, still a note of its own
+        20: "Third passage.",
+        21: "Fourth passage.",
+    }
+    store = SimpleNamespace(
+        get_ref=lambda **_k: None,
+        resolve_handle=lambda h: SimpleNamespace(
+            public_id="a1" if int(h[2:]) < 20 else "b2",
+            chunk_id=int(h[2:]),
+            cite_public_id=None,
+        ),
+        chunks=SimpleNamespace(chunk_text_by_id=lambda cid: passages[cid]),
+    )
+    monkeypatch.setattr(
+        dx,
+        "_resolve_source",
+        lambda _s, slug: {
+            "rec_number": 1 if slug == "a1" else 2,
+            "title": slug,
+            "authors": ["Doe, J."],
+            "year": 2024,
+            "slug": slug,
+        },
+    )
+    return dx._Ctx(
+        store=store,
+        known_handles=set(),
+        endnote=True,
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+
+
+def test_endnote_dropped_pair_adds_a_note_to_each_record(monkeypatch) -> None:
+    from lxml import etree
+
+    from precis.export import docx as dx
+
+    ctx = _two_record_passage_ctx(monkeypatch)
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        "A [pc10][pc20] then [pc11][pc21] more [pc12][pc20] end.", ctx, para
+    )
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    instrs = [e.text or "" for e in para._p.iter(w + "instrText")]
+    assert len(instrs) == 1  # the repeated pair prints no field
+    assert para.text == "A [1, 2] then more end."  # the kept field's display text
+    payload = instrs[0].strip()[len("ADDIN EN.CITE ") :]
+    first, second = etree.fromstring(payload.encode("utf-8"))
+    notes = [c.findtext("record/research-notes") or "" for c in (first, second)]
+    # each record gets its own passages; the pinned "First" is a note of its
+    # own although "First passage." contains it; "Third passage." only once
+    assert [n.split() for n in notes] == [
+        ["First", "passage.", "Second", "passage.", "First"],
+        ["Third", "passage.", "Fourth", "passage."],
+    ]
+    assert notes[0].count("First passage.") == 1 and notes[0].endswith("First")
+    assert notes[1].count("Third passage.") == 1
+
+
+def test_endnote_dropped_mark_adds_its_passage_to_the_kept_record(monkeypatch) -> None:
+    from lxml import etree
+
+    from precis.export import docx as dx
+
+    ctx = _passage_ctx(monkeypatch)
+    para = docx.Document().add_paragraph()
+    dx._render_inline("First [pc10] then more [pc11] again [pc10].", ctx, para)
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    instrs = [e.text or "" for e in para._p.iter(w + "instrText")]
+    assert len(instrs) == 1  # no field for the dropped marks
+    assert para.text == "First [1] then more again."
+    payload = instrs[0].strip()[len("ADDIN EN.CITE ") :]
+    (cite,) = etree.fromstring(payload.encode("utf-8"))
+    notes = cite.findtext("record/research-notes")
+    # each pinned passage kept once, none lost
+    assert notes == "First passage. Second passage."
+
+
+def test_repeated_cite_dropped_in_caption_and_cell() -> None:
+    from precis.export import docx as dx
+
+    ctx = _repeat_ctx()
+    doc = docx.Document()
+    cap, cell = doc.add_paragraph(), doc.add_table(rows=1, cols=1).cell(0, 0)
+    dx._render_inline("Cap [§a1] plus [§a1] end.", ctx, cap)
+    dx._render_inline("Cell [§a1] plus [§a1].", ctx, cell.paragraphs[0])
+    assert cap.text == "Cap [1] plus end."
+    assert cell.text == "Cell [1] plus."
+
+
+# ── one number for two records of the same work (gr725253) ─────────────
+
+
+def _doi_store():
+    from tests.test_export_walker import _SMITH, _WorkStore
+
+    return _WorkStore(
+        {
+            "a1": ("Nanobuds", 2020, _SMITH, "10.1/X"),
+            "b2": ("Nanobuds, preprint", 2019, _SMITH, "https://doi.org/10.1/x"),
+            "c3": ("Other", 2021, _SMITH, "10.9/y"),
+        }
+    )
+
+
+def test_two_records_with_one_doi_share_a_number_in_docx() -> None:
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=_doi_store(),
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    text = _render_text("A [§a1] x [§c3] y [§b2] z.", ctx)
+    assert text == "A [1] x [2] y [1] z."
+    assert ctx.cited == ["a1", "c3"]  # no list entry for b2
+    assert ctx.warnings == [
+        "references a1 and b2 share DOI 10.1/x: printed as one entry"
+    ]
+
+
+def test_same_doi_records_inside_one_claim_hub_share_a_number_in_docx(
+    monkeypatch,
+) -> None:
+    import types
+
+    from precis.export import docx as dx
+
+    store = _doi_store()
+    store.pool = _NonHubPool()
+    store.fetch_refs_by_ids = lambda ids: {
+        i: types.SimpleNamespace(meta={}) for i in ids
+    }
+    store.tags_for = lambda _id: []
+    monkeypatch.setattr(dx, "_conjunct_cite_keys", lambda _s, _pk: ["a1", "b2"])
+    monkeypatch.setattr(dx, "_render_trust_mark", lambda *_a: None)
+    ctx = dx._Ctx(
+        store=store,
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    assert _render_text("claim [fi7].", ctx) == "claim [1]."
+    assert ctx.cited == ["a1"]
+    assert ctx.warnings == [
+        "references a1 and b2 share DOI 10.1/x: printed as one entry"
+    ]
+
+
+def test_export_warns_when_two_cited_records_look_like_one_work(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    _seed_paper(hub.live_store, "dupa2020", "A study of MOFs", 2020)
+    _seed_paper(hub.live_store, "dupb2020", "A study  of MOFs.", 2020)
+    pid = _new_draft_project(hub)
+    draft.put(id="dsame", title="T", project=pid)
+    draft.put(
+        id="dsame",
+        chunk_kind="paragraph",
+        text="One [§dupa2020] and the other [§dupb2020].",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dsame")
+    res = export_docx(hub.live_store, ref, target_path=tmp_path / "dsame.docx")
+    assert res.cited_slugs == ["dupa2020", "dupb2020"]  # no DOI: not merged
+    assert (
+        "references [1] and [2] look like the same work (dupa2020, dupb2020)"
+        in res.warnings
+    )

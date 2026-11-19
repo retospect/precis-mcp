@@ -96,8 +96,8 @@ occurrence: headings print the bare short and never define it, URLs and
 DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
 latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
 not capitalise the next word. Record handles follow the audience choice
-below; draft chunk cross-references retain their section/figure numbers,
-except a section reference into the citing chunk's own section or an
+below; chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
+(`Eq. (1)`), except a section reference into the citing chunk's own section or an
 ancestor, which prints `above` (target first) or `below` (`Above` at a
 sentence start) in both formats.
 The byline becomes an `authblk`
@@ -114,8 +114,27 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
 - **PDF** — deterministic but slow, so it runs as a **job**
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
-- **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list; styles below.
+- **Word/.docx** — toolchain-free and **synchronous**, with acronym
+  first-use expansion + list; figure, table and equation numbers and
+  cross-references are Word fields (update fields renumbers); styles below.
+
+## Repeated citations
+
+Within one paragraph, list item, caption or table cell, a citation mark
+naming the same references as the previous printed mark is dropped, in
+Word and PDF: "text [5]. More [5]." prints "text [5]. More." The
+reference still counts and stays in the list. A different reference in
+between, an SI postnote or a trust mark ("(unverified)") keeps the mark.
+So does a sentence that leans on it: after "(", a comma, a colon or a full
+stop, after "see", "in", "ref." and the like, at the start of the block, or
+before "'s". The kept mark is the one the next mark is compared with.
+In EndNote mode the dropped mark's pinned passage joins the kept field's
+research notes. To print every mark, pass `--repeat-cites` (CLI) or
+`repeat_cites: true` (job param).
+
+Two cited records with the same DOI share one number and one list entry
+(the export warns once). Records with equal title, year and first author
+but no shared DOI are not merged; the export only warns.
 
 ## Word styles
 
@@ -130,6 +149,10 @@ restyle a whole class of text by editing one style in Word.
 | Picture paragraph | `Figure` |
 | Reference entry: "[n]", a tab, the entry; hanging indent | `Bibliography`; `EndNote Bibliography` when citations are EndNote fields |
 | Acronym entry "SHORT: long form" | `Definition`; the label in `Definition Term` (character) |
+| Published claim artifact entry: sentence, source numbers, linked word "link", "(under embargo)" until public | `Published Claim` |
+| "Abstract" label above the prose before the first heading (Word only; no number, not a heading) | `Abstract Title`; the paragraphs in `Abstract` until a "Keywords:" paragraph |
+| Page footer "Page N of M" (live fields, centred) | `Footer` |
+| Header from page 2: short title left, first author's family name (or "A and B", "A et al.") right | `Header` |
 
 ## Audience and data supplement
 

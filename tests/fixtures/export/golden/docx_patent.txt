@@ -1,5 +1,5 @@
 == [Content_Types].xml ==
-sha256 58f029a8e112bb31f99276277b530bd2ef422c2d0c20ffd85f242a837bd869a8
+sha256 a0a41c8caf61fdf728f2fc327624c642ea85502e1a3242aa2e3f03227ef539d9
 == _rels/.rels ==
 sha256 887452abd23127b28a6e015489dff730b30bf2ef64aa53ce3d9d0007f58e2921
 == customXml/_rels/item1.xml.rels ==
@@ -30,9 +30,19 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </Relationship>
 <Relationship Id="rId2" Target="numbering.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering">
 </Relationship>
-<Relationship Id="rId9" Target="https://precis.example.test/r/structure/12" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+<Relationship Id="rId9" Target="footer1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer">
 </Relationship>
-<Relationship Id="rId10" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
+<Relationship Id="rId10" Target="footer2.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer">
+</Relationship>
+<Relationship Id="rId11" Target="header1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header">
+</Relationship>
+<Relationship Id="rId12" Target="header2.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header">
+</Relationship>
+<Relationship Id="rId13" Target="https://precis.example.test/r/structure/12" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId14" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
+</Relationship>
+<Relationship Id="rId15" Target="https://w3id.org/np/RAgolden" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
 </Relationship>
 </Relationships>
 == word/document.xml ==
@@ -68,8 +78,15 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:pStyle w:val="Heading1">
 </w:pStyle>
 </w:pPr>
+<w:bookmarkStart w:id="1" w:name="_Ref_dc2">
+</w:bookmarkStart>
 <w:r>
-<w:t xml:space="preserve">1 </w:t>
+<w:t>1</w:t>
+</w:r>
+<w:bookmarkEnd w:id="1">
+</w:bookmarkEnd>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:r>
 <w:t>Introduction</w:t>
@@ -212,8 +229,15 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:pStyle w:val="Heading1">
 </w:pStyle>
 </w:pPr>
+<w:bookmarkStart w:id="2" w:name="_Ref_dc6">
+</w:bookmarkStart>
 <w:r>
-<w:t xml:space="preserve">2 </w:t>
+<w:t>2</w:t>
+</w:r>
+<w:bookmarkEnd w:id="2">
+</w:bookmarkEnd>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:r>
 <w:t xml:space="preserve">Claims about </w:t>
@@ -373,7 +397,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:r>
 <w:t xml:space="preserve">.1/x and </w:t>
 </w:r>
-<w:hyperlink r:id="rId9">
+<w:hyperlink r:id="rId13">
 <w:r>
 <w:rPr>
 <w:color w:val="000000">
@@ -400,13 +424,60 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">. See </w:t>
 </w:r>
 <w:r>
-<w:t>section 1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> and </w:t>
 </w:r>
 <w:r>
-<w:t>Eq. (1)</w:t>
+<w:t>Eq. (</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc11 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t>)</w:t>
 </w:r>
 <w:r>
 <w:t>.</w:t>
@@ -438,7 +509,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </pic:cNvPicPr>
 </pic:nvPicPr>
 <pic:blipFill>
-<a:blip r:embed="rId10">
+<a:blip r:embed="rId14">
 </a:blip>
 <a:stretch>
 <a:fillRect>
@@ -472,7 +543,58 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:rStyle w:val="CaptionLabel">
 </w:rStyle>
 </w:rPr>
-<w:t xml:space="preserve">Figure 1: </w:t>
+<w:t xml:space="preserve">Figure </w:t>
+</w:r>
+<w:bookmarkStart w:id="3" w:name="_Ref_dc9">
+</w:bookmarkStart>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:instrText xml:space="preserve"> SEQ Figure \* ARABIC </w:instrText>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:bookmarkEnd w:id="3">
+</w:bookmarkEnd>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:t xml:space="preserve">: </w:t>
 </w:r>
 <w:r>
 <w:t xml:space="preserve">A </w:t>
@@ -529,24 +651,119 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:r>
 <w:tab>
 </w:tab>
-<w:t>(1)</w:t>
+<w:t>(</w:t>
+</w:r>
+<w:bookmarkStart w:id="4" w:name="_Ref_dc11">
+</w:bookmarkStart>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> SEQ Equation \* ARABIC </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:bookmarkEnd w:id="4">
+</w:bookmarkEnd>
+<w:r>
+<w:t>)</w:t>
 </w:r>
 </w:p>
 <w:p>
 <w:r>
-<w:t>Fig. 1</w:t>
+<w:t xml:space="preserve">Figure </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc9 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> opens a sentence. Runs </w:t>
 </w:r>
 <w:r>
-<w:t>section 1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:r>
-<w:t>section 1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> merge, </w:t>
@@ -564,13 +781,57 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> and a legacy </w:t>
 </w:r>
 <w:r>
-<w:t>section 1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> resolve, a run-in </w:t>
 </w:r>
 <w:r>
-<w:t>section 2.1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc15 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">2.1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> names itself, the end matter </w:t>
@@ -582,13 +843,63 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> too, and </w:t>
 </w:r>
 <w:r>
-<w:t>Eq. (1)</w:t>
+<w:t>Eq. (</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc11 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t>)</w:t>
 </w:r>
 <w:r>
 <w:t xml:space="preserve">. </w:t>
 </w:r>
 <w:r>
-<w:t>Equation (1)</w:t>
+<w:t>Equation (</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc11 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t>)</w:t>
 </w:r>
 <w:r>
 <w:t xml:space="preserve"> starts one.</w:t>
@@ -599,8 +910,15 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:pStyle w:val="Heading2">
 </w:pStyle>
 </w:pPr>
+<w:bookmarkStart w:id="5" w:name="_Ref_dc15">
+</w:bookmarkStart>
 <w:r>
-<w:t xml:space="preserve">2.1 </w:t>
+<w:t>2.1</w:t>
+</w:r>
+<w:bookmarkEnd w:id="5">
+</w:bookmarkEnd>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
 </w:r>
 <w:r>
 <w:t>Deep part</w:t>
@@ -705,8 +1023,52 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:rStyle w:val="CaptionLabel">
 </w:rStyle>
 </w:rPr>
-<w:t>Table 1</w:t>
+<w:t xml:space="preserve">Table </w:t>
 </w:r>
+<w:bookmarkStart w:id="6" w:name="_Ref_dc28">
+</w:bookmarkStart>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:instrText xml:space="preserve"> SEQ Table \* ARABIC </w:instrText>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:rStyle w:val="CaptionLabel">
+</w:rStyle>
+</w:rPr>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:bookmarkEnd w:id="6">
+</w:bookmarkEnd>
 </w:p>
 <w:tbl>
 <w:tblPr>
@@ -835,7 +1197,29 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">Thanks to all; see </w:t>
 </w:r>
 <w:r>
-<w:t>section 1</w:t>
+<w:t xml:space="preserve">Section </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> REF _Ref_dc2 \h \* MERGEFORMAT </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
 </w:r>
 <w:r>
 <w:t>.</w:t>
@@ -1075,144 +1459,46 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t>Published claim artifacts</w:t>
 </w:r>
 </w:p>
-<w:tbl>
-<w:tblPr>
-<w:tblStyle w:val="TableGrid">
-</w:tblStyle>
-<w:tblW w:type="auto" w:w="0">
-</w:tblW>
-<w:tblLook w:firstColumn="1" w:firstRow="1" w:lastColumn="0" w:lastRow="0" w:noHBand="0" w:noVBand="1" w:val="04A0">
-</w:tblLook>
-</w:tblPr>
-<w:tblGrid>
-<w:gridCol w:w="2340">
-</w:gridCol>
-<w:gridCol w:w="2340">
-</w:gridCol>
-<w:gridCol w:w="2340">
-</w:gridCol>
-<w:gridCol w:w="2340">
-</w:gridCol>
-</w:tblGrid>
-<w:tr>
-<w:trPr>
-<w:tblHeader>
-</w:tblHeader>
-</w:trPr>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
 <w:p>
+<w:pPr>
+<w:pStyle w:val="PublishedClaim">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>MOFs capture CO2.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId15">
 <w:r>
 <w:rPr>
-<w:b>
-</w:b>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
 </w:rPr>
-<w:t>Claim</w:t>
+<w:t>link</w:t>
 </w:r>
+</w:hyperlink>
 </w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:rPr>
-<w:b>
-</w:b>
-</w:rPr>
-<w:t>Sources</w:t>
-</w:r>
-</w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:rPr>
-<w:b>
-</w:b>
-</w:rPr>
-<w:t>Cited in</w:t>
-</w:r>
-</w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:rPr>
-<w:b>
-</w:b>
-</w:rPr>
-<w:t>Artifact</w:t>
-</w:r>
-</w:p>
-</w:tc>
-</w:tr>
-<w:tr>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:t>“MOFs capture CO2.”</w:t>
-</w:r>
-</w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-</w:r>
-</w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:t>2</w:t>
-</w:r>
-</w:p>
-</w:tc>
-<w:tc>
-<w:tcPr>
-<w:tcW w:type="dxa" w:w="2340">
-</w:tcW>
-</w:tcPr>
-<w:p>
-<w:r>
-<w:t>https://w3id.org/np/RAgolden — published 2026-01-02</w:t>
-</w:r>
-</w:p>
-</w:tc>
-</w:tr>
-</w:tbl>
 <w:sectPr w:rsidR="00FC693F" w:rsidRPr="0006063C" w:rsidSect="00034616">
+<w:footerReference r:id="rId9" w:type="default">
+</w:footerReference>
+<w:footerReference r:id="rId10" w:type="first">
+</w:footerReference>
+<w:headerReference r:id="rId11" w:type="first">
+</w:headerReference>
+<w:headerReference r:id="rId12" w:type="default">
+</w:headerReference>
 <w:pgSz w:h="15840" w:w="12240">
 </w:pgSz>
 <w:pgMar w:bottom="1440" w:footer="720" w:gutter="0" w:header="720" w:left="1440" w:right="1440" w:top="1440">
 </w:pgMar>
 <w:cols w:space="720">
 </w:cols>
+<w:titlePg>
+</w:titlePg>
 <w:docGrid w:linePitch="360">
 </w:docGrid>
 </w:sectPr>
@@ -1220,6 +1506,148 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:document>
 == word/fontTable.xml ==
 sha256 ada4b4c453c903f5e93436aad8a5b6ac41c1f495386650164ad7af0a63c5f581
+== word/footer1.xml ==
+<w:ftr xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main" xmlns:mv="urn:schemas-microsoft-com:mac:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Footer">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Page </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> PAGE </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> of </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> NUMPAGES </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+</w:p>
+</w:ftr>
+== word/footer2.xml ==
+<w:ftr xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main" xmlns:mv="urn:schemas-microsoft-com:mac:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Footer">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Page </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> PAGE </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> of </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> NUMPAGES </w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">1</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+</w:p>
+</w:ftr>
+== word/header1.xml ==
+<w:hdr xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main" xmlns:mv="urn:schemas-microsoft-com:mac:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Header">
+</w:pStyle>
+</w:pPr>
+</w:p>
+</w:hdr>
+== word/header2.xml ==
+<w:hdr xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main" xmlns:mv="urn:schemas-microsoft-com:mac:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Header">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Golden Draft</w:t>
+<w:tab>
+</w:tab>
+<w:t>Lovelace</w:t>
+</w:r>
+</w:p>
+</w:hdr>
 == word/media/image1.png ==
 sha256 497790947d4666760ce38f3c00e852c71fdb66cae849bae8e9ede352719e1581
 == word/numbering.xml ==
@@ -1318,7 +1746,7 @@ sha256 32000b3f86ee8be54e8519f55001ac77a2bd8334be8ff76673e980cbdaaab8e5
 </w14:defaultImageDpi>
 </w:settings>
 == word/styles.xml ==
-sha256 2aa92cb3dd6905a771046ea3fca6b69034bce4f057255fc345267c07452afdc1
+sha256 fba84fdccaf17879cfc24e04f1f1e4e3d30d291b7b49d81fd578ee45259ea04b
 == word/stylesWithEffects.xml ==
 sha256 3994e251cc031b5e83769658f4af62834429eb239f41d5c9d2fd563e8fda9724
 == word/theme/theme1.xml ==

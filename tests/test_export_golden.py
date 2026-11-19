@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import struct
 import zipfile
 import zlib
@@ -476,6 +477,10 @@ _DOCX_TEXT = frozenset(
 )
 
 
+#: the running header / footer parts (``word/header1.xml``, ``footer2.xml`` …).
+_DOCX_HEADER_FOOTER = re.compile(r"word/(header|footer)\d+\.xml")
+
+
 def _canonical_docx(path: Path) -> str:
     today = datetime.now(UTC)
     date_line = f"{today:%B} {today.day}, {today.year}"
@@ -487,7 +492,7 @@ def _canonical_docx(path: Path) -> str:
             data = z.read(part)
             if part.endswith((".xml", ".rels")):
                 data = etree.tostring(etree.fromstring(data), method="c14n")
-            if part in _DOCX_TEXT:
+            if part in _DOCX_TEXT or _DOCX_HEADER_FOOTER.match(part):
                 text = data.decode("utf-8").replace(date_line, "<DATE>")
                 text = text.replace("><", ">\n<")
             else:

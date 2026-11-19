@@ -687,7 +687,7 @@ def test_handle_paper_pc_pa_render_cite() -> None:
             else None
         )
     )
-    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store, repeat_cites=True)
     out = latex._render_inline("per [pc789] and again [pa123].", ctx)
     assert out.count(r"\cite{miller23}") == 2
     assert ctx.cited == ["miller23"]  # collapsed to one bib entry
@@ -955,7 +955,7 @@ def test_bare_paper_handle_renders_cite() -> None:
             else None
         )
     )
-    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store, repeat_cites=True)
     out = latex._render_inline("see pa5715 and pc7890 in passing.", ctx)
     assert out.count(r"\cite{miller23}") == 2
     assert "pa5715" not in out
@@ -2976,7 +2976,7 @@ def test_adjacent_identical_cites_collapse_to_one(monkeypatch) -> None:
             3: types.SimpleNamespace(meta={"primary_cite_key": "other20"}),
         }
     )
-    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store, repeat_cites=True)
     out = latex._render_inline("a [fi1][fi2][fi1] b [fi1] [fi2] c [fi1][fi3].", ctx)
     assert out.count(r"\cite{choi16}") == 3  # run, then each spaced cite
     assert r"\cite{choi16,other20}" in out  # distinct keys still merge
@@ -3300,6 +3300,22 @@ def test_adjacent_crefs_merge() -> None:
     assert r"\cref{chunk:dc3,chunk:dc4}" in out
 
 
+def test_preamble_names_cross_references_with_capitalised_words() -> None:
+    """gr725244: cleveref prints "Figure 1", "Table 1", "Section 5.4" (and
+    "Sections 1 and 2" merged) mid-sentence; the equation name stays
+    "Eq."."""
+    pre = latex._template_text("preamble.tex")
+    for name, one, many in (
+        ("figure", "Figure", "Figures"),
+        ("table", "Table", "Tables"),
+        ("section", "Section", "Sections"),
+        ("subsection", "Section", "Sections"),
+        ("subsubsection", "Section", "Sections"),
+    ):
+        assert rf"\crefname{{{name}}}{{{one}}}{{{many}}}" in pre
+    assert r"\crefname{equation}{Eq.}{Eqs.}" in pre
+
+
 def test_cref_after_cite_gets_space() -> None:
     out, _ = _inline("Shown by paper:smith2024[dc7].")
     assert r"\cite{smith2024} \cref{chunk:dc7}" in out
@@ -3468,3 +3484,150 @@ def test_render_body_skips_seeded_title_heading_and_lifts_depths(hub) -> None:
     assert f"\\phantomsection\\label{{chunk:{title.dc}}}" in body
     assert "\\section{Introduction}" in body
     assert "\\subsection{Scope}" in body
+
+
+# ── repeated citations in one block (gr725253) ─────────────────────────
+
+
+def _repeat_tex(text: str, **kw) -> tuple[str, latex._Ctx]:
+    ctx = latex._Ctx(keymap={}, known_handles=set(), **kw)
+    return latex._render_inline(text, ctx), ctx
+
+
+def test_repeated_cite_in_a_paragraph_prints_once() -> None:
+    out, ctx = _repeat_tex(
+        "Alpha [§a1] one. Beta [§a1]. Gamma [§b2] then [§a1] end [§a1]."
+    )
+    assert out == (r"Alpha \cite{a1} one. Beta. Gamma \cite{b2} then \cite{a1} end.")
+    assert ctx.cited == ["a1", "b2"]  # the .bib keeps the dropped mark's paper
+
+
+#: ``(source after a first printed mark, output with the mark as {c})``: the
+#: sentence leans on a repeated mark and keeps it, or it is dropped and the
+#: prose closes up. The Word and LaTeX tests below render the same table.
+_LEANING_REPEATS = [
+    ("B (see [§a1]).", "B (see {c})."),
+    ("B ([§a1]).", "B ({c})."),
+    ("as in ref. [§a1].", "as in ref. {c}."),
+    ("(Fig. 2, [§a1])", "(Fig. 2, {c})"),
+    ("the model [§a1]'s core", "the model {c}'s core"),
+    ("It ended. [§a1] shows that", "It ended. {c} shows that"),
+    ("text [§a1]. More", "text. More"),
+    ("text [§a1], and", "text, and"),
+    ("text [§a1] more", "text more"),
+    ("(text [§a1])", "(text)"),
+]
+
+
+@pytest.mark.parametrize(("source", "expected"), _LEANING_REPEATS)
+def test_latex_a_repeat_the_sentence_leans_on_is_kept(
+    source: str, expected: str
+) -> None:
+    out, _ = _repeat_tex("First [§a1] here. " + source)
+    assert out == r"First \cite{a1} here. " + expected.format(c=r"\cite{a1}")
+
+
+def test_latex_a_kept_repeat_is_what_the_next_repeat_is_compared_with() -> None:
+    out, _ = _repeat_tex("A [§a1]. B (see [§a1]) C [§a1] D [§b2] E [§a1].")
+    assert out == r"A \cite{a1}. B (see \cite{a1}) C D \cite{b2} E \cite{a1}."
+
+
+def test_dropped_cite_closes_up_the_prose_in_latex() -> None:
+    out, _ = _repeat_tex("as shown [§a1], and then [§a1], and so on [§a1] and [§a1]")
+    assert out == r"as shown \cite{a1}, and then, and so on and \cite{a1}"
+    out, _ = _repeat_tex("text [§a1]. More [§a1]. Then [§a1] more.")
+    assert out == r"text \cite{a1}. More. Then more."
+
+
+def test_latex_repeat_cites_true_prints_every_mark() -> None:
+    out, _ = _repeat_tex("Beta [§a1]. Gamma [§a1] then [§a1].", repeat_cites=True)
+    assert out.count(r"\cite{a1}") == 3
+
+
+def test_latex_si_mark_differs_from_the_plain_reference(monkeypatch) -> None:
+    monkeypatch.setattr(
+        latex,
+        "_resolve_si_slug",
+        lambda s, _c: (s.removesuffix("si"), s.endswith("si")),
+    )
+    out, _ = _repeat_tex("A [§p24] x [§p24si] y [§p24si] z.")
+    assert out == r"A \cite{p24} x \cite[SI]{p24} y z."
+
+
+def test_latex_trust_marked_cite_is_never_dropped(monkeypatch) -> None:
+    import types
+
+    store = _FindingStore(
+        {
+            7: types.SimpleNamespace(meta={"primary_cite_key": "a1"}),
+            8: types.SimpleNamespace(meta={"primary_cite_key": "a1"}),
+        }
+    )
+    marks = {7: r"\textsuperscript{?}[unverified]", 8: ""}
+    monkeypatch.setattr(latex, "_trust_mark_latex", lambda _c, pk: marks[pk])
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("A [fi7] x [fi7] y [fi8] z [fi8] w [§a1] v.", ctx)
+    assert "\x05" not in out
+    assert out == (
+        r"A \cite{a1}\textsuperscript{?}[unverified] x "
+        r"\cite{a1}\textsuperscript{?}[unverified] y \cite{a1} z w v."
+    )
+
+
+def test_latex_each_block_starts_its_own_comparison() -> None:
+    ctx = latex._Ctx(keymap={}, known_handles=set())
+    assert latex._render_inline("one [§a1].", ctx) == r"one \cite{a1}."
+    assert latex._render_inline("two [§a1].", ctx) == r"two \cite{a1}."
+
+
+def test_two_records_with_one_doi_cite_the_first_bib_key() -> None:
+    from tests.test_export_walker import _SMITH, _WorkStore
+
+    store = _WorkStore(
+        {
+            "a1": ("Nanobuds", 2020, _SMITH, "10.1/X"),
+            "b2": ("Nanobuds, preprint", 2019, _SMITH, "https://doi.org/10.1/x"),
+            "c3": ("Other", 2021, _SMITH, "10.9/y"),
+        }
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("A [§a1] x [§c3] y [§b2] z.", ctx)
+    assert out == r"A \cite{a1} x \cite{c3} y \cite{a1} z."
+    assert ctx.cited == ["a1", "c3"]  # no .bib entry for b2
+    assert ctx.warnings == [
+        "references a1 and b2 share DOI 10.1/x: printed as one entry"
+    ]
+
+
+def test_same_doi_records_inside_one_cite_group_merge_in_latex(monkeypatch) -> None:
+    import types
+    from typing import Any
+
+    from tests.test_export_walker import _SMITH, _WorkStore
+
+    # ``Any``: the fake gains the few extra members build_bib reads below.
+    store: Any = _WorkStore(
+        {
+            "a21": ("Nanobuds", 2020, _SMITH, "10.1/X"),
+            "b22": ("Nanobuds, preprint", 2019, _SMITH, "https://doi.org/10.1/x"),
+        }
+    )
+    # a claim hub: no source of its own, neither of its conjunct sources cited yet
+    store.pool = _FakeNonHubPool()
+    store.fetch_refs_by_ids = lambda ids: {
+        i: types.SimpleNamespace(meta={}) for i in ids
+    }
+    store.tags_for = lambda _id: []
+    for ref in store._refs.values():
+        ref.meta, ref.kind = {}, "paper"  # what build_bib reads
+    monkeypatch.setattr(latex, "_conjunct_cite_keys", lambda _s, _pk: ["a21", "b22"])
+    monkeypatch.setattr(latex, "_trust_mark_latex", lambda _c, _pk: "")
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("claim [fi7].", ctx)
+    assert out == r"claim \cite{a21}."  # one key, not \cite{a21,b22}
+    assert ctx.cited == ["a21"]
+    assert ctx.warnings == [
+        "references a21 and b22 share DOI 10.1/x: printed as one entry"
+    ]
+    bib = latex.build_bib(store, ctx.cited, [])
+    assert re.findall(r"^@\w+\{(\w+),", bib, re.MULTILINE) == ["a21"]  # one entry

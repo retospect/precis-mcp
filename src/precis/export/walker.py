@@ -85,6 +85,11 @@ class CiteGroup:
     numbers: tuple[int, ...]
     si: tuple[bool, ...]
     chunk_ids: tuple[int | None, ...] = ()
+    #: The block's plain text right before the mark and right after it
+    #: (:func:`mark_context`); what :class:`RepeatMarks` reads to tell whether
+    #: the sentence leans on the mark. Not part of the mark's identity.
+    before: str = field(default="", compare=False)
+    after: str = field(default="", compare=False)
 
     def joins(self, run: Sequence[CiteGroup]) -> bool:
         """May this mark join the adjacent ``run``? An SI mark joins and keeps
@@ -108,6 +113,8 @@ class CiteGroup:
             chunk_ids=tuple(self.chunk_ids[i] for i in order)
             if len(self.chunk_ids) == len(self.keys)
             else self.chunk_ids,
+            before=self.before,
+            after=self.after,
         )
 
 
@@ -276,6 +283,125 @@ def resolve_cite_handle(store: Any, handle: str) -> tuple[str, int | None, bool]
     )
 
 
+_DOI_PREFIX = re.compile(r"\s*(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", re.IGNORECASE)
+_NON_ALNUM = re.compile(r"[\W_]+")
+_CITED_KINDS = ("paper", "patent", "datasheet")
+
+
+def normalise_doi(raw: Any) -> str:
+    """A DOI for comparison: ``https://doi.org/`` prefix stripped, lower-case;
+    ``""`` for none."""
+    return _DOI_PREFIX.sub("", str(raw or ""), count=1).strip().lower()
+
+
+def _first_family(authors: Any) -> str:
+    """The lead author's family name, lower-case (``""`` for none)."""
+    from precis.utils.authors import author_display
+
+    for a in authors if isinstance(authors, list) else []:
+        if isinstance(a, dict) and str(a.get("family") or "").strip():
+            return str(a["family"]).strip().lower()
+        name = author_display(a, order="sortable")
+        if name:
+            head = name.split(",")[0] if "," in name else name.rsplit(" ", 1)[-1]
+            return head.strip().lower()
+    return ""
+
+
+@dataclass
+class DoiAliases:
+    """One reference number for two records of the same work. ``cited`` and
+    ``warnings`` are the export's own lists. :meth:`canonical` maps the key
+    about to be registered to the already cited record with the same DOI (the
+    first one cited), so a second record of that work takes its number and no
+    second list entry; the export warns once per such pair.
+    :meth:`same_work_warnings` is the after-the-walk check for the records
+    this cannot merge (no DOI, or different ones)."""
+
+    store: Any
+    cited: list[str]
+    warnings: list[str]
+    _refs: dict[str, Any] = field(default_factory=dict, repr=False)
+    _alias: dict[str, str] = field(default_factory=dict, repr=False)
+    _dois: dict[str, str] = field(default_factory=dict, repr=False)
+
+    def _ref(self, key: str) -> Any:
+        if key not in self._refs:
+            get_ref = getattr(self.store, "get_ref", None)
+            ref = None
+            if callable(get_ref):
+                for kind in _CITED_KINDS:
+                    ref = get_ref(kind=kind, id=key)
+                    if ref is not None:
+                        break
+            self._refs[key] = ref
+        return self._refs[key]
+
+    def doi(self, key: str) -> str:
+        """The record's normalised DOI, ``""`` when it has none."""
+        if key in self._dois:
+            return self._dois[key]
+        ref = self._ref(key)
+        fn = getattr(self.store, "identifiers_for_refs", None)
+        doi = ""
+        if ref is not None and callable(fn):
+            try:
+                alias = fn([ref.id]).get(ref.id, {})
+            except Exception:  # pragma: no cover — store hiccup
+                alias = {}
+            if isinstance(alias, dict):
+                doi = normalise_doi(alias.get("doi"))
+        self._dois[key] = doi
+        return doi
+
+    def canonical(self, key: str) -> str:
+        """The key to register for ``key``: itself, or the first cited record
+        with the same DOI."""
+        if key in self._alias:
+            return self._alias[key]
+        if key in self.cited:
+            return key
+        doi = self.doi(key)
+        if doi:
+            for other in self.cited:
+                if self.doi(other) == doi:
+                    self._alias[key] = other
+                    if self._ref(other).id != self._ref(key).id:
+                        self.warnings.append(
+                            f"references {other} and {key} share DOI {doi}: "
+                            "printed as one entry"
+                        )
+                    return other
+        return key
+
+    def same_work_warnings(self) -> list[str]:
+        """A warning per pair of cited records that look like one work (same
+        normalised title, year and first author family) without sharing a
+        DOI; nothing is merged."""
+        out: list[str] = []
+        seen: dict[tuple[str, Any, str], list[int]] = {}
+        for i, key in enumerate(self.cited):
+            ref = self._ref(key)
+            if ref is None:
+                continue
+            title = _NON_ALNUM.sub(" ", str(ref.title or "").lower()).strip()
+            if not title:
+                continue
+            ident = (title, ref.year, _first_family(ref.authors))
+            for j in seen.get(ident, []):
+                a, b = self.cited[j], key
+                if self._ref(a).id == ref.id:
+                    continue  # one record under two cite keys, not two records
+                if self.doi(a) and self.doi(a) == self.doi(b):
+                    continue
+                out.append(
+                    f"references [{j + 1}] and [{i + 1}] look like the same "
+                    f"work ({a}, {b})"
+                )
+            seen.setdefault(ident, []).append(i)
+        return out
+
+
 def key_group(
     keys: Sequence[str], resolve: Callable[[str], tuple[str, bool]]
 ) -> list[tuple[str, bool]]:
@@ -346,6 +472,8 @@ def _concat(groups: Sequence[CiteGroup]) -> CiteGroup:
         numbers=tuple(n for g in groups for n in g.numbers),
         si=tuple(s for g in groups for s in g.si),
         chunk_ids=tuple(c for g in groups for c in g.chunk_ids),
+        before=groups[0].before,
+        after=groups[-1].after,
     )
 
 
@@ -359,6 +487,8 @@ def _dedupe(group: CiteGroup) -> CiteGroup:
         numbers=tuple(group.numbers[i] for i in keep),
         si=tuple(group.si[i] for i in keep),
         chunk_ids=tuple(group.chunk_ids[i] for i in keep if i < len(group.chunk_ids)),
+        before=group.before,
+        after=group.after,
     )
 
 
@@ -383,6 +513,19 @@ def trim_before_dropped(prose: str) -> str:
     return stripped.rstrip(" ") if stripped != trimmed else trimmed
 
 
+def close_up_dropped(before: str, after: str) -> tuple[str, str]:
+    """Prose either side of a repeated cite mark that was not printed
+    (:class:`RepeatMarks`), closed up: closing punctuation hugs the word
+    before (``More [5].`` -> ``More.``, and a stranded ``and`` goes,
+    :func:`trim_before_dropped`), the end of the block leaves no trailing
+    space, and two spaces become one (``as [5] and`` -> ``as and``)."""
+    if not after or after[0] in CLOSING_PUNCT:
+        return trim_before_dropped(before), after
+    if after[0] == " " and before.endswith(" "):
+        return before, after.lstrip(" ")
+    return before, after
+
+
 @dataclass
 class RepeatGuard:
     """LaTeX same-mark collapse within one paragraph: a reference whose
@@ -404,6 +547,99 @@ class RepeatGuard:
         return True
 
 
+#: Markup that is not text: emphasis, code and math delimiters, sub/sup
+#: tags, script and brace characters, the backslash of an escape.
+_MARKUP = re.compile(r"</?su[bp]>|[*_^{}$\\`]")
+#: How much of the block either side of a mark :func:`mark_context` keeps.
+_CONTEXT_BEFORE = 80
+_CONTEXT_AFTER = 24
+
+
+def mark_context(before_src: str, after_src: str) -> tuple[str, str]:
+    """The plain text directly around a cite mark, from the block's source
+    text before it (a display link as its surface text, as the exporters
+    accumulate it) and after it: the input of :func:`leans_on_mark`. Both
+    backends call this on the same source, so they decide alike."""
+    return (
+        _MARKUP.sub("", before_src[-_CONTEXT_BEFORE:]),
+        _MARKUP.sub("", after_src[:_CONTEXT_AFTER]),
+    )
+
+
+#: A word that hands the sentence to the citation: ``see [5]``, ``in ref. [5]``.
+_LEAN_WORDS = frozenset(
+    {
+        *("see", "cf", "in", "by", "from", "of", "and", "or", "to", "as", "per"),
+        *("with", "also", "ref", "refs", "reference", "references", "following"),
+        *("after", "e.g", "i.e"),
+    }
+)
+_WORD_BEFORE = re.compile(r"(?<![\w.-])([^\W\d_]+(?:\.[^\W\d_]+)*)\.?\Z")
+_CLOSERS = ")]%\u201d\u2019\u00bb\u203a"
+
+
+def _ends_a_phrase(before: str) -> bool:
+    """Does the (stripped, non-empty) ``before`` end in a letter, digit,
+    closing bracket, closing quotation mark or ``%``? A straight quote
+    closes when it follows a word, not a space or an opening bracket."""
+    c = before[-1]
+    if c.isalnum() or c in _CLOSERS:
+        return True
+    if c in "\"'":
+        prev = before[-2:-1]
+        return bool(prev) and not prev.isspace() and prev not in "([{"
+    return False
+
+
+def leans_on_mark(before: str, after: str) -> bool:
+    """Does the sentence need the cite mark between ``before`` and ``after``
+    (:func:`mark_context`, spaces next to the mark ignored)? Yes when nothing
+    precedes it, when what precedes does not end a phrase (``(``, ``,``, ``;``,
+    ``:``, ``.``, a dash, an opening quote), when the word before is one of
+    :data:`_LEAN_WORDS`, or when ``'s`` follows. Dropping such a mark leaves
+    ``(see)``, ``()``, ``ref..`` or ``the model 's core``."""
+    head = before.strip()
+    if not head or not _ends_a_phrase(head):
+        return True
+    word = _WORD_BEFORE.search(head)
+    if word is not None and word.group(1).lower() in _LEAN_WORDS:
+        return True
+    return after.lstrip().startswith(("'s", "\u2019s"))
+
+
+@dataclass
+class RepeatMarks:
+    """The repeated-citation rule for ONE rendered prose block (a paragraph,
+    a list item, a caption, one table cell; a fresh instance per block): a
+    mark naming the same set of references as the previous *printed* mark of
+    the block is not printed again, however much prose lies between. A mark
+    naming a different set prints and becomes the one compared against; an
+    SI mark differs from the same paper without the flag. A mark the sentence
+    leans on (:func:`leans_on_mark`, read from the group's ``before`` /
+    ``after``) prints and becomes the one compared against. A mark that
+    carries a trust mark always prints and, as the text now between it and
+    the next mark, resets the comparison. ``enabled=False`` prints every
+    mark."""
+
+    enabled: bool = True
+    _prev: frozenset[tuple[str, bool]] | None = None
+
+    def admit(self, group: CiteGroup, *, trusted: bool = False) -> bool:
+        """Should ``group`` print? Records it as the previous printed mark."""
+        marks = frozenset(zip(group.keys, group.si, strict=True))
+        if trusted:
+            self._prev = None
+            return True
+        if (
+            self.enabled
+            and marks == self._prev
+            and not leans_on_mark(group.before, group.after)
+        ):
+            return False
+        self._prev = marks
+        return True
+
+
 @dataclass
 class CiteRun:
     """docx in-walk grouping: directly adjacent cites buffer into one mark;
@@ -415,18 +651,33 @@ class CiteRun:
 
     _last: tuple[str, bool] | None = None
     _buffer: list[tuple[str, int, bool, int | None]] = field(default_factory=list)
+    _before: str = ""
+    _after: str = ""
 
     def add(
-        self, key: str, number: int, *, si: bool, chunk_id: int | None
+        self,
+        key: str,
+        number: int,
+        *,
+        si: bool,
+        chunk_id: int | None,
+        context: tuple[str, str] = ("", ""),
     ) -> list[CiteGroup]:
-        """Cite ``key``; return the marks to emit now (possibly none)."""
+        """Cite ``key``; return the marks to emit now (possibly none).
+        ``context`` is the plain text before and after the reference in its
+        block (:func:`mark_context`): the run's mark carries the text before
+        its first and after its last reference."""
         if self._last == (key, si):
+            self._after = context[1]
             return []
         self._last = (key, si)
         flushed: list[CiteGroup] = []
         if any(k == key and s != si for k, _n, s, _c in self._buffer):
             mark = self.flush()
             flushed = [mark] if mark is not None else []
+        if not self._buffer:
+            self._before = context[0]
+        self._after = context[1]
         self._buffer.append((key, number, si, chunk_id))
         return flushed
 
@@ -441,6 +692,8 @@ class CiteRun:
                 numbers=tuple(n for _k, n, _s, _c in run),
                 si=tuple(s for _k, _n, s, _c in run),
                 chunk_ids=tuple(c for _k, _n, _s, c in run),
+                before=self._before,
+                after=self._after,
             )
         ).by_number()
 
@@ -513,6 +766,18 @@ def title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
         return " ".join((s or "").split()).lower()
 
     return str(first.dc) if norm(first.text) == norm(title) else None
+
+
+def has_sections(chunks: list[Any], title_dc: str | None) -> bool:
+    """Whether the draft has a section heading besides its title (and the
+    generated Glossary). Only then is the prose before the first heading an
+    abstract; a note made of paragraphs alone has none."""
+    return any(
+        c.chunk_kind == "heading"
+        and str(c.dc) != title_dc
+        and not is_glossary_heading(c)
+        for c in chunks
+    )
 
 
 def depth_shift(chunks: list[Any], title_dc: str | None) -> int:
@@ -599,10 +864,10 @@ def number_xrefs(
             section[c.dc] = current  # a numbered heading overwrites below
         if c.chunk_kind == "figure":
             figs += 1
-            labels[c.dc] = ("fig.", str(figs))
+            labels[c.dc] = ("Figure", str(figs))
         elif c.chunk_kind == "table":
             tabs += 1
-            labels[c.dc] = ("table", str(tabs))
+            labels[c.dc] = ("Table", str(tabs))
         elif c.chunk_kind == "heading":
             if is_glossary_heading(c) or c.dc == title_dc:
                 continue
@@ -617,11 +882,11 @@ def number_xrefs(
                 shown.add(c.dc)
                 current = ".".join(str(n) for n in counters[: d + 1])
             # else: run-in paragraph heading — resolves to the enclosing section
-            labels[c.dc] = ("section", current)
+            labels[c.dc] = ("Section", current)
             if not in_back:
                 section[c.dc] = current
         elif c.chunk_kind not in ("ulist", "olist") and current:
-            labels[c.dc] = ("section", current)
+            labels[c.dc] = ("Section", current)
     equations: dict[str, int] = {}
     for c in chunks:
         if c.chunk_kind in EQ_SKIP_KINDS:
@@ -752,7 +1017,7 @@ def relative_word(dc: str, citing: str, nums: XrefNumbers | None) -> str | None:
         return None
     label = nums.labels.get(dc)
     here = nums.section.get(citing)
-    if label is None or label[0] != "section" or not label[1] or not here:
+    if label is None or label[0] != "Section" or not label[1] or not here:
         return None
     if dc in nums.equations or (
         here != label[1] and not here.startswith(label[1] + ".")

@@ -55,7 +55,7 @@ _SAMPLES: dict[str, dict[str, tuple[Any, ...]]] = {
     "term": dict.fromkeys(("latex", "docx"), (_abbrev.Use("MOF", mode="first"),)),
     "xref": dict.fromkeys(
         ("latex", "docx"),
-        (walker.Xref("dc2", None, live=True, label=("section", "1")),),
+        (walker.Xref("dc2", None, live=True, label=("Section", "1")),),
     ),
     "back_matter": {
         "latex": ("acronyms", "\\printglossaries"),
@@ -71,7 +71,7 @@ _SAMPLES: dict[str, dict[str, tuple[Any, ...]]] = {
         (_chunk("heading", "Intro"), walker.HeadingInfo(0, "1", back_matter=False)),
     ),
     "figure": dict.fromkeys(("latex", "docx"), (_chunk("figure", "A caption."),)),
-    "table": dict.fromkeys(("latex", "docx"), (_chunk("table", _TABLE),)),
+    "table": dict.fromkeys(("latex", "docx"), (_chunk("Table", _TABLE),)),
     "code": dict.fromkeys(("latex", "docx"), (_chunk("code", "x = 1"),)),
     "aside": dict.fromkeys(("latex", "docx"), (_chunk("aside", "Aside."),)),
     "equation": dict.fromkeys(
@@ -225,7 +225,7 @@ def test_xref_formats_only() -> None:
 
 
 def test_resolve_xref_downgrades_dead_and_skips_unnumbered() -> None:
-    nums = walker.XrefNumbers({"dc2": ("section", "")}, set(), {"dc5": 1})
+    nums = walker.XrefNumbers({"dc2": ("Section", "")}, set(), {"dc5": 1})
     warnings: list[str] = []
     dead = walker.resolve_xref(
         "dc9", None, live={"dc2", "dc5"}, numbers=nums, warnings=warnings
@@ -267,12 +267,12 @@ def test_number_xrefs_reads_structure_only() -> None:
     ]
     nums = walker.number_xrefs(chunks, "T", equation_of=latex._standalone_equation)
     assert nums.labels == {
-        "dc2": ("section", "1"),
-        "dc3": ("section", "1"),
-        "dc4": ("section", "1"),
-        "dc5": ("fig.", "1"),
-        "dc6": ("table", "1"),
-        "dc7": ("table", "2"),
+        "dc2": ("Section", "1"),
+        "dc3": ("Section", "1"),
+        "dc4": ("Section", "1"),
+        "dc5": ("Figure", "1"),
+        "dc6": ("Table", "1"),
+        "dc7": ("Table", "2"),
     }
     assert nums.numbered_headings == {"dc2"} and nums.equations == {"dc4": 1}
 
@@ -393,3 +393,198 @@ def test_relative_word_for_a_reference_into_the_own_section() -> None:
         ).relative
         is None
     )  # an authored surface wins
+
+
+# ── repeated citation marks (gr725253) ─────────────────────────────────
+
+
+def _mark(
+    *keys: str, si: bool = False, before: str = "a claim", after: str = ". More"
+) -> walker.CiteGroup:
+    return walker.CiteGroup(
+        keys=tuple(keys),
+        numbers=tuple(range(1, len(keys) + 1)),
+        si=(si,) * len(keys),
+        before=before,
+        after=after,
+    )
+
+
+def test_repeat_marks_drop_an_equal_mark_until_another_one_prints() -> None:
+    rep = walker.RepeatMarks()
+    assert rep.admit(_mark("a")) is True
+    assert rep.admit(_mark("a")) is False
+    assert rep.admit(_mark("a")) is False  # compared with the printed one
+    assert rep.admit(_mark("b")) is True  # a different set resets
+    assert rep.admit(_mark("a")) is True
+    # the set, not the order: [a, b] equals [b, a]
+    assert rep.admit(_mark("a", "b")) is True
+    assert rep.admit(_mark("b", "a")) is False
+
+
+def test_repeat_marks_si_and_trust_and_switch() -> None:
+    rep = walker.RepeatMarks()
+    assert rep.admit(_mark("a")) is True
+    assert rep.admit(_mark("a", si=True)) is True  # an SI postnote differs
+    assert rep.admit(_mark("a", si=True), trusted=True) is True
+    assert rep.admit(_mark("a", si=True)) is True  # not compared with it
+    assert rep.admit(_mark("a", si=True)) is False
+    off = walker.RepeatMarks(enabled=False)
+    assert [off.admit(_mark("a")) for _ in range(3)] == [True] * 3
+
+
+#: ``{}`` marks the repeated mark; True when the sentence leans on it (the
+#: mark is kept), False when it may be dropped.
+_LEAN_CASES = [
+    ("B (see {}).", True),
+    ("B ({}).", True),
+    ("as in ref. {}.", True),
+    ("(Fig. 2, {})", True),
+    ("the model {}'s core", True),
+    ("the model {}\u2019s core", True),
+    ("... end. {} shows that", True),
+    ("{} shows that", True),
+    ("   {} shows that", True),
+    ("first; {} second", True),
+    ("as follows: {}", True),
+    ("a dash \u2014 {}", True),
+    ('he said "{}', True),
+    ("he said \u201c{}", True),
+    ("by {}", True),
+    ("Refs. {}", True),
+    ("(e.g. {})", True),
+    ("(i.e., {}", True),
+    ("Cf. {}", True),
+    ("see also {}", True),
+    ("the following {}", True),
+    ("text {}. More", False),
+    ("text {}, and", False),
+    ("text {} more", False),
+    ("text {})", False),
+    ("text 2 {}.", False),
+    ("a 50% {}.", False),
+    ("(see x) {}.", False),
+    ("as [3] {}.", False),
+    ("quoted\u201d {}.", False),
+    ('"quoted" {}.', False),
+    ("**bold** {}.", False),
+    ("NICS(1)$_{zz}$ {}.", False),
+    ("a word-in {}.", False),
+    ("a seeing {}.", False),  # not the word "see"
+]
+
+
+@pytest.mark.parametrize(("template", "keep"), _LEAN_CASES)
+def test_leans_on_mark_decides_from_the_text_around_it(
+    template: str, keep: bool
+) -> None:
+    ctx = walker.mark_context(*template.split("{}"))
+    assert walker.leans_on_mark(*ctx) is keep
+    # the same answer through the rule that drops marks
+    rep = walker.RepeatMarks()
+    assert rep.admit(_mark("a")) is True
+    assert rep.admit(_mark("a", before=ctx[0], after=ctx[1])) is keep
+
+
+def test_a_kept_repeat_is_the_mark_the_next_one_is_compared_with() -> None:
+    rep = walker.RepeatMarks()
+    assert rep.admit(_mark("a")) is True
+    assert rep.admit(_mark("a", before="(see", after=")")) is True  # leaned on
+    assert rep.admit(_mark("a")) is False  # equals the kept one
+    assert rep.admit(_mark("b")) is True
+    assert rep.admit(_mark("a", before="", after=" shows")) is True  # kept, and
+    assert rep.admit(_mark("a")) is False  # compared with that one, not with b
+
+
+def test_close_up_dropped_prose() -> None:
+    assert walker.close_up_dropped("More ", ".") == ("More", ".")
+    assert walker.close_up_dropped("shown ", ", and") == ("shown", ", and")
+    assert walker.close_up_dropped("as ", " and") == ("as ", "and")
+    assert walker.close_up_dropped("end ", "") == ("end", "")
+    assert walker.close_up_dropped("see x and ", ".") == ("see x", ".")
+    assert walker.close_up_dropped("a-", "b") == ("a-", "b")
+
+
+# ── one number for two records of the same work (gr725253) ─────────────
+
+
+class _WorkStore:
+    """Papers by slug: ``(id, title, year, authors, doi)``."""
+
+    def __init__(self, papers: dict[str, tuple]) -> None:
+        from types import SimpleNamespace
+
+        self._refs = {
+            slug: SimpleNamespace(
+                id=i,
+                slug=slug,
+                title=title,
+                year=year,
+                authors=authors,
+                pdf_role=None,
+            )
+            for i, (slug, (title, year, authors, _doi)) in enumerate(
+                papers.items(), start=1
+            )
+        }
+        self._dois = {i: p[3] for i, p in enumerate(papers.values(), start=1)}
+
+    def get_ref(self, *, kind: str, id: str) -> Any:
+        return self._refs.get(id) if kind == "paper" else None
+
+    def identifiers_for_refs(self, ids: list[int]) -> dict[int, dict[str, str]]:
+        return {i: {"doi": self._dois[i]} for i in ids if self._dois.get(i)}
+
+
+_SMITH = [{"family": "Smith", "given": "J."}]
+
+
+def test_same_doi_shares_the_first_records_number_and_warns_once() -> None:
+    store = _WorkStore(
+        {
+            "a1": ("Nanobuds", 2020, _SMITH, "10.1/X"),
+            "b2": ("Nanobuds, preprint", 2019, _SMITH, "https://doi.org/10.1/x"),
+            "c3": ("Other", 2021, _SMITH, "10.9/y"),
+        }
+    )
+    cited: list[str] = []
+    warnings: list[str] = []
+    alias = walker.DoiAliases(store, cited, warnings)
+    assert walker.register(cited, alias.canonical("a1")) == 1
+    assert walker.register(cited, alias.canonical("b2")) == 1  # a1's number
+    assert walker.register(cited, alias.canonical("b2")) == 1
+    assert walker.register(cited, alias.canonical("c3")) == 2
+    assert cited == ["a1", "c3"]
+    assert warnings == ["references a1 and b2 share DOI 10.1/x: printed as one entry"]
+
+
+def test_one_record_under_two_cite_keys_is_aliased_without_a_warning() -> None:
+    # two cite keys (an alias) of one record: the same id, so the same DOI
+    store = _WorkStore({"a1": ("Nanobuds", 2020, _SMITH, "10.1/X")})
+    store._refs["a1alias"] = store._refs["a1"]
+    cited: list[str] = []
+    warnings: list[str] = []
+    alias = walker.DoiAliases(store, cited, warnings)
+    assert walker.register(cited, alias.canonical("a1")) == 1
+    assert walker.register(cited, alias.canonical("a1alias")) == 1
+    assert cited == ["a1"]
+    assert warnings == []
+
+
+def test_same_work_warning_for_unmergeable_records() -> None:
+    store = _WorkStore(
+        {
+            "a1": ("Carbon  nanobuds!", 2020, _SMITH, "10.1/x"),
+            "b2": ("carbon nanobuds", 2020, _SMITH, "10.2/other"),
+            "c3": ("Carbon nanobuds", 2020, _SMITH, ""),
+            "d4": ("Carbon nanobuds", 2021, _SMITH, ""),  # another year
+            "e5": ("Carbon nanobuds", 2020, [{"family": "Jones"}], ""),
+        }
+    )
+    cited = list(store._refs)
+    alias = walker.DoiAliases(store, cited, [])
+    assert alias.same_work_warnings() == [
+        "references [1] and [2] look like the same work (a1, b2)",
+        "references [1] and [3] look like the same work (a1, c3)",
+        "references [2] and [3] look like the same work (b2, c3)",
+    ]
