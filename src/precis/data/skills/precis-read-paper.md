@@ -275,7 +275,7 @@ duplicate; cite the hub instead.
 ## Step 5 — mesh extras
 ## The cheap edges that make the paper reachable
 
-- **Facet tags** — `material:`, `domain:`, `studytype:` per
+- **Facet tags** — `MATERIAL:`, `DOMAIN:`, `STUDYTYPE:` per
   `get(kind='skill', id='precis-paper-tag-axes')`. These reach the paper
   from queries no phrasing ranks.
 - **Cited primaries** — for each key comparison the paper draws against

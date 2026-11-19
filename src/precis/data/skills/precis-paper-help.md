@@ -356,8 +356,8 @@ terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 
 ```python
 search(kind="paper", view="count")                                  # total
-search(kind="paper", view="count", tags=["studytype:review"],
-       args={"group_by": "tag:studytype", "since": "2026-10-01"})   # filtered + facets
+search(kind="paper", view="count", tags=["STUDYTYPE:review"],
+       args={"group_by": "tag:STUDYTYPE", "since": "2026-10-01"})   # filtered + facets
 search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs thin-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
 ```
