@@ -9859,47 +9859,62 @@ class PaperHandler(Handler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
         reason: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open.
+        """Apply the same tag edits to one or more papers atomically.
 
-        ``reason=`` (gr688475) lands as one ``agent/retagged``
-        ``ref_events`` row — the audit line a mass tag fold (removing a
-        quest tag from a sweep of papers) otherwise lacks. Same door as
-        the numeric-ref kinds' tag ``reason=`` (gr504803) and pcb's
-        delete ``reason=`` (gr523119): declared on the handler so the
-        dispatch arg gate lets it through, recorded in the same
-        transaction as the tag writes.
+        ``id`` accepts a single paper address or a nonempty list with no size
+        cap. Resolve every address before writing so a missing paper aborts
+        the whole call. Collapse aliases by ref id so each paper gets one
+        edit and one optional ``agent/retagged`` audit event. The edits and
+        events share one transaction.
         """
         require_tag_ops("paper", add, remove)
-        slug, ref_id = self._resolve_paper_slug(id)
+        ids = id if isinstance(id, list) else [id]
+        if not ids:
+            raise BadInput(
+                "id=[] is empty — pass at least one paper",
+                next="pass a paper slug, a pa handle, or a list of paper ids",
+            )
+        papers: dict[int, str] = {}
+        for ident in ids:
+            slug, ref_id = self._resolve_paper_slug(ident)
+            papers.setdefault(ref_id, slug)
+
+        receipts: list[str] = []
+        audit_reason = (reason or "").strip()
         with self.store.tx() as conn:
-            n_added, n_removed = apply_tag_ops(
-                self.store, "paper", ref_id, tags=add, untags=remove, conn=conn
-            )
-            r = (reason or "").strip()
-            if r:
-                self.store.append_event(
-                    ref_id,
-                    source="agent",
-                    event="retagged",
-                    payload={"reason": r},
-                    conn=conn,
+            for ref_id, slug in papers.items():
+                n_added, n_removed = apply_tag_ops(
+                    self.store, "paper", ref_id, tags=add, untags=remove, conn=conn
                 )
-        return Response(
-            body=format_link_tag_ack(
-                kind=self.spec.kind,
-                ref_label=slug,
-                n_links_added=0,
-                n_links_removed=0,
-                n_tags_added=n_added,
-                n_tags_removed=n_removed,
+                if audit_reason:
+                    self.store.append_event(
+                        ref_id,
+                        source="agent",
+                        event="retagged",
+                        payload={"reason": audit_reason},
+                        conn=conn,
+                    )
+                receipts.append(
+                    format_link_tag_ack(
+                        kind=self.spec.kind,
+                        ref_label=slug,
+                        n_links_added=0,
+                        n_links_removed=0,
+                        n_tags_added=n_added,
+                        n_tags_removed=n_removed,
+                    )
+                )
+        if isinstance(id, list):
+            receipts.insert(
+                0, f"tagged {len(papers)} {self.spec.kind} refs in one transaction"
             )
-        )
+        return Response(body="\n".join(receipts))
 
     def link(  # type: ignore[override]
         self,

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 
@@ -176,6 +178,75 @@ def test_paper_tag_reason_lands_on_the_event_log(
     assert _reason_events(store, ref.id, "retagged") == [
         "quest:164903 folded into quest:164900"
     ]
+
+
+@pytest.mark.parametrize("explicit_kind", [True, False])
+def test_paper_tag_batch(
+    runtime_with_store: PrecisRuntime, store: Store, explicit_kind: bool
+) -> None:
+    first = store.insert_ref(
+        kind="paper", slug="batch-first", title="First", provider="manual"
+    )
+    second = store.insert_ref(
+        kind="paper", slug="batch-second", title="Second", provider="manual"
+    )
+    for ref in (first, second):
+        runtime_with_store.dispatch(
+            "tag", {"kind": "paper", "id": ref.id, "add": ["old-reading-list"]}
+        )
+    ids: list[str | int] = [f"pa{first.id}", f"pa{second.id}"]
+    kind = {"kind": "paper"} if explicit_kind else {}
+    if explicit_kind:
+        ids.extend(["batch-first", second.id])
+    else:
+        ids.append("batch-first")
+    out = runtime_with_store.dispatch(
+        "tag",
+        {
+            **kind,
+            "id": ids,
+            "add": ["aixmat-2026"],
+            "remove": ["old-reading-list"],
+            "reason": "  conference reading list  ",
+        },
+    )
+    assert "tagged 2 paper refs in one transaction" in out
+    assert out.count("batch-first") == 1
+    assert out.count("batch-second") == 1
+    for ref in (first, second):
+        tags = {tag.value for tag in store.tags_for(ref.id)}
+        assert "aixmat-2026" in tags
+        assert "old-reading-list" not in tags
+        assert _reason_events(store, ref.id, "retagged") == ["conference reading list"]
+
+
+def test_paper_tag_batch_rejects_empty_list(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch(
+        "tag", {"kind": "paper", "id": [], "add": ["aixmat-2026"]}
+    )
+    assert "[error:BadInput]" in out
+    assert "id=[] is empty" in out
+
+
+def test_paper_tag_batch_rejects_missing_paper_before_writes(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    ref = store.insert_ref(
+        kind="paper", slug="batch-first", title="First", provider="manual"
+    )
+    out = runtime_with_store.dispatch(
+        "tag",
+        {
+            "kind": "paper",
+            "id": [ref.id, "absent-paper"],
+            "add": ["aixmat-2026"],
+            "reason": "conference reading list",
+        },
+    )
+    assert "[error:NotFound]" in out
+    assert "absent-paper" in out
+    assert "aixmat-2026" not in {tag.value for tag in store.tags_for(ref.id)}
+    assert _reason_events(store, ref.id, "retagged") == []
 
 
 def test_reasonless_writes_leave_no_audit_rows(

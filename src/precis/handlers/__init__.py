@@ -10,6 +10,7 @@ the ordinary chase (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
+Paper tag batches commit edits and audit events together.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace

@@ -2956,7 +2956,7 @@ def delete(
 def tag(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # A list is the batch form (gripe/alert/todo): the same edit on every
+    # A list is the batch form (e.g. paper/gripe/alert/todo): the same edit on every
     # id in one transaction.
     id: str | int | list[str | int] | None = None,
     add: list[str] | None = None,
@@ -2975,7 +2975,7 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
-    # numeric-ref kinds (gr504803): why the tag change — recorded as an
+    # paper and numeric-ref kinds: why the tag change — recorded as an
     # ``agent/retagged`` ref_events row per affected ref (view='log'),
     # so a mass fold/cleanup says why. Same handler-declared door as
     # delete()'s reason= (gr503546); kinds whose tag doesn't declare it
@@ -3003,6 +3003,8 @@ def tag(
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.
     `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
+    `id=[...]` on paper applies the same edit to every paper in one
+    transaction. Use paper slugs, record handles, or numeric ref ids.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.

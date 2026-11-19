@@ -55,24 +55,24 @@ meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
 ```python
 tag(kind="todo", id=[158, 159], add=["STATUS:done"], remove=["STATUS:open"])
 tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
+tag(kind="paper", id=["pa1190", "dynamat26", 160060], add=["aixmat-2026"], reason="conference reading list")
 ```
 
 `id=[...]` applies the same `add=` / `remove=` to every ref in the
 list in one transaction — one call replaces N single-id calls.
-Verified on the numeric-ref kinds with `batch_ids`: todo, memory,
-gripe, job, alert, finding. Slug-addressed and file kinds (paper,
-quest, orcid, conv, md / tex / python / plaintext) take one id per
-call — issue one call per ref there.
+Batch kinds include paper, todo, memory, gripe, job, alert and finding.
+Quest, orcid, conv, md, tex, python and plaintext take one id per call.
+An empty list refuses. A missing id or failed edit aborts the whole batch.
 
-All or nothing: the per-id runs share one transaction, so the first
-failure rolls back every id. A missing id aborts the whole call —
-`<handle>: <kind> id=<n> not found — batch of N rolled back, nothing
-applied` — so re-check the ids with one `search` when they come from
-a table you have not just read. The list takes at most 50 ids; an
-empty list refuses.
+Paper accepts slugs, `pa` handles and numeric ref ids in the same list.
+Omit `kind=` for a list of `pa` handles. Duplicate addresses for the same
+paper collapse to one edit. Paper has no batch-size cap. The receipt starts
+with `tagged N paper refs in one transaction` and follows with one
+acknowledgment per distinct paper. Numeric-ref batch kinds accept up to
+50 ids per call.
 
-`reason=` lands one `agent/retagged` row per affected ref on
-`ref_events` (`view='log'`) — same audit door as a single-id call.
+`reason=` writes one `agent/retagged` row per affected ref, including one
+per distinct paper, on `ref_events` (`view='log'`).
 
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call
