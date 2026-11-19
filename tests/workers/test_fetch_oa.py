@@ -1417,6 +1417,145 @@ class TestTryAcl:
         ]
 
 
+class TestTryZenodo:
+    @pytest.mark.parametrize("doi", [None, "10.1234/x", "10.5281/zenodo.12/../3"])
+    def test_non_zenodo_is_silent(
+        self, doi: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lookup = Mock()
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", lookup)
+        assert fetch_oa._try_zenodo(_stub(doi=doi), inbox_dir=tmp_path) is None
+        lookup.assert_not_called()
+
+    def test_downloads_record_pdf_before_openalex(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = Mock(spec=Store)
+        stub = _stub(doi="10.5281/zenodo.22897660")
+        resolve_arxiv = Mock(return_value=None)
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", resolve_arxiv)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_zenodo_pdf_urls",
+            lambda rid: [f"https://zenodo.org/api/records/{rid}/files/p.pdf/content"],
+        )
+        openalex = Mock()
+        monkeypatch.setattr(fetch_oa, "_try_openalex", openalex)
+        download = Mock(
+            side_effect=lambda url, target, **kw: _write_synthetic_pdf(target)
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+
+        path = fetch_oa._run_cascade(
+            store, stub, tmp_path, email="", api_key="", wiley_token="", core_key=""
+        )
+
+        assert path is not None and path.is_file()
+        assert download.call_args.args[0] == (
+            "https://zenodo.org/api/records/22897660/files/p.pdf/content"
+        )
+        resolve_arxiv.assert_not_called()
+        openalex.assert_not_called()
+        event = store.append_event.call_args.kwargs
+        assert event["source"] == "fetcher:zenodo"
+        assert event["event"] == "fetch_ok"
+
+    def test_missing_pdf_preserves_arxiv_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = Mock()
+        calls.zenodo.return_value = []
+        calls.resolve_arxiv.return_value = "2401.12345"
+        calls.openalex.return_value = None
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", calls.zenodo)
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", calls.resolve_arxiv)
+        monkeypatch.setattr(fetch_oa, "_try_openalex", calls.openalex)
+        monkeypatch.setattr(fetch_oa, "_try_europepmc", Mock(return_value=None))
+        download = Mock(
+            side_effect=lambda url, target, **kw: _write_synthetic_pdf(target)
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+
+        path = fetch_oa._run_cascade(
+            Mock(spec=Store),
+            _stub(doi="10.5281/zenodo.1"),
+            tmp_path,
+            email="",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+
+        assert path is not None and path.is_file()
+        assert [call[0] for call in calls.mock_calls] == [
+            "zenodo",
+            "resolve_arxiv",
+            "openalex",
+        ]
+        assert download.call_args.args[0] == "https://arxiv.org/pdf/2401.12345.pdf"
+
+    def test_record_without_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", lambda rid: [])
+        outcome = fetch_oa._try_zenodo(
+            _stub(doi="10.5281/zenodo.1"), inbox_dir=tmp_path
+        )
+        assert outcome is not None and outcome.event == "no_oa_version"
+
+    def test_lookup_error_is_api_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_zenodo_pdf_urls", Mock(side_effect=ValueError("boom"))
+        )
+        outcome = fetch_oa._try_zenodo(
+            _stub(doi="10.5281/zenodo.1"), inbox_dir=tmp_path
+        )
+        assert outcome is not None and outcome.event == "api_error"
+
+    def test_lookup_follows_redirects(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A concept DOI (``10.5281/zenodo.<concept-id>``) is answered by
+        Zenodo with a 302 to the latest record — the API client must
+        follow redirects or ``resp.json()`` raises on the redirect HTML
+        (gr713820)."""
+        captured: dict[str, Any] = {}
+
+        class _Resp:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {"files": [{"key": "paper.pdf"}, {"key": "data.csv"}]}
+
+        class _Client:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+            def get(self, url: str) -> _Resp:
+                captured["url"] = url
+                return _Resp()
+
+        def _fake_http_client(**kw: Any) -> _Client:
+            captured.update(kw)
+            return _Client()
+
+        # call_with_backoff's provider-row resolution is DB-backed; the
+        # retry shape is covered in tests.test_http, so call through once.
+        monkeypatch.setattr(fetch_oa, "call_with_backoff", lambda fn, **_: fn())
+        monkeypatch.setattr(fetch_oa, "http_client", _fake_http_client)
+
+        urls = fetch_oa._zenodo_pdf_urls("22897659")
+
+        assert captured["follow_redirects"] is True
+        assert urls == [
+            "https://zenodo.org/api/records/22897659/files/paper.pdf/content"
+        ]
+
+
 class TestTryPublisher:
     def test_none_without_doi(self, tmp_path: Path) -> None:
         assert _try_publisher(_stub(doi=None), inbox_dir=tmp_path) is None

@@ -1,7 +1,7 @@
 """run_oa_fetch_pass — sibling worker that fetches OA PDFs.
 
 Closes the chase↔stub loop: chase creates stub refs (identifiers known,
-``pdf_sha256 IS NULL``); this worker cascades through **eleven OA sources**
+``pdf_sha256 IS NULL``); this worker cascades through **thirteen OA sources**
 per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 
 1. **Publisher pattern** — deterministic DOI→PDF for known-endpoint
@@ -14,13 +14,16 @@ per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 5. **Crossref** — publisher TDM PDF links; needs polite ``mailto`` (=
    the Unpaywall email).
 6. **ACL Anthology** — deterministic DOI→PDF for Anthology IDs.
-7. **OpenAlex** — OA ``pdf_url`` locations; ``mailto`` optional,
+7. **Zenodo** — record PDF files by Zenodo DOI. A miss still allows
+   OpenAlex metadata to resolve an arXiv fallback.
+8. **OpenAlex** — OA ``pdf_url`` locations; ``mailto`` optional,
    different coverage to Unpaywall.
-8. **Europe PMC** — biomedical OA full text, DOI→PMCID.
-9. **CORE** — green-OA repository copies; key-gated
-   (``PRECIS_CORE_API_KEY``), the net for paywalled publishers.
-10. **arXiv** — direct PDF by arXiv ID.
-11. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
+9. **Europe PMC** — biomedical OA full text, DOI→PMCID.
+10. **CORE** — green-OA repository copies; key-gated
+    (``PRECIS_CORE_API_KEY``), the net for paywalled publishers.
+11. **arXiv** — direct PDF by arXiv ID.
+12. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
+13. **OpenAlex content** — paid, key-gated cache of full text.
 
 Deterministic/key-gated legs run first (sidestep aggregators' common
 landing-page-as-OA miss on fresh DOIs); identifier-less legs silently
@@ -107,7 +110,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import quote, urlparse, urlsplit
 
 import httpx
 from psycopg import Connection
@@ -159,6 +162,7 @@ _SOURCE_WILEY = "fetcher:wiley"
 _SOURCE_UNPAYWALL = "fetcher:unpaywall"
 _SOURCE_CROSSREF = "fetcher:crossref"
 _SOURCE_ACL = "fetcher:acl"
+_SOURCE_ZENODO = "fetcher:zenodo"
 _SOURCE_OPENALEX = "fetcher:openalex"
 _SOURCE_EUROPEPMC = "fetcher:europepmc"
 _SOURCE_CORE = "fetcher:core"
@@ -349,6 +353,7 @@ _PROVIDER_KEYS: dict[str, str | None] = {
     _SOURCE_UNPAYWALL: "unpaywall",
     _SOURCE_CROSSREF: "crossref",
     _SOURCE_ACL: None,
+    _SOURCE_ZENODO: None,
     _SOURCE_OPENALEX: "openalex",
     _SOURCE_OPENALEX_CONTENT: "openalex-content",
     _SOURCE_EUROPEPMC: "europepmc",
@@ -1775,6 +1780,86 @@ def _try_acl(
     )
 
 
+_ZENODO_DOI_RE = re.compile(r"10\.5281/zenodo\.([0-9]+)", re.IGNORECASE | re.ASCII)
+
+
+def _zenodo_pdf_urls(record_id: str) -> list[str]:
+    """Content URLs of the PDF files on one Zenodo record (API lookup).
+
+    ``follow_redirects=True`` is deliberate: a Zenodo **concept** DOI
+    (``10.5281/zenodo.<concept-id>``, the "cite all versions" DOI Zenodo
+    recommends) resolves ``/api/records/<concept-id>`` with a 302 to the
+    latest record, so without redirect-following ``resp.json()`` would
+    raise on the redirect HTML and record ``api_error``. The host is
+    fixed and trusted (and ``record_id`` is digits-only), which is the
+    one shape :func:`~precis.utils.http.http_client`'s docstring allows
+    redirect-following for.
+    """
+    api = f"https://zenodo.org/api/records/{record_id}"
+
+    def _get() -> Any:
+        with http_client(
+            timeout=_API_TIMEOUT_S,
+            headers={"User-Agent": _user_agent_header()},
+            follow_redirects=True,
+        ) as client:
+            resp = client.get(api)
+            resp.raise_for_status()
+            return resp.json()
+
+    data = call_with_backoff(
+        _get,
+        service="web-fetch",
+        url=api,
+        deadline=_meta_deadline(),
+        now=time.perf_counter,
+    )
+    urls: list[str] = []
+    for f in data.get("files") or []:
+        key = f.get("key") if isinstance(f, dict) else None
+        if isinstance(key, str) and key.lower().endswith(".pdf"):
+            quoted = quote(key, safe="")
+            urls.append(f"{api}/files/{quoted}/content")
+    return urls
+
+
+def _try_zenodo(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    deadline: float | None = None,
+) -> FetchOutcome | None:
+    """Download the PDF attached to a Zenodo record named by its DOI.
+
+    Keyless. ``None`` (silent fall-through) for a non-Zenodo DOI; a record
+    with no PDF file records ``no_oa_version``.
+    """
+    m = _ZENODO_DOI_RE.fullmatch(stub.doi or "")
+    if m is None:
+        return None
+    t0 = time.perf_counter()
+    try:
+        urls = _zenodo_pdf_urls(m.group(1))
+    except Exception as exc:
+        return FetchOutcome(
+            event=_own_refusal_event(exc) or "api_error",
+            payload={"doi": stub.doi, "error": str(exc)[:200]},
+            duration_ms=_ms(t0),
+        )
+    if not urls:
+        return FetchOutcome(
+            event="no_oa_version", payload={"doi": stub.doi}, duration_ms=_ms(t0)
+        )
+    return _download_first(
+        stub,
+        urls,
+        inbox_dir=inbox_dir,
+        host_type="zenodo",
+        t0=t0,
+        deadline=deadline,
+    )
+
+
 def _try_publisher(
     stub: StubRef,
     *,
@@ -2880,7 +2965,8 @@ def run_oa_fetch_pass(
     Per stub: first the retraction gate (:func:`_apply_retraction_gate`)
     — a retracted paper skips straight to the next stub, no download leg
     ever runs. Otherwise tries publisher → Elsevier → Wiley → Unpaywall →
-    Crossref → OpenAlex → Europe PMC → CORE → arXiv → S2 in order.
+    Crossref → ACL Anthology → Zenodo → OpenAlex → Europe PMC → CORE →
+    arXiv → S2 → paid OpenAlex content in order.
     The cascade stops at the first ``fetch_ok``; intermediate
     ``no_oa_version`` / ``fetch_failed`` outcomes still produce an
     audit event and fall through to the next source.
@@ -2898,7 +2984,7 @@ def run_oa_fetch_pass(
     failed}``. ``ok`` counts stubs the cascade processed without
     a fatal exception (regardless of whether a PDF actually
     landed); ``failed`` counts only unhandled exceptions that
-    escaped all three providers.
+    escaped the cascade.
 
     ``email`` defaults to ``PRECIS_UNPAYWALL_EMAIL``. Without one,
     Unpaywall is skipped (with an ``identifier_missing``-style
@@ -3820,6 +3906,33 @@ def _pdf_title_warnings(stub: StubRef, path: Path) -> list[str]:
         return []
 
 
+def _with_resolved_arxiv(
+    stub: StubRef, *, email: str, gate: _ProviderGate, stop_at: float | None
+) -> StubRef:
+    """Give a DOI-only stub an arXiv fallback while respecting the OpenAlex gate."""
+    if stub.arxiv:
+        return stub
+    if not gate.acquire("openalex", deadline=_meta_wait_deadline(stop_at)):
+        log.info(
+            "fetch_oa: arxiv id resolve deferred for ref_id=%s — openalex lane busy",
+            stub.ref_id,
+        )
+        return stub
+
+    arxiv_t0 = time.perf_counter()
+    try:
+        resolved_arxiv = _resolve_arxiv_id(stub, email=email)
+    finally:
+        gate.release("openalex")
+    if resolved_arxiv:
+        gate.healthy("openalex")
+        return dataclasses.replace(stub, arxiv=resolved_arxiv)
+    if _ms(arxiv_t0) >= _SLOW_FAIL_MS:
+        gate.fail("openalex")
+    # A fast None can be either a miss or a fast error, so leave health alone.
+    return stub
+
+
 def _run_cascade(
     store: Store,
     stub: StubRef,
@@ -3856,13 +3969,15 @@ def _run_cascade(
     4. ``unpaywall`` — OA aggregator by DOI.
     5. ``crossref``  — publisher TDM PDF links by DOI.
     6. ``acl``       — deterministic ACL Anthology DOI→PDF, keyless.
-    7. ``openalex``  — OA aggregator (different PDF coverage to UPW).
-    8. ``europepmc`` — biomedical OA full-text PDF.
-    9. ``core``      — green-OA repository copies, key-gated.
-    10. ``arxiv``    — deterministic preprint PDF; after the published
+    7. ``zenodo``    — Zenodo record's own PDF file by ``10.5281/zenodo.N``
+       DOI, keyless.
+    8. ``openalex``  — OA aggregator (different PDF coverage to UPW).
+    9. ``europepmc`` — biomedical OA full-text PDF.
+    10. ``core``     — green-OA repository copies, key-gated.
+    11. ``arxiv``    — deterministic preprint PDF; after the published
        sources so a version of record is preferred over the preprint.
-    11. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
-    12. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
+    12. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
+    13. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
         agnostic; clears the MDPI-Akamai / Cloudflare 403 wall. Gated by
         ``PRECIS_OPENALEX_CONTENT_KEY`` alone (the key is the spend opt-in), and
         last so it only spends after every free leg fails. A low-balance alert
@@ -3877,30 +3992,11 @@ def _run_cascade(
     """
     if gate is None:
         gate = _ProviderGate()
-    # A DOI-only stub may still have a free arXiv copy: resolve the id from
-    # metadata so the arxiv leg runs instead of the stub falling to
-    # ``no_oa_version`` (gr453862).
-    if not stub.arxiv:
-        if gate.acquire("openalex", deadline=_meta_wait_deadline(stop_at)):
-            arxiv_t0 = time.perf_counter()
-            try:
-                resolved_arxiv = _resolve_arxiv_id(stub, email=email)
-            finally:
-                gate.release("openalex")
-            arxiv_ms = _ms(arxiv_t0)
-            if resolved_arxiv:
-                stub = dataclasses.replace(stub, arxiv=resolved_arxiv)
-                gate.healthy("openalex")
-            elif arxiv_ms >= _SLOW_FAIL_MS:
-                gate.fail("openalex")
-            # A fast ``None`` is ambiguous (no arXiv location, or a fast
-            # swallowed error) — no health signal, like the gate above.
-        else:
-            log.info(
-                "fetch_oa: arxiv id resolve deferred for ref_id=%s — "
-                "openalex lane busy",
-                stub.ref_id,
-            )
+    # Zenodo has its own PDF files, so give it a turn before asking
+    # OpenAlex for an arXiv ID. Other DOIs keep their early lookup.
+    defer_arxiv_lookup = _ZENODO_DOI_RE.fullmatch(stub.doi or "") is not None
+    if not defer_arxiv_lookup:
+        stub = _with_resolved_arxiv(stub, email=email, gate=gate, stop_at=stop_at)
     providers: list[tuple[str, Any]] = [
         (
             _SOURCE_PUBLISHER,
@@ -3946,6 +4042,12 @@ def _run_cascade(
         (
             _SOURCE_ACL,
             lambda dl: _try_acl(stub, inbox_dir=inbox_dir, deadline=dl),
+        )
+    )
+    providers.append(
+        (
+            _SOURCE_ZENODO,
+            lambda dl: _try_zenodo(stub, inbox_dir=inbox_dir, deadline=dl),
         )
     )
     providers.append(
@@ -4005,6 +4107,10 @@ def _run_cascade(
     for source, runner in providers:
         if stop_at is not None and time.perf_counter() >= stop_at:
             break
+        if defer_arxiv_lookup and source == _SOURCE_OPENALEX:
+            stub = _with_resolved_arxiv(stub, email=email, gate=gate, stop_at=stop_at)
+            if stop_at is not None and time.perf_counter() >= stop_at:
+                break
         trace = _current_ref_timing()
         timing = _LegTiming(source) if trace is not None else None
         if trace is not None and timing is not None:
