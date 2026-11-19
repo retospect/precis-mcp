@@ -45,6 +45,11 @@
       {% endif %}
       {# The source object this ask is about — the todo itself, hover-previewable. #}
       {{ a.source_link }}
+      {# The gr656970 sequencing edge: when this ask is itself held by an
+         open blocked-by target, name it — r is the AskRow from
+         _groups.html.j2's loop scope. #}
+      {% if r.after %}<span class="shrink-0 text-[11px] font-mono text-fg-faint"
+        title="held by live work — blocked-by">after {% for h in r.after %}<a href="/eye/{{ h }}" class="hover:underline">{{ h }}</a>{{ ", " if not loop.last }}{% endfor %}</span>{% endif %}
       <a href="/eye/{{ row_handle }}" class="shrink-0 text-xs text-info-strong hover:underline"
          title="Explore {{ row_handle }} and its graph neighbourhood">fisheye</a>
       {# X — dismiss the ask: close the todo (won't-do) and drop it

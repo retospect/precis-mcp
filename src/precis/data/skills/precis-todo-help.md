@@ -172,7 +172,16 @@ link(kind="todo", id=141, target="pa5", rel="blocked-by")
 
 `STATUS:blocked` marks the state; `link(... rel='blocked-by')`
 records what it's waiting on. Targets carry an explicit kind prefix
-(`todo:158`, `paper:<slug>`, `markdown:notes/x.md`).
+(`todo:158`, `paper:<slug>`, `markdown:notes/x.md`). The edge sequences
+dispatch (gr656970): a todo with an open `blocked-by` target — a todo
+or a gripe — is not dispatched by `plan_dispatch` until the blocker
+reaches a terminal STATUS, and a `run_slice` job already queued
+re-checks at claim, so a blocker linked after minting still holds the
+build. The blocked todo shows on the work board row as
+`after <handle>` and in `search(kind='todo', view='blocked')` naming
+the blocker. The same holds in reverse: a gripe a todo is blocked on
+holds the todo, and a gripe blocked by anything stays out of the
+factory intake until its blocker closes (see [[precis-gripe-help]]).
 
 `waiting-for:reto` marks a question for Reto. Once he has ruled and the
 todo carries the answer, remove the tag right after that write

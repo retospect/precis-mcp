@@ -3,9 +3,10 @@
 ``search(kind='todo', view='work')`` hangs every open gripe under the
 todo root that carries its ``thread:<slug>`` tag, one row each::
 
-    gr541348 in-build [claude] — title
+    gr541348 in-build [claude] after td584321 — title
 
-``<stage>`` is the gripe's STATUS tag as stored (``open → triaged →
+``after`` names the open ``blocked-by`` target (gr656970) when one
+holds the gripe. ``<stage>`` is the gripe's STATUS tag as stored (``open → triaged →
 fixing → verify``, plus the older ``ready_for_fix`` / ``in_review``); an
 untagged gripe reads ``open``. ``[lane]`` is ``meta.lane`` of the gripe's
 newest child job (a lane is adapter + credential pool + concurrency cap,
@@ -32,6 +33,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from precis.todo import views
+from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -75,6 +77,9 @@ class GripeRow:
     lane: str
     created_at: datetime
     threads: tuple[str, ...]
+    #: Open blocked-by target handles in id order (``td<N>`` / ``gr<N>``,
+    #: the sequencing pair gr656970 — a blocked gripe names what holds it).
+    after: tuple[str, ...] = ()
     #: ``gr<id>`` — the click / ``get`` handle.
     handle: str = ""
 
@@ -145,9 +150,10 @@ def _stage(tags: list[tuple[str, str]]) -> str:
 
 def _rows(store: Store, refs: list[Ref]) -> list[GripeRow]:
     """Rows for ``refs`` in the order given (one query for the tags, one
-    for the lanes)."""
+    for the lanes, one for the open blocked-by targets)."""
     tag_rows = store.ref_tags_bulk([r.id for r in refs])
     lanes = _lanes(store, [r.id for r in refs])
+    blocked = open_blocked_by(store, [r.id for r in refs])
     out: list[GripeRow] = []
     for ref in refs:
         open_tags = [v for ns, v in tag_rows.get(ref.id, []) if ns == "OPEN"]
@@ -160,6 +166,10 @@ def _rows(store: Store, refs: list[Ref]) -> list[GripeRow]:
                 lane=lanes.get(ref.id, ""),
                 created_at=ref.created_at,
                 threads=thread_slugs(open_tags),
+                after=tuple(
+                    handle_registry.try_format(kind, tid) or f"{kind}:{tid}"
+                    for kind, tid in blocked.get(ref.id, ())
+                ),
             )
         )
     return out
@@ -189,12 +199,14 @@ def _first_line(title: str, cap: int = 72) -> str:
 
 
 def render_gripe_rows(rows: list[GripeRow], *, indent: str = _INDENT) -> list[str]:
-    """One ``gr<id> <stage> [lane] — title`` line per row."""
+    """One ``gr<id> <stage> [lane] after td<N> — title`` line per row."""
     out = []
     for r in rows:
         cells = [r.handle, r.stage]
         if r.lane:
             cells.append(f"[{r.lane}]")
+        if r.after:
+            cells.append(f"after {','.join(r.after)}")
         out.append(f"{indent}{' '.join(cells)} — {_first_line(r.title)}")
     return out
 

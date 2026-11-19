@@ -63,7 +63,10 @@ Each fire:
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
   2026-11-10), waiting :data:`_MIN_AGE_MINUTES`
   since the latest ``STATUS:triaged`` or fix-class attachment (filing
-  time only if neither timestamp is known), with no live todo
+  time only if neither timestamp is known), with no open ``blocked-by``
+  target of any kind — a todo or gripe blocker that has not reached a
+  blocker-terminal STATUS holds the gripe out of dispatch, and it
+  returns once the blocker closes (gr656970) —, with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
   holds the gripe out, gr609044), none
@@ -127,7 +130,12 @@ Each fire:
   (unpinned: the build picks its cheapest fitting free lane at claim)
   and one ``dispatch:`` comment on the gripe naming the root. The
   ``related-to`` link the template writes is the idempotency marker: a
-  re-fire sees the gripe linked and skips it, so a doubled tick converges.
+  re-fire sees the gripe linked and skips it, so a doubled tick
+  converges. The pick's ``blocked-by`` read re-runs at each mint — a
+  blocker linked between the candidate query and the mint holds the
+  chain back (gr656970) — and again on the queued build's claim, which
+  follows the ``related-to`` edge back to the gripe
+  (:func:`precis.workers.executors._common.build_blocked_holds`).
 
 The pass bills no model call and holds no transaction across the mint
 (each mint is the template's own transaction).
@@ -150,7 +158,8 @@ from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
+from precis.todo.blocked import open_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
@@ -874,6 +883,14 @@ def _candidate_picks(
            AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
                             WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
                               AND h.value = ANY(%s))
+           AND NOT EXISTS (SELECT 1 FROM links bl JOIN refs bt ON bt.ref_id = bl.dst_ref_id
+                            WHERE bl.src_ref_id = r.ref_id AND bl.relation = 'blocked-by'
+                              AND bt.retired_at IS NULL
+                              AND COALESCE((SELECT t.value FROM ref_tags rt
+                                                    JOIN tags t ON t.tag_id = rt.tag_id
+                                             WHERE rt.ref_id = bt.ref_id
+                                               AND t.namespace = 'STATUS' LIMIT 1),
+                                           'open') NOT IN {blocker_terminal_sql()})
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
                             WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
                               AND t.kind = 'todo' AND t.retired_at IS NULL
@@ -1059,6 +1076,19 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # own posture (the mint gates fail closed downstream).
     deny = _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
     for c in picks:
+        # gr656970: the candidate read judged ``blocked-by`` at pick
+        # time — a blocker linked between then and the mint still holds
+        # the chain; the read re-runs here, and ``candidates`` skips the
+        # gripe next pass until the blocker closes. The claim re-gates
+        # it too (``executors._common.build_blocked_holds`` follows the
+        # chain's ``related-to`` edge back to the gripe).
+        if open_blocked_by(store, [c.gripe_id]):
+            log.info(
+                "gripe_dispatch: gr%d blocked since the pick — no mint",
+                c.gripe_id,
+            )
+            extra.setdefault("held", []).append(c.gripe_id)
+            continue
         # gr645163: work no builder lane may write — the report asks to
         # write a deny path, or the fix is prod-graph only — skips the
         # chain and files the one coordinator ask with the report

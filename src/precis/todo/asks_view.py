@@ -65,6 +65,7 @@ from precis.errors import BadInput
 from precis.plans.gates import MIN_SHA_LEN, read_prod_head
 from precis.response import Response
 from precis.todo import blocker_terminal_sql
+from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -173,6 +174,10 @@ class AskRow:
     #: Open rows blocked-by this one — ``meta.ask.blocks`` already writes
     #: that link, so the slice it names is counted, not added on top.
     blocked: int = 0
+    #: Open ``blocked-by`` targets of THIS row — the other direction of
+    #: the gr656970 sequencing edge: an ask itself held by live work
+    #: names its blocker like the work board's ``after`` column.
+    after: tuple[str, ...] = ()
     #: The ``asks-triage:<outcome>`` stamp's outcome, ``""`` when the row
     #: was never triaged (gr652333 — ``asks_model`` drops ``resolved`` /
     #: ``routed``; the header counts what's left unstamped).
@@ -635,8 +640,17 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 updated_at=updated,
             )
         )
-    blocked = _blocked_counts(store, [r.ref_id for r in rows if r.ref_id])
-    return [replace(r, blocked=blocked.get(r.ref_id or 0, 0)) for r in rows]
+    ids = [r.ref_id for r in rows if r.ref_id]
+    blocked = _blocked_counts(store, ids)
+    holds = open_blocked_by(store, ids)
+    return [
+        replace(
+            r,
+            blocked=blocked.get(r.ref_id or 0, 0),
+            after=tuple(_h(k, i) for k, i in holds.get(r.ref_id or 0, ())),
+        )
+        for r in rows
+    ]
 
 
 def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
@@ -694,6 +708,8 @@ def _line(r: AskRow, indent: str) -> str:
     out = f"{head} — {r.title} · {_age(r.age_days)}"
     if r.blocked:
         out += f" · blocks {r.blocked}"
+    if r.after:
+        out += f" · after {','.join(r.after)}"
     if r.question and r.question != r.title:
         out += f"\n{indent}  ? {r.question}"
     if r.ask_kind:
@@ -764,6 +780,7 @@ def _q_haystack(r: AskRow) -> str:
             r.needs,
             *r.reasons,
             *r.options,
+            *r.after,
         )
         if p
     ).lower()
@@ -986,7 +1003,8 @@ def render_reto_queue(
             for n, opt in enumerate(r.options, 1):
                 out.append(f"   option {n}{' (recommended)' if n == 1 else ''}: {opt}")
             age = f"{(now - r.created_at).days}d old" if r.created_at else "age unknown"
-            out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}")
+            hold = f" · after {','.join(r.after)}" if r.after else ""
+            out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}{hold}")
     remaining = total - offset - shown
     if remaining > 0:
         q_frag = f", q={q!r}" if q and q.strip() else ""

@@ -288,6 +288,41 @@ def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
     }
 
 
+def test_todo_blocked_by_gripe_waits_then_dispatches(store: Store) -> None:
+    """gr656970: a plan todo blocked-by an open gripe mints no job;
+    once the gripe reaches a blocker-terminal STATUS the next pass
+    dispatches it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    gripe = insert_gripe(store, "The blocker gripe")
+    store.add_link(src_ref_id=task, dst_ref_id=gripe.id, relation="blocked-by")
+    assert pd.run_pass(store).dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.add_tag(
+        gripe.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert pd.run_pass(store).dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, task)] == ["run_slice"]
+
+
+def test_todo_blocked_by_todo_waits_then_dispatches(store: Store) -> None:
+    """gr656970: the todo-on-todo combination of the same rule."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker todo")
+    store.add_link(src_ref_id=task, dst_ref_id=blocker.id, relation="blocked-by")
+    assert pd.run_pass(store).dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert pd.run_pass(store).dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, task)] == ["run_slice"]
+
+
 def test_a_node_tagged_for_another_repo_is_not_dispatched(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

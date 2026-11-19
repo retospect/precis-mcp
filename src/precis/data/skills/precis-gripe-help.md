@@ -595,7 +595,13 @@ routes, and its tags decide which.
 `fix:skill`, `fix:docs`, `fix:web`, `fix:mcp`) and no hold tag, mints a
 plan and leaves a `dispatch:` comment naming the plan root
 ([[precis-work-help]] § "How does a gripe reach a build lane by
-itself?"). To send one gripe yourself:
+itself?"). A `blocked-by` link — to a todo or another gripe — sequences
+the gripe (gr656970): while the blocker is open the intake skips the
+gripe, and it becomes dispatchable once the blocker reaches a terminal
+STATUS; a blocker linked after the chain minted still holds its queued
+build at claim. The work board row names the blocker as
+`after <handle>`. To
+send one gripe yourself:
 
 ```python
 put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 42})
