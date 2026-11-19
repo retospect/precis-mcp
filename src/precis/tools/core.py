@@ -2307,18 +2307,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
-    only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
-    takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
-    fields are per kind. `mode=` picks a kind's write door ('create',
-    'import', 'retry', 'plan', ...; numeric-ref kinds mostly omit it) —
-    the per-kind table is precis-put-help's. `text=`/`body=` alias a
-    kind's prose slot (finding says `body=`; both at once errors); memory
-    reads them as title/prose, todo and gripe as title/details.
-    `tags=`/`untags=` add/remove; `link=`/`unlink=` take
-    `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` reuses that handle's body (needs a recent
-    exact `get`).
+    Omit `id=` to mint a numeric ref. `mode=` and required fields vary by
+    kind. Use `tags=` or `link=` to annotate on create.
+    For gripe or todo, `id=` with `text=` appends a comment and can update
+    tags in the same call. Gripe comments can also update links.
+    `text={'$ref': '<handle>'}` reuses the body after a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
