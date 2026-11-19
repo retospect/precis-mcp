@@ -8,6 +8,7 @@ answers:
   - what publish state is this claim hub in?
   - can I mint or sign a nanopub myself as an agent?
   - how do I propose a hypothesis for a human to review?
+  - how do I record a rejection of a hypothesis I proposed?
   - how do I check my payload against the mint gates without approving?
   - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
@@ -167,6 +168,26 @@ envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor
 nanopublication; this edit door refuses.
+
+## Record a rejection
+
+To record a rejection, first create the ruling, then link and stamp the hypothesis.
+
+1. Mint an ordinary sourced finding for the negative ruling. State what was
+   run and what it showed, set `cited_in` to the source chunk, and confirm
+   the chase established the finding. See [[precis-finding-help]].
+2. Link the hypothesis to the ruling with
+   `link(id='fi<hypothesis>', rel='retracted-by', target='fi<ruling>')`.
+   Use `rel='superseded-by'` when the ruling is a successor that settles
+   the same ground.
+3. Stamp the hypothesis with
+   `tag(kind='finding', id='fi<hypothesis>', add=['STATUS:refuted'])`.
+   This closes it on the serving quest's gap list and excludes it from
+   default search.
+
+Read the do-not-repropose ledger with
+`search(kind='finding', status='refuted')`. This explicit status opts in
+to refuted findings, which `status='*'` still excludes.
 
 ## Report and definition types
 

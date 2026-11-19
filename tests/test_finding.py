@@ -3108,12 +3108,12 @@ class TestRetractionPropagation:
 
 # ── refuted lifecycle (docs/backlog/quest-dossier-dialectic.md
 #    §"Refuted lifecycle") — terminal STATUS:refuted applied via the
-#    existing tag verb, retracts-linked to the negative-ruling finding ──
+#    existing tag verb, with an outbound retracted-by link to the ruling ──
 
 
 class TestRefutedLifecycle:
     """A rejected hypothesis finding: mint the negative ruling as an
-    established finding, ``retracts``-link the hypothesis to it, tag
+    established finding, link the hypothesis to it with ``retracted-by``, tag
     the hypothesis ``STATUS:refuted``. No new transition machinery —
     the tag verb + the generic ``link(rel=...)`` door (already exercised
     for Taproot relations in ``TestLinkTaprootRouting``) are enough."""
@@ -3135,11 +3135,8 @@ class TestRefutedLifecycle:
         out = h.get(id=hyp_id)
         assert "STATUS:refuted" in out.body
 
-    def test_retracts_link_round_trips_to_ruling(self, store) -> None:
-        """``link(id=<hypothesis>, target=<ruling>, rel='retracts')``
-        writes the edge; the mirror ``retracted-by`` is readable from the
-        ruling's side (the auto-mirrored inverse relation, types.py
-        ``_RELATION_MIRROR``)."""
+    def test_retracted_by_link_round_trips_to_ruling(self, store: Any) -> None:
+        """Both relation queries find the stored hypothesis-to-ruling edge."""
         hyp_id = self._mint_finding(
             store, title="d-gate hypothesis", cite_key="paper-hyp2"
         )
@@ -3156,20 +3153,15 @@ class TestRefutedLifecycle:
             set_by="system",
             replace_prefix=True,
         )
-        h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracts")
+        h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracted-by")
         h.tag(id=hyp_id, add=["STATUS:refuted"])
 
-        with store.pool.connection() as conn:
-            forward = conn.execute(
-                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
-                (hyp_id, ruling_id),
-            ).fetchone()
-        assert forward is not None
-        assert forward[0] == "retracts"
-
-        # The mirror relation is queryable from the ruling's inbound side.
-        out = h.get(id=ruling_id)
-        assert f"fi{hyp_id}" in out.body or str(hyp_id) in out.body
+        forward = store.links_for(hyp_id, direction="out", relation="retracted-by")
+        assert [(link.relation, link.dst_ref_id) for link in forward] == [
+            ("retracted-by", ruling_id)
+        ]
+        inverse = store.links_for(ruling_id, direction="out", relation="retracts")
+        assert inverse == forward
 
         # The hypothesis itself is now refuted and excluded from default
         # search — the do-not-repropose ledger. (The "no finding matches"
