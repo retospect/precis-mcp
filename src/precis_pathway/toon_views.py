@@ -1950,8 +1950,7 @@ def compare_response(
         notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
         if unshifted:
             notes.append(
-                f"# no n_H (pre-CHE run), shown unshifted: {len(unshifted)}"
-                + (f" ({unshifted[0]})" if len(unshifted) == 1 else "")
+                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
             )
 
     profiles: list[dict[str, Any]] = []

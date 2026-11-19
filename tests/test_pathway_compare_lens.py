@@ -64,3 +64,8 @@ def test_compare_where_columns() -> None:
 
 def test_compare_without_lens_is_plain_dump() -> None:
     assert "pathways)" not in compare_toon(_cands(3))
+
+
+def test_compare_at_potential_names_unshifted_candidates() -> None:
+    out = compare_toon(_cands(2), U=0.2, lens_args={"limit": 1}, lens_call=_call)
+    assert "shown unshifted: run-00, run-01" in out
