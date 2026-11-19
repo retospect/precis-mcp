@@ -98,7 +98,7 @@ get(kind="provenance", q="10.x/a, 10.x/b, ...", args={"transitive": True})
 
 Clean-itself papers that cite retracted sources get promoted to 🟠.
 
-## Get candidate suggestions for unknown DOIs
+## Get candidate suggestions for unverified DOIs
 
 ```python
 get(
@@ -109,7 +109,7 @@ get(
 )
 ```
 
-The 404'd DOI stays `unknown` — no auto-substitution. The report lists
+The unverified DOI (status `unknown`) stays as given — no auto-substitution. The report lists
 possible Crossref matches; verify and replace by hand.
 
 ## Decide whether "cites retracted work" matters

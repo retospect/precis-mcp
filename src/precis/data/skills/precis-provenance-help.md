@@ -91,11 +91,11 @@ get(
 ```
 
 A real DOI pointing to a *different* paper than the bib claims is
-a worse failure than a 404. `view='verify'` adds a **⚠️ Metadata
+a worse failure than an unverified DOI. `view='verify'` adds a **⚠️ Metadata
 mismatch** section between Blockers and Review with per-field
 diff: title (fuzzy match), first-author surname, year ±1.
 
-## Surface candidate DOIs when one 404s
+## Surface candidate DOIs when one is unverified
 
 ```python
 get(
@@ -106,7 +106,7 @@ get(
 )
 ```
 
-On a 404 DOI with bib hints, shows Crossref candidate matches as
+On an unverified DOI with bib hints, shows Crossref candidate matches as
 advisory only — the supplied DOI's status stays `unknown`.
 
 ## Chase retractions one level deep
