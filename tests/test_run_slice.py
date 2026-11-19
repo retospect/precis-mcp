@@ -49,6 +49,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
 from precis.utils.llm.quota import quota_retry_at
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -14122,3 +14123,130 @@ def test_skill_lane_needs_live_mcp() -> None:
         )
     ]
     assert boundary.fit_lanes("skill", table) == ()
+
+
+@pytest.fixture
+def recovery_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[_Ctx, Path]:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    ctx = _Ctx(
+        _Store(),
+        {"todo_id": 7},
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    attempt = run_slice.run_dir(7) / ("a" * 32)
+    attempt.mkdir()
+    return ctx, attempt
+
+
+def test_reconcile_adopts_the_recorded_handle(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "pgid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {**recorded, "recovered_exit": True}
+
+
+def test_reconcile_pid_only_preserves_launch_baselines(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx, attempt = recovery_attempt
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    original = "1" * 40
+    baseline = {
+        "worktree": str(tree),
+        "exit_file": str(attempt / "exit"),
+        "review": {"head": original},
+        "acceptance_tests": ["tests/test_once.py"],
+        "acceptance_tests_missing": ["tests/test_once.py"],
+    }
+    run_slice._write_launch_record(attempt / "baseline", baseline)
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+
+    # Both mutable inputs have changed since spawn.
+    monkeypatch.setattr(run_slice, "_git", lambda *_: _proc("2" * 40))
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_once.py").touch()
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {
+        **baseline,
+        "pid": 4321,
+        "pgid": 4321,
+        "recovered_exit": True,
+    }
+
+
+def test_reconcile_pid_without_verified_identity_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, attempt = recovery_attempt
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    monkeypatch.setattr(run_slice, "_launch_pid_identity", lambda *_: None)
+    monkeypatch.setattr(run_slice, "_darwin_launch_identity", lambda *_: None)
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_missing_evidence_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    assert run_slice.reconcile(ctx) is None
+    # The worker may have died after spawn, before the child wrote its PID.
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_ignores_prior_attempt_and_legacy_evidence(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    prior = attempt.parent / ("b" * 32)
+    prior.mkdir()
+    (prior / "exit").write_text("0", encoding="utf-8")
+    recorded = {"pid": 4242, "exit_file": str(prior / "exit")}
+    run_slice._write_launch_record(prior / "handle", recorded)
+    run_slice._write_launch_record(attempt.parent / "run_slice.handle", recorded)
+    (attempt.parent / "run_slice.pid").write_text("4242", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_rejects_evidence_from_another_host(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+    ctx.meta["submit_host"] = "another-worker"
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_stale_record_mismatched_pid_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    run_slice._write_launch_record(attempt / "handle", {"pid": 4242})
+    (attempt / "pid").write_text("5555", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None

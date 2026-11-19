@@ -288,7 +288,12 @@ from precis.utils.dispatch_score import (
 from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
-from precis.workers.job_types import _lane_decide, _run_features, _slice_park
+from precis.workers.job_types import (
+    Reconcile,
+    _lane_decide,
+    _run_features,
+    _slice_park,
+)
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
@@ -781,6 +786,20 @@ def run_dir(todo_id: int) -> Path:
     return path
 
 
+def _submit_attempt_dir(ctx: Any, todo_id: int) -> Path | None:
+    """Only the submitting host may use the current intent's local evidence."""
+    meta = ctx.meta or {}
+    attempt = meta.get("submit_attempt")
+    if (
+        not isinstance(attempt, str)
+        or not re.fullmatch(r"[0-9a-f]{32}", attempt)
+        or meta.get("submit_host") != admission.local_host()
+        or not meta.get("submit_started_at")
+    ):
+        return None
+    return ops_root() / f"td{todo_id}" / attempt
+
+
 def uv_cache_dir() -> Path:
     """``UV_CACHE_DIR`` for the session: ``<ops_root>/uv-cache``. The
     checkout's hooks run through ``uv``, and uv's default cache is under
@@ -1010,16 +1029,19 @@ def _launch(
     pass_fds: tuple[int, ...] = (),
     store: Any = None,
     work_class: str = "slice",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
     wrapping shell (a restarted worker, no longer the parent, still reads
     it). ``stdin=None`` feeds ``/dev/null``. ``pass_fds`` are fds the child
-    inherits (an flock held for the run's life — gr650484). The child also
-    gets the per-task memory cap as an rlimit (gr595537 — the slice's
-    agent, builds and tests die over the ceiling instead of wedging the
-    host into swap; no cap configured ⇒ ``preexec_fn=None``). Returns the
-    process group pid.
+    inherits (an flock held for the run's life — gr650484). ``pid_file``
+    is where the child's *first* act writes its own pid — the launch
+    proof ``reconcile`` reads when the caller died between the spawn and
+    the handle persist (gr708457). The child also gets the per-task
+    memory cap as an rlimit (gr595537 — the slice's agent, builds and
+    tests die over the ceiling instead of wedging the host into swap; no
+    cap configured ⇒ ``preexec_fn=None``). Returns the process group pid.
 
     With a ``store`` (a real Store — fakes without a pool keep the legacy
     unheld path) the launch is admitted first: :func:`admission.spawn`
@@ -1040,19 +1062,26 @@ def _launch(
             stdin=stdin,
             log_path=log,
             exit_file=exit_file,
+            pid_file=pid_file,
             pass_fds=pass_fds,
             preexec_fn=mem_limit_preexec(),
         )
-    script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
     full_env = {
         **env,
         "RS_IN": str(stdin) if stdin is not None else os.devnull,
         "RS_LOG": str(log),
         "RS_EXIT": str(exit_file),
+        "RS_PID": str(pid_file) if pid_file is not None else os.devnull,
     }
     # Fixed script; argv rides as positional args, never interpolated.
     proc = subprocess.Popen(
-        ["/bin/sh", "-c", script, "run_slice", *argv],
+        [
+            "/bin/sh",
+            "-c",
+            admission._SPAWN_SCRIPT,
+            str(pid_file) if pid_file else "run_slice",
+            *argv,
+        ],
         cwd=str(cwd),
         env=full_env,
         stdin=subprocess.DEVNULL,
@@ -1131,6 +1160,8 @@ def _group_alive(pgid: int) -> bool:
 
 
 def _session_alive(handle: dict[str, Any]) -> bool:
+    if handle.get("recovered_exit"):
+        return False
     pid = int(handle.get("pid") or 0)
     if pid > 1:
         if "ps_identity" in handle:
@@ -5245,6 +5276,12 @@ def submit(ctx: Any, spec: Any) -> Any:
     # A second-repo reviewer's detached tree once cut: every launch failure
     # after that drops it (the run's own end drops it in poll).
     review_tree: Path | None = None
+    # A crash past ``_launch`` but before this function's own record /
+    # the executor's handle persist leaves a live orphan: the generic
+    # except below kills the group when ``pid`` is already assigned
+    # (gr708457). The child-written pid file still names the compute
+    # for the *hard* kill a plain except cannot reach.
+    pid: int | None = None
     try:
         repo_root: Path | None = None
         base_tip: str | None = None
@@ -5376,7 +5413,14 @@ def submit(ctx: Any, spec: Any) -> Any:
         ops = run_dir(todo_id)
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
-        exit_path.unlink(missing_ok=True)
+        attempt_dir = _submit_attempt_dir(ctx, todo_id)
+        if attempt_dir is not None:
+            attempt_dir.mkdir()
+            exit_path = attempt_dir / "exit"
+        else:
+            exit_path.unlink(missing_ok=True)
+        log_path = _attempt_log(attempt_dir, log_path)
+        pid_path = attempt_dir / "pid" if attempt_dir is not None else None
         if use_mcp:
             assert model is not None
             grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
@@ -5463,21 +5507,47 @@ def submit(ctx: Any, spec: Any) -> Any:
                 _KIMI_SUBMIT_KEYS[job] = env["KIMI_MODEL_API_KEY"]
         if use_mcp:
             _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
+        handle: dict[str, Any] = {
+            "worktree": str(tree),
+            "log": str(log_path),
+            "exit_file": str(exit_path),
+            "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        if profile is not None:
+            # Later phases read the repo off the handle, never the tag
+            # again.
+            handle["repo"] = repo
+        if repo_review:
+            # The poll judges the read-only brief against this head and
+            # drops the detached tree when the run ends.
+            handle["review"] = {"head": review_head}
+        if atif_path is not None:
+            handle["atif"] = str(atif_path)
+        if adapter.name == "devin_tree" and not is_generator:
+            handle["acceptance_tests"] = acceptance_tests
+            handle["acceptance_tests_missing"] = missing_tests
+        if grant:
+            handle["slice_token_dir"] = grant["dir"]
+            handle["slice_token_name"] = grant["name"]
+            handle["agentlog_id"] = grant["agentlog_id"]
+            if grant.get("devin_config"):
+                handle["devin_config"] = grant["devin_config"]
+        if attempt_dir is not None:
+            # Recovery must use the same finishing inputs as normal poll.
+            # Persist these before the agent can edit the checkout.
+            _write_launch_record(attempt_dir / "baseline", handle)
         pid = _launch(
             argv,
             cwd=tree,
             stdin=adapter.stdin(brief_path),
             log=log_path,
             exit_file=exit_path,
+            pid_file=pid_path,
             env=env,
             store=store,
             work_class="slice",
         )
-        started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        identity = _process_identity(pid)
-        ps_identity = (
-            _darwin_process_identity(pid) if sys.platform == "darwin" else None
-        )
+        _record_launched_process(handle, pid, attempt_dir)
     except _HostRefusal as exc:
         # The host cannot run the lane right now; the task is uncharged —
         # give the lease back clean, like the lane-table error path. The
@@ -5542,6 +5612,16 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
+        if pid is not None:
+            # The compute already exists but the submit is failing —
+            # a bare record_failure would orphan it (gr708457). The
+            # child wrote its pid file at exec, so even a crash between
+            # here and the executor's handle persist leaves the group
+            # named; kill it now while the pid is in hand.
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
         if review_tree is not None:
             _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
@@ -5586,39 +5666,170 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         task_class=task_class,
     )
-    handle: dict[str, Any] = {
-        "pid": pid,
-        "pgid": pid,
-        "worktree": str(tree),
-        "log": str(log_path),
-        "exit_file": str(exit_path),
-        "started_at": started_at,
-    }
-    if profile is not None:
-        # Later phases read the repo off the handle, never the tag again.
-        handle["repo"] = repo
-    if repo_review:
-        # The poll judges the read-only brief against this head and drops
-        # the detached tree when the run ends.
-        handle["review"] = {"head": review_head}
-    if atif_path is not None:
-        handle["atif"] = str(atif_path)
-    if adapter.name == "devin_tree" and not is_generator:
-        handle["acceptance_tests"] = acceptance_tests
-        handle["acceptance_tests_missing"] = missing_tests
-    if grant:
-        handle["slice_token_dir"] = grant["dir"]
-        handle["slice_token_name"] = grant["name"]
-        handle["agentlog_id"] = grant["agentlog_id"]
-        if grant.get("devin_config"):
-            handle["devin_config"] = grant["devin_config"]
-    if identity is not None:
-        # ssh_node's orphan reaper kills only a group whose leader still
-        # has this boot_id and start-tick count; without them it skips.
-        handle["boot_id"], handle["start_time"] = identity
-    if ps_identity is not None:
-        handle["ps_identity"] = ps_identity
     return handle
+
+
+def _attempt_log(attempt_dir: Path | None, latest: Path) -> Path:
+    """Keep the stable log path for rescue while each handle reads its own log."""
+    if attempt_dir is None:
+        # A retry launched from poll has no submit intent. Start a new
+        # stable log without truncating the previous attempt's evidence.
+        if latest.is_symlink():
+            latest.unlink()
+        return latest
+    path = (attempt_dir / "log").absolute()
+    link = latest.with_name(f".{latest.name}.{attempt_dir.name}")
+    link.symlink_to(path)
+    os.replace(link, latest)
+    return path
+
+
+def _write_launch_record(path: Path, record: dict[str, Any]) -> None:
+    """Atomically publish JSON evidence that survives a worker restart."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_launch_record(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _record_launched_process(
+    handle: dict[str, Any], pid: int, attempt_dir: Path | None
+) -> None:
+    handle.update(pid=pid, pgid=pid)
+    identity = _process_identity(pid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
+    if sys.platform == "darwin":
+        ps_identity = _darwin_process_identity(pid)
+        if ps_identity is not None:
+            handle["ps_identity"] = ps_identity
+    if attempt_dir is not None:
+        try:
+            _write_launch_record(attempt_dir / "handle", handle)
+        except OSError:
+            log.warning(
+                "could not save detached handle in %s", attempt_dir, exc_info=True
+            )
+
+
+def _launch_pid(path: Path) -> int | None:
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return pid if pid > 1 else None
+
+
+def _darwin_launch_identity(pid: int, pid_path: Path) -> str | None:
+    """The wrapper's shell argument binds the PID to this launch on Darwin."""
+    identity = _darwin_process_identity(pid)
+    if identity is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if (
+        result.returncode == 0
+        and f" {pid_path} " in result.stdout
+        and _darwin_process_identity(pid) == identity
+    ):
+        return identity
+    return None
+
+
+def _launch_pid_identity(pid: int, pid_path: Path) -> tuple[str, int] | None:
+    """Bind the live wrapper to its attempt before recording its identity."""
+    identity = _process_identity(pid)
+    if identity is None:
+        return None
+    try:
+        env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    if os.fsencode(f"RS_PID={pid_path}") in env and _process_identity(pid) == identity:
+        return identity
+    return None
+
+
+def _rebuild_handle_from_pid(attempt_dir: Path, pid: int) -> dict[str, Any] | None:
+    handle = _read_launch_record(attempt_dir / "baseline")
+    if handle is None:
+        return None
+    handle.update(pid=pid, pgid=pid)
+    pid_path = attempt_dir / "pid"
+    if sys.platform == "darwin":
+        ps_identity = _darwin_launch_identity(pid, pid_path)
+        if ps_identity is not None:
+            handle["ps_identity"] = ps_identity
+            return handle
+    else:
+        identity = _launch_pid_identity(pid, pid_path)
+        if identity is not None:
+            handle["boot_id"], handle["start_time"] = identity
+            return handle
+    if _read_exit(handle) is not None:
+        # An exit proves the launch ran. It cannot authorize signals to a
+        # PID that might have been recycled before the reclaim.
+        return {**handle, "recovered_exit": True}
+    return None
+
+
+def _recover_launch(ctx: Any) -> Reconcile | None:
+    """Recover only the current attempt, using its saved finishing inputs."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = params.get("todo_id")
+    if not isinstance(todo_id, int) or isinstance(todo_id, bool):
+        return None
+    attempt_dir = _submit_attempt_dir(ctx, todo_id)
+    if attempt_dir is None:
+        return None
+    pid = _launch_pid(attempt_dir / "pid")
+    handle = _read_launch_record(attempt_dir / "handle")
+    if handle is not None:
+        recorded_pid = handle.get("pid")
+        if type(recorded_pid) is not int or recorded_pid <= 1:
+            return None
+        if pid is not None and pid != recorded_pid:
+            return None
+        if sys.platform == "darwin":
+            identity = handle.get("ps_identity")
+            live = bool(identity and _darwin_process_identity(recorded_pid) == identity)
+        else:
+            identity = _process_identity(recorded_pid)
+            live = identity is not None and identity == (
+                handle.get("boot_id"),
+                handle.get("start_time"),
+            )
+        if live:
+            return Reconcile(handle=handle)
+        if _read_exit(handle) is not None:
+            return Reconcile(handle={**handle, "recovered_exit": True})
+    if pid is not None:
+        handle = _rebuild_handle_from_pid(attempt_dir, pid)
+        if handle is not None:
+            return Reconcile(handle=handle)
+    return None
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume a proven launch. The child can exist before its first write."""
+    return _recover_launch(ctx)
 
 
 def _read_exit(handle: dict[str, Any]) -> int | None:

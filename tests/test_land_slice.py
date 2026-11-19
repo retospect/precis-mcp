@@ -32,6 +32,7 @@ from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -7566,3 +7567,65 @@ def test_land_mints_skill_edit_job(monkeypatch: pytest.MonkeyPatch) -> None:
         empty = _MintStore(marker)
         assert land_slice._mint_skill_edit(empty, 42, sha) == note
         assert empty.minted == []
+
+
+def test_reconcile_completed_ship_resumes_mirror_publication(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen = _patch_sync_seams(monkeypatch)
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    handle = land_slice.submit(ctx, None)
+    assert handle is not None
+    attempt = run_slice.run_dir(42) / ("a" * 32)
+    assert Path(handle["exit_file"]) == attempt / "exit"
+
+    # Simulate death before even the full handle record. The completed
+    # wrapper left its PID and exit code, and the mirror is awaiting poll.
+    (attempt / "handle").unlink()
+    baseline = json.loads((attempt / "baseline").read_text(encoding="utf-8"))
+    run_slice._write_launch_record(
+        attempt / "baseline", {**baseline, "factory_mirror_tips": tips}
+    )
+    (attempt / "pid").write_text(str(handle["pid"]), encoding="utf-8")
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+
+    verdict = land_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert land_slice.poll(ctx, verdict.handle) is True
+    assert ctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+    assert len(seams["launch"]) == 1
+
+
+def test_reconcile_free_lock_without_current_evidence_is_unknown(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+    assert land_slice.reconcile(ctx) is None
+    assert seams["launch"] == []

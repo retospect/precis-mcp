@@ -334,7 +334,7 @@ from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec, _slice_park
+from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_park
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -900,6 +900,7 @@ def _launch(
     pass_fds: tuple[int, ...] = (),
     store: Any = None,
     work_class: str = "land",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
@@ -917,6 +918,7 @@ def _launch(
         pass_fds=pass_fds,
         store=store,
         work_class=work_class,
+        pid_file=pid_file,
     )
 
 
@@ -2814,6 +2816,7 @@ def _stamp_lock_holder(
     branch: str = "",
     subject: str = "",
     flag: str = "",
+    attempt: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
     flag=F subject=S`` — so the next land can tell its own
@@ -2831,6 +2834,8 @@ def _stamp_lock_holder(
         parts.append(f"branch={branch}")
     if flag:
         parts.append(f"flag={flag}")
+    if attempt:
+        parts.append(f"attempt={attempt}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -2854,6 +2859,7 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
         ("td", r"\btd=(\d+)\b", head),
         ("branch", r"\bbranch=(\S+)", head),
         ("flag", r"\bflag=(--\S+)", head),
+        ("attempt", r"\battempt=([0-9a-f]{32})\b", head),
         ("subject", r"\bsubject=([^\n]*)", text),
     ):
         m = re.search(pat, where)
@@ -3009,13 +3015,22 @@ def _adopt_ship(
         or ""
     )
     scratch = tree / "scratch"
+    attempt = busy["stamp"].get("attempt")
+    launched_todo = busy["stamp"].get("td")
+    attempt_dir = (
+        _rs.ops_root() / f"td{launched_todo}" / attempt
+        if attempt and launched_todo
+        else None
+    )
+    exit_file = attempt_dir / "exit" if attempt_dir else scratch / "land_slice.exit"
+    log_file = attempt_dir / "log" if attempt_dir else scratch / "land_slice.log"
     launched = _now()
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
         "worktree": str(tree),
-        "log": str(scratch / "land_slice.log"),
-        "exit_file": str(scratch / "land_slice.exit"),
+        "log": str(log_file),
+        "exit_file": str(exit_file),
         "subject": subject,
         "flag": flag,
         "adopted": True,
@@ -3037,6 +3052,15 @@ def _adopt_ship(
         f"{tree} — its exit file lands this job's record",
     )
     return handle
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume ship poll, including publication of a completed mirror squash.
+
+    A free flock cannot establish whether ship already ran. Only this
+    submit attempt's launch or exit record can resume poll.
+    """
+    return _rs._recover_launch(ctx)
 
 
 def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
@@ -3707,7 +3731,6 @@ def _launch_ship(
         # token fd.
         try:
             scratch.mkdir(parents=True, exist_ok=True)
-            exit_path.unlink(missing_ok=True)
             if mirror_tips is not None and mirror is not None and url is not None:
                 # The launch tips persist NEXT TO the mirror, under the
                 # main checkout's scratch — never this tree's own
@@ -3758,6 +3781,45 @@ def _launch_ship(
                 ship_env["PATH"] = (
                     str(shim) + os.pathsep + (ship_env.get("PATH") or os.defpath)
                 )
+            attempt_dir = (
+                _rs._submit_attempt_dir(ctx, todo_id) if carry is None else None
+            )
+            if attempt_dir is not None:
+                attempt_dir.mkdir(parents=True)
+                exit_path = attempt_dir / "exit"
+            else:
+                exit_path.unlink(missing_ok=True)
+            log_path = _rs._attempt_log(attempt_dir, log_path)
+            # The deadline rides the handle (gr647913): ``started_at`` + the wall
+            # — the clock stamps share the ``_now()`` seam so a worker restart's
+            # re-adoption resumes the job's own count instead of restarting the
+            # wall at the re-adopt poll.
+            launched = _now()
+            handle: dict[str, Any] = {
+                "worktree": str(tree),
+                "log": str(log_path),
+                "exit_file": str(exit_path),
+                "subject": subject,
+                "flag": flag,
+                "started_at": launched.strftime(_TS_FMT),
+                "deadline": launched.timestamp() + wall_seconds(),
+            }
+            if mirror_tips is not None:
+                # The sync's CAS basis (GitHub's tips at launch). Adopted
+                # handles rebuild without it; poll falls back to the launch
+                # record beside the mirror
+                # (:func:`factory_git_mirror.read_launch_tips`).
+                handle["factory_mirror_tips"] = mirror_tips
+            for key in (
+                "main_refusals",
+                "last_refusal",
+                "gate_kills",
+                "fell_back_full",
+            ):
+                if carry is not None and key in carry:
+                    handle[key] = carry[key]
+            if attempt_dir is not None:
+                _rs._write_launch_record(attempt_dir / "baseline", handle)
             pid = _launch(
                 [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,
@@ -3799,6 +3861,7 @@ def _launch_ship(
                 pass_fds=tuple(fd for fd in (ship_fd,) if fd is not None),
                 store=ctx.store,
                 work_class="land",
+                pid_file=attempt_dir / "pid" if attempt_dir is not None else None,
             )
         except admission.Refused as exc:
             # The host cannot fit the gate right now — the wait shape of
@@ -3832,47 +3895,16 @@ def _launch_ship(
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
             )
             return None
-        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject, flag)
-        # The deadline rides the handle (gr647913): ``started_at`` + the wall
-        # — the clock stamps share the ``_now()`` seam so a worker restart's
-        # re-adoption resumes the job's own count instead of restarting the
-        # wall at the re-adopt poll.
-        launched = _now()
-        handle: dict[str, Any] = {
-            "pid": pid,
-            "pgid": pid,
-            "worktree": str(tree),
-            "log": str(log_path),
-            "exit_file": str(exit_path),
-            "subject": subject,
-            "flag": flag,
-            "started_at": launched.strftime(_TS_FMT),
-            "deadline": launched.timestamp() + wall_seconds(),
-        }
-        if mirror_tips is not None:
-            # The sync's CAS basis (GitHub's tips at launch). Adopted
-            # handles rebuild without it; poll falls back to the launch
-            # record beside the mirror
-            # (:func:`factory_git_mirror.read_launch_tips`).
-            handle["factory_mirror_tips"] = mirror_tips
-        for key in (
-            "main_refusals",
-            "last_refusal",
-            "gate_kills",
-            "fell_back_full",
-        ):
-            if carry is not None and key in carry:
-                handle[key] = carry[key]
-        identity = _rs._process_identity(pid)
-        if identity is not None:
-            handle["boot_id"], handle["start_time"] = identity
-        ps_identity = (
-            _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+        _stamp_lock_holder(
+            lock_fd,
+            pid,
+            todo_id,
+            branch,
+            subject,
+            flag,
+            attempt_dir.name if attempt_dir is not None else "",
         )
-        if ps_identity is not None:
-            # ssh_node's identity gate verifies Darwin handles through ps —
-            # without it a cancel cannot signal the ship (gr572654).
-            handle["ps_identity"] = ps_identity
+        _rs._record_launched_process(handle, pid, attempt_dir)
         return handle
     finally:
         # Our end of the land flock: the launched ship's inherited copy
@@ -5901,6 +5933,7 @@ SPEC = JobTypeSpec(
     validate_submit=validate_submit,
     submit=submit,
     poll=poll,
+    reconcile=reconcile,
     kill=kill,
     deadline_kill_meta=DEADLINE_KILL_META,
     wall_seconds=wall_seconds,
@@ -5952,6 +5985,7 @@ __all__ = [
     "outside_diff_ids",
     "pending_gate",
     "poll",
+    "reconcile",
     "refusal_backoff_s",
     "refusal_side",
     "ship_bin",

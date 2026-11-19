@@ -122,6 +122,37 @@ _DISPATCH_PROTOCOL_EXECUTORS: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
+class Reconcile:
+    """A ``submit``/``poll`` job_type's answer to the mid-submit-crash
+    question (gr708457): the reclaim found ``submit_started_at`` but no
+    ``compute_handle``, so the prior worker generation died inside
+    ``submit()`` — after the intent marker, before the handle persist.
+
+    Bind launch evidence to the intent's ``submit_attempt`` and
+    ``submit_host``. Factory run and land launches record the poll inputs
+    before spawn, including the review HEAD, Devin test inventory or mirror
+    tips as applicable. The detached shell records its PID and exit for that
+    attempt. A missing file may precede the child's first write, and a
+    released ship lock may follow a squash awaiting publication in the mirror.
+
+    The reconciler returns exactly one of:
+
+    * ``Reconcile(handle=<handle>)`` — the dead generation's launch is
+      *provable* and its handle re-derivable; the job is re-adopted and
+      resumes on ``poll``, the compute runs once.
+    * ``Reconcile(launched=False)`` — the dead ``submit()`` provably
+      never reached the launch; the row clears its marker and submits
+      fresh, safely.
+    * ``None`` — cannot tell; the gripe-standing loud failure stands
+      (gr191673) — the compute may be orphaned, so the job fails as
+      infrastructure uncertainty rather than risk a duplicate submit.
+    """
+
+    handle: Any = None
+    launched: bool = True
+
+
+@dataclass(frozen=True)
 class JobTypeSpec:
     """Per-job-type declaration. Matches the module exports."""
 
@@ -205,6 +236,18 @@ class JobTypeSpec:
     #: this protocol exists to fix).
     submit: Callable[..., Any] | None = None
     poll: Callable[..., Any] | None = None
+    #: Optional mid-submit-crash reconciler, ``reconcile(ctx) ->
+    #: Reconcile | None`` — called by ``ssh_node`` on a reclaimed
+    #: ``STATUS:running`` row carrying ``meta.submit_started_at`` but no
+    #: ``meta.compute_handle``: the prior worker generation died inside
+    #: ``submit()`` — after the intent marker committed, before the handle
+    #: persisted (gr708457). The reconciler's own launch evidence answers:
+    #: ``Reconcile(handle=<handle>)`` re-adopts the provable compute,
+    #: ``Reconcile(launched=False)`` clears the marker and resubmits
+    #: safely, ``None`` keeps the loud gr191673 infrastructure failure.
+    #: ``None`` here means the job_type has no reconcile surface — the
+    #: fail-loud default stands.
+    reconcile: Callable[..., Any] | None = None
     #: Optional wall-clock kill hook — a detached submit/poll job_type has
     #: no termination path once the sweeper's own wall-clock retirement
     #: excludes its executor: ``ssh_node``'s ``_poll_one``
@@ -736,6 +779,7 @@ def _load_run_slice() -> JobTypeSpec:
         validate_submit=run_slice.validate_submit,
         submit=run_slice.submit,
         poll=run_slice.poll,
+        reconcile=run_slice.reconcile,
         kill=run_slice.kill,
         release=run_slice.release,
         wall_seconds=run_slice.wall_seconds,
@@ -1481,6 +1525,7 @@ def known_job_types() -> list[str]:
 __all__ = [
     "JOB_TYPE_PLUGIN_GROUP",
     "JobTypeSpec",
+    "Reconcile",
     "_reset_plugin_cache",
     "defer_on_pause",
     "fix_gripe_lane_on",

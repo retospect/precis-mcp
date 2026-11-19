@@ -126,6 +126,9 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
+The detached executor records a submit intent before launching either job.
+Recovery uses launch evidence from that attempt and host to resume poll,
+including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
