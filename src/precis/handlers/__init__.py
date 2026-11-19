@@ -10,7 +10,7 @@ Hub-mint concurrency awaits production timing measurements.
 Cached record selectors preserve ref identity despite numeric slug collisions.
 Cache eyes apply injection verdicts while retaining link rings.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
-Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
+Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Paper tag batches commit edits and audit events together.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root

@@ -25,6 +25,10 @@ deduplication hit keeps its byline and names the explicit metadata-edit call.
 S2 verification also persists its byline and journal on fresh stubs: the
 stub upsert uses authors for cite keys without writing the byline itself.
 
+DOI status reads use the fetch-status table before acquisition handling.
+An unheld DOI reports unresolved there, while an ordinary DOI get can
+request acquisition.
+
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
 Superseded-handle resolution on link/edit/put/tag emits a per-call footer
@@ -2458,6 +2462,13 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         if isinstance(id, list):
             return self._get_batch(id, view=view, args=args)
+        if (
+            self.spec.kind == "paper"
+            and _normalise_view(view) == "status"
+            and detect_identifier_scheme(str(id).strip().partition("~")[0]) == "doi"
+        ):
+            # Check availability before the DOI miss can request acquisition.
+            return self._fetch_status_view([str(id)])
         try:
             raw_id = _maybe_resolve_doi(self.store, str(id))
         except NotFound:
