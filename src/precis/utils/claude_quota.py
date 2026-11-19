@@ -23,8 +23,8 @@ no ``unifiedWindows``; the ``--output-format json`` envelope carried
 all of those shapes and folds whatever percentages they report into
 the snapshot.
 
-Persists to ``claude_quota_snapshot`` (scope='unified'). The 1-token
-call is cheap; the value is the headers Anthropic returns. Claude Code
+Persists to ``claude_quota_snapshot`` (scope='unified'). The probe is
+one `claude -p` call per refresh interval (its cost is unmeasured); the value is the headers Anthropic returns. Claude Code
 does the same trick under its ``/usage`` slash command (binary strings
 show a dedicated ``WkO`` function with ``source: "quota_check"``).
 

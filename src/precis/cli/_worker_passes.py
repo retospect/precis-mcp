@@ -1941,11 +1941,11 @@ def build_ref_passes(
         ref_passes.append(_stub_rank_pass)
 
     # Quota-check pass — refresh the Claude.ai OAuth utilisation
-    # snapshot via one 1-token `claude -p "quota" --output-format
-    # json` call. Agent profile only: hermes's OAuth state lives
+    # snapshot via one `claude -p "quota" --output-format
+    # json` call (input size dominated by CLI context). Agent profile only: hermes's OAuth state lives
     # there. Short-circuits when the persisted snapshot is younger
     # than REFRESH_INTERVAL_S (default 600s), so the cost is one
-    # SQL probe per idle cycle + a 2-token completion every 10 min.
+    # SQL probe per idle cycle + one `claude -p` call every 10 min.
     if _register("quota_check"):
         from precis.workers.quota_check import run_quota_check_pass
         from precis.workers.runner import BatchResult as _BatchResult

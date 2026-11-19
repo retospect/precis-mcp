@@ -13,7 +13,8 @@ layer reads three things off a draft and never writes back:
   notation pulled verbatim from a title/abstract is deterministically
   respoken (:func:`precis.draft.chem_speak.speak_chemistry` — ``Zn(NO3)2·6H2O``
   → "zinc nitrate hexahydrate", ``MOF-74`` → "MOF 74") *after* the lexicon so
-  a user override of a specific formula's surface form wins. Once
+  a user override of a specific formula's surface form wins. The formula
+  table lives in the ``chemistry`` section of ``data/tts_lexicon.json``. Once
   :func:`split_by_script` has settled a span's language, its numerals are
   spelled out deterministically (:func:`precis.draft.verbalize.verbalize_text`:
   abbreviations per ``data/tts_lexicon.json``, relative dates anchored to
