@@ -2771,21 +2771,15 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    `mode=` defaults to `find-replace`; kinds excluding it refuse with
-    options. todo uses `text=`/`body=`; memory takes `ops=[{find,text,...}]`;
-    quest wants 'replace' (explicit). Other kinds' sets are per kind —
-    the table is precis-edit-help's; paper, structure ignore it.
+    todo: `mode='replace', body=...` updates details; `text=` updates title.
+    quest needs explicit `mode='replace'`. memory accepts `ops=`.
+    Draft `replace-content` rewrites a block; `insert` edits around an anchor
+    within a chunk. To add an adjacent paragraph, use draft `put` with
+    `args={'at': {'before': 'dc<id>'}}` (or `after`).
 
-    Draft accepts `mode='replace-content'` for a block rewrite and
-    `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`
-    to insert text around an anchor within a chunk. To add a paragraph
-    next to a chunk, use `put(kind='draft', id='<draft>', text='…',
-    args={'at': {'before': 'dc<id>'}})` (or use `after`).
-
-    Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
-    edit. `dry_run=True` previews; `reason=` why.
-    `text={'$ref': '<handle>'}` = its body (needs a recent exact `get`).
+    Anchors: `before=`, `after=`, `match=`, `nth=`. `base_sha=` guards
+    against stale edits. `dry_run=True` previews; `reason=` records why.
+    `text={'$ref': '<handle>'}` uses the body from a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
