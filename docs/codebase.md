@@ -161,8 +161,9 @@ Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new
 claims before writing; the gardener evaluates existing maintenance candidates
 through its reviewed apply paths. The opt-in gardener grounding pass records
-claim classifications and span coverage in SHA-pinned review rows outside the
-apply queue. Labelled memory search batches reuse ordinary
+claim classifications, evidence judgments and premise lineage in SHA-pinned
+review rows outside the apply queue. The pass sends repair proposals through
+the existing garden ledger. Labelled memory search batches reuse ordinary
 search dispatch and preserve each query's results and errors separately.
 
 Skill discovery fuses up to five phrasings into attributed section matches.

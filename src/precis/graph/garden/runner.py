@@ -245,12 +245,15 @@ def run_garden_tick(
     cursors: dict[str, int] | None = None,
     considered_days: int = CONSIDERED_DAYS,
     propose: ProposerFn | None = None,
+    embedder: Any | None = None,
 ) -> GardenOutcome:
     """One bounded tick. Returns the outcome; writes only reviews rows.
 
     ``propose=None`` uses the routed LLM proposer. A paused verdict stops
     the tick — remaining candidates are re-found next tick (dedup makes
-    that free).
+    that free). ``embedder`` (when wired) lets the grounding audit's
+    bounded conflict probe retrieve candidates; without one the probe
+    degrades to ``not_probed`` rather than spending nothing on silence.
     """
     if propose is None:
         propose = propose_llm
@@ -288,15 +291,26 @@ def run_garden_tick(
             from precis.graph.garden.grounding import GroundingPaused, audit_candidate
 
             try:
-                audit_id = audit_candidate(store, cand)
+                # The audit row and its repair proposals all land in the
+                # reviews ledger, so they spend the tick's shared budget:
+                # repairs are capped at what remains after this audit's
+                # own row, and the outcome counts what was actually
+                # written (dedup may emit fewer than the cap).
+                result = audit_candidate(
+                    store,
+                    cand,
+                    embedder=embedder,
+                    repair_limit=max_proposals - out.proposals - 1,
+                )
             except GroundingPaused:
                 out.paused = True
                 return False
-            if audit_id is None:
+            if result is None:
                 return False
-            out.proposals += 1
+            _review_id, repairs = result
+            out.proposals += 1 + repairs
             out.proposals_by_detector[cand.detector] = (
-                out.proposals_by_detector.get(cand.detector, 0) + 1
+                out.proposals_by_detector.get(cand.detector, 0) + 1 + repairs
             )
             return True
         prompt_version = (

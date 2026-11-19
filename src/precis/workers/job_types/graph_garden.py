@@ -131,6 +131,29 @@ def _gate_skip(ctx: Any, reason: str) -> None:
     log.info("graph_garden: run skipped (%s)", reason)
 
 
+def _try_build_embedder(store: Any) -> Any | None:
+    """Embedder for the grounding audit's bounded conflict probe — same
+    construction ``conflict_sweep`` uses. A missing or unconfigured
+    embedder degrades the probe to ``not_probed`` (recorded on the audit
+    row) rather than failing the tick: retrieval needs query vectors,
+    everything else in the tick does not."""
+    try:
+        from precis.config import load_config
+        from precis.embedder import make_embedder
+
+        cfg = load_config()
+        return make_embedder(
+            cfg.embedder,
+            dim=store.embedding_dim(),
+            url=cfg.embedder_url,
+            timeout=cfg.embedder_timeout,
+            max_retries=cfg.embedder_max_retries,
+        )
+    except Exception:
+        log.info("graph_garden: no embedder; grounding conflict probe not_probed")
+        return None
+
+
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """Plugin dispatcher invoked by ``job_inproc`` for a claimed job.
 
@@ -186,6 +209,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     from precis.graph.garden.service import saved_cursors
 
     prev_cursors = saved_cursors(ctx.store)
+    embedder = _try_build_embedder(ctx.store)
     outcome = run_garden_tick(
         ctx.store,
         passes=passes,
@@ -201,6 +225,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         cursors=prev_cursors,
         considered_days=_nonneg("considered_days", CONSIDERED_DAYS),
         propose=propose_llm,
+        embedder=embedder,
     )
     garden: dict[str, Any] = {
         "candidates": outcome.candidates,
