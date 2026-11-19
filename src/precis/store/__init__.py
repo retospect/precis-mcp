@@ -35,6 +35,12 @@ and reason commit together; filesystem moves remain best-effort, keeping
 the old storage path on failure because a database transaction cannot
 roll back a corpus filesystem operation.
 
+Stub acquisition refuses an identifier hit with substantial, disjoint title
+tokens. An identifier on a corrupt row must not silently claim another work
+is held; sparse or placeholder titles provide too little evidence to refuse.
+This guard preserves the row for operator repair rather than guessing which
+of its metadata, body and links belongs to the requested paper.
+
 Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
 matches while retaining strict-AND eligibility and the existing RRF weights;

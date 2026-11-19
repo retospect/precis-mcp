@@ -1037,12 +1037,19 @@ class RefsMixin:
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
         reuse it (gr690614, §Acquire).
+
+        Raises:
+            Conflict: An identifier or twin DOI matches a row whose title
+                conflicts with the requested title. The guard abstains on
+                placeholders and refuses only when both titles have at least
+                four distinct content tokens and share none.
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
             doi_twins,
+            is_placeholder_title,
             make_cite_key,
             normalize_doi,
         )
@@ -1058,14 +1065,38 @@ class RefsMixin:
             if _val:
                 norm.append((_k, _val))
 
+        def check_title(ref_id: int, held_title: str | None) -> None:
+            # An identifier is strong evidence, but cannot make a corrupt
+            # corpus row the requested work (gr710296). Abstain on sparse
+            # titles and placeholders; refuse only disjoint, substantial
+            # titles, leaving repair to an operator rather than rewriting
+            # the existing paper's body, links or identity here.
+            from precis.utils.title_merge import content_tokens
+
+            if is_placeholder_title(title) or is_placeholder_title(held_title):
+                return
+            wanted = content_tokens(title or "")
+            held = content_tokens(held_title or "")
+            if min(len(wanted), len(held)) >= 4 and wanted.isdisjoint(held):
+                raise Conflict(
+                    f"paper identifier/title conflict on pa{ref_id}: "
+                    f"requested {title!r}; stored {held_title!r}",
+                    next=(
+                        f"inspect get(kind='paper', id='pa{ref_id}') and its "
+                        "identifiers; repair the mismatched identity before retrying"
+                    ),
+                )
+
         def _do(c: Connection) -> tuple[int, bool]:
             for id_kind, id_value in norm:
                 row = c.execute(
-                    "SELECT ref_id FROM ref_identifiers "
-                    "WHERE id_kind = %s AND id_value = %s",
+                    "SELECT r.ref_id, r.title FROM ref_identifiers ri "
+                    "JOIN refs r ON r.ref_id = ri.ref_id "
+                    "WHERE ri.id_kind = %s AND ri.id_value = %s",
                     (id_kind, id_value),
                 ).fetchone()
                 if row is not None:
+                    check_title(int(row[0]), row[1])
                     return int(row[0]), False
 
             # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
@@ -1076,7 +1107,7 @@ class RefsMixin:
                     continue
                 for twin in doi_twins(id_value):
                     row = c.execute(
-                        "SELECT pi.ref_id FROM ref_identifiers pi "
+                        "SELECT pi.ref_id, r.title FROM ref_identifiers pi "
                         "JOIN refs r ON r.ref_id = pi.ref_id "
                         "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
                         "AND r.retired_at IS NULL "
@@ -1084,6 +1115,7 @@ class RefsMixin:
                         (twin,),
                     ).fetchone()
                     if row is not None:
+                        check_title(int(row[0]), row[1])
                         c.execute(
                             "INSERT INTO ref_identifiers "
                             "(id_kind, id_value, ref_id, source) "

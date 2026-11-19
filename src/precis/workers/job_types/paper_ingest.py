@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import Conflict
 from precis.store.types import Tag
 from precis.workers.job_types import JobTypeSpec
 
@@ -321,68 +322,75 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     from psycopg.types.json import Jsonb
 
-    with ctx.store.tx() as conn:
-        ref_id, created = ctx.store.upsert_stub_paper(
-            identifiers=identifiers,
-            title=stub_title,
-            year=year,
-            authors=authors,
-            set_by="agent",
-            s2_meta=s2_meta,
-            conn=conn,
-        )
-        if created:
-            ctx.store.add_tag(
-                ref_id,
-                Tag.open("discovered-via:get"),
-                set_by="system",
+    try:
+        with ctx.store.tx() as conn:
+            ref_id, created = ctx.store.upsert_stub_paper(
+                identifiers=identifiers,
+                title=stub_title,
+                year=year,
+                authors=authors,
+                set_by="agent",
+                s2_meta=s2_meta,
                 conn=conn,
             )
-            if unverified:
+            if created:
                 ctx.store.add_tag(
                     ref_id,
-                    Tag.open("acquire:unverified"),
-                    set_by="agent",
+                    Tag.open("discovered-via:get"),
+                    set_by="system",
                     conn=conn,
                 )
-                patch: dict[str, Any] = {"acquire_unverified": True}
-                if resolver_err is not None:
-                    patch["acquire_unverified_reason"] = str(resolver_err)[:300]
-                conn.execute(
-                    "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-                    (Jsonb(patch), ref_id),
-                )
-            if registry_meta is not None:
-                # The registry-verified stub carries its bibliographic
-                # fields on mint — same patch acquire applies (gr514384).
-                reg_patch: dict[str, Any] = {}
-                reg_source = str(registry_meta.get("source") or "")
-                if reg_source:
-                    reg_patch["acquire_registry"] = reg_source
-                journal = registry_meta.get("journal")
-                if isinstance(journal, str) and journal.strip():
-                    reg_patch["journal"] = journal.strip()
-                for key in ("record_type", "version", "publisher", "entry_type"):
-                    val = registry_meta.get(key)
-                    if isinstance(val, str) and val.strip():
-                        reg_patch[key] = val.strip()
-                abstract = registry_meta.get("abstract")
-                if isinstance(abstract, str) and abstract.strip():
-                    reg_patch["abstract"] = abstract.strip()
-                ctx.store.update_paper_fields(
-                    ref_id,
-                    authors=registry_meta.get("authors") or None,
-                    meta_patch=reg_patch,
-                    source=f"acquire:{reg_source or 'registry'}",
-                    # ``paper_authors.source`` has no ``datacite`` tier —
-                    # ``pdf`` is the sanctioned programmatic fallback.
-                    authors_source=("crossref" if reg_source == "crossref" else "pdf"),
-                    conn=conn,
-                )
-        # Explicit semantics (restamp_min_hours=None): a get-asked DOI is
-        # a "fetch NOW" — the job's own idem gate is the rate limit, so
-        # the pin always re-arms one immediate fetch retry.
-        ctx.store.pin_stub_for_fetch(ref_id, conn=conn, restamp_min_hours=None)
+                if unverified:
+                    ctx.store.add_tag(
+                        ref_id,
+                        Tag.open("acquire:unverified"),
+                        set_by="agent",
+                        conn=conn,
+                    )
+                    patch: dict[str, Any] = {"acquire_unverified": True}
+                    if resolver_err is not None:
+                        patch["acquire_unverified_reason"] = str(resolver_err)[:300]
+                    conn.execute(
+                        "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                        (Jsonb(patch), ref_id),
+                    )
+                if registry_meta is not None:
+                    # The registry-verified stub carries its bibliographic
+                    # fields on mint — same patch acquire applies (gr514384).
+                    reg_patch: dict[str, Any] = {}
+                    reg_source = str(registry_meta.get("source") or "")
+                    if reg_source:
+                        reg_patch["acquire_registry"] = reg_source
+                    journal = registry_meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        reg_patch["journal"] = journal.strip()
+                    for key in ("record_type", "version", "publisher", "entry_type"):
+                        val = registry_meta.get(key)
+                        if isinstance(val, str) and val.strip():
+                            reg_patch[key] = val.strip()
+                    abstract = registry_meta.get("abstract")
+                    if isinstance(abstract, str) and abstract.strip():
+                        reg_patch["abstract"] = abstract.strip()
+                    ctx.store.update_paper_fields(
+                        ref_id,
+                        authors=registry_meta.get("authors") or None,
+                        meta_patch=reg_patch,
+                        source=f"acquire:{reg_source or 'registry'}",
+                        # ``paper_authors.source`` has no ``datacite`` tier —
+                        # ``pdf`` is the sanctioned programmatic fallback.
+                        authors_source=(
+                            "crossref" if reg_source == "crossref" else "pdf"
+                        ),
+                        conn=conn,
+                    )
+            # Explicit semantics (restamp_min_hours=None): a get-asked DOI is
+            # a "fetch NOW" — the job's own idem gate is the rate limit, so
+            # the pin always re-arms one immediate fetch retry.
+            ctx.store.pin_stub_for_fetch(ref_id, conn=conn, restamp_min_hours=None)
+
+    except Conflict as exc:
+        ctx.record_failure(f"paper_ingest {doi}: {exc}", failure_class="input")
+        return
 
     state = "minted stub" if created else "already tracked"
     ctx.append_chunk(
