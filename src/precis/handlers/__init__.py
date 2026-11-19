@@ -63,6 +63,7 @@ Paper identity warnings exclude misleading issue-page prefixes.
 Memory body writes lock the ref and anchored writes recheck the snapshot.
 Anchors retry folded on a literal miss to handle retyped prose.
 Transaction and resolver details live in :mod:`precis.handlers.memory`.
+Attribution reads rendered decimals in cited text.
 
 Stored-route/ledger-count rationale: :mod:`precis.handlers.llm`,
 :mod:`precis.handlers.job`.

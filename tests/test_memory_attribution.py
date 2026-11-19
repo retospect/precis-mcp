@@ -143,6 +143,22 @@ def test_chunk_level_cite_uses_chunk_evidence(world):
     assert [m.token for m in _check("film is 8 nm thick (pc995663)")] == ["8 nm"]
 
 
+@pytest.mark.parametrize(
+    "evidence, value",
+    [
+        ("cutoff 3**.**9 eV", "3.9 eV"),
+        ("threshold **0.01** eV/Å", "0.01 eV/Å"),
+        ("threshold 0*.*05 _eV/Å_", "0.05 eV/Å"),
+    ],
+)
+def test_chunk_evidence_unwraps_emphasis(
+    world: dict[tuple[int, int | None], str], evidence: str, value: str
+) -> None:
+    world[(995663, 4)] = evidence
+    assert _check(f"Setup used {value} [pc995663].") == []
+    assert [m.token for m in _check("Setup used 9 eV [pc995663].")] == ["9 eV"]
+
+
 def test_unresolvable_cite_reported_not_a_failure(world):
     out = _check("value 3 nm per websearch:999999999")
     assert out == [UngroundedNumber("3 nm", "websearch:999999999", None)]
