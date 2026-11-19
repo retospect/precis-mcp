@@ -4212,10 +4212,10 @@ class MemoryHandler(AuditedRetirementHandler):
         ``memory_body`` chunk. The note eye fingerprints this same chunk
         for the ``_memory_body_display`` stamp (gr715698): joined ord≥0
         text can carry a second body chunk or a ``tag_overflow`` and miss
-        it."""
-        for block in store.chunks.list_chunks_for_ref(ref.id):
-            if block.chunk_kind == _BODY_KIND:
-                return block.text
+        it. Reads the ``memory_body`` rows alone, not the ref's whole
+        chunk list."""
+        for block in store.chunks.list_chunks_for_ref_by_kind(ref.id, _BODY_KIND):
+            return block.text
         return ref.title or ""
 
     def _body_text(self, ref: Ref) -> str:
