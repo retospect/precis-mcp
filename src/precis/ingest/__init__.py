@@ -51,6 +51,11 @@ static for the process lifetime). Policy:
 Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
+Marker's pagination markers preserve physical page boundaries. Before
+merging blocks, paper extraction drops recognised leading advert pages
+when the target title and abstract confirm the next page is the article
+opening. Exact OCR sentence loops are removed before splitting so
+fragments of the loop cannot become searchable chunks.
 
 Figure alt text and captions are authored inside the dependency stack,
 not in this package: marker-pdf's surya-ocr VLM emits them from its
