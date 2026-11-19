@@ -724,6 +724,29 @@ def test_single_denominator_solidus_units_do_not_fire() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "basis", ["def2-TZVP", "def2-TZVPP", "def2-SVP", "def2-QZVPPD", "def2-SV(P)"]
+)
+def test_method_basis_label_does_not_fire_solidus(basis: str) -> None:
+    """gr722410: the solidus separates a method from its basis set."""
+    sentence = f"Energies were calculated with revPBE-D3(BJ)/{basis}."
+    assert lint_notation(sentence) == []
+    assert any(
+        "two-denominator-solidus" in warning
+        for warning in lint_notation(sentence + " Mobility is 10 cm²/Vs.")
+    )
+
+
+@pytest.mark.parametrize(
+    "denominator", ["def", "def2-TZVPextra", "def2-TZVP-extra", "Vs", "sprocket"]
+)
+def test_basis_exemption_does_not_hide_other_denominators(denominator: str) -> None:
+    assert any(
+        "two-denominator-solidus" in warning
+        for warning in lint_notation(f"The rate is 5 widgets/{denominator}.")
+    )
+
+
 def test_chemical_formula_and_miller_surface_do_not_fire_solidus() -> None:
     """gr530995: `PdH/Pd(111)` names a hydride over a Miller-index facet --
     chemistry, not a compound unit. The lint must still fire on a real

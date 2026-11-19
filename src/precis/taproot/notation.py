@@ -224,6 +224,11 @@ _SUPERSCRIPT_TAIL_RE = re.compile(f"[{_SUPERSCRIPT_DIGITS}]+$")
 #: A letter-run following a `/` -- the candidate denominator to classify.
 _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 
+#: A def2 basis-set name after a method/basis solidus is nomenclature,
+#: not a unit. Inspect the complete name: the denominator scanner only
+#: captures `def`, losing the digits and hyphen that establish its meaning.
+_DEF2_BASIS_RE = re.compile(r"def2-(?:SVP|SV\(P\)|[TQ]ZVPP?D?)(?![\w-])")
+
 #: A differential-quotient denominator (`dI/dV`, `dR/dT`, ...) -- physics
 #: shorthand where `d<Symbol>` is half of a derivative, not a compound
 #: unit; the ambiguity the two-denominator rule guards against (two units
@@ -781,6 +786,8 @@ def lint_notation(sentence: str) -> list[str]:
         )
 
     for dm in _DENOMINATOR_RUN_RE.finditer(sentence):
+        if _DEF2_BASIS_RE.match(sentence, dm.start(1)):
+            continue
         run = dm.group(1)
         if len(run) < 2:
             continue
