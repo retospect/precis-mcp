@@ -731,6 +731,141 @@ def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
     )
 
 
+def _scrub_uncorroborated_s2_doi(id_kind: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """Drop an S2-attributed DOI the DOI registries can't corroborate.
+
+    gr710828: ``put(kind='paper', arxiv='1705.07874')`` minted a stub
+    carrying ``doi:10.9728/dcs.2024.25.7.1847`` — an unrelated Korean
+    journal paper *about* SHAP — because S2's cluster for that arXiv id
+    (s2:442e10a3…) mis-merged the foreign DOI into its ``externalIds``.
+    Re-asking S2 cannot detect it (``DOI:<that doi>`` resolves back onto
+    the same poisoned record), and the stub's DOI alias is not
+    decoration: fetch_oa would pull the wrong paper's PDF under it, and
+    every later ``doi:`` request would collapse onto this ref.
+
+    So when the caller asked by a *non-DOI* id and the resolved record
+    attributes one, corroborate: resolve the DOI at the registries
+    (Crossref / DataCite / JaLC — the same fallback the ``doi:`` leg
+    already uses) and require the registered work to look like the same
+    paper — at least one shared distinctive title token
+    (:func:`~precis.ingest.verify_metadata.title_overlap`; the published
+    version of a preprint essentially always shares one) and no clear
+    first-author disagreement
+    (:func:`~precis.utils.title_merge.first_author_agreement`). The
+    ``10.48550/arxiv.<id>`` DataCite mint corroborates itself only when
+    ``<id>`` is the record's own arXiv id. A registry miss, fault, or
+    unjudgeable pair (missing or tokenless titles, unusable bylines)
+    ABSTAINS and keeps the DOI — a resolver hiccup is not evidence of a
+    mis-merge, the same split gr483930 drew for the S2 leg.
+
+    No-op for ``id_kind='doi'`` (the DOI *is* the requested id) and for
+    records carrying none. Returns ``meta`` unchanged when the DOI
+    stays, else a copy with ``doi``/``external_ids.DOI`` dropped — the
+    caller's dict is never mutated.
+    """
+    if id_kind == "doi":
+        return meta
+    doi = str(meta.get("doi") or "").strip()
+    if not doi:
+        return meta
+    if doi.lower().startswith("10.48550/arxiv."):
+        # The DataCite mint corroborates itself only when its suffix IS
+        # the resolved arXiv id; another preprint's mint is a conflict
+        # on its face — two preprint ids on one record — so the alias
+        # drops without a registry call (it also can't be vouched for
+        # while the registry is down).
+        from precis.identity import normalize_arxiv
+
+        want = normalize_arxiv(str(meta.get("arxiv_id") or ""))
+        got = normalize_arxiv(doi[len("10.48550/arxiv.") :])
+        if want and got:
+            if want.lower() == got.lower():
+                return meta
+            return _drop_s2_doi(meta, doi)
+    _reg, reg_title = _registry_disagreement(doi, meta)
+    if reg_title is None:
+        return meta
+    log.info(
+        "acquire: dropping registry-uncorroborated DOI %s off the %s record "
+        "(registry title %r vs record title %r) — gr710828",
+        doi,
+        id_kind,
+        reg_title,
+        meta.get("title"),
+    )
+    return _drop_s2_doi(meta, doi)
+
+
+def _drop_s2_doi(meta: dict[str, Any], doi: str) -> dict[str, Any]:
+    """Copy of ``meta`` without ``doi`` / ``external_ids.DOI``."""
+    out = dict(meta)
+    out["doi"] = None
+    ext = dict(out.get("external_ids") or {})
+    if str(ext.get("DOI") or "").strip().lower() == doi.lower():
+        del ext["DOI"]
+    out["external_ids"] = ext
+    return out
+
+
+def _registry_disagreement(
+    doi: str, meta: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(registry record, its title)`` when the registry clearly names
+    another work than ``meta``; ``(record, None)`` when the record
+    corroborates ``meta``; ``(None, None)`` when inconclusive (no S2
+    title, registry miss/fault, tokenless titles, unjudgeable bylines).
+
+    The record returns with the verdict so a caller that already paid for
+    the lookup can reuse it: re-asking the registries can miss on the
+    second pass and reject a DOI the first pass confirmed (gr710828
+    review).
+    """
+    s2_title = str(meta.get("title") or "").strip()
+    if not s2_title:
+        return None, None
+    try:
+        reg = _lookup_doi_registry(doi)
+    except Exception:
+        return None, None
+    reg_title = str((reg or {}).get("title") or "").strip()
+    if not reg_title:
+        return reg, None
+    from precis.ingest.verify_metadata import title_overlap
+    from precis.utils.title_merge import content_tokens, first_author_agreement
+
+    if not content_tokens(reg_title) or not content_tokens(s2_title):
+        return reg, None
+    if (
+        title_overlap(reg_title, s2_title) > 0
+        and first_author_agreement(meta.get("authors"), (reg or {}).get("authors"))
+        is not False
+    ):
+        return reg, None
+    return reg, reg_title
+
+
+def _poisoned_s2_cluster_registry(
+    meta: dict[str, Any], doi: str
+) -> dict[str, Any] | None:
+    """The registry record establishing that ``doi``'s S2 cluster belongs
+    to another work, else ``None``.
+
+    A ``doi:`` request whose S2 record would also hand the stub other
+    ids (arXiv / S2 paperId) while the registry names a different work.
+    The DOI echo check can't catch this: S2 resolves ``DOI:<foreign>``
+    onto the poisoned cluster (gr710828), and adopting that cluster's
+    arXiv / S2 aliases would collapse the DOI onto an unrelated ref.
+    Records with no other ids to adopt need no check. The caller reuses
+    the returned record as the DOI's own registry verification instead
+    of re-asking the registries — a second lookup can miss and reject a
+    DOI the first lookup confirmed (gr710828 review).
+    """
+    if not (meta.get("arxiv_id") or meta.get("s2_id")):
+        return None
+    reg, disagree = _registry_disagreement(doi, meta)
+    return reg if disagree is not None else None
+
+
 #: Display names for the ``meta.source`` tags ``resolve_registry_doi``
 #: returns — surfaced in the acquire response so the caller can see
 #: which registry vouched for the DOI.
@@ -1972,7 +2107,25 @@ class PaperHandler(Handler):
                 # real DOI as "hallucinated" (gr483930).
                 meta = None
                 resolver_err = exc
+            if meta and id_pair[0] == "doi":
+                # S2's cluster for this DOI may belong to another work
+                # (gr710828): adopt none of its aliases then. The registry
+                # record that established the mismatch doubles as the
+                # DOI's own verification — reuse it below instead of
+                # re-asking the registries, whose second lookup can miss
+                # and reject an already-confirmed DOI.
+                poisoned_reg = _poisoned_s2_cluster_registry(meta, id_pair[1])
+                if poisoned_reg is not None:
+                    log.info(
+                        "acquire: doi %s resolved to a mismatched S2 cluster "
+                        "(registry names %r) — using the registry record",
+                        id_pair[1],
+                        (poisoned_reg.get("title") or ""),
+                    )
+                    meta = None
+                    registry_meta = poisoned_reg
             if meta:
+                meta = _scrub_uncorroborated_s2_doi(id_pair[0], meta)
                 # Lazy import mirrors ``_lookup_acquire_metadata`` above —
                 # ``semanticscholar`` is gated behind the ``[paper]``
                 # extra, and a successful ``meta`` here already proves
@@ -2071,7 +2224,10 @@ class PaperHandler(Handler):
                 # index lags fresh records and misses whole registries
                 # (DataCite proceedings like LIPIcs), so for a DOI ask
                 # the registration agencies before rejecting (gr486090).
-                if id_pair[0] == "doi":
+                # A ``None`` meta can also be a poisoned S2 cluster
+                # dropped above — that branch already stashed the
+                # registry record, so don't ask again here.
+                if id_pair[0] == "doi" and registry_meta is None:
                     try:
                         registry_meta = _lookup_doi_registry(id_pair[1])
                     except Exception as exc:

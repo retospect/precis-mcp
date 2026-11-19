@@ -61,8 +61,8 @@ def lookup(pdf_path: str) -> dict[str, Any]:
             result["pdf_hash"] = pdf_meta["pdf_hash"]
             result["page_count"] = pdf_meta["page_count"]
             result["first_pages_text"] = pdf_meta["first_pages_text"]
-            if not result.get("arxiv_id"):
-                result["arxiv_id"] = arxiv_id
+            # ``get_paper_by_id`` echo-checks the prefixed id, so a hit
+            # always carries ``arxiv_id`` — no backfill (td730803).
             return result
 
     # Try publisher-specific filename → DOI (Nature, APS, …).

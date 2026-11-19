@@ -18,6 +18,17 @@ body. A matching source and quote enter ordinary citation chase; retained
 verifier metadata never establishes trust. Bodyless papers safely leave staged
 findings untouched (``finding_drafts.py``).
 
+Identifier trust (td730803): a prefixed ``arxiv:``/``doi:`` S2 single-id
+lookup must echo the requested id, so its record always carries it. An
+S2-attributed DOI on a stub put is kept only if the DOI registries
+corroborate it; an ``10.48550/arxiv.<id>`` mint self-corroborates only
+when ``<id>`` is the record's own arXiv id (another preprint's mint drops
+outright). Otherwise an ordinary DOI survives an inconclusive registry check
+(miss, outage, tokenless or missing titles, unusable bylines); only a clear
+title/author disagreement drops it. A ``doi:`` put whose S2 cluster would add
+arXiv/S2 aliases is registry-checked too, and a clear mismatch discards the
+cluster.
+
 The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the

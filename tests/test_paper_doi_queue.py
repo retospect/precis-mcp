@@ -444,6 +444,66 @@ class TestDispatch:
         assert stub["prio"] == 1
         assert not any(ev[0] == "fail" for ev in out)
 
+    def test_s2_echo_of_poisoned_cluster_uses_registry_record(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr710828, mirrored from acquire: S2 echoes the DOI back onto a
+        mis-merged cluster — the stub must not adopt the cluster's arXiv /
+        S2 aliases, and the registry record that established the mismatch
+        is reused (the registries are asked exactly once, so a second-ask
+        miss cannot fail a job the first ask confirmed)."""
+        foreign = "10.9728/dcs.2024.25.7.1847"
+        calls: list[str] = []
+        monkeypatch.setattr(
+            paper_ingest,
+            "_s2_lookup",
+            lambda doi: {
+                "title": "A Unified Approach to Interpreting Model Predictions",
+                "year": 2017,
+                "doi": doi,
+                "arxiv_id": "1705.07874",
+                "s2_id": "442e10a3c6640ded9408622005e3c2a8906ce4c2",
+                "authors": [{"name": "Scott M. Lundberg"}],
+            },
+        )
+
+        def _registry(doi: str) -> dict[str, Any]:
+            calls.append(doi)
+            return {
+                "title": "Exploration of Digital Divide Factors Affecting "
+                "Life Satisfaction in Older People: Using Tree-Based "
+                "Ensemble Machine Learning and SHAP",
+                "authors": [{"given": "Jeong-Seon", "family": "Lee"}],
+                "year": 2024,
+                "source": "crossref",
+            }
+
+        monkeypatch.setattr(paper_ingest, "_registry_lookup", _registry)
+        out: list = []
+        ctx = fake_ctx(
+            store, {"job_type": "paper_ingest", "params": {"doi": foreign}}, out
+        )
+        _dispatch(ctx)
+
+        stub = _stub_for_doi(store, foreign)
+        assert stub is not None
+        assert stub["meta"].get("acquire_registry") == "crossref"
+        assert stub["title"] == (
+            "Exploration of Digital Divide Factors Affecting Life "
+            "Satisfaction in Older People: Using Tree-Based Ensemble "
+            "Machine Learning and SHAP"
+        )
+        assert calls == [foreign]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id_kind FROM ref_identifiers WHERE ref_id = %s",
+                (stub["id"],),
+            ).fetchall()
+        kinds = [r[0] for r in rows]
+        assert "doi" in kinds
+        assert not any(k in ("arxiv", "s2") for k in kinds)
+        assert not any(ev[0] == "fail" for ev in out)
+
     def test_empty_doi_fails(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
