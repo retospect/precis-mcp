@@ -86,12 +86,19 @@ repairing the row is a data fix, never a hand-edit of the tag.
 ## Get or request the cited paper
 
 ```python
-get(kind="paper", id="<the DOI>")              # DOI resolves when held
-search(kind="paper", q="<title from the entry>")
+search(kind="paper", q="<bare DOI>")              # use the DOI alone
+search(kind="paper", q="<title from the entry>")  # when no DOI is available
 ```
 
-Held → keep its `pa<id>` handle. Not held → request it; the stub
-lands and fills in on its own (see [[precis-stubs-help]]):
+A DOI match identifies the held record. A text hit can be a paper
+that cites the DOI, so confirm the record's DOI or bibliographic
+details before keeping its `pa<id>` handle. To read metadata or BibTeX,
+use that handle, for example `get(kind="paper", id="pa<id>", view="bibtex")`.
+Use search for the held check because `get` with an unheld DOI can
+queue ingestion.
+
+If the paper is missing and you want it acquired, request it
+explicitly (see [[precis-stubs-help]]):
 
 ```python
 put(kind="paper", doi="<DOI>")
