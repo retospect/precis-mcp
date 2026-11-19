@@ -3665,3 +3665,32 @@ class TestCountView:
         self._graph(store)
         out = _make_handler(store).search(view="count", q="claim body")
         assert "# 1 finding entry" in out.body
+
+
+@pytest.mark.parametrize("status", [None, "established"])
+def test_search_view_index_lists_one_line_per_hit(
+    store: Any, status: str | None
+) -> None:
+    seed = TestSearch()
+    first = seed._seed_finding(
+        store,
+        cite_key="index-a",
+        title="first claim",
+        body="first body",
+        status="established",
+    )
+    second = seed._seed_finding(
+        store,
+        cite_key="index-b",
+        title="second claim",
+        body="second body",
+        status="established",
+    )
+    h = _make_handler(store)
+    default = h.search(status=status).body
+    out = h.search(status=status, view="index")
+    assert out.body.splitlines() == [
+        f"- second claim (fi{second}) — established",
+        f"- first claim (fi{first}) — established",
+    ]
+    assert default.index("second claim") < default.index("first claim")

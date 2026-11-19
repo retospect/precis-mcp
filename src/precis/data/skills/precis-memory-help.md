@@ -1246,3 +1246,7 @@ The caller's existing authority and the detector's allowed actions still apply.
 Gardener judgments use this evidence to accept/reject only the candidate's
 supported maintenance action. This policy adds no auto-apply door or permission
 to change human-origin nodes.
+
+## Bound the result shape
+
+For `get`, `args={'page_size': 3}` bounds `view='members'` and `view='toc'` pages; continue with the returned offset. For `view='log'` or `view='considerations'`, page_size aliases limit. Other views refuse page_size; use the log view with offset/limit to page history.

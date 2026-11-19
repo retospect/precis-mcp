@@ -637,6 +637,7 @@ def render_node_toc(
     *,
     depth: int | str | None = None,
     offset: int | str | None = None,
+    page_size: int | str | None = None,
 ) -> Response:
     """``get(view='toc')``: the ref's part-of subtree as an indented
     tree with extracted keywords per line.
@@ -647,10 +648,16 @@ def render_node_toc(
     reading order" list supplies order until it can be dropped.
     ``args={'depth': k}`` renders through depth *k* and collapses a
     deeper subtree into a ``· +N below`` marker; ``offset`` pages DFS
-    rows under the byte budget exactly like ``view='members'``.
+    rows under the byte budget. ``page_size`` caps the number of rows
+    per page, as in ``view='members'``.
     """
     next_call = f"get(kind='memory', id={ref.id}, view='toc')"
     off = _integer(offset, "offset", minimum=0, next_call=next_call)
+    n_size = (
+        _integer(page_size, "page_size", minimum=1, next_call=next_call)
+        if page_size is not None
+        else None
+    )
     n_depth: int | None = None
     if depth is not None:
         n_depth = _integer(
@@ -710,7 +717,9 @@ def render_node_toc(
             body=f"no members past offset {off} — 0 total; next: {next_call}"
         )
     descendants = rows[1:]
-    page_rows = descendants[off:]
+    page_rows = (
+        descendants[off : off + n_size] if n_size is not None else descendants[off:]
+    )
     if total and not page_rows:
         return Response(
             body=(f"no members past offset {off} — {total} total; next: {next_call}")
@@ -739,6 +748,8 @@ def render_node_toc(
     body = header + "\n" + "\n".join(lines)
     if end < total:
         args = f"'offset': {end}"
+        if n_size is not None:
+            args += f", 'page_size': {n_size}"
         if n_depth is not None:
             args += f", 'depth': {n_depth}"
         body += (

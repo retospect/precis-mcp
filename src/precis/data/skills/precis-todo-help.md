@@ -345,3 +345,7 @@ worth keeping a record of.
 - [[precis-tags]] — STATUS:/PRIO: vocabulary, validation
 - [[precis-relations]] — blocked-by / blocks and other rels
 - [[precis-search-help]] — tags= filter, q= ranking
+
+## Bound the result shape
+
+`search(kind='todo', ids=['td123', 456])` (also `args={'ids': ['td123', 456]}`) filters ordinary search or `view='count'` to those todos, AND-ed with other filters. Tree views do not accept ids.

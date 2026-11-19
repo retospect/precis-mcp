@@ -1654,8 +1654,10 @@ class FindingHandler(AuditedRetirementHandler):
         numeric-ref kinds) plus the live claim-graph census — hubs by
         publish state and trust axis, edges by relation (gr518170).
 
-        Renders a TOON table (``id | title | setup | primary``, plus
-        ``state | support | flags`` once any hit is a claim hub);
+        The default renders a TOON table (``id | title | setup | primary``,
+        plus ``state | support | flags`` once any hit is a claim hub).
+        ``view='index'`` renders the same ranked hits as one bullet per hit
+        (``- <title> (fi<id>) — <STATUS>``). Use
         ``get(kind='finding', id=N)`` for the full begat chain.
         """
         from precis.handlers._numeric_ref import _require_count_agg_view
@@ -1677,11 +1679,11 @@ class FindingHandler(AuditedRetirementHandler):
                 ),
             )
 
-        if view is not None:
+        if view not in (None, "index"):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count"],
+                    options=["count", "index"],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
                         "args={'group_by': 'state'})"
@@ -1709,6 +1711,7 @@ class FindingHandler(AuditedRetirementHandler):
                 trust=resolved_trust,
                 id_lo=id_lo,
                 id_hi=id_hi,
+                view=view,
             )
 
         # Explicit status= (including '*') — exact single-status filter,
@@ -1739,7 +1742,7 @@ class FindingHandler(AuditedRetirementHandler):
                 refs = self._apply_trust(
                     refs, trust=resolved_trust, page_size=page_size
                 )
-                return self._render_finding_table(refs, query=None)
+                return self._render_finding_table(refs, query=None, view=view)
             raise BadInput(
                 "search(kind='finding') requires q= or status=/tags=",
                 next=(
@@ -1786,7 +1789,7 @@ class FindingHandler(AuditedRetirementHandler):
             body += render_next_section(nav)
             return Response(body=body)
 
-        return self._render_finding_table(refs, query=q)
+        return self._render_finding_table(refs, query=q, view=view)
 
     def _search_default_cohort(
         self,
@@ -1798,6 +1801,7 @@ class FindingHandler(AuditedRetirementHandler):
         trust: str | None = None,
         id_lo: int | None = None,
         id_hi: int | None = None,
+        view: str | None = None,
     ) -> Response:
         """The defaulted (``status is None``) search cohort: union of
         ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
@@ -1848,7 +1852,7 @@ class FindingHandler(AuditedRetirementHandler):
                 trust=trust,
                 page_size=page_size,
             )
-            return self._render_finding_table(refs, query=None)
+            return self._render_finding_table(refs, query=None, view=view)
 
         range_ids = self._range_include_ids(id_lo, id_hi)
         wide = self._hybrid_hits(
@@ -1900,7 +1904,7 @@ class FindingHandler(AuditedRetirementHandler):
             body += render_next_section(nav)
             return Response(body=body)
 
-        return self._render_finding_table(refs, query=q)
+        return self._render_finding_table(refs, query=q, view=view)
 
     #: Publish-state display order for the count view — the trust ladder
     #: most-settled first; ``unminted`` (no publish row) closes it.
@@ -2079,7 +2083,9 @@ class FindingHandler(AuditedRetirementHandler):
             )
         return Response(body="\n".join(parts), result_count=total)
 
-    def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
+    def _render_finding_table(
+        self, refs: list[Ref], *, query: str | None, view: str | None = None
+    ) -> Response:
         """Render the finding-search TOON table.
 
         Shape: ``id | title | setup | primary``, widened to ``id | title |
@@ -2121,6 +2127,15 @@ class FindingHandler(AuditedRetirementHandler):
             rid: next((value for ns, value in pairs if ns == "STATUS"), "")
             for rid, pairs in self.store.ref_tags_bulk([r.id for r in refs]).items()
         }
+        if view == "index":
+            return Response(
+                body="\n".join(
+                    f"- {' '.join(r.title.splitlines())} (fi{r.id}) — {statuses.get(r.id, '')}"
+                    for r in refs
+                ),
+                result_count=len(refs),
+                result_ids=[int(r.id) for r in refs],
+            )
         rows: list[dict[str, str]] = []
         for r in refs:
             meta = r.meta or {}

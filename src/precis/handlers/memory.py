@@ -983,10 +983,10 @@ class MemoryHandler(AuditedRetirementHandler):
         rel: str | None = None,
         of_kind: str | None = None,
         direction: str | None = None,
-        # ``args={'page': N, 'page_size': M}`` — the ``id='/toc'`` kind
-        # TOC's (and the bare ``view='toc'`` spelling's) paging; the
-        # base reads them back out of the forwarded kwargs for paged
-        # list views (gr568237).
+        # The kind TOC (``id='/toc'`` or bare ``view='toc'``) uses
+        # ``page`` and ``page_size``. Node members and TOC use ``offset``
+        # and ``page_size``. For log and considerations, ``page_size``
+        # aliases ``limit``.
         page: int | str | None = None,
         page_size: int | str | None = None,
         **_kw: Any,
@@ -1005,7 +1005,20 @@ class MemoryHandler(AuditedRetirementHandler):
         if page is not None:
             _kw["page"] = page
         if page_size is not None:
-            _kw["page_size"] = page_size
+            if view in {"log", "considerations"} and q is None:
+                if limit is not None and str(limit) != str(page_size):
+                    raise BadInput(
+                        "page_size= and limit= disagree",
+                        next="get(kind='memory', id=N, view='log', args={'offset': 0, 'limit': 10})",
+                    )
+                limit = page_size
+            elif view not in {"members", "toc"} and id != "/toc":
+                raise BadInput(
+                    "page_size= only applies to paged memory views",
+                    next="get(kind='memory', id=N, view='log', args={'offset': 0, 'limit': 10})",
+                )
+            else:
+                _kw["page_size"] = page_size
         # Log offsets count events, or payload characters when event_id
         # selects one event. Keep members' independent cursor contract.
         if depth is not None and (
@@ -1164,7 +1177,9 @@ class MemoryHandler(AuditedRetirementHandler):
             )
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return self._render_members(ref, offset=offset, depth=depth)
+            return self._render_members(
+                ref, offset=offset, depth=depth, page_size=page_size
+            )
         if view == "toc" and id is None:
             # gr568237: the kind's own TOC — every root of the live
             # graph, the same paged forest render the tag-scoped
@@ -1186,7 +1201,9 @@ class MemoryHandler(AuditedRetirementHandler):
             from precis.handlers._memory_toc import render_node_toc
 
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return render_node_toc(self.store, ref, depth=depth, offset=offset)
+            return render_node_toc(
+                self.store, ref, depth=depth, offset=offset, page_size=page_size
+            )
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
@@ -1387,11 +1404,13 @@ class MemoryHandler(AuditedRetirementHandler):
         *,
         offset: int | str | None,
         depth: int | str | None,
+        page_size: int | str | None = None,
     ) -> Response:
         """``view='members'``: the ref's part-of subtree as index bullets.
 
         Emits whole lines until the context cap (gr538449's "members in
-        chunks under the result cap"); ``args={'offset': N}`` resumes at
+        chunks under the result cap"). ``page_size`` caps the number of
+        member rows per page. ``args={'offset': N}`` resumes at
         the member after the last one shown — the footer's ``next:`` line
         carries the ready-made call. Rows sort by ref_id, not recency:
         band order shifts when a reader touches a member mid-walk, which
@@ -1446,7 +1465,12 @@ class MemoryHandler(AuditedRetirementHandler):
         # Reserve room for the header + the continuation/footer lines so
         # the emitted page itself always fits the cap that binds reads.
         budget = max(200, result_context_cap() - _PAGED_FOOTER_BYTES)
-        rest = ordered[off:]
+        n_size = None
+        if page_size is not None:
+            from precis.handlers._event_log_render import log_integer
+
+            n_size = log_integer(page_size, "page_size", ref.id, minimum=1)
+        rest = ordered[off : off + n_size] if n_size is not None else ordered[off:]
         firsts = _first_body_lines(
             self.store, [r.id for r in rest if not (r.meta or {}).get("hook")]
         )
@@ -1472,6 +1496,8 @@ class MemoryHandler(AuditedRetirementHandler):
         body = f"{header}\n" + "\n".join(lines)
         if end < total:
             depth_arg = f", 'depth': {n_depth}" if n_depth else ""
+            if n_size is not None:
+                depth_arg += f", 'page_size': {n_size}"
             body += (
                 f"\n… {end} of {total} shown — next: get(kind='memory', "
                 f"id={ref.id}, view='members', "

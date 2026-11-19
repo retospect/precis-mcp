@@ -575,7 +575,7 @@ class TodoHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "search": ArgsSpec({"under"}),
+        "search": ArgsSpec({"under", "ids"}),
         "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
     #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
@@ -947,6 +947,7 @@ class TodoHandler(NumericRefHandler):
         view: str | None = None,
         args: dict[str, Any] | None = None,
         under: str | int | None = None,
+        ids: list[str | int] | None = None,
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
@@ -987,6 +988,22 @@ class TodoHandler(NumericRefHandler):
             args = {**(args or {}), **q_args}
             q = None
             readings.append(f"q={q_args!r} read as args={q_args!r}")
+        rest = dict(args or {})
+        nested_ids = rest.pop("ids", None)
+        if ids is None:
+            ids = nested_ids
+        if ids is not None:
+            selected = set(self._coerce_ids(ids)) if ids else set()
+            included = _kw.get("include_ref_ids")
+            _kw["include_ref_ids"] = sorted(
+                selected if included is None else selected & set(included)
+            )
+            if view is not None and view != "count":
+                raise BadInput(
+                    "ids= filters ordinary todo search and view='count'",
+                    next="search(kind='todo', ids=['td123'])",
+                )
+        args = rest or None
         # ``view='count'`` is the shared numeric-ref aggregate (total +
         # group_by facets) — it takes no tree args, so under= (todo's
         # own subtree scope) is refused rather than silently dropped.

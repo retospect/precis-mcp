@@ -642,3 +642,7 @@ admission rules and which rels are human-only are in
 - [[precis-bibliography-help]] — who cites this paper
 - [[precis-taproot-help]] — claim hubs, evidence edges, living citation
 - [[precis-overview]] — verbs and kinds
+
+## Bound the result shape
+
+`search(kind='finding', q='catalysis', view='index')` lists one title, fi handle and STATUS per line, in the same order as the default search.

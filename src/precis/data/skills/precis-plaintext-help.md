@@ -134,3 +134,7 @@ anchored deletes with `before=`/`after=`, use `find-replace` with
 - [[precis-markdown-help]] — use this for structured notes
 - [[precis-tex-help]] — .tex files
 - [[precis-overview]] — verbs and kinds
+
+## Preview a deletion
+
+`delete(kind='plaintext', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview deleting the whole file; a preview needs no confirmation.

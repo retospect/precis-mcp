@@ -405,3 +405,21 @@ def test_kind_toc_bare_view_refuses_node_args(hub: Hub) -> None:
         h.get(view="toc", depth=1)
     with pytest.raises(BadInput, match="depth=/offset="):
         h.get(view="toc", offset=2)
+
+
+def test_node_toc_page_size(hub: Hub, forest: dict[str, int]) -> None:
+    h = MemoryHandler(hub=hub)
+    root = forest["spec_r"]
+    first = h.get(id=root, view="toc", page_size=2)
+    assert first.result_count == 3  # root plus two descendants
+    assert "'offset': 2" in first.body
+    assert "'page_size': 2" in first.body
+
+
+def test_considerations_page_size_aliases_limit(hub: Hub) -> None:
+    h = MemoryHandler(hub=hub)
+    ref_id = _put(h, "Consideration scope")
+    assert (
+        h.get(id=ref_id, view="considerations", page_size=3).body
+        == h.get(id=ref_id, view="considerations", limit=3).body
+    )
