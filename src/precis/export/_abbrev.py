@@ -21,7 +21,8 @@ The rules, and why:
   the long form cannot replace the short inside the hyphenated word.
 - Two shorts joined by a dash or slash, both new (``HOMO–LUMO``), are
   defined together, ``long1–long2 (S1–S2)``, not as two interleaved
-  expansions.
+  expansions. A trailing hyphen still counts both shorts; a plural second
+  short is expanded separately so its plural long form is preserved.
 - Nothing inside a URL, DOI or an exporter placeholder expands: it would
   corrupt the link and use up the first use (M6).
 - An authored ``long (SHORT)`` is matched before the single shorts, so a
@@ -164,7 +165,7 @@ def _patterns(items: tuple[tuple[str, str], ...]) -> _Patterns:
     main = re.compile(
         rf"(?P<prot>{_PROTECTED})"
         r"|\x03(?P<tok>\d+)\x03"
-        rf"|(?<![\w-])(?P<a>{alt})(?P<sep>[-–—/])(?P<b>{alt})(?![\w-])"
+        rf"|(?<![\w-])(?P<a>{alt})(?P<sep>[-–—/])(?P<b>{alt})(?P<bpl>s)?(?!\w)"
         rf"|(?<![\w-])(?!(?:{alt})-)(?P<pre>[^\W\d_]{{2,}})-(?P<s2>{alt})(?P<pl2>s)?(?!\w)"
         rf"|(?<![\w-])(?P<s>{alt})(?P<pl>s)?(?!\w)"
     )
@@ -234,13 +235,19 @@ def expand(
         if a is not None and f"{a}{sep}{b}" not in abbrevs:
             if used is not None:
                 used.update((a, b))
-            if not heading and a not in seen and b not in seen and a != b:
+            if (
+                not heading
+                and a not in seen
+                and b not in seen
+                and a != b
+                and not m.group("bpl")
+            ):
                 seen.update((a, b))
                 emit(Use(a, False, "first", capital, bracket, (sep, b)))
                 continue
             emit(_single(a, False, seen, heading, capital, bracket))
             emit(sep)
-            emit(_single(b, False, seen, heading, False, bracket))
+            emit(_single(b, bool(m.group("bpl")), seen, heading, False, bracket))
             continue
         if m.group("pre") is not None:
             short, plural = m.group("s2"), bool(m.group("pl2"))
@@ -254,7 +261,7 @@ def expand(
             continue
         # A registered compound (``GNR-FET``) the pair branch matched first.
         short = f"{a}{sep}{b}" if a is not None else m.group("s")
-        plural = bool(m.group("pl"))
+        plural = bool(m.group("bpl") if a is not None else m.group("pl"))
         if used is not None:
             used.add(short)
         lookback = pats.lookback.get(short)

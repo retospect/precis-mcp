@@ -11,4 +11,8 @@
   per-registry numbering policy. See :mod:`precis.draft.registry`.
 - Document-class **scaffolding** — genre briefs + section styles + the
   standard section skeleton laid down per ``doc_type`` (paper-writing pipeline rung 4). See :mod:`precis.draft.scaffolds`.
+- Abbreviation hygiene warns about authored definitions of glossary terms:
+  export defines first use across chunks, so a later authored definition
+  can repeat it. Write hints cover newly introduced definitions; the full
+  hygiene view also catches existing prose and terms registered later.
 """

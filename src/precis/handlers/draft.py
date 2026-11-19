@@ -6755,13 +6755,20 @@ class DraftHandler(Handler):
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
         passed through an incremental ``put``/``edit`` still gets flagged.
-        Three checks, all advisory (never blocking):
+        Five checks, all advisory (never blocking):
 
         * **undefined abbreviations** — acronym-shaped tokens anywhere in
           the draft with no glossary ``term``/inline definition/silence.
           ``undefined_abbrevs`` normally scopes to one write's new text;
           passing it the whole draft surfaces everything a legacy draft
           never got hinted about.
+        * **authored abbreviation definitions** — a hand-written
+          ``long form (SHORT)`` for a glossary term, which the export's
+          own first-use expansion would print again as a second
+          definition (gr725250) — see
+          :func:`~precis.draft.lint.authored_abbrev_hint`. With
+          ``elide=True`` the line caps at 8 entries and points at
+          ``view='hygiene'`` for the rest.
         * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
           anywhere in the draft, with the ``dc<id>`` they live in so
           they're locatable.
@@ -6787,39 +6794,39 @@ class DraftHandler(Handler):
           fires on a ``candidate`` hub too, which is exactly when rewords
           happen.
 
-        A fifth, informational-only line (never a ``⚠``) scoreboards how
+        A sixth, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
-        A sixth line — DOI completeness/validity over the same cited
+        A seventh line — DOI completeness/validity over the same cited
         papers (gr690484), advisory
         only — see :meth:`_hygiene_doi_line`.
 
-        A seventh line — cited papers whose byline never came from
+        An eighth line — cited papers whose byline never came from
         Crossref despite carrying a DOI, advisory only — see
         :meth:`_hygiene_author_source_line`. Both share one batched
         identifier/ref fetch done here.
 
-        An eighth line — house-style violations (em-dash, bold/italic
+        A ninth line — house-style violations (em-dash, bold/italic
         markup, ``--``) in prose chunks and figure captions, with per-rule
         counts and example ``dc`` handles; advisory only — see
         :meth:`_hygiene_house_style_lines`.
 
-        A ninth line — figure chunks whose render is pending, stale or
+        A tenth line — figure chunks whose render is pending, stale or
         recorded-failed (gr592765); a broken recipe would otherwise
         surface only inside the ``draft_export`` job — see
         :meth:`_hygiene_figure_lines`.
 
-        A tenth line — figure/table captions opening with their own
+        An eleventh line — figure/table captions opening with their own
         "Figure N."/"Table N." label, which the exporters' auto-numbering
         prints doubled (gr592852) — see :meth:`_hygiene_caption_lines`.
 
-        An eleventh line — sentences that open with a known lowercase
+        A twelfth line — sentences that open with a known lowercase
         identifier (a glossary ``term`` short or a built-in), which reads
         as a typo at line start and has no emphasis rescue under house
         style (gr592934) — see :meth:`_hygiene_sentence_start_lines`.
 
-        A twelfth line — only on a draft that carries record handles an
+        A thirteenth line — only on a draft that carries record handles an
         export would link: an unset ``PRECIS_WEB_BASE_URL`` leaves every
         dev/collaborator link path-only (gr592892) — see
         :meth:`_hygiene_link_origin_lines`.
@@ -6852,6 +6859,23 @@ class DraftHandler(Handler):
                 "meta={'short': '<ABBR>'}) to define, or "
                 "edit(not_abbrev=['<ABBR>']) to silence."
             )
+
+        from precis.utils.abbreviations import find as find_abbrev_definitions
+
+        term_shorts = self.store.drafts.draft_term_shorts(ref_id)
+        authored = [
+            f"{c.dc}:{short}"
+            for c in chunks
+            if c.text and c.chunk_kind not in {"code", "term"}
+            for short in find_abbrev_definitions(c.text)
+            if short in term_shorts
+        ]
+        if authored:
+            shown_authored = authored if limit is None else authored[:limit]
+            hint = _draft_lint.authored_abbrev_hint(shown_authored).strip()
+            if limit is not None and len(authored) > limit:
+                hint += " More entries: get(kind='draft', id=<slug>, view='hygiene')."
+            out.append(hint)
 
         whole_pairs: list[tuple[Any, str]] = []
         for c in chunks:

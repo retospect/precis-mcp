@@ -405,8 +405,10 @@ See [[precis-draft-cite-help]].
 **Write the short form; define it once via a term call.** Use the
 abbreviation in prose (`TTA`, `PEI`, `FET`) — do **not** spell it out
 inline as `Term To Abbrev (TTA)`: the reader shows the definition on
-hover wherever the short form appears (including plurals like `FETs`),
-so an inline expansion is redundant clutter. After any `put`/`edit`, the
+hover wherever the short form appears (plurals like `FETs` too),
+so an inline expansion is redundant clutter. A hand-written `Long form
+(SHORT)` of a defined term is **flagged**: export expands the first
+use; write the short alone. After any `put`/`edit`, the
 response **hints any undefined acronyms you just wrote**, with
 copy-ready calls:
 
@@ -420,8 +422,7 @@ put(
 )  # define it — filed under an auto-created Glossary heading
 edit(
     kind="draft", id="<slug>", not_abbrev=["CO2"]
-)  # OR: mark not-an-abbreviation — silences the hint and skips its
-  # inline-detected pair
+)  # OR: not-an-abbreviation — silences the hint
 edit(
     kind="draft", id="<slug>", is_abbrev=["CO2"]
 )  # inverse: un-silence a wrongly-ignored token
@@ -431,8 +432,8 @@ The term call **is** what "define an abbreviation" means here, not an
 inline parenthetical. Want the label to stay the long form
 (`short='stereolithography'`) but the acronym to also hover-resolve? Add
 both: `meta={'short': 'stereolithography', 'abbrev': 'STL'}` — a
-distinct resolvable surface, not a replacement for `short`. Once defined
-or silenced, a token stops being hinted; reference a term with
+distinct resolvable surface, not a replacement for `short`. Defined or
+silenced tokens stop being hinted; reference a term with
 `[PEI](<dc-term-handle>)` (explicit terms win over auto-detected ones).
 
 Batch terms with `put(kind='draft', id='<slug>', terms=[{'text': '…',

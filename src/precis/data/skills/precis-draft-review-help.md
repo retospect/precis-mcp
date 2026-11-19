@@ -124,7 +124,11 @@ or move them out of the block first.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
-Before export, runtime flags undefined abbreviations, unresolved citations
+Before export, runtime flags undefined abbreviations, hand-written
+abbreviation definitions (`⚠ hand-written abbreviation definition(s): …` —
+a `Long form (SHORT)` in prose where `SHORT` is already a glossary term;
+export expands the first use itself, so the authored definition prints
+doubled — write the short alone), unresolved citations
 (cite grounded `[fi<id>]` hubs, not papers), and **drifted cites**: a hub's
 claim changed after the passage was written. Its old `pub_id` remains an
 alias, so the warning quotes old/new text. Rewrite the citing chunk to re-pin;

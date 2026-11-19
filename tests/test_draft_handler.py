@@ -2005,7 +2005,37 @@ def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> N
         text="We use multivariate templated modulation (MTVM) here.",
         at={"last": True},
     ).body
-    assert "inline definition" not in out  # already promoted → no nag
+    assert "inline definition" not in out  # no promotion offer
+    assert "hand-written abbreviation definition(s): MTVM" in out
+    report = draft.get(id="nt", view="hygiene").body
+    assert "hand-written abbreviation definition(s): dc" in report
+    assert ":MTVM" in report
+
+
+def test_authored_glossary_definition_after_first_use(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr725250: hygiene catches a definition after export's first use."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(
+        id="nt", chunk_kind="term", text="molecular dynamics", meta={"short": "MD"}
+    )
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="MD simulations.", at={"last": True}
+    )
+    put = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Molecular dynamics (MD) follows.",
+        at={"last": True},
+    )
+    assert "hand-written abbreviation definition(s): MD" in put.body
+    chunk = _dc_of(hub, "Molecular dynamics (MD) follows.")
+    edited = draft.edit(id=chunk, text="Molecular dynamics (MD) still follows.")
+    assert "hand-written abbreviation" not in edited.body
+    assert ":MD" in draft.get(id="nt", view="hygiene").body
+    draft.edit(id=chunk, text="MD still follows.")
+    assert "hand-written abbreviation" not in draft.get(id="nt", view="hygiene").body
 
 
 def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
