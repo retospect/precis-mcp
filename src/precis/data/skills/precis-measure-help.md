@@ -31,10 +31,19 @@ measures; their `put` verbs are unchanged and write the same record. Measures wr
 material or component subject appear in those value views only when the measurand
 was seeded from the legacy registry.
 
+## Cite a sourced number
+
+`mx12` addresses a measures row only; `[mx12]` in prose is not a ref
+citation and creates no graph link. To cite the number, read the measure
+and cite its source ref or chunk handle, including the anchor scheme and
+span shown in its detail. Keep `mx12` as plain text when naming the row.
+
+
 ## Find and read measures
 
 Rows are not refs, so they have their own kind, `measure`, addressed by the row
 id (`12`, or the handle `mx12` that search lines print).
+
 
 ```python
 get(kind="measure", id=12)  # one row, with everything a review needs

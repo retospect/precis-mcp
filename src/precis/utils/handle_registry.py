@@ -228,7 +228,8 @@ _FILE_BACKED_KINDS = frozenset({"python", "md"})
 # ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
 # C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live
 # decimal handle (``precis.handlers.part`` docstring).
-_OTHER_TABLE_KINDS = frozenset({"tag"})
+# Measures use measures.id, not refs.ref_id; mx is only a measure-kind address.
+_OTHER_TABLE_KINDS = frozenset({"tag", "measure"})
 
 # --- codeless kinds (providers / stateless tools / private data) ----------
 # Registered handler kinds (``dispatch.boot()``) that are never addressed by

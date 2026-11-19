@@ -47,7 +47,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _measure_render as render
 from precis.handlers._eye import is_eye_view
-from precis.handlers._measure_write import RunParser, flag_lines
+from precis.handlers._measure_write import RunParser, coerce_measure_id, flag_lines
 from precis.protocol import ArgsSpec, Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store._measures_ops import ANY_YEAR, ConditionFilter
@@ -174,17 +174,13 @@ class MeasureHandler(Handler):
 
     @staticmethod
     def _coerce_id(raw: str | int) -> int:
-        text = str(raw).strip()
-        parsed = handle_registry.parse(text)
-        if parsed is not None and parsed[0] == "measure" and not parsed[1]:
-            return parsed[2]
-        try:
-            return int(text)
-        except ValueError:
-            raise BadInput(
-                f"measure id must be an integer or an mx handle, got {raw!r}",
-                next="get(kind='measure', id=12) — ids come from search(kind='measure', ...)",
-            ) from None
+        measure_id = coerce_measure_id(raw)
+        if measure_id is not None:
+            return measure_id
+        raise BadInput(
+            f"measure id must be an integer or an mx handle, got {raw!r}",
+            next="get(kind='measure', id=12) — ids come from search(kind='measure', ...)",
+        )
 
     def _taxon(self, spec: str) -> tuple[int, dict[str, Any]]:
         """Resolve ``property=`` like a taxon address; returns ``(id, meta)``."""
