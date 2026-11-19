@@ -5841,8 +5841,8 @@ class PaperHandler(Handler):
         ``{family, given}`` or ``{name}`` dicts) and is canonicalised via
         :func:`precis.utils.authors.normalize_authors` — a flat "Family,
         Given" string splits to ``{given, family}``; anything ambiguous
-        or junk-flagged stays ``{"name"}`` or is dropped. This always
-        writes ``paper_authors.source='human'`` (the
+        or junk-flagged stays ``{"name"}`` or is dropped. This writes
+        ``paper_authors.source='human'`` for changed or new rows (the
         ``_default_author_source`` mapping for this door) and — as long
         as at least one author survived normalisation — stamps
         ``human_verified_at`` (:meth:`Store.set_human_verified`), a

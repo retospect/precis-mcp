@@ -41,6 +41,12 @@ is held; sparse or placeholder titles provide too little evidence to refuse.
 This guard preserves the row for operator repair rather than guessing which
 of its metadata, body and links belongs to the requested paper.
 
+Human byline edits keep rows with the same normalized name and ORCID at
+the same position. The edit form omits OpenAlex IDs, so a missing ID on
+an otherwise unchanged row preserves its index link alongside its
+source tier and verification stamp. Retention by position avoids moving
+identity evidence between co-authors with the same name.
+
 Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
 matches while retaining strict-AND eligibility and the existing RRF weights;

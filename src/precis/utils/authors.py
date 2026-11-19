@@ -38,8 +38,8 @@ byline position with ``given`` / ``middle`` / ``family`` / ``name_raw``
 ``openalex_author_id`` / ``person_ref_id`` (the ``kind='orcid'`` node) /
 ``source`` / ``verified_at``. Every paper byline write goes through
 ``store.set_paper_authors`` (``insert_ref``, ``update_paper_fields`` and
-``ingest/db_writer.py`` route there by kind), which DELETE+INSERTs the
-rows and regenerates the jsonb from them; ``health_checks.
+``ingest/db_writer.py`` route there by kind), which replaces edited rows
+and regenerates the jsonb from all rows; ``health_checks.
 paper_authors_drift`` catches anything that wrote the jsonb directly.
 Non-paper kinds (draft/patent/datasheet) stay jsonb-only. Neither path
 ever touches ``cite_key`` — it is coupled to the corpus PDF path.

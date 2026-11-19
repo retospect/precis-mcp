@@ -76,7 +76,11 @@ from precis.store._tag_filter import (
 )
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import gripe_order, handle_registry
-from precis.utils.authors import author_row_from_entry, entry_from_author_row
+from precis.utils.authors import (
+    author_row_from_entry,
+    entry_from_author_row,
+    normalize_authors,
+)
 from precis.utils.canon import lexical_q
 from precis.utils.title_views import title_plain_sql
 
@@ -350,7 +354,7 @@ def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:
     """The one write choke point for a paper's byline table + jsonb
-    projection (precis.utils.authors module docstring): DELETE+INSERT
+    projection (precis.utils.authors module docstring): replace
     ``paper_authors`` from *authors* (any ``refs.authors``-shaped input —
     a list of dict/str entries, or a semicolon-packed string, same
     tolerance as :func:`~precis.utils.authors.normalize_authors`), then
@@ -373,6 +377,9 @@ def project_paper_authors(
 
     Caller owns the transaction (no commit here).
     """
+    # Lock the parent before reading or writing its byline, in the same
+    # order as update_paper_fields and verify_paper_author.
+    conn.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
     existing = _fetch_paper_author_rows(conn, ref_id)
     if source != "human" and any(r["source"] == "human" for r in existing):
         # The caller (``update_paper_fields``) may already have written
@@ -388,13 +395,31 @@ def project_paper_authors(
     else:
         raw_entries = []
 
+    existing_by_position = {r["position"]: r for r in existing}
+    kept_positions: list[int] = []
     rows: list[dict[str, Any]] = []
+    position = 0
     for entry in raw_entries:
-        row = author_row_from_entry(entry, len(rows) + 1, source=source)
-        if row is not None:
+        row = author_row_from_entry(entry, position + 1, source=source)
+        if row is None:
+            continue
+        position += 1
+        old = existing_by_position.get(position)
+        if (
+            source == "human"
+            and old is not None
+            and normalize_authors([entry_from_author_row(old)])
+            == normalize_authors([entry_from_author_row(row)])
+            and row["openalex_author_id"] in (None, old["openalex_author_id"])
+        ):
+            kept_positions.append(position)
+        else:
             rows.append(row)
 
-    conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref_id,))
+    conn.execute(
+        "DELETE FROM paper_authors WHERE ref_id = %s AND position <> ALL(%s)",
+        (ref_id, kept_positions),
+    )
     for row in rows:
         person_ref_id: int | None = None
         if row["orcid"]:
@@ -2567,11 +2592,12 @@ class RefsMixin:
 
         No-ops (returns ``[]``) when the ref isn't a live ``kind='paper'``
         — non-paper kinds (draft/patent/datasheet/...) keep ``authors``
-        jsonb-only, as scoped. Otherwise DELETE+INSERTs ``paper_authors``
+        jsonb-only, as scoped. Otherwise replaces ``paper_authors``
         from *authors* (any ``refs.authors``-shaped input — see
         :func:`~precis.utils.authors.normalize_authors`'s tolerance),
         regenerates ``refs.authors`` jsonb from the rows just written,
-        and logs a ``ref_events`` ``authors_set`` row.
+        and logs a ``ref_events`` ``authors_set`` row. Human edits retain
+        unchanged rows at their existing positions.
 
         **Human guard**: a paper already carrying any ``source='human'``
         row is left untouched by a subsequent non-human write (returns
@@ -2631,6 +2657,7 @@ class RefsMixin:
         """
 
         def _do(c: Connection) -> None:
+            c.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
             sets = ["verified_at = now()", "updated_at = now()"]
             params: list[Any] = []
             if given is not None:

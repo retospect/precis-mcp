@@ -2559,6 +2559,52 @@ class TestPaperEdit:
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.human_verified_at is not None
 
+    def test_edit_author_case_preserves_unchanged_coauthor_row(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        orcid = "0000-0002-1825-0097"
+        person = store.insert_ref(
+            kind="orcid", slug=f"orcid:{orcid}", title="Bryan R. Goldsmith"
+        )
+        ref_id = _seed_paper(store, slug="tian2024")
+        store.set_paper_authors(
+            ref_id,
+            [
+                "ying tian",
+                {
+                    "given": "Bryan R.",
+                    "family": "Goldsmith",
+                    "orcid": orcid,
+                    "openalex_author_id": "A123",
+                },
+            ],
+            source="openalex",
+        )
+        store.verify_paper_author(ref_id, 2, source="orcid")
+        before = store.get_paper_authors(ref_id)[1]
+        assert before["person_ref_id"] == person.id
+        assert before["verified_at"] is not None
+
+        authors = ["Tian, Ying", f"Goldsmith, Bryan R. [{orcid}]"]
+        handler.edit(id=ref_id, authors=authors)
+        rows = store.get_paper_authors(ref_id)
+        assert rows[0]["given"] == "Ying"
+        assert rows[0]["family"] == "Tian"
+        assert rows[0]["source"] == "human"
+        assert rows[1] == before
+        assert store.fetch_refs_by_ids([ref_id])[ref_id].authors == [
+            {"given": "Ying", "family": "Tian"},
+            {
+                "given": "Bryan R.",
+                "family": "Goldsmith",
+                "orcid": orcid,
+                "openalex_author_id": "A123",
+            },
+        ]
+
+        handler.edit(id=ref_id, authors=authors)
+        assert store.get_paper_authors(ref_id) == rows
+
     def test_edit_dry_run_previews_journal_and_entry_type(
         self, store: Store, handler: PaperHandler
     ) -> None:
