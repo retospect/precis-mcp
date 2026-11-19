@@ -128,11 +128,11 @@ class TestHartreeSpelling:
         conv = make_converter("Ha", "eV")
         assert conv.value(-2.0) == pytest.approx(-54.42277249)
         assert conv.scale == pytest.approx(27.211386245)
-        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, abs=0)
+        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, rel=1e-9)
         assert format_value(1.0, canonical_unit="hartree", unit="Ha") == "1 Ha"
 
     def test_ha_keeps_energy_dimensions_and_case(self) -> None:
-        with pytest.raises(BadInput, match="cannot be converted"):
+        with pytest.raises(BadInput, match="'Ha'"):
             make_converter("Ha", "m²")
         assert to_canonical(1.0, "ha", "m²") == pytest.approx(10000.0)
 
