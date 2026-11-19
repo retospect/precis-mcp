@@ -187,7 +187,13 @@ def test_links_pagination_and_filters_through_dispatch(
 
 
 def _seed_cache(
-    store: Store, kind: str, *, slug: str, text: str, verdict: str = "clean"
+    store: Store,
+    kind: str,
+    *,
+    slug: str,
+    text: str,
+    verdict: str = "clean",
+    request_hash: str | None = None,
 ) -> Ref:
     ref, _cache = store.put_cache_entry(
         kind=kind,
@@ -195,7 +201,7 @@ def _seed_cache(
         title=f"{kind} answer",
         body_blocks=[ChunkInsert(ord=0, slug="answer", text=text)],
         provider=_PROVIDER[kind],
-        request_hash=f"h-{slug}",
+        request_hash=request_hash or f"h-{slug}",
         ttl_seconds=None,
         cache_meta={"query": slug, "inject": {"verdict": verdict}},
     )
@@ -436,7 +442,19 @@ def test_youtube_video_shaped_handle_reads_live_ref(
                 (previous,),
             )
     assert ref.id == 123456789
-    _seed_cache(store, "youtube", slug="yt123456789", text="competing video")
+    # A real write stores ``_hash(_canonical_key(video_id))`` — seed that
+    # hash so the URL read below hits by request hash. A foreign hash
+    # would simulate a different variant under the shared slug, where a
+    # refetch is the correct behaviour (gr:3681).
+    handler = runtime_with_store.hub.handler_for("youtube")
+    assert handler is not None
+    _seed_cache(
+        store,
+        "youtube",
+        slug="yt123456789",
+        text="competing video",
+        request_hash=handler._hash(handler._canonical_key("yt123456789")),
+    )
     note = store.insert_ref(kind="memory", slug=None, title="handle evidence")
     store.add_link(src_ref_id=note.id, dst_ref_id=ref.id)
     for explicit in ({}, {"kind": "youtube"}):
