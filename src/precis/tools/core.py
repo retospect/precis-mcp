@@ -2605,7 +2605,7 @@ def edit(
     # is_abbrev= is the inverse — un-silences them.
     not_abbrev: list[str] | None = None,
     is_abbrev: list[str] | None = None,
-    # draft regex substitute (see precis-draft-help "Search a draft"):
+    # Draft regex substitute (see precis-draft-reference-help "Regex find and substitute"):
     # sub={'find':…,'replace':…,'flags':…} (or a 's/find/replace/'
     # string) rewrites every match across the id= scope (a draft slug or a
     # dc<id> section/chunk). Previews by default; apply=True commits.

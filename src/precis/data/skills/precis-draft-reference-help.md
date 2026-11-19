@@ -6,9 +6,10 @@ summary: the lookup tables for kind='draft' — chunk addressing (dc<id>, window
 answers:
   - what views does get take on a draft, and what does each return?
   - which edit param do I use — text, find, move, table, sub, review, authors, title, scaffold?
+  - how do I regex-search or bulk-substitute in a draft?
   - what is the move= grammar for reordering or reparenting a draft chunk?
   - how do I edit one cell of a table chunk?
-applies-to: get/put/edit (kind='draft')
+applies-to: get/search/put/edit (kind='draft')
 status: active
 tags: [drafting]
 kinds: [draft]
@@ -16,9 +17,8 @@ kinds: [draft]
 
 # precis-draft-reference-help — the draft quick reference
 
-The tables behind [[precis-draft-help]]: what each verb accepts on
-`kind='draft'`. Workflow, examples and rulings live there; this file is
-the lookup.
+Look up what each verb accepts on `kind='draft'`, including regex find
+and bulk substitute. [[precis-draft-help]] covers the authoring workflow.
 
 ## Quick reference — verbs, views, edit params
 
@@ -137,3 +137,45 @@ is the same slot at the root level.
 - [[precis-draft-rich-content-help]] — figures, images, and data tables.
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
 - [[precis-edit-help]] — the generic edit verb across kinds.
+
+## Regex find and substitute
+
+**Regex find + substitute** (vi `/pattern` and `:%s/a/b/`) — for a
+**literal** pattern (markup, punctuation, a malformed citation), not
+meaning: Python regex (`\w`, `\d`, groups, `|`) over chunk text. Audits
+house style: stray `**bold**`, em-dashes, double spaces, a bare
+`paper:123` cite.
+
+```python
+search(kind="draft", mode="regex", q=r"\*\*\w+\*\*", scope="nanotrans")  # find **bold**
+search(kind="draft", mode="regex", q="TODO", scope="nanotrans", flags="i")  # case-fold
+edit(
+    kind="draft",
+    id="nanotrans",
+    sub={"find": r"\*\*(\w+)\*\*", "replace": r"\1"},
+    apply=True,
+)  # backreferences: strip bold
+```
+
+Find hits show `draft:<slug> dc<id> [kind]` and, per match,
+`L<line>:<col>` with the span wrapped `»…«`. `flags='i'` case-folds,
+`flags='s'` makes `.` cross newlines; `^`/`$` anchor per line; reads
+table/figure text too (read-only). `replace` is a regex template
+(`\1`/`\g<name>` resolve); every occurrence in each chunk is replaced —
+`s/pat/repl/` string form works too, and `sub=` dry-runs (counts +
+before→after sample) unless `apply=True`. Rewritten chunks go through
+the normal edit path (re-embed/keywords/gist re-derive, prior text kept
+in history); table/figure chunks are skipped in a slug/section-scoped
+substitute — point `sub=` at the table's own `dc<id>` to edit its cells
+instead.
+
+**Scope** (find and substitute):
+
+| `scope=`/`id=` | covers |
+|---|---|
+| a draft slug | the whole draft |
+| a `dc<id>` heading | that section's subtree |
+| a `dc<id>` leaf | just that chunk |
+| omitted (find only) | every draft |
+
+Substitute **requires** a scope — no corpus-wide rewrite.

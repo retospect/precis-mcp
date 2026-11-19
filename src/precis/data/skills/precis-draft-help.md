@@ -58,45 +58,8 @@ chunk's subtree); omit it to search every draft. `search(id='dc<id>',
 q='…')` is accepted too — the handle already names the scope. Each hit
 shows `draft:<slug>` and `dc<id>`; read one with `get(id='dc<id>')`.
 
-**Regex find + substitute** (vi `/pattern` and `:%s/a/b/`) — for a
-**literal** pattern (markup, punctuation, a malformed citation), not
-meaning: Python regex (`\w`, `\d`, groups, `|`) over chunk text. Audits
-house style: stray `**bold**`, em-dashes, double spaces, a bare
-`paper:123` cite.
-
-```python
-search(kind="draft", mode="regex", q=r"\*\*\w+\*\*", scope="nanotrans")  # find **bold**
-search(kind="draft", mode="regex", q="TODO", scope="nanotrans", flags="i")  # case-fold
-edit(
-    kind="draft",
-    id="nanotrans",
-    sub={"find": r"\*\*(\w+)\*\*", "replace": r"\1"},
-    apply=True,
-)  # backreferences: strip bold
-```
-
-Find hits show `draft:<slug> dc<id> [kind]` and, per match,
-`L<line>:<col>` with the span wrapped `»…«`. `flags='i'` case-folds,
-`flags='s'` makes `.` cross newlines; `^`/`$` anchor per line; reads
-table/figure text too (read-only). `replace` is a regex template
-(`\1`/`\g<name>` resolve); every occurrence in each chunk is replaced —
-`s/pat/repl/` string form works too, and `sub=` dry-runs (counts +
-before→after sample) unless `apply=True`. Rewritten chunks go through
-the normal edit path (re-embed/keywords/gist re-derive, prior text kept
-in history); table/figure chunks are skipped in a slug/section-scoped
-substitute — point `sub=` at the table's own `dc<id>` to edit its cells
-instead.
-
-**Scope** (find and substitute):
-
-| `scope=`/`id=` | covers |
-|---|---|
-| a draft slug | the whole draft |
-| a `dc<id>` heading | that section's subtree |
-| a `dc<id>` leaf | just that chunk |
-| omitted (find only) | every draft |
-
-Substitute **requires** a scope — no corpus-wide rewrite.
+For regex search and scoped substitution examples, see
+[[precis-draft-reference-help]].
 
 ## Create a draft — new, fork, or scaffold
 
@@ -269,12 +232,33 @@ the matching `chunk_kind` + a one-line caption, not a bare "paragraph."
 **Plain prose, no emphasis markup** — `**bold**` and single-`*` italic
 both render but read as shouting; `_italic_` does NOT render and leaves
 literal `_` (collides with `$x_1$` math subscripts). No em-dashes (`—`)
-— split the sentence, or use a colon/comma/parens. Also no `--`.
+or `--`. Split the sentence first. Use a comma or parentheses only for
+a short gloss such as a unit or a three-word definition. Use a colon
+to introduce a list or explanation.
 Math (`$P_5$`), backtick code, URLs and `[handles]` are exempt. A
 violation trips a `⚠ house style` hint on write, and `view='hygiene'`
 counts them per rule with example `dc` handles. Two `*` forms stay
 literal: an adsorbate star touching an element symbol (`*NO`, `H*`) and
 the `\*` escape.
+
+**Keep the sentence structure simple.** Put the subject, verb and object
+first. Give each sentence one main fact. Keep clauses out of the space
+between the subject and its verb. Give an aside its own sentence or move
+it to the end. Rewrite "X, which Y, does Z." as "X does Z. It Y."
+
+- **Before** — Carbon nanobuds, reported in 2007, are hybrid nanostructures
+  formed by covalently or non-covalently bonding fullerenes to the sidewalls
+  of carbon nanotubes or to a plane of graphene.
+- **After** — Carbon nanobuds are hybrid nanostructures in which fullerenes
+  bond to the sidewalls of carbon nanotubes or to graphene. They were
+  reported in 2007.
+- **Before** — Chemical reactivity, field emission (on films only) and the
+  local electronic spectrum (two peaks on a single bud, no gap extracted)
+  have measurements on nanobud material.
+- **After** — Three properties have been measured on nanobud material:
+  chemical reactivity, field emission and the local electronic spectrum.
+  Field emission was measured on films only. The spectrum shows two peaks
+  on a single bud, and no gap was extracted.
 
 **No sentence opens with a lowercase identifier** — `autocatpath`,
 `precis`, a lowercase glossary short ("autocatpath, the reaction

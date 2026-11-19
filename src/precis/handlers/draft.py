@@ -6922,7 +6922,7 @@ class DraftHandler(Handler):
         captions only; tables, equations, code and terms are skipped. An
         all-clear line is emitted only when ``clear_line`` (the full
         ``view='hygiene'`` report), so a clean outline stays footer-free."""
-        from precis.utils.house_style import RULE_NAMES, find_style_flags
+        from precis.utils.house_style import EM_DASH_FIX, RULE_NAMES, find_style_flags
         from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
         counts: dict[str, int] = {}
@@ -6949,8 +6949,8 @@ class DraftHandler(Handler):
         return [
             f"⚠ house style: {sum(counts.values())} violation(s) in "
             f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
-            "Read the chunk and edit it: no em-dash (split the sentence, or "
-            "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+            f"For an em-dash, {EM_DASH_FIX}. "
+            "Remove **bold**/*italic*/_italic_ markup and replace `--`."
         ]
 
     def _hygiene_sentence_start_lines(

@@ -3679,10 +3679,13 @@ def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) 
     )
     assert "⚠ house style" in bad.body
     assert "em_dash at 1:16" in bad.body
+    advice = "split the sentence first and give each sentence one main fact"
+    assert advice in bad.body
 
     out = draft.get(id="nt", view="hygiene").body
     assert "⚠ house style: 3 violation(s) in 1 chunk(s)" in out
     assert "1 em_dash, 1 bold, 1 double_hyphen" in out
+    assert advice in out
     assert "✓ house style" not in out
 
 
