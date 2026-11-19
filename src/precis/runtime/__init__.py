@@ -28,6 +28,8 @@ Each child uses ordinary dispatch and keeps its own ranking and error envelope;
 shared tags are ANDed with item tags so a batch cannot drop its SPACE scope.
 The eight-item/ten-hit bounds limit context while sequential dispatch retains
 normal request/user scope without sharing a connection across worker threads.
+Each child gets one additional backed-off attempt for lock contention so a
+short-lived lock can clear without rerunning successful sibling searches.
 The aggregate JSON is indivisible: an oversized envelope refuses with a
 smaller-batch recovery instead of passing through the prose truncation fitter.
 

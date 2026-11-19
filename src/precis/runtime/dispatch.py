@@ -1684,10 +1684,13 @@ def _is_pool_timeout(exc: BaseException) -> bool:
     return False
 
 
-def _is_transient_db_fault(exc: BaseException) -> bool:
+def _is_transient_db_fault(
+    exc: BaseException, classes: tuple[type[BaseException], ...] | None = None
+) -> bool:
     """True when ``exc`` or an explicit ``raise ... from`` cause is one of
     the retryable database faults."""
-    classes = _transient_db_classes()
+    if classes is None:
+        classes = _transient_db_classes()
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
@@ -1720,7 +1723,9 @@ def _retry_sleep(attempt: int) -> None:
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
-    def _dispatch_with_retry(self, verb: str, args: dict[str, Any]) -> Response:
+    def _dispatch_with_retry(
+        self, verb: str, args: dict[str, Any], *, batch_child: bool = False
+    ) -> Response:
         """:meth:`_dispatch_inner` with transient database faults retried.
 
         A persisting fault surfaces as ``Upstream`` whose text says how many
@@ -1751,7 +1756,12 @@ class DispatchMixin(RuntimeShape):
                         f"{UNREACHABLE_CAUSE} ({type(exc).__name__})",
                         next=UNREACHABLE_NEXT,
                     ) from exc
-                if not safe or attempt >= _RETRY_ATTEMPTS:
+                max_attempts = _RETRY_ATTEMPTS
+                if batch_child and _is_transient_db_fault(
+                    exc, (psycopg.errors.LockNotAvailable,)
+                ):
+                    max_attempts += 1
+                if not safe or attempt >= max_attempts:
                     if attempt == 1:
                         raise
                     mapped = map_boundary_exception(exc)
@@ -1766,7 +1776,7 @@ class DispatchMixin(RuntimeShape):
                     type(exc).__name__,
                     verb,
                     attempt,
-                    _RETRY_ATTEMPTS - 1,
+                    max_attempts - 1,
                 )
                 _retry_sleep(attempt)
                 attempt += 1
@@ -1907,7 +1917,12 @@ class DispatchMixin(RuntimeShape):
             search_trace.CURRENT.reset(token)
 
     def _dispatch_status(
-        self, verb: str, args: dict[str, Any], *, fold: bool = False
+        self,
+        verb: str,
+        args: dict[str, Any],
+        *,
+        fold: bool = False,
+        batch_child: bool = False,
     ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.
 
@@ -1987,7 +2002,12 @@ class DispatchMixin(RuntimeShape):
                 dispatch_args, deref_ack = self._dereference_write_args(verb, args)
                 _refuse_envelope_denied_verb(verb, dispatch_args, self.hub)
                 _refuse_agent_secrets(verb, dispatch_args, self.hub)
-                response = self._dispatch_with_retry(verb, dispatch_args)
+                if batch_child:
+                    response = self._dispatch_with_retry(
+                        verb, dispatch_args, batch_child=True
+                    )
+                else:
+                    response = self._dispatch_with_retry(verb, dispatch_args)
                 if deref_ack is not None:
                     response = replace(response, body=f"{deref_ack}\n{response.body}")
                 # gr515633 ask 2: a ``tags=`` that names a categorizer
@@ -2600,7 +2620,10 @@ class DispatchMixin(RuntimeShape):
                 from precis.runtime.memory_batch import dispatch_memory_batch
 
                 return dispatch_memory_batch(
-                    args, lambda child: self._dispatch_status("search", child)
+                    args,
+                    lambda child: self._dispatch_status(
+                        "search", child, batch_child=True
+                    ),
                 )
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
