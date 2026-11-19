@@ -1093,6 +1093,10 @@ def _origin_round_max(root: Path) -> int | None:
     """Highest N among origin's deployed/r<N> tags and release/r<N> branches.
 
     None = origin unreadable. Numbering is global on origin, not per checkout.
+    ``PRECIS_ROUND_FLOOR`` (the release pass passes the shared
+    ``release.round`` row's ``n``) raises the answer: an abandoned release
+    leaves neither ref behind, and its number must not be minted again
+    (gr714067). A value that is not a plain number is ignored.
     """
     out = _rgit(
         root,
@@ -1108,6 +1112,9 @@ def _origin_round_max(root: Path) -> int | None:
         for ln in out.splitlines()
         if (m := re.search(r"\trefs/(?:tags/deployed|heads/release)/r(\d+)$", ln))
     ]
+    floor = os.environ.get("PRECIS_ROUND_FLOOR", "").strip()
+    if floor.isdecimal():
+        nums.append(int(floor))
     return max(nums, default=0)
 
 

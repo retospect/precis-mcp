@@ -88,7 +88,8 @@ forward moves only, best-effort, never a job failure. This row is what
 
 The cut also clears the clone's own stale record: before `--cut-only`
 launches, `release_cut` supersedes the checkout's local `round.json`
-record when it is the one `deploying`/`deployed` record (a pinned sha,
+record when it is the one `deploying`/`deployed` record, or a `failed`
+one whose rollout launched (a pinned sha,
 no pending cut, no runtime confirm), the shared row proves prod moved
 past it (`confirmed` at the same or a later number), and no
 `release_deploy` job is live. It runs `scripts/round supersede r<N>`
@@ -98,6 +99,17 @@ then launches the cut on exit 0; a refusal fails the job with the log
 tail so the retry-cap ask still fires. Any other shape (an open
 `cut`/`gating`/`fixing`/`green` local record, a shared row that does not
 prove the release) is left alone for the ask.
+
+A `RELEASE_CUT` line is not believed on its word (gr724696):
+`scripts/release --cut-only --sha S` prints it only for a release that
+ships S — a resumed record that lacks S answers "release in flight", one
+prod moved past exits 4 naming `scripts/round supersede r<N>` — and
+`release_cut` fails the job (`stale-record`, nothing recorded) when the
+reported sha does not contain the asked one or already sits in
+origin/prod. The cut launch passes the shared row's number as
+`PRECIS_ROUND_FLOOR`, so an abandoned release's number is not minted
+again, and a cut that does reuse a dead row's number replaces the row
+(gr714067).
 
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists

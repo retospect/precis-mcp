@@ -1831,6 +1831,171 @@ def test_stale_local_round_reads_the_one_supersedable_record(
     assert rc._stale_local_round(tmp_path) is None
 
 
+def test_stale_local_round_counts_a_failed_record_whose_rollout_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: ``failed`` with a launched journal is not terminal —
+    ``scripts/release`` resumes it — so it is a supersede candidate like
+    ``deployed``. A ``failed`` record that never launched is terminal and
+    is not."""
+    launched = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z", "started_epoch": 5}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=launched)]
+    )
+    assert rc._stale_local_round(tmp_path) == 7
+    never = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z"}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=never)]
+    )
+    assert rc._stale_local_round(tmp_path) is None
+
+
+def test_release_cut_supersedes_a_failed_corpse_a_later_release_confirmed(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr724696, the r333 shape: the cut host still holds r7 ``failed``
+    with a launched rollout, the shared row says r8 confirmed. The cut's
+    first act is ``scripts/round supersede r7`` — it used to launch the
+    cut, which resumed r7 and reported its old base as the cut."""
+    script = _round_script(checkout)
+    launched = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z", "started_epoch": 5}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=launched)]
+    )
+    _seed_round(store, 8, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "supersede"
+    assert checkout["argv"] == [[str(script), "supersede", "r7"]]
+
+
+def _fake_ancestry(
+    monkeypatch: pytest.MonkeyPatch, contained: set[tuple[str, str]]
+) -> None:
+    """``git merge-base --is-ancestor <older> <newer>`` in the checkout:
+    exit 0 for the pairs in ``contained``, 1 for the rest. Any other git
+    call fails (the fixture's checkout is no repo)."""
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:2] != ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="")
+        rc_ = 0 if (args[2], args[3]) in contained else 1
+        return subprocess.CompletedProcess(args, rc_, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git)
+
+
+def test_release_cut_refuses_a_reported_cut_that_lacks_the_asked_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: the pass asked for A; ``scripts/release`` exited 0 with
+    ``RELEASE_CUT: r7 <SHA>`` and SHA does not contain A — a resumed
+    stale record. The job fails naming it; nothing is recorded on the
+    plan or in the round row."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_ancestry(monkeypatch, set())
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and ctx.failures == []
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert f"does not contain the asked {a[:9]}" in ctx.failures[0]
+    assert "scripts/round supersede r7" in ctx.failures[0]
+    assert ctx.stamped["cut_refusal"]["class"] == rc.REFUSAL_STALE_RECORD
+    assert R.release_of(store, mint.ids["deploy"]) is None
+    assert R.read_round(store) is None
+
+
+def test_release_cut_refuses_a_reported_cut_prod_already_holds(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: a tip cut (no ``--sha``) reporting a sha origin/prod
+    contains is a shipped release's record, not a cut."""
+    mint = T.mint_release_pass(store)
+    _fake_ancestry(monkeypatch, {(SHA, "refs/remotes/origin/prod")})
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "origin/prod already contains" in ctx.failures[0]
+    assert R.release_of(store, mint.ids["deploy"]) is None
+
+
+def test_release_cut_records_a_cut_that_contains_the_asked_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The honest cases pass: the reported sha contains the asked one and
+    prod does not hold it; git unable to answer (exit 128) proves nothing."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_ancestry(monkeypatch, {(a, SHA)})
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+
+    def unknown(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 128, stdout="", stderr="bad object")
+
+    monkeypatch.setattr(rs, "_git", unknown)
+    assert rc._stale_cut({"cut_argv": ["--cut-only", "--sha", a]}, "r7", SHA) is None
+    # a handle persisted before the check existed carries no cut_argv
+    _fake_ancestry(monkeypatch, set())
+    assert rc._stale_cut({"root": str(checkout["root"])}, "r7", SHA) is None
+
+
+def test_release_cut_checks_the_asked_sha_after_a_retire_phase(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supersede phase swaps a fresh handle in; the asked ``--sha``
+    must ride along or the cut after it goes unchecked (gr724696)."""
+    a = "a" * 40
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "supersede"
+    _exit(checkout, 0, "r7 superseded (origin/prod abc is past def)\n")
+    assert rc.poll(ctx, handle) is False
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", a]
+    _fake_ancestry(monkeypatch, set())
+    _exit(checkout, 0, _cut_log("r8"))
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert f"does not contain the asked {a[:9]}" in ctx.failures[0]
+
+
+def test_release_cut_passes_the_shared_rows_number_as_the_floor(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr714067: the cut launch carries ``PRECIS_ROUND_FLOOR`` — the
+    shared row's ``n`` — so ``scripts/round`` never mints an abandoned
+    release's number again; no row, no floor."""
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.pass_env(ctx) == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
+    _seed_round(store, 333, "abandoned")
+    assert rc.pass_env(ctx) == {
+        "PRECIS_RELEASE_PASS": f"td{mint.root_id}",
+        "PRECIS_ROUND_FLOOR": "333",
+    }
+
+
 def test_release_cut_supersedes_a_stale_local_round_when_prod_moved_past_it(
     store: Store,
     checkout: dict[str, Any],
@@ -2166,17 +2331,42 @@ def test_release_cut_abandons_a_dead_open_round(
         "--cut-only",
     ]
     assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
-    # the swapped-in cut carries the pass marker (the retire phase does not cut)
-    assert checkout["env"][-1] == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
+    # the swapped-in cut carries the pass marker (the retire phase does not
+    # cut) and numbers past the dead r7 (gr714067)
+    assert checkout["env"][-1] == {
+        "PRECIS_RELEASE_PASS": f"td{mint.root_id}",
+        "PRECIS_ROUND_FLOOR": "7",
+    }
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
+    row = R.read_round(store)  # the retire phase left the shared row alone
+    assert row is not None and (row["n"], row["state"]) == (7, "abandoned")
 
-    _exit(checkout, 0, _cut_log())
+    _exit(checkout, 0, _cut_log("r8"))
     assert rc.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
     assert ctx.stamped["dead_round_abandoned"] == {"n": 7}
     row = R.read_round(store)
-    assert row is not None and row["state"] == "abandoned"
+    assert row is not None and (row["n"], row["state"]) == (8, "cut")
+
+
+def test_release_cut_replaces_the_dead_row_when_its_number_is_cut_again(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr714067: r7 was abandoned under another pass and a cut reports r7
+    again (a checkout without the floor). The row used to stay
+    ``abandoned`` — "the script's publish wins", and none came — through
+    the new release's deploy; now it tracks the new cut."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    _seed_round(store, 7, "abandoned", **{"pass": "td1000000"})
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    assert "wrote r7 cut over the dead row (abandoned, td1000000)" in ctx.chunks[-1][1]
+    row = R.read_round(store)
+    assert row is not None
+    assert (row["state"], row["pass"]) == ("cut", f"td{mint.root_id}")
+    assert row["owner"] == {"host": "node-a", "checkout": str(checkout["root"])}
 
 
 @pytest.mark.parametrize("state", ["abandoned", "superseded", "confirmed", "failed"])

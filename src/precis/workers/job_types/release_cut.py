@@ -69,9 +69,19 @@ refused on the leftovers once main moves them again. The job records
 unstaged local edits to those paths, runs the working tree and the label
 says so.
 
+:func:`poll` believes a ``RELEASE_CUT`` line only after :func:`_stale_cut`
+(gr724696): the reported sha must contain the asked ``--sha`` and must not
+already sit in ``origin/prod``. ``scripts/release`` resumes whatever record
+its checkout holds; an abandoned r333 left on a builder host was reported
+as the cut of two later passes, which then gated a sha prod already held.
+A refused line fails the job as ``stale-record`` and records nothing. The
+cut launch also carries ``PRECIS_ROUND_FLOOR`` — the shared row's ``n`` —
+so an abandoned release's number is never minted again (gr714067).
+
 Before ``--cut-only`` launches, :func:`submit` clears the checkout's
 stale local round when three preflight conditions hold: the clone's own
-``round.json`` has exactly one ``deploying``/``deployed`` record (an int
+``round.json`` has exactly one ``deploying``/``deployed`` record, or a
+``failed`` one whose rollout launched (an int
 ``n``, a pinned sha, no pending cut, no runtime confirm), the shared
 ``release.round`` row proves that release rolled out elsewhere
 (:func:`precis.plans.release.round_confirmed`: ``confirmed`` at ``n`` or
@@ -166,6 +176,9 @@ REFUSAL_IN_FLIGHT = "in-flight"
 REFUSAL_HOLDING = "holding"
 REFUSAL_GATED_BEHIND = "gated-behind"
 REFUSAL_UNCLASSIFIED = "unclassified"
+#: ``scripts/release`` exited 0 with a ``RELEASE_CUT`` line this plan must
+#: not record (:func:`_stale_cut`, gr724696) — a failure, never a wait.
+REFUSAL_STALE_RECORD = "stale-record"
 
 #: ``scripts/round``'s pipelined-cut rule (``_cut_refuse``): the line names
 #: origin/main's tip and the sha the cut asked for.
@@ -446,9 +459,11 @@ def _round_json_path(root: Path) -> Path | None:
 
 def _stale_local_round(root: Path) -> int | None:
     """``n`` of the one local ``round.json`` record ``scripts/round
-    supersede r<n>`` would take — ``deploying``/``deployed``, an int
-    ``n``, no pending cut, a ``deployment`` dict pinning a non-empty
-    ``sha``, no ``runtime_confirmed_at`` — else ``None``. A missing or
+    supersede r<n>`` would take — ``deploying``/``deployed``, or a
+    ``failed`` one whose rollout launched (gr724696: not terminal, so
+    ``scripts/release`` resumes it), an int ``n``, no pending cut, a
+    ``deployment`` dict pinning a non-empty ``sha``, no
+    ``runtime_confirmed_at`` — else ``None``. A missing or
     unparsable file, a closed round, an open (``cut``/``gating``/
     ``fixing``/``green`` — ``supersede`` refuses them) or terminal
     record, and several candidates all answer ``None``."""
@@ -466,7 +481,11 @@ def _stale_local_round(root: Path) -> int | None:
         if not isinstance(rel, dict):
             continue
         n = rel.get("n")
-        if rel.get("state") not in ("deploying", "deployed") or type(n) is not int:
+        state = rel.get("state")
+        live_failed = state == "failed" and not _release.is_terminal(rel)
+        if type(n) is not int or not (
+            state in ("deploying", "deployed") or live_failed
+        ):
             continue
         if rel.get("cut_pending"):
             continue
@@ -1035,11 +1054,20 @@ def validate_submit(
 RELEASE_PASS_ENV = "PRECIS_RELEASE_PASS"
 
 
+#: The env floor ``scripts/round`` numbers past (gr714067): the shared
+#: ``release.round`` row's ``n``. An abandoned release leaves no branch and
+#: no ``deployed/r<N>`` tag on origin, so origin alone hands its number out
+#: again (four passes carried r333) and everything keyed on the number —
+#: the row, the stuck watch's once-per-round ask — reads the dead release.
+ROUND_FLOOR_ENV = "PRECIS_ROUND_FLOOR"
+
+
 def pass_env(ctx: Any) -> dict[str, str]:
     """``{PRECIS_RELEASE_PASS: td<pass root>}`` for the cut launch — the
     same ``td<root>`` handle the round row's ``pass`` carries — else the
     job's own ``jo<id>`` when the job names no todo. Never empty: an empty
-    marker would read as a hand session."""
+    marker would read as a hand session. Plus :data:`ROUND_FLOOR_ENV` when
+    the shared row names a number (an unreadable row adds nothing)."""
     todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
     value = ""
     if isinstance(todo_id, int) and not isinstance(todo_id, bool) and ctx.store:
@@ -1047,7 +1075,17 @@ def pass_env(ctx: Any) -> dict[str, str]:
             value = f"td{_release.plan_root(ctx.store, todo_id)}"
         except Exception:
             log.warning("%s: plan root lookup failed", NAME, exc_info=True)
-    return {RELEASE_PASS_ENV: value or f"jo{ctx.ref_id}"}
+    env = {RELEASE_PASS_ENV: value or f"jo{ctx.ref_id}"}
+    if ctx.store is not None:
+        try:
+            row = _release.read_round(ctx.store)
+        except Exception:
+            log.warning("%s: round floor read failed", NAME, exc_info=True)
+            row = None
+        n = row.get("n") if isinstance(row, dict) else None
+        if type(n) is int and n > 0:
+            env[ROUND_FLOOR_ENV] = str(n)
+    return env
 
 
 def submit(ctx: Any, spec: Any) -> Any:
@@ -1133,7 +1171,59 @@ def submit(ctx: Any, spec: Any) -> Any:
                 handle.update(phase="abandon_gone", n=gone, cut_argv=argv)
             return _handle_tooling(handle, tooling=tooling, added=added)
     handle = launch_script(ctx, NAME, argv, env=pass_env(ctx))
+    if isinstance(handle, dict):
+        handle["cut_argv"] = argv
     return _handle_tooling(handle, tooling=tooling, added=added)
+
+
+def _asked_sha(handle: dict[str, Any]) -> str:
+    """The ``--sha`` the cut launch carried (``cut_argv`` on the handle),
+    else ``""`` — a tip cut asked for no sha."""
+    argv = [str(a) for a in handle.get("cut_argv") or []]
+    if "--sha" in argv[:-1]:
+        return argv[argv.index("--sha") + 1]
+    return ""
+
+
+def _stale_cut(handle: dict[str, Any], rn: str, sha: str) -> str | None:
+    """Why the ``RELEASE_CUT: <rn> <sha>`` line is not this plan's cut, or
+    ``None`` (gr724696). ``scripts/release`` resumes whatever record its
+    checkout holds, and exit 0 plus the line once named an abandoned
+    r333's base that prod already held: the pass gated and tried to deploy
+    it for 18 h. Two facts from the checkout's own git (the script fetched
+    main and prod), each a refusal only when git answers it outright:
+
+    * the asked ``--sha`` is not contained in ``sha`` — another release;
+    * ``sha`` is contained in ``origin/prod`` — already shipped.
+
+    A commit git cannot resolve, or a tip cut (no ``--sha``), proves
+    nothing and passes."""
+    root = Path(str(handle.get("root") or "."))
+
+    def contained(older: str, newer: str) -> bool | None:
+        try:
+            proc = _rs._git(["merge-base", "--is-ancestor", older, newer], root)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return {0: True, 1: False}.get(proc.returncode)
+
+    asked = _asked_sha(handle)
+    if asked and contained(asked, sha) is False:
+        return (
+            f"scripts/release reported {rn} at {sha[:9]}, which does not "
+            f"contain the asked {asked[:9]} — it resumed a stale local "
+            f"record in {root}; nothing was cut for this plan. next: retire "
+            f"that record there (scripts/round supersede {rn}, or `scripts/"
+            "round cut --abandon` for an open one), then retry the cut"
+        )
+    if contained(sha, "refs/remotes/origin/prod") is True:
+        return (
+            f"scripts/release reported {rn} at {sha[:9]}, which origin/prod "
+            f"already contains — a stale local record in {root}, not a cut. "
+            f"next: retire that record there (scripts/round supersede {rn}), "
+            "then retry the cut"
+        )
+    return None
 
 
 #: The retire phases' printed verb, note and meta key — ``supersede``
@@ -1197,9 +1287,12 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
         return True  # the launch failure is recorded; no cut
     tooling = handle.get("tooling")
     added = handle.get("tooling_added")
+    cut_argv = handle.get("cut_argv")
     handle.clear()
     handle.update(fresh)
     handle["notes"] = [note]
+    if cut_argv:
+        handle["cut_argv"] = cut_argv
     if tooling:
         handle["tooling"] = tooling
     if added is not None:
@@ -1275,6 +1368,12 @@ def poll(ctx: Any, handle: Any) -> bool:
         fail_with_tail(ctx, reason, log_text)
         return True
     rn, sha, rng = cut
+    stale = _stale_cut(handle, rn, sha)
+    if stale is not None:
+        # Nothing is recorded: no meta.release on the plan, no round row.
+        ctx.set_meta(cut_refusal={"class": REFUSAL_STALE_RECORD, "line": stale})
+        fail_with_tail(ctx, f"{NAME}: {stale}", log_text)
+        return True
     params = (ctx.meta or {}).get("params") or {}
     todo_id = params.get("todo_id")
     checkout = str(handle.get("root") or ".")

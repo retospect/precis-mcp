@@ -449,6 +449,67 @@ def test_stale_owned_record_exits_four_not_three(rig: Rig) -> None:
     assert "confirm-runtime" not in out.stdout
 
 
+def _failed_corpse(rig: Rig, *, shipped: bool = True) -> str:
+    """r1 `failed` after `scripts/deploy` launched (a live partial rollout
+    by its journal), its pass then dropped elsewhere: release/r1 is gone
+    from origin and, with ``shipped``, a later release moved origin/prod
+    past the pin (gr724696 — the r333 record a builder host kept). This
+    tree still holds the marker. Returns the new origin/main tip."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0  # r1 at c3
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(s)).returncode == 7
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed" and rel["deployment"].get("started_epoch")
+    _git(rig.root, "push", "-q", "origin", "--delete", "release/r1")
+    c4 = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    if shipped:
+        _push_branch(rig, "prod", c4)
+    tip = _commit(rig.root, "src/c5.py", "c5 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    return tip
+
+
+def test_cut_only_never_reports_a_failed_corpse_as_the_cut(rig: Rig) -> None:
+    """gr724696: a `failed` record whose rollout launched, whose branch is
+    gone and whose pin origin/prod moved past is a corpse. `--cut-only
+    --sha S` used to resume it and print `RELEASE_CUT: r1 <old base>` (exit
+    0), so the pass gated and deployed a sha prod already held. Now: exit 4
+    naming the clear command, like a stale deployed record."""
+    tip = _failed_corpse(rig)
+    out = _release(rig, "--cut-only", "--sha", tip, *FAST)
+    assert "RELEASE_CUT:" not in out.stdout, out.stdout
+    assert out.returncode == 4, out.stdout + out.stderr
+    assert "scripts/round supersede r1" in out.stderr
+
+
+def test_cut_only_reports_no_cut_for_a_release_that_lacks_s(rig: Rig) -> None:
+    """gr724696: the same record while prod does NOT hold the pin is a
+    live partial rollout — still not the cut the caller asked for. No
+    `RELEASE_CUT` line: the release pass must not record another
+    release's head as its own."""
+    tip = _failed_corpse(rig, shipped=False)
+    out = _release(rig, "--cut-only", "--sha", tip, *FAST)
+    assert "RELEASE_CUT:" not in out.stdout, out.stdout
+    assert "release in flight: release/r1" in out.stdout
+    assert f"{tip[:9]} rides the next cut" in out.stdout
+    assert classify_cut_refusal(out.stdout)["class"] == REFUSAL_IN_FLIGHT
+
+
+def test_cut_numbers_past_the_round_floor(rig: Rig) -> None:
+    """gr714067: an abandoned release leaves no branch and no deployed tag
+    on origin, so origin alone would hand r333 out again. The release pass
+    passes the shared row's number as `PRECIS_ROUND_FLOOR`; junk is
+    ignored."""
+    out = _release(rig, "--cut-only", "--dry-run", *FAST, PRECIS_ROUND_FLOOR="x3")
+    assert "would cut release/r1 " in out.stdout, out.stdout + out.stderr
+    out = _release(rig, "--cut-only", *FAST, PRECIS_ROUND_FLOOR="333")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"RELEASE_CUT: r334 {rig.shas['c3']}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r334") == rig.shas["c3"]
+
+
 def test_fresh_path_opens_cuts_waits_and_deploys(rig: Rig) -> None:
     out = _release(rig, *FAST, **_green(rig))
     assert out.returncode == 3, out.stdout + out.stderr
@@ -840,6 +901,41 @@ def test_cut_only_adopts_an_unowned_pending_cut_and_pushes_it(rig: Rig) -> None:
     assert rig.origin_ref("release/r1") == c2
     assert "cut_pending" not in _rel(_round_json(rig))
     assert json.loads(_marker(rig).read_text(encoding="utf-8"))["base"] == c2
+
+
+def test_cut_only_leaves_a_pending_cut_that_pins_another_sha(rig: Rig) -> None:
+    """gr724696: a pending cut at c2 is not the cut of a caller asking for
+    c3 by sha — reconciling it would push a branch the caller cannot
+    record. In flight, nothing pushed; asking for c2 still reconciles."""
+    c2, c3 = rig.shas["c2"], rig.shas["c3"]
+    hook = _reject_release_pushes(rig)
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 1
+    assert _rel(_round_json(rig))["cut_pending"] is True
+    hook.unlink()
+    out = _release(rig, "--cut-only", "--sha", c3, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "RELEASE_CUT:" not in out.stdout
+    assert "release in flight: release/r1 (a pending cut at" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert _rel(_round_json(rig))["cut_pending"] is True
+    out = _release(rig, "--cut-only", "--sha", c2, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"RELEASE_CUT: r1 {c2}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r1") == c2
+
+
+def test_cut_only_dies_when_the_resumed_release_has_no_branch_on_origin(
+    rig: Rig,
+) -> None:
+    """gr724696: `report_cut` used to fall back to the record's base when
+    origin had no such branch — a `RELEASE_CUT` for a head that exists
+    nowhere. A partial rollout whose branch was deleted, asked for the
+    very sha it holds: exit 1, no line."""
+    _failed_corpse(rig, shipped=False)
+    out = _release(rig, "--cut-only", "--sha", rig.shas["c3"], *FAST)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "RELEASE_CUT:" not in out.stdout
+    assert "release/r1 has no head on origin" in out.stderr
 
 
 @pytest.mark.parametrize("owned", [True, False], ids=["owned", "unowned"])
