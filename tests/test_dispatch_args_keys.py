@@ -1410,3 +1410,20 @@ def test_memory_search_handle_scope_with_under_refuses(
     )
     assert "[error:BadInput]" in out, out
     assert "unknown scope" not in out, out
+
+
+def test_job_queryless_recency_with_serves_keeps_source_search_route(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr709771: a named cohort (``serves=``, top-level or nested) is
+    applied only by the source-search primitive — the job listing rejects
+    it — so a queryless recency sort carrying one must not be rerouted."""
+    rt = runtime_with_store
+    cohort = "quest:abc"
+    assert rt._routes_to_source_search(
+        "search", "job", {"sort": "recency", "serves": cohort}
+    )
+    assert rt._routes_to_source_search(
+        "search", "job", {"sort": "recency", "__extras__": {"serves": cohort}}
+    )
+    assert not rt._routes_to_source_search("search", "job", {"sort": "recency"})

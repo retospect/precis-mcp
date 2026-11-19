@@ -1298,7 +1298,13 @@ class SearchMixin(RuntimeShape):
                 # not a ranking opt-in (gr709771: the undated recency
                 # spelling used to reach the source-search primitive and
                 # die on "requires q= — or a named cohort").
-                if not sort or sort != "relevance":
+                extras = args.get("__extras__")
+                has_cohort = args.get("serves") is not None or (
+                    isinstance(extras, dict) and extras.get("serves") is not None
+                )
+                # A named cohort (serves=) is only applied by the source
+                # search primitive; the job listing rejects it.
+                if (not sort or sort != "relevance") and not has_cohort:
                     return False
         return True
 
