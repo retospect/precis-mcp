@@ -190,3 +190,13 @@ def test_degree_glyph_variants_normalise_to_degree_sign() -> None:
     for raw in ("450 ∘C", "450∘C", "450 ˚C", "450 º C", "450 ° C", "450℃"):
         assert "450 °C" in extract_numerics_wide(raw), raw
     assert normalize_spellings("at 90∘ tilt") == "at 90° tilt"
+
+
+@pytest.mark.parametrize("glue", ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"])
+@pytest.mark.parametrize("separator", ["-", "–", "—", "to"])
+def test_voltage_range_with_invisible_pdf_glue(glue: str, separator: str) -> None:
+    """gr716214: invisible glue must not hide a shared-unit endpoint."""
+    raw = f"1.2{glue}{separator}{glue}3.4{glue} V"
+    duplicate = rf"$1.2{glue}{separator}{glue}3.4$ \mathrm{{V}}"
+    for text in (raw, duplicate, raw + " " + duplicate):
+        assert {"1.2 V", "3.4 V"} <= set(extract_numerics_wide(text))

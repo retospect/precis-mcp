@@ -20,6 +20,9 @@ Returned tokens are *normalized for matching*, not for display:
   actually says.
 * Whitespace between number and unit collapses to a single space
   (``"1.523eV"`` → ``"1.523 eV"`` for index uniformity).
+
+Wide readings remove invisible PDF glue before parsing shared-unit ranges,
+so both endpoints can ground a citation. Raw span offsets remain unchanged.
 """
 
 from __future__ import annotations
@@ -178,7 +181,6 @@ _TEX_ANGSTROM_RE = re.compile(
     r"(?![A-Za-z])\}?\$?"
 )
 
-
 #: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
 #: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
 _HEADER_UNIT_RE = re.compile(rf"[\[(]\s*({_UNITS_RE_PART})\s*[\])]")
@@ -325,6 +327,11 @@ def _unwrap_math(m: re.Match[str]) -> str:
     return inner.strip()
 
 
+#: Invisible PDF glue can split a range, decimal, or number/unit pair.
+#: Remove it only in the normalized reading; raw span offsets stay intact.
+_ZERO_WIDTH_TRANSLATION = str.maketrans("", "", "\u200b\u200c\u200d\u2060\ufeff")
+
+
 def normalize_spellings(text: str) -> str:
     """PDF number spellings the tokenizer misses, rewritten to the plain
     form: "2,000 p.p.m." → "2000 ppm", "$1.78\\pm0.11$  Å" → "1.78 and 0.11 Å"
@@ -333,6 +340,7 @@ def normalize_spellings(text: str) -> str:
     and the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å"."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
     norm = _TEX_MU_RE.sub("µ", norm)
+    norm = norm.translate(_ZERO_WIDTH_TRANSLATION)
     norm = _TEX_WRAP_RE.sub(r"\1", norm)
     for rx, sym in _TEX_SYMBOLS:
         norm = rx.sub(sym, norm)

@@ -299,6 +299,22 @@ def test_range_claim_checked_against_both_ends(world):
     assert [m.token for m in _check("layers of 10-20 nm [pa12]")] == ["20 nm"]
 
 
+def test_voltage_windows_with_zero_width_and_tex_duplication(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    """gr716214: all four lower endpoints inherit the source's trailing V."""
+    windows = [("1.2", "3.4"), ("1.5", "3.7"), ("1.8", "4.1"), ("2.1", "4.4")]
+    glue = "\u200b"
+    world[(12, None)] = "; ".join(
+        f"{lo}{glue}–{glue}{hi} V " + rf"${lo}{glue}–{hi}$ \mathrm{{V}}"
+        for lo, hi in windows
+    )
+    body = "; ".join(f"{lo}–{hi} V [pa12]" for lo, hi in windows)
+    assert _check(body) == []
+    assert [m.token for m in _check("window 1.1–3.4 V [pa12]")] == ["1.1 V"]
+    assert [m.token for m in _check("window 1.2 mV [pa12]")] == ["1.2 mV"]
+
+
 def test_empty_evidence_is_nothing_to_check(world):
     world[(12, None)] = ""
     assert _check("gap of 7 nm [pa12]") == []
