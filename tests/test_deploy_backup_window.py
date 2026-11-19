@@ -596,7 +596,9 @@ class DeployFixture:
             shas,
         )
 
-    def run(self, *args: str, now: str) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, *args: str, now: str, **extra: str
+    ) -> subprocess.CompletedProcess[str]:
         env = _test_env(
             PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
             PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
@@ -607,6 +609,7 @@ class DeployFixture:
             PRECIS_ENV_POINTERS="0",
             PRECIS_TEST_CALLED_DIR=str(self.called),
             DEPLOY_NOW_UTC=now,
+            **extra,
         )
         env["PATH"] = f"{self.fakebin}:{env['PATH']}"
         return subprocess.run(
@@ -785,15 +788,42 @@ def test_a_failure_after_the_ping_exits_one(deploy_fx: DeployFixture) -> None:
     assert "ansible" in deploy_fx.ansible_called()
 
 
-def test_a_playbook_exiting_75_still_makes_deploy_exit_one(
+def test_a_post_ping_command_exiting_75_reaches_the_exit_trap(
     deploy_fx: DeployFixture,
 ) -> None:
-    """The EXIT-trap rule: a command after the ping that happens to return
-    75 must not leak out as "no host was touched"."""
-    _failing_playbook(deploy_fx, 75)
-    r = deploy_fx.run(deploy_fx.shas["mig"], now="12:00")
+    """The EXIT-trap rule: a command after the reachability ping that fails
+    with the "no host was touched" code (75) must be normalized to 1 by the
+    EXIT trap itself.
+
+    The canary phase-0 scratch-file create (scripts/deploy's
+    `_mig_out="$(mktemp)"`) is such a command: it runs bare under `set -e`,
+    outside any `||`/`if !` guard, so its 75 aborts the shell straight into
+    the trap — `die` and the rollout wrapper never see it. (The previous
+    shape — a playbook stub exiting 75 — never reached the trap:
+    `_run_rollout_playbook` collapses any non-zero to 1 before `die`.)"""
+    # scripts/deploy cds into $PRECIS_CLUSTER_DIR (scripts/deploy:1459) before
+    # the canary phase-0 `[[ -f playbooks/07-precis-migrate.yml ]]` probe, so
+    # the file belongs in the fixture's cluster dir, beside redeploy-precis.yml.
+    playbooks = deploy_fx.cluster / "playbooks"
+    playbooks.mkdir(exist_ok=True)
+    (playbooks / "07-precis-migrate.yml").write_text("---\n", encoding="utf-8")
+    mktemp = deploy_fx.fakebin / "mktemp"
+    mktemp.write_text(
+        '#!/usr/bin/env bash\ntouch "$PRECIS_TEST_CALLED_DIR/mktemp"\nexit 75\n',
+        encoding="utf-8",
+    )
+    mktemp.chmod(0o755)
+    r = deploy_fx.run(
+        deploy_fx.shas["mig"], now="12:00", PRECIS_DEPLOY_CANARY="gateway"
+    )
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "ansible-playbook" in deploy_fx.ansible_called()
+    # The raw 75 happened (a fake on PATH replaced mktemp; only the phase-0
+    # scratch create calls it before the abort), and the trap fired before
+    # phase 0 ran its playbook: without the trap's normalization this exit
+    # would be 75, and `die` would have printed its marker.
+    assert "mktemp" in deploy_fx.ansible_called()
+    assert "canary deploy: phase 1" not in r.stdout
+    assert "✖" not in r.stdout + r.stderr
 
 
 def test_prune_local_sweeps_incomplete_dump_dirs_and_nas_partials() -> None:
