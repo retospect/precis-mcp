@@ -189,6 +189,45 @@ class TestGetMetaView:
     """gr492452: an id-less ``get(kind=K, view='meta')`` reuses the shared
     inventory instead of the per-handler "unknown view" rejection."""
 
+    @pytest.mark.parametrize("kind", ["taxon", "tn"])
+    @pytest.mark.parametrize("in_extras", [False, True])
+    def test_taxon_descendant_inventory(
+        self,
+        runtime_with_store: PrecisRuntime,
+        store: Store,
+        hub: Hub,
+        kind: str,
+        in_extras: bool,
+    ) -> None:
+        """gr715189: scoped taxon get must bypass generic key introspection."""
+        from precis.handlers.taxon import TaxonHandler
+
+        root = _mk(store, "taxon", {"name": "probe root", "slug": "probe-root"})
+        child = _mk(store, "taxon", {"name": "probe child", "slug": "probe-child"})
+        grandchild = _mk(store, "taxon", {"name": "probe leaf", "slug": "probe-leaf"})
+        _mk(store, "taxon", {"name": "unrelated", "slug": "unrelated"})
+        handler = TaxonHandler(hub=hub)
+        handler.link(id=child, target=f"taxon:{root}", rel="specialises")
+        handler.link(id=grandchild, target=f"taxon:{child}", rel="specialises")
+        args = {"kind": kind, "view": "meta"}
+        scope = {"under": f"tn{root}"}
+        body = runtime_with_store.dispatch(
+            "get", {**args, **({"__extras__": scope} if in_extras else scope)}
+        )
+        assert "# 2 taxon meta under" in body
+        assert "probe-child" in body and "probe-leaf" in body
+        assert "unrelated" not in body
+        assert "meta keys in use" not in body
+
+    def test_unscoped_taxon_meta_still_lists_keys(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        _mk(store, "taxon", {"probe_key": 1})
+        for verb in ("get", "search"):
+            body = runtime_with_store.dispatch(verb, {"kind": "taxon", "view": "meta"})
+            assert "# meta keys in use — taxon" in body
+            assert "probe_key  number  1" in body
+
     @pytest.mark.parametrize("kind", ["job", "pathway", "quest"])
     def test_get_meta_matches_search(
         self, runtime_with_store: PrecisRuntime, store: Store, kind: str

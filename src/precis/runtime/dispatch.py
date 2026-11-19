@@ -3422,12 +3422,25 @@ class DispatchMixin(RuntimeShape):
         # An id-less ``get(kind=K, view='meta'|'tags')`` is the same
         # question asked on the wrong verb (gr492452) — serve it here
         # instead of each numeric-ref handler rejecting the view.
-        if (verb == "search" or (verb == "get" and args.get("id") is None)) and str(
-            args.get("view") or ""
-        ).strip() in (
-            "meta",
-            "tags",
-            "flow",
+        # Taxon's scoped metadata inventory belongs to its handler; it
+        # lists descendant nodes rather than the kind's metadata keys.
+        introspect_extras = args.get(_EXTRAS_KEY)
+        taxon_meta_scope = (
+            verb == "get"
+            and self._expand_kind_code(str(kind or "").strip()) == "taxon"
+            and str(args.get("view") or "").strip() == "meta"
+            and (
+                args.get("under") is not None
+                or (
+                    isinstance(introspect_extras, dict)
+                    and introspect_extras.get("under") is not None
+                )
+            )
+        )
+        if (
+            not taxon_meta_scope
+            and (verb == "search" or (verb == "get" and args.get("id") is None))
+            and str(args.get("view") or "").strip() in ("meta", "tags", "flow")
         ):
             view_name = str(args.get("view") or "").strip()
             # ``folder=`` folds into the include_ref_ids channel the
