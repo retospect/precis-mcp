@@ -403,7 +403,10 @@ def test_acquire_doi_identifier_never_scrubbed(
     poisoned-cluster check must not consult the registry to corroborate
     what the caller asked for. Asserted on the call count, not a raising
     mock: the mismatch check swallows resolver exceptions, so a raise
-    inside the mock could not prove the registry went unconsulted."""
+    inside the mock could not prove the registry went unconsulted. The S2
+    response here carries no year, so the registry year cross-check
+    (gr722127) is outside this test's scope; see
+    ``test_acquire_doi_year_crosscheck_consults_registry_once``."""
     monkeypatch.setattr(
         paper_mod,
         "_lookup_acquire_metadata",
@@ -419,6 +422,30 @@ def test_acquire_doi_identifier_never_scrubbed(
     rid = _ref_id(r.body)
     assert ("doi", "10.9728/dcs.2024.25.7.1847") in _identifiers(store, rid)
     assert consulted == []
+
+
+def test_acquire_doi_year_crosscheck_consults_registry_once(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion to ``test_acquire_doi_identifier_never_scrubbed``: when S2
+    carries a year, the registry year cross-check (gr722127) is the one
+    registry call a requested DOI makes. The DOI identifier is still kept."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Whatever",
+            "year": 2024,
+            "doi": "10.9728/dcs.2024.25.7.1847",
+            "external_ids": {"DOI": "10.9728/dcs.2024.25.7.1847"},
+        },
+    )
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", consulted.append)
+    r = handler.acquire(identifier="doi:10.9728/dcs.2024.25.7.1847")
+    rid = _ref_id(r.body)
+    assert ("doi", "10.9728/dcs.2024.25.7.1847") in _identifiers(store, rid)
+    assert consulted == ["10.9728/dcs.2024.25.7.1847"]
 
 
 def _fetch_pin(store: Store, ref_id: int) -> tuple[int | None, str | None, str | None]:
