@@ -47,7 +47,10 @@ not by the name.
 
 A put that looks like an existing node is refused, naming it (`tn12 turnover
 frequency (rate/turnover-frequency)`) with the reason. Candidates are: same
-name, alias or slug as the new node's name or aliases; then, when the
+name or alias as the new node's name or aliases, with case and separators
+folded (`dedupe-turnover` == `dedupe turnover`) but symbols kept — a shared
+slug alone is not a duplicate (`DimeNet` and `DimeNet++` both slug to
+`dimenet` and stay distinct); then, when the
 embedder is up, a node whose card is within cosine distance 0.25 (lexical
 only when it is down). A candidate with a different dimension is never
 offered: both nodes carry `dimension_kind` and the kinds differ, or both are
@@ -180,8 +183,11 @@ values per axis are shown, the rest as `+N values (M items)`. Narrow with
 In `get`, `search(under=)` and `link(kind='taxon', target='taxon:...')`:
 `42`, `tn42`, `taxon:42`, or a path of names, slugs or aliases joined by `/`
 and never starting with one: `measurand/temperature` means a node
-`temperature` whose parent is `measurand`. A lone `temperature` is a plain
-term lookup. Several matches are refused with each candidate's handle and
+`temperature` whose parent is `measurand`. A slug segment resolves even
+when it drops the name's symbols (`dimenet` still addresses `DimeNet++` —
+and becomes ambiguous once a `DimeNet` node shares the slug). A lone
+`temperature` is a plain term lookup. Several matches are refused with each
+candidate's handle and
 path; no match lists near candidates. A leading `/` is a list view
 (`/unrooted`, `/unmapped`, `/recent`, `/coverage`). A link from another kind
 (`rel='instance-of'`) and create-time `put(link=)` take the id only.
@@ -190,8 +196,10 @@ path; no match lists near candidates. A leading `/` is a list view
 
 `search(kind="taxon", q=...)` matches the name and the definition, lexically
 and by meaning; a word that appears only in the definition finds the node
-even with the embedder down. When nothing matches by name, slug, alias or
-lexically, the first line reads `no taxon named '<q>'; nearest by meaning:` and
+even with the embedder down. A `q` equal to a node's name or alias leads the
+page with `exact: tn12 …`; a slug-only hit (symbols dropped, as `DimeNet`
+vs `DimeNet++`) ranks normally instead. When `q` names no node and nothing
+matches lexically, the first line reads `no taxon named '<q>'; nearest by meaning:` and
 at most 3 semantic hits follow (synonym queries still land).
 
 ```python

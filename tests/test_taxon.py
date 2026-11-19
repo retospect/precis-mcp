@@ -13,7 +13,12 @@ from typing import Any, cast
 import pytest
 
 from precis.errors import BadInput, NotFound
-from precis.taxonomy.nodes import slugify, validate_taxon_meta
+from precis.taxonomy.nodes import (
+    matches_term,
+    resolves_term,
+    slugify,
+    validate_taxon_meta,
+)
 
 TOF = (
     "turnover frequency — the number of catalytic cycles per active site per unit time"
@@ -218,6 +223,33 @@ class TestTaxonRead:
 class TestPureHelpers:
     def test_slugify(self) -> None:
         assert slugify("Turnover Frequency (TOF)") == "turnover-frequency-tof"
+
+    def test_matches_term_strict_vs_resolves_term_loose(self) -> None:
+        meta = {
+            "name": "DimeNet++",
+            "norm_name": "dimenet++",
+            "slug": "dimenet",
+            "aliases": ["DNetPP"],
+        }
+        assert matches_term(meta, "DimeNet++")
+        assert matches_term(meta, "dimenet++")  # case fold
+        assert matches_term(meta, "dnetpp")  # alias
+        assert resolves_term(meta, "dimenet")  # slug addresses it
+        assert resolves_term(meta, "DimeNet++")
+        # but a slug that dropped the "++" is not an identity
+        assert not matches_term(meta, "DimeNet")
+        # separator-folded names still identify via the slug leg
+        dash = {
+            "name": "dedupe turnover",
+            "norm_name": "dedupe turnover",
+            "slug": "dedupe-turnover",
+            "aliases": [],
+        }
+        assert matches_term(dash, "dedupe-turnover")
+        # a row with only a slug (no name/norm_name) resolves but never identifies
+        bare = {"slug": "dimenet"}
+        assert resolves_term(bare, "dimenet")
+        assert not matches_term(bare, "dimenet")
 
     def test_validate_rejects_si_vector_without_si(self) -> None:
         with pytest.raises(BadInput, match="only allowed"):
@@ -1143,6 +1175,71 @@ class TestDedup:
         with pytest.raises(BadInput, match="dedupd count"):
             h.put(text="dedupd count — no dimension given")
 
+    def test_symbol_distinguishes_architectures(self, store: Any) -> None:
+        h = _handler(store)
+        parent = _mk(store, "graph-neural-network")
+        successor = _mk(store, "DimeNet++", under=parent)
+        assert "exact:" not in h.search(q="DimeNet").body
+        original = _created_id(
+            h.put(
+                text="DimeNet — original architecture",
+                link=f"taxon:{parent}",
+                rel="specialises",
+            )
+        )
+        assert original != successor
+        assert (
+            h.search(q="DimeNet")
+            .body.splitlines()[0]
+            .startswith(f"exact: tn{original} ")
+        )
+        assert (
+            h.search(q="DimeNet++")
+            .body.splitlines()[0]
+            .startswith(f"exact: tn{successor} ")
+        )
+        with pytest.raises(BadInput, match=f"tn{successor}"):
+            h.put(text="DimeNet++ — duplicate")
+
+    def test_slug_path_resolves_symbol_named_node(self, store: Any) -> None:
+        """gr722401 follow-up: identity got stricter, but a slug stays a
+        valid path segment — ``c`` still addresses ``C++``, ``dimenet``
+        still addresses ``DimeNet++``, alone or under a parent."""
+        h = _handler(store)
+        parent = _mk(store, "sps gnn")
+        cpp = _mk(store, "sps C++", under=parent)
+        body = h.get(id="sps-c").body  # the slug alone resolves it
+        assert body.startswith(f"# taxon {cpp}:")
+        assert h.get(id="sps-gnn/sps-c").body == body  # via the parent's path
+        # and a shared slug reports ambiguity rather than picking a node
+        other = _created_id(
+            h.put(
+                text="sps C — the plain-C sibling",
+                link=f"taxon:{parent}",
+                rel="specialises",
+            )
+        )
+        with pytest.raises(BadInput) as ei:
+            h.get(id="sps-c")
+        msg = str(ei.value)
+        assert "ambiguous" in msg and f"tn{cpp}" in msg and f"tn{other}" in msg
+
+    def test_legacy_slug_collision_is_not_identity(self, store: Any) -> None:
+        """A legacy row may lack ``norm_name`` and already share its slug:
+        the slug still resolves it, dedup still refuses a true repeat, but
+        the symbol-losing sibling mints."""
+        h = _handler(store)
+        rid = _mk(store, "leg DimeNet++")
+        removed = store.clear_ref_meta_keys(rid, ["norm_name"], source="test")
+        assert removed == ["norm_name"]
+        # slug-only addressing still reaches the legacy row
+        assert h.get(id="leg-dimenet").body.startswith(f"# taxon {rid}:")
+        # name equality survives on name + slug alone -> still a duplicate
+        with pytest.raises(BadInput, match=f"tn{rid}"):
+            h.put(text="leg DimeNet++ — again")
+        # but the shared slug does not block the distinct original
+        assert _created_id(h.put(text="leg DimeNet — the original")) != rid
+
     def test_alias_and_slug_matches(self, store: Any) -> None:
         h = _handler(store)
         first = _created_id(
@@ -1348,7 +1445,7 @@ class TestSiblingRefusal:
         with pytest.raises(BadInput, match="looks like an existing node"):
             h.put(**put)
         afm_name = store.get_ref(kind="taxon", id=afm).meta["name"]
-        with pytest.raises(BadInput, match="same name/alias/slug"):
+        with pytest.raises(BadInput, match="same name/alias"):
             h.put(**{**put, "text": f"{afm_name} — reworded"})
 
     def test_sibling_bar_is_not_tighter_than_dedup(self) -> None:
