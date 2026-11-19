@@ -91,7 +91,8 @@ is the same edge.
 
 ```python
 put(kind="taxon", text="faradaic efficiency — the fraction of charge that goes to the product",
-    meta={"dimension_kind": "dimensionless"},
+    meta={"dimension_kind": "si", "si_vector": "0,0,0,0,0,0,0",
+          "canonical_unit": "dimensionless"},
     link="taxon:12", rel="specialises")
 link(kind="taxon", id=40, target="taxon:12", rel="specialises",
      meta={"axis": "composition"})

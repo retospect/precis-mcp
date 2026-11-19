@@ -256,22 +256,23 @@ measures onto the survivor is not built yet.
 ## Write a run
 
 `put(kind='measure')` writes one run: the output's printed literal in `text=`,
-its fields in `meta=`, the input rows in `items=`. All in one transaction; a
+its fields in `meta=`, the input rows in `args={'items': [...]}`. All in one transaction; a
 refusal writes nothing. One more refusal: a live output row with the same
 measurand, subject, anchor scheme, span and value is a **duplicate** — the
 number is already written; `get` it, or re-write the run with
 `meta={'supersedes': id}` when it should replace that row.
 
 ```python
-put(kind="measure", text="95", reason="qu202467 pilot extraction",
+put(kind="measure", text="95",
     meta={"measurand": "measurand/faradaic-efficiency", "subject": "pa12",
           "subject_label": "Cu NWA", "subject_group": "fi345",
           "reported_unit": "%", "reference": "RHE", "tier": "measured",
           "anchor": {"chunk": "pc678", "anchor_scheme": "sentence", "span": "s3"}},
-    items=[{"measurand": "measurand/potential", "literal": "-0.5",
-            "reported_unit": "V", "reference": "RHE"},
-           {"measurand": "measurand/reaction-product", "literal": "NH3",
-            "condition": "product"}])
+    args={"reason": "qu202467 pilot extraction",
+          "items": [{"measurand": "measurand/potential", "literal": "-0.5",
+                     "reported_unit": "V", "reference": "RHE"},
+                    {"measurand": "measurand/reaction-product", "literal": "NH3",
+                     "condition": "product"}]})
 ```
 
 - **`meta`** (the output): `measurand` (taxon handle, path or id) and
@@ -295,7 +296,7 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   `direction` is `input` (default) or `covariate`. Items take `note` too.
 - **Errors** are `BadInput` naming the field (`items[1].measurand: ...`) with a
   `next:` example; an unknown field is refused with the accepted list.
-- **`reason=`** goes to the revision context like `edit`'s.
+- **`args={'reason': ...}`** goes to the revision context like `edit`'s.
 - **Answer**: the run key, one line per written row (`mx12 output ...`), then
   `flagged:` lines for anything flagged, each with its reason: a
   `meta.escalation` entry — a missing required condition, no molar mass, an
@@ -341,19 +342,20 @@ put(kind="measure", mode="recheck", args={"papers": [452964], "dry_run": False})
 ## Review a row
 
 ```python
-edit(kind="measure", id="mx12", review="model", verdict="approved",
-     text="95 is printed in the anchor sentence", meta={"model": "claude-opus-5-5"})
+edit(kind="measure", id="mx12", text="95 is printed in the anchor sentence",
+     args={"review": "model", "verdict": "approved",
+           "meta": {"model": "claude-opus-5-5"}})
 ```
 
-- `review=` is the reviewer's kind, `human` or `model`; `verdict=` is `approved`
+- `args={'review': ...}` is the reviewer's kind, `human` or `model`; `'verdict'` is `approved`
   or `rejected` (required, no default); `text=` is the
-  note; `meta={'model': ...}` names the model (`version` optional).
+  note; `args={'meta': {'model': ...}}` names the model (`version` optional).
 - The review is taken at the row's sha now: a later change to a fixed field
   makes it `STALE` in `get`. Reviews append; a second one never replaces the first.
 - **A model review must name its model** (`meta.model`), or it is refused.
 - **A human review** is a sign-off the session relays, as with
   `edit(kind='draft', review='human')`: `edit(kind='measure', id=12,
-  review='human', verdict='approved', meta={'actor': 'reto'})`. The actor is
+  args={'review': 'human', 'verdict': 'approved', 'meta': {'actor': 'reto'}})`. The actor is
   `meta.actor`, else `human`; the model is always NULL, and a `meta.model` on a
   human review is refused ("a human review has no model").
 - The ledger's actor is plain text, so an agent could claim to be a person.
@@ -382,11 +384,11 @@ How a corpus of claims becomes reviewed measures.
    unit fits the taxon's `canonical_unit`, a `measured` run has its anchor.
    Failures go back to the proposer; nothing is written.
 3. **Write.** `put(kind='measure')` each checked proposal with
-   `reason='<quest id> pilot extraction'`, one call per run. Keep the
+   `args={'reason': '<quest id> pilot extraction'}`, one call per run. Keep the
    returned `mx` ids and flags.
 4. **Review.** A reviewer on a larger model reads each written row
    with `get(kind='measure', id=N)` and its chunk, then `edit`s it with
-   `review='model'`, a `verdict` and a one-line note. Rows it rejects are
+   `args={'review': 'model', 'verdict': ...}` and a one-line note. Rows it rejects are
    corrected by a new `put` with `meta.supersedes`; anything it cannot decide
    goes to a person.
 

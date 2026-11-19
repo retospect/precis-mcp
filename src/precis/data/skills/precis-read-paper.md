@@ -180,14 +180,15 @@ states a number gets one measure run, unless step 1's
 with the hub as its group and the setup's conditions as input rows:
 
 ```python
-put(kind="measure", text="-0.42", reason="read-paper pa<id>",
+put(kind="measure", text="-0.42",
     meta={"measurand": "<taxon path, from search(kind='taxon')>",
           "subject": "pa<id>", "subject_label": "<material/site>",
           "subject_group": "fi<hub>", "reported_unit": "eV",
           "tier": "computed", "model": "<your model id>",
           "anchor": {"chunk": "pc<result>", "anchor_scheme": "sentence", "span": "s2"}},
-    items=[{"measurand": "<condition taxon>", "literal": "<value>",
-            "condition": "<label>"}])
+    args={"reason": "read-paper pa<id>",
+          "items": [{"measurand": "<condition taxon>", "literal": "<value>",
+                     "condition": "<label>"}]})
 ```
 
 One run per value and condition set ("95% at −0.5 V and 61% at −0.9 V"
