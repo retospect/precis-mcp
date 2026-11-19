@@ -1478,8 +1478,15 @@ SAME       — they state the exact same fact under the same conditions
              numeric value, or named mechanism that one claim asserts and
              the other does not — that added specificity is a narrower
              claim (see DIFFERENT).
-CONTRADICTS — they share the same scope (same material/method/regime) but
-             assert opposite conclusions.
+CONTRADICTS — they assert mutually exclusive conclusions about the same
+             material and quantity under shared conditions and with
+             comparable methods. For ranges (pressure, temperature, ...),
+             check whether both conclusions apply within the overlap.
+             Trends over adjacent intervals can coexist even if the
+             intervals share an endpoint. A claim about a trend and a
+             calculation explaining that trend can also coexist. Use
+             DIFFERENT when the regimes or methods make the claims
+             incomparable.
 DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              claim, a different scope, or claims about different things
              entirely (even if they sound superficially similar or share a
@@ -1489,9 +1496,10 @@ DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              specific formula that quantifies it are DIFFERENT, not the same
              fact stated in more detail.
 
-Default to DIFFERENT unless you are confident the claims are the SAME fact
-under the SAME conditions. A merge of two claims that are not really the
-same is the dangerous error here — when in doubt, DIFFERENT.
+When in doubt about equivalence or contradiction, use DIFFERENT.
+For example, measured negative c-axis compressibility from 0 to 0.15 GPa
+and positive c-axis compressibility explained by a calculated angle plateau
+from 0.15 to 0.6 GPa are DIFFERENT.
 
 CLAIM A: {claim_a}
 
@@ -1536,9 +1544,11 @@ def dedup_judge(a: str, b: str) -> Verdict:
     """THE crux call — is claim ``a`` the same as claim ``b``, different, or
     a contradiction? MEDIUM tier, one bounded pairwise judgment.
 
-    Merges only on genuinely the same fact + same conditions; any real
-    difference -> ``"different"``; opposite polarity at the same scope ->
-    ``"contradicts"``. Biased hard toward ``"different"`` — a dispatch
+    Returns ``"same"`` for the same fact under the same conditions.
+    ``"contradicts"`` requires mutually exclusive conclusions about the
+    same material and quantity under overlapping conditions and with
+    comparable methods. Use ``"different"`` for other pairs, including
+    trends over adjacent intervals that only share an endpoint. A dispatch
     response that is unparseable degrades to ``"different"`` at
     confidence 0.0, never a silent ``"same"``. A dispatch error is NOT a
     verdict: it returns ``verdict="error"`` (confidence 0.0) so a transient

@@ -115,6 +115,10 @@ addressed as ``fi<id>``; the signed artifact carries the sentence hash.
 (``precis_web/nanopub_render.py``, with the guarded merge door) expose the
 same neighbourhood to an agent and to the approving human.
 
+The judge requires overlapping conditions and comparable methods for a
+contradiction. This prevents automatic ``disputes`` edges between compatible
+claims, such as opposite trends in adjacent pressure regimes.
+
 Module map (detail lives in each module's own docstring):
 
 - :mod:`.canon` — the canonicalizer cascade: ``extract_claim`` -> ``block``
