@@ -158,6 +158,36 @@ def test_consumer_closes_retired_target_memory_proposal_gr714718(
     )
 
 
+@pytest.mark.parametrize("restore", [False, True])
+def test_consumer_rechecks_retirement_after_pending_scan(
+    store: Store, monkeypatch: pytest.MonkeyPatch, restore: bool
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    target = _memory(store, "Retirement race")
+    review_id = _retire_proposal(store, target)
+    store.retire_ref(target)
+    props = pending_proposals(store)
+    assert props[0].target_retired
+    if restore:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET retired_at = NULL WHERE ref_id = %s", (target,)
+            )
+
+    def unexpected(
+        _store: Store, _proposal: GardenProposal
+    ) -> consumer.ConsumerVerdict:
+        pytest.fail("a tombstone scan must not buy a model review")
+
+    report = consumer.ConsumeReport()
+    consumer.review_pending(store, props, report, review=unexpected, limit=10)
+    assert report.rejected == (0 if restore else 1)
+    remaining = pending_proposals(store)
+    assert [p.review_id for p in remaining] == ([review_id] if restore else [])
+    if restore:
+        assert not remaining[0].target_retired
+
+
 def test_proposals_view_lists_pending_and_flags_stale(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

@@ -27,6 +27,11 @@ fresh proposals. Applied find/span pairs must match fresh detector ops; link
 removals refuse, preventing model overrides from expanding detector edit scope.
 Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
+Pending reads mark retired targets stale, distinguishing redirected tombstones
+from successorless ones without changing the audit ledger. With memory apply
+enabled, the consumer terminally rejects these proposals as target_gone,
+rechecking retirement under a target-row lock in the verdict transaction.
+A target restored after the scan stays pending for a fresh scan.
 Retirement validates successor evidence before compaction so stale proposals close retryably.
 Supersede checks incoming and outgoing part-of migrations
 before writing and refuses edges that close a containment cycle. A direct

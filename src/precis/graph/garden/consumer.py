@@ -349,6 +349,7 @@ def _close(
     report: ConsumeReport,
     identity: PaperIdentity | None = None,
     retryable: bool = False,
+    conn: Any = None,
 ) -> None:
     extra = decision_record(
         prop, outcome="rejected", why=why, model=model, identity=identity
@@ -363,6 +364,7 @@ def _close(
         verdict="rejected",
         model=model,
         extra=extra,
+        conn=conn,
     ):
         report.rejected += 1
         report.reasons[reason] = report.reasons.get(reason, 0) + 1
@@ -1719,15 +1721,23 @@ def review_pending(
                 if prop.retired_successor
                 else " without a successor"
             )
-            _close(
-                store,
-                prop,
-                actor=CONSUMER_ACTOR,
-                reason="target_gone",
-                why=f"the target already retired elsewhere{successor}",
-                model=None,
-                report=report,
-            )
+            with store.pool.connection() as conn, conn.transaction():
+                target = conn.execute(
+                    "SELECT retired_at FROM refs WHERE ref_id = %s FOR UPDATE",
+                    (prop.target_id,),
+                ).fetchone()
+                if target is not None and target[0] is not None:
+                    _close(
+                        store,
+                        prop,
+                        actor=CONSUMER_ACTOR,
+                        reason="target_gone",
+                        why=f"the target already retired elsewhere{successor}",
+                        model=None,
+                        report=report,
+                        conn=conn,
+                    )
+            # An undo after the scan leaves this proposal for a fresh scan.
             continue
         if memory_enabled and not prop.current:
             _close(

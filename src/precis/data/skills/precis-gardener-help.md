@@ -134,6 +134,15 @@ review id, action, target handle, a `stale` flag when the target moved
 since the proposal, title, rationale, and any consumer hold with its
 next step. `action` and `limit` are optional.
 
+A tombstoned target shows `[stale: target retired → <successor>]` or
+`[stale: target retired (no successor)]`. Distinct pending reviews for the
+same target each carry the marker. Listing only annotates; the original
+proposal and retirement remain in the audit history. With memory apply
+enabled, the consumer closes eligible proposals with a terminal, nonretryable
+`target_gone` rejection without a model call. It rechecks retirement under a
+target-row lock in the verdict transaction; a target restored since the scan
+stays pending for a fresh scan.
+
 `put(kind='job', mode='garden-reject', args={'review_id': <id>,
 'reason': '<why>'})` closes one pending proposal: the terminal
 `rejected` row records your reason and actor, and the key stays decided
