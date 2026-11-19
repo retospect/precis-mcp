@@ -208,6 +208,13 @@ put(
 #     pa88 (minted)
 ```
 
+A descriptor whose DOI/arXiv id already sits on a held paper with a
+disjoint title (≥4 content words each, none shared) is refused, not
+silently claimed: it is skipped and listed as `skipped: paper
+identifier/title conflict on pa<N> …` under the awaiting list, and the
+count covers only minted/tracked stubs. If every descriptor conflicts the
+put raises `Conflict` and mints nothing; repair `pa<N>`'s identity first.
+
 `wants=` is a list of ≥1 descriptor dicts, each one of `{'doi':…}`,
 `{'arxiv':…}`, or `{'title':…, 'url':…}` — one per paper the claim
 expects grounding from. The call **atomically** mints a `DREAM:acquire`
