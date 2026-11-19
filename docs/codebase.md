@@ -96,6 +96,13 @@ while MCP keeps `Authorization: Bearer` only. Dispatch re-judges the allow-list
 on the final kind after every rewrite: converted `pa<id>` handles and a
 retired memory's successor (`md`, `python`, another kind) alike.
 
+A network MCP gate accepts five bearer classes: `install`, `slice`,
+`personal`, `capability` and `oauth`. `PRECIS_MCP_CREDENTIAL_CLASSES`
+(`mcp_identity.credential_classes`) narrows them per deployment; unset means
+all. A refused class gets the same 401 as a wrong token with no lookup, and the
+web account page stops offering to mint the personal and capability classes the
+deployment would refuse.
+
 Exact-handle write substitution uses one-hour ``read_receipts`` keyed on the
 authenticated credential, surviving transport restarts. Unauthenticated MCP
 receipts and hint suppression remain in process memory. Opt-in

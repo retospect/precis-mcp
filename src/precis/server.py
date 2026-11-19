@@ -2414,11 +2414,12 @@ def _sdk_session_ownership_supported() -> bool:
 def _install_token_auth(
     app: Any,
     *,
-    token: str,
+    token: str | None,
     slice_dir: Any = None,
     store: Any = None,
     personal_path: str | None = "/mcp",
     oauth_config: Any = None,
+    classes: frozenset[str] | None = None,
 ) -> None:
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
@@ -2446,6 +2447,16 @@ def _install_token_auth(
     URL-embedded carriage lives on ``/podcast/*`` (the ``feed`` scope),
     not on the MCP endpoint, whose auth rules forbid query credentials.
 
+    ``classes`` (``PRECIS_MCP_CREDENTIAL_CLASSES``, parsed by
+    :func:`precis.mcp_identity.credential_classes`) names the bearer classes
+    this gate accepts — ``install``, ``slice``, ``personal``, ``capability``,
+    ``oauth``; ``None`` means all five. A credential of a class that is not
+    accepted gets the ordinary 401 with the OAuth challenge, identical to a
+    wrong token, and its class's store lookup is never made. Without
+    ``oauth`` the gate serves no OAuth discovery and no challenge. ``install``
+    accepted with an empty ``token`` raises ``ValueError``; the install
+    check never runs against an empty token.
+
     ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
     ``/run/precis-slice-tokens`` on the shared session server) enables the
     second credential shape (gr543694): a ``td<id>.<hex>`` bearer
@@ -2465,6 +2476,35 @@ def _install_token_auth(
     from precis import mcp_identity, principal, security_txt, slice_tokens
     from precis.oauth import store as oauth_store
     from precis.oauth_transport import challenge, metadata, metadata_path
+
+    accepted = (
+        frozenset(mcp_identity.CREDENTIAL_CLASSES) if classes is None else classes
+    )
+    if "install" in accepted and not token:
+        raise ValueError(
+            f"{mcp_identity.CREDENTIAL_CLASSES_ENV} accepts 'install' but no "
+            "install token is configured"
+        )
+    if "oauth" not in accepted:
+        # A gate that refuses OAuth tokens must not publish discovery or a
+        # challenge that sends clients to sign in for one.
+        oauth_config = None
+    install_ok = "install" in accepted
+    slice_ok = "slice" in accepted
+    oauth_ok = "oauth" in accepted and oauth_config is not None
+    personal_ok = "personal" in accepted
+    capability_ok = "capability" in accepted
+    #: Bearer prefixes of the accepted store-backed classes: only these can
+    #: trip the SDK-ownership 503 below.
+    store_prefixes = tuple(
+        prefix
+        for ok, prefix in (
+            (personal_ok, mcp_identity.TOKEN_PREFIX),
+            ("oauth" in accepted, oauth_store.ACCESS_PREFIX),
+            (capability_ok, mcp_identity.CAP_TOKEN_PREFIX),
+        )
+        if ok
+    )
 
     class _TokenAuthMiddleware:
         def __init__(self, app: ASGIApp) -> None:
@@ -2519,11 +2559,11 @@ def _install_token_auth(
                 await JSONResponse(metadata(oauth_config))(scope, receive, send)
                 return
             header = Headers(scope=scope).get("authorization")
-            if _check_bearer_token(header, token):
+            if install_ok and token and _check_bearer_token(header, token):
                 scope[principal.SCOPE_INSTALL] = True
                 await self._authorized(scope, receive, send, "precis-install")
                 return
-            grant = slice_tokens.grant(slice_dir, header)
+            grant = slice_tokens.grant(slice_dir, header) if slice_ok else None
             if grant is not None:
                 scope[slice_tokens.SCOPE_SLICE_ID] = grant.slice_id
                 if grant.agentlog_id is not None:
@@ -2537,16 +2577,7 @@ def _install_token_auth(
                 return
             if store is not None and header and header.startswith("Bearer "):
                 raw = header.removeprefix("Bearer ")
-                if (
-                    raw.startswith(
-                        (
-                            mcp_identity.TOKEN_PREFIX,
-                            oauth_store.ACCESS_PREFIX,
-                            mcp_identity.CAP_TOKEN_PREFIX,
-                        )
-                    )
-                    and not self.ownership_supported
-                ):
+                if raw.startswith(store_prefixes) and not self.ownership_supported:
                     response = JSONResponse(
                         {
                             "error": "personal tokens require SDK session-owner validation",
@@ -2557,9 +2588,7 @@ def _install_token_auth(
                     )
                     await response(scope, receive, send)
                     return
-                if oauth_config is not None and raw.startswith(
-                    oauth_store.ACCESS_PREFIX
-                ):
+                if oauth_ok and raw.startswith(oauth_store.ACCESS_PREFIX):
                     try:
                         oauth_identity = await anyio.to_thread.run_sync(
                             oauth_store.resolve_access_token, store, raw, oauth_config
@@ -2590,16 +2619,16 @@ def _install_token_auth(
                             subject=f"{oauth_identity.user_id}:{oauth_identity.grant_id}",
                         )
                         return
+                identity = capability = None
                 try:
-                    identity = await anyio.to_thread.run_sync(
-                        mcp_identity.resolve_user_token, store, raw
-                    )
-                    if identity is None:
+                    if personal_ok:
+                        identity = await anyio.to_thread.run_sync(
+                            mcp_identity.resolve_user_token, store, raw
+                        )
+                    if identity is None and capability_ok:
                         capability = await anyio.to_thread.run_sync(
                             mcp_identity.resolve_capability_token, store, raw
                         )
-                    else:
-                        capability = None
                 except Exception:
                     # Do not attach exception messages or credentials to logs.
                     response = JSONResponse(
@@ -3104,7 +3133,7 @@ def _run_network_transport(
     transport: str,
     host: str,
     port: int,
-    token: str,
+    token: str | None,
     fd: int | None = None,
     uds: str | None = None,
 ) -> None:
@@ -3134,6 +3163,13 @@ def _run_network_transport(
     their request-body reads happen after authentication — an unfinished
     upload can never delay a 401 (review td661882).
 
+    ``PRECIS_MCP_CREDENTIAL_CLASSES`` (the bearer classes this gate
+    accepts; unset means all) is read here and handed to
+    :func:`_install_token_auth`. ``token`` may be ``None`` when ``install``
+    is not accepted. Startup refuses (``ValueError``) when no accepted class
+    can authenticate under the current configuration — an endpoint that
+    would answer 401 to everyone is a misconfiguration, not a deployment.
+
     ``PRECIS_MCP_STATELESS_HTTP`` flips streamable-http to the SDK's
     per-request mode (gr660588): no session tracking, so the bearer
     gate's per-request authentication is the only identity check (the
@@ -3146,6 +3182,9 @@ def _run_network_transport(
     import anyio
     import uvicorn
 
+    classes = mcp_identity.credential_classes(
+        os.environ.get(mcp_identity.CREDENTIAL_CLASSES_ENV)
+    )
     mcp.settings.host = host
     mcp.settings.port = port
     from urllib.parse import urlsplit
@@ -3170,9 +3209,29 @@ def _run_network_transport(
         # this mode — no request carries a session id by design — so it
         # is skipped; the failure logger stays for any residual 4xx.
         mcp.settings.stateless_http = True
-    app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     from precis import slice_tokens
 
+    store = getattr(_runtime, "store", None)
+    streamable = transport == "streamable-http"
+    slice_dir = (
+        Path(p) if (p := os.environ.get(slice_tokens.ENV_DIR, "").strip()) else None
+    )
+    usable = {
+        "install": bool(token),
+        "slice": slice_dir is not None,
+        "oauth": oauth_config is not None and store is not None and streamable,
+        "personal": store is not None and streamable,
+        "capability": store is not None and streamable,
+    }
+    if not any(usable[name] for name in classes):
+        raise ValueError(
+            f"{mcp_identity.CREDENTIAL_CLASSES_ENV}="
+            f"{','.join(sorted(classes))} accepts no credential this "
+            "server can authenticate (install needs a token, slice a slice "
+            "dir, oauth an OAuth configuration, personal/capability a "
+            "store, and oauth/personal/capability streamable-http)"
+        )
+    app = mcp.streamable_http_app() if streamable else mcp.sse_app()
     if transport == "streamable-http" and not stateless:
         _install_session_recover(app, mcp_path=mcp.settings.streamable_http_path)
     _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
@@ -3180,15 +3239,10 @@ def _run_network_transport(
         app,
         token=token,
         oauth_config=oauth_config,
-        store=getattr(_runtime, "store", None),
-        personal_path=(
-            mcp.settings.streamable_http_path
-            if transport == "streamable-http"
-            else None
-        ),
-        slice_dir=(
-            Path(p) if (p := os.environ.get(slice_tokens.ENV_DIR, "").strip()) else None
-        ),
+        classes=classes,
+        store=store,
+        personal_path=mcp.settings.streamable_http_path if streamable else None,
+        slice_dir=slice_dir,
     )
 
     async def _serve() -> None:
@@ -3229,9 +3283,12 @@ def main(
     **byte-identical** to before this function grew keyword args: same
     ``mcp.run(transport="stdio")`` call, no token/host/port ever
     consulted. ``sse``/``streamable-http`` require ``token`` (arg or
-    ``PRECIS_MCP_TOKEN`` env) — raises ``ValueError`` before touching
-    the network otherwise, since an unauthenticated network MCP would be
-    a live corpus-read hole. ``migrate`` maps the ``--migrate`` flag onto
+    ``PRECIS_MCP_TOKEN`` env) when the install credential class is
+    accepted (the default; ``PRECIS_MCP_CREDENTIAL_CLASSES`` narrows it) —
+    raises ``ValueError`` before touching the network otherwise, since an
+    unauthenticated network MCP would be a live corpus-read hole. A
+    deployment that does not accept ``install`` never consults the token.
+    ``migrate`` maps the ``--migrate`` flag onto
     ``PRECIS_AUTO_MIGRATE=1`` so the startup schema gate in
     ``_init_runtime`` self-heals instead of refusing. ``uds`` binds a
     network transport to a unix socket instead of ``host:port``;
@@ -3291,17 +3348,22 @@ def main(
             f"precis serve: unknown --transport {transport!r} "
             f"(stdio|{'|'.join(_NETWORK_TRANSPORTS)})"
         )
-    resolved_token = (
-        token
-        or os.environ.get("PRECIS_MCP_TOKEN")
-        or mounted_secret("PRECIS_MCP_TOKEN")
+    classes = mcp_identity.credential_classes(
+        os.environ.get(mcp_identity.CREDENTIAL_CLASSES_ENV)
     )
-    if not resolved_token:
-        raise ValueError(
-            f"precis serve: --transport {transport} requires --token or "
-            "PRECIS_MCP_TOKEN — a network transport with no token check "
-            "would expose the corpus to anything that can reach the port"
+    resolved_token = None
+    if "install" in classes:
+        resolved_token = (
+            token
+            or os.environ.get("PRECIS_MCP_TOKEN")
+            or mounted_secret("PRECIS_MCP_TOKEN")
         )
+        if not resolved_token:
+            raise ValueError(
+                f"precis serve: --transport {transport} requires --token or "
+                "PRECIS_MCP_TOKEN — a network transport with no token check "
+                "would expose the corpus to anything that can reach the port"
+            )
     if fd is not None:
         # Supervised (the fd is the supervisor's socket): SIGHUP drains
         # in-flight calls and exits 0 so the supervisor respawns (gr460711).

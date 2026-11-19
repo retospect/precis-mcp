@@ -37,11 +37,14 @@ _USER_COLS = (
     "id, login, abbrev, full_name, email, disabled_at, "
     "last_login_at, created_at, updated_at, "
     # Presence, never the digest: callers decide whether a podcast link
-    # exists — a live feed-scoped capability token (gr595554) — and
-    # nothing outside this module needs the hash itself.
+    # exists — a live feed-only capability token (gr595554, gr730564:
+    # the same exact-scope predicate ``get_web_user_by_feed_token``
+    # authenticates with, so /account never shows a link that is dead) —
+    # and nothing outside this module needs the hash itself.
     "EXISTS (SELECT 1 FROM web_user_capability_tokens ft"
     " WHERE ft.user_id = web_users.id AND ft.revoked_at IS NULL"
-    " AND 'feed' = ANY(ft.scopes)) AS has_feed_token, orcid, discord_user_id"
+    " AND ft.scopes = ARRAY['feed']::text[]) AS has_feed_token,"
+    " orcid, discord_user_id"
 )
 
 
@@ -173,19 +176,22 @@ class WebUsersMixin:
     def get_web_user_by_feed_token(self, digest: str) -> WebUser | None:
         """Resolve a ``/podcast?t=`` credential by its SHA-256 digest.
 
-        The credential is a feed-scoped row in ``web_user_capability_tokens``
+        The credential is a feed-only row in ``web_user_capability_tokens``
         (gr595554 — the class the feed token folded into); the digest alone
         authenticates, whatever the raw token's prefix — a legacy bare feed
-        token, a ``precis_feed_`` mint or a ``precis_cap_`` with the feed
-        scope. Enabled accounts only: disabling a user must kill their feed
-        with the same keystroke it kills their login.
+        token, a ``precis_feed_`` mint or a ``precis_cap_`` whose scopes are
+        exactly ``['feed']``. A row that mixes ``feed`` with another scope
+        (an MCP bearer that would sit in a URL, gr730564) does not
+        authenticate; rotating or revoking still kills it. Enabled
+        accounts only: disabling a user must kill their feed with the
+        same keystroke it kills their login.
         """
         sql = (
             f"SELECT {_USER_COLS} FROM web_users "
             "WHERE disabled_at IS NULL AND EXISTS ("
             "SELECT 1 FROM web_user_capability_tokens ft"
             " WHERE ft.user_id = web_users.id AND ft.token_sha256 = %s"
-            " AND ft.revoked_at IS NULL AND 'feed' = ANY(ft.scopes))"
+            " AND ft.revoked_at IS NULL AND ft.scopes = ARRAY['feed']::text[])"
         )
         with self.pool.connection() as conn:
             row = conn.execute(sql, (digest,)).fetchone()
@@ -325,9 +331,11 @@ class WebUsersMixin:
     def set_web_user_feed_token(self, login: str, digest: str | None) -> bool:
         """Store (or clear) the podcast token digest — a feed-scoped row
         in ``web_user_capability_tokens`` (gr595554). Rotating revokes
-        every live feed credential the user has (a ``precis_cap_`` feed
-        token minted at /account included), so the previous feed URL
-        stops working immediately; ``digest=None`` revokes without
+        every live row carrying the feed scope (a ``precis_cap_`` feed
+        token minted at /account included, and a legacy row that mixes
+        ``feed`` with other scopes — it no longer authenticates the feed,
+        but rotating still retires it), so the previous feed URL stops
+        working immediately; ``digest=None`` revokes without
         minting."""
         with self.pool.connection() as conn:
             with conn.transaction():
