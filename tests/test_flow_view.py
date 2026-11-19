@@ -411,3 +411,72 @@ class TestFlowErrors:
             },
         )
         assert "kind='job' only" in body
+
+
+def test_count_group_by_origin_class(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _gripe(store, "origin-class:human")
+    _gripe(store, "origin-class:self-improvement")
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "view": "count",
+            "__extras__": {"group_by": "tag:origin-class"},
+        },
+    )
+    assert "human" in body
+    assert "self-improvement" in body
+
+
+def test_count_view_numeric_aggregates(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    from uuid import uuid4
+
+    tag = f"test:{uuid4().hex}"
+    for fields in (
+        {"wall_seconds": 10, "usage": {"usd": 1.25}},
+        {"wall_seconds": 20, "usage": {"usd": 1.25}},
+        {"wall_seconds": 30, "usage": {"usd": 2.5}},
+        {},
+        {"wall_seconds": "999", "usage": {"usd": True}},
+    ):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="rollup fixture",
+            meta={
+                "job_type": "run_slice",
+                "lane": "codex",
+                "model": "sample",
+                **fields,
+            },
+        )
+        store.add_tag(ref.id, Tag.open(tag), set_by="system")
+        store.add_tag(ref.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "view": "count",
+            "status": "*",
+            "tags": [tag],
+            "__extras__": {
+                "job_type": "run_slice",
+                "group_by": "meta.lane,meta.model,state",
+                "agg": (
+                    "avg:meta.wall_seconds,sum:meta.usage.usd,"
+                    "min:meta.wall_seconds,max:meta.wall_seconds,sum:meta.absent"
+                ),
+            },
+        },
+    )
+    assert "codex | sample | STATUS:succeeded: 5" in body
+    assert "avg(meta.wall_seconds)=20 (n=3)" in body
+    assert "sum(meta.usage.usd)=5 (n=3)" in body
+    assert "min(meta.wall_seconds)=10 (n=3)" in body
+    assert "max(meta.wall_seconds)=30 (n=3)" in body
+    assert "sum(meta.absent)=None (n=0)" in body

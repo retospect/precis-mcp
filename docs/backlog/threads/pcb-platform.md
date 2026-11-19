@@ -186,17 +186,17 @@ current evidence and local intake gate remain in memory me562868.
   `.inputs`, `stale (input changed: …)`, `op='forget'` (machine verdicts
   only) — with per-net "… unknown: ask the user" rows throughout. Slice
   1 (epro import keeps part identity) landed from `p1-epro` as
-  `a7863eda3`; slice 5 waits on `datasheet-facts-mesh.md`.
+  `a7863eda3`; slice 5 waits on `datasheet-facts-mesh (me693194)`.
 - **Pin-level datasheet provenance + the two-source pin-name
   cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
   missing is a pin-level link target (links are
   `kind:identifier[~selector]` and pcb has no pin selector), an extraction
   pass, and the cross-check between the footprint's pad->function and the
-  datasheet's. Sequenced behind Do-next 4 (`pcb-component-model.md`), which
+  datasheet's. Sequenced behind Do-next 4 (`pcb-component-model (me692617)`), which
   owns pin roles/capabilities and already rules that the pass only unlocks
   "with provenance"; this is WHERE that provenance lives. Extend
-  `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
+  `pcb-argue-with-design (me690151)`'s existing anchor grammar, do not mint a second
   scheme.
 - **The prod `parts` catalog was EMPTY** — recorded and closed;
   the Open API walk has since populated ~2.0M rows and refills the low

@@ -42,8 +42,12 @@ session's model is no test (the MUST is not a preference). The MUST
 also binds when a prior code session's model cannot be established
 — a failed pick read parks the launch; an unrecorded one resolves to
 the vendor's account default where this host's config names it
-(:func:`account_default_model`), and only a default that cannot be
-named still refuses (:func:`code_session_models`, gr657521).
+(:func:`account_default_model`), and one whose default cannot be named
+falls back to its adapter (gr702143): a vendor CLI's model ids cannot
+equal another vendor's, so a test pick on a different adapter is a
+proven difference, while a pick on the same adapter as the unnamed
+session — like a session with neither model nor adapter — still
+refuses (:func:`code_session_models`).
 """
 
 from __future__ import annotations
@@ -371,27 +375,36 @@ def account_default_model(adapter: str | None) -> str | None:
     return model.strip()
 
 
-def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str | None]:
-    """``(avoid, unknown)`` — the model ids the run's code sessions
-    already ran (the picks the test session must route around,
-    gr595545) and WHY that set cannot be trusted, when it cannot:
+def code_session_models(
+    store: Any, todo_id: int
+) -> tuple[frozenset[str], frozenset[str], str | None]:
+    """``(avoid, unknown_adapters, unknown)`` — the model ids the run's
+    code sessions already ran (the picks the test session must route
+    around, gr595545), the adapters whose sessions' models could not be
+    named at all (gr702143), and WHY the avoid set cannot be trusted,
+    when it cannot:
 
     * ``"read"`` — the prior-pick read failed: a transient store
       fault. The caller PARKS and retries; an empty avoid riding past
       the different-model MUST is how the old code let a same-model
       test launch (review td655142).
-    * ``"unrecorded"`` — a prior code session's ``meta.model`` was
-      never recorded AND its account default cannot be resolved either
-      (:func:`account_default_model`, gr657521). Permanent — the run
-      can never prove its test session ran a different model, so the
-      caller REFUSES rather than guesses.
+    * ``"unrecorded"`` — a prior code session recorded NEITHER a
+      ``meta.model`` NOR the adapter that ran it: no model to avoid and
+      no vendor family to compare against. Permanent — the run can
+      never prove its test session ran a different model, so the caller
+      REFUSES rather than guesses.
 
     ``unknown is None`` says every prior code pick's model is
     established (or there are none — a test session launched first
     owes no avoidance). A launched pick with no recorded model
     contributes its resolved account default to ``avoid``: the current
     default stands in for the launch-time default (gr657521 — a test
-    pin to a different family then proves the difference).
+    pin to a different family then proves the difference). A default
+    this host cannot name instead contributes the pick's ADAPTER to
+    ``unknown_adapters`` (gr702143): one vendor CLI's model ids can
+    never equal another's, so a test pick on a different adapter is a
+    proven difference, while a pick on the same adapter as the unnamed
+    session still cannot prove one.
 
     Only picks whose submit stamped ``meta.lane`` count as sessions:
     ``lane`` and ``model`` stamp together just before the launch, so a
@@ -403,21 +416,29 @@ def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str |
         picks = prior_picks(store, todo_id, strict=True)
     except Exception:
         log.warning("outcome: prior-pick read for td%d failed", todo_id, exc_info=True)
-        return frozenset(), "read"
+        return frozenset(), frozenset(), "read"
     sessions = [
         p for p in picks if p.task_class == CODE_TASK_CLASS and p.lane is not None
     ]
     avoid: set[str] = {p.model for p in sessions if p.model}
+    unknown_adapters: set[str] = set()
     unrecorded = False
     for p in sessions:
         if p.model is not None:
             continue
         default = account_default_model(p.adapter)
         if default is None:
-            unrecorded = True
+            if p.adapter:
+                unknown_adapters.add(p.adapter)
+            else:
+                unrecorded = True
         else:
             avoid.add(default)
-    return frozenset(avoid), "unrecorded" if unrecorded else None
+    return (
+        frozenset(avoid),
+        frozenset(unknown_adapters),
+        "unrecorded" if unrecorded else None,
+    )
 
 
 def session_disagreement(
@@ -696,6 +717,7 @@ def diverse_model_pick(
     avoid: frozenset[str],
     model_pin: str | None,
     task_class: str,
+    unknown_adapters: frozenset[str] = frozenset(),
 ) -> tuple[Any, str | None, str | None]:
     """``(lane, model, note)`` — the test-session pick routed around the
     run's prior code models (gr595545), or ``(None, None, note)`` when
@@ -719,10 +741,25 @@ def diverse_model_pick(
     default that cannot be named, or one only an allowlist adapter
     (:data:`ALLOWLIST_MODEL_ADAPTERS`) would run, still needs a declared
     model outside ``avoid`` or the pick fails (review td661037).
+
+    ``unknown_adapters`` (gr702143) carries the vendors of code
+    sessions whose models could not be named at all — the config named
+    no default. One vendor CLI's model ids can never equal another's,
+    so a pick on a lane whose adapter is NOT in the set is a PROVEN
+    difference from those sessions and needs nothing more; a lane
+    whose adapter IS in the set cannot prove one (a different declared
+    model on the same vendor could still BE the unrecorded default),
+    so only a hop to another adapter's lane — never a same-lane model
+    move — can carry it, and with no such lane the pick refuses.
+    When ``avoid`` is empty, that hop may use an unnamed account
+    default: the adapter difference supplies all the required evidence.
     """
     from precis.plans import lanes as _lanes
 
-    if not avoid or lane is None:
+    if lane is None:
+        return lane, model, None
+    same_unknown = lane.adapter in unknown_adapters
+    if not avoid and not same_unknown:
         return lane, model, None
 
     def _pinnable(ln: Any, candidate: str) -> bool:
@@ -758,27 +795,37 @@ def diverse_model_pick(
             None,
         )
 
-    # A resolved model that already differs needs nothing; a resolved
-    # None (the account default) is unknown — it could BE a code model.
-    if model is not None and model not in avoid:
+    # A resolved model that already differs needs nothing — unless the
+    # lane runs a vendor whose code session's model is unknown: the
+    # unrecorded default could BE this very id (gr702143).
+    if model is not None and model not in avoid and not same_unknown:
         return lane, model, None
 
-    alt = _alt(lane)
-    if alt is not None:
-        return (
-            lane,
-            alt,
-            f"run_slice: test session must differ from the run's code "
-            f"model(s) {sorted(avoid)}; lane {lane.name!r} carries "
-            f"{alt!r} instead of {model or model_pin or 'the account default'}",
-        )
+    if not same_unknown:
+        alt = _alt(lane)
+        if alt is not None:
+            return (
+                lane,
+                alt,
+                f"run_slice: test session must differ from the run's code "
+                f"model(s) {sorted(avoid)}; lane {lane.name!r} carries "
+                f"{alt!r} instead of {model or model_pin or 'the account default'}",
+            )
 
     def _refuse() -> tuple[Any, None, str]:
-        why = (
-            f"its resolved model {model!r} repeats them"
-            if model is not None
-            else "its unnamed account default could repeat them"
-        )
+        if same_unknown:
+            why = (
+                f"its lane runs the same vendor as a code session whose "
+                f"model was never recorded — nothing on adapter "
+                f"{lane.adapter!r} can be proven different from that "
+                f"unknown model"
+            )
+        else:
+            why = (
+                f"its resolved model {model!r} repeats them"
+                if model is not None
+                else "its unnamed account default could repeat them"
+            )
         return (
             None,
             None,
@@ -793,6 +840,9 @@ def diverse_model_pick(
     live = dict(counts) if counts is not None else _lanes.live_lane_counts(store)
     now = datetime.now(UTC)
     backed = {n for n, until in (backoffs or {}).items() if until and until > now}
+    # A hop must prove the difference on its own: lanes on an adapter
+    # whose code session's model is unknown can never do that
+    # (gr702143), so they are not fit and not "busy" either.
     fit = [
         ln
         for ln in candidates
@@ -801,8 +851,9 @@ def diverse_model_pick(
         and not ln.parked
         and ln.fits(task_class)
         and ln.name not in backed
+        and ln.adapter not in unknown_adapters
         and live.get(ln.name, 0) < ln.cap
-        and _alt(ln) is not None
+        and (not avoid or _alt(ln) is not None)
     ]
     if not paid_ok and any(ln.cost_class != _lanes.COST_METERED for ln in fit):
         fit = [ln for ln in fit if ln.cost_class != _lanes.COST_METERED]
@@ -814,15 +865,17 @@ def diverse_model_pick(
             and ln.enabled
             and not ln.parked
             and ln.fits(task_class)
+            and ln.adapter not in unknown_adapters
             and (ln.name in backed or live.get(ln.name, 0) >= ln.cap)
-            and _alt(ln) is not None
+            and (not avoid or _alt(ln) is not None)
         )
         if busy:
+            outside = sorted(avoid) or sorted(unknown_adapters)
             return (
                 None,
                 None,
                 f"{DIVERSE_BUSY_PREFIX}: {', '.join(busy)} would run a model "
-                f"outside {sorted(avoid)} but is full or backed off; parked "
+                f"outside {outside} but is full or backed off; parked "
                 f"until a slot frees",
             )
         return _refuse()

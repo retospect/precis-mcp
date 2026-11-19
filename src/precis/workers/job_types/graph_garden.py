@@ -9,8 +9,9 @@ does not re-ask it). It writes NOTHING else: no merges, splits, prunes,
 relinks or tags. After the tick the proposal consumer
 (:mod:`precis.graph.garden.consumer`, gr506044) prunes dangling edges and
 has Opus approve (merge applied, undoable) or reject (with a reason
-code) the pending merge/relink proposals; ``params.consume=false`` turns
-it off. A consumer exception lands on ``meta.garden.consume_error``
+code) the pending merge/relink proposals. Audit-only ticks skip the
+consumer, as do other jobs with ``params.consume=false``. A consumer
+exception lands on ``meta.garden.consume_error``
 rather than failing the tick that already wrote its proposals.
 
 Who mints it: an operator-seeded recurring todo under Watches —
@@ -57,6 +58,7 @@ _PASS_CHOICES = (
     "paper-identity",
     "memory",
     "memory-review",
+    "memory-grounding",
     "host-facts",
     "all",
 )
@@ -220,7 +222,12 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     }
     ctx.set_meta(garden=garden)
     consumed = None
-    if not outcome.paused and params.get("consume", True) is not False:
+    audit_only = set(passes) == {"memory-grounding"}
+    if (
+        not audit_only
+        and not outcome.paused
+        and params.get("consume", True) is not False
+    ):
         # The proposal consumer (gr506044, Reto 2026-10-23): auto-prune
         # dangling edges, then the Opus review of merge/relink proposals.
         # A consume failure is recorded on meta, not raised — the tick's

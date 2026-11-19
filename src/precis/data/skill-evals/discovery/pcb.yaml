@@ -1,0 +1,27 @@
+# Discovery eval task for the pcb family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: pcb
+skill: precis-pcb-help
+tasks:
+  - id: inspect-the-stack
+    variants:
+      - |
+        Board taz15: which copper layers are planes and which are
+        routable? Give me the layer stack as the router sees it.
+      - |
+        For taz15, show the stack of copper layers — the roles, which
+        are planes, what's routable. Read-only.
+    expect:
+      calls:
+        - {verb: get, kind: pcb, args: {id: taz15, view: stackup}}
+    forbid:
+      calls:
+        - {verb: put, kind: pcb}            # stackup is a read view, not an op write
+    fake:
+      calls:
+        - {verb: get, kind: pcb, args: {id: taz15, view: stackup}}
+      record: null
+      answer: >
+        get(kind='pcb', id='taz15', view='stackup') prints layer, role,
+        plane and routable/pourable flags as the router sees them.

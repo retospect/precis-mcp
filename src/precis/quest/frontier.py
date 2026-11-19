@@ -137,6 +137,35 @@ class FrontierResult:
     #: WHICH required axis an unevaluated-but-converged candidate lacks
     #: instead of "(none converged yet)" (gr345354).
     optional: frozenset[str] = frozenset()
+    #: Strict PASS-only set, alongside the working PASS+WARN frontier.
+    pass_frontier: list[Candidate] = field(default_factory=list)
+
+
+def assurance_note(c: Candidate) -> str:
+    """Carry the approximation marker and its cause across frontier readers."""
+    if c.flags.get("barrier_assurance") == "WARN":
+        return "≈ WARN: " + ", ".join(c.flags.get("barrier_assurance_reasons") or [])
+    return str(c.flags.get("barrier_assurance") or "")
+
+
+def _warn_barrier(flags: Mapping[str, Any]) -> bool:
+    """Only an explicitly verified WARN stamp can relax the binary rank gate."""
+    return (
+        flags.get("barrier_assurance") == "WARN"
+        and not any(
+            flags.get(k)
+            for k in (
+                "barrier_absurd",
+                "barrier_neb_failed",
+                "barrier_desorbed",
+                "barrier_wrong_site",
+                "barrier_twin_disagreement",
+                "barrier_trust_note",
+            )
+        )
+        and flags.get("barrier_seed_blocker")
+        in (None, "seeds:1-independent", "engine:stale")
+    )
 
 
 #: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
@@ -1057,6 +1086,8 @@ def build_frontier_scatter(
             "y": y,
             "converged": c.converged,
             "band": "confirmed",
+            "assurance": c.flags.get("barrier_assurance"),
+            "assurance_note": assurance_note(c),
             "on_frontier": bool(frontier_ref_ids and c.ref_id in frontier_ref_ids),
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
@@ -1221,7 +1252,9 @@ def pareto_split(
     evaluated = [
         c
         for c in candidates
-        if c.converged and all(c.measures.get(k) is not None for k in keys)
+        if c.converged
+        and c.flags.get("barrier_assurance") != "FAIL"
+        and all(c.measures.get(k) is not None for k in keys)
     ]
     unevaluated = [c for c in candidates if c not in evaluated]
 
@@ -1242,6 +1275,16 @@ def pareto_split(
         dominated=dominated,
         unevaluated=unevaluated,
         optional=optional,
+        pass_frontier=[
+            c
+            for c in evaluated
+            if c.flags.get("barrier_assurance") != "WARN"
+            and not any(
+                _dominates(o, c, objectives, optional)
+                for o in evaluated
+                if o.ref_id != c.ref_id and o.flags.get("barrier_assurance") != "WARN"
+            )
+        ],
     )
 
 
@@ -1537,6 +1580,25 @@ def _candidate_from_structure(
     """
     from precis.utils import handle_registry
 
+    # Existing harvested rows predate assurance stamps. Replay only the
+    # barrier's named source, never the latest (possibly barrierless) run.
+    meta = getattr(s, "meta", None) or {}
+    source = meta.get("barrier_pathway_ref_id")
+    if (
+        "barrier_assurance" not in meta
+        and meta.get("barrier_seed_blocker") in ("seeds:1-independent", "engine:stale")
+        and isinstance(source, int)
+        and not isinstance(source, bool)
+    ):
+        from precis.quest.compute import _stamp_barrier_assurance
+
+        try:
+            pathway = store.fetch_refs_by_ids({source}).get(source)
+            if pathway is not None and pathway.kind == "pathway":
+                meta = dict(meta)
+                _stamp_barrier_assurance(pathway.meta or {}, meta)
+        except Exception:
+            log.warning("assurance source unavailable for %s", s.id, exc_info=True)
     handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
     name = (s.title or "").splitlines()[0] if s.title else handle
     if runs is None:
@@ -1562,7 +1624,6 @@ def _candidate_from_structure(
             if fv is not None:
                 measures[k] = fv
 
-    meta = getattr(s, "meta", None) or {}
     for k, v in meta.items():
         if k == "params" or k in _META_NON_MEASURE:
             continue
@@ -1627,7 +1688,15 @@ def _candidate_from_structure(
     )
     if "barrier_trusted" in meta:
         flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
-    elif any(
+    for key in (
+        "barrier_assurance",
+        "barrier_assurance_reasons",
+        "barrier_absurd",
+        "barrier_twin_disagreement",
+    ):
+        if key in meta:
+            flags[key] = meta[key]
+    if any(
         abs(measures[k]) > _BARRIER_ABSURD_EV
         for k in ("barrier", "span")
         if k in measures
@@ -1849,7 +1918,17 @@ def _candidate_from_structure(
     # trust_flags` pins it), except the absurd-magnitude preguard fires
     # above and stamps an explicit False for exactly the qu164903-shaped
     # gap (gr356741): a no-key row whose barrier/span is nonphysical.
-    if flags.get("barrier_trusted") is False:
+    if flags.get("barrier_assurance") == "FAIL":
+        flags["barrier_trusted"] = False
+    if (
+        flags.get("barrier_assurance") == "PASS"
+        and flags.get("barrier_trusted") is False
+    ):
+        flags["barrier_assurance"] = "FAIL"
+    if flags.get("barrier_assurance") == "WARN" and not _warn_barrier(flags):
+        flags["barrier_assurance"] = "FAIL"
+        flags["barrier_trusted"] = False
+    if flags.get("barrier_trusted") is False and not _warn_barrier(flags):
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
         if excluded_barrier is not None:
@@ -2340,7 +2419,11 @@ def _provisional_split(
     pool: list[tuple[int, dict[str, float]]] = [
         (c.ref_id, c.measures) for c in confirmed
     ]
-    pool += [(pc.candidate.ref_id, pc.measures) for pc in provisional]
+    pool += [
+        (pc.candidate.ref_id, pc.measures)
+        for pc in provisional
+        if pc.candidate.flags.get("barrier_assurance") != "FAIL"
+    ]
 
     def _is_dominated(ref_id: int, measures: dict[str, float]) -> bool:
         return any(
@@ -2350,7 +2433,13 @@ def _provisional_split(
         )
 
     final: list[ProvisionalCandidate] = [
-        replace(pc, on_frontier=not _is_dominated(pc.candidate.ref_id, pc.measures))
+        replace(
+            pc,
+            on_frontier=(
+                pc.candidate.flags.get("barrier_assurance") != "FAIL"
+                and not _is_dominated(pc.candidate.ref_id, pc.measures)
+            ),
+        )
         for pc in provisional
     ]
     return final, still_unevaluated
@@ -2498,7 +2587,8 @@ def leaderboard(
             }
             for key in col_keys:
                 v = c.measures.get(key)
-                row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+                mark = "≈" if c.flags.get("barrier_assurance") == "WARN" else ""
+                row[key] = f"{mark}{v:g}" if isinstance(v, (int, float)) else "—"
             row["$/rate"] = _rate_readout(c.measures) or "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
             row["validity"] = _validity_text(c)
@@ -2515,6 +2605,8 @@ def leaderboard(
             if c.flags.get("energy_twin_of"):
                 quality = f"{quality} etwin".strip()
             row["quality"] = quality
+            if assurance_note(c):
+                row["quality"] = assurance_note(c)
             out.append(row)
         return out
 
@@ -2566,6 +2658,17 @@ def leaderboard(
         + _prov_rows(fr.provisional)
         + _rows(fr.unevaluated, "awaiting")
     )
+    if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+        pass_ids = {c.ref_id for c in fr.pass_frontier}
+        combined_ids = {c.ref_id for c in fr.frontier}
+        by_handle = {c.handle: c for c in (*fr.frontier, *fr.dominated)}
+        for row in rows:
+            c = by_handle.get(row["design"])
+            row["PASS-only"] = "★" if c and c.ref_id in pass_ids else ""
+            row["PASS+WARN"] = "★" if c and c.ref_id in combined_ids else ""
+        assurance_cols = ["PASS-only", "PASS+WARN"]
+    else:
+        assurance_cols = []
     # The validity column exists only when some candidate carries the
     # stamp — a quest that never opted into the window objectives gets a
     # bit-identical leaderboard.
@@ -2582,6 +2685,7 @@ def leaderboard(
         *col_keys,
         "$/rate",
         "band",
+        *assurance_cols,
         "graduated",
         *validity_col,
         "quality",
@@ -2738,7 +2842,9 @@ def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
     )
     if ruled is not None:
         markers.append(ruled)
-    if c.flags.get("barrier_trusted") is False:
+    if assurance_note(c):
+        markers.append(assurance_note(c))
+    elif c.flags.get("barrier_trusted") is False:
         markers.append("untrusted")
     dup_of = c.flags.get("duplicate_of")
     if dup_of:
@@ -2887,6 +2993,10 @@ def quest_frontier(
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     optional = frozenset() if strict else _optional_objectives_for(store, quest_id)
+    if strict:
+        candidates = [
+            c for c in candidates if c.flags.get("barrier_assurance") != "WARN"
+        ]
     result = pareto_split(candidates, objs, optional=optional)
     provisional, still_unevaluated = _provisional_split(
         [*result.frontier, *result.dominated],

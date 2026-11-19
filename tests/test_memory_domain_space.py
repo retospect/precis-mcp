@@ -269,3 +269,29 @@ def test_smells_footer_counts_only_proposal_nodes(
     # A memory with no proposals is no smells entry; only the flagged
     # foreign node is hidden.
     assert "1 memory entry outside SPACE:repo-dev" in body
+
+
+@pytest.mark.parametrize("query", [_TOKEN, "absentwordxyz", "*", None])
+def test_toc_footer_counts_only_query_matching_roots(
+    handler: MemoryHandler, monkeypatch: pytest.MonkeyPatch, query: str | None
+) -> None:
+    """gr702042: unrelated foreign roots must not become hidden matches."""
+    dev = _note(handler, f"{_TOKEN} dev root", "repo-dev")
+    unrelated = _note(handler, "Unrelated foreign root", "research")
+    handler.tag(id=dev, add=["spec:footer"])
+    handler.tag(id=unrelated, add=["spec:footer"])
+    monkeypatch.setenv(scope_mod.DOMAIN_ENV, "repo-dev")
+    body = handler.search(q=query, tags=["spec:footer"], view="toc").body
+    if query in (None, "*"):
+        assert "1 memory entry outside SPACE:repo-dev" in body
+    else:
+        assert "the door" not in body
+    foreign = _note(handler, f"{_TOKEN} foreign root", "research")
+    handler.tag(id=foreign, add=["spec:footer"])
+    body = handler.search(q=query, tags=["spec:footer"], view="toc").body
+    if query == "absentwordxyz":
+        assert "the door" not in body
+    else:
+        count = 2 if query in (None, "*") else 1
+        noun = "entry" if count == 1 else "entries"
+        assert f"{count} memory {noun} outside SPACE:repo-dev" in body

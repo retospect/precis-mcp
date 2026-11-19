@@ -14,6 +14,13 @@ Self-service controls:
   once, with no-store. Every token operation rechecks the stable account
   ID, and list/revoke queries always include that owner. Learning settings
   link to the protected ``/learning`` page.
+* **Client capability tokens** — per-consumer credentials (gr595554) for
+  MCP clients that act as a thing, not a person: a chat connector, a
+  feed listener. Each carries its own kinds/verbs allow-list
+  (``read``/``read:<kind>``/``write:<kind>``/``feed``; blank mints the
+  ``read`` default); the ``feed`` scope doubles as the podcast ``?t=``
+  credential. Same rules as the personal tokens — digest-only, shown
+  once, owner-scoped mint and revoke.
 * **Profile** — full name, email, and ORCID iD. The first two are
   display-only; the iD is not. A nanopub signature is attributed to an
   ORCID, never to a login (:func:`precis.nanopub.keys.load_profile`
@@ -25,7 +32,7 @@ Self-service controls:
 * **Podcast feed link** — the subscribe URL, shown whole so it can be
   copied into a podcast app, plus mint/revoke. The row stores only the
   token's digest, so the readable copy comes from the vault
-  (:func:`precis.users.recall_feed_token`); when the vault can't produce
+  (:func:`precis.users.recall_live_feed_token`); when the vault can't produce
   one, the page falls back to "mint to see a link".
 * **reMarkable pairing** — send-to-tablet, entirely per-user
   (:mod:`precis.export.remarkable`) — there is no deployment-wide device.
@@ -86,7 +93,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import BadInput, Denied, Upstream
-from precis.mcp_identity import list_user_tokens, mint_user_token, revoke_user_token
+from precis.mcp_identity import (
+    list_capability_tokens,
+    list_user_tokens,
+    mint_capability_token,
+    mint_user_token,
+    parse_capability_scopes,
+    revoke_capability_token,
+    revoke_user_token,
+)
 from precis.user_context import require_user, user_scope
 from precis.users import (
     MIN_PASSWORD_LENGTH,
@@ -97,7 +112,7 @@ from precis.users import (
     mint_feed_token,
     normalize_discord_user_id,
     normalize_orcid,
-    recall_feed_token,
+    recall_live_feed_token,
     remember_feed_token,
     resolve_pepper,
     validate_password,
@@ -170,6 +185,7 @@ def _render(
     notice: str = "",
     feed_url: str | None = None,
     new_mcp_token: str | None = None,
+    new_cap_token: str | None = None,
 ) -> HTMLResponse:
     """Render the page, looking the feed URL up unless one was passed.
 
@@ -190,6 +206,7 @@ def _render(
     poster_profile: dict[str, Any] | None = None
     poster_roles: list[str] = []
     mcp_tokens = []
+    cap_tokens = []
     if user is not None:
         from precis import profiles
         from precis import secrets as _secrets
@@ -198,6 +215,7 @@ def _render(
 
         store = get_store(request)
         mcp_tokens = list_user_tokens(store, user.id)
+        cap_tokens = list_capability_tokens(store, user.id)
         remarkable_paired = user_remarkable_configured(store, user.login)
         # Presence, not reveal: ANKI_PASSWORD:<login> is class infra (0285,
         # precis_system-only) — this role can't decrypt it, and must not.
@@ -230,8 +248,10 @@ def _render(
             "poster_profile": poster_profile,
             "poster_roles": poster_roles,
             "mcp_tokens": mcp_tokens,
-            # Returned by the mint POST only; no URL, vault or persistence.
+            "cap_tokens": cap_tokens,
+            # Returned by the mint POSTs only; no URL, vault or persistence.
             "new_mcp_token": new_mcp_token,
+            "new_cap_token": new_cap_token,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -294,6 +314,52 @@ def revoke_mcp_token(request: Request, token_id: str = Form("")) -> Response:
         raise HTTPException(
             status_code=404,
             detail="MCP token not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    return RedirectResponse(
+        "/account", status_code=303, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post("/capability-tokens", response_class=HTMLResponse)
+def create_capability_token(
+    request: Request, label: str = Form(""), scopes: str = Form("")
+) -> HTMLResponse:
+    """Mint a per-consumer credential; show its plaintext exactly once."""
+    user = _require_token_owner(request)
+    try:
+        parsed = parse_capability_scopes(scopes)
+        _token_id, raw = mint_capability_token(
+            get_store(request), user.id, label, parsed
+        )
+    except BadInput as exc:
+        return _render(request, user=user, error=exc.cause)
+    except Denied as exc:
+        raise HTTPException(
+            status_code=403, detail=exc.cause, headers={"Cache-Control": "no-store"}
+        ) from exc
+    return _render(
+        request,
+        user=user,
+        notice="Capability token created. Copy it now; it will not be shown again.",
+        new_cap_token=raw,
+    )
+
+
+@router.post("/capability-tokens/revoke", response_class=HTMLResponse)
+def revoke_capability_token_route(
+    request: Request, token_id: str = Form("")
+) -> Response:
+    """Revoke only the signed-in owner's token; never accept an owner field."""
+    user = _require_token_owner(request)
+    if not token_id.isascii() or not token_id.isdecimal() or len(token_id) > 19:
+        return _render(
+            request, user=user, error="Choose an active capability token to revoke."
+        )
+    if not revoke_capability_token(get_store(request), user.id, int(token_id)):
+        raise HTTPException(
+            status_code=404,
+            detail="capability token not found",
             headers={"Cache-Control": "no-store"},
         )
     return RedirectResponse(
@@ -594,14 +660,14 @@ async def anki(
 def _feed_url(request: Request, user: WebUser) -> str:
     """The subscribe URL, or "" when there is no readable token.
 
-    Guarded on ``feed_token_sha256``: the row is what decides whether a
-    link is live, and a vault entry can outlive it (``precis users
-    feed-token --clear`` on an older build wrote only the row). Showing a
-    URL that 401s would be worse than showing none.
+    Guarded on the feed-scoped capability row (gr595554): the store is
+    what decides whether a link is live, and a vault entry can outlive
+    it (``precis users feed-token --clear`` on an older build wrote only
+    the row). Showing a URL that 401s would be worse than showing none.
     """
     if not user.has_feed_token:
         return ""
-    token = recall_feed_token(user.login, store=get_store(request))
+    token = recall_live_feed_token(user.login, store=get_store(request))
     if not token:
         return ""
     return f"{_base_url(request)}/podcast/feed.xml?t={token}"

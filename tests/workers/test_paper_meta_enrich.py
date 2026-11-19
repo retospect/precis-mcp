@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from precis.identity import PLACEHOLDER_TITLE
-from precis.ingest import paper_meta_enrich
+from precis.ingest import journal_record, paper_meta_enrich
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.paper_meta_enrich import (
@@ -56,6 +56,61 @@ class TestDefaults:
         drains in ~4 days at 400 refs/1 h (env overrides unchanged)."""
         assert _DEFAULT_BATCH_LIMIT == 400
         assert _DEFAULT_REFRESH_HOURS == 1.0
+
+
+def test_repairs_already_enriched_issn_paper(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rid = _paper(
+        store,
+        slug="old-venue",
+        meta={
+            "authors_resolved_at": "2026-01-01T00:00:00+00:00",
+            "issn": "2575-0356",
+            "venue": "ENERGY & ENVIRONMENTAL MATERIALS",
+        },
+    )
+    monkeypatch.setattr(
+        journal_record,
+        "fetch_journal",
+        lambda issn, mailto: {
+            "ISSN": [issn],
+            "title": "Energy & Environmental Materials",
+        },
+    )
+    store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+    result = run_paper_meta_enrich_pass(store)
+    assert result.ok == 1
+    assert _meta(store, rid)["journal"] == "Energy & Environmental Materials"
+    store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+    assert run_paper_meta_enrich_pass(store).claimed == 0
+    store.update_paper_fields(
+        rid, meta_patch={"journal_resolved_at": "2000-01-01T00:00:00+00:00"}
+    )
+    store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+    assert run_paper_meta_enrich_pass(store).ok == 1
+
+
+def test_journal_transport_failure_stays_claimable(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rid = _paper(
+        store,
+        slug="retry-venue",
+        meta={
+            "authors_resolved_at": "2026-01-01T00:00:00+00:00",
+            "issn": "2575-0356",
+            "journal": "ENERGY & ENVIRONMENTAL MATERIALS",
+        },
+    )
+
+    def fail(issn: str, mailto: str) -> None:
+        raise TimeoutError("registry unavailable")
+
+    monkeypatch.setattr(journal_record, "fetch_journal", fail)
+    store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+    assert run_paper_meta_enrich_pass(store).failed == 1
+    assert "journal_resolution_v" not in _meta(store, rid)
 
 
 class TestBatchAndThrottle:

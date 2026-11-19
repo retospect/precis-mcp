@@ -4,19 +4,14 @@ Spec: `me692430` § "4. Release pass, event-driven";
 the ``deploy`` node of the ``release-pass`` template. Mechanical, no LLM;
 detached submit/poll under ``ssh_node``, same launcher as ``release_cut``.
 
-**Authority.** Release and deploy are Reto-only (authority.md). The deploy
-node is ``blocked-by`` an approval ask (an ``answer`` gate); that gate opens
-on any answer, so this job checks the answer itself:
-:func:`precis.plans.release.approval` must find ``answer: deploy r<N>`` for
-the r<N> the plan's cut recorded — Reto's own comment, or the tick's under
-his standing approval ``release.auto_deploy`` (me573231:
-:func:`precis.plans.release.auto_answer_approval` posts it once CI is
-recorded green on the cut's exact sha and ``release.round`` names an open
-round on that head, fail closed, an existing answer never overwritten).
-:func:`validate_submit` refuses otherwise
-(the tick then notes "not dispatched" each pass and mints nothing) and
-:func:`submit` re-checks before launching. There is no param that names a
-release: r<N> comes only from the plan root's ``meta.release``.
+**Authority.** Manual passes block on an approval ask; since its answer
+gate opens on any answer, :func:`precis.plans.release.approval` checks
+``answer: deploy r<N>`` itself. Standing ``release.auto_deploy`` approval
+skips the ask at mint; existing asks still keep their answer contract.
+:func:`validate_submit` refuses otherwise (the tick notes "not dispatched"
+and mints nothing), and :func:`submit` rechecks before launching. There is
+no param that names a release: r<N> comes from the plan root's
+``meta.release``.
 
 **Reviews hold the deploy** (release train, Reto 2026-11-12). The
 engine-review gate never holds the cut; it holds this node:
@@ -33,6 +28,21 @@ gate read error refuses — fail closed.
 on ``meta.release``; the tick mints this job with ``params.target_node`` =
 that host, :func:`validate_submit` refuses any other (or no) node, and
 :func:`submit` refuses a worker whose ``PRECIS_NODE`` or checkout differs.
+The first cut has no host yet: plan_dispatch pins it to ``release.cut_host``
+(held when unset) and ``release_cut`` refuses a checkout with no deploy
+overlay, so the host recorded here is one that can deploy (gr713351).
+
+**Shared release policy** (gr702332). :func:`_refusal` calls
+:func:`precis.plans.release.may_release` at dispatch and launch:
+other open passes/rounds, prod/main ancestry, release reviews and a green CI
+verdict on the exact head all gate the deploy. Standing auto-deploy skips
+minting an approval ask; a manual pass still requires its answer.
+GitHub ancestry and in-flight reads fail closed: an outage holds deployment
+until a later tick can verify them. The clock is checked only at dispatch;
+once running, the script guards the window and its refusal is attempt-free.
+Malformed window settings are left to the script's own guard. A backup-window refusal that races dispatch still stamps
+``meta.attempt_free = "backup-window"`` in :func:`poll`, so the plan tick
+counts no attempt for it.
 
 * :func:`submit` runs ``scripts/release --deploy-only r<N>`` in the same
   checkout the cut ran in (the ``.release-owner`` marker there makes it the
@@ -96,14 +106,30 @@ REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION: str = (
     "Dark release pass: deploy the plan's cut release/r<N> pinned with "
-    "scripts/release --deploy-only r<N>, only once the approval ask that "
-    "blocks the deploy node is answered 'deploy r<N>'; records the prod head. "
+    "scripts/release --deploy-only r<N>, under standing approval or the "
+    "blocking ask's 'deploy r<N>' answer and shared release gate; records prod. "
     "Refused while PRECIS_FACTORY=off."
 )
 
 
 def wall_seconds() -> float:
     return float(_DEFAULT_WALL_S)
+
+
+#: ``meta.attempt_free`` value of a job the backup-window guard refused:
+#: ``plan_dispatch`` counts no attempt for it (its ``ATTEMPT_FREE_KEY``).
+WINDOW_FREE_REASON = "backup-window"
+
+#: ``run_slice.ATTEMPT_FREE_KEY``, restated (the one-way dependency rule).
+WINDOW_FREE_REASON_KEY = "attempt_free"
+
+#: The deploy script's marker for the window refusal, as against its other
+#: pre-rollout refusals (``_NO_HOST_TOUCHED`` alone also covers those).
+_WINDOW_REFUSAL = "backup-window guard refused"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def _refusal(
@@ -136,9 +162,23 @@ def _refusal(
     )
     if pin is not None:
         return f"{NAME}: {pin}", None
-    held = _rp.deploy_review_blockers(store, todo_id)
-    if held:
-        return f"{NAME}: {rn} waits on its engine reviews — {'; '.join(held)}", None
+    ok, reason = _release.may_release(
+        store,
+        "deploy",
+        todo_id=todo_id,
+        now=_utcnow(),
+        checks=("flight", "head", "branches", "deploy")
+        if running
+        else ("clock", "flight", "head", "branches", "deploy"),
+    )
+    if not ok:
+        if reason.startswith("inside the no-release window "):
+            hit = reason.removeprefix("inside the no-release window ")
+            return (
+                f"{NAME}: held — inside the backup window {hit} "
+                f"({_rp.WINDOWS_SETTING}); dispatches once it ends"
+            ), None
+        return f"{NAME}: {reason}", None
     return None, rn
 
 
@@ -254,6 +294,13 @@ def _landed(root: Path, prev: str, head: str) -> list[str]:
 #: backup-window refusal, scripts/deploy): no host moved.
 _NO_HOST_TOUCHED = "no host was touched"
 
+#: ``scripts/deploy``'s exit code for the same refusal — every guard ahead
+#: of its reachability ping, whatever the wording (gr730609).
+#: ``scripts/round`` and ``scripts/release`` pass it through; a test pins
+#: the copies. The words above still cover a checkout whose scripts
+#: predate the code.
+UNTOUCHED_EXIT = 75
+
 
 def poll(ctx: Any, handle: Any) -> bool:
     done = _rc.finish_run(ctx, handle, NAME)
@@ -261,10 +308,14 @@ def poll(ctx: Any, handle: Any) -> bool:
         return not isinstance(handle, dict)
     exit_code, log_text = done
     if exit_code not in (0, 3):
-        if _NO_HOST_TOUCHED in log_text:
+        if exit_code == UNTOUCHED_EXIT or _NO_HOST_TOUCHED in log_text:
             # release-train T3 review F5: the script refused before any
-            # host moved (the backup window, a pin refusal) — the release
-            # is not deploying, so it takes fixes again.
+            # host moved (the backup window, a pin refusal, a checkout
+            # with no overlay) — the release is not deploying, so it
+            # takes fixes again.
+            if _WINDOW_REFUSAL in log_text:
+                # gr697664: a window refusal is no failed attempt.
+                ctx.set_meta(**{WINDOW_FREE_REASON_KEY: WINDOW_FREE_REASON})
             todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
             if isinstance(todo_id, int):
                 ctx.append_chunk(

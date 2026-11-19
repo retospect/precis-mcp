@@ -17,10 +17,13 @@ and reachable from the phone. See :mod:`precis_web.podcast`.
 Basic gate. A podcast app subscribes once and then fetches enclosures on
 its own schedule, and support for HTTP Basic on those enclosure requests
 is inconsistent across clients — Basic alone would leave the phone
-silently not downloading. So a per-user feed token
-(``precis users feed-token <login>``) is accepted as ``?t=`` and is
-threaded into the enclosure URLs the feed emits; Basic still works for a
-browser hitting the feed directly. Both paths go through
+silently not downloading. So a per-user feed credential is accepted as
+``?t=`` and is threaded into the enclosure URLs the feed emits; Basic
+still works for a browser hitting the feed directly. Since gr595554 that
+credential is a ``feed``-scoped client capability token — minted by
+``precis users feed-token <login>`` (prefix ``precis_feed_``, legacy
+bare tokens still authenticate by digest) or at ``/account`` (a
+``precis_cap_`` whose allow-list names ``feed``). Both paths go through
 :func:`_require_listener`, so an unauthenticated request is rejected here
 exactly as it would have been upstream.
 """
@@ -31,7 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from precis import audio_feed as podcast
-from precis.users import feed_token_digest, recall_feed_token
+from precis.users import feed_token_digest, recall_live_feed_token
 from precis_web.config import WebConfig
 from precis_web.deps import get_web_config
 
@@ -95,7 +98,7 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
         ) from exc
     if not user.has_feed_token:
         return None
-    return recall_feed_token(user.login, store=store)
+    return recall_live_feed_token(user.login, store=store)
 
 
 def _base_url(request: Request, cfg: WebConfig) -> str:

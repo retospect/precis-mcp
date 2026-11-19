@@ -40,6 +40,7 @@ from __future__ import annotations
 import io
 import os
 from datetime import UTC, datetime
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -148,6 +149,14 @@ def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Fig
             linewidths=1.5,
             zorder=3,
         )
+        if p.get("assurance") == "WARN":
+            ax.annotate(
+                "≈ " + str(p.get("assurance_note", "WARN")),
+                (p["x"], p["y"]),
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=6,
+            )
 
     # "Which way is better" suffix (optunacy-style) — reuses the SAME
     # scatter.x_better/y_better `better_arrow_for` already computed onto the
@@ -258,6 +267,8 @@ def build_pareto_snapshot(
         "on_frontier",
         "converged",
         "trusted",
+        "assurance",
+        "assurance_reasons",
         "tier",
         "barrier",
         "energy",
@@ -292,6 +303,8 @@ def build_pareto_snapshot(
             "on_frontier": p["on_frontier"],
             "converged": p["converged"],
             "trusted": all(gate_vals) if gate_vals else None,
+            "assurance": flags.get("barrier_assurance"),
+            "assurance_reasons": flags.get("barrier_assurance_reasons") or [],
             "tier": flags.get("barrier_fidelity") or flags.get("tier"),
             "barrier": measures.get("barrier"),
             "energy": measures.get("energy"),
@@ -385,7 +398,7 @@ def _profile_root_target(
 
 
 def _profile_positions(
-    graph: dict[str, Any], root: str, target: str
+    graph: dict[str, Any], root: str, target: str, **options: Any
 ) -> list[dict[str, Any]]:
     """The interleaved ``[state, ‡, state, ‡, …]`` row list this module's
     snapshot/renderer share — mirrors the selection
@@ -394,24 +407,23 @@ def _profile_positions(
     but keeps ``energy``/``rel_energy``/``barrier``/``delta_e`` as separate
     columns instead of collapsing them to one ``value`` (the data-package
     needs all four, not just the plotted axis)."""
+    from precis.utils.pathway_figure import selected_graph
+
     path = reaction_path(graph, root, target)
-    node_map = {n.get("id"): n for n in graph.get("nodes") or []}
-    links = graph.get("links") or []
-
-    def _edge(a: str, b: str) -> dict[str, Any] | None:
-        for e in links:
-            if e.get("source") == a and e.get("target") == b:
-                return e
-        return None
-
+    selected = selected_graph(graph, root, target, **options)
+    node_map = {n.get("id"): n for n in selected.get("nodes") or []}
+    # Preserve productive order; append side states only for the full view.
+    order = [s for s in path if s in node_map]
+    if options and not options.get("route_only"):
+        order.extend(s for s in node_map if s not in order)
     rows: list[dict[str, Any]] = []
-    for i, s in enumerate(path):
-        node = node_map.get(s, {})
+    for i, state in enumerate(order):
+        node = node_map[state]
         rows.append(
             {
                 "pos": f"s{i}",
                 "kind": "state",
-                "label": s,
+                "label": state,
                 "energy": node.get("energy"),
                 "rel_energy": node.get("rel_energy"),
                 "barrier": None,
@@ -419,26 +431,37 @@ def _profile_positions(
                 "low_confidence": bool(node.get("low_confidence")),
             }
         )
-        if i < len(path) - 1:
-            e = _edge(s, path[i + 1])
-            if e is not None and e.get("kind") != "supply":
-                rows.append(
-                    {
-                        "pos": f"‡{i + 1}",
-                        "kind": "ts",
-                        "label": f"{s}→{path[i + 1]}",
-                        "energy": None,
-                        "rel_energy": None,
-                        "barrier": e.get("barrier"),
-                        "delta_e": e.get("delta_e"),
-                        "low_confidence": bool(e.get("low_confidence")),
-                    }
-                )
+        for edge in selected.get("links") or []:
+            if (
+                edge.get("source") != state
+                or edge.get("target") not in order
+                or edge.get("kind") == "supply"
+            ):
+                continue
+            rows.append(
+                {
+                    "pos": f"‡{len(rows)}",
+                    "kind": "ts",
+                    "label": f"{state}→{edge['target']}",
+                    "energy": None,
+                    "rel_energy": None,
+                    "barrier": edge.get("barrier"),
+                    "sigma": edge.get("barrier_std"),
+                    "delta_e": edge.get("delta_e"),
+                    "low_confidence": bool(edge.get("low_confidence")),
+                }
+            )
     return rows
 
 
 def render_profile_png(
-    rows: list[dict[str, Any]], *, title: str | None = None
+    rows: list[dict[str, Any]],
+    *,
+    title: str | None = None,
+    annotation: str | None = None,
+    size: list[float] | None = None,
+    label_threshold_eV: float = 0.0,
+    rls_step: str | None = None,
 ) -> bytes:
     """Render an energy-profile diagram from :func:`_profile_positions`
     rows: horizontal levels at each state's ``rel_energy``, dashed
@@ -455,7 +478,7 @@ def render_profile_png(
         max(finite_ts, key=lambda r: r["barrier"])["pos"] if finite_ts else None
     )
 
-    fig = Figure(figsize=(6.4, 4.4), dpi=200)
+    fig = Figure(figsize=(size[0], size[1]) if size else (6.4, 4.4), dpi=200)
     ax = fig.add_subplot(111)
     half_w = 0.3
 
@@ -494,7 +517,7 @@ def render_profile_png(
         apex_y = ea + barrier
         apex_x = (ia + ib) / 2.0
         eb = states[ib].get("rel_energy")
-        is_rl = r["pos"] == rate_limiting_pos
+        is_rl = r["label"] == rls_step if rls_step else r["pos"] == rate_limiting_pos
         color = _RATE_LIMITING_COLOR if is_rl else _CONNECTOR_COLOR
         linewidth = 2.0 if is_rl else 1.2
         xs = [ia + half_w, apex_x]
@@ -511,7 +534,13 @@ def render_profile_png(
             zorder=2,
         )
         ax.annotate(
-            f"Eₐ={barrier:g}",
+            (
+                f"Eₐ={barrier:g} ± {r['sigma']:g} eV"
+                if r.get("sigma") is not None
+                else f"Eₐ={barrier:g} eV (σ unknown)"
+            )
+            if barrier >= label_threshold_eV
+            else "",
             (apex_x, apex_y),
             textcoords="offset points",
             xytext=(0, 6),
@@ -527,6 +556,9 @@ def render_profile_png(
     if title:
         ax.set_title(title, fontsize=10)
     ax.grid(True, axis="y", linewidth=0.4, alpha=0.4)
+    if annotation:
+        fig.text(0.02, 0.01, annotation, fontsize=6, wrap=True)
+        fig.subplots_adjust(bottom=0.25)
 
     return _fig_to_png(fig)
 
@@ -585,6 +617,7 @@ def build_profile_snapshot(store: Store, pathway_ref: Any) -> dict[str, Any]:
             "energy",
             "rel_energy",
             "barrier",
+            "sigma",
             "delta_e",
             "low_confidence",
         ],
@@ -592,8 +625,66 @@ def build_profile_snapshot(store: Store, pathway_ref: Any) -> dict[str, Any]:
     }
 
 
+def pathway_kinetics_annotation(pathway_meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Read solved kinetics and measured step uncertainties; never run a solver."""
+    import math
+
+    from precis.utils.pathway_conditions import kinetics_environment
+    from precis.utils.reaction_graph import rate_limiting
+
+    results = pathway_meta.get("results") or {}
+    record = {
+        **(results.get("kinetics") or pathway_meta.get("kinetics") or {}),
+        **(results.get("kinetics_v2") or pathway_meta.get("kinetics_v2") or {}),
+    }
+    if not record:
+        return None
+    method, tof = "mean-field", record.get("tof_mf")
+    if tof is None:
+        method, tof = "chain", record.get("tof_chain", record.get("tof"))
+    graph = pathway_meta.get("graph") or {}
+    root, target = _profile_root_target(graph, results)
+    path = reaction_path(graph, root, target)
+    pairs = set(pairwise(path))
+    steps = [
+        {
+            "name": f"{e['source']}→{e['target']}",
+            "ea": e.get("barrier"),
+            "sigma": e.get("barrier_std"),
+        }
+        for e in graph.get("links") or []
+        if (e.get("source"), e.get("target")) in pairs and e.get("kind") != "supply"
+    ]
+    env = kinetics_environment({"kinetics_v2": record}) or {}
+    rls = rate_limiting(graph, root, target) or {}
+    return {
+        "tof_log10": math.log10(tof)
+        if isinstance(tof, (int, float)) and math.isfinite(tof) and tof > 0
+        else None,
+        "method": method,
+        "trust": pathway_meta.get(
+            "kinetics_trusted", record.get("trust", record.get("trusted", "unknown"))
+        ),
+        "T": env.get("T"),
+        "gases": env.get("pressures", {}),
+        "rls_step": rls.get("step"),
+        "steps": steps,
+    }
+
+
+def kinetics_annotation_text(annotation: dict[str, Any] | None) -> str:
+    """Caption the stored solve without claiming a new environment solve."""
+    if annotation is None:
+        return "kinetics not solved"
+    return (
+        f"log10 TOF (/s): {annotation['tof_log10']}; {annotation['method']}; "
+        f"trust: {annotation['trust']}; T={annotation['T']} K; gases (bar): {annotation['gases']}; "
+        f"largest route barrier: {annotation['rls_step']}"
+    )
+
+
 def pathway_profile_figure(
-    store: Store, pathway_ref: Any
+    store: Store, pathway_ref: Any, *, view: str = "profile", **options: Any
 ) -> tuple[bytes, dict[str, Any]]:
     """Convenience: one :func:`_profile_positions` walk, both the PNG and
     its data-package snapshot."""
@@ -601,10 +692,131 @@ def pathway_profile_figure(
     graph = meta.get("graph") or {}
     results = meta.get("results") or {}
     root, target = _profile_root_target(graph, results)
-    rows = _profile_positions(graph, root, target)
-    png = render_profile_png(rows, title=pathway_ref.title)
+    from precis.utils.pathway_figure import selected_graph
+    from precis.utils.reaction_graph import rate_limiting
+
+    rows = _profile_positions(graph, root, target, **options)
+    rls_step = (rate_limiting(graph, root, target) or {}).get("step")
+    annotation = (
+        pathway_kinetics_annotation(meta) if options.get("kinetics", True) else None
+    )
+    text = (
+        kinetics_annotation_text(annotation) if options.get("kinetics", True) else None
+    )
+    from precis.utils.pathway_conditions import conditions_note
+
+    note = conditions_note(meta)
+    if text and note:
+        text += "; " + note
+    if options.get("U") is not None and text:
+        text += f"; profile U={options['U']} V vs RHE; kinetics at stored conditions"
+    if view == "graph":
+        png = render_pathway_graph_png(
+            selected_graph(graph, root, target, **options),
+            title=pathway_ref.title,
+            annotation=text,
+            size=options.get("size"),
+            label_threshold_eV=options.get("label_threshold_eV", 0.0),
+            rls_step=rls_step,
+        )
+    else:
+        png = render_profile_png(
+            rows,
+            title=pathway_ref.title,
+            annotation=text,
+            size=options.get("size"),
+            label_threshold_eV=options.get("label_threshold_eV", 0.0),
+            rls_step=rls_step,
+        )
     snapshot = build_profile_snapshot(store, pathway_ref)
+    snapshot["rows"] = rows
+    snapshot["params"].update(
+        {"view": view, **options, "annotation": text, "kinetics": annotation}
+    )
+    if view == "graph":
+        snapshot["params"]["graph"] = selected_graph(graph, root, target, **options)
     return png, snapshot
+
+
+def render_pathway_graph_png(
+    graph: dict[str, Any],
+    *,
+    title: str,
+    annotation: str | None,
+    size: list[float] | None,
+    label_threshold_eV: float,
+    rls_step: str | None = None,
+) -> bytes:
+    """Draw the selected network, including side branches, without Graphviz."""
+    import math
+
+    nodes = graph.get("nodes") or []
+    if not nodes:
+        raise ValueError("no plottable states in this graph")
+    fig = Figure(figsize=(size[0], size[1]) if size else (8, 5), dpi=200)
+    ax = fig.add_subplot(111)
+    positions = {
+        node["id"]: (
+            math.cos(2 * math.pi * i / len(nodes)),
+            math.sin(2 * math.pi * i / len(nodes)),
+        )
+        for i, node in enumerate(nodes)
+    }
+    for name, (x, y) in positions.items():
+        ax.text(
+            x,
+            y,
+            name,
+            ha="center",
+            va="center",
+            fontsize=7,
+            bbox={"boxstyle": "round", "facecolor": "white", "edgecolor": _STATE_COLOR},
+            zorder=3,
+        )
+    for edge in graph.get("links") or []:
+        start, end = positions.get(edge["source"]), positions.get(edge["target"])
+        if start is None or end is None:
+            continue
+        is_rls = f"{edge['source']}→{edge['target']}" == rls_step
+        color = _RATE_LIMITING_COLOR if is_rls else _CONNECTOR_COLOR
+        ax.annotate(
+            "",
+            xy=end,
+            xytext=start,
+            arrowprops={
+                "arrowstyle": "->",
+                "color": color,
+                "lw": 2.5 if is_rls else 1,
+                "shrinkA": 12,
+                "shrinkB": 12,
+                "linestyle": "dashed" if edge.get("kind") == "supply" else "solid",
+            },
+        )
+        barrier = edge.get("barrier")
+        if barrier is not None and barrier < label_threshold_eV:
+            continue
+        label = (
+            f"Ea={barrier:g} ± {edge.get('barrier_std', '?')} eV"
+            if barrier is not None
+            else ("supply" if edge.get("kind") == "supply" else "Ea unavailable")
+        )
+        ax.text(
+            (start[0] + end[0]) / 2,
+            (start[1] + end[1]) / 2,
+            label,
+            fontsize=5,
+            color=color,
+            ha="center",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8},
+        )
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.set_title(title)
+    ax.set_axis_off()
+    if annotation:
+        fig.text(0.02, 0.01, annotation, fontsize=6, wrap=True)
+        fig.subplots_adjust(bottom=0.25)
+    return _fig_to_png(fig)
 
 
 __all__ = [

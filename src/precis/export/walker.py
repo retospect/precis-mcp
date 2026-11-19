@@ -44,7 +44,9 @@ structure (sections, figures, tables, equations; it reads no inline text,
 so it cannot renumber a cite); :func:`resolve_xref` decides liveness, the
 downgrade warning and what number to print; :func:`merge_xref_runs` joins
 whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
-count at compile time; docx prints the pre-pass numbers. A legacy ``¶``
+count at compile time; docx prints the pre-pass numbers. A section
+reference into the citing chunk's own section (or an ancestor) is the
+word above/below in both (:func:`relative_word`). A legacy ``¶``
 handle is still mapped to its ``dc`` in each backend's reference dispatch,
 which moves with the chunk loop.
 
@@ -84,10 +86,29 @@ class CiteGroup:
     si: tuple[bool, ...]
     chunk_ids: tuple[int | None, ...] = ()
 
-    @property
-    def mergeable(self) -> bool:
-        """A plain mark: may join an adjacent run (an SI postnote never does)."""
-        return not any(self.si)
+    def joins(self, run: Sequence[CiteGroup]) -> bool:
+        """May this mark join the adjacent ``run``? An SI mark joins and keeps
+        its flag on its own number; only a paper already in the run with the
+        OTHER flag (``[n]`` then ``[n] (SI)``) stays a separate mark."""
+        flags = {k: s for g in run for k, s in zip(g.keys, g.si, strict=True)}
+        return all(
+            flags.get(k, s) == s for k, s in zip(self.keys, self.si, strict=True)
+        )
+
+    def by_number(self) -> CiteGroup:
+        """A merged mark with an SI member prints its numbers ascending (the
+        SI mark rides on its own number); other marks are left as they are."""
+        if len(self.keys) < 2 or not any(self.si):
+            return self
+        order = sorted(range(len(self.keys)), key=lambda i: self.numbers[i])
+        return CiteGroup(
+            keys=tuple(self.keys[i] for i in order),
+            numbers=tuple(self.numbers[i] for i in order),
+            si=tuple(self.si[i] for i in order),
+            chunk_ids=tuple(self.chunk_ids[i] for i in order)
+            if len(self.chunk_ids) == len(self.keys)
+            else self.chunk_ids,
+        )
 
 
 class Renderer(Protocol):
@@ -288,9 +309,11 @@ def register_group(
 def merge_adjacent(
     items: Sequence[str | CiteGroup],
 ) -> list[str | CiteGroup]:
-    """LaTeX grouping: a run of directly adjacent plain marks (nothing but
-    empty strings between them) becomes one mark, keys deduped in first-cited
-    order; a mark with an SI postnote stands alone and breaks the run."""
+    """LaTeX grouping: a run of directly adjacent marks (nothing but empty
+    strings between them) becomes one mark, keys deduped in first-cited
+    order. An SI postnote stays attached to its own key inside the group
+    (``\\cites{a}[SI]{b}``, numbers ascending); a paper cited both plain and
+    SI back to back keeps two marks (:meth:`CiteGroup.joins`)."""
     out: list[str | CiteGroup] = []
     run: list[CiteGroup] = []
 
@@ -300,11 +323,13 @@ def merge_adjacent(
         if len(run) == 1:
             out.append(_dedupe(run[0]))
         else:
-            out.append(_dedupe(_concat(run)))
+            out.append(_dedupe(_concat(run)).by_number())
         run.clear()
 
     for item in items:
-        if isinstance(item, CiteGroup) and item.mergeable:
+        if isinstance(item, CiteGroup):
+            if run and not item.joins(run):
+                flush()
             run.append(item)
         elif isinstance(item, str) and not item:
             continue
@@ -383,11 +408,13 @@ class RepeatGuard:
 class CiteRun:
     """docx in-walk grouping: directly adjacent cites buffer into one mark;
     consecutive cites of the same paper (same SI flag) collapse to one, even
-    across whitespace; an SI cite flushes the run and prints its own mark.
-    Returned groups are ready for :meth:`Renderer.cite_group`."""
+    across whitespace; an SI cite joins the run and keeps its mark on its
+    own number, except next to the same paper cited without the flag (two
+    marks, as in LaTeX). Returned groups are ready for
+    :meth:`Renderer.cite_group`."""
 
     _last: tuple[str, bool] | None = None
-    _buffer: list[tuple[str, int, int | None]] = field(default_factory=list)
+    _buffer: list[tuple[str, int, bool, int | None]] = field(default_factory=list)
 
     def add(
         self, key: str, number: int, *, si: bool, chunk_id: int | None
@@ -396,12 +423,12 @@ class CiteRun:
         if self._last == (key, si):
             return []
         self._last = (key, si)
-        if not si:
-            self._buffer.append((key, number, chunk_id))
-            return []
-        flushed = self.flush()
-        own = CiteGroup((key,), (number,), (True,), (chunk_id,))
-        return [own] if flushed is None else [flushed, own]
+        flushed: list[CiteGroup] = []
+        if any(k == key and s != si for k, _n, s, _c in self._buffer):
+            mark = self.flush()
+            flushed = [mark] if mark is not None else []
+        self._buffer.append((key, number, si, chunk_id))
+        return flushed
 
     def flush(self) -> CiteGroup | None:
         """End the pending run: one mark for it (a doubled paper once)."""
@@ -410,12 +437,12 @@ class CiteRun:
             return None
         return _dedupe(
             CiteGroup(
-                keys=tuple(k for k, _n, _c in run),
-                numbers=tuple(n for _k, n, _c in run),
-                si=tuple(False for _ in run),
-                chunk_ids=tuple(c for _k, _n, c in run),
+                keys=tuple(k for k, _n, _s, _c in run),
+                numbers=tuple(n for _k, n, _s, _c in run),
+                si=tuple(s for _k, _n, s, _c in run),
+                chunk_ids=tuple(c for _k, _n, _s, c in run),
             )
-        )
+        ).by_number()
 
     def gap(self, text: str) -> CiteGroup | None:
         """Prose between references: any content ends the run; real
@@ -518,11 +545,16 @@ class XrefNumbers:
     handle to ``(noun, number)`` as ``\\cref`` would print it (an empty
     noun: ``number`` is already the full label, a back-matter heading's
     name); ``numbered_headings`` are the headings that display a number;
-    ``equations`` maps a standalone equation's dc to its number."""
+    ``equations`` maps a standalone equation's dc to its number. ``order``
+    (dc -> reading-order index) and ``section`` (dc -> the numbered section
+    the chunk sits in; absent in front and back matter) place a reference
+    relative to its citing chunk (:func:`relative_word`)."""
 
     labels: dict[str, tuple[str, str]]
     numbered_headings: set[str]
     equations: dict[str, int]
+    order: dict[str, int] = field(default_factory=dict)
+    section: dict[str, str] = field(default_factory=dict)
 
 
 def number_xrefs(
@@ -553,7 +585,18 @@ def number_xrefs(
     shift = depth_shift(chunks, title_dc)
     back_matter = back_matter_handles(chunks)
     current = ""  # number of the enclosing numbered section
-    for c in chunks:
+    in_back = False  # inside unnumbered journal back matter
+    order: dict[str, int] = {}
+    section: dict[str, str] = {}
+    for i, c in enumerate(chunks):
+        order[c.dc] = i
+        if c.chunk_kind == "heading" and not is_glossary_heading(c):
+            if c.dc in back_matter:
+                in_back = True
+            elif c.dc != title_dc:
+                in_back = False
+        if current and not in_back and c.chunk_kind not in ("ulist", "olist"):
+            section[c.dc] = current  # a numbered heading overwrites below
         if c.chunk_kind == "figure":
             figs += 1
             labels[c.dc] = ("fig.", str(figs))
@@ -575,6 +618,8 @@ def number_xrefs(
                 current = ".".join(str(n) for n in counters[: d + 1])
             # else: run-in paragraph heading — resolves to the enclosing section
             labels[c.dc] = ("section", current)
+            if not in_back:
+                section[c.dc] = current
         elif c.chunk_kind not in ("ulist", "olist") and current:
             labels[c.dc] = ("section", current)
     equations: dict[str, int] = {}
@@ -585,7 +630,13 @@ def number_xrefs(
         if eq is None or eq[1]:  # not standalone, or the starred escape hatch
             continue
         equations[c.dc] = len(equations) + 1
-    return XrefNumbers(labels=labels, numbered_headings=shown, equations=equations)
+    return XrefNumbers(
+        labels=labels,
+        numbered_headings=shown,
+        equations=equations,
+        order=order,
+        section=section,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,13 +648,16 @@ class Xref:
     any number. ``equation`` / ``label``: what to print (from the
     pre-pass, when the backend prints numbers itself); ``label`` is ``None``
     when there is nothing to print (front matter, glossary, or a section
-    reference before the first numbered section)."""
+    reference before the first numbered section). ``relative``: ``"above"``
+    / ``"below"`` when the target is the citing chunk's own section or an
+    ancestor of it (:func:`relative_word`), printed instead of the number."""
 
     dc: str
     surface: str | None
     live: bool
     equation: int | None = None
     label: tuple[str, str] | None = None
+    relative: str | None = None
     #: Neutral text for a dead target with no authored surface (a retired
     #: chunk prints "a removed figure", never the bare ``dc…`` — gr493181).
     fallback: str | None = None
@@ -634,6 +688,8 @@ def resolve_xref(
     numbers: XrefNumbers | None,
     warnings: list[str],
     dead: Callable[[str], tuple[str | None, str]] | None = None,
+    placement: XrefNumbers | None = None,
+    citing: str = "",
 ) -> Xref:
     """Resolve a ``[dc<id>]`` cross-ref. ``live`` is the draft's live dc
     handles (``None``: unknown, treat as live); a dead target warns and
@@ -641,7 +697,10 @@ def resolve_xref(
     number itself (LaTeX's cleveref counts at compile time and passes
     ``None``). ``dead`` maps a dead handle to ``(replacement, text)``: a
     retired target resolves to its recorded live replacement, otherwise the
-    xref prints ``text`` — a neutral placeholder, never the bare handle."""
+    xref prints ``text`` — a neutral placeholder, never the bare handle.
+    ``placement`` is the pre-pass for the own-section test, which a backend
+    that leaves the numbers to the typesetter (LaTeX, ``numbers=None``) still
+    supplies; ``citing`` is the dc of the chunk being rendered."""
     if live is not None and dc not in live:
         replacement: str | None = None
         text = DEAD_XREF_TEXT
@@ -655,11 +714,22 @@ def resolve_xref(
                 f"cross-ref {dc}: retired — resolved to its replacement {replacement}"
             )
             return resolve_xref(
-                replacement, surface, live=live, numbers=numbers, warnings=warnings
+                replacement,
+                surface,
+                live=live,
+                numbers=numbers,
+                warnings=warnings,
+                placement=placement,
+                citing=citing,
             )
         warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
         return Xref(dc, surface, live=False, fallback=text)
-    if surface or numbers is None:
+    if surface:
+        return Xref(dc, surface, live=True)
+    word = relative_word(dc, citing, placement or numbers)
+    if word is not None:
+        return Xref(dc, None, live=True, relative=word)
+    if numbers is None:
         return Xref(dc, surface, live=True)
     eq = numbers.equations.get(dc)
     if eq is not None:
@@ -668,6 +738,37 @@ def resolve_xref(
     if label is None or not label[1]:
         return Xref(dc, None, live=True)
     return Xref(dc, None, live=True, label=label)
+
+
+def relative_word(dc: str, citing: str, nums: XrefNumbers | None) -> str | None:
+    """``"above"`` / ``"below"`` for a reference that resolves to a section
+    number (a prose or heading target; not a figure, table or equation) when
+    that section is the citing chunk's own innermost section or one of its
+    ancestors: "section 3.1" inside 3.1 reads as noise. ``"above"`` when the
+    target precedes the citing chunk in reading order, or is it; ``"below"``
+    when it follows. ``None`` everywhere else (the number prints as usual).
+    The one place both exporters get this decision."""
+    if nums is None or not citing:
+        return None
+    label = nums.labels.get(dc)
+    here = nums.section.get(citing)
+    if label is None or label[0] != "section" or not label[1] or not here:
+        return None
+    if dc in nums.equations or (
+        here != label[1] and not here.startswith(label[1] + ".")
+    ):
+        return None
+    if dc not in nums.order or citing not in nums.order:
+        return None
+    return "above" if nums.order[dc] <= nums.order[citing] else "below"
+
+
+@dataclass
+class XrefCursor:
+    """The chunk the walk is rendering, set by :func:`walk_body` so a
+    cross-ref deep in a chunk's inline text knows its citing chunk."""
+
+    dc: str = ""
 
 
 def dead_xref(
@@ -883,6 +984,7 @@ def walk_body(
     equation_of: Callable[[str | None], tuple[str, bool] | None],
     numbers: XrefNumbers | None = None,
     on_chunk: Callable[[int], None] | None = None,
+    cursor: XrefCursor | None = None,
 ) -> None:
     """Visit the draft body once, in reading order, and hand each chunk to
     the renderer as the method its kind calls for; the renderer only
@@ -894,7 +996,8 @@ def walk_body(
     (``equation_of``) with its pre-pass number. ``renderer.code_kinds`` and
     ``renderer.aside_kinds`` name the chunk kinds a backend has a block for
     (docx renders a listing and an aside as an ordinary paragraph: a known
-    divergence, kept byte-identical). ``on_chunk`` reports progress."""
+    divergence, kept byte-identical). ``on_chunk`` reports progress;
+    ``cursor`` follows the chunk being rendered."""
     # Chunk ids and parents only matter for list items; a caller's lighter
     # chunk shape (no ids) still walks.
     kind_by_id = {getattr(c, "chunk_id", None): c.chunk_kind for c in chunks}
@@ -913,6 +1016,8 @@ def walk_body(
     for n_done, c in enumerate(chunks):
         if on_chunk is not None:
             on_chunk(n_done)
+        if cursor is not None:
+            cursor.dc = c.dc
         depth = depth_of(c)
         while open_lists and depth <= open_lists[-1][1]:
             renderer.list_close(sink, open_lists.pop()[0])

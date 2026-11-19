@@ -54,6 +54,10 @@ from precis.store._salience import background_actor_active
 from precis.store._search_cut import fixed_floors_enabled, semantic_fold_distance
 from precis.store.core import StoreCore
 
+#: Divide cover-density rank by 1 + log(document length), so scattered
+#: matches in large chunks do not crowd out focused lexical evidence.
+LEX_RANK_NORMALIZATION = 1
+
 #: Whitelist mapping a background actor's name to its per-actor rotation
 #: column on ``chunks``. The column name is interpolated into selection /
 #: touch SQL (it can't be a bind param), so it MUST come from this dict
@@ -691,8 +695,11 @@ _OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
 #: flattens a ``-negated`` term or a ``"quoted phrase"`` into positive OR
 #: terms, inverting the query's intent. A bare ``or`` needs no guard —
 #: plainto drops it as a stopword, so the retry ORs the same term set
-#: websearch did.
-_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
+#: websearch did. A hyphen before an uppercase letter or digit ('-NH',
+#: '-OH', '-1') is group notation in scientific text, not a negation —
+#: guarding on it silently killed the whole recall fallback (gr681469),
+#: so only a lowercase ``-word`` counts as an operator.
+_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-(?![A-Z0-9])\S')
 
 #: Minimum words before an *unscoped* query earns the OR retry
 #: (gr614169). Inside one ref any multi-word query retries — every term
@@ -701,6 +708,21 @@ _TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
 #: alone); three or more words is where natural-language questions —
 #: and the spread-terms failure the bench measured — begin.
 _OR_RETRY_MIN_WORDS = 3
+
+
+def _lexical_chunk_source(kind: str | None) -> str:
+    """Fetch taxon chunks by ref before applying full-text predicates.
+
+    Taxa are a small fraction of the corpus. OFFSET 0 keeps a long query's
+    OR fallback from driving the join through the corpus-wide tsv index.
+    """
+    if kind == "taxon":
+        return (
+            "refs r CROSS JOIN LATERAL ("
+            "SELECT c.* FROM chunks c WHERE c.ref_id = r.ref_id OFFSET 0"
+            ") c"
+        )
+    return "chunks c JOIN refs r ON r.ref_id = c.ref_id"
 
 
 def _or_retry(q: str, scope_ref_id: int | None) -> bool:
@@ -741,25 +763,39 @@ def _ilike_contains(term: str) -> str:
 
 
 def _verbatim_backstop(
-    scope_ref_id: Any, include_ref_ids: Any, kind: str | None
+    scope_ref_id: Any,
+    include_ref_ids: Any,
+    kind: str | None,
+    kinds: list[str] | None = None,
 ) -> bool:
     """Whether the ``mode='verbatim'`` scan is bounded enough to afford
     the phrase-substring backstop (see :func:`_verbatim_pred`).
 
     True for a single-ref scope or an explicit ref-id set, and for the
-    agent-authored memory corpus (``kind='memory'``): the join filters
-    ``refs`` via ``refs_kind_idx`` and probes ``chunks_ref_id_idx``, so
-    the ILIKE leg evaluates only memory-chunk text, never the
-    multi-million-row paper corpus. gr662452: verbatim search is the
-    dedup check the remember/search-first recipes trust, and an exact
-    sentence fails ``keywords @>`` whenever KeyBERT never stored one of
-    its words (stopwords, LaTeX tokens) — a miss then mints duplicates.
-    A memory body is one ``memory_body`` chunk, so a phrase found in the
-    body is always wholly inside that chunk's text. Multi-kind
-    ``kinds=`` filters are never bounded this way (a paper member would
-    reopen the seq-scan), so only the singular ``kind`` counts.
+    agent-authored memory corpus (``kind='memory'``, gr662452): the join
+    filters ``refs`` via ``refs_kind_idx`` and probes
+    ``chunks_ref_id_idx``, so the ILIKE leg evaluates only memory-chunk
+    text, never the multi-million-row paper corpus. gr662452: verbatim
+    search is the dedup check the remember/search-first recipes trust,
+    and an exact sentence fails ``keywords @>`` whenever KeyBERT never
+    stored one of its words (stopwords, LaTeX tokens) — a miss then
+    mints duplicates. A memory body is one ``memory_body`` chunk, so a
+    phrase found in the body is always wholly inside that chunk's text.
+    Multi-kind ``kinds=`` filters are never bounded this way (a paper
+    member would reopen the seq-scan), so a mixed list never counts —
+    but a single-element ``['memory']`` list compiles to the same
+    ``refs_kind_idx`` probe as the singular spelling, and the
+    source-search route (``sort='recency'``, gr688850) hands the memory
+    corpus in exactly that shape: without the backstop a verbatim
+    ``sort='recency'`` memory search silently drops every hit the
+    un-sorted singular call finds.
     """
-    return scope_ref_id is not None or include_ref_ids is not None or kind == "memory"
+    return (
+        scope_ref_id is not None
+        or include_ref_ids is not None
+        or kind == "memory"
+        or list(kinds or ()) == ["memory"]
+    )
 
 
 def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
@@ -1164,7 +1200,7 @@ class ChunkStore:
             return 0
         pred, pred_params = _verbatim_pred(
             norm,
-            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind, kinds),
         )
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
@@ -1419,13 +1455,13 @@ class ChunkStore:
         params.append(offset)
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        source = _lexical_chunk_source(kind if kinds is None else None)
 
         def _sql(tsquery_expr: str) -> str:
             return (
                 f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
-                "       ts_rank_cd(c.tsv, qq.qq) AS rank "
-                "FROM chunks c "
-                "JOIN refs r ON r.ref_id = c.ref_id, "
+                f"       ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) AS rank "
+                f"FROM {source}, "
                 f"{tsquery_expr} qq(qq) "
                 f"WHERE {' AND '.join(clauses)} "
                 # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
@@ -1461,8 +1497,7 @@ class ChunkStore:
                     # inherits the stale cap (gr664954, td665127).
                     apply_checkout_budget(conn)
                     probe = conn.execute(
-                        "SELECT EXISTS(SELECT 1 FROM chunks c "
-                        "JOIN refs r ON r.ref_id = c.ref_id, "
+                        f"SELECT EXISTS(SELECT 1 FROM {source}, "
                         "websearch_to_tsquery('english', %s) qq(qq) "
                         f"WHERE {' AND '.join(clauses)})",
                         params[:-2],
@@ -1537,7 +1572,7 @@ class ChunkStore:
             return []
         pred, pred_params = _verbatim_pred(
             norm,
-            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind, kinds),
         )
         clauses = [
             "r.retired_at IS NULL",
@@ -2024,6 +2059,7 @@ class ChunkStore:
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
         or_leg = _or_retry(q, scope_ref_id)
+        lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 
         with self.pool.connection() as conn:
@@ -2034,8 +2070,7 @@ class ChunkStore:
                 # inherits the checkout-time cap (gr664954, td665127).
                 apply_checkout_budget(conn)
                 row = conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM chunks c "
-                    "JOIN refs r ON r.ref_id = c.ref_id, "
+                    f"SELECT EXISTS(SELECT 1 FROM {lexical_source}, "
                     "websearch_to_tsquery('english', %s) qq(qq) "
                     f"WHERE c.tsv @@ qq.qq{where_extra})",
                     [lexical_q(q), *params],
@@ -2062,9 +2097,9 @@ class ChunkStore:
             lex_any_cte = f"""lex_any AS (
                 SELECT c.chunk_id AS cid,
                        row_number() OVER (
-                           ORDER BY ts_rank_cd(c.tsv, oq.oq) DESC, c.chunk_id
+                           ORDER BY ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      (SELECT {_OR_TSQUERY}) oq(oq)
                 WHERE c.tsv @@ oq.oq
                       {where_extra}
@@ -2164,9 +2199,9 @@ class ChunkStore:
                        row_number() OVER (
                            -- chunk_id tiebreak: same determinism fix as
                            -- search_chunks_lexical (rank ties shuffle).
-                           ORDER BY ts_rank_cd(c.tsv, qq.qq) DESC, c.chunk_id
+                           ORDER BY ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      websearch_to_tsquery('english', %s) qq(qq)
                 WHERE c.tsv @@ qq.qq
                       {where_extra}

@@ -69,7 +69,7 @@ search(kind="job", tags=["STATUS:failed"])
 ```python
 get(kind="job", id=101)
 # → header + current status + summary chunk (when finished) +
-#   recent job_event chunks (telemetry, kept for forensics)
+#   recent job_event chunks
 get(id="jo101")  # the job's universal handle resolves the same way
 ```
 
@@ -77,11 +77,14 @@ A `STATUS:failed` card leads with `error:` — the one-line failure
 reason (`meta.error`, else the newest `job_event` head; `retry_after:`
 beside it when a transient backoff was stamped) — printed right under
 `status:` so the card cap can't cut it on jobs with long event
-timelines. The full reason stays in the `job_event` chunks below.
+timelines. The card hides any `job_event` chunk that starts with the
+printed error. Use `view='raw'` for the full record.
 `view='raw'` on a failed job leads with `failure:` — the reason's
 last line, so a traceback-shaped `meta.error` shows its actual
 exception rather than just "Traceback (most recent call last):" —
 before the scalar block.
+
+`view='error'` and `view='body'` both read as the default status card.
 
 The `job_summary` chunk is the human-readable account ("Fix
 landed on main at <remote> as abc123 (squash of gripe_42 onto
@@ -194,15 +197,16 @@ search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
 (mint time) — an ISO timestamp or an age (`'24'`/`'6h'`/`'7d'` =
 hours/days ago). A window with no `job_type=` and no view lists jobs
 of every type minted in it — "what ran in the last day". `q=` is
-title-lexical on this path; `sort=`/`mode=` are rejected — they belong
-to the unfiltered ranked path. This is the MCP answer for what used
-to need `refs.meta->>'job_type'` SQL.
+title-lexical on this path. The listing already uses `sort='recency'`,
+and `mode='lexical'` names its query mode. This is the MCP answer for
+what used to need `refs.meta->>'job_type'` SQL.
 
 `since=`/`until=` ride `args=` like `job_type=` on the queryless plain
 listing too — `search(kind='job', args={'since': '2026-10-20'},
 status='*')` is the same recency-ordered listing without a `job_type=`
 filter (adding `q=` makes it a ranked search and `sort=`/`mode=` legal
-again).
+again). A bare `search(kind='job')` — no window, no filter — is the
+same listing over every job: "what ran lately".
 
 `view='count'` facet rows also name each group's newest/oldest member
 (`jo<N>` + created bounds) — "when did the last <type> run, how far
@@ -221,6 +225,14 @@ For the *trend* behind the snapshot — minted vs terminal per day,
 with mint→terminal percentiles per lane —
 `search(kind='job', view='flow', args={'job_type': '<type>'})`
 (`precis-search-help`'s flow section).
+
+## Count jobs by executor and state
+
+```python
+search(kind="job", view="count", args={"group_by": "meta.executor,state"})
+```
+
+Each group shows a count and the newest and oldest job IDs.
 
 ## See also
 

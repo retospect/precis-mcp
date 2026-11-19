@@ -152,7 +152,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
@@ -178,6 +178,7 @@ from precis.handlers._attribution import (
     grounding_failures,
     ungrounded_cited_numbers,
 )
+from precis.handlers._audited_retirement import AuditedRetirementHandler
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._memory_link_receipt import (
@@ -205,6 +206,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._links_ops import MACHINE_EDGE_META_KEYS
 from precis.store._search_cut import semantic_fold_distance
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
@@ -212,11 +214,16 @@ from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
     EditResult,
-    apply_edit,
+    _nearest_lines,
+    find_candidates,
+    fold_anchor,
     format_unified_diff,
     normalize_dry_run,
+    relaxed_candidates,
     render_dry_run_full,
     render_dry_run_header,
+    select_candidates,
+    splice_edit,
 )
 from precis.utils.link_tag_ops import merge_link_reason
 from precis.utils.link_target import parse_link_target
@@ -251,6 +258,9 @@ from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.timeutil import as_utc
 from precis.workers.embed import nudge_fresh_embed
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Heading line that opens a memory-body section — the ``~<slug>``
 #: selector grammar (``me<id>~<section>``) splits on these.
@@ -612,6 +622,7 @@ _OPS_KEYS = frozenset(
 )
 _OPS_KINDS = ("find-replace", "insert", "append")
 _MEMORY_TYPES = ("user", "feedback", "project", "reference")
+_CREATE_EDGE_META_KEYS = frozenset((*MACHINE_EDGE_META_KEYS, "evidence"))
 
 
 def _validate_meta(
@@ -725,7 +736,7 @@ def _ruling_ack(meta: dict[str, Any]) -> str:
     return f"\nruling meta: {stamped}" if stamped else ""
 
 
-class MemoryHandler(NumericRefHandler):
+class MemoryHandler(AuditedRetirementHandler):
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
@@ -977,18 +988,42 @@ class MemoryHandler(NumericRefHandler):
         rel: str | None = None,
         of_kind: str | None = None,
         direction: str | None = None,
-        # ``args={'page': N, 'page_size': M}`` — the ``id='/toc'`` kind
-        # TOC's (and the bare ``view='toc'`` spelling's) paging; the
-        # base reads them back out of the forwarded kwargs for paged
-        # list views (gr568237).
+        # The kind TOC (``id='/toc'`` or bare ``view='toc'``) uses
+        # ``page`` and ``page_size``. Node members and TOC use ``offset``
+        # and ``page_size``. For log and considerations, ``page_size``
+        # aliases ``limit``.
         page: int | str | None = None,
         page_size: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if id == "/links" or (view == "links" and _kw.get("reason") == "missing"):
+            return super().get(
+                id=id,
+                view=view,
+                q=q,
+                rel=rel,
+                of_kind=of_kind,
+                direction=direction,
+                limit=limit,
+                **_kw,
+            )
         if page is not None:
             _kw["page"] = page
         if page_size is not None:
-            _kw["page_size"] = page_size
+            if view in {"log", "considerations"} and q is None:
+                if limit is not None and str(limit) != str(page_size):
+                    raise BadInput(
+                        "page_size= and limit= disagree",
+                        next="get(kind='memory', id=N, view='log', args={'offset': 0, 'limit': 10})",
+                    )
+                limit = page_size
+            elif view not in {"members", "toc"} and id != "/toc":
+                raise BadInput(
+                    "page_size= only applies to paged memory views",
+                    next="get(kind='memory', id=N, view='log', args={'offset': 0, 'limit': 10})",
+                )
+            else:
+                _kw["page_size"] = page_size
         # Log offsets count events, or payload characters when event_id
         # selects one event. Keep members' independent cursor contract.
         if depth is not None and (
@@ -1147,7 +1182,9 @@ class MemoryHandler(NumericRefHandler):
             )
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return self._render_members(ref, offset=offset, depth=depth)
+            return self._render_members(
+                ref, offset=offset, depth=depth, page_size=page_size
+            )
         if view == "toc" and id is None:
             # gr568237: the kind's own TOC — every root of the live
             # graph, the same paged forest render the tag-scoped
@@ -1169,7 +1206,9 @@ class MemoryHandler(NumericRefHandler):
             from precis.handlers._memory_toc import render_node_toc
 
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return render_node_toc(self.store, ref, depth=depth, offset=offset)
+            return render_node_toc(
+                self.store, ref, depth=depth, offset=offset, page_size=page_size
+            )
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
@@ -1228,6 +1267,10 @@ class MemoryHandler(NumericRefHandler):
             shown = f"view={canon!r}" if canon is not None else "the default view"
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
+        if isinstance(id, list) and view in {"list", "ids"}:
+            return self._get_batch(
+                id, view=view, tag_prefixes=_kw.get("tag_prefixes", ...)
+            )
         if concrete and view is not None and view not in _BASE_VIEWS:
             legal = [
                 "argument",
@@ -1366,11 +1409,13 @@ class MemoryHandler(NumericRefHandler):
         *,
         offset: int | str | None,
         depth: int | str | None,
+        page_size: int | str | None = None,
     ) -> Response:
         """``view='members'``: the ref's part-of subtree as index bullets.
 
         Emits whole lines until the context cap (gr538449's "members in
-        chunks under the result cap"); ``args={'offset': N}`` resumes at
+        chunks under the result cap"). ``page_size`` caps the number of
+        member rows per page. ``args={'offset': N}`` resumes at
         the member after the last one shown — the footer's ``next:`` line
         carries the ready-made call. Rows sort by ref_id, not recency:
         band order shifts when a reader touches a member mid-walk, which
@@ -1425,7 +1470,12 @@ class MemoryHandler(NumericRefHandler):
         # Reserve room for the header + the continuation/footer lines so
         # the emitted page itself always fits the cap that binds reads.
         budget = max(200, result_context_cap() - _PAGED_FOOTER_BYTES)
-        rest = ordered[off:]
+        n_size = None
+        if page_size is not None:
+            from precis.handlers._event_log_render import log_integer
+
+            n_size = log_integer(page_size, "page_size", ref.id, minimum=1)
+        rest = ordered[off : off + n_size] if n_size is not None else ordered[off:]
         firsts = _first_body_lines(
             self.store, [r.id for r in rest if not (r.meta or {}).get("hook")]
         )
@@ -1451,6 +1501,8 @@ class MemoryHandler(NumericRefHandler):
         body = f"{header}\n" + "\n".join(lines)
         if end < total:
             depth_arg = f", 'depth': {n_depth}" if n_depth else ""
+            if n_size is not None:
+                depth_arg += f", 'page_size': {n_size}"
             body += (
                 f"\n… {end} of {total} shown — next: get(kind='memory', "
                 f"id={ref.id}, view='members', "
@@ -1583,13 +1635,17 @@ class MemoryHandler(NumericRefHandler):
         )
         return render_agent_table(rows, schema=["section", "size", "title"])
 
-    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
+    ) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.
 
         Same body as a single ``get``, minus a ``Next:`` trailer per memory;
         one trailer at the end points at the fisheye neighbourhood. A missing
         or deleted id is a one-line block.
         """
+        if view in {"list", "ids"}:
+            return super()._get_batch(ids, view=view, tag_prefixes=tag_prefixes)
         ref_ids = self._coerce_ids(ids)
         if view is not None:
             return self._get_batch_view(ref_ids, view=view)
@@ -1717,6 +1773,8 @@ class MemoryHandler(NumericRefHandler):
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
+        When ``link=`` is supplied, ``meta.model``, ``prompt_version``,
+        ``run_id``, ``why`` and ``evidence`` describe the creation edge.
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1810,6 +1868,10 @@ class MemoryHandler(NumericRefHandler):
         is_ruling = any(
             isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
         )
+        edge_meta: dict[str, Any] = {}
+        if link is not None and isinstance(meta, dict):
+            edge_meta = {k: v for k, v in meta.items() if k in _CREATE_EDGE_META_KEYS}
+            meta = {k: v for k, v in meta.items() if k not in _CREATE_EDGE_META_KEYS}
         create_meta = (
             _validate_meta(meta or {}, ruling=is_ruling)
             if meta is not None or is_ruling
@@ -1828,6 +1890,10 @@ class MemoryHandler(NumericRefHandler):
                 text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
             )
 
+        if edge_meta:
+            # Carry the edge annotation separately through the shared put
+            # plumbing. The store admits and writes it in the create transaction.
+            create_meta["edge_meta"] = edge_meta
         base_put = super().put  # zero-arg super() can't see self inside create()
 
         def create() -> Response:
@@ -2119,6 +2185,7 @@ class MemoryHandler(NumericRefHandler):
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
+                    meta=create_meta.get("edge_meta"),
                     conn=conn,
                 )
             if misses:
@@ -2529,7 +2596,7 @@ class MemoryHandler(NumericRefHandler):
         - ``mode='replace'`` (the default for a direct handler call):
           ``text=`` is the whole new body; ``title=`` optionally updates the
           header (omit to keep it).
-        - ``mode='find-replace'``: ``find=`` locates literal text in the body
+        - ``mode='find-replace'``: ``find=`` locates an anchored span in the body
           and ``text=`` replaces it (``text=''`` deletes the span).
         - ``mode='insert'``: ``text=`` goes ``where='before'|'after'`` the
           ``find=`` match.
@@ -2552,7 +2619,10 @@ class MemoryHandler(NumericRefHandler):
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
         ``dry_run=True`` (unified diff, nothing written) — resolved by the
         shared :mod:`precis.utils.edit_resolve`, so a one-word fix in a large
-        body needs no re-send. ``title=`` / ``rule=`` / ``warrant=`` /
+        body needs no re-send. A ``find`` that misses verbatim is retried
+        folded (whitespace, quotes, dashes, ligatures — gr688478) before
+        the error fires, so a retyped span still lands. ``title=`` /
+        ``rule=`` / ``warrant=`` /
         ``meta=`` ride every mode's one transaction (gr506768) — a retitle
         or an argument-label fix pairs with an anchored body edit in one
         call; ``title=`` alone (with ``mode='replace'``) is the retitle
@@ -3918,7 +3988,7 @@ class MemoryHandler(NumericRefHandler):
         ref: Ref,
         echo_title: str,
     ) -> tuple[str, tuple[tuple[int, int], ...], bool]:
-        """One ``'find-replace'``/``'insert'`` dict through ``apply_edit``."""
+        """Resolve one ``'find-replace'``/``'insert'`` dict against the current body."""
         find = raw.get("find")
         if not isinstance(find, str) or not find:
             raise BadInput(
@@ -3959,13 +4029,16 @@ class MemoryHandler(NumericRefHandler):
                 "'nth' must be an int",
                 next="pass 'nth' as an int with 'match': 'nth', or leave it out",
             )
+        # find/before/after are locators, like the single-op path's — they
+        # address already-stored text and never land in the body, so
+        # masking them would only break a legitimate anchor (gr688478).
         op = EditOp(
             op="edit" if op_kind == "find-replace" else "insert",
-            find=mask_secrets(find),
+            find=find,
             text=mask_secrets(text),
-            before=mask_secrets(cast(str, before)),
-            after=mask_secrets(cast(str, after)),
-            where=cast("Any", mask_secrets(where) if isinstance(where, str) else where),
+            before=cast(str, before),
+            after=cast(str, after),
+            where=cast("Any", where),
             match=cast("Any", match or "unique"),
             nth=nth,
             region_label=label,
@@ -4014,16 +4087,25 @@ class MemoryHandler(NumericRefHandler):
 
     # ── read: title header + body chunk ─────────────────────────────
 
+    @staticmethod
+    def _stored_body(store: Store, ref: Ref) -> str:
+        """The stored body bytes every read projects — the first
+        ``memory_body`` chunk. The note eye fingerprints this same chunk
+        for the ``_memory_body_display`` stamp (gr715698): joined ord≥0
+        text can carry a second body chunk or a ``tag_overflow`` and miss
+        it."""
+        for block in store.chunks.list_chunks_for_ref(ref.id):
+            if block.chunk_kind == _BODY_KIND:
+                return block.text
+        return ref.title or ""
+
     def _body_text(self, ref: Ref) -> str:
         """The memory's body prose from its ``memory_body`` chunk.
 
         Falls back to ``refs.title`` for any pre-0050 row that never got a
         body chunk (defensive — the migration backfilled every live memory).
         """
-        for block in self.store.chunks.list_chunks_for_ref(ref.id):
-            if block.chunk_kind == _BODY_KIND:
-                return block.text
-        return ref.title or ""
+        return self._stored_body(self.store, ref)
 
     @staticmethod
     def _body_display_policy(body: str, echo_title: str) -> dict[str, str]:
@@ -4032,8 +4114,8 @@ class MemoryHandler(NumericRefHandler):
             "echo_title": echo_title,
         }
 
+    @staticmethod
     def _body_echo_title(
-        self,
         body: str,
         title: str,
         meta: dict[str, Any],
@@ -4047,16 +4129,23 @@ class MemoryHandler(NumericRefHandler):
         policy = meta.get("_memory_body_display")
         if (
             isinstance(policy, dict)
-            and policy.get("sha256") == self._body_display_policy(body, "")["sha256"]
+            and policy.get("sha256")
+            == MemoryHandler._body_display_policy(body, "")["sha256"]
             and isinstance(policy.get("echo_title"), str)
         ):
             return str(policy["echo_title"])
 
         return title
 
-    def _display_body(self, ref: Ref, raw_body: str) -> str:
-        echo_title = self._body_echo_title(raw_body, ref.title or "", ref.meta or {})
-        return self._strip_title_echo(raw_body, echo_title)
+    @staticmethod
+    def _display_body(ref: Ref, raw_body: str) -> str:
+        """The body as every read renders it: the raw chunk minus its
+        stamped legacy title echo. The note eye shares this projection
+        (gr715698 — its raw-chunk render kept the hidden lead visible)."""
+        echo_title = MemoryHandler._body_echo_title(
+            raw_body, ref.title or "", ref.meta or {}
+        )
+        return MemoryHandler._strip_title_echo(raw_body, echo_title)
 
     def _apply_body_edit(
         self,
@@ -4073,30 +4162,89 @@ class MemoryHandler(NumericRefHandler):
         authored body, so its invisible prefix cannot survive the rewrite.
         A delete is not a rewrite: it stays on the raw buffer.
         Generated headers and entity footers never enter either buffer.
+
+        A literal miss retries folded (gr688478): the agent retyped a span
+        it saw and drifted on whitespace, quotes, dashes or ligatures —
+        ``relaxed_candidates`` maps the folded hit back to raw offsets, so
+        the splice still lands real bytes under the same match policy.
         """
-        if op.find not in buffer:
-            raise BadInput(
-                f"anchor not found in memory {ref.id} body; generated headers "
-                "and referenced entities footers are not editable",
-                next=(
-                    f"get(kind='memory', id='me{ref.id}~body'), then retry "
-                    "with an anchor from the body prose"
-                ),
-            )
         if echo_title is None:
             echo_title = self._body_echo_title(buffer, ref.title or "", ref.meta or {})
         visible = self._strip_title_echo(buffer, echo_title)
-        exact_body = bool(
+        whole_visible = (
             op.op == "edit"
-            and op.text
-            and visible
-            and op.find == visible
+            and bool(op.text)
+            and bool(visible)
             and op.match == "unique"
             and op.nth is None
             and not op.before
             and not op.after
         )
-        return apply_edit(visible if exact_body else buffer, op), exact_body
+        exact_body = whole_visible and op.find == visible
+        basis = visible if exact_body else buffer
+        candidates = find_candidates(basis, op)
+        if not candidates:
+            exact_body = whole_visible and fold_anchor(op.find) == fold_anchor(visible)
+            basis = visible if exact_body else buffer
+            candidates = relaxed_candidates(basis, op)
+        if not candidates:
+            raise self._anchor_miss(ref, buffer, op)
+        chosen = select_candidates(candidates, op, buffer=basis)
+        return splice_edit(basis, op, chosen, n_matches=len(candidates)), exact_body
+
+    def _anchor_miss(self, ref: Ref, buffer: str, op: EditOp) -> BadInput:
+        """The 'anchor not found' BadInput, with a diagnosis when one shows.
+
+        The read the agent copied from renders more than the body — the
+        ``# memory N:`` header, a ``tags:`` line, the referenced-entities
+        courtesy footer — none of it editable through the body anchor.
+        Name the likely culprit and list the nearest real body lines the
+        way the file kinds' not-found error does.
+        """
+        notes: list[str] = []
+        if "…" in op.find or "..." in op.find:
+            notes.append(
+                "find= carries an ellipsis — anchors need the complete "
+                "stored span, not a copy cut by a truncated view"
+            )
+        title = (ref.title or "").strip()
+        if title and title in op.find and title not in buffer:
+            notes.append(
+                "find= matches the title — it lives in the generated "
+                "'# memory N:' header, not the body"
+            )
+        if "# memory" in op.find or "referenced entities" in op.find:
+            notes.append(
+                "the '# memory N:' header and referenced-entities footer "
+                "are rendered on read, not stored in the body"
+            )
+        nearest = _nearest_lines(buffer, op.find, base_line=1)
+        if nearest:
+            notes.append("nearest body lines:")
+            notes.extend(
+                "  "
+                + (
+                    f"L{ln}  "
+                    + (txt if len(txt) <= 80 else txt[:77].rstrip() + "…")
+                    + f"  ({ratio:.0%} similar)"
+                )
+                for ln, txt, ratio in nearest
+            )
+        title_next = (
+            " or pass title= to retitle"
+            if title and title in op.find and title not in buffer
+            else ""
+        )
+        cause = f"anchor not found in memory {ref.id} body"
+        if notes:
+            cause += "\n" + "\n".join(notes)
+        return BadInput(
+            cause,
+            next=(
+                f"get(kind='memory', id='me{ref.id}~body'), then retry "
+                f"with an anchor from the body prose{title_next}"
+            ),
+        )
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Search-hit text: the body prose, even when the best-ranked chunk
@@ -4105,7 +4253,8 @@ class MemoryHandler(NumericRefHandler):
             return self._body_text(ref)
         return str(block.text or "")
 
-    def _strip_title_echo(self, body: str, title: str) -> str:
+    @staticmethod
+    def _strip_title_echo(body: str, title: str) -> str:
         """Drop a leading line identified as a legacy title echo.
 
         ``_derive_title`` copies the first non-empty body line into the
@@ -4175,7 +4324,9 @@ class MemoryHandler(NumericRefHandler):
                 )
         return "\n".join(out)
 
-    def _render_hits_table(self, refs: list[Ref]) -> str:
+    def _render_hits_table(
+        self, refs: list[Ref], *, row_tag_prefixes: tuple[str, ...] | None = None
+    ) -> str:
         """List view: ``refs.title`` is now a real title, so show it verbatim
         as the summary and count the body words hidden behind the id.
 
@@ -4204,10 +4355,18 @@ class MemoryHandler(NumericRefHandler):
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
-                    "size": row_size_cell(sizes.get(r.id, 0)),
+                    "size [kB] (default 1kB)": row_size_cell(sizes.get(r.id, 0)),
                 }
             )
-        schema = ["kind", "id", "summary", "body_words", "links", "age", "size"]
+        schema = [
+            "kind",
+            "id",
+            "summary",
+            "body_words",
+            "links",
+            "age",
+            "size [kB] (default 1kB)",
+        ]
         return render_agent_table(rows, schema=schema)
 
     # ── search: body-chunk search + cross-kind hits come from the base
@@ -4427,14 +4586,16 @@ class MemoryHandler(NumericRefHandler):
             # gr631890: the tag's forest — matched nodes whose own
             # part-of parents are unmatched (``spec:*``-shape entries
             # prefix-match inside the view; the exact filter can't
-            # spell them). A listing, so q/mode/scope/status/sort don't
-            # apply; ``under=`` arrives resolved into include_ref_ids.
+            # spell them). A listing, so mode/scope/status/sort don't
+            # apply; ``q=`` filters the roots (gr702042 — agents kept
+            # passing it and meeting a BadInput). ``under=`` arrives
+            # resolved into include_ref_ids.
             from precis.handlers._memory_toc import count_tag_toc, render_tag_toc
 
+            folded_q = fold_match_all_q(q)
             rejected = [
                 name
                 for name, val in (
-                    ("q", fold_match_all_q(q)),
                     ("mode", mode),
                     ("scope", scope),
                     ("status", status),
@@ -4451,6 +4612,7 @@ class MemoryHandler(NumericRefHandler):
                 render_tag_toc(
                     self.store,
                     tags=tags,
+                    q=folded_q,
                     page=page,
                     page_size=page_size,
                     include_ref_ids=include_ref_ids,
@@ -4466,6 +4628,7 @@ class MemoryHandler(NumericRefHandler):
                 count=lambda scope_tags, scope_ids: count_tag_toc(
                     self.store,
                     tags=scope_tags,
+                    q=folded_q,
                     include_ref_ids=scope_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 ),
@@ -4682,7 +4845,9 @@ class MemoryHandler(NumericRefHandler):
 
         ``scope=`` picks where ``q`` matches: ``'title'`` = only the header
         card (title + hook), ``'body'`` = only the body prose, omitted =
-        both. Anything else is refused.
+        both. Dispatch also accepts a memory handle (``scope='me<id>'``)
+        as an alias for ``under=`` to search that memory's subtree.
+        Other values are refused.
 
         ``view='index'`` returns one ``- <Title> (me<id>[, <filename>]) —
         <hook>`` line per best-ranked memory (the session-start index shape;
@@ -4709,7 +4874,7 @@ class MemoryHandler(NumericRefHandler):
         if chunk_scope not in (None, "title", "body"):
             raise BadInput(
                 f"unknown scope {scope!r} for search(kind='memory')",
-                options=["title", "body"],
+                options=["title", "body", "a memory handle (alias of under=)"],
                 next="search(kind='memory', q='<words>', scope='title')",
             )
         if view is None or view == "count":
@@ -4828,6 +4993,7 @@ class MemoryHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         query_vec: list[float] | None = None,
+        row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> list[SearchHit]:
         """Cross-kind stream: the same domain ``SPACE:`` default as
         ``search`` (gr572723) — a domain-bound connection's wildcard
@@ -4849,6 +5015,7 @@ class MemoryHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             query_vec=query_vec,
+            row_tag_prefixes=row_tag_prefixes,
         )
 
     def _rerank_fused(
@@ -4999,279 +5166,6 @@ class MemoryHandler(NumericRefHandler):
             body=body,
             result_count=len(lines),
             result_ids=[rid for rid, _ln in page_rows],
-        )
-
-    # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
-
-    def delete(
-        self,
-        *,
-        id: str | int | None = None,
-        reason: str | None = None,
-        dry_run: bool = False,
-        superseded_by: str | None = None,
-        force: bool = False,
-        **_kw: Any,
-    ) -> Response:
-        """Preview or retire with an explicit disposition for live prose mentions."""
-        return self._delete(
-            id, reason=reason, dry_run=dry_run, superseded_by=superseded_by, force=force
-        )
-
-    def _retire_successor(
-        self, raw: str, ref_id: int, *, conn: Connection
-    ) -> tuple[str, int | None, str]:
-        """Validate a replacement; file- and index-backed successors have no ref."""
-        if raw.startswith("md:"):
-            address = raw.removeprefix("md:")
-            if "~" not in address or not address.rsplit("~", 1)[1]:
-                raise BadInput(
-                    "an md successor requires a docs path and section",
-                    next="superseded_by='md:main/docs/<file>.md~<heading>'",
-                )
-            handler = self.hub.handler_for("md")
-            if handler is None:
-                raise BadInput(
-                    "md successor validation requires the md handler",
-                    next="use a live record handle or enable the md reader",
-                )
-            handler.get(id=address)
-            return raw, None, "md"
-        if raw.startswith("python:"):
-            address = raw.removeprefix("python:")
-            if "::" not in address and "/" not in address:
-                raise BadInput(
-                    "a python successor requires a symbol or file address",
-                    next="superseded_by='python:<alias>::<qualname>' or "
-                    "'python:<alias>/<path>.py'",
-                )
-            handler = self.hub.handler_for("python")
-            if handler is None:
-                raise BadInput(
-                    "python successor validation requires the python handler",
-                    next="use a live record handle or configure python roots",
-                )
-            handler.get(id=address)
-            return raw, None, "python"
-        if raw.isdecimal():
-            raw = f"me{raw}"
-        try:
-            target = parse_link_target(raw, store=self.store)
-        except NotFound as exc:
-            raise BadInput(
-                f"superseded_by must name a live successor: {raw}",
-                next=f"get(id={raw!r})",
-            ) from exc
-        if target.ref_id == ref_id:
-            raise BadInput(
-                "a memory cannot supersede itself",
-                next="superseded_by='<different live handle>'",
-            )
-        row = conn.execute(
-            "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR SHARE",
-            (target.ref_id,),
-        ).fetchone()
-        if row is None:
-            raise BadInput(
-                "superseded_by must name a live successor",
-                next=f"get(id={raw!r})",
-            )
-        formatted = handle_registry.try_format(str(row[0]), target.ref_id)
-        if formatted is None:
-            raise BadInput(
-                f"superseded_by kind {row[0]!r} has no record handle",
-                next="use a live record handle or an md:path~section successor",
-            )
-        address = formatted
-        if target.pos is not None:
-            # The garden's successor resolver follows records and md sections,
-            # not chunks. Refuse rather than store an address it would lose.
-            raise BadInput(
-                "superseded_by cannot name a chunk",
-                next=f"use the record handle {address!r} or an md:path~section successor",
-            )
-        return address, target.ref_id, str(row[0])
-
-    def _delete_successor(
-        self,
-        ref_id: int,
-        meta: dict[str, Any],
-        *,
-        conn: Any,
-        superseded_by: str | None = None,
-        reason: str | None = None,
-    ) -> tuple[str | None, int | None, str | None]:
-        """Resolve the delete route before mutation so garden can snapshot it."""
-        raw_sup = superseded_by or meta.get("superseded_by")
-        if superseded_by is None:
-            inbound: list[str] = []
-            for rid, kind in conn.execute(
-                "SELECT DISTINCT r.ref_id, r.kind FROM links l JOIN refs r "
-                "ON r.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s "
-                "AND l.relation = 'supersedes' AND r.retired_at IS NULL "
-                "AND r.ref_id <> %s ORDER BY r.ref_id",
-                (ref_id, ref_id),
-            ):
-                address = handle_registry.try_format(str(kind), int(rid))
-                if address is not None:
-                    inbound.append(address)
-                    if len(inbound) == 2:
-                        break
-            if len(inbound) > 1:
-                raise BadInput(
-                    "multiple live successors supersede this memory; choose one",
-                    next=[
-                        f"delete(kind='memory', id={ref_id}, superseded_by={address!r})"
-                        for address in inbound
-                    ],
-                )
-            if raw_sup is None and inbound:
-                raw_sup = inbound[0]
-        if raw_sup is None and reason:
-            named = self._reason_named_ref({"reason": reason})
-            if (
-                named is not None
-                and named != ref_id
-                and self.store.get_ref(kind="memory", id=named, conn=conn) is not None
-            ):
-                raw_sup = f"me{named}"
-        if raw_sup is None:
-            return None, None, None
-        return self._retire_successor(str(raw_sup), ref_id, conn=conn)
-
-    def _delete(
-        self,
-        id: str | int | None,
-        *,
-        reason: str | None = None,
-        dry_run: bool = False,
-        superseded_by: str | None = None,
-        force: bool = False,
-    ) -> Response:
-        """Scan, guard, record the redirect and retire atomically; preview writes nothing."""
-        from precis.handlers._memory_retire import scan_mentions
-
-        if id is None:
-            raise BadInput(
-                "delete requires id=",
-                next=f"delete(kind={self.kind!r}, id=N)",
-            )
-        ref_id = self._coerce_id(id)
-        self._resolve_ref_for_delete(ref_id)
-        # Mutation review (gr626866): walk the rely-side graph before the
-        # retire tx severs/migrates its edges.
-        deps = self.store.dependants(ref_id, limit=10)
-        from precis.handlers._dependants_view import (
-            dependants_block,
-            dependants_summary,
-        )
-
-        with self.store.tx() as conn:
-            row = conn.execute(
-                "SELECT retired_at, meta FROM refs WHERE ref_id = %s "
-                "AND kind = 'memory' FOR NO KEY UPDATE",
-                (ref_id,),
-            ).fetchone()
-            if row is None or row[0] is not None:
-                raise Gone(
-                    f"memory {ref_id} is no longer live",
-                    next=f"get(kind='memory', id={ref_id}, view='retired')",
-                )
-            successor_handle, successor, successor_kind = self._delete_successor(
-                ref_id,
-                row[1] or {},
-                conn=conn,
-                superseded_by=superseded_by,
-                reason=reason,
-            )
-            report = scan_mentions(conn, ref_id)
-            receipt = report.render(
-                f"me{ref_id}",
-                datetime.now(UTC).date().isoformat() + " UTC",
-                successor_handle or reason or "retired without a successor",
-            )
-            blocked = report.blocking and successor_handle is None and not force
-            if dry_run:
-                verdict = (
-                    "would refuse: live mentions need superseded_by= or args={'force': True}"
-                    if blocked
-                    else "would retire"
-                )
-                replacement = (
-                    f"; successor {successor_handle}" if successor_handle else ""
-                )
-                return Response(
-                    body=(
-                        f"dry run: {verdict} memory id={ref_id}"
-                        f"{replacement}\n{receipt}\n\n"
-                        + dependants_block(
-                            self.store,
-                            kind=self.kind,
-                            ref_id=ref_id,
-                            id_arg=str(ref_id),
-                            page=deps,
-                        )
-                    )
-                )
-            if blocked:
-                raise BadInput(
-                    f"cannot retire me{ref_id}: {report.blocking} live mention(s)\n{receipt}",
-                    next=[
-                        f"delete(kind='memory', id={ref_id}, superseded_by='<live handle>')",
-                        f"delete(kind='memory', id={ref_id}, args={{'force': True}})",
-                    ],
-                )
-            if successor_handle is not None:
-                self.store.stamp_ref_meta(
-                    ref_id, {"superseded_by": successor_handle}, conn=conn
-                )
-            counts = conn.execute(
-                "SELECT count(*) FILTER (WHERE dst_ref_id = %s"
-                "   AND relation <> 'supersedes')::int,"
-                "       count(*) FILTER (WHERE src_ref_id = %s)::int,"
-                "       count(*) FILTER (WHERE dst_ref_id = %s"
-                "   AND relation = 'supersedes')::int"
-                "  FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
-                (ref_id, ref_id, ref_id, ref_id, ref_id),
-            ).fetchone()
-            n_in, n_out, n_sup = (
-                (int(counts[0]), int(counts[1]), int(counts[2]))
-                if counts
-                else (0, 0, 0)
-            )
-            if successor is not None:
-                moved = self.store.migrate_links(
-                    ref_id, successor, conn=conn, preserve_supersedes=True
-                )
-            else:
-                # Inbound ``supersedes`` edges stay: "new supersedes old"
-                # IS the tombstone trail (dangling_links skips them by
-                # design); the Gone reads it back (gr503546).
-                cur = conn.execute(
-                    "DELETE FROM links WHERE (src_ref_id = %s OR dst_ref_id = %s)"
-                    " AND NOT (dst_ref_id = %s AND relation = 'supersedes')",
-                    (ref_id, ref_id, ref_id),
-                )
-                removed = int(cur.rowcount or 0)
-            self._record_delete_reason(ref_id, reason, conn=conn)
-            self.store.retire_ref(ref_id, conn=conn)
-        if successor is not None:
-            detail = (
-                f"{moved} link(s) migrated to {successor_kind} id={successor} "
-                f"(meta.superseded_by)"
-            )
-        else:
-            kept = f"; {n_sup} supersedes edge(s) kept" if n_sup else ""
-            detail = (
-                f"{n_in} inbound + {n_out} outbound link(s) removed{kept}"
-                if (n_in or n_out or removed or n_sup)
-                else "no links to remove"
-            )
-        return Response(
-            body=(
-                f"deleted {self._sense()} id={ref_id} — {detail}\n{receipt}\n"
-                + dependants_summary(self.store, ref_id=ref_id, page=deps)
-            )
         )
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────

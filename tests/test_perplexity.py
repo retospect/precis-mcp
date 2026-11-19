@@ -1826,7 +1826,7 @@ def test_unknown_view_rejected(websearch: WebsearchHandler) -> None:
     ignored (previously view= passed through unread)."""
     with pytest.raises(BadInput, match="unknown view") as err:
         websearch.get(id="anything", view="bogu")
-    assert err.value.options == ["body"]
+    assert err.value.options == ["body", "links"]
     assert _StubClient.call_count == 0
 
 

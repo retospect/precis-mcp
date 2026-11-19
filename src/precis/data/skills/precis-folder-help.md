@@ -15,6 +15,8 @@ status: active
 
 # precis-folder-help — the `folder` kind
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 A **folder** is an organizational container (ADR 0045): a plain
 numeric ref whose children are the live refs pointing at it via
 `parent_id`. Placement is the *extrinsic* "where do I keep this?"

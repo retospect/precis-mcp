@@ -1233,6 +1233,24 @@ class TestBatchGet:
         assert "first" in resp.body
         assert "second" in resp.body
 
+    def test_legacy_glyph_damage_warns_on_the_matching_passage(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        clean = "The study used 608 samples at 10 mA/cm2 and reported ¼ of them."
+        damaged = "The temperature was 2,000 8C and v ¼ 84:68."
+        paper = _seed_paper(
+            store, slug="legacy-glyph", title="Legacy paper", blocks=[clean, damaged]
+        )
+
+        response = handler.get(id=f"pa{paper}~0..1").body
+        assert response.count("GLYPH-DAMAGED SOURCE") == 1
+        assert response.index(clean) < response.index("GLYPH-DAMAGED SOURCE")
+        assert response.index("GLYPH-DAMAGED SOURCE") < response.index(damaged)
+
+        pc = chunk_handle(store, "legacy-glyph", ord=1)
+        assert "GLYPH-DAMAGED SOURCE" in handler.get(id=pc).body
+        assert "GLYPH-DAMAGED SOURCE" not in handler.get(id=f"pa{paper}~0").body
+
     def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:
         with pytest.raises(BadInput, match="empty"):
             handler.get(id=[])
@@ -1314,22 +1332,36 @@ class TestSearch:
         assert record_handle(store, "tagged-paper") in resp.body
         assert record_handle(store, "untagged-paper") not in resp.body
 
-    def test_search_tags_only_enumerates_matching_papers(
+    def test_search_studytype_filters_computational_and_measured_papers(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        review_id = _seed_paper(
-            store, slug="review-paper", title="A review", doi="10.1/review"
+        simulated_id = _seed_paper(
+            store,
+            slug="simulated-paper",
+            title="Simulated adsorption isotherms",
+            doi="10.1/simulated",
         )
-        store.add_tag(review_id, Tag.open("studytype:review"), set_by="system")
-        other_id = _seed_paper(
-            store, slug="other-paper", title="Not a review", doi="10.1/other"
+        measured_id = _seed_paper(
+            store,
+            slug="measured-paper",
+            title="Measured adsorption isotherms",
+            doi="10.1/measured",
         )
-        store.add_tag(other_id, Tag.open("studytype:synthesis"), set_by="system")
+        store.add_tag(
+            simulated_id, Tag.closed("STUDYTYPE", "computational"), set_by="system"
+        )
+        store.add_tag(
+            measured_id,
+            Tag.closed("STUDYTYPE", "experimental-ensemble"),
+            set_by="system",
+        )
 
-        resp = handler.search(tags=["studytype:review"])
-        assert "A review" in resp.body
-        assert handle_registry.format_handle("paper", review_id) in resp.body
-        assert "Not a review" not in resp.body
+        simulated = handler.search(tags=["STUDYTYPE:computational"]).body
+        measured = handler.search(tags=["STUDYTYPE:experimental-ensemble"]).body
+        assert handle_registry.format_handle("paper", simulated_id) in simulated
+        assert handle_registry.format_handle("paper", measured_id) not in simulated
+        assert handle_registry.format_handle("paper", measured_id) in measured
+        assert handle_registry.format_handle("paper", simulated_id) not in measured
 
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler

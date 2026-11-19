@@ -292,6 +292,48 @@ def _pathway_ref(**meta_overrides: Any) -> _FakeRef:
 
 
 class TestPathwayProfile:
+    def test_kinetics_annotation_from_meta(self) -> None:
+        ref = _pathway_ref(
+            results={
+                "kinetics_v2": {
+                    "tof_mf": 0.01,
+                    "trust": "provisional",
+                    "environment": {"T": 350, "gases": {"inputs": {"H2": 0.2}}},
+                }
+            }
+        )
+        annotation = figures.pathway_kinetics_annotation(ref.meta)
+        assert annotation is not None
+        assert annotation["tof_log10"] == -2
+        assert annotation["method"] == "mean-field"
+        assert annotation["trust"] == "provisional"
+        assert annotation["T"] == 350
+        assert annotation["gases"] == {"H2": 0.2}
+        assert annotation["rls_step"] == "s1→s2"
+        assert annotation["steps"][0] == {"name": "s1→s2", "ea": 0.55, "sigma": None}
+        assert figures.pathway_kinetics_annotation(_pathway_ref().meta) is None
+
+    def test_profile_route_only_drops_side_states(self) -> None:
+        graph = {
+            "nodes": [*_GRAPH3["nodes"], {"id": "side", "rel_energy": 3}],
+            "links": [
+                *_GRAPH3["links"],
+                {"source": "s1", "target": "side", "barrier": 4},
+            ],
+        }
+        full = figures._profile_positions(graph, "s1", "s3", kinetics=True)
+        route = figures._profile_positions(graph, "s1", "s3", route_only=True)
+        assert len(route) < len(full)
+        assert "side" not in {r["label"] for r in route}
+
+    def test_profile_png_has_tof_annotation(self) -> None:
+        ref = _pathway_ref(results={"kinetics_v2": {"tof_chain": 0.01}})
+        png, snapshot = figures.pathway_profile_figure(cast(Any, None), ref)
+        assert png.startswith(_PNG_MAGIC)
+        assert "log10 TOF (/s): -2.0; chain" in snapshot["params"]["annotation"]
+        _, unsolved = figures.pathway_profile_figure(cast(Any, None), _pathway_ref())
+        assert unsolved["params"]["annotation"] == "kinetics not solved"
+
     def test_pathway_profile_figure_png_and_snapshot(self) -> None:
         pathway_ref = _pathway_ref()
         png, snapshot = figures.pathway_profile_figure(

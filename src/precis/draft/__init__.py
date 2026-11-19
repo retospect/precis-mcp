@@ -1,5 +1,7 @@
 """Draft-document machinery shared by the store, handlers, and web reader.
 
+- Cascade recovery emits typed puts in reading order. Child puts use new
+  parent handles because the retired tree stays out of reading order.
 - The structured ``term`` **registry** — glossary, patent
   drawings/parts, and manufacturing components/BOM as one abstraction over
   the ``chunk_kind='term'`` leaf, distinguished by ``meta.registry`` and a

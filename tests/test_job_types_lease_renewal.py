@@ -15,15 +15,21 @@ from precis.workers import hub_refine
 from precis.workers.job_types import reground_claim, taproot_backfill
 
 
-def _ctx(renew: Any, events: list[tuple[str, str]], params: dict) -> Any:
+def _ctx(
+    renew: Any,
+    events: list[tuple[str, str]],
+    params: dict,
+    cancel: Any = lambda: False,
+) -> Any:
     return SimpleNamespace(
+        set_status=lambda s: events.append(("status", s)),
         store=None,
         ref_id=1,
         meta={"params": params},
         append_chunk=lambda k, t: events.append((k, t)),
         set_meta=lambda **_f: None,
         record_failure=lambda r, **_k: events.append(("fail", r)),
-        is_cancel_requested=lambda: False,
+        is_cancel_requested=cancel,
         renew_lease=renew,
     )
 
@@ -86,6 +92,22 @@ def test_taproot_backfill_lost_lease_stops(backfill_seen: list[int]) -> None:
     assert backfill_seen == [1]
     assert not any(k == "job_summary" for k, _ in events)
     assert any("lease lost" in t for _, t in events)
+
+
+def test_taproot_backfill_cancel_stops_at_chunk_boundary(
+    backfill_seen: list[int],
+) -> None:
+    answers = iter([False, True])
+    events: list[tuple[str, str]] = []
+
+    taproot_backfill._dispatch(
+        _ctx(lambda: True, events, {"scope": "x"}, cancel=lambda: next(answers)),
+        None,
+    )
+
+    assert backfill_seen == [1]
+    assert ("status", "cancelled") in events
+    assert not any(k == "job_summary" for k, _ in events)
 
 
 # ── reground_claim verify mode ───────────────────────────────────────────

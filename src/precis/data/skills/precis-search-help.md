@@ -173,6 +173,15 @@ more-relevant is always first. There is no `mode='regex'` on this verb
 pattern hunt elsewhere use `'literal'` (exact substring) or `'lexical'`
 (stemmed full-text).
 
+## Find an exact hub cite in a draft
+
+Scoped `mode='verbatim'` matches substrings: `fi34984` also finds
+`fi349841`. Include the citation brackets to find the exact hub cite:
+
+```python
+search(kind='draft', scope='norr-her-survey', q='[fi34984]', mode='verbatim')
+```
+
 ## The corpus stores one spelling per quantity
 
 ASCII queries are auto-canonicalized — `40 kOhm` finds a claim written

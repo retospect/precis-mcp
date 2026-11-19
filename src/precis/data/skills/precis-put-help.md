@@ -28,7 +28,35 @@ Create by omitting `id=`: the response returns the new ref's handle
 lists them. `mode=` picks the creation door: file kinds
 (markdown/plaintext/tex/python) take `'create'`; the paid-import kinds
 (`websearch`, `perplexity-reasoning`, `perplexity-research`) take
-`'import'`; numeric-ref kinds omit `mode=` — an explicit one is rejected.
+`'import'`. Other kinds gate their own doors: paper `'fetch-si'`,
+structure `'rerun'` / `'neb'` / `'md'` / `'analyze'` / `'trust'`,
+machine `'sync'`. Numeric-ref kinds mostly omit `mode=`. Exceptions:
+gripe accepts `create` / `comment` as confirmation of what `id=` selects;
+job accepts `retry` / `retarget` / `setting` / `wake` / `extend` /
+`garden-reject`; memory accepts `process`; measure accepts `recheck`
+(the extraction-guard recheck door); fleet accepts `report` (collector
+reports only). Todo also has `mode='plan'` for plan minting (see
+`precis-plan-help`).
+
+| Kind | Accepted put modes |
+| --- | --- |
+| markdown | `create` |
+| plaintext | `create` |
+| tex | `create` |
+| python | `create` |
+| websearch | `import` |
+| perplexity-reasoning | `import` |
+| perplexity-research | `import` |
+| paper | `fetch-si` |
+| structure | `rerun`, `neb`, `md`, `analyze`, `trust` |
+| machine | `sync` |
+| gripe | `create`, `comment` |
+| job | `retry`, `retarget`, `setting`, `wake`, `extend`, `garden-reject` |
+| memory | `process` |
+| measure | `recheck` |
+| fleet | `report` |
+
+Todo's plan door is handled outside the declared mode gate.
 
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
@@ -42,10 +70,11 @@ and drops the waiting tag atomically. Tag-only changes stay on
 `tag(add=[...]/remove=[...])`.
 
 `text=` and `body=` are the same prose slot spelled two ways across
-kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
+kinds (finding says `body=`, memory/files say `text=`). On a kind
 that declares only one spelling the other is accepted as an alias, and
-passing both at once errors. `todo` declares both — `text=` is the
-title, `body=` the details — and takes either or both.
+passing both at once errors (memory reads the pair as `text=` title,
+`body=` prose). `todo` and `gripe` declare both — `text=` is the
+title/first line, `body=` the details — and take either or both.
 
 ## Make a retry safe with idem_key
 ## A put timed out — is it safe to retry?
@@ -196,22 +225,26 @@ put(
 Citation is the verifier's output kind. See `precis-citation-help`
 for the verifier loop and the named-kwarg shape.
 
-## Create a markdown file under PRECIS_ROOT
-## Drop a new note file on disk
-## How do I make a new .md file?
+## Write project content in the mesh
+
+Search the project hub before creating content:
 
 ```python
-put(
-    kind="markdown",
-    mode="create",
-    id="notes/proj-fbproj.md",
-    text="# fbproj — project notes\n\n## Goals\n- ...\n",
-)
+search(kind="memory", tags=["project:<slug>"], view="index")
+put(kind="memory", text="<one claim and its evidence>",
+    tags=["project:<slug>"], link="memory:<hub>", rel="part-of")
 ```
 
-`mode='create'` is required for file kinds and is the only accepted
-mode on `put`. `id=` is the path under `PRECIS_ROOT`. Append, insert,
-replace, and find-replace live on `edit`.
+Read back the returned handle and the hub's navigation links. For a bound
+document, edit its draft chunks instead; compile/export only when requested.
+`meta.workspace` names the export home, not the source of project prose.
+See [[precis-memory-help]], [[precis-draft-help]] and [[precis-files-help]].
+
+## Export a markdown file explicitly
+
+After reading the authoritative memory or draft, an explicit file export uses
+`put(kind='markdown', mode='create', id='exports/project.md', text='<export>')`.
+File kinds require `mode='create'`; subsequent artifact edits use `edit`.
 
 ## Create a plaintext, tex, or python file
 ## Drop a new .txt, .tex, or source file

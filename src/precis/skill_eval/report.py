@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from precis.skill_eval.cases import EvalCase, Transcript
+from precis.skill_eval.cases import EvalCase, Transcript, discovery_metrics
 from precis.skill_eval.criteria import check
 from precis.skill_eval.runners import (
     LiveUnavailable,
@@ -22,6 +22,13 @@ from precis.skill_eval.runners import (
 log = logging.getLogger(__name__)
 
 DEFAULT_REPORT_PATH = ".skill-eval-report.json"
+
+#: The paired-run failure classes (gr634773). ``retrieval`` = the skill
+#: works when handed over but the agent failed to find it; ``guidance`` =
+#: the run fails even with the skill supplied, with clean tool calls;
+#: ``tool`` = precis calls errored or the runner crashed; ``unattributed``
+#: = contradictory or partial evidence, never a root cause on its own.
+FAILURE_CLASSES = ("retrieval", "guidance", "tool", "unattributed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +46,76 @@ class CaseResult:
     #: The model that ran the case (the runner's ``.model``); ``None`` on
     #: the fake runner or the runner's default model.
     model: str | None = None
+    #: Which condition produced the row: ``supplied`` (skill text injected)
+    #: or ``discovery`` (no skill text, no slug) — gr634773.
+    condition: str = "supplied"
+    #: Discovery exploration before the first correct call — the number of
+    #: calls and the result bytes they read (``None`` on supplied rows and
+    #: runners that can't measure it).
+    discovery_calls: int | None = None
+    discovery_bytes: int | None = None
+    #: Paired-run failure class (both rows of a failed pair carry it);
+    #: ``None`` when the pair passed or no pairing ran.
+    failure: str | None = None
+    #: The runner's final answer — the retained transcript's reply half.
+    answer: str = ""
+
+
+def _errored(row: CaseResult) -> bool:
+    """Tool-surface failure evidence: a crashed run or a call whose tool
+    result came back an error."""
+    return row.status == "error" or any(
+        r.startswith("call errored:") for r in row.reasons
+    )
+
+
+def classify_failure(supplied: CaseResult, discovery: CaseResult) -> str:
+    """Classify one failed supplied/discovery pair (gr634773).
+
+    Neither condition failing alone proves a root cause, so the classes
+    are conservative: the skill passing *when supplied* pins a discovery
+    failure on retrieval; a clean double failure pins guidance; errored
+    calls or a crashed runner pin the tool surface; everything else —
+    skips, errors, contradictions — stays ``unattributed``.
+    """
+    if discovery.status == "pass":
+        # Includes "no failure at all" (both pass) and the contradictory
+        # supplied-fail/discovery-pass — neither attributes a cause.
+        return "unattributed"
+    if supplied.status == "pass":
+        return "retrieval"
+    if "skip" in (supplied.status, discovery.status):
+        return "unattributed"
+    if _errored(supplied) or _errored(discovery):
+        return "tool"
+    return "guidance"
+
+
+def classify_pairs(cases: list[CaseResult]) -> dict[tuple[str | None, str], str]:
+    """Pair supplied/discovery rows by ``(model, case_id)``, stamp
+    ``failure`` on both rows of each failed pair, and return the
+    classifications. Rows whose counterpart is missing (a skipped
+    condition) are left unstamped."""
+    supplied = {
+        (c.model, c.case_id): i
+        for i, c in enumerate(cases)
+        if c.condition == "supplied"
+    }
+    out: dict[tuple[str | None, str], str] = {}
+    for i, c in enumerate(cases):
+        if c.condition != "discovery":
+            continue
+        j = supplied.get((c.model, c.case_id))
+        if j is None:
+            continue
+        s = cases[j]
+        if s.status == "pass" and c.status == "pass":
+            continue
+        cls = classify_failure(s, c)
+        out[(c.model, c.case_id)] = cls
+        cases[i] = replace(c, failure=cls)
+        cases[j] = replace(s, failure=cls)
+    return out
 
 
 @dataclass(slots=True)
@@ -47,6 +124,9 @@ class Report:
     #: ``ok`` (cases ran) | ``skipped`` (no case ran: runner unavailable, no cases)
     status: str = "ok"
     reason: str | None = None
+    #: ``supplied`` | ``discovery`` | ``paired`` — how prompts were built
+    #: (gr634773); ``paired`` means each case ran under both conditions.
+    condition: str = "supplied"
     started_at: str = field(
         default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds")
     )
@@ -94,7 +174,13 @@ class Report:
         lines = [f"skill-eval [{self.runner}] {self.started_at}"]
         for c in self.cases:
             cost = f"${c.cost_usd:.3f}" if c.cost_usd is not None else "-"
-            note = "; ".join(c.reasons)
+            notes = list(c.reasons)
+            if c.discovery_calls is not None:
+                notes.append(
+                    f"discovery {c.discovery_calls} calls/"
+                    f"{c.discovery_bytes}B to first correct call"
+                )
+            note = "; ".join(notes)
             lines.append(
                 f"{c.case_id:<{width}}  {c.status.upper():<5}  {cost:>7}  {note}"
             )
@@ -113,6 +199,30 @@ class Report:
                     lines.append(
                         f"  {model:<{width}}  {st} subtasks  "
                         f"{b['pass']}/{b['total']}  ({b['pass'] / b['total']:.0%})"
+                    )
+        if self.condition == "paired":
+            pairs: dict[tuple[str | None, str], dict[str, CaseResult]] = {}
+            for c in self.cases:
+                pairs.setdefault((c.model, c.case_id), {})[c.condition] = c
+            failed = {
+                key: rows
+                for key, rows in pairs.items()
+                if any(r.failure is not None for r in rows.values())
+            }
+            if failed:
+                lines.append("paired failures:")
+                for pmodel, cid in sorted(failed, key=lambda k: (k[1], k[0] or "")):
+                    rows = failed[(pmodel, cid)]
+                    s_row = rows.get("supplied")
+                    d_row = rows.get("discovery")
+                    fail_cls = next(
+                        (r.failure for r in rows.values() if r.failure is not None),
+                        None,
+                    )
+                    lines.append(
+                        f"  {cid}  supplied={s_row.status.upper() if s_row else '-'}"
+                        f" discovery={d_row.status.upper() if d_row else '-'}"
+                        f"  {fail_cls}"
                     )
         lines.append(
             f"{s['pass']} pass, {s['fail']} fail, {s['error']} error, "
@@ -141,9 +251,14 @@ def run_cases(
 
     A :class:`LiveUnavailable` from the runner marks the whole run
     ``skipped`` (nothing scored); :class:`RunBudgetExhausted` skips the
-    remaining cases; any other exception is that case's ``error``.
+    remaining cases; any other exception is that case's ``error``. The
+    report's ``condition`` comes from the runner (``supplied`` unless it
+    declares one); discovery-condition rows carry the exploration metrics
+    — calls and result bytes before the first correct call.
     """
-    report = Report(runner=runner.name)
+    report = Report(
+        runner=runner.name, condition=getattr(runner, "condition", "supplied")
+    )
     pending = list(cases)
     if not pending:
         report.status, report.reason = "skipped", "no cases selected"
@@ -154,8 +269,15 @@ def run_cases(
         return report
     model = getattr(runner, "model", None)
     # A runner may own its prompt contract (the executed runner's *call
-    # the tools* brief vs. the dry-run's declared-JSON one).
-    prompt_fn = getattr(runner, "build_prompt", None) or build_prompt
+    # the tools* brief vs. the dry-run's declared-JSON one); a runner
+    # without one still gets the dry-run builder, honouring its condition.
+    prompt_fn = getattr(runner, "build_prompt", None)
+    if prompt_fn is None:
+        condition = getattr(runner, "condition", "supplied")
+
+        def prompt_fn(case: EvalCase, texts: dict[str, str]) -> str:
+            return build_prompt(case, texts, condition=condition)
+
     budget_out: str | None = None
     for case in pending:
         if budget_out is not None:
@@ -167,6 +289,7 @@ def run_cases(
                     (budget_out,),
                     subtasks=case.subtasks,
                     model=model,
+                    condition=report.condition,
                 )
             )
             continue
@@ -186,6 +309,7 @@ def run_cases(
                     (budget_out,),
                     subtasks=case.subtasks,
                     model=model,
+                    condition=report.condition,
                 )
             )
             continue
@@ -199,12 +323,16 @@ def run_cases(
                     (str(exc),),
                     subtasks=case.subtasks,
                     model=model,
+                    condition=report.condition,
                 )
             )
             continue
         verdict = check(case.criterion, transcript)
         if transcript.cost_usd is not None:
             report.spent_usd += transcript.cost_usd
+        dc = db = None
+        if report.condition == "discovery":
+            dc, db = discovery_metrics(case.criterion, transcript)
         report.cases.append(
             CaseResult(
                 case.case_id,
@@ -215,6 +343,10 @@ def run_cases(
                 tuple(c.render() for c in transcript.calls),
                 subtasks=case.subtasks,
                 model=model,
+                condition=report.condition,
+                discovery_calls=dc,
+                discovery_bytes=db,
+                answer=transcript.answer,
             )
         )
     return report
@@ -222,8 +354,11 @@ def run_cases(
 
 __all__ = [
     "DEFAULT_REPORT_PATH",
+    "FAILURE_CLASSES",
     "CaseResult",
     "Report",
+    "classify_failure",
+    "classify_pairs",
     "run_cases",
     "shipped_skill_text",
 ]

@@ -1,6 +1,5 @@
 """``se_simp`` job_type — the enqueued half of
-``realize(block=..., strategy='simp', ...)`` (docs/backlog/
-structural-solution-space.md "Slice 4 bridge").
+``realize(block=..., strategy='simp', ...)`` (me695531 "Slice 4 bridge").
 
 The op (:func:`precis_se.simp_bridge.prepare_simp`, run inside
 ``SeHandler.put``/``edit``) only validates and enqueues; this job does

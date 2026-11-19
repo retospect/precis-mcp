@@ -1058,7 +1058,7 @@
              overrideRetraction: false,
              placeholderFigures: false,
              submissionCopy: false,
-             forceRecheck: false,
+             retractionScope: 'stale',
              retraction: null,
              retractionChecking: false,
              retractionError: null,
@@ -1118,7 +1118,7 @@
                this.retractionError = null;
                try {
                  const body = new URLSearchParams();
-                 if (this.forceRecheck) body.set('force', '1');
+                 body.set('retraction_check', this.retractionScope);
                  const r = await fetch('/drafts/{{ ident }}/retraction-check', { method: 'POST', body });
                  const data = await r.json();
                  if (data.ok === false) { this.retractionError = data.error || 'check failed'; }
@@ -1180,6 +1180,7 @@
              exportQuery(extra) {
                const p = new URLSearchParams();
                p.set('audience', this.audience);
+               p.set('retraction_check', this.retractionScope);
                if (this.withSources) p.set('sources', '1');
                if (this.overrideRetraction) p.set('ignore_retractions', '1');
                if (this.placeholderFigures) p.set('placeholder_figures', '1');
@@ -1274,14 +1275,20 @@
           </div>
         </template>
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <button type="button" @click="checkRetraction()" :disabled="retractionChecking"
+          <span x-show="retraction" x-text="retraction ? ((retraction.coverage_entries[retractionScope][0] || [retraction.coverage])[0]) : ''"
+                :class="retraction && (retraction.coverage_entries[retractionScope][0] || [null, false])[1] ? 'text-danger' : 'text-fg-subtle'"></span>
+          <button type="button" @click="checkRetraction()" :disabled="retractionChecking || retractionScope === 'none'"
                   class="text-fg-subtle underline hover:text-fg disabled:opacity-50"
                   title="live-check every cited paper against Crossref for retraction/correction notices (TTL-gated)">
             <span x-text="retractionChecking ? 'checking…' : 'check retractions'"></span>
           </button>
           <label class="flex items-center gap-1 text-fg-faint"
-                 title="ignore the 30-day cache and re-check every cite now">
-            <input type="checkbox" x-model="forceRecheck" class="h-3 w-3"><span>force</span>
+                 title="Choose all citations, checks older than 30 days, or no live checks">
+            <select x-model="retractionScope" aria-label="Retraction check scope" class="bg-surface text-fg">
+              <option value="all">check all</option>
+              <option value="stale">older than 30 days</option>
+              <option value="none">none</option>
+            </select>
           </label>
           <span x-show="retractionError" x-text="retractionError" class="text-danger"></span>
         </div>
@@ -1301,6 +1308,7 @@
              class="text-fg-subtle underline hover:text-fg">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
             <input type="hidden" name="audience" :value="audience">
+            <input type="hidden" name="retraction_check" :value="retractionScope">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
             <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
             <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">

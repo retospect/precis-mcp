@@ -857,6 +857,7 @@ def _shape_fr(fr: Any, *, trusted: bool, sort: tuple[str, str] | None) -> Any:
         fr = replace(
             fr,
             frontier=[c for c in fr.frontier if candidate_trusted(c) is True],
+            pass_frontier=[c for c in fr.pass_frontier if candidate_trusted(c) is True],
             dominated=[c for c in fr.dominated if candidate_trusted(c) is True],
             provisional=[
                 pc for pc in fr.provisional if candidate_trusted(pc.candidate) is True
@@ -2726,7 +2727,10 @@ class QuestHandler(NumericRefHandler):
                 str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id)
             )
             star = " ★ needs-experiment" if graduated else ""
-            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}"
+            note = frontier_mod.assurance_note(c)
+            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}" + (
+                f" — {note}" if note else ""
+            )
 
         def _fmt_provisional(pc: frontier_mod.ProvisionalCandidate) -> str:
             c = pc.candidate
@@ -2807,6 +2811,11 @@ class QuestHandler(NumericRefHandler):
                 frontier_rows,
             )
         ]
+        if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+            bands.insert(
+                0, ("── PASS-only Pareto set ──", [_fmt(c) for c in fr.pass_frontier])
+            )
+            bands[1] = ("── PASS+WARN Pareto set ──", frontier_rows)
         if ladder_band is not None:
             bands.append(ladder_band)
         if fr.dominated:

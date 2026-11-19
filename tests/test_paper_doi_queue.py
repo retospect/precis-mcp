@@ -135,6 +135,22 @@ def _mint_terminal_job(
 # ---------------------------------------------------------------------------
 
 
+def test_doi_status_reports_availability_without_queuing(
+    store: Store, handler: PaperHandler
+) -> None:
+    held_doi = "10.1111/jnc.13915"
+    ref_id = _seed_paper(store, doi=held_doi)
+
+    held = handler.get(id=f"https://doi.org/{held_doi}", view="status")
+    missing = handler.get(id=DOI, view="status")
+
+    assert f"https://doi.org/{held_doi} -> pa{ref_id}" in held.body
+    assert "full-text" in held.body
+    assert f"{DOI}  unresolved" in missing.body
+    assert not _jobs(store)
+    assert _stub_for_doi(store, DOI) is None
+
+
 class TestUnheldDoiGetQueues:
     def test_queues_job_and_names_it(self, store: Store, handler: PaperHandler) -> None:
         resp = handler.get(id=DOI)

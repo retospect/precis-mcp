@@ -183,7 +183,8 @@ Two small page-now passes document against this skill:
 - `quota_check` refreshes each host's Claude OAuth utilisation snapshot
   and raises `quota_check:auth/<host>:claude-oauth` (critical) when a
   host's `claude-oauth` credential is expired or unreadable — agent
-  ticks there fail until it is renewed.
+  ticks there fail until an operator replaces the vault token
+  `CLAUDE_CODE_OAUTH_TOKEN` (see the alert's triage line).
 - `disk_check` raises `disk_check/<host>:<path>` when free disk on a
   watched path drops under threshold.
 

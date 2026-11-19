@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from precis_web.routes.drive import _tag_rows
+from precis_web.routes.drive import _TAG_STRIP_SIZE, _tag_chips, _tag_rows
 from precis_web.routes.items import _PAGE_SIZE
 
 
@@ -54,9 +54,63 @@ def test_tag_rows_browse_lists_tags_linking_to_filtered_drive() -> None:
     assert rows[1]["open_url"] == "/drive?tag=carbon&k=paper"
 
 
+def test_tag_rows_offer_delete_outside_protected_namespaces() -> None:
+    """The retired ``/tags`` leaderboard's cluster-wide wipe rides the
+    tag row (gr636493): ``POST /tags/delete`` for open/machine axes,
+    never for the structural namespaces the handlers rely on."""
+    rows, _ = _tag_rows(_SmallStore(), "", 1, ["paper"])
+    assert rows[0]["actions"] == []  # STATUS is protected
+    (action,) = rows[1]["actions"]
+    assert action["type"] == "post"
+    assert action["url"] == "/tags/delete"
+    assert action["fields"]["namespace"] == "OPEN"
+    assert action["fields"]["value"] == "carbon"
+
+
+def test_tag_chips_strip_pins_kinds_and_caps() -> None:
+    """Mixed selection renders a chip strip, not rows (gr636493): the
+    links pin the ref kinds like tag rows do, and an over-cap roster
+    adds an "all tags →" chip to the full ``k=tag`` view."""
+    chips = _tag_chips(_TagStore(), "", ["paper", "draft"])
+    assert len(chips) == _TAG_STRIP_SIZE + 1
+    assert chips[0]["label"] == "NS0:v0"
+    assert chips[0]["n"] == 0
+    assert chips[0]["href"] == "/drive?tag=NS0%3Av0&k=paper&k=draft"
+    assert chips[-1]["label"] == "all tags →"
+    assert chips[-1]["href"] == "/drive?k=tag"
+
+
+def test_tag_chips_strip_uses_substring_match() -> None:
+    chips = _tag_chips(_SmallStore(), "carb", ["paper"])
+    assert [c["label"] for c in chips] == ["OPEN:carbon"]
+    assert chips[0]["href"] == "/drive?tag=carbon&k=paper"
+
+
 def test_tag_rows_link_pins_every_ref_kind_in_order() -> None:
     rows, _ = _tag_rows(_SmallStore(), "", 1, ["paper", "draft"])
     assert rows[0]["open_url"] == "/drive?tag=STATUS%3Adone&k=paper&k=draft"
+
+
+def test_tag_rows_lowercase_namespace_spells_exact_axis() -> None:
+    """gr636493 review (td697200): a stored lowercase axis like
+    ``tier`` can't ride the plain ``ns:value`` spelling — the parser
+    expands it to the OPEN/FLAG pair, which never matches the stored
+    row. The link carries the ``=ns:value`` exact escape; the label
+    and title stay readable."""
+
+    class _TierStore:
+        def list_all_tags(self, *, page: int = 1, page_size: int = 50):
+            return [("tier", "dream", 7)][:page_size]
+
+        def suggest_tags(self, q: str, *, limit: int = 10):
+            return []
+
+    rows, _ = _tag_rows(_TierStore(), "", 1, ["paper"])
+    assert rows[0]["title"] == "tier:dream"
+    assert rows[0]["open_url"] == "/drive?tag=%3Dtier%3Adream&k=paper"
+    chips = _tag_chips(_TierStore(), "", ["paper"])
+    assert chips[0]["label"] == "tier:dream"
+    assert chips[0]["href"] == "/drive?tag=%3Dtier%3Adream&k=paper"
 
 
 def test_tag_rows_pages_do_not_skip_or_repeat() -> None:

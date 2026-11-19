@@ -96,7 +96,10 @@ started before `source_drift` (or `served_sha`) existed renders no such
 row and no WARN. Absence means the process is older than the field, so
 it is stale by definition and cannot tell you by how much. Do not read a
 missing row as `none`. Reconnect (`/mcp` → the server → reconnect) to
-land on the shared server.
+land on the shared server. If the warning persists, report it to Reto,
+the deployment owner, with `served_sha`, `source_drift`, `build_age` and
+the WARN lines. Refreshing the server belongs to the deployment owner;
+it is not the calling agent's job. Reconnecting does not deploy code.
 
 ## What version am I running?
 ## What version of precis-mcp is this?
@@ -168,6 +171,24 @@ packages*: `current`, `⚠ N migration(s) pending (first:
 rolling-deploy peer migrated ahead). A pending `schema_state` means the
 server booted onto a DB a migration behind — expect missing columns/tables
 for whatever the pending migration adds until the migration lands.
+
+## How do I look up a table's columns?
+
+Read the schema reference through `md` ([[precis-md-help]]):
+
+```python
+get(kind="md")  # discover mounted root aliases
+get(kind="md", id="main/docs/reference/schema.md")  # table headings
+get(kind="md", id="main/docs/reference/schema.md~refs")  # columns, types, constraints
+```
+
+Use the root alias returned by the first call: a checkout root uses
+`<alias>/docs/reference/schema.md`; a docs-only root uses
+`<alias>/reference/schema.md`. The heading selector is the table name.
+This is a generated reference with its source date in the file, not live
+schema introspection; compare `schema_state` above when diagnosing drift.
+If no mounted root contains it, report the missing schema reference to
+Reto; a local checkout is not required by this read route.
 
 ## What container am I running in?
 ## What's the container hostname?

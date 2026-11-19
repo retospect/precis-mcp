@@ -141,10 +141,11 @@ a `+1 (<first line>): <text>` comment; the ack says so.
 <!-- write -->
 It names `args={'new': True}` as the bypass if you meant a standalone
 gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
-making it the keeper — but minting takes a stronger match than merging
-(two pattern hits or a title hit; one incidental body hit files
-standalone), and a filing carrying `thread:<slug>` only ever joins a
-keeper inside that same thread. Several matches file normally — the ack
+making it the keeper. Minting and merging both need two distinct pattern
+hits or a title hit; one incidental body hit files standalone. Filings
+over 1,500 characters or carrying a `spec:` line never merge. A merge
+echoes your tags in its comment and leaves keeper tags unchanged. A filing
+carrying `thread:<slug>` only ever joins a keeper inside that same thread. Several matches file normally — the ack
 lists them (add the one you meant as `theme:<slug>` yourself if you want
 it on a keeper). Comments (`put(id=N, …)`) never match.
 <!-- /write -->
@@ -152,8 +153,8 @@ it on a keeper). Comments (`put(id=N, …)`) never match.
 ```python
 put(kind="gripe", text="scripts/test <file> -q waits ~25s on container bring-up")
 <!-- write -->
-# → merged into gr514478 (theme test-speed); to file separately anyway
-#   pass args={'new': True}
+# → NOT filed as a new gripe: merged into gr514478 (theme test-speed) as comment 1.
+# next: repeat this put with args={'new': True}
 <!-- /write -->
 ```
 
@@ -251,6 +252,11 @@ triage reads that need the title, not just the id:
 search(kind="gripe", tags=["STATUS:open"], view="list", page_size=100)
 ```
 
+Search rows default to `cluster:` chips. Choose open-tag prefixes with
+`args={'tag_prefixes': 'thread,fix,reto'}` on table or `view='list'`
+searches. The same argument appends those chips to default batch
+`get(id=[...])` summaries; omission keeps the existing summary.
+
 `args={'id_min': N}` / `args={'id_max': M}` bound any search to a
 ref-id range — a lone bound is legal — so "open gripes filed since
 gr514000" is `args={'id_min': 514000}`. The range applies on the
@@ -306,19 +312,28 @@ tag(kind="gripe", id=N, add=["STATUS:parked"],
 put(kind="gripe", id=N, tags=["STATUS:parked"], args={"until": "td456"})
 put(kind="gripe", id=N, tags=["STATUS:parked"],
     args={"until": "2026-12-01"})
-# spec_landed's value is a spec's repo path — the id this read takes:
-get(kind="md", id="docs/backlog/<slug>.md")
+# spec_landed's value is a graph handle — the spec root or its plan
+# todo (specs live in graph memory; there is no repo path to name).
+# On put the condition rides in args= — meta= is tag's carrier:
+put(kind="gripe", id=N, tags=["STATUS:parked"],
+    args={"until": {"type": "spec_landed", "value": "me<spec root>"}})
+get(kind="memory", id=me<N>)             # the spec root, names its plan todo
+get(kind="todo", id=td<N>, view="tree")  # the plan and its slices
 ```
 
 Condition types: `ref_done` (gr/td handle; met when that ref reaches a
 terminal STATUS), `sha_in_prod` (a hex sha; met once it is in the
-recorded prod head), `spec_landed` (a spec's repo path — the `id=` an
-`md` get takes, as above; the wake pass can't see the repo, so unpark
-by hand or use `text`), `date` (ISO-8601; met at that UTC instant),
+recorded prod head), `spec_landed` (a spec root `me<N>` or its plan
+todo `td<N>`; met when the todo reaches `STATUS:done` — the slice
+landed; `won't-do`/`auto-timeout` do not count — with `me<N>` resolving
+through the spec's `plan-of` link, so
+the wake pass evaluates it from the DB), `date` (ISO-8601; met at that
+UTC instant),
 `text` (free
 text — the cheapest tier judges met/not_met/unsure from the newest
 comments; unsure = not met). Shorthands: `gr<N>`/`td<N>` → `ref_done`,
-a 9–40-hex sha → `sha_in_prod`, an ISO date → `date`, anything else →
+`me<N>` → `spec_landed`, a 9–40-hex sha → `sha_in_prod`, an ISO date →
+`date`, anything else →
 `text`. `get(kind="gripe", id="/parked")` lists the shelf with each
 condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 
@@ -363,6 +378,13 @@ comments — a page that can't hold the rest names the
 Plain `view='full'` is the bounded complete read: a long body clips
 naming `view='body'`, and comments the page can't hold are elided by
 ord with the windowed call named. `view='log'` remains the audit log.
+## Read several gripes in one call
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —
@@ -573,7 +595,13 @@ routes, and its tags decide which.
 `fix:skill`, `fix:docs`, `fix:web`, `fix:mcp`) and no hold tag, mints a
 plan and leaves a `dispatch:` comment naming the plan root
 ([[precis-work-help]] § "How does a gripe reach a build lane by
-itself?"). To send one gripe yourself:
+itself?"). A `blocked-by` link — to a todo or another gripe — sequences
+the gripe (gr656970): while the blocker is open the intake skips the
+gripe, and it becomes dispatchable once the blocker reaches a terminal
+STATUS; a blocker linked after the chain minted still holds its queued
+build at claim. The work board row names the blocker as
+`after <handle>`. To
+send one gripe yourself:
 
 ```python
 put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 42})
@@ -965,3 +993,19 @@ link or comment the recovery note onto the surviving ref instead.
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds
 - [[precis-todo-help]] — promote a gripe to a todo
+
+## Origin classification
+
+Filings and triage infer the open tag `origin-class:human`,
+`origin-class:self-improvement` or `origin-class:specification` from explicit
+filing tags, then the first line. Known human writer context also counts.
+Unknown provenance stays untagged. An existing origin-class tag is preserved;
+use `tag` to remove the old value and add a corrected one.
+
+Filter with `search(kind="gripe", tags=["origin-class:human"])`;
+count with `search(kind="gripe", view="count",
+args={"group_by": "tag:origin-class"})`.
+
+`precis gripe origin-backfill --status done` reports counts and unclassified
+handles without writes. Review the report, then pass `--apply` to stamp
+classifiable rows. Existing classifications remain untouched.

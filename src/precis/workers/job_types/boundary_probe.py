@@ -50,6 +50,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis.workers import admission
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import run_slice as _rs
@@ -469,26 +470,44 @@ def _rm_tagged(tag: str) -> None:
 
 
 def _run_probe(
-    run: dict[str, Any], tree: Path, image: str, *, name: str, tag: str
+    run: dict[str, Any],
+    tree: Path,
+    image: str,
+    *,
+    name: str,
+    tag: str,
+    store: Any = None,
 ) -> tuple[int | None, str]:
     """One containerized probe → ``(exit code or None, stdout+stderr)``.
     A timed-out or crashed ``docker run`` client leaves the container
     running server-side, so both paths force-remove ``name`` first
-    (td598968)."""
+    (td598968).
+
+    Admitted when a ``store`` is at hand (gr657245) — a probe builds and
+    runs containers, real host load. A capacity refusal reads as a
+    failed probe (the job retries), never raises through the plan."""
     argv = _container_argv(str(run["file"]), tree, image, name=name, tag=tag)
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=2000, mem_mb=4096, wall_s=float(_PROBE_TIMEOUT_S)
+    )
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return None, f"probe exceeded {_PROBE_TIMEOUT_S}s" + _rm_container(name)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"container launch failed: {exc}" + _rm_container(name)
+        with admission.hold(store, host, footprint, f"{host}:{os.getpid()}"):
+            try:
+                proc = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=_PROBE_TIMEOUT_S,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return None, f"probe exceeded {_PROBE_TIMEOUT_S}s" + _rm_container(name)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return None, f"container launch failed: {exc}" + _rm_container(name)
+    except admission.Refused as exc:
+        return None, f"probe deferred, host at capacity: {exc}"
     out = (proc.stdout or "") + (
         f"\n--- stderr ---\n{proc.stderr}" if proc.stderr else ""
     )
@@ -581,7 +600,17 @@ def submit(ctx: Any, spec: Any) -> Any:
             log=log_path,
             exit_file=exit_file,
             env=_child_env(),
+            store=ctx.store,
+            work_class="boundary_probe",
         )
+    except admission.Refused as exc:
+        # Host capacity, not a boundary verdict: fail soft so the
+        # scheduler retries the probe (gr657245).
+        log.warning("%s: probe child launch deferred: %s", NAME, exc)
+        ctx.record_failure(
+            f"{NAME}: probe child launch deferred, host at capacity: {exc}"
+        )
+        return None
     except Exception as exc:
         log.warning("%s: probe child launch failed", NAME, exc_info=True)
         ctx.record_failure(f"{NAME}: probe child launch failed: {exc}")

@@ -2478,6 +2478,8 @@ _KINETICS_GATED_STASH_KEYS: tuple[str, ...] = (
 #: flipped ``barrier_trusted`` back to True over the seed-blocked neb
 #: barrier the candidate still carried).
 _BARRIER_SCOPED_QUALITY_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier_trusted",
     "barrier_blocked_by",
     "barrier_marginal_count",
@@ -2493,6 +2495,8 @@ _BARRIER_SCOPED_QUALITY_KEYS: tuple[str, ...] = (
 #: (an absurd 12 eV job's ``barrier_absurd`` would otherwise flag the
 #: kept 0.6 eV trusted value on ``view='trust'``; neb-s6 must-fix 1).
 _LOSING_JOB_FLAG_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier_trusted",
     "barrier_blocked_by",
     "barrier_marginal_count",
@@ -3034,7 +3038,7 @@ def _flag_few_independent_seeds(
     # evidence the current engine never produced, so it names
     # ``engine:stale`` (the dominant reason) rather than a seed count.
     # The restale pass re-dispatches it on the current token.
-    if stale_engine:
+    if stale_engine and (blk is None or blk.startswith("seeds:")):
         blk = "engine:stale"
     if blk is None:
         if "barrier" in measures:
@@ -3043,6 +3047,65 @@ def _flag_few_independent_seeds(
     measures["barrier_trusted"] = False
     measures["barrier_seed_blocker"] = blk
     return blk
+
+
+def _stamp_barrier_assurance(
+    pw_meta: dict[str, Any],
+    measures: dict[str, Any],
+    *,
+    current_engine: str | None = None,
+) -> None:
+    """Attach assurance to this barrier only, without granting strict credit."""
+    if "barrier" not in measures:
+        return
+    # Rows that predate the harvest-time absurd guard reach here unflagged
+    # (frontier's read-time stamp); a nonphysical magnitude is never WARN.
+    _flag_absurd_barrier(measures)
+    results = pw_meta.get("results") or {}
+    records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
+    engine = pw_meta.get("autocatpath_version")
+    scope = trust_gate.route_scope(results)
+    thresholds = trust_gate.thresholds_from(records, pw_meta.get("config"))
+    rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+    rows += trust_gate.precis_guard_rows(
+        measures,
+        barrier_ea=_num_measure(measures.get("barrier")),
+        rate_limit_std=None,
+        low_confidence=bool(measures.get("barrier_low_confidence")),
+        thresholds=thresholds,
+        engine=engine,
+        current_engine=current_engine or _autocatpath_current_version(),
+    )
+    blocker = measures.get("barrier_seed_blocker")
+    reasons = []
+    edges = results.get("edges") or {}
+    if isinstance(edges, dict) and any(
+        isinstance(edge, dict) and edge.get("bep") and not edge.get("barrier")
+        for name, edge in edges.items()
+        if scope[0] and name in scope[0]
+    ):
+        reasons.append("bep_estimated")
+    if blocker in ("seeds:1-independent", "engine:stale"):
+        reasons.append(str(blocker))
+    elif blocker:
+        rows.append({"gate": str(blocker), "verdict": "fail", "blocking": 1})
+    for key in ("barrier_neb_failed", "barrier_desorbed", "barrier_wrong_site"):
+        if measures.get(key):
+            rows.append({"gate": key, "verdict": "fail", "blocking": 1})
+    tier, why = trust_gate.barrier_assurance(
+        rows,
+        trusted=measures.get("barrier_trusted") is True,
+        reasons=reasons,
+        records=records,
+        scope=scope,
+        engine=engine,
+    )
+    if tier == "WARN" and not engine:
+        tier, why = "FAIL", ["engine:unknown"]
+    measures["barrier_assurance"] = tier
+    measures["barrier_assurance_reasons"] = why
+    if tier == "FAIL" or tier == "WARN":
+        measures["barrier_trusted"] = False
 
 
 def _barrier_anchor(
@@ -3458,6 +3521,31 @@ def _struct_neb_measures_from_run(
     barrier = _num_measure(run.get("barrier_fwd_ev"))
     if barrier is not None:
         out["barrier"] = barrier
+        assurance_records = [r for r in records if isinstance(r, dict)]
+        # One valid start weakens independence, not saddle verification.
+        without_multistart = [
+            r for r in assurance_records if r.get("check") != "multistart"
+        ]
+        if len(
+            union if union is not None else (own_seeds or {})
+        ) == 1 and not _neb_union_blocked(without_multistart):
+            out["barrier_seed_blocker"] = "seeds:1-independent"
+            out["barrier_trusted"] = False
+            assurance_records = without_multistart
+        _stamp_barrier_assurance(
+            {"autocatpath_version": engine, "results": {"trust": assurance_records}},
+            out,
+            current_engine=current,
+        )
+        if out.get("barrier_assurance") == "WARN" and (
+            not own_seeds
+            or not any(
+                r.get("check") == "frequency" and r.get("verdict") == "pass"
+                for r in assurance_records
+            )
+        ):
+            out["barrier_assurance"] = "FAIL"
+            out["barrier_assurance_reasons"] = ["seed/frequency:unverified"]
     return out
 
 
@@ -3473,6 +3561,8 @@ def _neb_edge_entry(run: Mapping[str, Any], measures: dict[str, Any]) -> dict[st
         "engine": run.get("engine"),
         "barrier": measures["barrier"],
         "trusted": bool(measures.get("barrier_trusted")),
+        "barrier_assurance": measures.get("barrier_assurance"),
+        "barrier_assurance_reasons": measures.get("barrier_assurance_reasons") or [],
         "warnings": list(measures.get("warnings") or []),
         "barrier_neb_failed": int(measures.get("barrier_neb_failed") or 0),
         "barrier_desorbed": int(measures.get("barrier_desorbed") or 0),
@@ -3552,7 +3642,12 @@ def _neb_candidate_stamp(
             and candidate_meta.get("barrier_source") != "struct_neb"
         ):
             return None  # the trusted autocatpath barrier stands
-        pick = max(entries, key=lambda e: int(e.get("neb_run_id") or 0))
+        warning_edges = [e for e in entries if e.get("barrier_assurance") == "WARN"]
+        pick = (
+            max(warning_edges, key=lambda e: float(e["barrier"]))
+            if warning_edges
+            else max(entries, key=lambda e: int(e.get("neb_run_id") or 0))
+        )
     warnings = list(pick.get("warnings") or [])
     unknown_engine = any(e.get("trusted") and _engine(e) is None for e in entries)
     if not trusted_edges:
@@ -3581,6 +3676,16 @@ def _neb_candidate_stamp(
     stamp: dict[str, Any] = {
         "barrier": float(pick["barrier"]),
         "barrier_trusted": bool(trusted_edges),
+        "barrier_assurance": "PASS"
+        if trusted_edges
+        else (pick.get("barrier_assurance") or "FAIL"),
+        "barrier_assurance_reasons": []
+        if trusted_edges
+        else (
+            pick.get("barrier_assurance_reasons")
+            or blocked_by
+            or ["strict gate refused"]
+        ),
         "barrier_source": "struct_neb",
         "barrier_fidelity": "struct_neb",
         "barrier_pathway_ref_id": None,
@@ -3613,6 +3718,8 @@ def _neb_candidate_stamp(
         # self-consistent and the sel_dirty compare quiet.
         stamp["barrier_trusted"] = False
         stamp["barrier_twin_disagreement"] = twin
+        stamp["barrier_assurance"] = "FAIL"
+        stamp["barrier_assurance_reasons"] = ["twin disagreement"]
     return stamp
 
 
@@ -4894,6 +5001,8 @@ def harvest_measures(
                     measures["barrier_trusted"] = False
                     blocked = list(measures.get("barrier_blocked_by") or [])
                     measures["barrier_blocked_by"] = [*blocked, "anchor:none"]
+            if not stashed and pw_is_pathway and isinstance(pw_meta, dict):
+                _stamp_barrier_assurance(pw_meta, measures)
             if not stashed:
                 # neb-s7: a stashed losing job earns no ladder rung — its
                 # ``meta.tier`` raise would graduate the candidate on an
@@ -6810,6 +6919,8 @@ def promote_tiers(
 #: reading a stale ``barrier_fidelity="verify"`` and wrongly refusing to
 #: stamp a fresh neb-tier barrier as canonical).
 _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier",
     "span",
     "barrier_trusted",

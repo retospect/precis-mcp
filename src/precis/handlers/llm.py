@@ -91,7 +91,7 @@ _ACCOUNT_ADAPTERS: frozenset[str] = frozenset(
     }
 )
 _ACCOUNT_TASK_CLASSES: frozenset[str] = frozenset(
-    {"*", "code", "review", "validate", "triage", "brief", "pcb", "docs"}
+    {"*", "code", "review", "validate", "triage", "brief", "pcb", "docs", "skill"}
     # security-review (td574934 A2): an account row may LIST the class —
     # plans.boundary.pick_lane still refuses a non-SECURITY_LANE_ADAPTERS
     # lane for it, whatever the row says.
@@ -1379,7 +1379,10 @@ class LlmHandler(NumericRefHandler):
                 f"concurrency={a.concurrency} "
                 f"task_classes={','.join(a.task_classes) or 'unknown'} "
                 f"default_model={a.default_model or 'unknown'} key={key} "
-                f"pools={','.join(a.pools) or 'unknown'}{parked}{health}"
+                f"pools={','.join(a.pools) or 'unknown'} "
+                f"promo_expiry={a.promo_expiry or 'none'} "
+                f"models={','.join(a.models) or 'unknown'} lane_rank={a.lane_rank}"
+                f"{parked}{health}"
             )
         return "\n".join(lines)
 

@@ -39,7 +39,7 @@ get(kind="math", q="population of Ireland")  # compute
 
 | Arg | Type | Meaning |
 |---|---|---|
-| `kind` | str | Required. Which kind to read from. |
+| `kind` | str | Optional when `id=` self-identifies (handle, bare ref id, slug, DOI, `kind:id`); otherwise required. Which kind to read from. |
 | `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Papers also accept a DOI (`id='10.x/y'`). Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). A fisheye-ladder label here (`view='fisheye+1hop'`) is the deprecated spelling of `extent=`; `full=` is the deprecated spelling of `extent='verbatim'` — both still route and announce the read on `interpreted:`. |
 | `q` | str | Free-text query for compute-style kinds. |
@@ -50,6 +50,11 @@ Per-kind views are listed by the kind's own skill
 (`get(kind='skill', id='precis-<kind>-help')`) or by the `options=` of
 an unknown-view refusal — a view name valid on one kind does not carry
 to another.
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
 
 ## Render a ref with its neighbourhood and recall
 

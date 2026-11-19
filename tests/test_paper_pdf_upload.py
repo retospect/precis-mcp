@@ -236,13 +236,28 @@ def test_uploads_dir_unset_is_none(monkeypatch):
 # -- mint door -------------------------------------------------------------
 
 
-def test_mint_returns_single_use_url(paper, store, dirs, link_key):
+def test_mint_returns_single_use_url(paper, store, dirs, link_key, monkeypatch):
+    monkeypatch.setenv("PRECIS_WEB_BASE_URL", "https://web.example/")
     ref_id = _stub(store)
     body = paper.put(id=ref_id, args={"pdf_upload_link": True}).body
     assert f"/files/upload/{ref_id}?t=v1.put." in body
     assert "single use" in body
     assert "curl -f --data-binary @paper.pdf" in body
     assert "'pdf_upload': '<sha256>'" in body
+
+
+def test_mint_refuses_unset_web_origin(
+    paper, store, dirs, link_key, monkeypatch, tmp_path
+):
+    """gr681313: a missing web origin refuses naming the deployment
+    setting — never a path-only link nothing could POST to."""
+    monkeypatch.delenv("PRECIS_WEB_BASE_URL", raising=False)
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    ref_id = _stub(store)
+    with pytest.raises(Unsupported, match="PRECIS_WEB_BASE_URL") as exc:
+        paper.put(id=ref_id, args={"pdf_upload_link": True})
+    assert "web origin" in str(exc.value)
+    assert "precis secret set" in str(exc.value.next)
 
 
 def test_mint_refuses_complete_target(paper, store, dirs, link_key):

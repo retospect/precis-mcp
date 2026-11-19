@@ -1,6 +1,6 @@
 """Canonical human readers for stored refs, shared by navigation surfaces.
 
-Browse-menu membership is unrelated to detail coverage. Optional plugin refs
+Drive saved-view membership is unrelated to detail coverage. Optional plugin refs
 remain readable when their handler is unavailable. Slug readers require a
 stored slug; incomplete refs use generic detail rather than inventing a slug.
 """
@@ -26,8 +26,9 @@ NATIVE_REF_URLS: dict[str, str] = {
     # every surface that still lists one sends the owner to /account
     "profile": "/account",
     # A tag ref has nothing per-ref to read — the handler reads the tag
-    # vocabulary (its own table, not refs); the index is the reader.
-    "tag": "/tags",
+    # vocabulary (its own table, not refs); the drive's ``k=tag`` view
+    # is the reader (gr636493).
+    "tag": "/drive?k=tag",
 }
 
 

@@ -15,8 +15,7 @@ progress apart), plus a pathological-runaway ceiling tripwire.
 Pure and side-effect-free: :func:`narrative_growth_gate` only decides
 accept/retry from word counts + a caller-supplied progress fact. The caller
 (:mod:`precis.quest.tick`'s ``run_quest_tick`` today; a future
-``draft_refresh`` job for the paper-writing pipeline — docs/backlog/
-draft-refresh.md — tomorrow) owns fetching the word counts, deciding what
+``draft_refresh`` job for the paper-writing pipeline — me693762 — tomorrow) owns fetching the word counts, deciding what
 counts as *this* rewrite's "progress" in its own context, dispatching a
 compress re-prompt worded for :data:`GateResult.reason`, and logging the
 outcome.

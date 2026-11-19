@@ -947,3 +947,68 @@ def _iso(value: Any) -> str | None:
 
 
 __all__ = ["add_parser", "run"]
+
+
+def add_origin_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register the non-deprecated provenance maintenance command."""
+    parser = sub.add_parser("gripe", help="Maintain gripe origin classifications.")
+    commands = parser.add_subparsers(dest="gripe_command", required=True)
+    backfill = commands.add_parser("origin-backfill")
+    backfill.add_argument("--apply", action="store_true")
+    backfill.add_argument("--status", default="done")
+    backfill.add_argument("--database-url", default=None)
+    return parser
+
+
+def run_origin(args: argparse.Namespace) -> None:
+    """Report a provenance backfill, writing only with --apply."""
+    from precis.config import load_config
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    bind_process_store(store)
+    try:
+        print(origin_backfill(store, apply=args.apply, status=args.status))
+    finally:
+        store.close()
+
+
+def origin_backfill(store: Any, *, apply: bool = False, status: str = "done") -> str:
+    """Classify live unstamped gripes under row locks; dry-run writes nothing."""
+    from precis.store.types import Tag
+    from precis.utils.gripe_origin_class import ORIGINS, classify_origin
+
+    counts = dict.fromkeys(ORIGINS, 0)
+    unknown: list[str] = []
+    with store.pool.connection() as conn, conn.transaction():
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, r.meta FROM refs r "
+            "WHERE r.kind = %s AND r.retired_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = %s AND t.value = %s) "
+            "ORDER BY r.ref_id FOR UPDATE",
+            ("gripe", "STATUS", status),
+        ).fetchall()
+        for gid, title, meta in rows:
+            pairs = conn.execute(
+                "SELECT t.namespace, t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = %s",
+                (gid,),
+            ).fetchall()
+            tags = [
+                value if ns in {"OPEN", "FLAG"} else f"{ns}:{value}"
+                for ns, value in pairs
+            ]
+            if any(t.startswith("origin-class:") for t in tags):
+                continue
+            origin = classify_origin(tags, title or "", (meta or {}).get("filed_by"))
+            if origin is None:
+                unknown.append(f"gr{gid}")
+                continue
+            counts[origin] += 1
+            if apply:
+                store.add_tag(
+                    gid, Tag.open(f"origin-class:{origin}"), set_by="system", conn=conn
+                )
+    mode = "applied" if apply else "dry-run"
+    return f"{mode}: {counts}; unclassified ({len(unknown)}): {chr(32).join(unknown)}"

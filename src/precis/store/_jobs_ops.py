@@ -5,8 +5,7 @@ Mixin on :class:`precis.store.Store`. ``_stamp_job_completion``
 ``meta.footprint = {ru_maxrss_mb, wall_s, cpu_s}`` out of
 :mod:`precis.utils.job_footprint`; :meth:`JobsMixin.job_footprint_summary`
 folds those samples into the per-``(job_type, meta.size)`` p50/p95 the
-footprint-admission table derives from (``docs/backlog/
-cluster-scheduling.md`` Pillar 3b: "a high percentile plus margin").
+footprint-admission table derives from (``me695459`` Pillar 3b: "a high percentile plus margin").
 ``meta.size`` is the gr595539 mint-time ``{name, value}`` size
 parameter — rows minted before it lands group under a null
 ``size_name``/``size_value`` rather than dropping out of the table.

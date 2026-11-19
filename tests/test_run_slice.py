@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: execs shell script scripts/ship"
 )
 
-from precis.plans import lanes
+from precis.plans import boundary, lanes
 from precis.plans import release as _release_real
 from precis.plans.lanes import (
     ANY_CLASS,
@@ -49,6 +49,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
 from precis.utils.llm.quota import quota_retry_at
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -347,6 +348,17 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         run_slice, "_preland_reviewer", lambda store, todo_id: calls["preland"]
     )
+    # gr698949: the verdict hold's leave-open arm counts its own
+    # ``preland-hold-unrestored`` repeats on the todo's job metas; the
+    # fake store has no pool, so the seam returns
+    # ``calls["unrestored_run"]`` (0 = no prior repeats, the default the
+    # attempt-free tests take; a cap test sets it at/above the cap).
+    calls["unrestored_run"] = 0
+    monkeypatch.setattr(
+        run_slice,
+        "_unrestored_free_run",
+        lambda store, todo_id, job_id: calls["unrestored_run"],
+    )
     # gr681208: the verdict-hold restore trusts the ``ls_remote`` oracle —
     # what GitHub serves — never the tracking ref the fetch just wrote.
     # ``ls_remote`` answers ``remote_tips`` when a test sets it (a
@@ -381,7 +393,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     calls["push"] = []
     calls["push_note"] = "branch push of {branch}: on origin"
 
-    def fake_push_branch(tree: Path, branch: str) -> str:
+    def fake_push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
         calls["push"].append((Path(tree), branch))
         return calls["push_note"].format(branch=branch)
 
@@ -452,6 +464,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # and the pinned-lane guard — every adapter's bin resolves by
     # default; a test names the absent ones in ``calls["bins_absent"]``.
     calls["bins_absent"] = set()
+    from precis.workers import capability_probe
+
+    monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: True)
+    monkeypatch.setattr(capability_probe, "codex_login_present", lambda: True)
     monkeypatch.setattr(
         run_slice,
         "adapter_bin_present",
@@ -1050,6 +1066,38 @@ def test_brief_states_the_one_turn_rule() -> None:
         )
         assert "You get one turn" in brief
         assert "never start a background subagent and wait for it" in brief
+
+
+@pytest.mark.parametrize("adapter", ["devin_tree", "codex_exec", None])
+@pytest.mark.parametrize("other_repo", [False, True])
+def test_devin_brief_forbids_ending_turn_to_poll(
+    adapter: str | None, other_repo: bool
+) -> None:
+    """gr676969: Devin must wait for its commands within the build turn."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="builder",
+        model=None,
+        effort="high",
+        adapter=adapter,
+        profile=lanes.REPO_PROFILES["catpath"] if other_repo else None,
+    )
+    assert ("Do not end your turn to wait" in brief) == (adapter == "devin_tree")
+    if adapter == "devin_tree":
+        if other_repo:
+            # gr709133: a repo-profile brief must not leak the precis
+            # repo's own scripts/ poll commands (the profile names its own
+            # lint/test commands instead).
+            assert "scripts/ship --await" not in brief
+            assert "scripts/test --await <run-id>" not in brief
+        else:
+            assert "scripts/ship --await" in brief
+            assert "scripts/test --await <run-id>" in brief
+        assert "do not post progress-only messages" in brief
+        assert "your first final message ends the session" in brief
 
 
 def test_brief_parts_prefers_brief_over_dead_attempt_handoff() -> None:
@@ -2065,7 +2113,7 @@ def test_submit_unpinned_child_uses_lane_default_model(
 
 
 def test_submit_env_is_an_allowlist(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("PRECIS_DB_DSN", "dbname=precis user=agent_rw")
     monkeypatch.setenv("DATABASE_URL", "postgresql:///precis")
@@ -2073,6 +2121,9 @@ def test_submit_env_is_an_allowlist(
     monkeypatch.setenv("VAULT_TOKEN", "v")
     monkeypatch.setenv("PRECIS_MCP_TOKEN", "mcp-token")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    # A HOME with no ``.local/bin/uv`` keeps the gr702380 fallback inert
+    # — the allowlist's PATH assertion stays about pass-through.
+    monkeypatch.setenv("HOME", str(tmp_path))
     store = _Store()
     store.add_todo(42, "t")
     _submit(store, seams, effort="low")
@@ -2262,15 +2313,58 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+def test_submit_rechecks_a_breaker_held_pinned_lane(seams: dict[str, Any]) -> None:
+    """A breaker-held lane reports ``now + lanes.BREAKER_HOLD`` — "until
+    its ask closes", not a time. A job pinned to it re-checks on the
+    refusal cadence instead of sleeping the year: four jobs did, past an
+    ask that closed the same day. A real refusal window still parks to
+    its end."""
+    store = _Store()
+    store.add_todo(42, "t")
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    now = datetime.now(UTC)
+    seams["backoff"] = {"claude-sub": now + lanes.BREAKER_HOLD}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "lane-breaker ask" in note and "after a host refusal" not in note
+    assert wake - now < lanes.HOST_REFUSAL_BACKOFF + timedelta(minutes=6)
+    assert ctx.failure is None and seams["launch"] == []
+
+    deferred.clear()
+    end = now + timedelta(minutes=20)
+    seams["backoff"] = {"claude-sub": end}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "after a host refusal" in note
+    assert end <= wake <= end + timedelta(minutes=5)
+
+
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
 ) -> None:
     """gr676054: a lane pin landing on a host without the lane's binary
     parks as a lane wait — the ``builder`` placement floor passed the
     host on SOME lane binary, so the pin holds for a host that carries
     this one. It is a host gap, not a lane failure: no
     ``meta.host_refusal`` stamp, so no fleet-wide lane backoff."""
-    seams["bins_absent"] = {"claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
@@ -2293,8 +2387,9 @@ def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     assert seams["launch"] == []
 
 
+@pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_pick_filters_lanes_to_host_bins(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     """gr676054: the unpinned pick offers only lanes whose adapter binary
     this host can exec — a builder host carrying a subset must not pick
@@ -2312,7 +2407,12 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
 
     # Every fit lane's bin absent → nothing is pickable; the job parks.
-    seams["bins_absent"] = {"devin_tree", "claude_p"}
+    if missing == "binary":
+        seams["bins_absent"] = {"devin_tree", "claude_p"}
+    else:
+        from precis.workers import capability_probe
+
+        monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: False)
     ctx2 = _Ctx(store, {"todo_id": 42})
     deferred: list[tuple[Any, str]] = []
 
@@ -2326,6 +2426,21 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert "no enabled lane" in deferred[0][1]
     assert ctx2.meta_set["lane_wait"] == []
     assert ctx2.failure is None
+
+
+@pytest.mark.parametrize("adapter", ["claude_p", "codex_exec"])
+def test_adapter_readiness_requires_login(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, adapter: str
+) -> None:
+    from precis.workers import capability_probe
+
+    probe = "claude_auth_present" if adapter == "claude_p" else "codex_login_present"
+    monkeypatch.setattr(capability_probe, probe, lambda: False)
+    assert run_slice._adapter_ready(adapter) is False
+    monkeypatch.setattr(capability_probe, probe, lambda: True)
+    assert run_slice._adapter_ready(adapter) is True
+    seams["bins_absent"] = {adapter}
+    assert run_slice._adapter_ready(adapter) is False
 
 
 def test_lane_full_park_names_the_lanes_to_wake_on(seams: dict[str, Any]) -> None:
@@ -2866,6 +2981,76 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
     assert "The branch head is" not in target
 
 
+def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td707034: the hidden-ref fetch failed, nothing checked its exit
+    code, and the brief named the tracking ref of two days earlier as
+    "the branch head" — the reviewer judged it. With the pushed tip
+    known (``pending_land.head``) a head that is not it retries the
+    fetch once; still off after a failed fetch, the brief names no head
+    to judge and asks for no verdict, so the tick re-runs the review."""
+    old, new = "5" * 40, "7" * 40
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        meta={"pending_land": {"todo_id": 7, "branch": "slice/7", "head": new}},
+    )
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+    hidden = "+refs/factory/slice/7:refs/remotes/origin/slice/7"
+    state = {"hidden_fetches": 0, "ok_from": 99}
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["fetch"] and args[-1] == hidden:
+            state["hidden_fetches"] += 1
+            if state["hidden_fetches"] < state["ok_from"]:
+                return subprocess.CompletedProcess(
+                    [], 128, stdout="", stderr="fatal: unable to access origin\n"
+                )
+        if args[:1] == ["rev-parse"]:
+            fresh = state["hidden_fetches"] >= state["ok_from"]
+            return _proc(f"{new if fresh else old}\n")
+        return _proc()
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert state["hidden_fetches"] == 2
+    assert "STALE CHECKOUT" in target and "fatal: unable to access origin" in target
+    assert new in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
+
+    # The retry reaches the pushed tip: the usual brief, naming it.
+    state.update(hidden_fetches=0, ok_from=2)
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "STALE CHECKOUT" not in target
+    assert f"The branch head is `{new}`" in target
+
+    # A clean fetch that disagrees with the stamp is no safer than a
+    # failed one (td730820): the branch moved after the defer stamped
+    # the tip, and judging the read head would let a LAND release a land
+    # for a commit the review never read — the brief says judge nothing
+    # and the tick re-runs the review.
+    monkeypatch.setattr(
+        run_slice,
+        "_git",
+        lambda args, cwd: _proc(f"{old}\n") if args[:1] == ["rev-parse"] else _proc(),
+    )
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert "STALE CHECKOUT" in target
+    assert "after a clean fetch" in target
+    assert new in target and old in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2962,6 +3147,117 @@ def test_launch_failure_revokes_the_slice_token(
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
     assert not (registry / "td42j900").exists()
+
+
+def test_submit_refused_launch_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capacity refusal at launch is the host's, not the build's: no
+    handle, no burned attempt — plan_dispatch re-queues when capacity
+    returns (review td702053)."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("full")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "lane-wait"
+    assert "host at capacity" in (ctx.failure or "")
+    assert seams["launch"] == []
+
+
+def test_submit_refused_launch_parks_on_lane_wait(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr708204: a capacity deferral parks the job (the busy-lane shape)
+    instead of failing it, so the free-failure run never reaches the
+    showstopper ask."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("full")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "host at capacity" in deferred[0][1]
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert ctx.meta_set["wait_parks"] == 1
+
+
+def test_launch_goes_through_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pooled store routes the detached launcher through
+    ``admission.spawn`` with the work class's footprint (gr657245)."""
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def fake_spawn(*args: Any, **kwargs: Any) -> int:
+        calls.append((args, kwargs))
+        return 4242
+
+    monkeypatch.setattr(run_slice.admission, "spawn", fake_spawn)
+    log = tmp_path / "run.log"
+    exit_file = tmp_path / "exit"
+    store = types.SimpleNamespace(pool=object())
+    pid = run_slice._launch(
+        ["devin", "-p"],
+        cwd=tmp_path,
+        stdin=None,
+        log=log,
+        exit_file=exit_file,
+        env={"PATH": "/usr/bin"},
+        store=store,
+        work_class="land",
+    )
+    assert pid == 4242
+    ((args, kwargs),) = calls
+    assert args[0] is store
+    assert args[1] == run_slice.admission.local_host()
+    assert args[2] is run_slice._WORK_FOOTPRINTS["land"]
+    assert args[3] == f"{run_slice.admission.local_host()}:{os.getpid()}"
+    assert args[4] == ["devin", "-p"]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["stdin"] is None
+    assert kwargs["log_path"] == log
+    assert kwargs["exit_file"] == exit_file
+    assert kwargs["env"] == {"PATH": "/usr/bin"}
+
+
+def test_launch_without_pooled_store_keeps_the_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fake store without a pool (unit-test doubles) must not engage
+    admission — the legacy unheld launcher runs verbatim."""
+    monkeypatch.setattr(run_slice.admission, "spawn", None)  # would TypeError
+    log = tmp_path / "run.log"
+    exit_file = tmp_path / "exit"
+    store = types.SimpleNamespace()  # no .pool
+    pid = run_slice._launch(
+        ["/bin/sh", "-c", "exit 0"],
+        cwd=tmp_path,
+        stdin=None,
+        log=log,
+        exit_file=exit_file,
+        env={"PATH": "/usr/bin"},
+        store=store,
+    )
+    assert isinstance(pid, int)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not exit_file.exists():
+        time.sleep(0.02)
+    assert exit_file.read_text(encoding="utf-8").strip() == "0"
 
 
 class _Resp:
@@ -3654,6 +3950,34 @@ def test_slice_env_minted_token_without_the_oauth_login(
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_slice_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702380: the session env reaches uv in ``~/.local/bin`` when a
+    non-login coder unit's PATH lacks it — the same fallback
+    ``land_env`` gives its children, precedence preserved."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = run_slice.slice_env(42, "low", mcp=False)
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+
+
 def test_render_brief_read_mcp_paragraphs() -> None:
     """The scope's brief paragraph replaces the no-MCP one: reader's is
     the spec text verbatim; triage's names its write set and never says
@@ -4108,15 +4432,15 @@ def test_poll_verdict_hold_divergent_local_tip_yields_to_origin(
     assert "STATUS:done" in store.tag_strings(42)
 
 
-def test_poll_verdict_hold_leaves_open_without_a_pushed_tip(
+def test_poll_verdict_hold_absent_branch_takes_the_plain_close(
     seams: dict[str, Any],
 ) -> None:
-    """Nothing restorable — ``origin/slice/42`` names no tip (never
-    pushed, deleted, or the fetch could not read it): the bare verdict
-    still cannot close the build, and holding would land the empty
-    local tip while the land's cleanup can delete unlanded remote work.
-    The lease goes back attempt-free, the todo stays open — the
-    defer-failed arm's ruling."""
+    """gr698949: the oracle ANSWERED and GitHub holds no ``slice/42`` in
+    either ref home (never pushed or already deleted) — verifiably
+    nothing reviewed exists to hold or lose. The bare verdict close was
+    right all along for this case: the build closes done, no
+    ``pending_land`` is stamped, and the tick's dead-chain sweep closes
+    the stale reviewer won't-do."""
     store = _Store()
     store.add_todo(42, "t", body="b")
     ctx, handle = _submit(store, seams)
@@ -4131,22 +4455,53 @@ def test_poll_verdict_hold_leaves_open_without_a_pushed_tip(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     tags = store.tag_strings(42)
-    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "STATUS:done" in tags and "STATUS:open" not in tags
     assert not any(t.startswith("attempt:") for t in tags)
-    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "preland-hold-unrestored"
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
     assert "pending_land" not in store.refs[42].meta
     assert seams["lands"] == []
-    assert any(
-        "stays open for a run whose tree still holds" in c for c in store.comments(42)
-    )
+    assert any("nothing reviewed to hold" in c for c in store.comments(42))
 
 
-def test_poll_verdict_hold_leaves_open_on_an_empty_pushed_tip(
+def test_poll_verdict_hold_burns_an_attempt_after_unrestored_repeats(
     seams: dict[str, Any],
 ) -> None:
-    """``origin/slice/42`` resolves but is not ahead of base — a pushed
-    branch carrying nothing the review judged: same leave-open ruling,
-    no restore attempted beyond the reads."""
+    """gr698949's cap: the leave-open repeats are clean-exit successes, so
+    plan_dispatch's ``FREE_RUN_CAP`` never sees them — after
+    ``PRELAND_HOLD_UNRESTORED_CAP`` attempt-free repeats the arm burns a
+    real attempt (no ``attempt_free`` stamp, the lease bumps
+    ``attempt:<n>``) so the node's retry cap can reach the spin."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["remote_tips"] = None  # the oracle cannot be read — unrestorable
+    seams["unrestored_run"] = run_slice.PRELAND_HOLD_UNRESTORED_CAP
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "validated: the branch already holds the review fix\n",
+    }
+    _finish(handle, 0, json.dumps(result) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "attempt:1" in tags
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
+    assert "pending_land" not in store.refs[42].meta
+    assert seams["lands"] == []
+    assert any("burning an attempt" in c for c in store.comments(42))
+
+
+def test_poll_verdict_hold_tip_not_ahead_of_base_takes_the_plain_close(
+    seams: dict[str, Any],
+) -> None:
+    """``origin/slice/42`` resolves but carries nothing beyond base
+    (``merge-base --is-ancestor`` rc 0) — provably nothing reviewed for
+    the land to ship, the absent ruling (gr698949): the plain verdict
+    close takes over, no restore attempted beyond the reads."""
     store = _Store()
     store.add_todo(42, "t", body="b")
     ctx, handle = _submit(store, seams)
@@ -4164,7 +4519,8 @@ def test_poll_verdict_hold_leaves_open_on_an_empty_pushed_tip(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     tags = store.tag_strings(42)
-    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "STATUS:done" in tags and "STATUS:open" not in tags
+    assert run_slice.ATTEMPT_FREE_KEY not in pctx.meta_set
     assert "pending_land" not in store.refs[42].meta
     git_cmds = [args for args, _cwd in seams["git"]]
     assert not any(c[:1] == ["checkout"] for c in git_cmds)
@@ -4551,6 +4907,71 @@ def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -
     assert "1 commit(s) ahead of origin/main" in summary
 
 
+def test_poll_commits_a_blocked_commit_without_a_message(
+    seams: dict[str, Any],
+) -> None:
+    """gr702644 (td700755): a codex slice under a read-only ``.git``
+    sandbox finishes real work, reports the commit blocked and writes no
+    ``scratch/commit-msg.txt`` — the worker commits with a generated
+    subject instead of counting a no-commit run and relaunching."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    tree = Path(handle["worktree"])
+    seams["porcelain"] = " M a.py\n M b.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(slice): complete (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Commit blocked by read-only `.git`; changes "
+                "remain in the worktree.\ntests: ran",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert ["add", "-A"] in [a for a, _cwd in seams["git"]]
+    commits = [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert len(commits) == 1 and commits[0][:3] == ["commit", "--quiet", "-F"]
+    assert seams["commit_text"] == "fix(slice): complete (td42)\n"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert seams["land_checked"] == [True]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert (
+        "Commit: worker committed the session's working tree with "
+        "a worker-generated subject" in summary
+    )
+
+
+def test_poll_a_dirty_tree_without_a_blocked_report_commits_nothing(
+    seams: dict[str, Any],
+) -> None:
+    """The fallback is gated on the session's own report: a clean exit
+    that left edits but never said its commit was refused keeps the
+    no-commit ruling — stray leftovers are not the lander's business."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Done; tree left as-is."}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert not [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+
+
 def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
     """BUILDER on f039f543b: the rewritten subject must be what git gets,
     not the session's raw file."""
@@ -4649,7 +5070,7 @@ def test_poll_validate_verdict_waives_the_not_run_gate(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -4688,7 +5109,7 @@ def test_poll_validate_moot_waives_the_not_run_gate(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -4727,7 +5148,7 @@ def test_poll_validate_verdictless_not_run_still_fails(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -8120,7 +8541,7 @@ def _devin_test_task(store: _Store) -> Path:
     tests = tree / "tests"
     tests.mkdir(parents=True, exist_ok=True)
     (tests / "test_widget.py").write_text("# supplied regression\n", encoding="utf-8")
-    store.add_todo(42, "Build", body="Pass the supplied tests/test_widget.py.")
+    store.add_todo(42, "Build", body="Acceptance tests: tests/test_widget.py")
     return tree
 
 
@@ -8135,8 +8556,11 @@ def test_devin_submit_snapshots_only_supplied_tests(
     store.add_todo(
         42,
         "Build",
-        body="Pass tests/test_widget.py.",
-        comments=("handoff: use tests/test_latest.py and tests/test_widget.py.",),
+        body="File set: src/widget.py, tests/test_widget.py",
+        comments=(
+            "brief: the coordinator's declaration rides its own line\n"
+            "Acceptance tests: tests/test_latest.py, tests/test_widget.py",
+        ),
     )
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None and ctx.failure is None
@@ -8156,6 +8580,7 @@ def test_acceptance_paths_skip_sibling_clusters() -> None:
     not this slice's acceptance tests."""
     latest = (
         "brief: release r7 is red at c0ffee111 (range 999..c0f), run 31\n"
+        "Acceptance tests: tests/test_a.py\n"
         "cluster 1/3: tests/test_a.py — fix only these failing ids: "
         "tests/test_a.py::test_one. The other clusters are fixed in "
         "parallel by their own nodes — leave them alone: "
@@ -8167,10 +8592,26 @@ def test_acceptance_paths_skip_sibling_clusters() -> None:
     assert run_slice._acceptance_paths("Fix the failures it names.", latest) == [
         "tests/test_a.py"
     ]
-    # No marker: the harvest is exactly as before — every path counts.
-    assert run_slice._acceptance_paths(
-        "fix tests/test_a.py", "handoff: also tests/test_b.py"
-    ) == ["tests/test_a.py", "tests/test_b.py"]
+    # Prose paths are symptoms, never implicit acceptance declarations.
+    assert (
+        run_slice._acceptance_paths(
+            "fix tests/test_a.py", "handoff: also tests/test_b.py"
+        )
+        == []
+    )
+
+
+def test_acceptance_paths_only_explicit_lines() -> None:
+    body = (
+        "Quoted report: tests/test_symptom.py froze dispatch.\n"
+        "> Acceptance tests: tests/test_quoted.py\n"
+        "File set: src/widget.py, tests/test_widget.py\n"
+        "Acceptance tests: tests/test_nested/test_other.py, tests/test_widget.py\n"
+    )
+    assert run_slice._acceptance_paths(body, "handoff: tests/test_unrelated.py") == [
+        "tests/test_nested/test_other.py",
+        "tests/test_widget.py",
+    ]
 
 
 @pytest.mark.parametrize("setting,enabled", [(None, False), ("0", False), ("1", True)])
@@ -8220,7 +8661,9 @@ def test_devin_harness_tests_then_commits_and_lands_checked(
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
-    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert seams["run"] == [
+        (["scripts/test", "tests/test_widget.py", "-m", "not nightly"], tree)
+    ]
     assert len([a for a, _cwd in seams["git"] if a[:1] == ["commit"]]) == 1
     assert seams["commit_text"].startswith("fix(")
     assert "td42" in seams["commit_text"]
@@ -8326,7 +8769,7 @@ def test_devin_acceptance_yields_and_resumes_after_restart(
     launches: list[dict[str, Any]] = []
 
     def launch(argv: list[str], **kwargs: Any) -> int:
-        assert argv == ["scripts/test", "tests/test_widget.py"]
+        assert argv == ["scripts/test", "tests/test_widget.py", "-m", "not nightly"]
         launches.append(kwargs)
         return 4343
 
@@ -8436,7 +8879,7 @@ def test_devin_verdict_precedes_real_worker_staging(
 ) -> None:
     """Untracked supplied tests must not hide a no-change verdict in a commit."""
     store = _Store()
-    store.add_todo(42, "Build")
+    store.add_todo(42, "Build", body="Acceptance tests: tests/test_widget.py")
     ctx, handle = _devin_lane_submit(
         store,
         seams,
@@ -8491,7 +8934,9 @@ def test_devin_harness_records_explicit_no_change(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
     assert "STATUS:done" in store.tag_strings(42)
-    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert seams["run"] == [
+        (["scripts/test", "tests/test_widget.py", "-m", "not nightly"], tree)
+    ]
     assert seams["lands"] == []
     assert not any(a[:1] == ["commit"] for a, _cwd in seams["git"])
 
@@ -8544,7 +8989,11 @@ def test_devin_acceptance_artifacts_survive_worktree_reset(
 ) -> None:
     """Fresh tests come from job params after cleanup, not untracked leftovers."""
     store = _Store()
-    store.add_todo(42, "Build", body="Keep tests/test_existing.py green.")
+    store.add_todo(
+        42,
+        "Build",
+        body="Acceptance tests: tests/test_existing.py, tests/test_widget.py",
+    )
     tree = run_slice.worktrees_dir(run_slice.slice_root()) / run_slice.slice_name(42)
     (tree / "tests").mkdir(parents=True)
     (tree / "tests" / "test_widget.py").write_text(
@@ -8552,7 +9001,7 @@ def test_devin_acceptance_artifacts_survive_worktree_reset(
     )
     supplied = "def test_widget():\n    assert widget() == 42\n"
 
-    def reset_tree(root: Path, todo_id: int, **kw: Any) -> Path:
+    def reset_tree(root: Path, todo_id: int, **_kw: Any) -> Path:
         # Model the real reset's clean -fd: untracked tests do not survive.
         shutil.rmtree(tree / "tests")
         (tree / "tests").mkdir()
@@ -8631,7 +9080,7 @@ def test_devin_acceptance_artifacts_refuse_symlink_parent(
     outside = tmp_path / "outside"
     outside.mkdir()
 
-    def reset_tree(root: Path, todo_id: int, **kw: Any) -> Path:
+    def reset_tree(root: Path, todo_id: int, **_kw: Any) -> Path:
         (tree / "tests").mkdir(parents=True)
         (tree / "tests" / "linked").symlink_to(outside, target_is_directory=True)
         return tree
@@ -11259,6 +11708,7 @@ def test_submit_validate_hops_lanes_and_re_resolves_the_adapter(
         "code_session_models",
         lambda store, todo_id: (
             frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            frozenset(),
             None,
         ),
     )
@@ -11308,6 +11758,7 @@ def test_submit_validate_refuses_when_no_model_differs(
         "code_session_models",
         lambda store, todo_id: (
             frozenset({"m1", *run_slice._outcome.PREFIX_LANE_FALLBACK_MODELS}),
+            frozenset(),
             None,
         ),
     )
@@ -11328,7 +11779,7 @@ def test_submit_validate_parks_when_the_prior_pick_read_fails(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "read"),
+        lambda store, todo_id: (frozenset(), frozenset(), "read"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11357,7 +11808,7 @@ def test_submit_validate_refuses_an_unrecorded_prior_model(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "unrecorded"),
+        lambda store, todo_id: (frozenset(), frozenset(), "unrecorded"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11377,7 +11828,7 @@ def test_submit_model_rule_refusal_stamps_the_job(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), "unrecorded"),
+        lambda store, todo_id: (frozenset(), frozenset(), "unrecorded"),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -11387,6 +11838,101 @@ def test_submit_model_rule_refusal_stamps_the_job(
         "run_slice: the test session must run a different model"
     )
     assert seams["launch"] == []
+
+
+def test_submit_validate_launches_across_an_unknown_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: a code session whose model was never recorded and whose
+    vendor config names no default is avoided BY ADAPTER — a test pick
+    on a different vendor's lane launches instead of refusing."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "claude-sub",
+            "claude_p",
+            "pool",
+            1,
+            frozenset({ANY_CLASS}),
+            True,
+            models=("claude-haiku-5-5",),
+            default_model="claude-haiku-5-5",
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), frozenset({"codex_exec"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    assert ctx.meta_set["lane"] == "claude-sub"
+    assert ctx.meta_set["model"] == "claude-haiku-5-5"
+    assert seams["launch"]
+
+
+def test_submit_validate_refuses_on_the_unnamed_session_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: only a pick on the SAME adapter as the unrecorded code
+    session stays refused — the vendor's own models cannot be proven
+    different from the unnamed one. The refusal names the adapter."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "codex",
+            "codex_exec",
+            "pool",
+            1,
+            frozenset({ANY_CLASS}),
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), frozenset({"codex_exec"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.failure is not None and "refusing the launch" in ctx.failure
+    assert "codex_exec" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_poll_stamps_the_cli_reported_model_when_the_launch_was_unnamed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143: a launch the submit could not name (no recorded model,
+    no nameable account default) stays recordable — once the CLI
+    reports the model it actually ran (devin's ATIF ``model_name``),
+    the job's ``meta.model`` carries it, so a later test session reads
+    a concrete model instead of the avoid-by-adapter fallback."""
+    real_default = run_slice._outcome.account_default_model
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "account_default_model",
+        lambda adapter: None if adapter == "devin_tree" else real_default(adapter),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    assert ctx.meta_set.get("model") is None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 1.0})
+    seams["alive"] = False
+    seams["ahead"] = "abc1234 the slice's commit\n"
+    _finish(handle, 0, "all done\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.meta_set["model"] == "Claude Fable 5.1 Medium"
+    assert pctx.meta_set["usage"]["model"] == "Claude Fable 5.1 Medium"
 
 
 def test_poll_gate_failure_vetoes_the_land(seams: dict[str, Any]) -> None:
@@ -11497,7 +12043,7 @@ def test_poll_gate_failure_vetoes_the_validate_close(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset(), None),
+        lambda store, todo_id: (frozenset(), frozenset(), None),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
@@ -14049,3 +14595,238 @@ def test_ensure_worktree_withholds_the_reset_when_salvage_fails(
         run_slice._ensure_worktree(root, 7)
 
     assert exc.value.attempt_free == "index-lock" and reset == []
+
+
+# ── skill-editor lane (gr657065) ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "skills: precis-get-help, precis-put-help",
+            ("precis-get-help", "precis-put-help"),
+        ),
+        ("skills: none", ()),
+        ("tests: ran", None),
+        ("skills: ../bad", None),
+        ("skills: none, precis-get-help", None),
+        ("skills: precis-get-help, precis-get-help\ntests: ran", ("precis-get-help",)),
+    ],
+)
+def test_skills_marker_parsed(text: str, expected: tuple[str, ...] | None) -> None:
+    assert run_slice.skills_named(text) == expected
+
+
+@pytest.mark.parametrize(
+    "path", ["src/precis/handlers/skill.py", "tests/test_skill.py"]
+)
+def test_skill_class_rejects_non_skill_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+) -> None:
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    why, human = run_slice._deny_reason(
+        tmp_path, (), governed_scan=False, allow_only=run_slice.SKILL_WRITE_PATHS
+    )
+    assert why is not None and "outside skill-editor scope" in why
+    assert not human
+
+
+def test_skill_class_governed_hit_asks_reto(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = "src/precis/data/skills/example.md"
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    monkeypatch.setattr(
+        run_slice._governs, "governed_skill_paths_at_ref", lambda *a, **kw: (path,)
+    )
+    why, human = run_slice._deny_reason(
+        tmp_path, (), allow_only=run_slice.SKILL_WRITE_PATHS
+    )
+    assert why is not None and "Reto" in why
+    assert human == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/precis/data/skills/example.md", "src/precis/data/skill-evals/example.yaml"],
+)
+def test_skill_class_allows_skill_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+) -> None:
+    monkeypatch.setattr(run_slice, "changed_paths", lambda *a: [path])
+    assert run_slice._deny_reason(
+        tmp_path, (), governed_scan=False, allow_only=run_slice.SKILL_WRITE_PATHS
+    ) == (None, [])
+
+
+def test_skill_brief_names_scope_and_verify_step() -> None:
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Update skills",
+        body="git show abc123",
+        latest=None,
+        lane="claude-sub",
+        model=None,
+        effort="high",
+        task_class="skill",
+    )
+    assert all(path in brief for path in run_slice.SKILL_WRITE_PATHS)
+    for phrase in (
+        "run each example",
+        "live tool",
+        "open its ruling",
+        "Only Reto",
+        "no ruling",
+        "skills: none",
+    ):
+        assert phrase in brief
+
+
+def test_skill_lane_needs_live_mcp() -> None:
+    table = [
+        lanes.Lane(
+            name="x",
+            adapter="codex_exec",
+            credential_pool="test",
+            vendor="openai",
+            models=(),
+            default_model=None,
+            cap=1,
+            task_classes=frozenset({"skill"}),
+            enabled=True,
+        )
+    ]
+    assert boundary.fit_lanes("skill", table) == ()
+
+
+@pytest.fixture
+def recovery_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[_Ctx, Path]:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    ctx = _Ctx(
+        _Store(),
+        {"todo_id": 7},
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    attempt = run_slice.run_dir(7) / ("a" * 32)
+    attempt.mkdir()
+    return ctx, attempt
+
+
+def test_reconcile_adopts_the_recorded_handle(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "pgid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {**recorded, "recovered_exit": True}
+
+
+def test_reconcile_pid_only_preserves_launch_baselines(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx, attempt = recovery_attempt
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    original = "1" * 40
+    baseline = {
+        "worktree": str(tree),
+        "exit_file": str(attempt / "exit"),
+        "review": {"head": original},
+        "acceptance_tests": ["tests/test_once.py"],
+        "acceptance_tests_missing": ["tests/test_once.py"],
+    }
+    run_slice._write_launch_record(attempt / "baseline", baseline)
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+
+    # Both mutable inputs have changed since spawn.
+    monkeypatch.setattr(run_slice, "_git", lambda *_: _proc("2" * 40))
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_once.py").touch()
+    (attempt / "exit").write_text("0", encoding="utf-8")
+
+    verdict = run_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert verdict.handle == {
+        **baseline,
+        "pid": 4321,
+        "pgid": 4321,
+        "recovered_exit": True,
+    }
+
+
+def test_reconcile_pid_without_verified_identity_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, attempt = recovery_attempt
+    (attempt / "pid").write_text("4321", encoding="utf-8")
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    monkeypatch.setattr(run_slice, "_launch_pid_identity", lambda *_: None)
+    monkeypatch.setattr(run_slice, "_darwin_launch_identity", lambda *_: None)
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_missing_evidence_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    assert run_slice.reconcile(ctx) is None
+    # The worker may have died after spawn, before the child wrote its PID.
+    run_slice._write_launch_record(
+        attempt / "baseline", {"exit_file": str(attempt / "exit")}
+    )
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_ignores_prior_attempt_and_legacy_evidence(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    prior = attempt.parent / ("b" * 32)
+    prior.mkdir()
+    (prior / "exit").write_text("0", encoding="utf-8")
+    recorded = {"pid": 4242, "exit_file": str(prior / "exit")}
+    run_slice._write_launch_record(prior / "handle", recorded)
+    run_slice._write_launch_record(attempt.parent / "run_slice.handle", recorded)
+    (attempt.parent / "run_slice.pid").write_text("4242", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_rejects_evidence_from_another_host(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    recorded = {"pid": 4242, "exit_file": str(attempt / "exit")}
+    run_slice._write_launch_record(attempt / "handle", recorded)
+    (attempt / "exit").write_text("0", encoding="utf-8")
+    ctx.meta["submit_host"] = "another-worker"
+    assert run_slice.reconcile(ctx) is None
+
+
+def test_reconcile_stale_record_mismatched_pid_is_unknown(
+    recovery_attempt: tuple[_Ctx, Path],
+) -> None:
+    ctx, attempt = recovery_attempt
+    run_slice._write_launch_record(attempt / "handle", {"pid": 4242})
+    (attempt / "pid").write_text("5555", encoding="utf-8")
+    assert run_slice.reconcile(ctx) is None

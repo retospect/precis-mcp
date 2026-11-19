@@ -7,6 +7,7 @@ checks use a minimal fake so they prove no learning read needs to happen first.
 from __future__ import annotations
 
 import base64
+import uuid
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from types import SimpleNamespace
@@ -220,6 +221,77 @@ def test_timezone_choices_list_geographic_zones_and_keep_the_current_one() -> No
     assert all("/" in zone or zone == "UTC" for zone in choices)
     legacy = timezone_choices("Eire")
     assert legacy == sorted(legacy) and "Eire" in legacy
+
+
+@pytest.mark.db
+def test_current_context_lists_live_forge_cards_masked(
+    store: Any, learning_users: Any
+) -> None:
+    """gr664414: /learning shows the learner's live forge cards, grouped by
+    concept, each cloze rendered masked with hover reveal, with per-row
+    htmx delete (``/anki/drop``) and boost (``/anki/boost``), and a concept
+    delete (``/anki/known``). Another owner's card on the same concept must
+    not leak in."""
+    from precis.reading.flashcards import author_card
+    from precis.reading.promote import create_concept
+
+    first, second = learning_users
+    cid = create_concept(store, name=f"ctx-{uuid.uuid4().hex[:8]}")
+    mine = author_card(
+        store,
+        text="The {{c1::mitochondrion}} is the powerhouse of the cell.",
+        concept_id=cid,
+        deck="Precis::reading",
+    )
+    store.set_ref_owner(mine, first.login)
+    theirs = author_card(
+        store,
+        text="The {{c1::nucleus}} holds the DNA.",
+        concept_id=cid,
+        deck="Precis::reading",
+    )
+    store.set_ref_owner(theirs, second.login)
+
+    client = _client(store)
+    page = client.get("/learning", headers=_auth())
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    assert "Current context" in page.text
+    # Masked cloze: the gap renders as a labeled blank, the raw markup is gone.
+    assert 'class="cloze-mask"' in page.text
+    assert ">c1</sup>" in page.text
+    assert "{{c1::" not in page.text
+    # Owner scope: my card row is there, the other user's is not.
+    assert f'"card": "{mine}"' in page.text
+    assert f'"card": "{theirs}"' not in page.text
+    assert f'"concept": "{cid}"' in page.text
+    assert 'hx-post="/anki/drop"' in page.text
+    assert 'hx-post="/anki/boost"' in page.text
+    assert 'hx-post="/anki/known"' in page.text
+    # Not boosted yet: the queued chip is absent.
+    assert "boost queued" not in page.text
+
+    boosted = client.post(
+        "/anki/boost",
+        data={"card": str(mine)},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert boosted.status_code == 303
+    page = client.get("/learning", headers=_auth())
+    assert "boost queued" in page.text
+    assert 'hx-post="/anki/boost"' not in page.text
+
+    dropped = client.post(
+        "/anki/drop",
+        data={"card": str(mine)},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert dropped.status_code == 303
+    page = client.get("/learning", headers=_auth())
+    assert f'"card": "{mine}"' not in page.text
+    assert "Current context" not in page.text  # no live cards left for me
 
 
 @pytest.mark.db

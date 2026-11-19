@@ -11,6 +11,8 @@ writing through them unchanged).
 *input* rows (``direction='input'`` — set temperature, potential, product),
 tied by one ``run_key``, in one transaction. "FE 95% at -0.5 V and 61% at
 -0.9 V" is two runs: the caller calls it twice.
+Inputs are inserted first so duplicate detection compares canonical condition
+values, independent of input order, reported units and presentation labels.
 
 **Evidence edge.** A row with an ``anchor`` points (``primary_link_id``) at a
 ``quantifies`` link written through ``add_link``: paper (``src_chunk_id`` = the
@@ -52,8 +54,8 @@ is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 
 **Refusals.** ``tier='measured'`` without an anchor whose chunk is set;
 ``tier='measured'`` with ``source_attribution='cited_work'``; a live output
-row that repeats another's measurand, anchor scheme, span and value (one
-chunk value extracted under two findings is one measure, not two) — unless
+row that repeats another's measurand, anchor scheme, span, value and conditions
+(one chunk value extracted under two findings is one measure, not two) — unless
 the matched row's newest current review is ``rejected``: a judged-wrong
 reading must not hold its span against a fixed extractor, so the new row
 lands and supersedes it when it states the same subject label (gr639356);
@@ -837,9 +839,9 @@ class MeasuresMixin:
             )
             required = self._required_conditions(c, output.measurand_ref_id)
             have: set[str] = set()
-            for key in output.conditions or {}:
-                if isinstance(key, str) and key.strip():
-                    have.add(slugify(key))
+            for condition_key in output.conditions or {}:
+                if isinstance(condition_key, str) and condition_key.strip():
+                    have.add(slugify(condition_key))
             for spec in inputs:
                 if (spec.role or "context") == "context":
                     have |= self._condition_names(spec, taxa[spec.measurand_ref_id])
@@ -854,18 +856,6 @@ class MeasuresMixin:
             ]
             product = self._product_formula(inputs, taxa)
 
-            out_id = self._insert_one(
-                c,
-                output,
-                taxa[output.measurand_ref_id],
-                direction="output",
-                run_key=key,
-                actor=actor,
-                model=model,
-                link_set_by=link_set_by,
-                flags=run_flags,
-                product=product,
-            )
             in_ids = tuple(
                 self._insert_one(
                     c,
@@ -880,6 +870,18 @@ class MeasuresMixin:
                     product=None,
                 )
                 for spec in inputs
+            )
+            out_id = self._insert_one(
+                c,
+                output,
+                taxa[output.measurand_ref_id],
+                direction="output",
+                run_key=key,
+                actor=actor,
+                model=model,
+                link_set_by=link_set_by,
+                flags=run_flags,
+                product=product,
             )
         return MeasureRun(run_key=key, output_id=out_id, input_ids=in_ids)
 
@@ -899,12 +901,14 @@ class MeasuresMixin:
         spec: MeasureSpec,
         anchor: MeasureAnchor,
         values: tuple[Any, ...],
+        run_key: str,
+        output_conditions: dict[str, Any],
     ) -> list[int]:
         """One chunk value extracted under two findings is one measure, not
         two (the pilot's mx212/mx218 pair): a live output row with the same
         measurand, subject, anchor scheme and span, and the same literal or
-        parsed value is refused, naming the row. The same span's number about
-        a *different* subject ref is a different claim and lands; a
+        parsed value and condition set is refused, naming the row. The same
+        span's number about a *different* subject ref is a different claim and lands; a
         supersession of that row is not a duplicate. A match whose newest
         current review is ``rejected`` does not block either (gr639356): the
         reading was already judged wrong, so it yields the span — the write
@@ -918,7 +922,8 @@ class MeasuresMixin:
             "       (SELECT r.verdict FROM reviews r "
             "        WHERE r.target_kind = 'measure' AND r.target_id = m.id "
             "          AND r.content_sha = precis_target_sha('measure', m.id) "
-            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1) "
+            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1), "
+            "       m.run_key, m.conditions "
             "FROM measures m JOIN links l ON l.link_id = m.primary_link_id "
             "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
             "  AND m.measurand_ref_id = %s AND m.subject_ref_id = %s "
@@ -936,8 +941,30 @@ class MeasuresMixin:
         lit = _squash(spec.literal)
         has_value = any(v is not None for v in values)
         supersede: list[int] = []
+
+        def conditions(key: str) -> list[tuple[Any, ...]]:
+            return list(
+                c.execute(
+                    "SELECT measurand_ref_id, subject_ref_id, direction, role, "
+                    "value_num, value_low, value_high, value_text, value_bool, "
+                    "reference, normalization, conditions, "
+                    "CASE WHEN value_num IS NULL AND value_low IS NULL "
+                    "AND value_high IS NULL AND value_text IS NULL "
+                    "AND value_bool IS NULL THEN literal END FROM measures "
+                    "WHERE run_key = %s AND direction <> 'output' "
+                    "AND superseded_by IS NULL "
+                    "ORDER BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13",
+                    (key,),
+                ).fetchall()
+            )
+
+        incoming_conditions = conditions(run_key)
         for row in rows:
             if spec.supersedes is not None and int(row[0]) == spec.supersedes:
+                continue
+            if (row[10] or {}) != output_conditions or conditions(
+                row[9]
+            ) != incoming_conditions:
                 continue
             if _squash(row[1] or "") == lit or (
                 has_value and (row[2], row[3], row[4], row[5], row[6]) == values
@@ -1326,7 +1353,7 @@ class MeasuresMixin:
         superseded_rejected: list[int] = []
         if direction == "output" and anchor is not None:
             superseded_rejected = self._refuse_duplicate_output(
-                c, spec, anchor, (num, low, high, text, flag)
+                c, spec, anchor, (num, low, high, text, flag), run_key, conditions
             )
 
         # evidence edge + computed extraction status

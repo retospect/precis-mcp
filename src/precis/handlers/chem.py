@@ -74,6 +74,8 @@ class ChemHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "aspirin"
+    # The ``ch<id>`` handle routes by ref id (gr702974).
+    handle_routes_by_ref_id: ClassVar[bool] = True
     chunk_target_chars: ClassVar[int] = 0
 
     #: Tests swap in a recorded-fixture fetcher.

@@ -53,6 +53,7 @@ from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Tag
+from precis.store._chunks_ops import _or_retry
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
@@ -1719,7 +1720,7 @@ class PaperSearchResultRenderer:
                     ]
                 )
             else:
-                if result.scope:
+                if result.scope and _or_retry(q, 1):
                     # Under a single-paper scope the legs already retried
                     # every term OR-ed (gr510534), so "widen the net"
                     # means different terms, not more of the same page.

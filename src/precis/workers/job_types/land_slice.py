@@ -337,10 +337,11 @@ from precis.plans.templates import (
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
+from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_park
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -844,7 +845,14 @@ def land_env() -> dict[str, str]:
     ``refs/replace/*`` planted for an oracle-verified sha must never
     substitute the object a child's trusted read resolves — ship's
     fetch/merge, the drift helper's own ``rev-list``, a gate child's
-    git calls alike (review td660513, pre-land pass)."""
+    git calls alike (review td660513, pre-land pass). ``PATH`` gains the
+    worker user's ``~/.local/bin`` appended when ``uv`` is installed
+    there but missing from the inherited PATH — a non-login coder
+    service carries no shell-hook PATH (gr702644), and ship plus its
+    nested ``/usr/bin/env uv`` helpers must still resolve it; the append
+    preserves the operator's PATH precedence
+    (:func:`~precis.workers.job_types.run_slice.path_with_user_uv`, the
+    same rule ``slice_env`` gives the session itself)."""
     env = {k: os.environ[k] for k in LAND_ENV_NAMES if os.environ.get(k)}
     for name, value in os.environ.items():
         if (
@@ -854,6 +862,9 @@ def land_env() -> dict[str, str]:
         ):
             env[name] = value
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    patched = _rs.path_with_user_uv(env.get("PATH"))
+    if patched != (env.get("PATH") or os.defpath):
+        env["PATH"] = patched
     return env
 
 
@@ -894,11 +905,16 @@ def _launch(
     exit_file: Path,
     env: dict[str, str],
     pass_fds: tuple[int, ...] = (),
+    store: Any = None,
+    work_class: str = "land",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
     flock rides one so it is held for the ship's whole life (gr650484).
-    Returns the pid (= the process group)."""
+    With a real ``store`` the launch is admitted first
+    (:func:`admission.spawn`); a full host raises
+    :class:`admission.Refused`. Returns the pid (= the process group)."""
     return _rs._launch(
         argv,
         cwd=cwd,
@@ -907,6 +923,9 @@ def _launch(
         exit_file=exit_file,
         env=env,
         pass_fds=pass_fds,
+        store=store,
+        work_class=work_class,
+        pid_file=pid_file,
     )
 
 
@@ -1523,10 +1542,25 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
     A pin-bump node (``meta.pin_bump``, td659522 F7) gets the ``landed:``
     comment but stays open until its record says the gate image carries
     the new engine (``image.ready``): glue blocked by the node must not
-    unblock on the land alone, and ``pin_bump``'s image wait closes it."""
+    unblock on the land alone, and ``pin_bump``'s image wait closes it.
+
+    The dedupe is keyed on the sha, not the newest comment: the
+    skill-edit mint appends its own note after this record on some
+    finishes, so a retried land tail would read a non-``landed:`` newest
+    and stamp a duplicate. A sha-keyed check stays idempotent no matter
+    what notes landed in between (and still writes a real land after a
+    ``nothing new`` note, whose ``landed:`` line names no sha)."""
     wrote: list[str] = []
-    newest = (_newest_comment(store, todo_id) or "").lstrip()
-    if not newest.lower().startswith("landed:"):
+    if sha is not None:
+        already = _landed_comment_sha(store, todo_id) == sha[:9].lower()
+    else:
+        already = (
+            (_newest_comment(store, todo_id) or "")
+            .lstrip()
+            .lower()
+            .startswith("landed:")
+        )
+    if not already:
         note = NO_DIFF_NOTE if sha is None else f"landed: {sha[:9]} — {subject}"
         _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
@@ -2373,6 +2407,18 @@ def _fail(
             _rs.rearm_preland_review(ctx.store, todo_id)
         except Exception:  # pragma: no cover — defensive; the job still fails
             log.warning("land_slice: pre-land re-arm on td%d failed", todo_id)
+        # Park = save (``_slice_park``): the lander's tree may sit
+        # mid-rebase, so only the branch tip is pushed — never the dirty
+        # tree. A second repo's tree is not this remote's to push.
+        if _rs.job_repo(getattr(ctx, "meta", None) or {}) == _lanes.DEFAULT_REPO:
+            _slice_park.save_at_job_end(
+                ctx,
+                _rs.worktrees_dir(_rs.slice_root()) / _rs.slice_name(int(todo_id)),
+                int(todo_id),
+                reason,
+                base=_rs._land_base(ctx.store, int(todo_id)),
+                include_dirty=False,
+            )
     ctx.record_failure(f"land_slice: {reason}{suffix}")
 
 
@@ -2570,6 +2616,23 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store) + governed)
+    allow_only = _rs._skill_allow_only(ctx.store, todo_id)
+    if allow_only is not None:
+        outside = sorted(
+            p
+            for p in paths
+            if not any(_rs.fnmatch.fnmatchcase(p, g) for g in allow_only)
+        )
+        if outside:
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                "skill-editor scope violated",
+                handoff="land FAILED: paths outside skill-editor scope: "
+                + ", ".join(outside),
+            )
+            return None
     pin_why, pin_unreadable = None, False
     if denied:
         denied, pin_why, pin_unreadable = _pin_exempt(
@@ -2768,6 +2831,7 @@ def _stamp_lock_holder(
     branch: str = "",
     subject: str = "",
     flag: str = "",
+    attempt: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
     flag=F subject=S`` — so the next land can tell its own
@@ -2785,6 +2849,8 @@ def _stamp_lock_holder(
         parts.append(f"branch={branch}")
     if flag:
         parts.append(f"flag={flag}")
+    if attempt:
+        parts.append(f"attempt={attempt}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -2808,6 +2874,7 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
         ("td", r"\btd=(\d+)\b", head),
         ("branch", r"\bbranch=(\S+)", head),
         ("flag", r"\bflag=(--\S+)", head),
+        ("attempt", r"\battempt=([0-9a-f]{32})\b", head),
         ("subject", r"\bsubject=([^\n]*)", text),
     ):
         m = re.search(pat, where)
@@ -2963,13 +3030,22 @@ def _adopt_ship(
         or ""
     )
     scratch = tree / "scratch"
+    attempt = busy["stamp"].get("attempt")
+    launched_todo = busy["stamp"].get("td")
+    attempt_dir = (
+        _rs.ops_root() / f"td{launched_todo}" / attempt
+        if attempt and launched_todo
+        else None
+    )
+    exit_file = attempt_dir / "exit" if attempt_dir else scratch / "land_slice.exit"
+    log_file = attempt_dir / "log" if attempt_dir else scratch / "land_slice.log"
     launched = _now()
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
         "worktree": str(tree),
-        "log": str(scratch / "land_slice.log"),
-        "exit_file": str(scratch / "land_slice.exit"),
+        "log": str(log_file),
+        "exit_file": str(exit_file),
         "subject": subject,
         "flag": flag,
         "adopted": True,
@@ -2991,6 +3067,15 @@ def _adopt_ship(
         f"{tree} — its exit file lands this job's record",
     )
     return handle
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume ship poll, including publication of a completed mirror squash.
+
+    A free flock cannot establish whether ship already ran. Only this
+    submit attempt's launch or exit record can resume poll.
+    """
+    return _rs._recover_launch(ctx)
 
 
 def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
@@ -3758,7 +3843,6 @@ def _launch_ship(
         # token fd.
         try:
             scratch.mkdir(parents=True, exist_ok=True)
-            exit_path.unlink(missing_ok=True)
             if mirror_tips is not None and mirror is not None and url is not None:
                 # The launch tips persist NEXT TO the mirror, under the
                 # main checkout's scratch — never this tree's own
@@ -3809,6 +3893,45 @@ def _launch_ship(
                 ship_env["PATH"] = (
                     str(shim) + os.pathsep + (ship_env.get("PATH") or os.defpath)
                 )
+            attempt_dir = (
+                _rs._submit_attempt_dir(ctx, todo_id) if carry is None else None
+            )
+            if attempt_dir is not None:
+                attempt_dir.mkdir(parents=True)
+                exit_path = attempt_dir / "exit"
+            else:
+                exit_path.unlink(missing_ok=True)
+            log_path = _rs._attempt_log(attempt_dir, log_path)
+            # The deadline rides the handle (gr647913): ``started_at`` + the wall
+            # — the clock stamps share the ``_now()`` seam so a worker restart's
+            # re-adoption resumes the job's own count instead of restarting the
+            # wall at the re-adopt poll.
+            launched = _now()
+            handle: dict[str, Any] = {
+                "worktree": str(tree),
+                "log": str(log_path),
+                "exit_file": str(exit_path),
+                "subject": subject,
+                "flag": flag,
+                "started_at": launched.strftime(_TS_FMT),
+                "deadline": launched.timestamp() + wall_seconds(),
+            }
+            if mirror_tips is not None:
+                # The sync's CAS basis (GitHub's tips at launch). Adopted
+                # handles rebuild without it; poll falls back to the launch
+                # record beside the mirror
+                # (:func:`factory_git_mirror.read_launch_tips`).
+                handle["factory_mirror_tips"] = mirror_tips
+            for key in (
+                "main_refusals",
+                "last_refusal",
+                "gate_kills",
+                "fell_back_full",
+            ):
+                if carry is not None and key in carry:
+                    handle[key] = carry[key]
+            if attempt_dir is not None:
+                _rs._write_launch_record(attempt_dir / "baseline", handle)
             pid = _launch(
                 [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,
@@ -3848,7 +3971,32 @@ def _launch_ship(
                 # finds it held even after this worker dies (gr650484).
                 # Nothing else rides pass_fds: the credential never does.
                 pass_fds=tuple(fd for fd in (ship_fd,) if fd is not None),
+                store=ctx.store,
+                work_class="land",
+                pid_file=attempt_dir / "pid" if attempt_dir is not None else None,
             )
+        except admission.Refused as exc:
+            # The host cannot fit the gate right now — the wait shape of
+            # _land_busy, not the red path: attempt-free, so the tick
+            # re-mints the land when capacity returns (review td702053).
+            ctx.append_chunk(
+                "job_summary",
+                f"land_slice td{todo_id}: ship launch deferred — host at "
+                f"capacity ({exc}); no ship launched",
+            )
+            _fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"ship launch deferred: {exc}",
+                handoff=(
+                    "land DEFERRED (not red): the worker host could not "
+                    "admit the gate's footprint just now. The tick "
+                    "re-mints the land attempt-free once capacity frees."
+                ),
+                attempt_free="admission",
+            )
+            return None
         except Exception as exc:
             log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
             _fail(
@@ -3859,47 +4007,16 @@ def _launch_ship(
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
             )
             return None
-        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject, flag)
-        # The deadline rides the handle (gr647913): ``started_at`` + the wall
-        # — the clock stamps share the ``_now()`` seam so a worker restart's
-        # re-adoption resumes the job's own count instead of restarting the
-        # wall at the re-adopt poll.
-        launched = _now()
-        handle: dict[str, Any] = {
-            "pid": pid,
-            "pgid": pid,
-            "worktree": str(tree),
-            "log": str(log_path),
-            "exit_file": str(exit_path),
-            "subject": subject,
-            "flag": flag,
-            "started_at": launched.strftime(_TS_FMT),
-            "deadline": launched.timestamp() + wall_seconds(),
-        }
-        if mirror_tips is not None:
-            # The sync's CAS basis (GitHub's tips at launch). Adopted
-            # handles rebuild without it; poll falls back to the launch
-            # record beside the mirror
-            # (:func:`factory_git_mirror.read_launch_tips`).
-            handle["factory_mirror_tips"] = mirror_tips
-        for key in (
-            "main_refusals",
-            "last_refusal",
-            "gate_kills",
-            "fell_back_full",
-        ):
-            if carry is not None and key in carry:
-                handle[key] = carry[key]
-        identity = _rs._process_identity(pid)
-        if identity is not None:
-            handle["boot_id"], handle["start_time"] = identity
-        ps_identity = (
-            _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+        _stamp_lock_holder(
+            lock_fd,
+            pid,
+            todo_id,
+            branch,
+            subject,
+            flag,
+            attempt_dir.name if attempt_dir is not None else "",
         )
-        if ps_identity is not None:
-            # ssh_node's identity gate verifies Darwin handles through ps —
-            # without it a cancel cannot signal the ship (gr572654).
-            handle["ps_identity"] = ps_identity
+        _rs._record_launched_process(handle, pid, attempt_dir)
         return handle
     finally:
         # Our end of the land flock: the launched ship's inherited copy
@@ -4625,13 +4742,17 @@ def _launch_verify(
     phase: str,
     run_tree: Path,
     argv: list[str] | None = None,
+    store: Any = None,
 ) -> dict[str, Any] | None:
     """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
     file under the SLICE tree's ``scratch/`` so they outlive a probe
     worktree. ``argv`` replaces the bare id list (the ``deselect``
     phase's ``--selected --deselect <id>…``) while ``ids`` keeps the
     failing ids the phase is about. ``None`` when the launch itself
-    failed — the caller falls back to the ordinary red."""
+    failed — the caller falls back to the ordinary red.
+    :class:`admission.Refused` propagates: the host could not fit the
+    probe's footprint, which defers the land attempt-free at the caller,
+    never charging the branch for the host's capacity (review td702053)."""
     scratch = slice_tree / "scratch"
     log_path = scratch / f"land_verify_{phase}.log"
     exit_path = scratch / f"land_verify_{phase}.exit"
@@ -4652,7 +4773,13 @@ def _launch_verify(
                 "PRECIS_TEST_NPROC": test_nproc(),
                 "PRECIS_GATE_SLOTS": land_gate_slots(),
             },
+            store=store,
+            work_class="verify",
         )
+    except admission.Refused:
+        # The host is full, not the branch red: the caller defers
+        # attempt-free (review td702053).
+        raise
     except Exception as exc:
         log.warning(
             "land_slice: verify launch (%s) failed: %s", phase, exc, exc_info=True
@@ -4681,6 +4808,36 @@ def _launch_verify(
     if ps_identity is not None:
         verify["ps_identity"] = ps_identity
     return verify
+
+
+def _defer_admission_refused(
+    ctx: Any, handle: dict[str, Any], what: str, exc: admission.Refused
+) -> bool:
+    """A verify launch refused for capacity — the wait shape of the ship
+    launch's refusal (:func:`_launch_ship`), not the red path: the job
+    fails attempt-free (``red_class = "admission"``) so the tick re-mints
+    the land when the host frees, and the branch is never charged for the
+    host's moment (review td702053)."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    handle.pop("verify", None)
+    ctx.append_chunk(
+        "job_summary",
+        f"land_slice td{todo_id}: {what} launch deferred — host at capacity ({exc})",
+    )
+    _fail(
+        ctx,
+        todo_id,
+        params.get("lane"),
+        f"{what} launch deferred: {exc}",
+        handoff=(
+            "land DEFERRED (not red): the worker host could not admit the "
+            f"{what} probe's footprint just now. The tick re-mints the land "
+            "attempt-free once capacity frees."
+        ),
+        attempt_free="admission",
+    )
+    return True
 
 
 def _promote_verify(handle: dict[str, Any], verify: dict[str, Any]) -> None:
@@ -4725,7 +4882,9 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
     :func:`run_slice._ensure_worktree` puts the slice trees), so its
     compose project carries the slice prefix and the stack sweep reaps
     it — and run the ids there. The worktree is dropped on every later
-    exit path (:func:`_drop_main_verify`). ``False`` → the ordinary
+    exit path (:func:`_drop_main_verify`), and on a launch refused for
+    capacity too (the caller defers attempt-free; review td702053).
+    ``False`` → the ordinary
     red."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
@@ -4757,9 +4916,20 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
         )
         ctx.set_meta(main_probe=None)
         return False
-    verify = _launch_verify(
-        tree, [str(i) for i in (v.get("ids") or [])], phase="main", run_tree=main_tree
-    )
+    try:
+        verify = _launch_verify(
+            tree,
+            [str(i) for i in (v.get("ids") or [])],
+            phase="main",
+            run_tree=main_tree,
+            store=ctx.store,
+        )
+    except admission.Refused:
+        # Capacity, not evidence: drop the throwaway tree and let the
+        # caller defer attempt-free (review td702053).
+        _git(["worktree", "remove", "--force", str(main_tree)], root)
+        ctx.set_meta(main_probe=None)
+        raise
     if verify is None:
         _git(["worktree", "remove", "--force", str(main_tree)], root)
         ctx.set_meta(main_probe=None)
@@ -4888,7 +5058,9 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
       ``--quick`` — a ``handoff``-style note names the ids on the todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
-    * any launch or probe failure → the ordinary red."""
+    * any launch or probe failure → the ordinary red — except a launch
+      refused for capacity, which defers the land attempt-free (the
+      host's moment, not the branch's; review td702053)."""
     v = handle["verify"]
     exit_code = _rs._read_exit(v)
     if exit_code is None and _process_alive(int(v.get("pid") or 0)):
@@ -4955,8 +5127,11 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # summary shows the named ids failing — anything else is a probe
         # failure and stays the ordinary red.
         if exit_code is not None and _probe_red(v, ids):
-            if _start_main_verify(ctx, handle, v):
-                return False
+            try:
+                if _start_main_verify(ctx, handle, v):
+                    return False
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "main probe", exc)
         return _ordinary_ship_red(ctx, handle)
     if phase == "deselect":
         # The checked selection minus the red-on-main ids (gr598110):
@@ -5024,7 +5199,18 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             "the release gate keeps the suite",
         )
     argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
-    verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
+    try:
+        verify = _launch_verify(
+            tree, ids, phase="deselect", run_tree=tree, argv=argv, store=ctx.store
+        )
+    except admission.Refused as exc:
+        # The finished main probe's throwaway tree goes on every exit
+        # path (its phase is done; the deselect gate never started) —
+        # then the capacity refusal defers attempt-free.
+        for note in _drop_main_verify(v):
+            ctx.append_chunk("job_event", f"land_slice: {note}")
+        ctx.set_meta(main_probe=None)
+        return _defer_admission_refused(ctx, handle, "deselect", exc)
     if verify is None:
         return _ordinary_ship_red(ctx, handle)
     _promote_verify(handle, verify)
@@ -5255,7 +5441,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             and ids
             and len(outside_diff_ids(tree, ids)) == len(ids)
         ):
-            verify = _launch_verify(tree, ids, phase="alone", run_tree=tree)
+            try:
+                verify = _launch_verify(
+                    tree, ids, phase="alone", run_tree=tree, store=ctx.store
+                )
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "verify", exc)
             if verify is not None:
                 _promote_verify(handle, verify)
                 ctx.append_chunk(
@@ -5430,6 +5621,68 @@ def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
         return "pin: finish FAILED"
 
 
+def _mint_skill_edit(store: Any, todo_id: int, sha: str) -> str:
+    """Mint one follow-up per landed diff, atomically with the source receipt."""
+    from precis.plans.nodes import finish_mint
+
+    chunks = store.chunks.list_chunks_for_ref(todo_id)
+    handoffs = [
+        c.text
+        for c in chunks
+        if c.chunk_kind == "todo_comment" and c.text.startswith("handoff:")
+    ]
+    ids = _rs.skills_named(handoffs[-1] if handoffs else None)
+    if ids is None:
+        return "skills: not stated"
+    if not ids:
+        return "skills: none"
+    plan_tag = _plan_tag(store, todo_id)
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (todo_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"skill-edit source td{todo_id} disappeared")
+        receipts = dict((row[0] or {}).get("skill_edit_jobs") or {})
+        if sha in receipts:
+            return f"skills: follow-up td{receipts[sha]} already minted"
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"Update skills after td{todo_id}",
+            parent_id=todo_id,
+            meta={
+                "task_class": "skill",
+                "op": "run_slice",
+                "skill_ids": list(ids),
+                "landed_sha": sha,
+            },
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system", conn=conn)
+        store.add_tag(ref.id, Tag.open("skill-edit"), set_by="system", conn=conn)
+        store.add_tag(
+            ref.id, Tag.open(plan_tag or f"plan:{ref.id}"), set_by="system", conn=conn
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=f"Read landed diff `git show {sha}` from td{todo_id}.\n"
+                    f"Named skills: {', '.join(ids)}.\nRun each example on the live tool and correct drift. "
+                    "Escalate governs:factory skills and missing rulings to Reto.",
+                    meta={"chunk_kind": "todo_body"},
+                )
+            ],
+            conn=conn,
+        )
+        receipts[sha] = ref.id
+        store.stamp_ref_meta(todo_id, {"skill_edit_jobs": receipts}, conn=conn)
+        finish_mint(store, ref.id, conn=conn)
+    return f"skills: minted td{ref.id} for {', '.join(ids)}"
+
+
 def _landed_finish(
     ctx: Any,
     handle: dict[str, Any],
@@ -5463,6 +5716,19 @@ def _landed_finish(
     landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
+    if sha is not None:
+        try:
+            skill_note = _mint_skill_edit(store, todo_id, sha)
+            summary.append(skill_note)
+            if skill_note == "skills: not stated" and _newest_comment(
+                store, todo_id
+            ) != ("skills: not stated"):
+                _rs._append_comment(store, todo_id, skill_note)
+        except Exception as exc:
+            log.warning(
+                "land_slice: skill-edit mint for td%d failed", todo_id, exc_info=True
+            )
+            summary.append(f"skills: follow-up FAILED ({exc})")
     try:
         pin_note = _pin_finish(store, todo_id, sha)
         if pin_note is not None:
@@ -5592,7 +5858,7 @@ def _landed_finish(
     return True
 
 
-def _push_branch(tree: Path, branch: str) -> str:
+def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
     """Push ``<branch>`` to origin's hidden ``refs/factory/<branch>``
     (:data:`~precis.plans.templates.SLICE_REF_NS`) under the factory
     credential — until then the branch lives only on this host, so a
@@ -5618,7 +5884,11 @@ def _push_branch(tree: Path, branch: str) -> str:
     caller; an unreadable origin falls back to the plain push. The note
     carries ``(replaced)`` when the push overwrote a tip origin already
     held (an amended/rebased build whose earlier push is stale,
-    gr663738)."""
+    gr663738).
+
+    ``sha`` pushes that commit instead of the local branch tip: the
+    park-save's WIP snapshot (:mod:`precis.workers.slice_park`) rides the
+    same ref without moving the local branch."""
     ops: Path | None = None
     remote: dict[str, str] | None = None
     try:
@@ -5626,7 +5896,10 @@ def _push_branch(tree: Path, branch: str) -> str:
         url = _github_url(root)
         if url is None:
             return f"branch push of {branch}: skipped (no trusted origin url)"
-        sha = (_git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or "").strip()
+        if sha is None:
+            sha = (
+                _git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or ""
+            ).strip()
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             return f"branch push of {branch}: FAILED (no local sha)"
         env = _factory_git.git_auth_env(base=land_env())
@@ -5725,6 +5998,10 @@ def kill(ctx: Any, handle: Any) -> None:
                 _rs._signal_group(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # The pgid now belongs to another user's process (reused
+                # after ship exited): not ours to signal, so skip it.
+                log.warning("land_slice: kill skipped — pgid %d is not ours", pgid)
     params = (getattr(ctx, "meta", None) or {}).get("params") or {}
     todo_id = params.get("todo_id")
     number = _pr_param(params)
@@ -5768,6 +6045,7 @@ SPEC = JobTypeSpec(
     validate_submit=validate_submit,
     submit=submit,
     poll=poll,
+    reconcile=reconcile,
     kill=kill,
     deadline_kill_meta=DEADLINE_KILL_META,
     wall_seconds=wall_seconds,
@@ -5819,6 +6097,7 @@ __all__ = [
     "outside_diff_ids",
     "pending_gate",
     "poll",
+    "reconcile",
     "refusal_backoff_s",
     "refusal_side",
     "ship_bin",

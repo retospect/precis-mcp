@@ -406,12 +406,14 @@ def _release_pass_ids(store: Any) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _open_pass_id(store: Any) -> int | None:
+def _open_pass_id(store: Any, *, exclude: int | None = None) -> int | None:
     """The oldest ``release-pass``-tagged todo whose STATUS is not
     terminal, else ``None``."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     for rid in _release_pass_ids(store):
+        if rid == exclude:
+            continue
         status = next(
             (str(t.value) for t in store.tags_for(rid) if t.prefix == "STATUS"),
             "open",
@@ -571,7 +573,12 @@ def _rejudge_after_abandon(store: Any, pass_id: int, status: str) -> str | None:
 
 
 def _round_blocker(
-    store: Any, now: datetime, *, dry_run: bool, notes: list[str]
+    store: Any,
+    now: datetime,
+    *,
+    dry_run: bool,
+    notes: list[str],
+    exclude_n: int | None = None,
 ) -> str | None:
     """The shared ``release.round`` record as a blocker line — ``None``
     only for an absent record ("no round"), a closed one (terminal
@@ -608,6 +615,8 @@ def _round_blocker(
     if _release.is_terminal(rec):
         return None
     n = rec.get("n", "?")
+    if n == exclude_n:
+        return None
     pass_ref = _pass_ref(store, rec)
     if pass_ref is not None:
         pass_id, status = pass_ref
@@ -1257,7 +1266,7 @@ def _patch_equivalent_on_main(n: int, sha: str) -> bool:
     return bool(verdicts) and all(line.startswith("-") for line in verdicts)
 
 
-def _in_flight(store: Any, repo: str) -> str | None:
+def _in_flight(store: Any, repo: str, *, exclude_n: int | None = None) -> str | None:
     """The first in-flight ``release/r<N>`` on origin (``release/r<N>``),
     else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`.
     A head that reads in flight stays so unless prod holds it (the
@@ -1278,6 +1287,8 @@ def _in_flight(store: Any, repo: str) -> str | None:
     tags_url = f"{base}/git/matching-refs/tags/deployed/"
     tagged = set(_matching_refs(tags_url, _TAG_RE, _TAG_CAP) or {})
     for n in sorted(heads):
+        if n == exclude_n:
+            continue
         has_tag = n in tagged
         sha = str((heads[n].get("object") or {}).get("sha") or "")
         prod_has_head: bool | None = None
@@ -1625,6 +1636,17 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
+def _carry_ask_key(unit: _GateLand, missing: list[str], rn: Any) -> str:
+    """The carry hold's ask key — the plain per-unit key plus the release
+    and the corrective commit(s) the waived cut lacked (td730820): an
+    answered ask waives the carry for THAT release and THAT corrective
+    commit only. The plain per-unit key would clear the same land's
+    carry hold on every release and the main gate too — "ship r318
+    without the fix" is not "ship r319 without it", and it says nothing
+    about main."""
+    return f"{unit.ask_key}:carry:{rn}:{'+'.join(missing)}"
+
+
 def _gate_lands(
     store: Any, rel: dict[str, Any] | None = None
 ) -> tuple[list[_GateLand], str, list[str]]:
@@ -1889,6 +1911,27 @@ def _review_outcome(
             ),
             (),
         )
+    rescue = next(
+        (
+            str(t.value)
+            for t in store.tags_for(rid)
+            if t.namespace == "open" and str(t.value).startswith("rescue:")
+        ),
+        None,
+    )
+    if rescue is not None:
+        # A reviewer parked in rescue belongs to the rescue pass and will
+        # not run again by itself; waiting REVIEW_WAIT_AFTER to ask hid
+        # r316's hold for hours (gr702442).
+        return (
+            "hopeless",
+            (
+                f"{base} is parked in rescue ({rescue}); it will not finish "
+                f"on its own — next: resolve its rescue, re-review {land}, "
+                "or acknowledge the review-wait ask"
+            ),
+            (),
+        )
     return (
         "waiting",
         (
@@ -1907,6 +1950,7 @@ def _file_review_wait_ask(
     job_id: int | None = None,
     dry_run: bool,
     reason: str | None = None,
+    carry: str | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
     unit (a landed todo, or a sha-keyed hand land), deduped by its
@@ -1916,7 +1960,12 @@ def _file_review_wait_ask(
     closed without an ``answer:`` (comment or body line, gr645663) is
     refiled. ``land`` names the
     land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
-    when one claims it.
+    when one claims it. ``carry`` is the "cleared on a corrective commit"
+    blocker line of a land whose corrective commit is not on the release
+    branch (gr702442) — no reviewer is involved, the ask quotes the
+    line; its caller passes the release-and-commit-scoped
+    :func:`_carry_ask_key`, so the waiver cannot leak across releases
+    (td730820).
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -1925,7 +1974,24 @@ def _file_review_wait_ask(
 
     tag = f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}"
     job = f" (jo{job_id})" if job_id is not None else ""
-    if rid is not None:
+    if carry is not None:
+        what = f"the {land} engine land{job}"
+        title = (
+            f"engine land {land}{job} is cleared but its corrective commit "
+            "is not on the release branch — acknowledge it, or is this a "
+            "false alarm?"
+        )
+        body = (
+            f"The engine-review gate (td574937 E1) holds the deploy of "
+            f"the release carrying the {land} engine land{job}: {carry}. "
+            "Answering clears this one land, so the release then deploys "
+            "WITHOUT that corrective commit; to ship the fix with this "
+            "release, land it on the release branch instead and leave "
+            "this ask alone. This ask is the only write the gate makes; "
+            "answering it executes nothing — a comment starting `answer:` "
+            "('acknowledged' or 'false alarm') just closes it."
+        )
+    elif rid is not None:
         what = f"engine review td{rid} on the {land} land"
         title = (
             f"engine review td{rid} on the {land} land will not "
@@ -2253,6 +2319,27 @@ def _chain_corrective(
     return False
 
 
+def _carry_missing(verdict: _LandVerdict, scanned: list[str]) -> list[str]:
+    """The cleared ``verdict``'s corrective shas (12 chars) that are not
+    among the release's ``scanned`` commits — the "carry" hold's subject
+    (:func:`deploy_review_blockers`, :func:`_engine_verdicts`)."""
+    return [
+        r[:12]
+        for r in verdict.requires
+        if verdict.cleared and not any(_same_sha(r, s) for s in scanned)
+    ]
+
+
+def _carry_line(unit: _GateLand, missing: list[str], rn: Any) -> str:
+    """The "cleared on a corrective commit" blocker line for ``unit``
+    whose ``missing`` corrective shas are not on ``release/r<rn>``."""
+    return (
+        f"engine land {unit.label} {_CARRY_MARK} "
+        f"({', '.join(missing)}) that is not on release/{rn} — next: "
+        f"land the fix on release/{rn} or answer the review-wait ask"
+    )
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2274,10 +2361,16 @@ def _engine_verdicts(
     then, ``scanned`` empty).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
-    ``release-review-wait:<key>`` ask clears a gated unit; so does being
-    a cleared FIX/REVERT's recorded corrective commit while no covering
-    reviewer reached a verdict (:func:`_chain_corrective`, gr611217); no
-    covering reviewer
+    ``release-review-wait:<key>`` ask clears a gated unit; the carry
+    hold's ask (a cleared FIX/REVERT whose corrective commit is not on
+    ``release/r<N>``) files under a key scoped to the release and the
+    corrective commit(s) (:func:`_carry_ask_key`, td730820), so
+    answering it waives only that release's carry of that commit — the
+    plain per-unit key would clear the same land's hold on every
+    release and on main. Being a cleared FIX/REVERT's recorded
+    corrective commit while no covering
+    reviewer reached a verdict (:func:`_chain_corrective`, gr611217)
+    also clears a unit; no covering reviewer
     (``generate.from`` naming the landed todo or its parent, or the
     commit's ``sha:<sha12>`` — sha-keyed covers every unit of the
     commit) mints one —
@@ -2483,6 +2576,27 @@ def _engine_verdicts(
                     hopeless = (rid, line)
             if satisfied:
                 verdict.cleared = True
+                # The carry hold (a cleared FIX/REVERT whose corrective
+                # commit is not on release/r<N>) filed nothing, so the
+                # release waited silently — r316, nine hours (gr702442).
+                # The release-scoped carry ask (:func:`_carry_ask_key`)
+                # clears it once answered: deploy_review_blockers drops
+                # the line, and here no new ask files over the answer
+                # (td730820).
+                missing = _carry_missing(verdict, scanned) if rel is not None else []
+                rn = rel.get("rN") if rel is not None else None
+                answered_carry = bool(missing) and _answered_wait_ask(
+                    store, _carry_ask_key(unit, missing, rn)
+                )
+                if file_asks and missing and not answered_carry:
+                    note, _filed = _file_review_wait_ask(
+                        store,
+                        _carry_ask_key(unit, missing, rn),
+                        land=unit.land,
+                        dry_run=dry_run,
+                        carry=_carry_line(unit, missing, rn),
+                    )
+                    notes.append(note)
                 verdicts.append(verdict)
                 continue
             pick = waiting or hopeless
@@ -2578,17 +2692,18 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
     rn = rel.get("rN")
     lines = [v.line for v in verdicts or () if not v.cleared]
     for v in verdicts or ():
-        missing = [
-            r[:12]
-            for r in v.requires
-            if v.cleared and not any(_same_sha(r, s) for s in scanned)
-        ]
-        if missing:
-            lines.append(
-                f"engine land {v.unit.label} {_CARRY_MARK} "
-                f"({', '.join(missing)}) that is not on release/{rn} — next: "
-                f"land the fix on release/{rn} or answer the review-wait ask"
-            )
+        missing = _carry_missing(v, scanned)
+        # td730820: the waiver is scoped to the release and the
+        # corrective commit — an answered carry ask drops this line; it
+        # never touches another release's hold or the main gate.
+        if missing and not _answered_wait_ask(
+            store, _carry_ask_key(v.unit, missing, rn)
+        ):
+            line = _carry_line(v.unit, missing, rn)
+            ask_id = _open_wait_ask_id(store, _carry_ask_key(v.unit, missing, rn))
+            if ask_id is not None:
+                line = f"{line} — the open ask is td{ask_id}"
+            lines.append(line)
     return lines
 
 
@@ -2732,7 +2847,6 @@ def run_pass(
     now: datetime | None = None,
 ) -> PollResult:
     """One poll pass (module docstring); stops at the first blocker."""
-    from precis import settings
     from precis.plans import templates
 
     now = now or datetime.now(UTC)
@@ -2743,36 +2857,36 @@ def run_pass(
         # The watchdog never blocks a mint: one note, then the pass goes on.
         log.warning("release_poll: stuck watch raised", exc_info=True)
         res.notes.append("stuck watch raised — mint path unaffected")
-    windows = parse_windows(settings.get_str(WINDOWS_SETTING, store=store) or "")
-    if windows is None:
-        res.blocker = f"{WINDOWS_SETTING} is unparsable: nothing minted"
-        return res
-    hit = in_window(now, windows)
-    if hit is not None:
-        _mint_reviewers_only(store, res, now=now, dry_run=dry_run)
-        res.blocker = f"inside the no-release window {hit}Z"
-        return res
-    open_id = _open_pass_id(store)
-    if open_id is not None:
+    ok, blocked = _release.may_release(
+        store,
+        "cut",
+        now=now,
+        dry_run=dry_run,
+        notes=res.notes,
+        checks=("clock", "flight"),
+    )
+    if not ok:
+        if blocked == f"{WINDOWS_SETTING} is unparsable: nothing minted":
+            res.blocker = blocked
+            return res
+        open_id = (
+            _open_pass_id(store) if blocked.startswith("release-pass td") else None
+        )
         _mint_reviewers_only(
             store,
             res,
             now=now,
             dry_run=dry_run,
-            rel=_release.release_of(store, open_id),
+            rel=_release.release_of(store, open_id) if open_id is not None else None,
         )
-        try:
-            note = _cut_hold_ask(store, open_id, now=now, dry_run=dry_run)
-        except Exception:
-            log.warning("release_poll: cut-hold ask raised", exc_info=True)
-            note = "cut-hold ask raised — next tick retries"
-        if note is not None:
-            res.notes.append(note)
-        res.blocker = f"release-pass td{open_id} is open"
-        return res
-    blocked = _round_blocker(store, now, dry_run=dry_run, notes=res.notes)
-    if blocked is not None:
-        _mint_reviewers_only(store, res, now=now, dry_run=dry_run)
+        if open_id is not None:
+            try:
+                note = _cut_hold_ask(store, open_id, now=now, dry_run=dry_run)
+            except Exception:
+                log.warning("release_poll: cut-hold ask raised", exc_info=True)
+                note = "cut-hold ask raised — next tick retries"
+            if note is not None:
+                res.notes.append(note)
         res.blocker = blocked
         return res
     verdicts, notes, fatal, pin, scanned = _engine_verdicts(
@@ -2802,14 +2916,16 @@ def run_pass(
             )
         try:
             ahead = int(cmp_["ahead_by"])
-            behind = int(cmp_["behind_by"])
         except (KeyError, TypeError, ValueError):
             raise pr_class.GitHubUnreadable(
                 f"GET {base}/compare/prod...{pin}: no ahead_by/behind_by"
             ) from None
         status = str(cmp_.get("status") or "unknown")
-        if behind > 0 or status == "diverged":
-            res.blocker = f"prod has commits main lacks ({status})"
+        ok, reason = _release.may_release(
+            store, "cut", repo=res.repo, now=now, compare=cmp_, checks=("head",)
+        )
+        if not ok:
+            res.blocker = reason
             return res
         if ahead <= 0:
             res.blocker = f"main is not ahead of prod ({status})"
@@ -2836,9 +2952,11 @@ def run_pass(
                 f"— they hold the deploy, not the cut "
                 f"({', '.join(v.unit.land for v in uncleared)})"
             )
-        flying = _in_flight(store, res.repo)
-        if flying is not None:
-            res.blocker = f"{flying} is in flight"
+        ok, reason = _release.may_release(
+            store, "cut", repo=res.repo, now=now, checks=("branches",)
+        )
+        if not ok:
+            res.blocker = reason
             return res
     except pr_class.GitHubUnreadable as exc:
         res.blocker = f"GitHub unreadable ({exc}); nothing minted, next tick retries"

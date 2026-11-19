@@ -115,7 +115,7 @@ container metadata). Nothing in this thread waits on it.
 
 ## Horizon
 
-Milestones 2–4 and 6 are specced inside plugin-split-runtime-shell.md's
+Milestones 2–4 and 6 are specced inside plugin-split-runtime-shell (me690684)'s
 post-10-16 ordering and share its pointer (6 pairs it with the fold-in's
 own item); they become items as each comes into reach.
 

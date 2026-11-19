@@ -31,13 +31,18 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.export import _abbrev, progress, walker
-from precis.export._cite_ids import merged_cite_numbers, paper_identifier
+from precis.export._cite_ids import (
+    merged_cite_numbers,
+    merged_cite_numbers_si,
+    paper_identifier,
+)
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
 )
@@ -130,6 +135,17 @@ _MARGIN_IN = 1.0
 #: 8.5in page width matching python-docx's built-in template.
 _EQ_CENTER_TAB_IN = (8.5 - 2 * _MARGIN_IN) / 2
 _EQ_NUMBER_TAB_IN = 8.5 - 2 * _MARGIN_IN
+#: Caption formatting lives in Word styles, never in direct run formatting,
+#: so an author restyles every caption by editing one style in Word:
+#: ``Caption`` is Word's built-in caption paragraph style (the one *Insert
+#: Caption* and *Table of Figures* use) and carries the figure-caption text;
+#: ``Table Caption`` (based on it) the title above a table; ``Caption Label``
+#: (character) the "Figure N:" / "Table N:" label; ``Figure`` the paragraph
+#: that holds the picture.
+_CAPTION_STYLE = "Caption"
+_TABLE_CAPTION_STYLE = "Table Caption"
+_CAPTION_LABEL_STYLE = "Caption Label"
+_FIGURE_STYLE = "Figure"
 
 
 def _apply_paper_theme(doc: Any) -> None:
@@ -157,12 +173,65 @@ def _apply_paper_theme(doc: Any) -> None:
     for lvl in range(1, _MAX_HEADING_LEVEL + 1):
         _restyle(f"Heading {lvl}", font=_HEADING_FONT)
 
+    _ensure_caption_styles(doc)
+
     margin = Inches(_MARGIN_IN)
     for section in doc.sections:
         section.top_margin = margin
         section.bottom_margin = margin
         section.left_margin = margin
         section.right_margin = margin
+
+
+def _ensure_caption_styles(doc: Any) -> None:
+    """Define the four caption styles (idempotent; see ``_CAPTION_STYLE``).
+
+    The look matches what the export used to apply run by run: figure
+    captions italic and centred under a bold label, table titles bold and
+    left-aligned. ``Figure`` and ``Table Caption`` keep with the next
+    paragraph, so a picture stays on the page of its caption and a title on
+    the page of its table."""
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
+
+    styles = doc.styles
+    if _CAPTION_LABEL_STYLE in styles:
+        return
+
+    def _get_or_add(name: str, style_type: Any) -> Any:
+        return styles[name] if name in styles else styles.add_style(name, style_type)
+
+    try:
+        normal = styles["Normal"]
+    except KeyError:  # pragma: no cover - depends on the docx template
+        normal = None
+
+    # python-docx's template ships ``Caption`` as 9 pt bold accent-blue.
+    caption = _get_or_add(_CAPTION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    caption.base_style = normal
+    caption.font.name = _BODY_FONT
+    caption.font.size = Pt(_BODY_PT)
+    caption.font.color.rgb = RGBColor.from_string(_INK)
+    caption.font.bold = False
+    caption.font.italic = True
+    caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    table_caption = _get_or_add(_TABLE_CAPTION_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    table_caption.base_style = caption
+    table_caption.font.bold = True
+    table_caption.font.italic = False
+    table_caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    table_caption.paragraph_format.keep_with_next = True
+
+    figure = _get_or_add(_FIGURE_STYLE, WD_STYLE_TYPE.PARAGRAPH)
+    figure.base_style = normal
+    figure.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    figure.paragraph_format.keep_with_next = True
+
+    label = _get_or_add(_CAPTION_LABEL_STYLE, WD_STYLE_TYPE.CHARACTER)
+    label.font.bold = True
+    label.font.italic = False
 
 
 @dataclass
@@ -264,6 +333,12 @@ class _Ctx:
     xref: dict[str, tuple[str, str]] = field(default_factory=dict)
     #: dc handles of headings that display a section number (depth <= 2).
     numbered_headings: set[str] = field(default_factory=set)
+    #: reading-order index and enclosing numbered section per dc handle, and
+    #: the chunk being rendered: a reference into the citing chunk's own
+    #: section prints "above" / "below" (:func:`walker.relative_word`).
+    xref_order: dict[str, int] = field(default_factory=dict)
+    xref_section: dict[str, str] = field(default_factory=dict)
+    cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: every live ``dc`` handle (cross-ref liveness) and legacy ``¶`` handle →
     #: ``dc`` — mirrors ``export/latex.py``'s ``known_handles``/``legacy_to_dc``.
     dc_handles: set[str] = field(default_factory=set)
@@ -377,6 +452,23 @@ def _add_hyperlink(
     run.append(t)
     link.append(run)
     paragraph._p.append(link)
+
+
+def _set_core_properties(doc: Any, title: str | None, byline: dict[str, Any]) -> None:
+    """Replace the python-docx template's document properties (gr725247):
+    title = the draft title as plain text, author = the byline's names (empty
+    when the draft has none), created / modified = now (UTC); description and
+    last-modified-by empty."""
+    from precis.utils.title_views import title_plain
+
+    props = doc.core_properties
+    now = datetime.now(UTC)
+    props.title = title_plain(title)
+    props.author = ", ".join(a["name"] for a in byline.get("authors") or [])
+    props.comments = ""
+    props.last_modified_by = ""
+    props.created = now
+    props.modified = now
 
 
 def _render_date(doc: Any) -> None:
@@ -498,6 +590,8 @@ def export_docx(
         known_handles=handles,
         xref=nums.labels,
         numbered_headings=nums.numbered_headings,
+        xref_order=nums.order,
+        xref_section=nums.section,
         dc_handles={c.dc for c in chunks},
         legacy_to_dc=walker.legacy_map(chunks),
         abbrevs=store.drafts.defined_abbrevs(ref.id),
@@ -517,6 +611,7 @@ def export_docx(
     doc = Document()
     _apply_paper_theme(doc)
     byline = build_byline(getattr(ref, "authors", None))
+    _set_core_properties(doc, getattr(ref, "title", None), byline)
 
     # The seeded title chunk renders as the doc title (``\maketitle``); a
     # draft that no longer opens with it (abstract moved above, chunk
@@ -539,6 +634,7 @@ def export_docx(
         equation_of=_standalone_equation,
         numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
         on_chunk=lambda n: progress.report("rendering", n, len(chunks)),
+        cursor=ctx.cursor,
     )
 
     # Back matter in the one order both exporters share
@@ -625,6 +721,60 @@ def _border_paragraph(par: Any) -> None:
     par._p.get_or_add_pPr().append(pbdr)
 
 
+#: Placed width of an embedded figure, and the print resolution below which
+#: a raster figure earns a warning (gr725249).
+_FIGURE_WIDTH_IN = 5.5
+_MIN_FIGURE_DPI = 300
+_ALT_TEXT_MAX = 250
+
+
+def _alt_text(caption: str) -> str:
+    """A caption as plain text for a picture's alt text: citation marks, math
+    and inline markup stripped, cut at 250 characters on a word boundary."""
+    from precis.utils.title_views import title_plain
+
+    refs = [m.span() for m in _iter_refs(caption)]
+    for lo, hi in reversed(refs):
+        caption = caption[:lo] + caption[hi:]
+    text = title_plain(caption)
+    text = re.sub(r"\*\*|(?<![\w\\])\*(?=\S)|(?<=\S)\*(?!\w)|`", "", text)
+    text = re.sub(r"\s+([,.;:!?)])", r"\1", re.sub(r"\s+", " ", text)).strip()
+    if len(text) <= _ALT_TEXT_MAX:
+        return text
+    cut = text[:_ALT_TEXT_MAX]
+    if not text[_ALT_TEXT_MAX].isspace() and " " in cut:
+        cut = cut[: cut.rindex(" ")]
+    return cut.rstrip()
+
+
+def _warn_low_resolution(store: Store, chunk: Any, data: bytes, ctx: _Ctx) -> None:
+    """Warn when a raster figure's pixel width over its placed width is below
+    300 dpi. A vector source the exporter rasterised itself is exempt: it
+    chose the width."""
+    from docx.image.image import Image
+
+    from precis.utils.figure_source import figure_asset_is_rasterised_vector
+
+    width_px = Image.from_blob(data).px_width
+    dpi = width_px / _FIGURE_WIDTH_IN
+    if dpi >= _MIN_FIGURE_DPI or figure_asset_is_rasterised_vector(store, chunk):
+        return
+    ctx.warnings.append(
+        f"figure {chunk.dc}: {int(dpi)} dpi at {_FIGURE_WIDTH_IN} in "
+        f"({width_px} px wide); below {_MIN_FIGURE_DPI} dpi"
+    )
+
+
+def _repeat_header_row(table: Any) -> None:
+    """Mark the table's first row as a header row (``w:tblHeader``) so Word
+    repeats it at the top of each page the table spans."""
+    from docx.oxml import OxmlElement
+
+    tr_pr = table.rows[0]._tr.get_or_add_trPr()
+    if not tr_pr.xpath("w:tblHeader"):
+        tr_pr.append(OxmlElement("w:tblHeader"))
+
+
 def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     """Embed a figure image + its caption. Raster blobs
     embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
@@ -632,12 +782,12 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     figure degrades to a caption-only paragraph + a warning."""
     from io import BytesIO
 
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches
 
     from precis.render.figure import ensure_rendered
     from precis.utils.figure_source import figure_export_asset
 
+    _ensure_caption_styles(doc)
     render_err = (
         None if chunk.dc in ctx.withheld_figures else ensure_rendered(store, chunk)
     )
@@ -652,9 +802,9 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
             str(perm[k]) for k in ("publisher", "source_paper") if perm.get(k)
         )
         box = doc.add_paragraph(
-            "Figure withheld pending permission" + (f": {who}" if who else "")
+            "Figure withheld pending permission" + (f": {who}" if who else ""),
+            style=_FIGURE_STYLE,
         )
-        box.alignment = WD_ALIGN_PARAGRAPH.CENTER
         _border_paragraph(box)
         ctx.warnings.append(
             f"figure {chunk.dc} withheld (third-party image, permission not granted)"
@@ -667,8 +817,12 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
     else:
         data, _ext = asset
         try:
-            doc.add_picture(BytesIO(data), width=Inches(5.5))
-            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            shape = doc.add_picture(BytesIO(data), width=Inches(_FIGURE_WIDTH_IN))
+            doc.paragraphs[-1].style = _FIGURE_STYLE
+            alt = _alt_text(chunk.text or "")
+            if alt:
+                shape._inline.docPr.set("descr", alt)
+            _warn_low_resolution(store, chunk, data, ctx)
         except Exception as exc:  # pragma: no cover — pillow/format edge
             ctx.warnings.append(f"figure {chunk.dc} could not embed: {exc}")
         snapshot = collect_entry(chunk)
@@ -683,17 +837,15 @@ def _render_figure(doc: Any, store: Store, chunk: Any, ctx: _Ctx) -> None:
                     label=chunk.dc, caption=chunk.text or "", snapshot=snapshot
                 )
             )
-    cap = doc.add_paragraph()
-    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # Formatting comes from the ``Caption`` / ``Caption Label`` styles alone
+    # (gr725239): no run here carries direct bold, italic or alignment.
+    cap = doc.add_paragraph(style=_CAPTION_STYLE)
     # "Figure N:" — the same reading-order number a ``[dc<id>]`` cross-ref
     # prints as "fig. N", like LaTeX's ``\\caption`` label.
     number = ctx.xref.get(chunk.dc, ("", ""))[1]
     if number:
-        cap.add_run(f"Figure {number}: ").bold = True
-    first_caption_run = len(cap.runs)
+        cap.add_run(f"Figure {number}: ", style=_CAPTION_LABEL_STYLE)
     _render_inline(chunk.text or "", ctx, cap)
-    for r in cap.runs[first_caption_run:]:
-        r.italic = True
 
 
 # ── table rendering ───────────────────────────────────────────────
@@ -716,19 +868,22 @@ def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
     # prints as "table N", like the figure caption's "Figure N:" (gr592852).
     number = ctx.xref.get(chunk.dc, ("", ""))[1]
     if number or caption:
-        cap = doc.add_paragraph()
+        _ensure_caption_styles(doc)
+        cap = doc.add_paragraph(style=_TABLE_CAPTION_STYLE)
         if number:
-            cap.add_run(f"Table {number}: " if caption else f"Table {number}")
+            cap.add_run(
+                f"Table {number}: " if caption else f"Table {number}",
+                style=_CAPTION_LABEL_STYLE,
+            )
         if caption:
             _render_inline(caption, ctx, cap)
-        for run in cap.runs:
-            run.bold = True
     ncols = len(header)
     table = doc.add_table(rows=1, cols=ncols)
     try:  # built-in style; absent in some templates → fall back to no style
         table.style = "Table Grid"
     except KeyError:  # pragma: no cover - depends on the docx template
         pass
+    _repeat_header_row(table)
     for cell, text in zip(table.rows[0].cells, header):
         para = cell.paragraphs[0]
         # Header cells use the same inline grammar as body cells — a
@@ -809,6 +964,23 @@ def _script_only_to_html(m: re.Match[str]) -> str:
     return f"<{tag}>{arg}</{tag}>"
 
 
+#: A leading ASCII hyphen that is a minus sign in a sub/superscript: directly
+#: before a digit (``-1``), or the whole script is a lone sign (``-``, ``+-``).
+#: A hyphen inside a word-like script (``in-plane``) is a hyphen.
+_SCRIPT_MINUS = re.compile(r"\A(\+?)-(?=\d|\Z)")
+#: A superscript that ends in a hyphen right after a digit is a charge
+#: (``SO$_4^{2-}$``): the hyphen is a minus too (gr725241).
+_CHARGE_MINUS = re.compile(r"(?<=\d)-\Z")
+
+
+def _script_minus(text: str, *, sup: bool = False) -> str:
+    """The text of a ``<sub>``/``<sup>`` run with its minus sign typeset as
+    U+2212, as the OMML path does for ``$10^{-53}$`` (gr725240). A superscript
+    (``sup``) also takes the trailing charge sign (``2-``)."""
+    text = _SCRIPT_MINUS.sub("\\1\u2212", text)
+    return _CHARGE_MINUS.sub("\u2212", text) if sup else text
+
+
 _CLOSING_PUNCT = walker.CLOSING_PUNCT
 
 
@@ -841,6 +1013,33 @@ _SPAN = re.compile(
 )
 
 
+#: A math span that is exactly ``$\mu$`` / ``$\Omega$`` (gr725241).
+_UNIT_SYMBOL_SPAN = re.compile(r"\$\s*\\(?P<name>mu|Omega)\s*\$")
+#: What may directly precede a unit ``$\Omega$``: a digit, a digit plus one
+#: space, or an SI prefix letter (``k``, ``M``, ``G``, ``m``, ``μ``) that is
+#: itself at the start, or after a digit, whitespace or an opening bracket
+#: (``system$\Omega$`` is not a unit).
+_OHM_PREFIX = re.compile(
+    r"(?:\d|\d[ \u00a0\u2009\u202f]"
+    r"|(?:\A|(?<=[\d\s(\[{]))[kMGm\u03bc])\Z"
+)
+
+
+def _unit_symbol(span: str, before: str, after: str) -> str | None:
+    """The literal character for a lone ``$\\mu$`` / ``$\\Omega$`` that is a
+    unit symbol — ``V/$\\mu$m``, ``10 $\\mu$A`` (μ directly followed by a
+    letter), ``150 $\\Omega$``, ``k$\\Omega$`` (Ω after a number or an SI
+    prefix) — else ``None``. OMML would set these in math italic; the plain
+    character prints upright in the body font. ``$\\mu_B$`` and a lone
+    ``$\\mu$`` before a space stay math."""
+    sm = _UNIT_SYMBOL_SPAN.fullmatch(span)
+    if sm is None:
+        return None
+    if sm.group("name") == "mu":
+        return "\u03bc" if after[:1].isalpha() else None
+    return "\u03a9" if _OHM_PREFIX.search(before) else None
+
+
 def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
     if not text:
         return
@@ -856,7 +1055,11 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
         if m.group("math") is not None:
             span = m.group("math")
             if _math_braces_balanced(span) and _math_plausible(span):
-                _render_math(span, paragraph)
+                unit = _unit_symbol(span, text[: m.start()], text[m.end() :])
+                if unit is not None:
+                    paragraph.add_run(unit)  # upright body-font run, not math
+                else:
+                    _render_math(span, paragraph)
             else:
                 # Same demotion as the LaTeX exporter: a garbled or
                 # money-dollar-mispaired span is prose, not math — emit
@@ -866,10 +1069,10 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
             r = paragraph.add_run(m.group("code")[1:-1])
             r.font.name = "Consolas"
         elif m.group("sub") is not None:
-            r = paragraph.add_run(m.group("sub")[5:-6])
+            r = paragraph.add_run(_script_minus(m.group("sub")[5:-6]))
             r.font.subscript = True
         elif m.group("sup") is not None:
-            r = paragraph.add_run(m.group("sup")[5:-6])
+            r = paragraph.add_run(_script_minus(m.group("sup")[5:-6], sup=True))
             r.font.superscript = True
         elif m.group("bold") is not None:
             # Definitions inside bold resolve too — the PDF defines inside
@@ -1336,11 +1539,18 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
         dc,
         surface,
         live=ctx.dc_handles or None,
-        numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
+        numbers=walker.XrefNumbers(
+            ctx.xref,
+            ctx.numbered_headings,
+            ctx.eq_numbers,
+            ctx.xref_order,
+            ctx.xref_section,
+        ),
         warnings=ctx.warnings,
         dead=lambda d: walker.dead_xref(
             ctx.store, d, ctx.dc_handles, ctx._dead_xref_cache
         ),
+        citing=ctx.cursor.dc,
     )
     DocxRenderer(ctx).xref(paragraph, xref)
 
@@ -1481,10 +1691,10 @@ def _cite(
     # marker gains " (SI)" (an EndNote field carries it as <Suffix>).
     slug, resolved_si = _resolve_si_slug(slug, ctx)
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
-    # Consecutive cites to the same paper give one mark for the run; an
-    # "(SI)" postnote cite never joins a merge run (mirrors LaTeX, where
-    # ``\cite[SI]{…}`` is never merged): it flushes the pending run, then
-    # prints its own mark (:class:`walker.CiteRun`).
+    # Consecutive cites to the same paper give one mark for the run. An
+    # "(SI)" cite joins the run and keeps its postnote on its own number
+    # (mirrors LaTeX's ``\\cites{a}[SI]{b}``); the same paper cited both plain
+    # and SI back to back stays two marks (:class:`walker.CiteRun`).
     _emit_cites(
         ctx,
         paragraph,
@@ -1618,6 +1828,7 @@ class DocxRenderer:
         """One superscript mark (``[n]``, ``[1, 2]``, ``[1–3]``; an SI mark
         ``[n] (SI)``) plus each paper's link runs, or ONE EndNote field."""
         ctx, si = self.ctx, any(group.si)
+        mixed = si and not all(group.si)  # "[9 (SI), 14]": the mark per number
         si_mark = ctx._si_mark
         ctx._si_mark = None
         if si_mark is not None and si_mark[0] is sink and len(sink.runs) == si_mark[1]:
@@ -1626,7 +1837,19 @@ class DocxRenderer:
             sink.add_run(" ")
         if ctx.endnote:
             entries = list(zip(group.keys, group.numbers, group.chunk_ids, strict=True))
-            _cite_endnote(entries, ctx, sink, suffix=" (SI)" if si else "")
+            _cite_endnote(
+                entries,
+                ctx,
+                sink,
+                suffix=" (SI)" if si and not mixed else "",
+                suffixes=[" (SI)" if s else "" for s in group.si] if mixed else None,
+            )
+        elif mixed:
+            sink.add_run(
+                merged_cite_numbers_si(list(zip(group.numbers, group.si, strict=True)))
+            ).font.superscript = True
+            for slug in group.keys:
+                _cite_link_group(slug, ctx, sink)
         else:
             # biblatex sorts the keys of a merged cite before printing it.
             sink.add_run(
@@ -1636,7 +1859,7 @@ class DocxRenderer:
                 sink.add_run(" (SI)").font.superscript = True
             for slug in group.keys:
                 _cite_link_group(slug, ctx, sink)
-        if si:
+        if si and not mixed:
             ctx._si_mark = (sink, len(sink.runs))
 
     def term(self, sink: Any, use: _abbrev.Use) -> None:
@@ -1648,9 +1871,16 @@ class DocxRenderer:
         """The surface / fallback text, or what ``\\cref`` would print —
         ``section 1.5.5``, ``fig. 2``, ``Eq. (3)`` — capitalised at a
         sentence start (``Section``, ``Fig.``, ``Equation``); a back-matter
-        target prints its name. Nothing when there is no number."""
+        target prints its name; a reference into the citing chunk's own
+        section prints ``above`` / ``below`` (``Above``). Nothing when there
+        is no number."""
         if not xref.live or xref.surface:
             text = xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
+        elif xref.relative is not None:
+            # The target is the citing chunk's own section or an ancestor.
+            text = xref.relative
+            if _at_sentence_start(sink):
+                text = text[0].upper() + text[1:]
         elif xref.equation is not None:
             lead = "Equation" if _at_sentence_start(sink) else "Eq."
             text = f"{lead} ({xref.equation})"
@@ -1673,6 +1903,22 @@ class DocxRenderer:
         ctx = self.ctx
         if name == "unverified":
             _append_unverified_claims(sink, ctx)
+            from docx.shared import RGBColor
+
+            from precis.export.retraction import (
+                draft_retraction_report,
+                retraction_coverage_entries,
+            )
+
+            entries = retraction_coverage_entries(
+                draft_retraction_report(ctx.store, None, cited_slugs=ctx.cited), "none"
+            )
+            if entries:
+                sink.add_heading("Retraction coverage", level=1)
+                for text, red in entries:
+                    run = sink.add_paragraph().add_run(text)
+                    if red:
+                        run.font.color.rgb = RGBColor(255, 0, 0)
         elif name == "data_package":
             _append_data_package(sink, ctx.data_package)
             if ctx.audience is not None and ctx.audience.name == "external":
@@ -1736,8 +1982,8 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         "authors": pref.authors,
         "title": pref.title or slug,
         "year": pref.year,
-        "journal": meta.get("venue")
-        or meta.get("journal")
+        "journal": meta.get("journal")
+        or meta.get("venue")
         or meta.get("container_title"),
         "volume": meta.get("volume"),
         "number": meta.get("number"),
@@ -1752,6 +1998,7 @@ def _cite_endnote(
     ctx: _Ctx,
     paragraph: Any,
     suffix: str = "",
+    suffixes: Sequence[str] | None = None,
 ) -> None:
     """Emit ONE native EndNote ``ADDIN EN.CITE`` field for a citation run —
     one ``<Cite>`` element per ``(slug, n, chunk_id)`` entry, as EndNote
@@ -1761,18 +2008,22 @@ def _cite_endnote(
     A ``pc<id>`` chunk citation (``chunk_id`` set) embeds that chunk's text as
     the field's traveling note — so the exact cited passage rides along in
     EndNote. Per-citation, not per-paper: different cite sites of the same
-    paper carry the passage each one actually pointed at. ``suffix`` is a
-    single SI cite's ``" (SI)"`` postnote (gr491600 L5)."""
+    paper carry the passage each one actually pointed at. ``suffix`` is an
+    all-SI run's ``" (SI)"`` postnote (gr491600 L5); ``suffixes`` (one per
+    ``run`` entry) puts it on the SI ``<Cite>`` of a mixed run only."""
     from precis.export.endnote import add_citation_field
 
     cites: list[tuple[dict[str, Any], str | None, int]] = []
-    for slug, n, chunk_id in run:
+    cite_suffixes: list[str] = []
+    for i, (slug, n, chunk_id) in enumerate(run):
         source = ctx.resolved.get(slug)
         if source is None:
             source = _resolve_source(ctx.store, slug)
             if source is None:
                 ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
-                paragraph.add_run(f"[{n}]{suffix}").font.superscript = True
+                paragraph.add_run(
+                    f"[{n}]{suffixes[i] if suffixes else suffix}"
+                ).font.superscript = True
                 continue
             if not source.get("year"):
                 ctx.warnings.append(f"cite {slug!r}: no year — empty <Year/>")
@@ -1784,8 +2035,11 @@ def _cite_endnote(
             except Exception:  # pragma: no cover — chunk fetch best-effort
                 notes = None
         cites.append((source, notes, n))
+        cite_suffixes.append(suffixes[i] if suffixes else suffix)
     if cites:
-        add_citation_field(paragraph, cites, suffix)
+        add_citation_field(
+            paragraph, cites, suffix, cite_suffixes if suffixes else None
+        )
 
 
 # ── references + glossary sections ────────────────────────────────
@@ -1997,7 +2251,7 @@ def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
             out.append((f"{', ' if publisher else ' '}version {version}", none))
         return _sentence(out) if out else out
     if entry_type == "article":
-        journal = field("venue") or field("journal") or field("container_title")
+        journal = field("journal") or field("venue") or field("container_title")
         if journal:
             out.append((" ", none))
             out += [(t, st | ital) for t, st in _bib_markup_runs(journal)]
@@ -2114,6 +2368,7 @@ def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
         return
     doc.add_heading(_NANOPUB_SECTION_TITLE, level=1)
     table = doc.add_table(rows=1, cols=4)
+    _repeat_header_row(table)
     try:  # built-in style; absent in some templates -> no style
         table.style = "Table Grid"
     except Exception:  # pragma: no cover — template without the style
@@ -2137,6 +2392,7 @@ def _append_supplement(doc: Any, entries: list[Any]) -> None:
     """Format the numbered record table alongside the figure data package."""
     doc.add_heading("Data Supplement", level=1)
     table = doc.add_table(rows=1, cols=3)
+    _repeat_header_row(table)
     for cell, text in zip(table.rows[0].cells, ("Entry", "Kind", "Description")):
         cell.text = text
     for entry in entries:

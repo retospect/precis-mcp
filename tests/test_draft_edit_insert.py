@@ -130,6 +130,21 @@ def test_insert_requires_where(store: Store) -> None:
         h.edit(id=dc, mode="insert", find="[pc1]", text=" more")
 
 
+def test_insert_without_find_does_not_overwrite_chunk(store: Store) -> None:
+    """gr720455: mode='insert' with no find= used to rewrite the chunk."""
+    h, dc, _chunk_id = _draft_with_para(store, "Some text [pc1].")
+    for dry in (True, False):
+        with pytest.raises(BadInput):
+            h.edit(
+                id=dc,
+                mode="insert",
+                where="before",
+                text="Test paragraph.",
+                dry_run=dry,
+            )
+    assert _text(store, dc) == "Some text [pc1]."
+
+
 def test_insert_rejects_bad_where(store: Store) -> None:
     h, dc, _chunk_id = _draft_with_para(store, "Some text [pc1].")
     with pytest.raises(BadInput):

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from precis.workers.job_types import (
+    _BUILTIN_JOB_TYPES,
     JOB_TYPE_PLUGIN_GROUP,
     JobTypeSpec,
     _reset_plugin_cache,
@@ -159,7 +160,9 @@ class TestKnownJobTypes:
     def test_builtins_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_eps(monkeypatch, [])
         names = known_job_types()
-        assert names[:2] == ["fix_gripe", "plan_tick"]
+        # The whole built-in tuple, in its declared order (not a hand-copied
+        # prefix that goes stale whenever a built-in is added).
+        assert names[: len(_BUILTIN_JOB_TYPES)] == list(_BUILTIN_JOB_TYPES)
 
     def test_plugins_append(self, monkeypatch: pytest.MonkeyPatch) -> None:
         spec = JobTypeSpec(
@@ -174,8 +177,9 @@ class TestKnownJobTypes:
         names = known_job_types()
         # Built-ins keep their order; plugin appears after them
         # even though it sorts alphabetically before "fix_gripe".
-        assert names[:2] == ["fix_gripe", "plan_tick"]
-        assert "aaa_first_alphabetically" in names[2:]
+        n = len(_BUILTIN_JOB_TYPES)
+        assert names[:n] == list(_BUILTIN_JOB_TYPES)
+        assert "aaa_first_alphabetically" in names[n:]
 
     def test_unknown_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_eps(monkeypatch, [])

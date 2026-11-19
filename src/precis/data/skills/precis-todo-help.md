@@ -50,9 +50,21 @@ is one call: `put(kind='todo', id=122, text='done — pr merged',
 tags=['STATUS:done'])`; drop tags atomically with `untags=`, e.g.
 `put(kind='todo', id=122, text='answered', tags=['STATUS:done'],
 untags=['waiting-for:reto'])`. Tag-only changes use
-`tag(add=[...]/remove=[...])`. `get`
-shows the newest 3 in full, older ones as one-liners, and
-`get(kind='todo', id=122, view='comments')` shows all. The details body
+`tag(add=[...]/remove=[...])`. A bare `get`
+shows the newest 3, older ones as one-liners — each newest comment longer
+than ~2500 characters is cut mid-text (head + tail, 2000-char budget) with
+a marker naming `args={'comment': K}` for the whole one; `spec:` / `brief:`
+work orders stay whole. `get(kind='todo', id=122, view='comments')` shows
+all, oldest first, paged whole — and selects: `args={'comments': 5}` the
+newest 5, `args={'comments': '3-7'}` a comment-number window,
+`args={'comment': 4}` one comment uncapped; on a bare get a selector reads
+as `view='comments'`. Ask for a window only from numbers a response
+already named — an elided span, or the count line a comments view ends
+with (`comments: all N`, `comments: A-B of N`). A guessed range refuses
+(gr688479) with the count, the valid span and the working call as
+`next=` — issue the `next=`, never re-issue the failing range.
+
+The details body
 reads alone via `view='body'` (title + untruncated `todo_body` — the call a
 `… cut:` marker names when the whole card can't fit). The ref's `meta`
 dict (workspace, llm_tier, op, …) reads via `view='meta'`.
@@ -160,7 +172,16 @@ link(kind="todo", id=141, target="pa5", rel="blocked-by")
 
 `STATUS:blocked` marks the state; `link(... rel='blocked-by')`
 records what it's waiting on. Targets carry an explicit kind prefix
-(`todo:158`, `paper:<slug>`, `markdown:notes/x.md`).
+(`todo:158`, `paper:<slug>`, `markdown:notes/x.md`). The edge sequences
+dispatch (gr656970): a todo with an open `blocked-by` target — a todo
+or a gripe — is not dispatched by `plan_dispatch` until the blocker
+reaches a terminal STATUS, and a `run_slice` job already queued
+re-checks at claim, so a blocker linked after minting still holds the
+build. The blocked todo shows on the work board row as
+`after <handle>` and in `search(kind='todo', view='blocked')` naming
+the blocker. The same holds in reverse: a gripe a todo is blocked on
+holds the todo, and a gripe blocked by anything stays out of the
+factory intake until its blocker closes (see [[precis-gripe-help]]).
 
 `waiting-for:reto` marks a question for Reto. Once he has ruled and the
 todo carries the answer, remove the tag right after that write
@@ -333,3 +354,7 @@ worth keeping a record of.
 - [[precis-tags]] — STATUS:/PRIO: vocabulary, validation
 - [[precis-relations]] — blocked-by / blocks and other rels
 - [[precis-search-help]] — tags= filter, q= ranking
+
+## Bound the result shape
+
+`search(kind='todo', ids=['td123', 456])` (also `args={'ids': ['td123', 456]}`) filters ordinary search or `view='count'` to those todos, AND-ed with other filters. Tree views do not accept ids.

@@ -38,6 +38,8 @@ and target grammar live in `precis-link-help`.
 | `supports` | `supported-by` | A provides evidence for B. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
 | `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Fileable only where the constraint table below allows it. |
+| `inspired-by` | `inspired` | An idea or design took inspiration from B prior art; does not assert evidential support. |
+| `rejected-after` | (none) | A records deciding against an approach after reading B prior art. |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
 | `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the composite hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
@@ -102,6 +104,9 @@ write. Every other relation accepts any two refs.
 | `rel=` | domain (source kind) | range (target kind) | functional | acyclic |
 |---|---|---|---|---|
 | `contradicts` | memory | memory | - | - |
+| `inspired-by` | gripe, markdown, memory, todo | memory, paper, web | - | - |
+| `inspired` | memory, paper, web | gripe, markdown, memory, todo | - | - |
+| `rejected-after` | gripe, markdown, memory, todo | memory, paper, web | - | - |
 | `selects` | memory | component, part | - | - |
 | `rejects` | memory | component, part | - | - |
 | `draft-of` | any | any | yes | - |
@@ -137,7 +142,7 @@ Inverse slugs follow the same rule as the relation they mirror
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
-without a second `link()`. `selects` / `rejects` / `considered` and
+without a second `link()`. `rejected-after` / `selects` / `rejects` / `considered` and
 `cited-in` / `corroborates` / `superseded-in` /
 `off-topic-for` are the exception among the *non*-`related-to`/`see-also`
 set — asymmetric with NO inverse (like `see-also`): a paper's disposition
@@ -198,8 +203,7 @@ link(kind="perplexity-research", id=88, target="todo:14", rel="derived-from")
 ```
 
 `derived-from` records that A's content was produced from B —
-summaries, distillations, chase-pipeline outputs, manual notes
-extracted from a passage.
+summaries, distillations, chase outputs, manual notes.
 
 ## Express abstraction level
 ## A is broader / narrower than B
@@ -227,8 +231,9 @@ link(kind="todo", id=141, target="todo:158", rel="blocked-by")
 link(kind="todo", id=158, target="gripe:7", rel="blocks")
 ```
 
-`blocks` / `blocked-by` is the workflow-filter pair. Targets are
-usually `todo` or `gripe`. The `todo` list view filters on these.
+`blocks` / `blocked-by` sequences the work (gr656970): either kind on
+either side waits — undispatched and unclaimed — until the blocker
+reaches a terminal STATUS; `view='blocked'` names it.
 
 ## Mark a retraction, correction, or concern
 ## A retracts / corrects / raises concern about B
@@ -377,3 +382,9 @@ existing claim/source identities, and retain the decisive passage. Follow
 [[precis-link-help]] for chunk targets and machine-writer admission. Read back
 the affected refs and their links. A link or a fluent summary does not promote
 trust, resolve a dispute, or authorize publication.
+
+## Record prior-art decisions
+
+`link(kind="gripe", id=608714, target="pa57193", rel="inspired-by")`
+records adoption; `rejected-after` records rejection, with rationale in the
+source. Backlog files use stored `markdown` refs, not the read-only `md` index.

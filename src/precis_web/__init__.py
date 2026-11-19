@@ -10,7 +10,10 @@ error handlers, and a lifespan building the single
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
 
-**Ref readers.** ``ref_urls`` is the shared native-reader map for Drive,
+**Ref readers.** Memory bodies render Markdown blocks through ``linkify.linkify_toon``;
+inline spans preserve single newlines so older line-oriented bodies remain
+legible. Code stays literal, including nested fences, and raw HTML is escaped.
+``ref_urls`` is the shared native-reader map for Drive,
 handle resolution and tag pivots. Browse-menu membership cannot gate stored
 ref detail: optional kinds still render when their handler is absent. ORCID
 reads its stored identity/authored papers without upstream refresh. File kinds
@@ -87,10 +90,14 @@ PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
 links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
-(Drive, Tags, Design); Browse ▾ (Quests, Todos — the ``queue=doable``
-preset the retired ToDo tab's dashboard list became, gr664410 — the
-``/todo/{id}`` workbench stays per-item — Schedules, Clusters,
-Structures, CAD, Figures, Mermaid); Attention (Needs you, Gripes, Alerts,
+(Drive, Design); plain links (Quests → ``/refs/quest``, Clusters,
+Reactions → the ``/rxn`` ledger — kept top-level rather than folded
+into Drive's New form, gr664411). The former Browse ▾ kind presets are
+Drive's sidebar "Saved views" (``drive_views.py``: Drafts, Papers,
+Schedules, Structures, CAD, PCB, Figures, Mermaid, plus the Nanopubs
+workbench link); the Todos ``queue=doable`` preset the retired ToDo
+tab's dashboard list became (gr664410 — the ``/todo/{id}`` workbench
+stays per-item) is a Drive facet. Attention (Needs you, Gripes, Alerts,
 badged); Manual (top-level and unbadged because it is the no-idea-where tab);
 Ops ▾ (System, Categorizers, Agent Logs, Console, Env, Secrets); search submits
 to ``/drive``; "?" launches a tour only when the path matches a manifest

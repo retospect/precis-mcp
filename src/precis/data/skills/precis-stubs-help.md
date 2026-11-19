@@ -136,7 +136,11 @@ put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 `put(kind='paper', …)` mints a **stub only** — it requests the paper
 into this backlog; it never writes a body (paper bodies are
 import-only, via `.acatome` ingest). Idempotent: a paper already held
-or already wanted is a no-op.
+or already wanted is a no-op. An identifier already held by a paper whose
+stored title shares nothing with the `title=` you pass (both ≥4 content
+words) is refused as an identifier/title conflict naming `pa<N>` — the
+stub is not minted and the held row is left for repair; check
+`get(kind='paper', id='pa<N>')`. Placeholder or sparse titles never trip it.
 
 A **DOI / arXiv / S2 / PubMed / PMC id is strongly preferred** — the stub carries the
 id, and an explicit `put` jumps the fetch queue: the stub is pinned to

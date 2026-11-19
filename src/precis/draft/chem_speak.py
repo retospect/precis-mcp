@@ -21,8 +21,11 @@ pattern later can't re-carve a span the specific one already claimed):
    anion grammar is covered (the literal shape this transform targets); a
    bare-anion salt like ``CuSO4·5H2O`` doesn't match and is left alone
    rather than guessing the cation/anion split.
-2. :data:`_FORMULA_RE` — a curated table of ~2 dozen exact, unambiguous
-   formulas (``H2O`` → water, ``CO2`` → carbon dioxide, …), word-boundary
+2. :data:`_formula_re` — a curated table of exact, unambiguous formulas
+   (``H2O`` → water, ``CO2`` → carbon dioxide, …), loaded from the
+   ``chemistry`` section of the shared plain-data lexicon
+   ``data/tts_lexicon.json`` (the file the phonetics DB shares with the
+   abbreviation pass, gr690184) rather than a hardcoded dict. Word-boundary
    matched so ``CO2`` in prose converts but ``CO2R`` (a substituent label,
    not the molecule) doesn't — ``\\b`` never breaks between two ``\\w``
    characters, so a trailing letter glued onto the formula (digit→letter,
@@ -48,7 +51,10 @@ Pure function, no I/O, no store/TTS import — unit-testable like the rest of
 
 from __future__ import annotations
 
+import json
 import re
+from functools import lru_cache
+from importlib import resources
 
 # ── ion tables (curated, not exhaustive) ────────────────────────────────
 
@@ -129,70 +135,55 @@ def _hydrate_repl(m: re.Match[str]) -> str:
     return f"{cation_name} {anion_name} {prefix}hydrate"
 
 
-# ── curated exact-formula table ─────────────────────────────────────────
+# ── curated exact-formula table (data: precis/data/tts_lexicon.json) ─────
 
-#: A couple dozen high-frequency, unambiguous formulas -> spoken name.
-#: Deliberately excludes formulas with more than one common name (e.g.
-#: Fe3O4 is both "iron oxide" and "magnetite") — ambiguity means "don't
-#: guess", per the module contract.
-_FORMULAS: dict[str, str] = {
-    "H2O": "water",
-    "H2O2": "hydrogen peroxide",
-    "CO2": "carbon dioxide",
-    "CO": "carbon monoxide",
-    "NH3": "ammonia",
-    "H2SO4": "sulfuric acid",
-    "HNO3": "nitric acid",
-    "HCl": "hydrochloric acid",
-    "NaCl": "sodium chloride",
-    "NaOH": "sodium hydroxide",
-    "KOH": "potassium hydroxide",
-    "TiO2": "titanium dioxide",
-    "SiO2": "silicon dioxide",
-    "Al2O3": "aluminum oxide",
-    "Fe2O3": "iron oxide",
-    "CaCO3": "calcium carbonate",
-    "CaO": "calcium oxide",
-    "MgO": "magnesium oxide",
-    "ZnO": "zinc oxide",
-    "CuO": "copper oxide",
-    "Na2CO3": "sodium carbonate",
-    "NaHCO3": "sodium bicarbonate",
-    "K2CO3": "potassium carbonate",
-    "CH4": "methane",
-    "C2H4": "ethylene",
-    "C2H6": "ethane",
-    "C6H6": "benzene",
-    "O2": "oxygen",
-    "O3": "ozone",
-    "N2": "nitrogen",
-    "SO2": "sulfur dioxide",
-    "SO3": "sulfur trioxide",
-    "NO2": "nitrogen dioxide",
-}
-# "NO" (nitric oxide) is deliberately absent: \bNO\b also matches the
-# English word "NO" in all-caps emphasis, and a wrong "nitric oxide" there
-# is worse than a spelled-out N-O.
-# Deliberately excludes salts that commonly appear hydrated in the
-# bare-anion form (CuSO4, Na2SO4, CaCl2, ...): the exact-formula pass would
-# convert the anhydrous prefix and leave a dangling "·nH2O" behind — a
-# partial, inconsistent conversion rather than the "fully match or leave
-# untouched" contract. That bare-anion hydrate grammar is out of scope for
-# this transform (see :data:`_HYDRATE`'s docstring point).
+#: The exact-formula table lives in the ``chemistry`` section of the shared
+#: TTS lexicon data file, NOT here — the phonetics DB and the abbreviation
+#: pass read one plain-data source (gr690184), and a formula's spoken name
+#: can be overridden per-draft through the usual lexicon mechanism (applied
+#: before this transform in narrate.py). Curated rules the table obeys:
+#: every entry has exactly one common name — ambiguity means "don't guess"
+#: (e.g. Fe3O4 is both "iron oxide" and "magnetite", so it stays out) — and
+#: no formula whose surface collides with an English word ("NO" reads as
+#: all-caps emphasis too, so a wrong "nitric oxide" there is worse than a
+#: spelled-out N-O). Salts that commonly appear hydrated in the bare-anion
+#: form (CuSO4, Na2SO4, CaCl2, …) are also excluded: the exact-formula pass
+#: would convert the anhydrous prefix and leave a dangling "·nH2O" behind —
+#: a partial, inconsistent conversion rather than the "fully match or leave
+#: untouched" contract. That bare-anion hydrate grammar is out of scope for
+#: this transform (see :data:`_HYDRATE`'s docstring point).
 
-# Longest-first so a formula that is a substring of another (by characters,
-# not by the \b-guarded position it would need) never shadows it — belt and
-# braces alongside the \b anchors, which already block e.g. "H2" matching
-# inside "H2O" (digit->letter is a \w->\w transition, no boundary there).
-_FORMULA_RE = re.compile(
-    r"\b("
-    + "|".join(re.escape(k) for k in sorted(_FORMULAS, key=len, reverse=True))
-    + r")\b"
-)
+
+@lru_cache(maxsize=1)
+def _formula_table() -> dict[str, str]:
+    """The curated formula → spoken-name table from the shared lexicon data
+    file (``chemistry`` section of ``precis/data/tts_lexicon.json``)."""
+    raw = json.loads(
+        resources.files("precis.data")
+        .joinpath("tts_lexicon.json")
+        .read_text(encoding="utf-8")
+    )
+    return {str(k): str(v) for k, v in raw["chemistry"].items()}
+
+
+@lru_cache(maxsize=1)
+def _formula_re() -> re.Pattern[str]:
+    """The exact-formula pattern, built from :func:`_formula_table`.
+    Longest-first so a formula that is a substring of another (by characters,
+    not by the \\b-guarded position it would need) never shadows it — belt
+    and braces alongside the \\b anchors, which already block e.g. "H2"
+    matching inside "H2O" (digit→letter is a \\w→\\w transition, no boundary
+    there)."""
+    table = _formula_table()
+    return re.compile(
+        r"\b("
+        + "|".join(re.escape(k) for k in sorted(table, key=len, reverse=True))
+        + r")\b"
+    )
 
 
 def _formula_repl(m: re.Match[str]) -> str:
-    return _FORMULAS[m.group(1)]
+    return _formula_table()[m.group(1)]
 
 
 # ── generic acronym-number designator ───────────────────────────────────
@@ -254,7 +245,7 @@ def speak_chemistry(text: str) -> str:
     never re-carves a span an earlier, more specific one already claimed.
     """
     t = _HYDRATE.sub(_hydrate_repl, text)
-    t = _FORMULA_RE.sub(_formula_repl, t)
+    t = _formula_re().sub(_formula_repl, t)
     t = _DESIGNATOR.sub(_designator_repl, t)
     return t
 

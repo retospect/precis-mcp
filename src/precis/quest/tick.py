@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 
+from precis.quest import commits as commits_mod
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
 from precis.quest import narrative_budget
@@ -2557,6 +2558,11 @@ clone>", "ops": [{{"op": "set_element", "atom": "<label>", "element": \
 "<dopant>"}}]}}}}
   ],
   "directions": ["<0–3 strategic directions — set these on a frontier review>"],
+  "commits": [
+    {{"kind": "<ask|account|lead-ruled-out>", "text": "<what was done — an ask \
+queued for a human, an account row created disabled, or a lead ruled out WITH \
+its reason>", "ref": "<optional handle or name>"}}
+  ],
   "needs": [
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
 does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
@@ -2855,6 +2861,11 @@ strategy tried/settled/still open, not a single fact or citation>",
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
 {dialectic_schema}  "directions": ["<0–3 strategic directions — set these on a review>"],
+  "commits": [
+    {{"kind": "<ask|account|lead-ruled-out>", "text": "<what was done — an ask \
+queued for a human, an account row created disabled, or a lead ruled out WITH \
+its reason>", "ref": "<optional handle or name>"}}
+  ],
   "needs": [
     {{"tool": "<a tool, data source, sim lane or catalog entry you need that \
 does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
@@ -2972,6 +2983,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "searches",
         "directions",
         "needs",
+        "commits",
         "reruns",
         "read",
         "fetch",
@@ -2982,6 +2994,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
 
 #: Declared top-level types of a tick payload's keys (the prompt schema). A
 #: key present with a non-null value of another type fails the payload.
+#: The commits channel validates locally, dropping malformed values with a note.
 _PAYLOAD_TYPES: dict[str, type] = {
     "logbook": list,
     "ledger_add": list,
@@ -3215,17 +3228,17 @@ def _commit_rung(
     *,
     disp: Callable[[Any], Any],
     by: str,
-) -> tuple[tuple[Any, list[str]] | None, bool]:
+) -> tuple[tuple[Any, list[str], int] | None, bool]:
     """One rung of the commit re-prompt ladder — a single LLM call.
 
     Returns ``(committed, transport_error)``:
 
-    * ``committed`` is ``(ComputeStep, proposal_names)`` when this rung's
-      model proposed something, materialised/dispatched via the SAME
-      :func:`precis.quest.compute.run_compute_step` path as any ordinary
-      proposal (idempotent, content-addressed), or ``None`` when the
-      response carried no usable ``proposals`` entry. Never fabricates a
-      candidate itself.
+    * ``committed`` is ``(ComputeStep, proposal_names, accepted_commits)``
+      when this rung records operational progress or proposes something.
+      Proposals use the SAME :func:`precis.quest.compute.run_compute_step`
+      path as an ordinary tick (idempotent, content-addressed); a commit-only
+      response has an empty step. ``None`` means neither was usable.
+      Never fabricates a candidate itself.
     * ``transport_error`` is ``True`` when the rung came back with an LLM
       ``error``/``paused`` result (breaker/quota/transport trouble) rather
       than a genuine empty ``proposals`` — the caller ORs it across rungs so
@@ -3238,7 +3251,7 @@ def _commit_rung(
     (the transport default used to apply here, so a hung ladder rung could
     outlive the tick's own budget).
     """
-    from precis.quest.compute import run_compute_step
+    from precis.quest.compute import ComputeStep, run_compute_step
     from precis.utils.llm.router import LlmRequest
 
     res = disp(
@@ -3264,15 +3277,26 @@ def _commit_rung(
         log.exception(
             "quest tick: commit-rung needs apply raised for quest %s", quest_id
         )
+    accepted = 0
+    try:
+        accepted = commits_mod.apply_commits(
+            store, quest_id, (payload or {}).get("commits"), by=by
+        ).accepted
+    except Exception:
+        log.exception(
+            "quest tick: commit-rung commits apply raised for quest %s", quest_id
+        )
     proposals = [
         p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
     ]
     if not proposals:
-        return None, False
+        return (
+            (ComputeStep(0, 0, 0, 0, []), [], accepted) if accepted else None
+        ), False
     proposals = proposals[: max_proposals_per_tick()]  # WIP cap (one at a time)
     step = run_compute_step(store, quest_id, proposals, by=by)
     names = [str(p.get("name") or "?") for p in proposals]
-    return (step, names), False
+    return (step, names, accepted), False
 
 
 # ── narrative growth-ratchet gate (dossier-hygiene design) ─────────────
@@ -4166,6 +4190,18 @@ class _TickRun:
         except Exception:
             log.exception("run_quest_tick: needs apply raised for quest %s", quest_id)
 
+        # commits — non-materials progress for operational quests
+        # (gr573805): an ask queued, an account row created disabled, a
+        # lead ruled out with its reason. Same degrade-don't-crash rule.
+        try:
+            commits = commits_mod.apply_commits(
+                store, quest_id, payload.get("commits"), by=by
+            )
+            added += commits.logbook_entries
+            self.st["commits_accepted"] = commits.accepted
+        except Exception:
+            log.exception("run_quest_tick: commits apply raised for quest %s", quest_id)
+
         # judgments — the model's write channel for the considered-verdict
         # ledger (gr592951): an explicit useful/not-useful/uncertain on a
         # served source, recorded quest→source through the general
@@ -4508,12 +4544,16 @@ class _TickRun:
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A
-        # model tick that dispatched a real sim resets the stall counter; one
+        # model tick that dispatched a real sim or accepted an operational
+        # commit resets the stall counter; one
         # that dispatched nothing advances it, and once it reaches
         # PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive dry ticks (default 2)
         # the tick fires the ladder — one rung per slice, from `_stage_ladder`.
         # The counter is stamped by `finish`, whichever way the ladder goes.
-        if int(self.st.get("dispatched") or 0) > 0:
+        if (
+            int(self.st.get("dispatched") or 0) > 0
+            or int(self.st.get("commits_accepted") or 0) > 0
+        ):
             self.st["stall"] = 0
             self.st["stage"] = "finish"
             return None
@@ -4641,7 +4681,9 @@ class _TickRun:
             self._ladder_gave_up()
             return None
 
-        fstep, names = committed
+        fstep, names, accepted = committed
+        if accepted:
+            self.st["stall"] = 0
         self._bump("created", fstep.candidates_created)
         self._bump("dispatched", fstep.sims_dispatched)
         self._bump("harvested", fstep.results_harvested)
@@ -4662,7 +4704,7 @@ class _TickRun:
             )
             self._bump("added")
             self.st["stall"] = 0
-        else:
+        elif not accepted:
             # The ladder returned a proposal but nothing reached simulation
             # (e.g. a candidate materialised without wiring/dispatch —
             # gr201814). Report the truth, carrying the step notes, so the

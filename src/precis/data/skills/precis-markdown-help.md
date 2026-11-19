@@ -16,6 +16,8 @@ status: active
 
 # precis-markdown-help — `.md` chunk grammar and recipes
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 Markdown files under `PRECIS_ROOT`. Read `precis-files-help` for the
 shared address grammar, write modes, and two-track addressing. This
 skill covers markdown-specific behaviour: chunk kinds, available
@@ -189,3 +191,7 @@ put(
 - [[precis-tex-help]] — .tex section-aware chunks
 - [[precis-python-help]] — code navigation, AST-gated edits
 - [[precis-relations]] — typed links between files and refs
+
+## Preview a deletion
+
+`delete(kind='markdown', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview deleting the whole file; a preview needs no confirmation.

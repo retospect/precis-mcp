@@ -229,7 +229,7 @@ at five; engine-over-UI still holds.
 
 - **catalysis-selectivity** changes the ammonia network content and adds
   link fields; this thread keeps the engine contract and the wheel bump.
-  `pathway-viewer-ux-batch.md` item 3 moved there.
+  `pathway-viewer-ux-batch (me692650)` item 3 moved there.
 
 - **plugin-split** owns me692580
   (its Do-next 6: where shared pathway presentation lives, plus the

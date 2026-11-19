@@ -304,3 +304,46 @@ def test_invalid_envelope_refuses_before_searching(
     assert message in body
     assert "next:" in body.lower()
     assert searched == []
+
+
+@pytest.mark.parametrize("numeric", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_scope_handle_aliases_under(
+    runtime_with_store: PrecisRuntime, store: Store, numeric: bool, nested: bool
+) -> None:
+    rt = runtime_with_store
+    hub = _note(rt, "Scopepump hub", "section:index")
+    child = _note(rt, "Scopepump child")
+    grandchild = _note(rt, "Scopepump grandchild")
+    _note(rt, "Scopepump outside")
+    store.add_link(src_ref_id=child, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=grandchild, dst_ref_id=child, relation="part-of")
+    shared = {"kind": "memory", "q": "Scopepump", "mode": "lexical"}
+    expected = rt.dispatch("search", {**shared, "under": f"me{hub}"})
+    scope = str(hub) if numeric else f"me{hub}"
+    for under in (None, str(hub), f"me{hub}"):
+        filters: dict[str, Any] = {"scope": scope}
+        if under is not None:
+            filters["under"] = under
+        args = {**shared, "__extras__": filters} if nested else {**shared, **filters}
+        body, error = rt.dispatch_with_status("search", args)
+        assert not error, body
+        assert body == expected
+        assert "Scopepump child" in body and "Scopepump grandchild" in body
+        assert "Scopepump outside" not in body
+    body, error = rt.dispatch_with_status(
+        "search", {**shared, "scope": scope, "__extras__": {"under": f"me{child}"}}
+    )
+    assert error and "different subtree" in body
+
+
+@pytest.mark.parametrize("scope", ["bogus", "pa3", "mb3"])
+def test_scope_bad_value_lists_title_body_handle(
+    runtime_with_store: PrecisRuntime, scope: str
+) -> None:
+    body, error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "q": "pump", "scope": scope}
+    )
+    assert error and "unknown scope" in body
+    assert "title" in body and "body" in body
+    assert "a memory handle (alias of under=)" in body

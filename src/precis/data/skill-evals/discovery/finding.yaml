@@ -1,0 +1,41 @@
+# Discovery eval task for the finding family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: finding
+skill: precis-finding-help
+tasks:
+  - id: register-a-claim
+    variants:
+      - |
+        Register this claim for follow-up: a gate bias of 2.4 kV held for
+        30 s on Si/SiO2 MOSCAPs with a Cu top contact, N2 ambient. I read
+        it in paper chunk pc42 — record it against that source.
+      - |
+        Chunk pc42 of the Si/SiO2 paper reports that a 2.4 kV gate bias
+        for 30 s works on MOSCAPs with a Cu top contact in N2 ambient.
+        Log it in precis as a claim tied to that chunk.
+    expect:
+      calls:
+        - verb: put
+          kind: finding
+          args:
+            title: 're:(?is).+'
+            body: 're:(?is).*2\.4.*'
+            args: {cited_in: pc42}      # kind-specific fields ride args={...}
+      record: {kind: finding}
+    forbid:
+      calls:
+        - {verb: put, kind: finding, args: {cited_in: 're:(?is).+'}}  # top-level cited_in= is the deprecated spelling
+        - {verb: put, kind: memory}      # a claim is not a free-standing note
+    fake:
+      calls:
+        - verb: put
+          kind: finding
+          args:
+            title: gate bias 2.4 kV / 30 s on Si/SiO2
+            body: 2.4 kV held for 30 s on Si/SiO2 MOSCAPs, Cu top contact, N2 ambient.
+            args: {cited_in: pc42}
+      record: {kind: finding}
+      answer: >
+        put(kind='finding', title='…', body='…', args={'cited_in':
+        'pc42'}) — title, body and the source chunk are all mandatory.

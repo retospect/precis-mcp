@@ -29,9 +29,10 @@ Stage C adds search and dedup:
   whose ``meta.axis`` matches, ``depth=N`` meaning <= N hops. With ``q=`` the
   hits are ranked and intersected with that set; without it the set is listed
   by depth then name.
-* ``put`` refuses a likely duplicate (name/alias/slug match, then embedding
-  nearest-neighbour under ``DEDUP_MAX_DISTANCE`` when an embedder answers;
-  lexical-only when it does not). A candidate is **suppressed only on an
+* ``put`` refuses a likely duplicate (name/alias match — a slug alone is
+  too lossy to prove identity — then embedding nearest-neighbour under
+  ``DEDUP_MAX_DISTANCE`` when an embedder answers, lexical-only when it
+  does not). A candidate is **suppressed only on an
   explicit dimension mismatch**: both sides carry ``dimension_kind`` and the
   kinds differ, or both are ``si`` with different ``si_vector``. A side with
   no ``dimension_kind`` stays compatible. ``dedup=False`` mints anyway.
@@ -62,7 +63,9 @@ from precis.taxonomy.nodes import (
     STATUS_PROPOSED,
     dimension_clash,
     initial_taxon_meta,
+    matches_term,
     mirror_namespace,
+    resolves_term,
     slugify,
     taxon_card_text,
     validate_taxon_meta,
@@ -111,16 +114,6 @@ def _dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     :func:`precis.taxonomy.nodes.dimension_clash` so the graph gardener
     (which must not import handlers) applies the same hard gate."""
     return dimension_clash(a, b)
-
-
-def _matches_term(meta: dict[str, Any], seg: str) -> bool:
-    """Does a node's slug / norm_name / any alias equal ``seg``?"""
-    norm = normalize_name(seg)
-    if meta.get("slug") and meta.get("slug") == slugify(seg):
-        return True
-    if meta.get("norm_name") == norm:
-        return True
-    return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))
 
 
 def _lede(definition: str) -> str:
@@ -256,9 +249,25 @@ class TaxonHandler(NumericRefHandler):
         return self._path_label(ref_id)
 
     def _term_matches(self, term: str) -> list[int]:
+        """Ids ``term`` may *address* — name, alias or slug (the loose
+        surface of :meth:`Store.taxon_find_by_term`). Slugs fold symbols
+        away, so this is resolution, not identity: callers that need "the
+        term IS the node" go through :meth:`_identity_matches`."""
         return self.store.taxon_find_by_term(
             slug=slugify(term), norm=normalize_name(term)
         )
+
+    def _identity_matches(self, term: str) -> list[int]:
+        """The subset of :meth:`_term_matches` that ``term`` names exactly
+        (:func:`precis.taxonomy.nodes.matches_term`) — the surface for
+        dedup and the ``exact:`` lead, so ``DimeNet`` cannot claim
+        ``DimeNet++`` over their shared ``dimenet`` slug (gr722401)."""
+        ids = []
+        for rid in self._term_matches(term):
+            ref = self.store.get_ref(kind=self.kind, id=rid)
+            if ref is not None and matches_term(ref.meta or {}, term):
+                ids.append(rid)
+        return ids
 
     def _slug_of(self, ref_id: int) -> str:
         ref = self.store.get_ref(kind=self.kind, id=ref_id)
@@ -305,7 +314,7 @@ class TaxonHandler(NumericRefHandler):
             return True
         for aid, _depth, _axis in self.store.taxon_ancestors(node):
             ref = self.store.get_ref(kind=self.kind, id=aid)
-            if ref is None or not _matches_term(ref.meta or {}, segs[-1]):
+            if ref is None or not resolves_term(ref.meta or {}, segs[-1]):
                 continue
             if self._ancestor_matches(aid, segs[:-1]):
                 return True
@@ -365,8 +374,9 @@ class TaxonHandler(NumericRefHandler):
         """Create a node. ``meta=`` is declared explicitly (not read from
         ``**_kw``) so the dispatch strictness gate, which only inspects
         explicit parameters, lets it through. Unless ``dedup=False``, a likely duplicate (same
-        name/alias/slug, or an embedding neighbour within
-        ``DEDUP_MAX_DISTANCE`` when an embedder answers) is refused naming the
+        name/alias — a shared slug alone does not count — or an embedding
+        neighbour within ``DEDUP_MAX_DISTANCE`` when an embedder answers)
+        is refused naming the
         existing node, and a near sibling under the ``link=`` parent is
         refused as a definition that does not separate (order in
         :meth:`_mint_checks`); candidates whose dimension explicitly differs
@@ -401,7 +411,7 @@ class TaxonHandler(NumericRefHandler):
         parent_ids: list[int] | None = None,
     ) -> None:
         """Refusals before a put or a definition/alias edit, most specific
-        first: an exact name/alias/slug match is a duplicate ("use the
+        first: an exact name/alias match is a duplicate ("use the
         existing node"); a near sibling is a definition that does not
         separate ("sharpen it against the sibling"); a near non-sibling is
         a duplicate again. Sibling before the embedding leg of dedup, or
@@ -445,8 +455,8 @@ class TaxonHandler(NumericRefHandler):
         terms = [meta.get("name", ""), *(meta.get("aliases") or [])] if names else []
         for term in terms:
             if str(term).strip():
-                for rid in self._term_matches(str(term)):
-                    reasons.setdefault(rid, f"same name/alias/slug as {term!r}")
+                for rid in self._identity_matches(str(term)):
+                    reasons.setdefault(rid, f"same name/alias as {term!r}")
         # Embedding leg: degrades to lexical-only on a missing or failing
         # embedder (query_vec_for) or a failing vector query.
         card = self._card_text_for(text, meta)
@@ -688,12 +698,13 @@ class TaxonHandler(NumericRefHandler):
         return Response(body="\n".join(lines))
 
     def _no_name_match(self, q: str | None, page: int, kw: dict[str, Any]) -> bool:
-        """True when ``q`` hits no name/slug/alias term and the lexical leg
+        """True when ``q`` names no node exactly (name/alias — a slug-only
+        hit is not a name, gr722401) and the lexical leg
         (title + definition card) finds nothing — i.e. any hit would be
         semantic-only. Reuses ``mode='lexical'`` rather than a score cutoff."""
         if not q or not q.strip() or int(page) != 1:
             return False
-        if self._term_matches(q):
+        if self._identity_matches(q):
             return False
         lex = super().search(
             q=q,
@@ -706,11 +717,13 @@ class TaxonHandler(NumericRefHandler):
     def _exact_first(
         self, resp: Response, q: str | None, page: int, scope: set[int] | None
     ) -> Response:
-        """Page 1 leads with nodes whose name/slug/alias equals ``q`` — hybrid
-        ranking can put 'Tensile yield strength' above 'Yield' (gr460338)."""
+        """Page 1 leads with nodes whose name/alias equals ``q`` — hybrid
+        ranking can put 'Tensile yield strength' above 'Yield' (gr460338).
+        A slug-only hit (``DimeNet`` vs ``DimeNet++``) is not exact and
+        ranks normally instead (gr722401)."""
         if not q or not q.strip() or int(page) != 1:
             return resp
-        hits = [h for h in self._term_matches(q) if scope is None or h in scope]
+        hits = [h for h in self._identity_matches(q) if scope is None or h in scope]
         if not hits:
             return resp
         lead = "exact: " + "; ".join(
@@ -906,7 +919,7 @@ class TaxonHandler(NumericRefHandler):
         if under is not None:
             raise BadInput(
                 "under= applies to get(kind='taxon', view='meta') only",
-                next="get(kind='taxon', under='tn42', view='meta')",
+                next="get(kind='taxon', view='meta', args={'under': 'tn42'})",
             )
         if isinstance(id, str) and id == "/coverage":
             # gr572708: this branch returns ahead of the base dispatch,
@@ -1094,7 +1107,7 @@ class TaxonHandler(NumericRefHandler):
                 "view='meta' needs id= or under=",
                 next=(
                     "get(kind='taxon', id=[<tn…>, …], view='meta') or "
-                    "get(kind='taxon', under='measurand', view='meta')"
+                    "get(kind='taxon', view='meta', args={'under': 'measurand'})"
                 ),
             )
         # Axis on the specialises edge to the node's first parent — the

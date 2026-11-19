@@ -45,6 +45,8 @@
         {{ s.title }}
       </a>
       {% if s.year %}<span class="text-xs text-fg-faint shrink-0">{{ s.year }}</span>{% endif %}
+      <a href="/eye/pa{{ s.id }}" class="shrink-0 text-xs text-info-strong hover:underline"
+         title="Explore pa{{ s.id }} and its graph neighbourhood">fisheye</a>
       {% if s.created_at or s.updated_at %}
       <span class="shrink-0 whitespace-nowrap text-xs text-fg-faint">
         {%- if s.created_at %}<span title="filed {{ s.created_at | abs_ts }}">filed {{ s.created_at | ago }}</span>{% endif %}

@@ -17,6 +17,8 @@ scope: write
 
 # precis-delete-help — remove a ref or a selector region
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 `delete` removes content two ways. Numeric-ref kinds soft-delete:
 the row hides from list/search but is recoverable. File kinds
 require a selector and rewrite the file without the addressed
@@ -43,8 +45,13 @@ design — and a kind with no delete door refuses as `Unsupported`,
 naming the supported verbs.
 
 Soft-delete only. The ref disappears from list views and search;
-the row is retained for audit. Memory retirement also cleans up links
-and checks prose mentions; see the memory recipe below.
+the row is retained for audit. Memory and finding retirement also clean up links and check live memory
+prose mentions; see the memory recipe below. Findings accept the same
+`dry_run=`, `superseded_by=` and `args={'force': True}` options. For example,
+`delete(kind='finding', id='fi42', dry_run=True, superseded_by='fi77')`
+previews retirement without writing; repeat without `dry_run` to retire and
+record the successor redirect. This retires a duplicate finding; claim-hub
+merging still uses the Taproot merge door.
 
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a

@@ -297,6 +297,11 @@ body with `find=` writes the replacement exactly, including when paired
 with `args={'title': ...}`; a hidden legacy title line is not retained.
 The generated `referenced entities` footer is not editable body text.
 Use `get(kind='memory', id='me42~body')` for body-only anchors.
+When the complete literal anchor yields no candidates, memory edits retry
+`find`, `before` and `after` with folded whitespace and typography, including
+curly quotes, dashes and ligatures. The same match policy applies and the
+edit uses whole characters from the stored body. Each anchored batch op
+uses this retry too.
 An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is
 refused, never taken as a whole-body overwrite.
@@ -379,6 +384,8 @@ narrows to refs carrying every listed tag (AND). Omit `q=` to browse a
 tag slice. A memory's title and `meta.hook` are searchable too:
 `scope='title'` matches only those, `scope='body'` only the body prose,
 omitted matches both (`search(kind="memory", q="quokka", scope="title")`).
+To search a memory subtree, use `under='me<id>'`; `scope='me<id>'`
+is accepted as an alias for `under=`. Pass the subtree once.
 
 ## Recall what I already know before starting a task
 ## Match a memory hit to the topic file I may have loaded
@@ -476,6 +483,11 @@ memories when omitted); `tags=` narrows further. It is an aggregate, so
 Both are computed observations — never proposals, tags or writes. Read
 windows cap at the tool-call ledger's retention (30d by default), so a
 read older than that is invisible to `r3d`/`r14d`/`sess` and co-read.
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
 
 ## Read a memory I have the id for
 ## Open a memory by id
@@ -715,6 +727,11 @@ put(
 
 The memory survives the cache's TTL and carries your own framing.
 
+When `link=` is given, `meta` keys `model`, `prompt_version`, `run_id`, `why`
+and `evidence` annotate the creation edge, not the memory (a machine-written
+edge needs the first four); other keys such as `hook` and `type` stay on the
+memory.
+
 ## Bump confidence as evidence accumulates
 ## Upgrade a tentative note to strong
 ## Change confidence-moderate to confidence-certain
@@ -756,7 +773,8 @@ body: past that, follow [[how-to-split-memory]] to make it terser or
 preserve the detail in linked nodes before trimming the original.
 
 Search inside one hub or summary node with
-`search(kind="memory", q="pump", args={"under": "me3"})`; add
+`search(kind="memory", q="pump", args={"under": "me3"})` (short spelling: `scope="me3"`;
+a numeric memory id works too); add
 `"depth": 1` for direct members, `tags=["section:gotchas"]` to narrow by type.
 
 Two generated outlines (gr631890) replace hand-maintained member lists:
@@ -769,7 +787,9 @@ subtree counts, `offset=` pages. And
 *forest* — every node carrying the tag whose own `part-of` parents do
 not — one line each with keywords and member count. A trailing `*` on
 a `tags=` entry prefix-matches the tag value inside this view only;
-`view='members'` stays the flat paged listing. The kind's own contents
+`view='members'` stays the flat paged listing and pages with
+`args={'offset': N, 'depth': D}`; the footer prints the next call.
+The kind's own contents
 is `get(kind="memory", id="/toc")` (or bare `get(kind="memory", view="toc")`):
 every root of the live graph, the same forest render (gr568237).
 
@@ -1231,3 +1251,7 @@ The caller's existing authority and the detector's allowed actions still apply.
 Gardener judgments use this evidence to accept/reject only the candidate's
 supported maintenance action. This policy adds no auto-apply door or permission
 to change human-origin nodes.
+
+## Bound the result shape
+
+For `get`, `args={'page_size': 3}` bounds `view='members'` and `view='toc'` pages; continue with the returned offset. For `view='log'` or `view='considerations'`, page_size aliases limit. Other views refuse page_size; use the log view with offset/limit to page history.

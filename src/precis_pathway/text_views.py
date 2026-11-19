@@ -86,7 +86,7 @@ def topology_to_mermaid(topo: NetworkTopology) -> str:
 
 
 # ── from the computed graph (node_link_data) ────────────────────────────
-def graph_to_mermaid(graph: dict[str, Any]) -> str:
+def graph_to_mermaid(graph: dict[str, Any], *, label_threshold_eV: float = 0.0) -> str:
     lines = ["flowchart LR"]
     for n in graph.get("nodes", []):
         rel = n.get("rel_energy", 0.0)
@@ -101,6 +101,9 @@ def graph_to_mermaid(graph: dict[str, Any]) -> str:
             lines.append(f"  {src} -.->|supply| {tgt}")
         else:
             ea = e.get("barrier")
+            if ea is not None and ea < label_threshold_eV:
+                lines.append(f"  {src} --> {tgt}")
+                continue
             estd = e.get("barrier_std", 0.0)
             flag = " ⚠" if ea is None or e.get("low_confidence") else ""
             if ea is None:

@@ -13,6 +13,13 @@ stored bytes and one-hour read receipts persisted by authenticated credential.
 Without a bound principal, receipts remain session-local in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
 
+Table refusals select table help from explicit arguments or a best-effort chunk
+lookup for ambiguous edits, so prose and table edits retain specific recovery.
+
+An id-less taxon metadata get with a subtree selector goes to the taxon
+handler, where the subtree selects individual rows. An unscoped get still
+aliases the kind-wide metadata key inventory.
+
 Licensed live responses opt out of pagination caching while retaining the
 frame limit. The tool ledger already stores only call metadata, not content.
 
@@ -32,6 +39,9 @@ context cap, respecting ``fold=False`` and explicit part reads.
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.
+Capability kind gates also span SDK resource and prompt handlers because
+these modalities call runtime dispatch without passing through the tools.
+The binding resets on success and failure so it cannot leak to another call.
 Retired memory redirects drop view, extent and q when the successor is
 another kind, with a receipt: memory read options can break that reader.
 

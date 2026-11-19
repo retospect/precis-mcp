@@ -53,8 +53,10 @@ search(kind="finding", tags=["TAPROOT:claim"], q="<topic>", status="*", mode="se
 `status='*'` is required — the default hides most hubs. Start with the
 audit's known-dense clusters (MOF conduction, DNA bricks, molecular
 switches) before fanning out. For a specific hub, `get(id='fi<id>',
-view='evidence')` shows its originator/corroborator/contradicts edges and
-grounding quotes; pull both hubs in a candidate pair before judging.
+view='evidence')` shows originators, corroborators, and any contradictors,
+with passage handles preferred. It groups inherited evidence by conjunct
+and lists open disputes separately. Use `view='links'` if the dispute list
+is capped. Pull both hubs in a candidate pair before judging.
 
 ## The five verdicts
 

@@ -66,11 +66,16 @@ def _token(body: str) -> str:
 
 
 class TestPdfLinkView:
-    def test_link_shape_round_trips(self, store: Store, handler: PaperHandler) -> None:
+    def test_link_shape_round_trips(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_WEB_BASE_URL", "https://web.example/")
         ref_id = _seed(store, "linkshape2020")
         body = handler.get(id="linkshape2020", view="pdf_link").body
         url = _url(body)
-        assert url.startswith(f"/files/pdf/{_SHA}?t=v1.get.{_SHA}.{ref_id}.")
+        assert url.startswith(
+            f"https://web.example/files/pdf/{_SHA}?t=v1.get.{_SHA}.{ref_id}."
+        )
         claims = file_links.verify(_token(body), op="get", sha=_SHA, store=store)
         assert claims.ref_id == ref_id
         assert f"sha256: {_SHA}" in body
@@ -78,15 +83,18 @@ class TestPdfLinkView:
         assert "pages: 12" in body
         assert f"curl -fo linkshape2020.pdf '{url}'" in body
 
-    def test_unset_base_url_says_so_and_returns_bare_path(
+    def test_unset_base_url_refuses_naming_the_setting(
         self, store: Store, handler: PaperHandler
     ) -> None:
+        """gr681313: a missing web origin is a refusal naming the missing
+        deployment setting — never a path-only link the caller can't use."""
+        from precis.errors import Unsupported
+
         _seed(store, "linkbase2020")
-        body = handler.get(id="linkbase2020", view="pdf_link").body
-        assert "PRECIS_WEB_BASE_URL is not set" in body.splitlines()[0]
-        # The degraded line names the operator door (gr524008).
-        assert "precis secret set PRECIS_WEB_BASE_URL" in body.splitlines()[0]
-        assert _url(body).startswith("/files/pdf/")
+        with pytest.raises(Unsupported, match="PRECIS_WEB_BASE_URL") as exc:
+            handler.get(id="linkbase2020", view="pdf_link")
+        assert "web origin" in str(exc.value)
+        assert "precis secret set" in str(exc.value.next)
 
     def test_base_url_joins_onto_path(
         self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
@@ -97,7 +105,10 @@ class TestPdfLinkView:
         assert _url(body).startswith(f"https://web.example/files/pdf/{_SHA}")
         assert "PRECIS_WEB_BASE_URL is not set" not in body
 
-    def test_ttl_s_clamps_at_3600(self, store: Store, handler: PaperHandler) -> None:
+    def test_ttl_s_clamps_at_3600(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_WEB_BASE_URL", "https://web.example/")
         _seed(store, "linkttl2020")
         before = int(time.time())
         body = handler.get(
@@ -107,7 +118,10 @@ class TestPdfLinkView:
         assert before + 3600 <= exp <= int(time.time()) + 3600
         assert "expires: " in body and body.split("expires: ")[1][19] == "Z"
 
-    def test_default_ttl_600(self, store: Store, handler: PaperHandler) -> None:
+    def test_default_ttl_600(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_WEB_BASE_URL", "https://web.example/")
         _seed(store, "linkdef2020")
         before = int(time.time())
         body = handler.get(id="linkdef2020", view="pdf_link").body

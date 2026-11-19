@@ -39,6 +39,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from tokenize import TokenError
 from typing import Any, Final
 
 import pint
@@ -60,9 +61,11 @@ from precis.utils.text import markup_surface, markup_unit
 
 _UREG: pint.UnitRegistry | None = None
 
-#: pint parse failures that mean "not a unit" (see ``census._UNIT_PARSE_ERRORS``).
+#: Pint can leak the tokenizer's error for incomplete expressions such as
+#: ``s/(`` in an extracted table header (gr718774).
 _PARSE_ERRORS: Final[tuple[type[Exception], ...]] = (
     pint.PintError,
+    TokenError,
     TypeError,
     ValueError,
     SyntaxError,
@@ -164,6 +167,9 @@ def _registry() -> pint.UnitRegistry:
         # one stand-in currency unit: make_converter's currency branch swaps
         # the ISO token for `money` so pint scales only the unit's remainder
         _UREG.define(MONEY_DEFINITION)
+        # Printed atomic energies use Ha; retain that spelling on the row
+        # while letting pint supply the hartree definition and dimensions.
+        _UREG.define("@alias hartree = Ha")
     return _UREG
 
 

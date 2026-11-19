@@ -23,9 +23,11 @@ import pytest
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.graph.garden.apply import apply_merge
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store._links_ops import GARDEN_RELINK_META
 from precis.store.revision_context import revision_context, trust_producer
+from precis.store.types import ChunkInsert
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
 
@@ -336,6 +338,60 @@ class TestExplainsRouting:
         assert _link_row(store, h1, h2, "explains") is not None
 
 
+@pytest.mark.parametrize("annotated", [True, False])
+def test_memory_put_creation_edge_meta(
+    runtime_with_store: PrecisRuntime, store: Store, annotated: bool
+) -> None:
+    paper = _ref(store, "paper", "Source of the setup parameters")
+    (chunk,) = store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="The sample was cooled in stages.", meta={})]
+    )
+    pin = f"pc{chunk.id}"
+    title = f"Cooling setup {uuid.uuid4().hex}"
+    hook = "Cooling stages used in the source experiment"
+    edge_meta = _meta(evidence=[pin])
+    if not annotated:
+        del edge_meta["why"]
+    with _machine():
+        out = runtime_with_store.dispatch(
+            "put",
+            {
+                "kind": "memory",
+                "title": title,
+                "text": "The experiment cooled the sample in stages.",
+                "link": pin,
+                "rel": "derived-from",
+                "meta": {"hook": hook, **edge_meta},
+                # The direct-dispatch channel spells the extras dict
+                # ``__extras__``; the MCP tool layer lifts wire-level
+                # ``args=`` into it before dispatch (tools/core.py).
+                "__extras__": {"writer": {"model": "test-model"}},
+            },
+        )
+
+    with store.pool.connection() as conn:
+        ref = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'memory' AND title = %s",
+            (title,),
+        ).fetchone()
+        if not annotated:
+            assert "machine-edge-annotation" in out, out
+            assert ref is None
+            return
+        assert "[error:" not in out, out
+        assert ref is not None
+        assert ref[1]["hook"] == hook
+        assert edge_meta.keys().isdisjoint(ref[1])
+        edge = conn.execute(
+            "SELECT meta, dst_chunk_id FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s AND relation = 'derived-from'",
+            (ref[0], paper),
+        ).fetchone()
+    assert edge is not None
+    assert edge[1] == chunk.id
+    assert {key: edge[0][key] for key in edge_meta} == edge_meta
+
+
 # ── the link verb carries meta= to the gate (gr504789) ────────────────
 
 
@@ -475,8 +531,6 @@ class TestLinkVerbMeta:
                 meta={},
             ).id
         )
-        from precis.store.types import ChunkInsert
-
         store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="body", meta={})])
         with store.pool.connection() as conn:
             row = conn.execute(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -20,10 +21,12 @@ import pytest
 from precis import settings as psettings
 from precis.plans import gates
 from precis.plans import pr_class as P
+from precis.plans import red_waiver as _waiver
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.utils import dispatch_score as _dscore
 from precis.workers import factory_git as _fg
 from precis.workers.job_types import ci_red_digest as crd
 from precis.workers.job_types import ci_verdict_poll as cvp
@@ -62,7 +65,22 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
+    # The first cut is pinned to release.cut_host and held without one
+    # (gr713351); the hold and the pin are pinned in test_plan_dispatch.
+    monkeypatch.setattr(R, "cut_host", lambda store: "node-a")
     psettings.invalidate()
+    # These op tests exercise approval, pins and rollout bookkeeping;
+    # shared ancestry and exact-head CI refusal cases live in test_release_gate.
+    monkeypatch.setattr(rc._rp, "_in_flight", lambda *a, **kw: None)
+    monkeypatch.setattr(R, "_newest_sha_verdict", lambda *a: {"verdict": "green"})
+    original_get = P._get_json
+
+    def get(url: str, params: dict[str, Any]) -> Any:
+        if url.endswith("/compare/prod...main"):
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0}
+        return original_get(url, params)
+
+    monkeypatch.setattr(P, "_get_json", get)
     _GIT_LANDS.clear()
     _REL_LANDS.clear()
     monkeypatch.setattr(rc._rp, "_git_lands", lambda: (list(_GIT_LANDS), "5" * 40))
@@ -339,6 +357,49 @@ def test_deploy_refused_before_the_cut_and_with_the_factory_off(
     refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
     assert refusal is not None and "factory is off" in refusal
     assert rc.validate_submit(store, params={}) is not None
+
+
+@pytest.mark.parametrize(
+    ("clock", "held"),
+    [
+        ((3, 30), True),  # inside the default 03:00-04:20Z backup window
+        ((4, 20), False),  # the window is half-open: its end is outside
+        ((12, 0), False),
+    ],
+)
+def test_deploy_dispatch_holds_inside_the_backup_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch, clock: tuple[int, int], held: bool
+) -> None:
+    """gr697664: inside the window the dispatch-time refusal holds the job
+    (the tick mints nothing); outside it the same approved node launches."""
+    mint = _cut(store)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, *clock, tzinfo=UTC)
+    )
+    refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
+    if held:
+        assert refusal is not None and "03:00-04:20Z" in refusal, refusal
+    else:
+        assert refusal is None, refusal
+
+
+def test_deploy_hold_follows_the_window_setting(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 22, 0, tzinfo=UTC)
+    )
+    params = {"todo_id": mint.ids["deploy"]}
+    assert rd.validate_submit(store, params=params) is None
+    psettings.set_setting("release.no_release_windows", "21:30-23:30", store=store)
+    refusal = rd.validate_submit(store, params=params)
+    assert refusal is not None and "21:30-23:30Z" in refusal
+    # An unparsable value holds nothing here: the script's guard decides.
+    psettings.set_setting("release.no_release_windows", "garbage", store=store)
+    assert rd.validate_submit(store, params=params) is None
 
 
 def test_deploy_node_without_an_approval_ask_is_refused(store: Store) -> None:
@@ -1190,6 +1251,12 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     root = tmp_path / "repo"
     (root / "scripts").mkdir(parents=True)
     (root / "scripts" / "release").write_text("#!/bin/sh\n", encoding="utf-8")
+    # The cut refuses a checkout with no deploy overlay (gr713351); this
+    # one has the local overlay, the overlay tests below remove it.
+    (root / "deploy" / "inventory").mkdir(parents=True)
+    (root / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
+    monkeypatch.delenv("PRECIS_OVERLAY_DIR", raising=False)
+    monkeypatch.delenv("PRECIS_DEPLOY_FROM_TREE", raising=False)
     runs = tmp_path / "runs"
     runs.mkdir()
     seen: dict[str, Any] = {"argv": [], "env": []}
@@ -1274,6 +1341,112 @@ def test_release_cut_marker_is_never_empty(
     handle = rc.submit(ctx, None)
     assert handle is not None and ctx.failures == []
     assert checkout["env"] == [{"PRECIS_RELEASE_PASS": "jo4242"}]
+
+
+def _strip_overlay(seen: dict[str, Any]) -> None:
+    shutil.rmtree(seen["root"] / "deploy")
+
+
+def test_release_cut_refuses_a_checkout_with_no_overlay(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr713351 (r333): a host with no deploy inventory / .vault-pass cuts a
+    release it cannot deploy — the job fails, nothing is staged or cut."""
+    _strip_overlay(checkout)
+    monkeypatch.setenv("PRECIS_NODE", "builder-host")
+    refreshed: list[Path] = []
+
+    def _refresh(root: Path) -> tuple[str, list[str]]:
+        refreshed.append(root)
+        return ("x", [])
+
+    monkeypatch.setattr(rc, "refresh_tooling", _refresh)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert len(ctx.failures) == 1
+    msg = ctx.failures[0]
+    assert "builder-host cannot deploy" in msg
+    assert "release.cut_host" in msg and "gr713351" in msg
+    assert checkout["argv"] == [] and refreshed == []
+    assert R.release_of(store, mint.ids["cut"]) is None
+
+
+def test_release_cut_refuses_an_overlay_with_no_vault_pass(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    (checkout["root"] / "deploy" / ".vault-pass").unlink()
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is None
+    assert "cannot deploy" in ctx.failures[0]
+    assert checkout["argv"] == []
+
+
+def test_release_cut_overlay_from_the_checkout_itself(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    assert rc.overlay_refusal(checkout["root"]) is None
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+
+
+def test_release_cut_overlay_from_precis_overlay_dir(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _strip_overlay(checkout)
+    shared = tmp_path / "private"
+    (shared / "inventory").mkdir(parents=True)
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
+    # No .vault-pass beside it yet: still refused.
+    assert rc.overlay_refusal(checkout["root"]) is not None
+    (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
+    assert rc.overlay_refusal(checkout["root"]) is None
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+
+
+def test_release_cut_overlay_from_the_main_checkout(
+    store: Store, checkout: dict[str, Any], tmp_path: Path
+) -> None:
+    """The checkout is a linked worktree: the overlay lives in the main
+    checkout (the parent of git's common dir), as scripts/deploy finds it."""
+    main = tmp_path / "main-checkout"
+    main.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+        ["worktree", "add", "-q", str(tmp_path / "wt")],
+    ):
+        subprocess.run(["git", "-C", str(main), *args], check=True)
+    wt = tmp_path / "wt"
+    assert rc.overlay_refusal(wt) is not None  # main has no overlay yet
+    (main / "deploy" / "inventory").mkdir(parents=True)
+    assert rc.overlay_refusal(wt) is not None  # the vault key is missing
+    (main / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
+    assert rc.overlay_refusal(wt) is None
+    assert rc.overlay_refusal(main) is None
+
+
+def test_release_cut_overlay_check_honours_the_legacy_escape(
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _strip_overlay(checkout)
+    assert rc.overlay_refusal(checkout["root"]) is not None
+    monkeypatch.setenv("PRECIS_DEPLOY_FROM_TREE", "")
+    assert rc.overlay_refusal(checkout["root"]) is None
 
 
 @pytest.mark.parametrize(
@@ -1660,6 +1833,171 @@ def test_stale_local_round_reads_the_one_supersedable_record(
     assert rc._stale_local_round(tmp_path) is None
 
 
+def test_stale_local_round_counts_a_failed_record_whose_rollout_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: ``failed`` with a launched journal is not terminal —
+    ``scripts/release`` resumes it — so it is a supersede candidate like
+    ``deployed``. A ``failed`` record that never launched is terminal and
+    is not."""
+    launched = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z", "started_epoch": 5}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=launched)]
+    )
+    assert rc._stale_local_round(tmp_path) == 7
+    never = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z"}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=never)]
+    )
+    assert rc._stale_local_round(tmp_path) is None
+
+
+def test_release_cut_supersedes_a_failed_corpse_a_later_release_confirmed(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr724696, the r333 shape: the cut host still holds r7 ``failed``
+    with a launched rollout, the shared row says r8 confirmed. The cut's
+    first act is ``scripts/round supersede r7`` — it used to launch the
+    cut, which resumed r7 and reported its old base as the cut."""
+    script = _round_script(checkout)
+    launched = {"sha": SHA, "started_at": "2026-11-17T22:43:00Z", "started_epoch": 5}
+    _local_round(
+        tmp_path, monkeypatch, [_stale_record(state="failed", deployment=launched)]
+    )
+    _seed_round(store, 8, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "supersede"
+    assert checkout["argv"] == [[str(script), "supersede", "r7"]]
+
+
+def _fake_ancestry(
+    monkeypatch: pytest.MonkeyPatch, contained: set[tuple[str, str]]
+) -> None:
+    """``git merge-base --is-ancestor <older> <newer>`` in the checkout:
+    exit 0 for the pairs in ``contained``, 1 for the rest. Any other git
+    call fails (the fixture's checkout is no repo)."""
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:2] != ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="")
+        rc_ = 0 if (args[2], args[3]) in contained else 1
+        return subprocess.CompletedProcess(args, rc_, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git)
+
+
+def test_release_cut_refuses_a_reported_cut_that_lacks_the_asked_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: the pass asked for A; ``scripts/release`` exited 0 with
+    ``RELEASE_CUT: r7 <SHA>`` and SHA does not contain A — a resumed
+    stale record. The job fails naming it; nothing is recorded on the
+    plan or in the round row."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_ancestry(monkeypatch, set())
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and ctx.failures == []
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert f"does not contain the asked {a[:9]}" in ctx.failures[0]
+    assert "scripts/round supersede r7" in ctx.failures[0]
+    assert ctx.stamped["cut_refusal"]["class"] == rc.REFUSAL_STALE_RECORD
+    assert R.release_of(store, mint.ids["deploy"]) is None
+    assert R.read_round(store) is None
+
+
+def test_release_cut_refuses_a_reported_cut_prod_already_holds(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr724696: a tip cut (no ``--sha``) reporting a sha origin/prod
+    contains is a shipped release's record, not a cut."""
+    mint = T.mint_release_pass(store)
+    _fake_ancestry(monkeypatch, {(SHA, "refs/remotes/origin/prod")})
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "origin/prod already contains" in ctx.failures[0]
+    assert R.release_of(store, mint.ids["deploy"]) is None
+
+
+def test_release_cut_records_a_cut_that_contains_the_asked_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The honest cases pass: the reported sha contains the asked one and
+    prod does not hold it; git unable to answer (exit 128) proves nothing."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_ancestry(monkeypatch, {(a, SHA)})
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+
+    def unknown(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 128, stdout="", stderr="bad object")
+
+    monkeypatch.setattr(rs, "_git", unknown)
+    assert rc._stale_cut({"cut_argv": ["--cut-only", "--sha", a]}, "r7", SHA) is None
+    # a handle persisted before the check existed carries no cut_argv
+    _fake_ancestry(monkeypatch, set())
+    assert rc._stale_cut({"root": str(checkout["root"])}, "r7", SHA) is None
+
+
+def test_release_cut_checks_the_asked_sha_after_a_retire_phase(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supersede phase swaps a fresh handle in; the asked ``--sha``
+    must ride along or the cut after it goes unchecked (gr724696)."""
+    a = "a" * 40
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "supersede"
+    _exit(checkout, 0, "r7 superseded (origin/prod abc is past def)\n")
+    assert rc.poll(ctx, handle) is False
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", a]
+    _fake_ancestry(monkeypatch, set())
+    _exit(checkout, 0, _cut_log("r8"))
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert f"does not contain the asked {a[:9]}" in ctx.failures[0]
+
+
+def test_release_cut_passes_the_shared_rows_number_as_the_floor(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr714067: the cut launch carries ``PRECIS_ROUND_FLOOR`` — the
+    shared row's ``n`` — so ``scripts/round`` never mints an abandoned
+    release's number again; no row, no floor."""
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.pass_env(ctx) == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
+    _seed_round(store, 333, "abandoned")
+    assert rc.pass_env(ctx) == {
+        "PRECIS_RELEASE_PASS": f"td{mint.root_id}",
+        "PRECIS_ROUND_FLOOR": "333",
+    }
+
+
 def test_release_cut_supersedes_a_stale_local_round_when_prod_moved_past_it(
     store: Store,
     checkout: dict[str, Any],
@@ -1995,17 +2333,42 @@ def test_release_cut_abandons_a_dead_open_round(
         "--cut-only",
     ]
     assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
-    # the swapped-in cut carries the pass marker (the retire phase does not cut)
-    assert checkout["env"][-1] == {"PRECIS_RELEASE_PASS": f"td{mint.root_id}"}
+    # the swapped-in cut carries the pass marker (the retire phase does not
+    # cut) and numbers past the dead r7 (gr714067)
+    assert checkout["env"][-1] == {
+        "PRECIS_RELEASE_PASS": f"td{mint.root_id}",
+        "PRECIS_ROUND_FLOOR": "7",
+    }
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
+    row = R.read_round(store)  # the retire phase left the shared row alone
+    assert row is not None and (row["n"], row["state"]) == (7, "abandoned")
 
-    _exit(checkout, 0, _cut_log())
+    _exit(checkout, 0, _cut_log("r8"))
     assert rc.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     assert "abandoned dead local r7" in ctx.chunks[-1][1]
     assert ctx.stamped["dead_round_abandoned"] == {"n": 7}
     row = R.read_round(store)
-    assert row is not None and row["state"] == "abandoned"
+    assert row is not None and (row["n"], row["state"]) == (8, "cut")
+
+
+def test_release_cut_replaces_the_dead_row_when_its_number_is_cut_again(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr714067: r7 was abandoned under another pass and a cut reports r7
+    again (a checkout without the floor). The row used to stay
+    ``abandoned`` — "the script's publish wins", and none came — through
+    the new release's deploy; now it tracks the new cut."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    _seed_round(store, 7, "abandoned", **{"pass": "td1000000"})
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    assert "wrote r7 cut over the dead row (abandoned, td1000000)" in ctx.chunks[-1][1]
+    row = R.read_round(store)
+    assert row is not None
+    assert (row["state"], row["pass"]) == ("cut", f"td{mint.root_id}")
+    assert row["owner"] == {"host": "node-a", "checkout": str(checkout["root"])}
 
 
 @pytest.mark.parametrize("state", ["abandoned", "superseded", "confirmed", "failed"])
@@ -2384,6 +2747,12 @@ def stale_checkout(
     checkout["tip"] = _g(work, "rev-parse", "HEAD")
     checkout["origin"] = origin
     checkout["work"] = work
+    # The re-clone dropped the fixture's overlay (gr713351); keep it
+    # outside the clone so the tooling tests' tree stays clean.
+    shared = tmp_path / "overlay"
+    (shared / "inventory").mkdir(parents=True)
+    (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
     monkeypatch.setattr(rc, "refresh_tooling", _REAL_REFRESH_TOOLING)
     monkeypatch.setattr(
         rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
@@ -2543,8 +2912,13 @@ def test_a_failed_launch_restores_the_tooling(
     assert _g(root, "status", "--porcelain") == ""
 
 
+@pytest.mark.parametrize("permission_denied", [False, True])
 def test_a_kill_restores_the_tooling(
-    store: Store, stale_checkout: dict[str, Any]
+    store: Store,
+    stale_checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    permission_denied: bool,
 ) -> None:
     """A wall-clock kill restores the paths too — a run that never gets
     polled again must not leave its staging behind."""
@@ -2554,7 +2928,19 @@ def test_a_kill_restores_the_tooling(
     handle = rc.submit(ctx, None)
     assert handle is not None
     assert _g(root, "diff", "--cached", "--name-only") != ""
+    signals: list[tuple[int, int]] = []
+    if permission_denied:
+        import os
+
+        def denied(pgid: int, sig: int) -> None:
+            signals.append((pgid, int(sig)))
+            raise PermissionError("foreign process group")
+
+        monkeypatch.setattr(os, "killpg", denied)
     rc.kill(ctx, handle)
+    if permission_denied:
+        assert signals == [(handle["pgid"], 15)]
+        assert f"permission denied for pgid {handle['pgid']}" in caplog.text
     assert _g(root, "status", "--porcelain") == ""
     assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
 
@@ -2708,7 +3094,8 @@ def test_tick_walks_a_release_pass_to_the_deploy(
     assert res.dispatched == 1
     job, meta = _only_job(store, ids["cut"])
     assert (meta["job_type"], meta["executor"]) == ("release_cut", "ssh_node")
-    assert meta["params"] == {"todo_id": ids["cut"]}
+    # The first cut has no meta.release.host: pinned to release.cut_host.
+    assert meta["params"] == {"todo_id": ids["cut"], "target_node": "node-a"}
 
     # The cut job: record the cut, succeed. The tick closes the cut and
     # dispatches the poll on job_inproc in the same pass.
@@ -4966,7 +5353,11 @@ def test_consecutive_unbounced_deploys_keep_the_original_worker_sha(
         ctx, handle = _deploy_handle(store, mint)
         _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {prev}\n{_scope_line(scope)}")
         assert rd.poll(ctx, handle) is True, ctx.failures
-        return _meta(store, mint.root_id)["release"]
+        rel = _meta(store, mint.root_id)["release"]
+        # the live flow closes a deployed pass; the shared flight gate
+        # refuses the next pass while an earlier one is still open
+        _close(store, mint.root_id)
+        return rel
 
     deploy(a, "none")
     rel = deploy(b, "web")
@@ -5687,3 +6078,222 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
     assert len(checkout["argv"]) == launches + 1
     assert checkout["argv"][-1][1:] == ["--cut-only"]
+
+
+_PARTLY_PARSED_RED = (
+    "== test-linux (3.13, 1) ==\n"
+    "  FAILED tests/test_alpha.py::test_one - assert 1 == 2\n"
+    "  ===== 1 failed, 40 passed in 3.00s =====\n"
+    "== test-linux (3.13, 2) ==\n"
+    "  failed ids (3):\n"
+    "    tests/test_beta.py::test_a\n"
+    "    tests/test_beta.py::test_b\n"
+    "    … +1 more\n"
+    "  FAILED tests/test_beta.py::test_a - boom\n"
+    "  ===== 3 failed, 10 passed in 2.00s =====\n"
+    "== test-linux (3.13, 3) ==\n"
+    "  FAILED tests/test_gamma.py::test_g - assert 0\n"
+    "  ===== 1 failed in 1.00s =====\n"
+)
+
+
+def test_clusters_of_adds_one_catch_all_per_flagged_section() -> None:
+    """gr681901: a digest that could not parse everything still clusters
+    the ids it did parse and adds one catch-all (no ids) per flagged
+    section, keyed by its job name; a clean section gets none."""
+    failures, problems = _waiver.parse_failures(_PARTLY_PARSED_RED)
+    assert problems  # the premise: the old code collapsed to no clusters
+    clusters, catch = crd._clusters_of(_PARTLY_PARSED_RED, failures, problems, "31")
+    assert catch.keys() == {"job test-linux (3.13, 2)"}
+    assert "id list truncated (+1 more)" in catch["job test-linux (3.13, 2)"]
+    assert clusters[-1] == ("job test-linux (3.13, 2)", [])
+    id_clusters = dict(clusters[:-1])
+    assert set(id_clusters) == {
+        "tests/test_alpha.py",
+        "tests/test_beta.py",
+        "tests/test_gamma.py",
+    }
+    assert id_clusters["tests/test_beta.py"] == [
+        "tests/test_beta.py::test_a",
+        "tests/test_beta.py::test_b",
+    ]
+
+
+def test_clusters_of_folds_an_unowned_problem_into_a_run_catch_all() -> None:
+    """A problem no section owns (a collection error) is one catch-all
+    named for the run, after the section catch-alls."""
+    text = (
+        "== test-linux ==\n"
+        "  FAILED tests/test_alpha.py::test_one - boom\n"
+        "  ===== 1 failed in 1.00s =====\n"
+    )
+    failures, problems = _waiver.parse_failures(
+        text, {"x": ["Interrupted: 1 error during collection"]}
+    )
+    assert problems == ["a collection error or an interrupted session"]
+    clusters, catch = crd._clusters_of(text, failures, problems, "31")
+    assert catch == {"run 31": problems[0]}
+    assert clusters == [
+        ("tests/test_alpha.py", ["tests/test_alpha.py::test_one"]),
+        ("run 31", []),
+    ]
+
+
+def test_clusters_of_fully_parsed_digest_is_unchanged() -> None:
+    """No problem: exactly :func:`cluster_failures`, no catch-all."""
+    failures, problems = _waiver.parse_failures(_TWO_FILE_RED)
+    assert problems == []
+    clusters, catch = crd._clusters_of(_TWO_FILE_RED, failures, problems, "31")
+    assert catch == {}
+    assert clusters == crd.cluster_failures(failures)
+
+
+def test_clusters_of_nothing_parsed_keeps_the_single_fallback() -> None:
+    """Problems but not one parsed id: no clusters, so the caller keeps
+    its one whole-digest brief."""
+    text = "== test-linux ==\n  (no signal lines — last 1 of 1 lines)\n  noise\n"
+    failures, problems = _waiver.parse_failures(text)
+    assert failures == {} and problems
+    assert crd._clusters_of(text, failures, problems, "31") == ([], {})
+
+
+def test_clusters_of_keeps_the_cluster_cap() -> None:
+    """Catch-alls and id clusters together stay within ``_CLUSTER_CAP``:
+    excess catch-alls fold into one, the id clusters keep a slot."""
+    n = crd._CLUSTER_CAP + 3
+    text = "".join(
+        f"== job{i} ==\n  FAILED tests/test_f{i}.py::t - boom\n" for i in range(n)
+    )
+    failures, problems = _waiver.parse_failures(text)
+    assert len(problems) == n  # each section lacks its pytest count
+    clusters, catch = crd._clusters_of(text, failures, problems, "31")
+    assert len(clusters) == crd._CLUSTER_CAP
+    assert len(catch) == crd._CLUSTER_CAP - 1
+    assert any(ids for _key, ids in clusters)
+    assert any(key.endswith(" more") for key in catch)
+    # Every parsed id still belongs to some cluster.
+    assert sorted(t for _k, ids in clusters for t in ids) == sorted(failures)
+
+
+def test_partly_parsed_red_mints_a_fixer_per_cluster_and_a_catch_all(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr681901 (release r332: one fixer for 2 of 9 red shards): a red
+    whose id list is truncated still splits — one fixer per parsed id
+    cluster plus a catch-all fixer for the flagged shard whose brief says
+    the id list is incomplete, names the problem and sends it to the run."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, _PARTLY_PARSED_RED)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+
+    fixes = sorted(
+        tid
+        for tid in _children(store, mint.ids["loop"])
+        if _meta(store, tid).get("op") == "run_slice"
+    )
+    assert len(fixes) == 4 and fixes[0] == it["fix"]  # 3 id clusters + 1 catch-all
+    assert _blockers(store, it["restamp"]) == set(fixes)
+    briefs = [_todo_comments(store, tid)[0] for tid in fixes]
+    [catch_brief] = [b for b in briefs if ": job test-linux (3.13, 2) —" in b]
+    assert "id list is incomplete" in catch_brief
+    assert "id list truncated (+1 more)" in catch_brief
+    assert "read this section's log in the check.yml run" in catch_brief
+    assert "fix only these failing ids" not in catch_brief
+    assert sum("fix only these failing ids" in b for b in briefs) == 3
+    for b in briefs:
+        assert "/4:" in b and "lander lands it onto release/r7, never main" in b
+
+    # A retried digest finds all four nodes and mints no fifth.
+    ctx2 = Ctx(store, {"todo_id": it["digest"]})
+    handle2 = crd.submit(ctx2, None)
+    _exit(checkout, 0, _PARTLY_PARSED_RED)
+    assert crd.poll(ctx2, handle2) is True
+    assert ctx2.status == "succeeded", ctx2.failures
+    assert (
+        len(
+            [
+                t
+                for t in _children(store, mint.ids["loop"])
+                if _meta(store, t).get("op") == "run_slice"
+            ]
+        )
+        == 4
+    )
+
+
+def test_a_run_catch_all_defers_section_failures_to_the_section_fixer(
+    store: Store,
+) -> None:
+    """td730820: a digest with a section catch-all AND a run-wide one
+    gives every unlisted failure exactly one owner — the section fixer
+    owns every failure its section's log shows, the run-wide fixer only
+    what no flagged section owns — so both fixers can no longer take the
+    same unlisted failure."""
+    failures, problems = _waiver.parse_failures(_PARTLY_PARSED_RED)
+    assert problems and problems[0].startswith("job test-linux (3.13, 2): ")
+    problems = [*problems, "a collection error or an interrupted session"]
+    clusters, catch = crd._clusters_of(_PARTLY_PARSED_RED, failures, problems, "31")
+    assert set(catch) == {"job test-linux (3.13, 2)", "run 31"}
+    nodes = [
+        int(store.insert_ref(kind="todo", slug=None, title=f"fix {i}", meta=None).id)
+        for i in range(len(clusters))
+    ]
+    posted = crd._cluster_briefs(
+        Ctx(store, {"todo_id": nodes[0]}),
+        nodes[0],
+        nodes,
+        clusters,
+        "head",
+        "digest",
+        catch_alls=catch,
+    )
+    by_key = {
+        key: text for (_tid, text), (key, _ids) in zip(posted, clusters, strict=True)
+    }
+    section = by_key["job test-linux (3.13, 2)"]
+    assert "read this section's log in the check.yml run" in section
+    assert "another section's log shows" in section
+    runwide = by_key["run 31"]
+    assert "fix only failures no flagged section owns" in runwide
+    assert "job test-linux (3.13, 2) (td" in runwide
+    assert "yours is only what no section's log claims" in runwide
+
+
+def test_release_pass_root_stamps_the_release_claim_band(store: Store) -> None:
+    """gr698700: the pass root carries ``meta.claim_band = release`` next
+    to its dispatch score, so the jobs minted under it claim in the
+    release band, not as ``origin=background``."""
+    mint = T.mint_release_pass(store)
+    meta = _meta(store, mint.root_id)
+    assert meta[_dscore.CLAIM_BAND_META_KEY] == _dscore.RELEASE_CLAIM_BAND == "release"
+    assert meta[_dscore.SCORE_META_KEY] == _dscore.RELEASE_SCORE
+
+
+def test_a_release_fix_node_dispatches_its_run_slice_in_the_release_band(
+    store: Store,
+) -> None:
+    """gr698700: a fixer under a release pass (the iteration's own and a
+    cluster sibling) gets its ``run_slice`` job minted with
+    ``claim_band == "release"`` — ``plan_dispatch._mint_job`` reads the
+    band off the pass root, ``run_slice._mint_land`` carries it onto the
+    land from the job's own meta."""
+    mint, it = _red_iteration(store)
+    [extra] = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_beta.py"]
+    )
+    pd.run_pass(store)
+    job, _ = _only_job(store, it["digest"])
+    _succeed(store, job)
+    _close(store, it["digest"])
+    pd.run_pass(store)
+    for fix_id in (it["fix"], extra):
+        _job, meta = _only_job(store, fix_id)
+        assert meta["job_type"] == "run_slice"
+        assert meta[_dscore.CLAIM_BAND_META_KEY] == _dscore.RELEASE_CLAIM_BAND
+        assert meta["plan_root"] == mint.root_id

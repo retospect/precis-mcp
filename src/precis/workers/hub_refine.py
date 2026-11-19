@@ -1743,6 +1743,9 @@ RULES:
     somebody else's references is a PROXY -> PRUNE.
   - Support and polarity are separate questions: decide CONTRADICTS only
     on the polarity test above, never because support is weak.
+  - KEEP requires the same system/material AND observable as the claim.
+    Numerical similarity across unrelated systems is PRUNE. If same_setup
+    is false, return PRUNE even if the passage reports primary data.
   - DEFAULT TO KEEP WHEN UNCERTAIN. Over-pruning is the dangerous
     direction; a doubtful edge stays.
 
@@ -1843,6 +1846,8 @@ def judge_edge_strict(
         log.warning("hub_refine: strict judge returned verdict %r — ignored", verdict)
         return None
     same = data.get("same_setup")
+    if verdict == "KEEP" and same is False:
+        verdict = "PRUNE"
     primary = data.get("primary")
     return StrictVerdict(
         verdict=str(verdict),
@@ -4518,8 +4523,9 @@ def _refine_one_hub(
                         conn=conn,
                         pending_checks=pending_checks,
                     )
-                elif supports in ("partial", "no"):
-                    # "no", or a contradicting "partial" — judged once, memoed.
+                elif supports in ("yes", "partial", "no"):
+                    # Recognized verdicts that fail the gate are memoed once,
+                    # including "yes" with an explicit setup mismatch.
                     entry: dict[str, Any] = {
                         "at": datetime.now(UTC).isoformat(),
                         "supports": supports,
@@ -4569,11 +4575,6 @@ def _refine_one_hub(
                     # A citation-reached rejection is ALSO a citation miss: "we
                     # read the paper the claim cites and the content isn't there"
                     # — marked on the memo + recorded as a queryable red flag.
-                    # DELIBERATE: this fires for BOTH a plain ``no`` AND a
-                    # contradicting ``partial`` (the ``elif`` above), slightly
-                    # beyond the AC's literal "supports=no" — a cited source that
-                    # *contradicts* the claim is a stronger miss than a bare "no"
-                    # and belongs in the same red-flag bucket, not a separate one.
                     if cand.via == "citation":
                         entry["via"] = "citation"
                         citation_misses.append(

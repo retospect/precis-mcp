@@ -93,6 +93,10 @@ def bridge_for(kind: str) -> KindBridge | None:
         from precis.checklist.pcb import PcbBridge
 
         return PcbBridge()
+    if kind == "memory":
+        from precis.checklist.memory import MemoryBridge
+
+        return MemoryBridge()
     return None
 
 

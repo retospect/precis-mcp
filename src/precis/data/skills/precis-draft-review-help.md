@@ -31,7 +31,7 @@ edit(
 edit(
     kind="draft", id="nanotrans", args={"authoring": "on"}
 )  # let review personas author fixes inline
-delete(id="dc12")  # retire a chunk (un-delete restores)
+delete(id="dc12")  # retire a chunk (soft — text survives; restore = re-put)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
 delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
@@ -74,6 +74,16 @@ contents) or `cascade` (delete the section) — no default for that
 destructive choice. Retired chunks drop out of the document but their
 history (and any anchor to them) survives; you cannot delete the last
 live chunk — a draft is never empty.
+
+A retired chunk still reads by its own `dc<id>`: the get marks it
+`⚠ RETIRED`, shows the stored text, names the `retired` event that
+took it out (a cascade logs it on the subtree root, so a descendant
+names its ancestor), and prints a recipe to re-`put` the text.
+Run the puts in order. Each `restored_dc…` variable stands for the
+new handle in that put's acknowledgment. Child puts use those handles
+to rebuild their original section or list. If you read a child first,
+follow the pointer to its retired parent. A cascade recipe includes only
+the chunks retired by that event.
 
 `delete` reads its granularity off the id: a chunk address (`dc<id>` /
 `¶<base58>`) retires that chunk, a **ref-level** id (the slug, or the

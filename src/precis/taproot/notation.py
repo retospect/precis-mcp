@@ -302,6 +302,20 @@ def set_skill_slug_probe(probe: Callable[[str], bool] | None) -> None:
     _SKILL_SLUG_PROBE = probe
 
 
+def is_served_skill_slug(token: str) -> bool:
+    """Whether ``token`` names a skill this build serves.
+
+    The same probe the `~N` carve-out consults (plugin slugs included),
+    with the packaged-corpus fallback when the probe was never
+    registered. ``precis.runtime.dispatch`` uses this for kindless-get
+    inference (gr676949) — taproot answers so the runtime need not reach
+    up to the handlers layer.
+    """
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
+
+
 @lru_cache(maxsize=1)
 def _skill_slugs() -> frozenset[str]:
     """Slugs of the skills shipped under ``precis.data.skills`` -- the
@@ -396,8 +410,13 @@ _UNIT_TOKEN_ALT = "|".join(
 #: reading, which is nonsensical -- the same unit symbol repeating right
 #: after the digits is `range-unit-repeated`'s shape, not an exponent, so
 #: this rule stands down and lets that one fire instead.
+#: Zero is not a negative power: `cycle-0` is an ordinal label, and
+#: rewriting it would corrupt prose. Bare `K-12` is also ambiguous with
+#: the conventional E. coli strain designation, so preserve it; an
+#: explicit caret (`K^-12`) still unambiguously requests an exponent.
 _ASCII_MINUS_EXP_RE = re.compile(
-    rf"(?<![A-Za-zµμΩ])(?P<unit>{_UNIT_TOKEN_ALT})\^?-(\d+)\b(?!\s?(?P=unit)\b)"
+    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?P<unit>{_UNIT_TOKEN_ALT})"
+    rf"\^?-(?!0+\b)(\d+)\b(?!\s?(?P=unit)\b)"
 )
 
 #: A caret followed by an uppercase letter is a letter superscript
@@ -509,11 +528,15 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: immediately (optionally through one space) followed by a unit-ish
 #: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Four guards keep
 #: nomenclature hyphens out, each found by a corpus dry run:
-#: `(?<![-A-Za-z\d])` before the first number excludes a hyphen/letter/
-#: digit immediately to its left, so a *named-method* hyphen (`M06-2X`,
-#: a DFT functional) never fires (the `06` would otherwise read as the
-#: left half of a range) and neither does a mid-chain member of a longer
-#: hyphenated run; `(?!-\d)` after the second number excludes a
+#: `(?<![-\w.])` before the first number excludes a hyphen, word
+#: character or dot immediately to its left, so a *named-method* hyphen
+#: (`M06-2X`, a DFT functional) never fires (the `06` would otherwise
+#: read as the left half of a range), neither does a mid-chain member of
+#: a longer hyphenated run, and neither does a hyphen inside a model/
+#: package identifier (`qwen3.6-27b-q8_0`, `model_6-27b`, `模型6-27b`) --
+#: blocking dots keeps the matcher from restarting after an identifier's
+#: decimal point while still accepting a standalone decimal range
+#: (`0.7-0.9 mg`); `(?!-\d)` after the second number excludes a
 #: `-<digit>` immediately to its right, so a three-way nomenclature chain
 #: (`5-8-5`, a Stone-Wales defect label) never fires on either of its two
 #: hyphens. Compound/series names (`Fe-ZSM-5`, `UiO-66`, `MIL-101`,
@@ -536,16 +559,21 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: does not merely lint, it rewrites `6-311G` to `6–311G` and corrupts
 #: the basis set.
 _HYPHEN_NUMERIC_RANGE_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
+    r"(?<![-\w.])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
     r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
-#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit,
-#: word-bounded on the right -- `1.61x`, `4-8x`, `100x`. The lookbehind
-#: means the `x` must directly abut the digit (no space), and the
-#: trailing `\b` means a grid-style label like `2x2` never fires (`x` is
-#: followed by another digit, so no word boundary sits between them).
-_ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
+#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit run
+#: that starts at a word boundary -- `1.61x`, `4-8x`, `100x`. The
+#: leading `\b` means the digit run must start at the beginning of a
+#: word: a ref-handle range like `pa4249x` (pa42490 to pa42499) has its
+#: digits glued to the handle prefix (`pa`, `pc`, `fi`, `me`, `td`,
+#: `gr`, ...), and between two word characters no boundary sits, so the
+#: range never fires (gr694538). The trailing `\b` means a grid-style
+#: label like `2x2` never fires either (`x` is followed by another
+#: digit, so no word boundary sits between them). The digit run is
+#: captured so `normalize_notation` can rewrite only the `x`.
+_ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 
 #: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
 #: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
@@ -555,14 +583,14 @@ _ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
 #: separately and on a structurally disjoint shape (that rule requires
 #: the two numbers to be dash-adjacent with nothing between; this one
 #: requires a unit token *between* the first number and the dash, so the
-#: two never double-fire on the same span). The same
-#: `(?<![-A-Za-z\d])` guard as `hyphen-numeric-range` keeps a named-
-#: method hyphen (`M06-2X`) from reading its trailing digit as a range
-#: endpoint. `(?P=unit)` requires an exact repeat of the first unit's
-#: text, so `9 GPa-12 kPa` (a genuine unit change, not a duplication)
-#: never fires.
+#: two never double-fire on the same span). The same `(?<![-\w.])` guard
+#: as `hyphen-numeric-range` keeps a named-method hyphen (`M06-2X`) and
+#: an identifier's word-char/dot-adjacent digits (`model_4b-4b`) from
+#: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
+#: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
+#: a duplication) never fires.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )
@@ -1087,7 +1115,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         "hyphen-numeric-range",
         applied,
     )
-    s = _apply(s, _ASCII_X_MULT_RE, "×", "ascii-x-multiplier", applied)
+    s = _apply(
+        s,
+        _ASCII_X_MULT_RE,
+        lambda m: f"{m.group(1)}×",
+        "ascii-x-multiplier",
+        applied,
+    )
     s = _apply(
         s,
         _RANGE_UNIT_REPEATED_RE,

@@ -15,6 +15,22 @@ Click a calendar day to read its current check-in. Recording that date again
 corrects its status while retaining the earlier event in your private history.
 A rest entry does not require or record study minutes.
 
+## Current context
+
+Below the calendar, **Current context** lists the cards you are learning right
+now — your live forge-authored cards, grouped by concept. Every cloze gap is
+masked; hover it (or tab to it) to reveal the answer, so the list works as a
+self-quiz.
+
+- **boost** queues a card to come up *today*: the next Anki sync brings its
+  due date forward. Your review history is never rewritten — only the due
+  date moves. A boosted card shows *boost queued* until the sync applies it.
+- **drop** retires that one card (the same retire path as the Anki page).
+- **I know this** retires every live card of the concept and marks the
+  concept mastered.
+
+The panel is yours alone: it lists only the signed-in account's cards.
+
 ## Set your pacing
 
 On the same page, set your timezone and an optional typical session length.

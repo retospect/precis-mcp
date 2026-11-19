@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
@@ -43,6 +44,7 @@ from precis.utils.llm.router import (
     resolve_selection,
 )
 from precis_web.deps import get_store, templates
+from precis_web.routes._llm_pools import llm_pools_view
 from precis_web.routes.status import (
     _active_routing_ctx,
     _llm_chain_ctx,
@@ -135,6 +137,17 @@ async def llm_op(request: Request) -> HTMLResponse:
     ctx: dict[str, Any] = {"active_tab": "llm"}
     ctx.update(await asyncio.to_thread(_llm_ops_ctx, store))
     return templates.TemplateResponse(request, "llm/op.html.j2", ctx)
+
+
+@pages.get("/pools", response_class=HTMLResponse)
+async def llm_pools(request: Request) -> HTMLResponse:
+    """Stored allowance and scheduler pacing, without refreshing or spending."""
+    rows = await asyncio.to_thread(
+        llm_pools_view, get_store(request), datetime.now(UTC)
+    )
+    return templates.TemplateResponse(
+        request, "llm/pools.html.j2", {"active_tab": "llm", "pools": rows}
+    )
 
 
 # ── keyword rules (precis.utils.llm.keyword_route) ──────────────────

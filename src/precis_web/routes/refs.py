@@ -2692,6 +2692,11 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "web",
     "youtube",
     "websearch",
+    # Handle-coded fetch caches (gr702974): their detail page is what a
+    # ``wp``/``ss``/``ch`` link and the inbound-links view land on.
+    "wikipedia",
+    "semanticscholar",
+    "chem",
     "message",
     # Quest (the striving/lab-notebook kind) + its candidate `structure`s.
     # QuestHandler.get(id=N) renders the append-only logbook (the lab
@@ -2745,6 +2750,7 @@ _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
 #: ``CacheBackedHandler`` subclasses.
 _CACHE_BACKED_KINDS: frozenset[str] = frozenset(
     {
+        "chem",
         "math",
         "news",
         "orcid",

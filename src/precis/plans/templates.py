@@ -309,12 +309,13 @@ def slice_fetch_cmd(branch: str) -> str:
 #: session's own last message, which may also begin ``handoff: review:``.
 PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
 #: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
-#: finding, head?, anchors?}`` — the pre-land FIX/REVERT verdicts in a
+#: finding, head?, anchors?, text?}`` — the pre-land FIX/REVERT verdicts in a
 #: row since the last land or coordinator ask, a digest of the newest
 #: finding, the ``file::function`` anchors its last ``anchors:`` line
 #: declares (the active findings — the tick never reads prose cites,
 #: td688394 r5) and the pushed head the
-#: verdict judged (gr688058). ``plan_dispatch`` counts and caps it;
+#: verdict judged (gr688058), plus normalized finding text for similarity
+#: comparison (gr702711). ``plan_dispatch`` counts and caps it;
 #: ``land_slice._record_land`` clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 #: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
@@ -430,8 +431,11 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
     "`file::function` each ACTIVE finding hangs on. A cite you make "
     "only to declare resolved is context and stays off the line (none "
     "at all — write `anchors:` bare or leave it out). The tick reads "
-    "only that line against the last round's: the same anchor twice "
-    "running is the repeat stop; prose cites never count (gr688058).\n\n"
+    "only that line for anchor overlap. A shared anchor stops the loop "
+    "only with token Jaccard similarity >= 0.6 against the previous "
+    "finding text; prose cites never count. An identical finding digest "
+    "also stops it, ignoring anchors lines and head shas. Different "
+    "findings at the same function keep rebuilding (gr702711).\n\n"
     "Reject (FIX) a diff that changes behavior or tests without the "
     "matching documentation (docstrings, comments, skills, docs) updated "
     "in the same diff, and check one hop out: read the callers and "
@@ -1657,14 +1661,11 @@ def mint_release_pass(
     and the loop's ``until``. ``poll`` (``ci_verdict_poll``) records the
     GitHub verdict, parking itself while CI runs. The gate and the loop are
     siblings blocked-by the poll, so the loop sees a recorded verdict: green
-    closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
-    that is also the ask Reto answers (``deploy r<N>`` | ``hold``) —
-    minted with the ``ask-user`` tag only while ``release.auto_deploy``
-    is disarmed; armed, the tick's standing approval answers it and a
-    definitive refusal re-tags it
-    (:func:`precis.plans.release.auto_answer_approval`, gr595272).
-    ``deploy`` (``release_deploy``) refuses unless that answer names
-    ``deploy r<N>`` (:func:`precis.plans.release.approval`). ``confirm``
+    closes it empty, red mints a fixer. With ``release.auto_deploy`` off,
+    ``approval`` is an ``answer`` gate and human ask (``deploy r<N>`` |
+    ``hold``). With it on, no approval node is minted: deploy depends on
+    the CI gate directly. Both paths recheck
+    :func:`precis.plans.release.may_release` before deploying. ``confirm``
     (``release_confirm``) then attests the deployed runtime — every live
     worker's heartbeat ``code_sha``, and the web's boot sha when
     ``release.health_url`` is set — before ``scripts/round`` confirms and
@@ -1681,16 +1682,23 @@ def mint_release_pass(
         "blocks": "nothing",
         "context": "release/r<N> is cut by this plan; green CI gates this ask",
     }
-    # gr595272: armed, the standing approval answers the ask — it stays
-    # off the human queue until a definitive refusal re-tags it.
+    # Standing approval skips the ask entirely; dispatch checks the policy.
     human_ask = not _release.auto_deploy_armed(store)
 
     def build(m: _Minter) -> None:
         root = m.node("root", "Release pass", _phase())
         _tag(m, root, "release-pass")
-        # The release-fixer class outranks routine builds (gr604593).
+        # The release-fixer class outranks routine builds (gr604593). The
+        # claim band rides every job minted under the root (the fixers'
+        # run_slice and their lands), so a release fixer claims in the
+        # release band, not as background (gr681901).
         m.store.stamp_ref_meta(
-            root, {_dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE}, conn=m.conn
+            root,
+            {
+                _dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE,
+                _dscore.CLAIM_BAND_META_KEY: _dscore.RELEASE_CLAIM_BAND,
+            },
+            conn=m.conn,
         )
         stamped = release_main_tag(main_sha)
         if stamped is not None:
@@ -1727,14 +1735,15 @@ def mint_release_pass(
             {"loop": {"until": gate, "body": "release-fix"}},
             blocked_by=("poll",),
         )
-        approval = m.node(
-            "approval",
-            _release.approval_title("r<N>"),
-            {"gate": {"kind": "answer"}, "ask": ask},
-            body=_release.approval_body("r<N>"),
-            blocked_by=("gate",),
-        )
+        approval = None
         if human_ask:
+            approval = m.node(
+                "approval",
+                _release.approval_title("r<N>"),
+                {"gate": {"kind": "answer"}, "ask": ask},
+                body=_release.approval_body("r<N>"),
+                blocked_by=("gate",),
+            )
             _tag(m, approval, "ask-user")
         deploy = m.node(
             "deploy",
@@ -1742,9 +1751,9 @@ def mint_release_pass(
             _task("release_deploy"),
             body=(
                 "release_deploy runs scripts/release --deploy-only r<N> (pinned), "
-                "only after the approval ask is answered 'deploy r<N>'."
+                "only once the shared release gate allows the deploy."
             ),
-            blocked_by=("approval",),
+            blocked_by=("approval",) if human_ask else ("gate",),
         )
         m.node(
             "confirm",
@@ -1786,7 +1795,8 @@ def mint_release_pass(
         m.store.stamp_ref_meta(mid, {"op": merge_op}, conn=m.conn)
         final = {**ask, "blocks": f"td{deploy}"}
         check_ask_meta({"ask": final})
-        m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
+        if approval is not None:
+            m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
 
     return _run(store, parent_id, build)
 

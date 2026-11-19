@@ -38,6 +38,7 @@ import re
 from typing import Any
 from urllib.parse import urlencode
 
+from precis.store._tag_filter import tag_filter_string
 from precis.utils.authors import author_names
 from precis.utils.title_views import title_md, title_md_clip
 from precis_web.paper_ident import PAPER_IDENT_KINDS
@@ -125,14 +126,26 @@ _TAG_HIDE_NS: frozenset[str] = frozenset(
 _TAG_HIDE_VALUES: frozenset[str] = frozenset({"read-later", "must-read", "skim"})
 
 
+def tag_display_label(ns: str, value: str) -> str:
+    """Display label for a stored ``(namespace, value)`` tag —
+    ``OPEN`` tags render as their bare value, every other namespace as
+    ``ns:value``. Presentation only; the *filter* spelling a
+    ``/drive?tag=`` link carries is
+    :func:`precis.store._tag_filter.tag_filter_string` — identical
+    except a lowercase/mixed-case axis, which filters as ``=ns:value``
+    (the exact-axis escape; plain ``ns:value`` would parse as the
+    OPEN/FLAG pair and match nothing — gr636493)."""
+    return value if ns == "OPEN" else f"{ns}:{value}"
+
+
 def _display_tags(
     raw: list[tuple[str, str]] | None, ref_kinds: list[str]
 ) -> list[dict[str, str]]:
     """Per-row tag chips: what this item was tagged with, minus the
     machine namespaces and the reading-intent flags (which have buttons).
     ``OPEN`` tags render bare; others as ``namespace:value``; each links
-    to Drive filtered to that tag (the label is already the canonical
-    tag-filter string, urlencoded — values with ``& # + %`` or spaces
+    to Drive filtered to that tag (the ``tag=`` param is the canonical
+    filter spelling, urlencoded — values with ``& # + %`` or spaces
     break a raw ``href``). Each link pins ``ref_kinds`` as explicit
     ``k=`` params — the ``/drive`` landing resolves the ``items_kinds``
     cookie when the URL names no ``k=``, so a bare ``?tag=`` link would
@@ -145,8 +158,11 @@ def _display_tags(
             continue
         if ns == "OPEN" and val in _TAG_HIDE_VALUES:
             continue
-        label = val if ns == "OPEN" else f"{ns}:{val}"
-        params = [("tag", label), *(("k", kind) for kind in ref_kinds)]
+        label = tag_display_label(ns, val)
+        params = [
+            ("tag", tag_filter_string(ns, val)),
+            *(("k", kind) for kind in ref_kinds),
+        ]
         out.append({"label": label, "href": "/drive?" + urlencode(params)})
     return out
 

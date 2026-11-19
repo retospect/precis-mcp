@@ -32,26 +32,6 @@ _DENY = (
 @pytest.mark.parametrize(
     "text",
     [
-        "add a --remote flag to scripts/ship",
-        "the fix touches `scripts/ship`",
-        "edit ./scripts/ship so it takes --remote",
-        "the land broke; fix Scripts/Ship",
-        "the new rule lives in src/precis/plans/lanes.py",
-        "CI needs .github/workflows/test.yml updated",
-        "rotate the host in deploy/inventory-prod/hosts.yml",
-        "fix CLAUDE.md's stale rule",
-        "the slice rules moved to .claude/CLAUDE.md",
-        "refresh .mcp.json's server list",
-    ],
-)
-def test_deny_path_mention_routes(text: str) -> None:
-    why = route.coordinator_route(text, _DENY)
-    assert why is not None and why.startswith("names deny path")
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
         # a neighbouring path is not a glob hit
         "fix scripts/shippy's flag parsing",
         "the helper lives in scripts/shipping/label.py",
@@ -147,7 +127,7 @@ def test_empty_text_never_routes(text: str | None) -> None:
 def test_direct_head_never_routes_but_the_report_does() -> None:
     head = "Fix gr1 directly: find the code it names. " + templates.DIRECT_HEAD_END
     assert route.coordinator_route(head + "\nclean the cache", _DENY) is None
-    why = route.coordinator_route(head + "\nfix scripts/ship", _DENY)
+    why = route.coordinator_route(head + "\nFix: edit scripts/ship", _DENY)
     assert why is not None and "scripts/ship" in why
 
 
@@ -203,8 +183,8 @@ def test_factory_land_mechanics_never_route(text: str) -> None:
         pytest.param(
             "`scripts/round open` refuses the next cut. "
             "Round open has no step that reruns failed soak legs.",
-            "scripts/round",
-            id="gr639737-round-target",
+            None,
+            id="gr639737-prose-only",
         ),
         pytest.param(
             "Goal: enumerate every code path through scripts/ship and its gate "
@@ -278,11 +258,6 @@ def test_multiline_and_multiple_intent_paragraphs_keep_deny_targets() -> None:
         "scripts/ship to verify the worker's confirmation."
     )
     why = route.coordinator_route(text, _DENY)
-    assert why is not None and "`scripts/ship`" in why
-
-
-def test_evidence_without_intent_keeps_whole_text_fallback() -> None:
-    why = route.coordinator_route("Symptom: scripts/ship cannot land a branch.", _DENY)
     assert why is not None and "`scripts/ship`" in why
 
 
@@ -372,30 +347,9 @@ def test_cited_deny_mention_does_not_route(mention: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "path"),
-    [
-        ("the fix is in scripts/lib/lock-holder.sh", "scripts/lib/lock-holder.sh"),
-        ("edit .github/workflows/check.yml", ".github/workflows/check.yml"),
-        # a negated mention elsewhere hides no requested target
-        (
-            "no deploy paths; the fix is in scripts/lib/lock-holder.sh",
-            "scripts/lib/lock-holder.sh",
-        ),
-        (
-            "The fix is not in guards.py, it's in scripts/lib/lock-holder.sh",
-            "scripts/lib/lock-holder.sh",
-        ),
-    ],
-)
-def test_requested_deny_edit_still_routes(text: str, path: str) -> None:
-    why = route.coordinator_route(text, _DENY)
-    assert why is not None and f"`{path}`" in why
-
-
-@pytest.mark.parametrize(
     ("body", "brief", "routes"),
     [
-        ("Goal: repair release confirmation", "Update scripts/ship", True),
+        ("Goal: repair release confirmation", "Fix: update scripts/ship", True),
         (
             "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
             "Update the release confirmation worker",
@@ -403,7 +357,7 @@ def test_requested_deny_edit_still_routes(text: str, path: str) -> None:
         ),
         ("Goal: update scripts/ship", "Repair release confirmation", True),
         # One document's write set cannot hide the other's requested target.
-        ("File set: worker.py", "Update scripts/ship", True),
+        ("File set: worker.py", "Fix: update scripts/ship", True),
         ("Goal: update scripts/ship", "File set: worker.py", True),
         # Graph-only still means the whole task names no repo work.
         ("remove the stale edge from me123456", "Update worker.py", False),
@@ -502,7 +456,7 @@ Reproduce with scripts/test tests/test_cross_kind_fanout_bound.py::test_fan_out_
 """
 
 #: td674828: gr663867 asks for a new section IN a factory-governed skill
-#: (``governs: factory``) — a genuine deny path, so it must route.
+#: (``governs: factory``), but has no declared write set (gr702295).
 _GR663867 = """\
 Skills: gripe-fleet lacks the pre-dispatch overlap check
 
@@ -602,7 +556,7 @@ spec marks those a human step.
 
 @pytest.mark.parametrize(
     "text",
-    [_GR574149, _GR681901, _GR606462, _GR613096],
+    [_GR574149, _GR681901, _GR606462, _GR613096, _GR663867],
 )
 def test_mention_only_reports_never_route(text: str) -> None:
     """gr685970: the four reports that stalled on hold:no-dispatch —
@@ -622,13 +576,6 @@ def test_mention_only_reports_never_route(text: str) -> None:
         # a list the write-target label introduces
         "Files:\n- `src/precis/workers/gripe_dispatch.py`\n- `scripts/ship`\n\nDone.",
         "Files: `src/precis/a.py`,\n    `scripts/ship`\n\nDone.",
-        # the defect's subject — a gripe about the path is the ask for it
-        "`scripts/round open` refuses the next cut.",
-        "Symptom: `scripts/ship` cannot land a branch.",
-        "`scripts/ship` is broken on harness diffs.",
-        # the path is asked for in prose with an edit verb
-        "the fix is in `scripts/lib/lock-holder.sh`",
-        "the new rule lives in `src/precis/plans/lanes.py`",
     ],
 )
 def test_write_intent_deny_path_routes(text: str) -> None:
@@ -636,23 +583,11 @@ def test_write_intent_deny_path_routes(text: str) -> None:
     assert why is not None and why.startswith("names deny path")
 
 
-def test_loose_write_verb_still_routes_and_route_builder_releases() -> None:
-    """gr685970's accepted trade-off: :data:`route._WRITE_VERBS` keeps
-    loose words (``make``, ``review``, ``inspect``, ``live``, ``go``,
-    ``split``), so a mention like "make sure ``scripts/ship`` …" still
-    reads as a requested write and routes — the coordinator's
-    ``route:builder`` tag is the release for it (gripe_dispatch passes
-    an empty deny set; tests/workers/test_gripe_dispatch.py pins the
-    tag itself)."""
-    text = "make sure `scripts/ship` runs the whole gate before the land"
-    assert route.coordinator_route(text, _DENY) is not None
-    # ``route:builder`` on the gripe: the deny leg sees an empty set.
-    assert route.coordinator_route(text, ()) is None
-
-
 def test_route_reason_quotes_the_matching_sentence() -> None:
     """gr685970 want 3: the reviewer sees why the route fired."""
-    why = route.coordinator_route("fix the widget; edit `scripts/ship` too", _DENY)
+    why = route.coordinator_route(
+        "Fix: repair the widget; edit `scripts/ship` too", _DENY
+    )
     assert why is not None
     assert 'in "edit `scripts/ship` too"' in why
 
@@ -679,9 +614,7 @@ def test_mention_shapes_never_route(text: str) -> None:
     ("text", "path"),
     [
         # a genuine edit request on the harness still routes
-        ("Goal: scripts/test accepts --foo", "scripts/test"),
         ("Fix: edit deploy/group_vars/all.yml", "deploy/group_vars/all.yml"),
-        ("Goal: scripts/ship should refuse a dirty tree", "scripts/ship"),
         # a run cue does not hide a later edit request in the same text
         ("Run scripts/test first.\n\nFix: edit scripts/test", "scripts/test"),
         ("Fix: make scripts/ship quieter, then run scripts/test", "scripts/ship"),
@@ -699,13 +632,31 @@ def test_mention_shapes_never_route(text: str) -> None:
             ),
             "scripts/ship",
         ),
-        # gr663867: the skill file IS the requested edit target
-        (_GR663867, "src/precis/data/skills/gripe-fleet.md"),
         # a target ending its sentence keeps its glob match
         ("Fix: please edit scripts/ship.", "scripts/ship"),
-        ("Run `scripts/test tests/x.py`, then edit scripts/ship.", "scripts/ship"),
     ],
 )
 def test_genuine_edit_request_still_routes(text: str, path: str) -> None:
     why = route.coordinator_route(text, _ALL_DENY)
     assert why is not None and f"`{path}`" in why
+
+
+@pytest.mark.parametrize("language", ["log", "console", "output"])
+@pytest.mark.parametrize("label", ["File set", "Files", "Seam", "Anchors", "Targets"])
+def test_write_set_inside_evidence_fence_never_routes(
+    language: str, label: str
+) -> None:
+    text = f"Fix: repair worker.py.\n```{language}\n{label}: scripts/ship\n```"
+    assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "scripts/ship cannot land a branch. Repair worker.py.",
+        "edit scripts/ship",
+        "Goal: scripts/ship should refuse a dirty tree",
+    ],
+)
+def test_prose_without_declared_write_never_routes(text: str) -> None:
+    assert route.coordinator_route(text, _DENY) is None

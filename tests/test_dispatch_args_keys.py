@@ -63,6 +63,8 @@ PASSTHROUGH = [
     ("datasheet", "edit"),
     ("youtube", "put"),
     ("pres", "edit"),
+    # handle.get's spoken-name resolve door reads args{'kind'} (gr634708).
+    ("handle", "get"),
     # llm.put's owner account door reads args{'account'} (0280, td568204)
     ("llm", "put"),
     # Plugin handlers (entry point group ``precis.handlers``).
@@ -655,12 +657,14 @@ def test_job_type_search_refuses_sort_on_the_job_path(
 ) -> None:
     """A ``sort=`` the job_type path can't apply still refuses — now
     with the job listing's own message (its ordering is already
-    recency), not the source-search field gate."""
+    recency), not the source-search field gate. ``sort='recency'`` is
+    that natural order and is accepted (b4f03a0c3), so the refused
+    spelling here is ``relevance``."""
     out = runtime_with_store.dispatch(
         "search",
         {
             "kind": "job",
-            "sort": "recency",
+            "sort": "relevance",
             "__extras__": {"job_type": "land_slice"},
         },
     )
@@ -1298,3 +1302,57 @@ def test_search_batch_on_a_non_memory_kind_names_the_kind(
         assert "[error:BadInput]" in out, (payload, out)
         assert "batch= is not on kind='paper' yet" in out, out
         assert "kind='memory'" in out, out
+
+
+# ── gr676945: the advertised id range bound applies on every ────────────
+# numeric-ref kind. The list footer teaches
+# ``args={'id_min': N, 'id_max': M}`` on all of them; the args= key gate
+# used to check only the resolved override's own signature, so the keys
+# NumericRefHandler.search declares (and the override forwards through its
+# ``**_kw``) were refused with "keys ['id_min'] not accepted".
+
+_ID_RANGE_KINDS = ["memory", "job", "finding", "quest", "todo", "gripe"]
+
+
+@pytest.mark.parametrize("kind", _ID_RANGE_KINDS)
+def test_id_range_accepted_on_numeric_ref_kinds(
+    runtime_with_store: PrecisRuntime, kind: str
+) -> None:
+    """``search(kind=K, args={'id_min': N, 'id_max': M})`` — the range
+    bound the list footer advertises — returns without BadInput on every
+    numeric-ref kind."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": kind, "__extras__": {"id_min": 1, "id_max": 999_999_999}},
+    )
+    assert "[error" not in out, out
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("kind", ["memory", "me", " memory ", " me "])
+def test_memory_search_handle_scope_acts_as_under(
+    runtime_with_store: PrecisRuntime, nested: bool, kind: str
+) -> None:
+    """gr688476: ``scope='me<id>'`` on memory search reads as ``under=`` —
+    it no longer dies as ``unknown scope``."""
+    args: dict[str, Any] = {"kind": kind, "q": "x"}
+    if nested:
+        args["__extras__"] = {"scope": "me999999"}
+    else:
+        args["scope"] = "me999999"
+    out = runtime_with_store.dispatch("search", args)
+    assert "unknown scope" not in out, out
+    assert out == runtime_with_store.dispatch(
+        "search", {"kind": kind, "q": "x", "under": "me999999"}
+    )
+
+
+def test_memory_search_handle_scope_with_under_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "memory", "q": "x", "scope": "me1", "under": "me2"},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "unknown scope" not in out, out

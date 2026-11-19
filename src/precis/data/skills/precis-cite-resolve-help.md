@@ -86,9 +86,12 @@ repairing the row is a data fix, never a hand-edit of the tag.
 ## Get or request the cited paper
 
 ```python
-get(kind="paper", id="<the DOI>")              # DOI resolves when held
-search(kind="paper", q="<title from the entry>")
+get(kind="paper", id="<the DOI>", view="status")  # availability only
+search(kind="paper", q="<title from the entry>")  # fallback when unresolved
 ```
+
+The status row names the held `pa<id>` and its body state, or reports
+`unresolved`. A plain DOI get can queue ingest on a miss.
 
 Held → keep its `pa<id>` handle. Not held → request it; the stub
 lands and fills in on its own (see [[precis-stubs-help]]):

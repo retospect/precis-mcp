@@ -124,6 +124,10 @@ agent-facing copy.
 | python | `py` | — | | message | `ms` | `mb` |
 | gripe | `gr` | `gc` | | tag | `tg` | — |
 | skill | `sk` | — | | alias | `as` | — |
+| wikipedia | `wp` | — | | youtube | `yt` | — |
+| semanticscholar | `ss` | — | | web | `wb` | — |
+| chem | `ch` | — | | websearch | `wx` | — |
+| perplexity-research | `rr` | — | | perplexity-reasoning | `rz` | — |
 
 - **`skill`** anchors round-trip as `sk<ref_id>` in `get` and `link`; the
   canonical `skill:<slug>` form also works. **`python` / `tag`** keep their
@@ -132,9 +136,16 @@ agent-facing copy.
   forms (every `put(kind='draft', …)` returns `dc`-form handles). The
   ADR-0033 legacy `¶<base58>` form still *resolves* as an accepted alias
   during the transition, but write new references in `dc` form.
-- **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
-  `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
-  `random`) have **no handle** — addressed by URL / query / compute.
+- **Fetch-cache providers** (`wikipedia` → `wp`, `semanticscholar` → `ss`,
+  `chem` → `ch`, `youtube` → `yt`, `web` → `wb`, `websearch` → `wx`,
+  `perplexity-research` → `rr`, `perplexity-reasoning` → `rz`) persist a
+  refs row + chunks on every read, so they *are* handle-coded — cite them
+  as `[wb5]` in prose and they show inbound links (`view='links'`, the
+  default read's Links section, and the fisheye ring). The handle routes
+  by ref id, never the slug: a cache slug is derived from the query text
+  or URL, so a slug read could fire a fresh (possibly paid) upstream call.
+- **Stateless tools** (`calc`, `math`, `provenance`, `random`) have
+  **no handle** — addressed by query / compute.
 - **A string with no handle** (a long URL, an external id, a path you keep
   re-sending) can get a durable short name through `kind='alias'`:
   `put(kind='alias', args={'a': 'crossref-x', 'b': '<url>', 'rel':
@@ -175,6 +186,9 @@ never enter the search fan-out. If the alias does not resolve, fall
 back to reading the file directly.
 
 ## Skill revisions — `have=`
+
+Open an H2 section with `id='<slug>~<heading>'`: case and whitespace are ignored; exact names precede unique prefixes, and aliases match individually.
+Example: `get(kind='skill', id='precis-memory-help~Working a memory-review todo')`.
 
 Every whole-skill serve ends with one line, `skill rev <sha8>`. To
 re-read a skill whose text is unchanged, pass it back:

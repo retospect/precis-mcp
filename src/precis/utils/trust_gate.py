@@ -56,6 +56,64 @@ GATE_ORDER: tuple[str, ...] = (
     "hidden_intermediate",
 )
 
+
+def barrier_assurance(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    trusted: bool,
+    reasons: Iterable[str] = (),
+    records: list[dict[str, Any]] | None = None,
+    scope: tuple[set[str] | None, set[str]] | None = None,
+    engine: str | None = None,
+) -> tuple[str, list[str]]:
+    """Grade barrier evidence under gr593137's approved assurance policy.
+
+    PASS retains the strict gate. WARN needs affirmative convergence and
+    saddle verification; only seed independence, engine age and BEP estimates
+    may weaken it. Missing evidence and every other blocking failure fail
+    closed. Endpoint splits cannot be waived by lower-basin credit.
+    """
+    table = list(rows)
+    warnings = list(dict.fromkeys(reasons))
+    soft = {"seed independence (precis)", "engine staleness (precis)", "bep_estimated"}
+    for row in table:
+        if row.get("verdict") == "not-run" and row.get("blocking") == 1:
+            return "FAIL", [str(row.get("gate")) + ":unverified"]
+        if row.get("verdict") == "fail" and row.get("blocking") != "—":
+            gate = str(row.get("gate"))
+            if gate == "seed independence (precis)" and not str(
+                row.get("input")
+            ).startswith("1 independent"):
+                return "FAIL", [gate + ":unverified"]
+            if gate not in soft:
+                return "FAIL", [gate]
+            warnings.append(gate)
+    if warnings:
+        for gate in ("neb_convergence", "saddle_verified"):
+            if (
+                records is not None
+                and scope is not None
+                and scope[0]
+                and any(
+                    not any(
+                        r.get("step") == step
+                        and r.get("check") == gate
+                        and r.get("verdict") == "pass"
+                        and not is_stale(r, engine)
+                        for r in records
+                    )
+                    for step in scope[0]
+                )
+            ):
+                return "FAIL", [f"{gate}:unverified"]
+            if not any(
+                r.get("gate") == gate and r.get("verdict") == "pass" for r in table
+            ):
+                return "FAIL", [f"{gate}:unverified"]
+        return "WARN", list(dict.fromkeys(warnings))
+    return ("PASS", []) if trusted else ("FAIL", ["strict gate refused"])
+
+
 #: Fallback when ``autocatpath.trust`` is not importable and no record
 #: carries a stamped ``tol_eV`` — the engine constant's long-standing
 #: value, rendered labelled ``assumed`` so a reader knows it isn't

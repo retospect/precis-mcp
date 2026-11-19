@@ -1197,8 +1197,7 @@ def run_coverage_scan(
 ) -> CoverageScanResult:
     """Run catpath's ab-initio-thermodynamics coverage scan
     (``autocatpath.coverage.scan``) for the MLIP spec at ``model_index`` —
-    the anchor generator of ``docs/backlog/surface-pourbaix-staircase-
-    optimizer.md`` slice 1.
+    the anchor generator of ``me692414`` slice 1.
 
     Without ``slab_extxyz`` the engine's scan builds its own clean slab
     from ``config.slab`` (element + facet). With it, the exported candidate

@@ -98,7 +98,7 @@ quoted prefix of at least 40 characters; an `add` with an unresolved parent
 is kept as a root with `parent_unresolved` and rendered as unplaced; each
 tick logs its applied counts; the dialectic prompt section only shows when
 a block exists. The dialectic design is
-`quest-graph-as-dossier.md` open question 2.
+`quest-graph-as-dossier (me692487)` open question 2.
 **Last reviewed:** 2026-10-03 (round 3 deployed and dogfooded; parked at TIER 3)
 **Worktree:** `roadmap-quest`
 

@@ -5,11 +5,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2] / "src/precis_web"
 BASE = (ROOT / "templates/base.html.j2").read_text(encoding="utf-8")
 
 # Chord -> where it goes (rulings: drafts and papers live in Drive, so g r / g p;
-# todos joined them — g t is the Browse preset's doable queue, gr664410).
+# g t is Drive's doable todo queue, gr664410). The Browse ▾ menu became Drive's
+# sidebar Saved views (gr664411), but the three chords stayed global: base.html.j2
+# renders visually hidden anchors for them on every page, and the static test
+# checks pages beyond /drive so they cannot regress into Drive-only bindings.
 CHORDS = {
     "g d": "/drive",
     "g r": "k=draft",
@@ -29,8 +34,9 @@ def test_base_loads_shortcuts_js_beside_tour():
     assert (ROOT / "static/shortcuts.js").is_file()
 
 
-def test_nav_chords_are_unique_and_point_where_ruled(client):
-    html = client.get("/drive").text
+@pytest.mark.parametrize("path", ["/drive", "/todo?show_jobs=active"])
+def test_nav_chords_are_unique_and_point_where_ruled(client, path):
+    html = client.get(path).text
     anchors = re.findall(r'<a href="([^"]*)"[^>]*data-shortcut="(g [a-z])"', html)
     chords = [c for _, c in anchors]
     assert len(chords) == len(set(chords)), chords

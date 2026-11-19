@@ -1548,6 +1548,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="weekly_report",
+        label="Weekly report (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Collect factory numbers into report tables; optional draft section.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="gripe_validate",
         label="Gripe validate (job)",
         category="jobs",

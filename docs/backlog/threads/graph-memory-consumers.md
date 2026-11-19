@@ -50,7 +50,7 @@ landed-sha edit ack. Both views were dogfooded 2026-10-03 on the live
 server (63301c5c) against dr173020, and both rendered. The edit ack was
 not exercised on that live review draft. The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
-(the eye ladder — shipped 2026-10-12, draft-linearization) are ranked in `knowledge-mesh.md`
+(the eye ladder — shipped 2026-10-12, draft-linearization) are ranked in `knowledge-mesh (me693314)`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-10-07
@@ -81,7 +81,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 - **Next step:** review that branch's diff. Run its memory handler test
   file with `scripts/test`, merge it into this worktree and qland. If the
   branch is gone or empty, redo the change from the
-  `memory-native-authoring.md` decisions-log entry dated 2026-10-03.
+  `memory-native-authoring (me690866)` decisions-log entry dated 2026-10-03.
 - **Reconsolidation:** 2026-10-04 pass logged; no node edits.
 
 ## Do next
@@ -163,9 +163,9 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    remain operator-owned. Open: gr548275 SPACE backfill (the glossary
    mirror is superseded — the vocabulary lives as taxa under tn559460).
    Specs:
-   `memory-retrieval-learning.md` (idea, decision rule),
-   `dreaming-classify-rehome.md` (draft). Reto's call: S4 in
-   `context-memory-hierarchy.md` (resident block, largest token lever).
+   `memory-retrieval-learning (gr690890)` (idea, decision rule),
+   `dreaming-classify-rehome (me693172)` (draft). Reto's call: S4 in
+   `context-memory-hierarchy (me692173)` (resident block, largest token lever).
 
 ## Horizon
 
@@ -190,7 +190,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 
 1. **me692487** — Reto 2026-10-01: a quest's
    graph "is" the dossier and a writer agent linearises it. Specified by
-   `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5); its
+   `retire-dossier (me692487)` (draft, ranked in roadmap-quest Horizon 5); its
    experiment memory cards are the quest loop's memory
    consumer: one `memory` per candidate structure, `serves` the quest,
    `part-of` its direction todo, every line a quoted source. Same

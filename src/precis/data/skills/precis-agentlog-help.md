@@ -64,8 +64,19 @@ requested tier/pin.
 
 ## Reading (agent side)
 
+Agentlog handles use **`ag`**, not `jo`: `get(id='ag42')` reads
+agentlog 42, equivalent to `get(kind='agentlog', id=42)`. A `jo42`
+handle asks for **job** 42; it cannot read agentlog 42. Ref IDs share a
+global sequence, so an agentlog and its owning job have different IDs.
+To read the owning job's transcript, first read the agentlog, then use
+its **`meta.job_ref_id`** with `get(kind='job', id=<job_ref_id>)`.
+If no `job_ref_id` is present, do not invent a job handle from the
+agentlog's ID. A wrong-kind NotFound naming a live agentlog is recovered
+with the reported `ag…` handle, not by retrying `jo…`.
+
 ```
-get(kind='agentlog', id=42)         # one run
+get(id='ag42')                    # one run, kind inferred from ag
+get(kind='agentlog', id=42)         # same run, explicit kind
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
 get(kind='agentlog', id='/traces', args={'since': '90d', 'kind': 'memory'})
                                   # search traces, excluded from /recent

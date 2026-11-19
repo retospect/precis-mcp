@@ -176,12 +176,77 @@ def test_drop_retires_the_users_own_card() -> None:
     assert store.retired == [9]
 
 
+def test_drop_htmx_returns_empty_ok_for_row_delete() -> None:
+    """The /learning current-context row deletes via htmx ``hx-swap="delete"``:
+    a 303 would swap the whole /anki page into the row, so htmx gets an
+    empty 200 instead."""
+    store = FakeStore()
+    store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="reto", meta={})
+    r = _client(store).post(
+        "/anki/drop",
+        data={"card": "9"},
+        headers={**_auth(), "HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert r.text == ""
+    assert store.retired == [9]
+
+
 def test_drop_refuses_another_owners_card() -> None:
     store = FakeStore()
     store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="alice", meta={})
     r = _client(store).post("/anki/drop", data={"card": "9"}, headers=_auth())
     assert r.status_code == 404
     assert store.retired == []
+
+
+def test_boost_stamps_the_due_marker_for_the_users_own_card() -> None:
+    """Boost = ``meta.anki_boost_due`` set to today; the next anki-sync tick
+    brings the mirror card's due date forward and clears the marker."""
+    store = FakeStore()
+    store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="reto", meta={})
+    r = _client(store).post(
+        "/anki/boost", data={"card": "9"}, headers=_auth(), follow_redirects=False
+    )
+    assert r.status_code == 303
+    patches = {cid: patch for cid, patch in store.meta_writes}
+    assert patches[9]["anki_boost_due"].count("-") == 2  # an ISO date
+
+
+def test_boost_refuses_another_owners_card() -> None:
+    store = FakeStore()
+    store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="alice", meta={})
+    r = _client(store).post("/anki/boost", data={"card": "9"}, headers=_auth())
+    assert r.status_code == 404
+    assert store.meta_writes == []
+
+
+def test_boost_htmx_swaps_the_queued_chip() -> None:
+    store = FakeStore()
+    store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="reto", meta={})
+    r = _client(store).post(
+        "/anki/boost",
+        data={"card": "9"},
+        headers={**_auth(), "HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert "boost queued" in r.text
+    assert {cid for cid, _ in store.meta_writes} == {9}
+
+
+def test_known_htmx_returns_empty_ok_for_row_delete() -> None:
+    store = FakeStore()
+    r = _client(store).post(
+        "/anki/known",
+        data={"concept": ["11"]},
+        headers={**_auth(), "HX-Request": "true"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert r.text == ""
+    assert {cid for cid, _ in store.meta_writes} == {11}
 
 
 def test_queue_mints_asked_terms(monkeypatch: pytest.MonkeyPatch) -> None:

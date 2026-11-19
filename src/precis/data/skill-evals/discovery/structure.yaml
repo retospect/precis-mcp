@@ -1,0 +1,36 @@
+# Discovery eval task for the structure family (gr634773): phrased
+# WITHOUT skill names — the discovery condition sees only the task and
+# the tool surface. Two wording variants limit overfitting. The write
+# target carries {run} so paired/parallel executed passes can't collide
+# on the shared eval DB; expect matches the minted slug, the fake the
+# -0-0 form.
+family: structure
+skill: precis-structure-help
+tasks:
+  - id: build-and-count
+    subtasks: 2
+    variants:
+      - |
+        Build a structure 'eval-slab-{run}' in precis — a 2×2×2 Pt(111)
+        slab with 10 Å of vacuum — then read it back and tell me its
+        atom count.
+      - |
+        Create 'eval-slab-{run}' as a 2×2×2 Pt(111) slab (10 Å vacuum)
+        and report back how many atoms it holds.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: 're:eval-slab-\d+-\d+', text: 're:.*slab.*'}}
+        - {verb: get, kind: structure, args: {id: 're:eval-slab-\d+-\d+'}}
+      record: {kind: structure, id: 're:eval-slab-\d+-\d+'}
+    fake:
+      calls:
+        - verb: put
+          kind: structure
+          args:
+            id: eval-slab-0-0
+            text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}]}'
+        - {verb: get, kind: structure, args: {id: eval-slab-0-0}}
+      record: {kind: structure, id: eval-slab-0-0}
+      answer: >
+        put(kind='structure', id='eval-slab-0-0', text=<cell+slab op
+        JSON>) builds the slab; get reads it back — 8 Pt atoms.

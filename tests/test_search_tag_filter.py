@@ -29,7 +29,11 @@ from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.paper import PaperHandler
 from precis.store import ChunkInsert, Store, Tag
-from precis.store._tag_filter import build_tag_filter
+from precis.store._tag_filter import (
+    _parse_tag_string,
+    build_tag_filter,
+    tag_filter_string,
+)
 from tests.conftest import chunk_handle
 
 # ── unit: build_tag_filter ──────────────────────────────────────────
@@ -127,6 +131,39 @@ class TestBuildTagFilter:
         assert frag.count("NOT IN") == 1
         assert "HAVING" not in frag
         assert params == ["OPEN", "a", "FLAG", "a", "OPEN", "b", "FLAG", "b"]
+
+    def test_exact_axis_escape_matches_stored_lowercase_namespace(self) -> None:
+        """gr636493 review (td697200): a stored lowercase axis like
+        ``tier`` can't ride the plain ``ns:value`` spelling — it would
+        expand to the OPEN/FLAG pair and match nothing. ``=ns:value``
+        forces the exact ``(namespace, value)`` pair instead."""
+        assert _parse_tag_string("=tier:synthetic-insight") == [
+            ("tier", "synthetic-insight")
+        ]
+        frag, params = build_tag_filter(["=tier:synthetic-insight"])
+        assert params == ["tier", "synthetic-insight", 1]
+        # Negated exact-axis composes like any other exclusion.
+        _frag, neg_params = build_tag_filter(["!=tier:dream"])
+        assert neg_params == ["tier", "dream"]
+
+    def test_tag_filter_string_round_trips_stored_pairs(self) -> None:
+        """The canonical ``/drive?tag=`` spelling of a stored
+        ``(namespace, value)`` row parses back to exactly that pair."""
+        assert tag_filter_string("OPEN", "read-later") == "read-later"
+        assert tag_filter_string("FLAG", "pinned") == "FLAG:pinned"
+        assert tag_filter_string("STATUS", "open") == "STATUS:open"
+        assert tag_filter_string("tier", "dream") == "=tier:dream"
+        # An OPEN value that itself carries a colon still rides bare.
+        assert tag_filter_string("OPEN", "topic:co2") == "topic:co2"
+
+    @pytest.mark.parametrize(
+        "value", ["!urgent", "=tier:dream", "STATUS:open", "OPEN:carbon"]
+    )
+    def test_open_syntax_values_keep_the_stored_pair(self, value: str) -> None:
+        spelling = tag_filter_string("OPEN", value)
+        assert _parse_tag_string(spelling) == [("OPEN", value)]
+        _, params = build_tag_filter([spelling])
+        assert params == ["OPEN", value, 1]
 
 
 # ── store-level: ref-search filter ──────────────────────────────────

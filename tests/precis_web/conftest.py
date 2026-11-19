@@ -72,6 +72,11 @@ class _FakeConn:
     def execute(self, sql: str, params: Any = None) -> _FakeCursor:
         return _FakeCursor([])
 
+    @contextmanager
+    def transaction(self):
+        # Write paths scope their statements (e.g. /tags/delete).
+        yield self
+
     def commit(self) -> None:  # write paths (e.g. vault set/delete) commit
         return None
 

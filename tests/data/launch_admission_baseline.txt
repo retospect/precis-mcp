@@ -32,6 +32,7 @@ scripts/fleet-wave::_assign_batch 1
 scripts/fleet-wave::_ensure_tree 1
 scripts/fleet-wave::_launch_kimi 1
 scripts/fleet-wave::_render_batch_brief 1
+scripts/fleet-wave::_tools_call 1
 scripts/fleet-wave::cmd_land.run_ship 1
 scripts/fleet-wave::cmd_launch 1
 scripts/gripe-note::run_capped 1
@@ -105,11 +106,7 @@ src/precis/render/sandbox.py::render_python 1
 src/precis/store/schema_dump.py::_run_pg_dump 1
 src/precis/structure/_xtb_isolated.py::IsolatedTBLite.__init__ 1
 src/precis/tts/encode.py::encode_mp3 1
-src/precis/utils/_claude_subprocess.py::run_claude 1
-src/precis/utils/_claude_subprocess.py::run_claude_async 1
-src/precis/utils/_claude_subprocess.py::run_claude_gated 1
 src/precis/utils/codex_exec.py::_probe_login_status 1
-src/precis/utils/codex_exec.py::_run_codex 1
 src/precis/utils/compile_guard.py::check_workspace_compiles 1
 src/precis/utils/stall_capture.py::maybe_capture 1
 src/precis/utils/tex_llm_fix.py::_run_chktex 1
@@ -132,9 +129,7 @@ src/precis/workers/heartbeat.py::collect_worker_units 2
 src/precis/workers/job_types/boundary_probe.py::_container_present 1
 src/precis/workers/job_types/boundary_probe.py::_rm_container 1
 src/precis/workers/job_types/boundary_probe.py::_rm_tagged 2
-src/precis/workers/job_types/boundary_probe.py::_run_probe 1
 src/precis/workers/job_types/ci_verdict_poll.py::_gh 1
-src/precis/workers/job_types/dep_check.py::_run 1
 src/precis/workers/job_types/land_slice.py::_collected_count 1
 src/precis/workers/job_types/land_slice.py::_drift_preflight 1
 src/precis/workers/job_types/land_slice.py::_selector_stdout 1
@@ -143,7 +138,6 @@ src/precis/workers/job_types/lane_health.py::_probe_codex_exec 1
 src/precis/workers/job_types/pr_action.py::_gh 1
 src/precis/workers/job_types/run_slice.py::_devin_auth_status 1
 src/precis/workers/job_types/run_slice.py::_devin_model_prices 1
-src/precis/workers/job_types/run_slice.py::_launch 1
 src/precis/workers/job_types/run_slice.py::_run 1
 src/precis/workers/job_types/struct_relax.py::_container_still_present 1
 src/precis/workers/job_types/struct_relax.py::_default_runner 1

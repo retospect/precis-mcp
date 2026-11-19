@@ -19,9 +19,8 @@ from precis.runtime import PrecisRuntime
 from precis.utils import handle_registry as hr
 
 # Mirror of the addressable persistent-ref kinds registered in
-# ``dispatch.boot()`` (providers web/youtube/wikipedia/semanticscholar/
-# perplexity-* and stateless tools calc/math/provenance/random are
-# addressed by URL/query/compute, not handles). ``random`` is a stateless
+# ``dispatch.boot()`` (stateless tools calc/math/provenance/random are
+# addressed by query/compute, not handles). ``random`` is a stateless
 # generator — no row, no handle. TODO: derive from the live hub registry
 # so this can never drift, once a lightweight kind-list accessor exists
 # that doesn't boot the heavy handler graph.
@@ -76,6 +75,16 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "checklist",
         "profile",
         "alias",
+        # handle-coded fetch caches (gr702974)
+        "wikipedia",
+        "semanticscholar",
+        "chem",
+        # the remaining stored fetch caches (gr702962)
+        "youtube",
+        "web",
+        "websearch",
+        "perplexity-research",
+        "perplexity-reasoning",
         "machine",
     }
 )
@@ -108,7 +117,7 @@ def test_format_handle_is_code_plus_decimal_pk() -> None:
 
 
 def test_try_format_is_none_for_codeless_kind_or_id() -> None:
-    assert hr.try_format("websearch", 5) is None  # provider, no code
+    assert hr.try_format("math", 5) is None  # stateless tool, no code
     assert hr.try_format("paper", None) is None
     assert hr.try_format("paper", 5) == "pa5"
 
@@ -175,7 +184,7 @@ def test_normalize_folds_prefix_case_only() -> None:
 
 def test_unknown_kind_and_code_raise() -> None:
     with pytest.raises(KeyError):
-        hr.code_for_kind("websearch")  # a provider, not a record
+        hr.code_for_kind("math")  # a stateless tool, not a record
     with pytest.raises(KeyError):
         hr.kind_for_code("zz")
 

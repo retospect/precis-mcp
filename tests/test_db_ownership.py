@@ -320,7 +320,9 @@ def test_ingress_reads_the_hash_for_login(prod_like: psycopg.Connection) -> None
         prod_like,
         "agent_rw",
         "SELECT login, has_feed_token FROM (SELECT login, "
-        "(feed_token_sha256 IS NOT NULL) AS has_feed_token FROM web_users) s",
+        "EXISTS (SELECT 1 FROM web_user_capability_tokens ft"
+        " WHERE ft.user_id = web_users.id AND ft.revoked_at IS NULL"
+        " AND 'feed' = ANY(ft.scopes)) AS has_feed_token FROM web_users) s",
     )
     _as(prod_like, "agent_ro", "SELECT count(*) FROM web_users")
 

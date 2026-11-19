@@ -81,7 +81,7 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.identity import is_placeholder_title
+from precis.identity import doi_twins, is_placeholder_title
 from precis.ingest.article_spread import article_start_ord
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.crossref import lookup_crossref
@@ -779,6 +779,12 @@ def _resolve_by_title(
     # the merge path (gr658635) must never consume a DOI twin like that.
     if res.verdict == "auto" and res.doi:
         owner = store.identifier_owner("doi", res.doi)
+        if owner is None or owner == rid:
+            # Wiley anie/ange twin DOIs name one work: a held twin owns it.
+            for twin in doi_twins(res.doi):
+                owner = store.identifier_owner("doi", twin)
+                if owner is not None and owner != rid:
+                    break
         if owner is not None and owner != rid:
             res.verdict, res.reason = "review", f"recovered-doi-owned-by-#{owner}"
     return res

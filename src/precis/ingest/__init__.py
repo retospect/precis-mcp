@@ -51,6 +51,17 @@ static for the process lifetime). Policy:
 Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
+Marker's pagination markers preserve physical page boundaries. Before
+merging blocks, paper extraction drops recognised leading advert pages
+when the target title and abstract confirm the next page is the article
+opening. Exact OCR sentence loops are removed before splitting so
+fragments of the loop cannot become searchable chunks.
+arXiv HTML can display citation numbers that disagree with their linked
+bibliography entries. Before flattening the HTML, ``markup.parse_arxiv_html``
+uses the destination labels for fully linked numeric citation groups and
+emits each structured bibliography item separately for ``bib_parse``.
+Repeated numeric labels trigger the markup fallback because citation
+storage has one number namespace per paper.
 
 Figure alt text and captions are authored inside the dependency stack,
 not in this package: marker-pdf's surya-ocr VLM emits them from its
@@ -86,7 +97,10 @@ the lookup provider).
 ``meta.entry_type``/``journal``/``issn``, extra ``ref_identifiers``,
 per-author ORCID links, and retraction status from one Crossref
 (+conditional OpenAlex) fetch, on the :mod:`precis.workers.paper_meta_enrich`
-cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
+cadence. Journal spelling comes from the shared Crossref journal record keyed
+by ISSN (``journal_record``), with a 30-day background refresh even for
+already-enriched papers; ambiguous source identities create review todos.
+``meta.authors_resolved_at`` is its idempotency stamp and
 ``refs.human_verified_at`` its skip guard. It also fills
 ``refs.title``/``refs.year`` when — and only when — the ref has none of
 its own (:func:`precis.identity.is_placeholder_title`), which is how a

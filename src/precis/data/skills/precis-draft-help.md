@@ -437,11 +437,10 @@ put(
 edit(
     kind="draft", id="<slug>", not_abbrev=["CO2"]
 )  # OR: mark not-an-abbreviation — silences the hint and skips its
-  # inline-detected pair (a term chunk you filed still defines it)
+  # inline-detected pair
 edit(
     kind="draft", id="<slug>", is_abbrev=["CO2"]
-)  # inverse: un-silence a wrongly-ignored token (removing an absent
-  # token is a no-op; the response says so)
+)  # inverse: un-silence a wrongly-ignored token
 ```
 
 The term call **is** what "define an abbreviation" means here, not an
@@ -452,13 +451,15 @@ distinct resolvable surface, not a replacement for `short`. Once defined
 or silenced, a token stops being hinted; reference a term with
 `[PEI](<dc-term-handle>)` (explicit terms win over auto-detected ones).
 
-**Defining several at once** — a glossary pass, a parts list — is one
-call, not one per term: `put(kind='draft', id='<slug>',
-chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
-'<ABBR>'}}, ...])` (≤50 per call; a bare string entry is shorthand for
-`{'text': it}`; an entry may carry `at=` to place it, else it files
-under the registry's home heading). All-or-nothing: a rejected entry
-rolls the whole call back and names its position.
+Batch terms with `put(kind='draft', id='<slug>', terms=[{'text': '…',
+'meta': {'short': 'ABBR'}}])`. Strings work too. Without `at`, terms file
+under their registry heading.
+For mixed kinds, pass `chunks=[{'text': '…', 'chunk_kind': 'paragraph',
+'meta': {}, 'at': {'last': True}}]`. Table text is a markdown grid.
+View figures use caption text and `meta.view`.
+Verb-level kind, metadata and placement provide defaults. Anchors must
+resolve in this draft. Each batch takes up to 50 entries and rolls back
+on indexed errors.
 
 ## Audit the draft — hygiene checks & the gap-finder
 

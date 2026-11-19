@@ -235,6 +235,14 @@ def test_every_critical_rule_carries_a_triage_line() -> None:
     assert not missing, f"critical rules need a triage line: {missing}"
 
 
+def test_quota_check_auth_triage_names_the_vault_token() -> None:
+    """gr676935: the triage hint must point at the vault token, never at
+    logging Claude in on the worker host."""
+    rule = next(r for r in ALERT_RULES if r.rule == "quota_check:auth")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in (rule.triage or "")
+    assert "claude login" not in (rule.triage or "")
+
+
 # ── resolve(): pattern matching ──────────────────────────────────────────
 
 

@@ -57,6 +57,7 @@ argument as the heartbeat thread vs its in-rotation pass.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -1318,6 +1319,45 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
     return True
 
 
+def _weekly_report_eligible() -> bool:
+    return os.environ.get("PRECIS_WEEKLY_REPORT_ENABLED", "0") == "1"
+
+
+def _run_weekly_report(store: Store, batch_size: int) -> None:
+    """Mint one report per UTC week; retries retain the same activity bounds."""
+    del batch_size
+    from precis.workers._mint import mint_background_job
+
+    now = datetime.now(UTC)
+    until = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    since = until - timedelta(days=7)
+    key = f"weekly_report:{until.date().isoformat()}"
+    params = {"since": since.isoformat(), "until": until.isoformat()}
+    draft = os.environ.get("PRECIS_WEEKLY_REPORT_DRAFT")
+    section = os.environ.get("PRECIS_WEEKLY_REPORT_SECTION")
+    if draft and section:
+        params.update(draft=draft, section=section)
+    with store.pool.connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM refs WHERE kind='job' AND meta->>'idem_key' = %s AND retired_at IS NULL",
+            (key,),
+        ).fetchone():
+            return
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="weekly_report",
+            executor="job_inproc",
+            title=f"Weekly report {since.date()} to {until.date()} UTC",
+            params=params,
+            idem_key=key,
+            prio=8,
+        )
+        conn.commit()
+
+
 #: The folded cadences. ``cron_tick``/``watch_poll`` intervals mirror the
 #: launchd timers they retire (``precis-cron-tick`` 60s, ``precis-watch-poll``
 #: 3600s) — host-agnostic, no affinity/eligibility needed. ``dream_agent`` /
@@ -1342,7 +1382,14 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
 #: ``cron_tick`` only *spawns child todos* — those become dispatch candidates
 #: and are gated there, at mint, so marking this cadence too would double-gate
 #: the same spend.
+#: ``weekly_report`` is disabled by default; ``PRECIS_WEEKLY_REPORT_ENABLED=1`` opts in.
 CADENCES: tuple[Cadence, ...] = (
+    Cadence(
+        name="weekly_report",
+        interval_s=7 * 24 * 3600,
+        run=_run_weekly_report,
+        eligible=_weekly_report_eligible,
+    ),
     Cadence(name="recipe_gap", interval_s=6 * 3600, run=_run_recipe_gap),
     Cadence(name="llm_suitability", interval_s=24 * 3600, run=_run_llm_suitability),
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),

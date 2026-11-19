@@ -20,36 +20,53 @@ Each fire:
   ``op`` node of a :data:`_BUILD_OPS` type under the root, non-terminal,
   whose ``task_class`` resolves to ``code``. A chain parked on the
   sha-in-prod gate, on validate or on the non-blocking review holds no
-  slot (gr584410). Of the unlanded chains only those whose build is
-  **live** hold a slot (gr687946): a non-terminal job, a ``claimed-by:``
-  tag, or doable by ``plan_dispatch``'s own predicate
-  (``plan_dispatch.live_nodes``: open, no ``ask-user``, ``waiting-for:*``,
-  ``child-failed:*``, ``halt``, ``rescue:`` or ``hold:no-dispatch`` tag on
-  it or an ancestor, not blocked, not paused). A parked build — a rescue
-  ask answered and never re-armed, a spent ladder, ``STATUS:paused``, a
-  child-failed bubble — holds none, so idle build hosts get work. Capacity
-  = the summed ``cap`` of the enabled lanes that fit the ``code`` task
-  class (``plans/lanes.py``). Slots = capacity minus live chains — one
-  tick may fill every free build slot. Parked chains are bounded by
-  setting :data:`MAX_PARKED_KEY` (default 2 x capacity): at the cap the
-  pass mints nothing (release-waiver chains excepted) and logs why.
+  slot (gr584410). Only running jobs and explicit claims count as live
+  in the census. Every doable node is queued, including builds waiting
+  on file overlap; the executor skips held builds and takes the next
+  job by score. Capacity is the free executor supply on live code-capable
+  hosts, using the claim loop's caps and reservations. Mint up to
+  ``factory.gripe_dispatch.queue_depth`` (default 2) queued builds per
+  free slot, less already queued builds (gr702610). This bounds how much
+  gripe text is frozen ahead of execution. Parked work costs no seat and
+  is never thrown away by a timer (Reto 2026-11-16: "put a todo on the
+  thing, park the branch, use the slot otherwise"), so the count of
+  parked chains is no longer a brake: :data:`MAX_PARKED_KEY` (default
+  :data:`DEFAULT_MAX_PARKED`, 500) is a last-resort backstop only — at
+  it the pass mints nothing (release-waiver chains excepted) and logs
+  why. What stops the factory is a *cause*: the breaker below.
+* **Breaker** (:mod:`precis.plans.lane_breaker`, before minting). When the
+  newest ``K`` (setting ``factory.gripe_dispatch.breaker_parks``, default
+  5) ended builds on one lane — or one host — all failed of the same
+  engine cause (the lane-auth allowlist, an HTTP 401/403, the router's
+  quota/rate/budget/transport classes, ``failure_class=infra``, a host
+  refusal) across at least two build nodes, ONE ask-user todo names the
+  lane or host, the cause and the job ids, and new builds stop going to
+  it: ``lanes.lane_backoffs`` holds it out of every lane pick and its
+  host out of the claim. Every other lane and host keeps
+  dispatching. Closing the ask resets the breaker.
 * **Stall sweep** (:func:`sweep_stalled`, before minting). A parked chain
-  with no open ask in its plan is closed once the whole plan has
-  stalled: no node under the root is live (a build blocked-by a running
-  review is waiting, not stalled) and nothing has moved on any plan node
+  whose whole plan has stalled — no node under the root is live (a build
+  blocked-by a running review, or held behind another build's files, is
+  waiting, not stalled), nothing has moved on any plan node
   (``updated_at``, tag stamps, jobs) for setting :data:`STALL_HOURS_KEY`
-  hours (default 6). The ROOT goes ``STATUS:won't-do`` (``plan_dispatch``'s dead-roots step closes
-  the open children, gr612091), with a comment on the root and on the
-  gripe giving the state found and its age. The gripe's open tag
-  ``chain-stalls:<n>`` counts closures; at the second stall it also gets
-  ``hold:no-dispatch`` and a comment that it needs a re-brief, so it is
-  not re-minted in a loop. At most :data:`_STALL_BATCH` closures a pass.
+  hours (default 6) and no ask is open in the plan — is NOT closed. It
+  gets ONE ask-user todo, ``td<root>: chain stalled <age> — resume, start
+  over, or drop?``, blocking its build nodes, naming the state found and
+  the parked branch/host (``meta.parked``, ``plan_dispatch``'s park
+  stamp) if any. The open ask keeps the chain out of the sweep and out of
+  dispatch; closing it re-arms the build (``plan_dispatch._step_rearm``:
+  resume from the saved branch, or ``start over``); dropping it is
+  closing the root ``won't-do``. The gripe's open tag ``chain-stalls:<n>``
+  counts the asks. At most :data:`_STALL_BATCH` asks a pass.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
   2026-11-10), waiting :data:`_MIN_AGE_MINUTES`
   since the latest ``STATUS:triaged`` or fix-class attachment (filing
-  time only if neither timestamp is known), with no live todo
+  time only if neither timestamp is known), with no open ``blocked-by``
+  target of any kind — a todo or gripe blocker that has not reached a
+  blocker-terminal STATUS holds the gripe out of dispatch, and it
+  returns once the blocker closes (gr656970) —, with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
   holds the gripe out, gr609044), none
@@ -110,10 +127,15 @@ Each fire:
   and the mint/write gates downstream still refuse a build that
   actually writes a deny path (gr645524).
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
-  (unpinned: the build picks its lane at dispatch, devin first by table
-  order) and one ``dispatch:`` comment on the gripe naming the root. The
+  (unpinned: the build picks its cheapest fitting free lane at claim)
+  and one ``dispatch:`` comment on the gripe naming the root. The
   ``related-to`` link the template writes is the idempotency marker: a
-  re-fire sees the gripe linked and skips it, so a doubled tick converges.
+  re-fire sees the gripe linked and skips it, so a doubled tick
+  converges. The pick's ``blocked-by`` read re-runs at each mint — a
+  blocker linked between the candidate query and the mint holds the
+  chain back (gr656970) — and again on the queued build's claim, which
+  follows the ``related-to`` edge back to the gripe
+  (:func:`precis.workers.executors._common.build_blocked_holds`).
 
 The pass bills no model call and holds no transaction across the mint
 (each mint is the template's own transaction).
@@ -128,6 +150,7 @@ from typing import Any
 from precis import settings as psettings
 from precis.corpus_layout import host_name
 from precis.plans import governs as _governs
+from precis.plans import lane_breaker as _lane_breaker
 from precis.plans import lanes as _lanes
 from precis.plans import route as _route
 from precis.plans.nodes import finish_mint
@@ -135,7 +158,8 @@ from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
+from precis.todo.blocked import open_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
@@ -233,18 +257,24 @@ TRUST_KEY = "factory.gripe_trust"
 #: ``filer`` keeps the Claude Code / human / ``ci.sig`` rule.
 TRUST_ALL = "all"
 TRUST_FILER = "filer"
-#: Registry key of the parked-chain cap (:func:`max_parked`).
+#: Registry key and default of the parked-chain backstop
+#: (:func:`max_parked`): no longer a brake on ordinary pile-ups (parked
+#: work costs no seat), only the last resort against a runaway.
 MAX_PARKED_KEY = "factory.gripe_dispatch.max_parked"
+DEFAULT_MAX_PARKED = 500
 #: Registry key and default of the stall window (:func:`stall_hours`).
 STALL_HOURS_KEY = "factory.gripe_dispatch.stall_hours"
 DEFAULT_STALL_HOURS = 6
-#: Stalled chains closed per pass.
+#: Stalled chains asked about per pass.
 _STALL_BATCH = 10
-#: Open tag counting a gripe's stalled-and-closed chains
-#: (``chain-stalls:<n>``); the second stall also holds the gripe.
+#: Open tag counting the asks a gripe's stalled chains raised
+#: (``chain-stalls:<n>``). It only counts: the open ask itself keeps the
+#: chain out of dispatch and the sweep.
 STALL_TAG_PREFIX = "chain-stalls:"
-#: Stalls after which a gripe needs a re-brief, not another mint.
-_STALL_HOLD_AT = 2
+#: Options of the stall ask: resume re-arms the build on its saved branch,
+#: ``start over`` drops the branch and rebuilds from the base, drop is
+#: closing the root ``won't-do``.
+_STALL_OPTIONS = ["resume", "start over", "drop"]
 
 
 def gripe_trust(store: Store) -> str:
@@ -297,9 +327,18 @@ class DispatchPick:
 def lane_capacity(
     store: Store | None, lanes: tuple[_lanes.Lane, ...] | None = None
 ) -> int:
-    """Summed cap of the enabled lanes that fit the build's task class."""
+    """Summed cap of the enabled lanes that fit the build's task class —
+    no longer the minting capacity (free executor slots are:
+    :func:`build_queue_supply`); kept for diagnostics —
+    less a lane the breaker holds out (:mod:`precis.plans.lane_breaker`:
+    its newest builds all died of one engine cause and an ask is open)."""
     table = _lanes.load_lanes(store) if lanes is None else lanes
-    return sum(ln.cap for ln in table if ln.enabled and ln.fits(_BUILD_TASK_CLASS))
+    held = _lane_breaker.tripped_lanes(store) if store is not None else set()
+    return sum(
+        ln.cap
+        for ln in table
+        if ln.enabled and ln.fits(_BUILD_TASK_CLASS) and ln.name not in held
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,12 +350,15 @@ class Chain:
     #: Non-terminal :data:`_BUILD_OPS` nodes of the chain (task class code).
     build_ids: tuple[int, ...]
     #: Some build node is live (:func:`precis.workers.job_types.
-    #: plan_dispatch.live_nodes`) and so holds a build slot.
+    #: plan_dispatch.live_nodes`): a running job or an explicit claim. A
+    #: queued, undispatched or file-overlap-held build is not live; it
+    #: counts as parked in the census (:data:`MAX_PARKED_KEY`).
     live: bool
     #: Every todo of the plan (tagged ``plan:<root>``, root included).
     plan_ids: tuple[int, ...] = ()
-    #: Some node anywhere in the plan is live (:func:`plan_dispatch.
-    #: live_nodes`): the chain is moving, whatever its build is doing.
+    #: Some node anywhere in the plan is live or waiting in the
+    #: file-overlap hold (:func:`plan_dispatch.live_and_held_nodes`): the
+    #: chain is moving, whatever its build is doing.
     plan_live: bool = True
 
 
@@ -404,18 +446,19 @@ def _unlanded_chains(
 
 
 def chains(store: Store) -> list[Chain]:
-    """Every unlanded chain, each marked live or parked. Liveness is
-    ``plan_dispatch``'s own predicate (a live job, a ``claimed-by:`` tag,
-    or a doable node); a load failure reads every chain live — the
-    pre-gr687946 count — so a blip never over-mints."""
+    """Every unlanded chain, marked running or waiting/parked.
+
+    A load failure conservatively reads every chain live. Queue supply is
+    counted separately, so a waiting chain never consumes an executor slot.
+    """
     rows = _unlanded_chains(store)
     if not rows:
         return []
-    from precis.workers.job_types.plan_dispatch import live_nodes
+    from precis.workers.job_types.plan_dispatch import live_and_held_nodes
 
     roots = [r[0] for r in rows]
     try:
-        live = live_nodes(store, roots)
+        live, held = live_and_held_nodes(store, roots)
         plans = _plan_nodes(store, roots)
     except Exception:
         log.warning(
@@ -423,6 +466,7 @@ def chains(store: Store) -> list[Chain]:
             exc_info=True,
         )
         live = {b for r in rows for b in r[2]}
+        held = set()
         plans = {}
     return [
         Chain(
@@ -432,7 +476,9 @@ def chains(store: Store) -> list[Chain]:
             bool(live & set(builds)),
             plans.get(root, ()),
             # No plan read means no evidence of a stall: read it moving.
-            root not in plans or bool(live & set(plans[root])),
+            # An overlap-held node is waiting on another build's land,
+            # not stalled: it keeps the plan moving though it holds no slot.
+            root not in plans or bool((live | held) & set(plans[root])),
         )
         for root, gids, builds in rows
     ]
@@ -442,9 +488,9 @@ def open_chain_count(store: Store) -> int:
     """Chains holding a build slot: unlanded chains whose build is live.
 
     A parked build (``ask-user``, ``waiting-for:*``, ``child-failed:*``,
-    paused, blocked, claim-less and job-less) holds no slot — it is
-    bounded by ``factory.gripe_dispatch.max_parked`` and swept by
-    :func:`sweep_stalled` instead (gr687946)."""
+    paused, blocked, file-overlap held, claim-less and job-less) holds no
+    slot — its branch is saved and :func:`sweep_stalled` asks about it
+    once the plan has stood still (gr687946)."""
     return sum(1 for c in chains(store) if c.live)
 
 
@@ -453,11 +499,11 @@ def parked_chain_count(store: Store) -> int:
     return sum(1 for c in chains(store) if not c.live)
 
 
-def max_parked(store: Store, capacity: int) -> int:
-    """``factory.gripe_dispatch.max_parked``; unset or below 1 reads
-    2 x ``capacity``."""
+def max_parked(store: Store) -> int:
+    """``factory.gripe_dispatch.max_parked`` — the last-resort backstop on
+    parked chains; unset or below 1 reads :data:`DEFAULT_MAX_PARKED`."""
     raw = psettings.get_int(MAX_PARKED_KEY, store=store)
-    return raw if raw is not None and raw >= 1 else 2 * capacity
+    return raw if raw is not None and raw >= 1 else DEFAULT_MAX_PARKED
 
 
 def stall_hours(store: Store) -> int:
@@ -558,20 +604,25 @@ def _comment_todo(store: Store, todo_id: int, text: str) -> None:
 def sweep_stalled(
     store: Store, parked: list[Chain], *, limit: int = _STALL_BATCH
 ) -> list[dict[str, Any]]:
-    """Close chains stalled with no human waiting (gr687946).
+    """Ask about chains stalled with no human waiting (gr687946; parked
+    work is saved, never thrown away — Reto 2026-11-16).
 
-    A parked chain — build not live, no node of its plan live (a build
-    blocked-by a running review is waiting, not stalled), no open ask in
-    the plan, and nothing moved on ANY plan node (``updated_at``, tag
-    stamps, jobs) for :func:`stall_hours` — has its ROOT set
-    ``STATUS:won't-do``; ``plan_dispatch``'s dead-roots step closes the
-    open children (gr612091), and the gripe, its link now to a closed
-    todo, re-enters :func:`candidates`. Each gripe carries
-    ``chain-stalls:<n>`` (replaced per closure); the second stall also
-    tags it ``hold:no-dispatch`` and says it needs a re-brief, so a
-    gripe the builders cannot land is not re-minted in a loop. At most
-    ``limit`` chains close per pass, idlest first. Returns one dict per
-    closure: ``root``, ``gripes``, ``idle_hours``, ``stalls``."""
+    A parked chain — build not live, no node of its plan live or held in
+    the file-overlap hold (a build blocked-by a running review, or
+    waiting on another build's land, is waiting, not stalled), no open ask
+    in the plan, and nothing moved on ANY plan node (``updated_at``, tag
+    stamps, jobs) for :func:`stall_hours` — gets ONE ask-user todo,
+    ``td<root>: chain stalled <age> — resume, start over, or drop?``,
+    blocking its build nodes and naming the state found and the parked
+    branch/host (``meta.parked``). The chain is never closed: the open ask
+    keeps it out of dispatch and of this sweep (an open ask in the plan
+    shields it), and closing the ask re-arms the build —
+    ``plan_dispatch._step_rearm``, which resumes from the saved branch or,
+    on ``start over``, drops it. Each gripe carries ``chain-stalls:<n>``
+    (replaced per ask); the count no longer holds the gripe — the open ask
+    does. At most ``limit`` chains are asked about per pass, idlest first.
+    Returns one dict per ask: ``root``, ``gripes``, ``idle_hours``,
+    ``stalls``, ``ask``."""
     hours = stall_hours(store)
     due: list[tuple[float, Chain]] = []
     for c in parked:
@@ -589,40 +640,172 @@ def sweep_stalled(
                 "gripe_dispatch: stall check on td%d failed", c.root_id, exc_info=True
             )
     due.sort(key=lambda x: (-x[0], x[1].root_id))
-    closed: list[dict[str, Any]] = []
+    asked: list[dict[str, Any]] = []
     for idle, c in due[:limit]:
         try:
-            closed.append(_close_stalled(store, c, idle, hours))
+            result = _ask_stalled(store, c, idle, hours)
+            if result is not None:
+                asked.append(result)
         except Exception:
             log.warning(
-                "gripe_dispatch: closing stalled td%d failed", c.root_id, exc_info=True
+                "gripe_dispatch: asking about stalled td%d failed",
+                c.root_id,
+                exc_info=True,
             )
-    if closed:
+    if asked:
         log.info(
-            "gripe_dispatch: closed %d stalled chain(s): %s",
-            len(closed),
-            ", ".join(f"td{z['root']}" for z in closed),
+            "gripe_dispatch: asked about %d stalled chain(s): %s",
+            len(asked),
+            ", ".join(f"td{z['root']}" for z in asked),
         )
-    return closed
+    return asked
 
 
-def _close_stalled(store: Store, c: Chain, idle: float, hours: int) -> dict[str, Any]:
+def _ask_stalled(
+    store: Store, c: Chain, idle: float, hours: int
+) -> dict[str, Any] | None:
+    from precis.store.advisory import try_xact_advisory_lock
+    from precis.workers.job_types.plan_dispatch import (
+        TICK_LOCK_IDLE_TIMEOUT,
+        TICK_LOCK_KEY,
+    )
+
+    # The census is only a shortlist. A tick can re-arm or dispatch the
+    # plan before we get here; exclude ticks through the ask writes.
+    if store.dsn is None:
+        return None
+    with try_xact_advisory_lock(
+        store.dsn, TICK_LOCK_KEY, idle_timeout=TICK_LOCK_IDLE_TIMEOUT
+    ) as got:
+        if not got:
+            return None
+        current = next((x for x in chains(store) if x.root_id == c.root_id), None)
+        if current is None or current.live or current.plan_live or not current.plan_ids:
+            return None
+        fresh_idle = _idle_hours(store, current.plan_ids)
+        if fresh_idle < hours or _open_ask(store, current.root_id):
+            return None
+        return _write_stalled_ask(store, current, fresh_idle)
+
+
+def _chain_state(store: Store, c: Chain) -> tuple[str, list[str]]:
+    """``(state, parked lines)`` of the chain's build nodes: STATUS and
+    the park-ish tags each carries, and where its saved branch is
+    (``meta.parked``: host, worktree, head)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta->'parked',
+                   (SELECT string_agg(t.value, ', ' ORDER BY t.value)
+                      FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'),
+                   (SELECT string_agg(t.value, ', ' ORDER BY t.value)
+                      FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                       AND (t.value LIKE 'rescue:%%' OR t.value LIKE 'child-failed:%%'
+                            OR t.value LIKE 'waiting-for:%%' OR t.value LIKE 'hold:%%'
+                            OR t.value = 'halt'))
+              FROM refs r WHERE r.ref_id = ANY(%s) ORDER BY r.ref_id
+            """,
+            (list(c.build_ids),),
+        ).fetchall()
+    states: list[str] = []
+    saved: list[str] = []
+    for ref_id, parked, status, tags in rows:
+        states.append(
+            f"td{ref_id} STATUS:{status or 'open'}" + (f" [{tags}]" if tags else "")
+        )
+        if isinstance(parked, dict) and parked.get("head"):
+            saved.append(
+                f"td{ref_id}: branch slice/{ref_id} saved on `{parked.get('host')}` "
+                f"(worktree `{parked.get('worktree')}`, head "
+                f"`{str(parked['head'])[:12]}`, pushed to "
+                f"`refs/factory/slice/{ref_id}`)"
+            )
+    return "; ".join(states) or "no build node found", saved
+
+
+def _mint_stalled_ask(
+    store: Store, c: Chain, title: str, body: str, meta: dict[str, Any]
+) -> int:
+    """The ask todo itself, linked ``blocked-by`` from every build node of
+    the chain — one transaction, ending in ``finish_mint``."""
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=c.root_id,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{c.root_id}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        for build in c.build_ids:
+            store.add_link(
+                src_ref_id=build,
+                dst_ref_id=ref.id,
+                relation="blocked-by",
+                conn=conn,
+            )
+        finish_mint(store, ref.id, conn=conn)
+    return int(ref.id)
+
+
+def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
+    state, saved = _chain_state(store, c)
+    age = f"{idle:.0f} h"
+    handle = f"td{c.root_id}"
+    title = f"{handle}: chain stalled {age} — resume, start over, or drop?"
     found = (
-        f"build node(s) {', '.join(f'td{b}' for b in c.build_ids)} not live "
-        f"(no live job, claim or doable state) and no live node in the plan, "
-        f"plan untouched for {idle:.1f} h (window {hours} h), no open ask"
+        f"build node(s) not live (no live job, claim or doable state) and no "
+        f"live node in the plan, plan untouched for {age}, no open ask. "
+        f"State: {state}."
     )
-    store.add_tag(
-        c.root_id,
-        Tag.closed("STATUS", "won't-do"),
-        set_by="system",
-        replace_prefix=True,
+    where = (
+        " ".join(saved)
+        if saved
+        else "No saved branch is stamped on the build (it never reached "
+        "park-save, or nothing was uncommitted or ahead of the base)."
     )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_STALL_OPTIONS),
+            "blocks": f"td{c.build_ids[0]}",
+            "context": f"{handle} stalled {age}: {state}"[:600],
+        }
+    }
+    check_ask_meta(meta)
+    body = (
+        f"The plan under {handle} (gripe {', '.join(f'gr{g}' for g in c.gripe_ids)}) "
+        f"has stood still for {age}: {found}\n\n{where}\n\n"
+        "Nothing was closed and nothing is thrown away. Answer with the "
+        "option you pick and close this todo: `resume` re-arms the build to "
+        "carry on from the saved branch (on any host); `start over` drops "
+        "the saved branch and rebuilds from the base; `drop` — close "
+        f"{handle} STATUS:won't-do. `resume` lifts STATUS:paused on the "
+        "build; a `waiting-for:*` hold (waiting on files) stays until lifted "
+        "by hand."
+    )
+    ask = _mint_stalled_ask(store, c, title, body, meta)
     _comment_todo(
         store,
         c.root_id,
-        f"gripe_dispatch: stalled chain closed won't-do — {found}. "
-        "plan_dispatch closes the open children; the gripe may re-enter dispatch.",
+        f"gripe_dispatch: chain stalled {age} — ask td{ask} (resume, start over, "
+        f"or drop). {found}",
     )
     stalls = 0
     for gid in c.gripe_ids:
@@ -631,21 +814,18 @@ def _close_stalled(store: Store, c: Chain, idle: float, hours: int) -> dict[str,
         for v in held:
             store.remove_tag(gid, Tag.open(v))
         store.add_tag(gid, Tag.open(f"{STALL_TAG_PREFIX}{stalls}"), set_by="system")
-        note = (
-            f"dispatch: closed stalled chain td{c.root_id} — {found} (stall {stalls})."
+        _append_comment(
+            store,
+            gid,
+            f"dispatch: chain {handle} stalled {age} — ask td{ask} "
+            f"(resume, start over, or drop); stall {stalls}.",
         )
-        if stalls >= _STALL_HOLD_AT:
-            store.add_tag(gid, Tag.open("hold:no-dispatch"), set_by="system")
-            note += (
-                f" Second stall: `hold:no-dispatch` set — gr{gid} needs a "
-                "re-brief; remove the tag to return it to dispatch."
-            )
-        _append_comment(store, gid, note)
     return {
         "root": c.root_id,
         "gripes": list(c.gripe_ids),
         "idle_hours": round(idle, 1),
         "stalls": stalls,
+        "ask": ask,
     }
 
 
@@ -703,6 +883,14 @@ def _candidate_picks(
            AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
                             WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
                               AND h.value = ANY(%s))
+           AND NOT EXISTS (SELECT 1 FROM links bl JOIN refs bt ON bt.ref_id = bl.dst_ref_id
+                            WHERE bl.src_ref_id = r.ref_id AND bl.relation = 'blocked-by'
+                              AND bt.retired_at IS NULL
+                              AND COALESCE((SELECT t.value FROM ref_tags rt
+                                                    JOIN tags t ON t.tag_id = rt.tag_id
+                                             WHERE rt.ref_id = bt.ref_id
+                                               AND t.namespace = 'STATUS' LIMIT 1),
+                                           'open') NOT IN {blocker_terminal_sql()})
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
                             WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
                               AND t.kind = 'todo' AND t.retired_at IS NULL
@@ -744,8 +932,69 @@ def _candidate_picks(
     ]
 
 
+def build_queue_supply(store: Store) -> tuple[int, int]:
+    """Free host executor slots and queued builds; lane caps are not capacity.
+
+    Use the claimer's live host advertisements, executor cap and reserved
+    bands. An unavailable host contributes nothing, and a queued or held
+    build consumes no running slot.
+    """
+    from precis.workers.executors import _common as claims
+    from precis.workers.service_config import ServiceConfigResolver
+
+    with store.pool.connection() as conn:
+        advertised = claims.advertised_by_host(conn)
+        build_cap = claims.job_type_running_caps(conn).get("run_slice")
+        free = 0
+        for host, tokens in advertised.items():
+            if "builder" not in tokens:
+                continue
+            if not ServiceConfigResolver(store, host).enabled(
+                "job_ssh_node", default_on=True
+            ):
+                continue
+            if claims.reserve_active(conn, host):
+                continue
+            cap, reserve = claims.executor_lane_limits(conn, "ssh_node", host)
+            if cap is None:
+                continue
+            rows = conn.execute(
+                "SELECT r.meta->>'job_type', count(*) FROM refs r "
+                "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+                "JOIN tags t USING (tag_id) WHERE r.kind = 'job' "
+                "AND r.retired_at IS NULL AND r.meta->>'executor' = 'ssh_node' "
+                "AND r.meta->>'lease_host' = %s "
+                "AND t.namespace = 'STATUS' AND t.value = 'running' GROUP BY 1",
+                (host,),
+            ).fetchall()
+            running = {str(jt): int(n) for jt, n in rows}
+            total = sum(running.values())
+            own = reserve.get("run_slice", 0)
+            available = max(cap - (sum(reserve.values()) - own) - total, 0)
+            available = max(available, own - running.get("run_slice", 0))
+            available = max(0, min(cap - total, available))
+            if build_cap is not None:
+                available = min(
+                    available, max(build_cap - running.get("run_slice", 0), 0)
+                )
+            free += available
+        row = conn.execute(
+            "SELECT count(*) FROM refs r JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t USING (tag_id) WHERE r.kind = 'job' "
+            "AND r.retired_at IS NULL AND r.meta->>'job_type' = 'run_slice' "
+            "AND EXISTS (SELECT 1 FROM refs b WHERE b.ref_id = r.parent_id "
+            "AND b.retired_at IS NULL AND NOT COALESCE(b.meta ? 'generate', FALSE) "
+            "AND NOT EXISTS (SELECT 1 FROM ref_tags bt JOIN tags s USING (tag_id) "
+            "WHERE bt.ref_id = b.ref_id AND s.namespace = 'STATUS' "
+            "AND s.value = ANY(%s))) "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (sorted(TERMINAL_TODO_STATUSES),),
+        ).fetchone()
+    return free, int(row[0]) if row else 0
+
+
 def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchResult:
-    """One fire: free slots → candidates → one chain each. ``claimed`` is
+    """One fire: queue deficit → candidates → one chain each. ``claimed`` is
     the number of gripes the tick tried, ``ok`` the chains minted."""
     if not gripe_dispatch_enabled(store, host=host):
         log.info("gripe_dispatch: dark — no live service_config row; no-op")
@@ -762,20 +1011,31 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
             failed=0,
             extra={"read_only": reason},
         )
-    capacity = lane_capacity(store)
+    # Cause-based breaker first: a lane or host whose newest builds all died
+    # of one engine cause stops taking builds (its ask is the only record),
+    # before the capacity below is read.
+    breaker = _run_breaker(store)
+    from precis.workers.job_types.plan_dispatch import enqueue_roots
+
     census = chains(store)
-    # gr687946: close stalled chains first — their gripes re-enter below.
+    # gr687946: ask about stalled chains — nothing is closed, nothing thrown
+    # away; the ask keeps the chain out of the next sweep. Before the
+    # enqueue below: its fresh job stamps would read as plan movement.
     stalled = sweep_stalled(store, [c for c in census if not c.live])
-    swept = {int(z["root"]) for z in stalled}
+    enqueue_roots(store, [c.root_id for c in census])
+    capacity, queued = build_queue_supply(store)
     open_chains = sum(1 for c in census if c.live)
-    parked = sum(1 for c in census if not c.live and c.root_id not in swept)
-    cap_parked = max_parked(store, capacity)
-    slots = max(capacity - open_chains, 0)
+    parked = sum(1 for c in census if not c.live)
+    cap_parked = max_parked(store)
+    depth = max(
+        1, psettings.get_int("factory.gripe_dispatch.queue_depth", store=store) or 2
+    )
+    slots = max(depth * capacity - queued, 0)
     parked_full = parked >= cap_parked
     if parked_full:
         log.info(
-            "gripe_dispatch: parked=%d reached %s=%d — minting no new chains "
-            "(waiver chains excepted) until the parked ones are swept or ruled",
+            "gripe_dispatch: parked=%d reached the backstop %s=%d — minting no "
+            "new chains (waiver chains excepted) until the parked ones are ruled",
             parked,
             MAX_PARKED_KEY,
             cap_parked,
@@ -798,10 +1058,14 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     ]
     extra: dict[str, Any] = {
         "lane_capacity": capacity,
+        "free_executor_slots": capacity,
+        "queued_builds": queued,
+        "queue_depth": depth,
         "open_chains": open_chains,
         "parked": parked,
         "max_parked": cap_parked,
         "stalled": stalled,
+        "breaker": breaker,
         "slots": slots,
         "waivers": [w.gripe_id for w in waivers],
         "minted": [],
@@ -812,6 +1076,19 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # own posture (the mint gates fail closed downstream).
     deny = _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
     for c in picks:
+        # gr656970: the candidate read judged ``blocked-by`` at pick
+        # time — a blocker linked between then and the mint still holds
+        # the chain; the read re-runs here, and ``candidates`` skips the
+        # gripe next pass until the blocker closes. The claim re-gates
+        # it too (``executors._common.build_blocked_holds`` follows the
+        # chain's ``related-to`` edge back to the gripe).
+        if open_blocked_by(store, [c.gripe_id]):
+            log.info(
+                "gripe_dispatch: gr%d blocked since the pick — no mint",
+                c.gripe_id,
+            )
+            extra.setdefault("held", []).append(c.gripe_id)
+            continue
         # gr645163: work no builder lane may write — the report asks to
         # write a deny path, or the fix is prod-graph only — skips the
         # chain and files the one coordinator ask with the report
@@ -883,11 +1160,13 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
             log.warning(
                 "gripe_dispatch: comment on gr%d failed", c.gripe_id, exc_info=True
             )
+    enqueue_roots(store, [m["root"] for m in extra["minted"]])
     log.info(
-        "gripe_dispatch: capacity=%d open=%d parked=%d slots=%d minted=%d failed=%d",
+        "gripe_dispatch: capacity=%d open=%d parked=%d queued=%d slots=%d minted=%d failed=%d",
         capacity,
         open_chains,
         parked,
+        queued,
         slots,
         ok,
         failed,
@@ -895,6 +1174,30 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     return BatchResult(
         handler=SERVICE_NAME, claimed=len(picks), ok=ok, failed=failed, extra=extra
     )
+
+
+def _run_breaker(store: Store) -> list[dict[str, Any]]:
+    """Open the one ask per newly tripped lane/host
+    (:func:`precis.plans.lane_breaker.detect`). A blip never stops the
+    pass: it logs and reports nothing."""
+    opened: list[dict[str, Any]] = []
+    try:
+        k = _lane_breaker.breaker_parks(store)
+        for trip in _lane_breaker.detect(store, k):
+            ask = _lane_breaker.open_trip(store, trip, k)
+            opened.append(
+                {
+                    "scope": trip.scope,
+                    "name": trip.name,
+                    "cause": trip.cause,
+                    "jobs": list(trip.jobs),
+                    "lanes": list(trip.lanes),
+                    "ask": ask,
+                }
+            )
+    except Exception:
+        log.warning("gripe_dispatch: breaker pass failed", exc_info=True)
+    return opened
 
 
 def _route_override(store: Store, gripe_id: int) -> bool:

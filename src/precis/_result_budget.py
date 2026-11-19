@@ -123,16 +123,27 @@ def size_cell(n_bytes: int) -> str:
 
 
 def row_size_cell(n_bytes: int) -> str:
-    """``size_cell`` with a byte floor — for fetchable-row listings.
+    """``size_cell`` with a decimal-kB floor — for fetchable-row listings.
 
     ``size_cell`` blanks sub-kB bodies because in a steering column (toc,
     outline, ring) the number only earns its place when it changes the
     choice. A listing row — a links table, a search hit — instead reads a
-    blank as missing data, so sub-kB rows report raw bytes (``830B``)
-    and every row names a size (gr568219: most memories sit under 1 kB
-    and rendered sizeless next to sized gripe rows).
+    blank as missing data, so sub-kB rows still name a size (gr568219:
+    most memories sit under 1 kB and rendered sizeless next to sized
+    gripe rows).
+
+    The cell is decimal kB at one decimal place — the gripe's own
+    arithmetic (gr573411: ``353B`` → ``0.4kB``, ``1006B`` → ``1kB``)
+    reads 1 kB = 1000 B and raw byte counts as too much precision.
+    ``.0`` strips (``8.0kB`` → ``8kB``); the one value that renders
+    blank is the common ``1kB`` default — the ``size [kB] (default
+    1kB)`` column header names it, so a blank still means "about a
+    kilobyte", not missing data.
     """
-    return size_cell(n_bytes) or f"{n_bytes}B"
+    s = f"{n_bytes / 1000:.1f}"
+    if s.endswith(".0"):
+        s = s[:-2]
+    return "" if s == "1" else f"{s}kB"
 
 
 def read_shape(verb: str, args: dict[str, Any]) -> str:

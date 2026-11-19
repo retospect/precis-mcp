@@ -132,7 +132,7 @@ def test_gate_view_absurd_guard_reads_candidate(store: Store) -> None:
     row = next(ln for ln in body.splitlines() if ln.startswith("absurd magnitude"))
     assert "fail" in row
     # a fired precis guard blocks even when the engine records are clean
-    assert "verdict: BLOCKED" in body
+    assert "verdict: FAIL" in body
 
 
 def test_gate_view_makes_no_store_writes(store: Store) -> None:

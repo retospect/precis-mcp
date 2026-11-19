@@ -11,6 +11,10 @@ v2 schema notes:
     ``"STATUS:open"``      → (``"STATUS"``, ``"open"``)  closed-prefix
     ``"pinned"``           → (``"FLAG"``,   ``"pinned"``)  v1-flag-shape
     ``"topic-x"``          → (``"OPEN"``,   ``"topic-x"``) bare word
+    ``"=tier:dream"``      → (``"tier"``,   ``"dream"``)   exact-axis
+                           escape — a stored lowercase/mixed-case
+                           namespace the plain ``ns:value`` spelling
+                           can't reach (it would parse as OPEN/FLAG).
 
 We can filter "ref carries all of these tags" with one IN-subquery
 that joins ``ref_tags``+``tags``, uses tuple-IN on ``(namespace,
@@ -45,6 +49,12 @@ def _parse_tag_string(s: str) -> list[tuple[str, str]]:
     Mirrors :mod:`precis.store._tags_ops`'s canonical mapping:
 
     - ``"PREFIX:value"`` with uppercase prefix → single ``(prefix, value)``
+    - ``"=ns:value"``                        → single ``(ns, value)`` —
+      the exact-axis escape (gr636493): ``=`` forces the closed-pair
+      read for a namespace that isn't all-uppercase, which the plain
+      spelling would expand to the OPEN/FLAG pair below. Spelled by
+      :func:`tag_filter_string` for stored lowercase-axis rows
+      (``tier:dream`` …).
     - bare string ``"workspace"``            → both ``(OPEN, "workspace")``
                                                and ``(FLAG, "workspace")``
 
@@ -55,11 +65,44 @@ def _parse_tag_string(s: str) -> list[tuple[str, str]]:
     and counts *distinct values* (not tag_ids), so the bare tag
     still counts once whether it matched the open or flag row.
     """
-    if ":" in s:
+    if s.startswith("="):
+        ns, sep, v = s[1:].partition(":")
+        if sep and ns and v:
+            return [(ns, v)]
+    elif ":" in s:
         prefix, _, value = s.partition(":")
         if prefix and prefix.isupper():
             return [(prefix, value)]
     return [("OPEN", s), ("FLAG", s)]
+
+
+def tag_filter_string(ns: str, value: str) -> str:
+    """Canonical filter spelling of a stored ``(namespace, value)``
+    row — the inverse of :func:`_parse_tag_string`, used wherever a
+    ``/drive?tag=`` link or tag-filter value is built from a stored
+    tag pair (row chips, autocomplete, ``/tags/refs`` redirects).
+
+    ``OPEN`` rides bare unless its value resembles filter syntax, in
+    which case ``=OPEN:value`` preserves it literally. Otherwise
+    the parse expands to OPEN+FLAG — deliberate:
+    a bare-word filter doesn't care which sentinel row carries it. An
+    uppercase axis spells ``NS:value`` (``FLAG`` included — it
+    parses back to the exact ``(FLAG, value)`` row). A lowercase or
+    mixed-case axis takes the ``=ns:value`` exact escape: the plain
+    ``ns:value`` spelling would parse as the OPEN/FLAG pair and match
+    nothing (gr636493 — ``tier:dream``, ``tier:synthetic-insight``).
+    """
+    if ns == "OPEN":
+        # Stored values can themselves look like filter syntax. Escape
+        # those before polarity splitting or namespace parsing sees them.
+        if value.startswith(("!", "=")) or (
+            ":" in value and value.partition(":")[0].isupper()
+        ):
+            return f"=OPEN:{value}"
+        return value
+    if ns.isupper():
+        return f"{ns}:{value}"
+    return f"={ns}:{value}"
 
 
 def split_tag_polarity(
@@ -372,5 +415,6 @@ __all__ = [
     "refuted_fence",
     "speculative_fence",
     "split_tag_polarity",
+    "tag_filter_string",
     "wiki_fence",
 ]

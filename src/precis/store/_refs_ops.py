@@ -273,6 +273,7 @@ class FacetSpan(NamedTuple):
     max_ref_id: int
     min_created: Any
     max_created: Any
+    aggregates: tuple[tuple[float | None, int], ...] = ()
 
 
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -1036,11 +1037,19 @@ class RefsMixin:
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
         reuse it (gr690614, §Acquire).
+
+        Raises:
+            Conflict: An identifier or twin DOI matches a row whose title
+                conflicts with the requested title. The guard abstains on
+                placeholders and refuses only when both titles have at least
+                four distinct content tokens and share none.
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
+            doi_twins,
+            is_placeholder_title,
             make_cite_key,
             normalize_doi,
         )
@@ -1056,15 +1065,64 @@ class RefsMixin:
             if _val:
                 norm.append((_k, _val))
 
+        def check_title(ref_id: int, held_title: str | None) -> None:
+            # An identifier is strong evidence, but cannot make a corrupt
+            # corpus row the requested work (gr710296). Abstain on sparse
+            # titles and placeholders; refuse only disjoint, substantial
+            # titles, leaving repair to an operator rather than rewriting
+            # the existing paper's body, links or identity here.
+            from precis.utils.title_merge import content_tokens
+
+            if is_placeholder_title(title) or is_placeholder_title(held_title):
+                return
+            wanted = content_tokens(title or "")
+            held = content_tokens(held_title or "")
+            if min(len(wanted), len(held)) >= 4 and wanted.isdisjoint(held):
+                raise Conflict(
+                    f"paper identifier/title conflict on pa{ref_id}: "
+                    f"requested {title!r}; stored {held_title!r}",
+                    next=(
+                        f"inspect get(kind='paper', id='pa{ref_id}') and its "
+                        "identifiers; repair the mismatched identity before retrying"
+                    ),
+                )
+
         def _do(c: Connection) -> tuple[int, bool]:
             for id_kind, id_value in norm:
                 row = c.execute(
-                    "SELECT ref_id FROM ref_identifiers "
-                    "WHERE id_kind = %s AND id_value = %s",
+                    "SELECT r.ref_id, r.title FROM ref_identifiers ri "
+                    "JOIN refs r ON r.ref_id = ri.ref_id "
+                    "WHERE ri.id_kind = %s AND ri.id_value = %s",
                     (id_kind, id_value),
                 ).fetchone()
                 if row is not None:
+                    check_title(int(row[0]), row[1])
                     return int(row[0]), False
+
+            # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
+            # collapses onto the twin's ref and registers the requested
+            # DOI there as a second doi row.
+            for id_kind, id_value in norm:
+                if id_kind != "doi":
+                    continue
+                for twin in doi_twins(id_value):
+                    row = c.execute(
+                        "SELECT pi.ref_id, r.title FROM ref_identifiers pi "
+                        "JOIN refs r ON r.ref_id = pi.ref_id "
+                        "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
+                        "AND r.retired_at IS NULL "
+                        "ORDER BY pi.ref_id LIMIT 1",
+                        (twin,),
+                    ).fetchone()
+                    if row is not None:
+                        check_title(int(row[0]), row[1])
+                        c.execute(
+                            "INSERT INTO ref_identifiers "
+                            "(id_kind, id_value, ref_id, source) "
+                            "VALUES ('doi', %s, %s, %s) ON CONFLICT DO NOTHING",
+                            (id_value, row[0], set_by),
+                        )
+                        return int(row[0]), False
 
             # Title-only fuzzy guard (dup-of-held prevention). With no
             # external identifier to collapse on, a stub for a paper we
@@ -4922,6 +4980,7 @@ class RefsMixin:
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
+        aggs: list[tuple[str, str]] | None = None,
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
@@ -5093,6 +5152,40 @@ class RefsMixin:
                     f"GROUP BY {ordinals} "
                     f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
                 )
+                if aggs:
+                    # A tag join can repeat a ref within one group. Deduplicate
+                    # group membership before aggregating, preserving equal
+                    # numeric values from different refs.
+                    facet_cols = [f"facet_{i}" for i in range(n)]
+                    projected = [
+                        f"{expr} AS {col}"
+                        for expr, col in zip(select_exprs, facet_cols, strict=True)
+                    ]
+                    aggregates: list[str] = []
+                    for i, (fn, path) in enumerate(aggs):
+                        col = f"value_{i}"
+                        projected.append(
+                            "CASE WHEN jsonb_typeof(r.meta #> %s::text[]) = 'number' "
+                            f"THEN (r.meta #>> %s::text[])::float END AS {col}"
+                        )
+                        keys = path.split(".")
+                        select_params.extend((keys, keys))
+                        sql_fn = {
+                            "avg": "AVG",
+                            "sum": "SUM",
+                            "min": "MIN",
+                            "max": "MAX",
+                        }[fn]
+                        aggregates.extend((f"{sql_fn}({col})", f"COUNT({col})"))
+                    sql = (
+                        f"SELECT {', '.join(facet_cols)}, COUNT(*), "
+                        "min(ref_id), max(ref_id), min(created_at), max(created_at), "
+                        f"{', '.join(aggregates)} FROM ("
+                        f"SELECT DISTINCT {', '.join(projected)}, r.ref_id, r.created_at "
+                        f"FROM refs r {' '.join(joins)} WHERE {where}"
+                        f") members GROUP BY {ordinals} "
+                        f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
+                    )
                 # Bind order follows textual %s order: SELECT exprs,
                 # JOIN subqueries, WHERE clauses, then the LIMIT.
                 rows = conn.execute(
@@ -5102,7 +5195,15 @@ class RefsMixin:
                     (
                         tuple(r[:n]),
                         int(r[n]),
-                        FacetSpan(int(r[n + 1]), int(r[n + 2]), r[n + 3], r[n + 4]),
+                        FacetSpan(
+                            int(r[n + 1]),
+                            int(r[n + 2]),
+                            r[n + 3],
+                            r[n + 4],
+                            tuple(
+                                (r[i], int(r[i + 1])) for i in range(n + 5, len(r), 2)
+                            ),
+                        ),
                     )
                     for r in rows
                 ]

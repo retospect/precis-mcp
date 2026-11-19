@@ -256,8 +256,7 @@ def propose_radial_assignment(
 
     For the one shape that dominates here — an
     HV507-class sink under an electrode field, its pads on a ring, every
-    far end a plaza via inside or around that ring (docs/backlog/
-    pcb-ewod-multitile.md ruling 6, "pin swaps make routing trivial") —
+    far end a plaza via inside or around that ring (me692460 ruling 6, "pin swaps make routing trivial") —
     the non-crossing assignment IS known in closed form: sort the pins by
     angle, sort the far ends by angle, and match them in the same cyclic
     order; two chords of a ring cross exactly when their endpoint orders

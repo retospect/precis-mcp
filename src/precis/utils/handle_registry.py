@@ -49,10 +49,10 @@ CODE_LEN = 2
 PLUGIN_GROUP = "precis.handle_codes"
 
 # --- record codes (the addressable persistent-ref kinds) ------------------
-# Authoritative kind list: dispatch.boot() composition root. Providers
-# (web/youtube/wikipedia/semanticscholar/perplexity-*) and stateless tools
-# (calc/time/math/provenance/random) are addressed by URL/query/compute.
-# Private non-ref kinds retain their own store-local addresses.
+# Authoritative kind list: dispatch.boot() composition root. Stateless
+# tools (calc/time/math/provenance/random) are addressed by
+# query/compute. Private non-ref kinds retain their own store-local
+# addresses.
 
 KIND_CODES: dict[str, str] = {
     # corpus / documents
@@ -150,6 +150,23 @@ KIND_CODES: dict[str, str] = {
     # bidirectional string map (a ⇄ b, payload in meta.alias) — a plain
     # numeric ref like profile. ``al`` is alert's, so ``as``.
     "alias": "as",
+    # fetch-cache kinds whose reads persist a refs row + chunks
+    # (gr702974): coded so a note can cite them and their inbound links
+    # show. The handle routes by ref id, never the slug — a wikipedia
+    # slug is derived from the query text, not the article title.
+    "wikipedia": "wp",
+    "semanticscholar": "ss",
+    "chem": "ch",
+    # the remaining stored fetch caches (gr702962): same story — a memory
+    # mention auto-links them, and the edge now shows under view='links'
+    # and the fisheye. ``ws``/``px`` are deliberately avoided (ws2812 /
+    # px4 prose would trip the _memory_shape handle lint); ``wx`` =
+    # websearch, ``rr``/``rz`` = perplexity research / reasoning.
+    "youtube": "yt",
+    "web": "wb",
+    "websearch": "wx",
+    "perplexity-research": "rr",
+    "perplexity-reasoning": "rz",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -228,15 +245,6 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "provenance",
     "random",
     "handle",
-    # web/document providers, addressed by URL or query, not a stored pk
-    "web",
-    "websearch",
-    "perplexity-reasoning",
-    "perplexity-research",
-    "semanticscholar",
-    "wikipedia",
-    "youtube",
-    "chem",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
     # private non-ref records — leN is store-local, never a shared ref code
@@ -322,6 +330,11 @@ def _load_plugin_codes() -> None:
 def _kind_codes() -> dict[str, str]:
     _load_plugin_codes()
     return {**KIND_CODES, **_plugin_kind_codes}
+
+
+def record_kinds() -> frozenset[str]:
+    """Record-addressable kinds, including installed plugin contributions."""
+    return frozenset(_kind_codes())
 
 
 def is_known_kind(kind: str) -> bool:
@@ -449,7 +462,7 @@ def parse(handle: str) -> tuple[str, bool, int] | None:
     if len(base) <= CODE_LEN:
         return None
     code, body = base[:CODE_LEN], base[CODE_LEN:]
-    if code not in _decimal_codes() or not body.isdigit():
+    if code not in _decimal_codes() or not body.isdecimal():
         return None
     kind, is_chunk = _code_to_kind()[code]
     if sel is not None and not (is_chunk and _TABLE_SEL_RE.match(sel)):

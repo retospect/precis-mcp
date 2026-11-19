@@ -22,6 +22,12 @@ edit.
 Stub puts accept caller-supplied authors through the existing byline writer.
 They seed the cite key and populate ``paper_authors`` on a fresh mint; a
 deduplication hit keeps its byline and names the explicit metadata-edit call.
+S2 verification also persists its byline and journal on fresh stubs: the
+stub upsert uses authors for cite keys without writing the byline itself.
+
+DOI status reads use the fetch-status table before acquisition handling.
+An unheld DOI reports unresolved there, while an ordinary DOI get can
+request acquisition.
 
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
@@ -130,7 +136,11 @@ from precis.utils.block_selector import (
 )
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
-from precis.utils.glyph_health import glyph_caveat
+from precis.utils.glyph_health import (
+    glyph_caveat,
+    glyph_suspected,
+    passage_glyph_caveat,
+)
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -775,6 +785,16 @@ class PaperHandler(Handler):
                 # ``next:`` line left off; ``rel``/``of_kind`` filter the
                 # edge set like draft's links view.
                 "cursor",
+                "reason",
+                "relation",
+                "src_kind",
+                "dst_kind",
+                "include_structural",
+                "count",
+                "space",
+                "under",
+                "endpoint",
+                "direction",
                 "rel",
                 "of_kind",
                 # ``view='comments'`` note selectors (gr521094):
@@ -1370,23 +1390,24 @@ class PaperHandler(Handler):
                 "get(kind='paper', id=...) to check its state",
             )
         _uploads.require_uploads_dir()
-        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
-        exp = file_links.parse(token).exp
-        path = f"/files/upload/{ref_id}?t={token}"
         base = (
             vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
         ).rstrip("/")
-        url = f"{base}{path}" if base else path
-        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lines: list[str] = []
         if not base:
-            lines.append(
-                "PRECIS_WEB_BASE_URL is not set — the link below is "
-                "path-only; prepend the precis_web origin to POST to it "
-                "(the operator sets it with `precis secret set "
-                "PRECIS_WEB_BASE_URL` or on /secrets)."
+            raise Unsupported(
+                "PRECIS_WEB_BASE_URL is not set — the deployment's web "
+                "origin is unset, so the upload link would come back "
+                "path-only and nothing could POST to it (gr681313)",
+                next="operator: set the web origin with `precis secret set "
+                "PRECIS_WEB_BASE_URL <origin>` or on /secrets, then retry "
+                f"{example}",
             )
-        lines += [
+        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
+        exp = file_links.parse(token).exp
+        path = f"/files/upload/{ref_id}?t={token}"
+        url = f"{base}{path}"
+        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines: list[str] = [
             f"# {slug} — PDF upload link",
             f"url: {url}",
             f"expires: {expires} (single use — one upload per link)",
@@ -1853,7 +1874,9 @@ class PaperHandler(Handler):
 
         1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:``/
            ``pubmed:``/``pmcid:`` or a bare DOI/arXiv id) and
-           best-effort enrich via S2.
+           best-effort enrich via S2 — a DOI also gets a registration-
+           agency year cross-check, the registry being authoritative
+           for what the DOI names (gr722127).
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
@@ -1924,7 +1947,9 @@ class PaperHandler(Handler):
 
         # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
         # ``year`` arrives as a caller hint (e.g. from put(kind='paper',
-        # year=…)); S2 overrides it when it has one, else the hint stands.
+        # year=…)); S2 overrides it when it has one, else the hint stands —
+        # except for a DOI, where the registration-agency cross-check below
+        # can override S2's year (gr722127).
         stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
@@ -1933,6 +1958,9 @@ class PaperHandler(Handler):
         registry_meta: dict[str, Any] | None = None
         meta: dict[str, Any] | None = None
         s2_down = False
+        # Set when the DOI-registry year cross-check below replaces S2's
+        # year — the value names the registry that vouched (gr722127).
+        year_registry_source: str | None = None
         if id_pair is not None:
             try:
                 meta = _lookup_acquire_metadata(*id_pair)
@@ -1988,6 +2016,34 @@ class PaperHandler(Handler):
                         pair = ("pmcid", f"pmc{pmc_digits}")
                         if pair not in identifiers:
                             identifiers.append(pair)
+                if id_pair[0] == "doi":
+                    # Year cross-check against the DOI's registration
+                    # agency (gr722127): S2's index is a secondary source
+                    # and its year can be wrong — S2 says 1999 for
+                    # Feynman's 1982 "Simulating physics with computers"
+                    # (10.1007/BF02650179), minting the cite key
+                    # ``feynman99``. The registry is authoritative for
+                    # what the DOI names; when it vouches for the same
+                    # title its year wins. A registry fault or a
+                    # non-matching title keeps S2's year.
+                    try:
+                        crosscheck = _lookup_doi_registry(id_pair[1])
+                    except Exception:
+                        crosscheck = None
+                    if crosscheck is not None:
+                        from precis.ingest._text_norm import best_jaccard
+
+                        score, _, _ = best_jaccard(
+                            str(meta.get("title") or ""),
+                            str(crosscheck.get("title") or ""),
+                        )
+                        if score >= _DOI_EDIT_TITLE_MISMATCH_THRESHOLD:
+                            reg_year = crosscheck.get("year")
+                            if isinstance(reg_year, int):
+                                year = reg_year
+                                year_registry_source = str(
+                                    crosscheck.get("source") or ""
+                                )
             elif resolver_err is not None:
                 # The resolver could not answer at all (S2 outage, 429
                 # storm, broken client) — mint anyway, marked unverified.
@@ -2077,6 +2133,22 @@ class PaperHandler(Handler):
                 if pair not in identifiers:
                     identifiers.append(pair)
 
+        twin_doi_of: int | None = None
+        for _k, _v in identifiers:
+            if _k != "doi":
+                continue
+            from precis.identity import doi_twins
+
+            if self.store.find_ref_by_identifier("doi", _v, kind="paper") is not None:
+                break
+            for _twin in doi_twins(_v):
+                twin_doi_of = self.store.find_ref_by_identifier(
+                    "doi", _twin, kind="paper"
+                )
+                if twin_doi_of is not None:
+                    break
+            break
+
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
                 identifiers=identifiers,
@@ -2121,6 +2193,26 @@ class PaperHandler(Handler):
                     conn.execute(
                         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                         (Jsonb(patch), ref_id),
+                    )
+                if meta:
+                    # The upsert only uses authors to choose the cite key.
+                    # Persist the verified S2 byline before workers can fetch
+                    # the body and take this paper out of the stub queue.
+                    s2_patch: dict[str, Any] = {}
+                    journal = meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        s2_patch["journal"] = journal.strip()
+                    if year_registry_source:
+                        # The registry's year replaced S2's in the mint
+                        # (gr722127) — leave the provenance on the stub.
+                        s2_patch["acquire_year_registry"] = year_registry_source
+                    self.store.update_paper_fields(
+                        ref_id,
+                        authors=meta.get("authors") or None,
+                        meta_patch=s2_patch,
+                        source="acquire:s2",
+                        authors_source="s2",
+                        conn=conn,
                     )
                 if registry_meta is not None:
                     # A registry-resolved stub is verified — carry the
@@ -2227,6 +2319,8 @@ class PaperHandler(Handler):
             )
             s2_state = "S2 unavailable" if s2_down else "S2 has no record"
             parts.append(f"(identifier verified via {reg_label} — {s2_state})")
+        if twin_doi_of is not None and not created and twin_doi_of == ref_id:
+            parts.append(f"(twin DOI of pa{ref_id}, nothing minted)")
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:
@@ -2411,6 +2505,13 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         if isinstance(id, list):
             return self._get_batch(id, view=view, args=args)
+        if (
+            self.spec.kind == "paper"
+            and _normalise_view(view) == "status"
+            and detect_identifier_scheme(str(id).strip().partition("~")[0]) == "doi"
+        ):
+            # Check availability before the DOI miss can request acquisition.
+            return self._fetch_status_view([str(id)])
         try:
             raw_id = _maybe_resolve_doi(self.store, str(id))
         except NotFound:
@@ -2815,6 +2916,7 @@ class PaperHandler(Handler):
         # (gr500643, ``days=``) are paper-only ingest-state reads.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         since: str | None = None,
         until: str | None = None,
         ids: list[str] | None = None,
@@ -2904,6 +3006,9 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        from precis.handlers._numeric_ref import _require_count_agg_view
+
+        _require_count_agg_view(agg, view)
         q = fold_match_all_q(q)
         linked_from_kind = (
             self._link_scope_kind(linked_from, "linked_from")
@@ -3129,6 +3234,7 @@ class PaperHandler(Handler):
                     q=q,
                     tags=tags,
                     group_by=group_by,
+                    agg=agg,
                     since=bf["since"],
                     until=bf["until"],
                     year_from=bf["year_from"],
@@ -4831,6 +4937,7 @@ class PaperHandler(Handler):
         q: str | None,
         tags: list[str] | None,
         group_by: Any,
+        agg: str | None = None,
         since: str | datetime | None,
         until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
@@ -4869,7 +4976,9 @@ class PaperHandler(Handler):
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -4877,6 +4986,7 @@ class PaperHandler(Handler):
 
         kind = self.spec.kind
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
         normalized = Tag.normalize_filter(tags, kind=kind) if tags else None
@@ -4891,6 +5001,7 @@ class PaperHandler(Handler):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -4933,9 +5044,11 @@ class PaperHandler(Handler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n, _span in groups:
+            for vals, n, span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
-                parts.append(f"  {label}: {n}")
+                parts.append(
+                    f"  {label}: {n}" + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
             if any(ft == "fulltext" for ft, _k in facets):
@@ -9800,27 +9913,62 @@ class PaperHandler(Handler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open."""
+        """Apply the same tag edits to one or more papers atomically.
+
+        ``id`` accepts a single paper address or a nonempty list with no size
+        cap. Resolve every address before writing so a missing paper aborts
+        the whole call. Collapse aliases by ref id so each paper gets one
+        edit and one optional ``agent/retagged`` audit event. The edits and
+        events share one transaction.
+        """
         require_tag_ops("paper", add, remove)
-        slug, ref_id = self._resolve_paper_slug(id)
-        n_added, n_removed = apply_tag_ops(
-            self.store, "paper", ref_id, tags=add, untags=remove
-        )
-        return Response(
-            body=format_link_tag_ack(
-                kind=self.spec.kind,
-                ref_label=slug,
-                n_links_added=0,
-                n_links_removed=0,
-                n_tags_added=n_added,
-                n_tags_removed=n_removed,
+        ids = id if isinstance(id, list) else [id]
+        if not ids:
+            raise BadInput(
+                "id=[] is empty — pass at least one paper",
+                next="pass a paper slug, a pa handle, or a list of paper ids",
             )
-        )
+        papers: dict[int, str] = {}
+        for ident in ids:
+            slug, ref_id = self._resolve_paper_slug(ident)
+            papers.setdefault(ref_id, slug)
+
+        receipts: list[str] = []
+        audit_reason = (reason or "").strip()
+        with self.store.tx() as conn:
+            for ref_id, slug in papers.items():
+                n_added, n_removed = apply_tag_ops(
+                    self.store, "paper", ref_id, tags=add, untags=remove, conn=conn
+                )
+                if audit_reason:
+                    self.store.append_event(
+                        ref_id,
+                        source="agent",
+                        event="retagged",
+                        payload={"reason": audit_reason},
+                        conn=conn,
+                    )
+                receipts.append(
+                    format_link_tag_ack(
+                        kind=self.spec.kind,
+                        ref_label=slug,
+                        n_links_added=0,
+                        n_links_removed=0,
+                        n_tags_added=n_added,
+                        n_tags_removed=n_removed,
+                    )
+                )
+        if isinstance(id, list):
+            receipts.insert(
+                0, f"tagged {len(papers)} {self.spec.kind} refs in one transaction"
+            )
+        return Response(body="\n".join(receipts))
 
     def link(  # type: ignore[override]
         self,
@@ -10591,6 +10739,16 @@ class PaperHandler(Handler):
             return Response(body="\n".join(lines))
 
         if view == "links":
+            if (args or {}).get("reason") == "missing":
+                from precis.handlers._links_missing_reason import render_missing_reasons
+
+                return render_missing_reasons(
+                    self.store,
+                    kind=ref.kind,
+                    id_arg=ref.public_id,
+                    focus_ref_id=ref.id,
+                    **(args or {}),
+                )
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
             # ``cited-by`` edges on a paper (214 inbound related-to on
@@ -11094,6 +11252,7 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         pointers = self._figure_pointer_lines(ref, blocks)
+        has_glyph_caveat = glyph_suspected(ref.meta)
         block_spans: list[tuple[int, int]] = []  # (ord, end line index)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
@@ -11102,6 +11261,11 @@ class PaperHandler(Handler):
             lines.append(
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
+            if b.ord >= 0 and not has_glyph_caveat:
+                caveat = passage_glyph_caveat(b.text)
+                if caveat:
+                    lines.append(_glyph_damage_banner(caveat))
+                    lines.append("")
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
@@ -11850,6 +12014,10 @@ def _retraction_banner(ref: Ref) -> str | None:
     return " ".join(parts)
 
 
+def _glyph_damage_banner(caveat: str) -> str:
+    return f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}"
+
+
 def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
@@ -11863,7 +12031,7 @@ def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
-        lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+        lines.append(_glyph_damage_banner(caveat))
     one_page = (
         store.is_one_page_preview(ref) if store is not None else ref.is_one_page_pdf
     )

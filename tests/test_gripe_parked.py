@@ -56,6 +56,7 @@ def test_shorthand_parses_to_types(hub: Any) -> None:
     dep = _gripe(hub)
     assert until_shorthand(f"gr{dep}") == {"type": "ref_done", "value": f"gr{dep}"}
     assert until_shorthand("td7") == {"type": "ref_done", "value": "td7"}
+    assert until_shorthand("me42") == {"type": "spec_landed", "value": "me42"}
     assert until_shorthand("a1b2c3d4e") == {
         "type": "sha_in_prod",
         "value": "a1b2c3d4e",
@@ -65,6 +66,152 @@ def test_shorthand_parses_to_types(hub: Any) -> None:
         "type": "text",
         "value": "when the fleet is green",
     }
+
+
+def _todo(hub: Any, text: str) -> int:
+    from precis.handlers.todo import TodoHandler
+    from tests.conftest import id_of
+
+    return id_of(TodoHandler(hub=hub).put(text=text).body)
+
+
+def _mem(hub: Any, title: str) -> int:
+    from precis.cli.memory import SPACE_TAG
+    from precis.handlers.memory import MemoryHandler
+    from tests.conftest import id_of
+
+    return id_of(
+        MemoryHandler(hub=hub).put(text="spec body", title=title, tags=[SPACE_TAG]).body
+    )
+
+
+def _done(store: Store, ref_id: int) -> None:
+    _status_to(store, ref_id, "done")
+
+
+def _status_to(store: Store, ref_id: int, status: str) -> None:
+    with store.tx() as conn:
+        store.add_tag(
+            ref_id,
+            Tag.closed("STATUS", status),
+            set_by="agent",
+            replace_prefix=True,
+            conn=conn,
+        )
+
+
+def test_spec_landed_plan_todo_handle(hub: Any) -> None:
+    """gr696034: a spec_landed value may name the plan todo directly."""
+    store = hub.store
+    todo = _todo(hub, "Slice todo.")
+    gid = _gripe(hub)
+    _park(hub, gid, {"type": "spec_landed", "value": f"td{todo}"})
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [] and res.waiting == 1
+    assert _status(store, gid) == "parked"
+    _done(store, todo)
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [gid] and _status(store, gid) == "open"
+
+
+def test_spec_landed_spec_root_resolves_plan_of(hub: Any) -> None:
+    """gr696034: a spec root me<N> resolves through its plan-of link —
+    the wake pass evaluates 'landed' as the plan todo reaching
+    STATUS:done, straight from the DB."""
+    store = hub.store
+    spec = _mem(hub, "Spec gamma")
+    plan = _todo(hub, "Gamma plan root.")
+    store.add_link(src_ref_id=plan, dst_ref_id=spec, relation="plan-of")
+    gid = _gripe(hub)
+    _park(hub, gid, f"me{spec}")  # shorthand maps me<N> → spec_landed
+    ref = store.get_ref(kind="gripe", id=gid)
+    assert (ref.meta or {})["until"]["type"] == "spec_landed"
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [] and res.waiting == 1
+    _done(store, plan)
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [gid] and _status(store, gid) == "open"
+    comments = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments[-1].startswith(f"unparked: spec_landed me{spec} met")
+
+
+def test_spec_landed_terminal_but_not_done_keeps_waiting(hub: Any) -> None:
+    """``won't-do`` and ``auto-timeout`` are terminal for dispatch but are
+    not a landing — the gripe keeps waiting for STATUS:done (review
+    td706868)."""
+    store = hub.store
+    todo = _todo(hub, "Slice todo.")
+    gid = _gripe(hub)
+    _park(hub, gid, {"type": "spec_landed", "value": f"td{todo}"})
+    for status in ("won't-do", "auto-timeout"):
+        _status_to(store, todo, status)
+        res = gp.run_gripe_parked_pass(store)
+        assert res.woke == [] and res.waiting == 1, status
+        assert _status(store, gid) == "parked"
+    _done(store, todo)
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [gid] and _status(store, gid) == "open"
+
+
+def test_spec_landed_spec_root_without_plan_waits(hub: Any) -> None:
+    """A me<N> with no plan-of todo is not an error — nothing has been
+    planned yet, so the gripe keeps waiting."""
+    store = hub.store
+    spec = _mem(hub, "Spec orphan")
+    gid = _gripe(hub)
+    _park(hub, gid, {"type": "spec_landed", "value": f"me{spec}"})
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [] and res.errors == 0 and res.waiting == 1
+    assert _status(store, gid) == "parked"
+
+
+def test_spec_landed_legacy_repo_path_wakes(hub: Any) -> None:
+    """A value parked before gr696034 named a docs/backlog path; the
+    files were deleted in the transfer landing commit, which the old
+    contract ("ready or gone") reads as met — the pass wakes it rather
+    than erroring on an unparseable value forever."""
+    store = hub.store
+    gid = _gripe(hub)
+    _park(hub, gid, {"type": "date", "value": "2999-01-01"})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set("
+            "jsonb_set(meta, '{until,type}', %s::jsonb), "
+            "'{until,value}', %s::jsonb) "
+            "WHERE kind = 'gripe' AND ref_id = %s",
+            ('"spec_landed"', '"docs/backlog/old-spec.md"', gid),
+        )
+    res = gp.run_gripe_parked_pass(store)
+    assert res.woke == [gid] and res.errors == 0
+    assert _status(store, gid) == "open"
+
+
+def test_spec_landed_refuses_non_spec_handles(hub: Any) -> None:
+    gid = _gripe(hub)
+    h = GripeHandler(hub=hub)
+    with pytest.raises(BadInput, match="does not exist"):
+        h.tag(
+            id=gid,
+            add=["STATUS:parked"],
+            meta={"until": {"type": "spec_landed", "value": "me424242"}},
+        )
+    with pytest.raises(BadInput, match="gripe handle"):
+        h.tag(
+            id=gid,
+            add=["STATUS:parked"],
+            meta={"until": {"type": "spec_landed", "value": f"gr{gid}"}},
+        )
+    with pytest.raises(BadInput, match="does not exist"):
+        h.tag(
+            id=gid,
+            add=["STATUS:parked"],
+            meta={"until": {"type": "spec_landed", "value": "td424242"}},
+        )
+    assert _status(hub.store, gid) == "open"
 
 
 def test_park_stamps_meta_until_and_unpark_clears(hub: Any) -> None:

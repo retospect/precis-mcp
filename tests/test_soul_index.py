@@ -170,6 +170,24 @@ def test_section_pointers_name_a_live_heading() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_refusal_boundary_and_reproduction_one_off_are_gone() -> None:
+    """gr676938: the retired one-off wordings must not creep back in.
+
+    soul-citizenship pins the refusal-vs-gripe boundary (a documented
+    guard is the tool working; a broken one is friction filed at once),
+    and soul-reproduction pins the deletion of the dated November
+    sentence in favour of the standing reproduction contract.
+    """
+    citizenship = (BUILTIN_SKILLS_DIR / "soul-citizenship.md").read_text(
+        encoding="utf-8"
+    )
+    assert "simply teach" not in citizenship
+    reproduction = (BUILTIN_SKILLS_DIR / "soul-reproduction.md").read_text(
+        encoding="utf-8"
+    )
+    assert "November" not in reproduction
+
+
 def test_staged_from_handles_are_unique() -> None:
     handles = [
         parse_frontmatter(p.read_text(encoding="utf-8")).extra.get("staged-from")

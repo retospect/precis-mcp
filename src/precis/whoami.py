@@ -118,8 +118,20 @@ def render(store: Store | None) -> str:
     owner = current_principal()
     if owner is None or store is None:
         lines.append("user: (anonymous — no authenticated account on this session)")
-        lines.append("credential: shared server credential, not a personal session")
-        lines.append("permission: shared-credential scope (install / slice / agent)")
+        bound = write_principal.current()
+        if bound.startswith("cap:"):
+            # A capability token names a consumer, not a person — the
+            # bound write principal is the only stamp whoami can see.
+            lines.append(
+                f"credential: client capability token {bound.removeprefix('cap:')}"
+                " — a consumer, not a person"
+            )
+            lines.append("permission: the token's own kinds/verbs allow-list")
+        else:
+            lines.append("credential: shared server credential, not a personal session")
+            lines.append(
+                "permission: shared-credential scope (install / slice / agent)"
+            )
     else:
         lines.append(_user_line(store, owner.user_id))
         lines.extend(_credential_lines(store, owner))

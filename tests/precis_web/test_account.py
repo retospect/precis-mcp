@@ -144,7 +144,7 @@ def _client(store: FakeStore, **cfg_kw) -> TestClient:
 @pytest.fixture(autouse=True)
 def _fake_token_listing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Legacy page tests fake roster writes; credential tests use real SQL."""
-    from precis.mcp_identity import list_user_tokens
+    from precis.mcp_identity import list_capability_tokens, list_user_tokens
     from precis_web.routes import account
 
     monkeypatch.setattr(
@@ -152,6 +152,15 @@ def _fake_token_listing(monkeypatch: pytest.MonkeyPatch) -> None:
         "list_user_tokens",
         lambda store, user_id: (
             [] if isinstance(store, FakeStore) else list_user_tokens(store, user_id)
+        ),
+    )
+    monkeypatch.setattr(
+        account,
+        "list_capability_tokens",
+        lambda store, user_id: (
+            []
+            if isinstance(store, FakeStore)
+            else list_capability_tokens(store, user_id)
         ),
     )
 

@@ -416,6 +416,16 @@ fetches a live page through the `web` cache — vendor pricing, changelogs,
 announcements — serves-linked, rendered next tick), `proposals` /
 `reruns` (sim lanes), `dialectic_ops` + `ledger_ops` (structure).
 
+## Non-materials progress — `commits`
+
+An operational quest (a compute scout, say) has deliverables that are not
+structures. Its tick output accepts an optional `commits` list —
+`{"kind", "text", "ref"?}` with `kind` one of `ask` (queued for a human),
+`account` (a row created disabled) or `lead-ruled-out` (`text` carries the
+reason). Each lands on the logbook (`decision` / `dead-end`, stamped
+`meta.commit_kind`) as real forward motion; no slab/structure `proposal`
+is needed. Malformed entries are dropped with one observation.
+
 ## Directions — where attempts and ideas live
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
@@ -459,7 +469,7 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place; refuted per the record-a-rejection workflow — pending gr664308 (lands in `precis-nanopub-help`/`precis-finding-help`); until then: `retracts`/`superseded-by`-link the hypothesis to the negative ruling and stamp `STATUS:refuted` on it, so the do-not-repropose ledger and the gap list close it |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place. To record a rejection, link the hypothesis to the negative ruling with `retracted-by` or `superseded-by` and stamp the hypothesis `STATUS:refuted`. See "Record a rejection" in [[precis-nanopub-help]]. |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
 
 ## Directions — state rides `STATUS`, not tags

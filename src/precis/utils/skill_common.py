@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Final
 
-from precis.utils.handle_registry import code_for_kind, is_known_kind
+from precis.utils.handle_registry import code_for_kind, is_known_kind, parse
 
 #: Defined flavours, per decision 7. The frontmatter field
 #: ``flavor: <value>`` is emitted as a ``FLAVOR:<value>`` tag (uppercase
@@ -192,6 +192,9 @@ class SkillFrontmatter:
     #: queryable. Empty tuple when absent (the common case).
     governs: tuple[str, ...] = ()
 
+    #: Hidden provenance handles; visible sections state rules without history.
+    rulings: tuple[str, ...] = ()
+
     #: Subject family (``family: se``) - the grouping axis behind
     #: ``family=`` on skill search/toc. ``None`` = absent: the family
     #: defaults to the slug's name-prefix stem (:func:`skill_family`).
@@ -248,6 +251,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "kinds",
         "governs",
+        "rulings",
         "family",
         "parent",
         "scope",
@@ -388,6 +392,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             "kinds",
             "requires",
             "governs",
+            "rulings",
         }
         if key in list_keys and val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
@@ -476,6 +481,18 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         fields_in["governs"] = ()
     elif isinstance(gv, str):
         fields_in["governs"] = (gv,) if gv else ()
+
+    rulings = fields_in.get("rulings") or ()
+    if isinstance(rulings, str):
+        rulings = (rulings,)
+    assert isinstance(rulings, tuple)
+    for handle in rulings:
+        parsed = parse(handle)
+        if parsed is None or parsed[0] not in {"memory", "gripe", "todo"} or parsed[1]:
+            raise FrontmatterError(
+                f"rulings: {handle!r} must be a memory/gripe/todo handle"
+            )
+    fields_in["rulings"] = rulings
 
     # fields_in is dict[str, object] (frontmatter is parsed dynamically);
     # unpacking it into SkillFrontmatter's typed fields can't be checked

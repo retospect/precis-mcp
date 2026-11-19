@@ -1258,3 +1258,23 @@ def test_delete_without_id_names_search_then_delete(handler: TodoHandler) -> Non
         handler.delete()
     assert exc.value.next is not None
     assert "delete(kind='todo', id=" in str(exc.value.next)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_search_ids_filters_to_listed_todos(handler: TodoHandler, nested: bool) -> None:
+    first = handler.put(text="selected alpha", tags=["context:work"]).ref_id
+    second = handler.put(text="selected beta").ref_id
+    other = handler.put(text="unselected", tags=["context:work"]).ref_id
+    assert first is not None and second is not None and other is not None
+    selected: list[str | int] = [f"td{first}", second]
+    kwargs: dict[str, Any] = (
+        {"args": {"ids": selected}} if nested else {"ids": selected}
+    )
+    out = handler.search(tags=["context:work"], **kwargs)
+    assert "selected alpha" in out.body
+    assert "selected beta" not in out.body
+    assert "unselected" not in out.body
+    narrowed = handler.search(ids=selected, include_ref_ids=[second, other])
+    assert "selected beta" in narrowed.body
+    assert "selected alpha" not in narrowed.body
+    assert "unselected" not in narrowed.body

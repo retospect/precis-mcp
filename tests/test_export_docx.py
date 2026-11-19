@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -188,10 +189,14 @@ def test_docx_embeds_figure_image(
     hub.live_store.drafts.link_figure_canvas(fig.chunk_id, canvas.id)
 
     out = tmp_path / "d1.docx"
-    export_docx(hub.live_store, ref, target_path=out)
+    res = export_docx(hub.live_store, ref, target_path=out)
 
     doc = docx.Document(str(out))
     assert len(doc.inline_shapes) == 1  # the rasterised canvas embedded
+    # alt text from the caption; a vector source the exporter rasterised is
+    # exempt from the resolution check (gr725249)
+    assert doc.inline_shapes[0]._inline.docPr.get("descr") == "Fig 1. A widget."
+    assert not any("dpi" in w for w in res.warnings)
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Fig 1. A widget." in text  # caption
 
@@ -948,11 +953,25 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     assert [c.text for c in t.rows[0].cells] == ["ID", "Title"]
     assert [c.text for c in t.rows[1].cells] == ["I1", "alpha"]
     assert t.rows[0].cells[0].paragraphs[0].runs[0].bold  # header bold
+    # only the header row repeats on each page (gr725249)
+    assert [bool(r._tr.xpath("w:trPr/w:tblHeader")) for r in t.rows] == [
+        True,
+        False,
+        False,
+    ]
     # caption renders auto-numbered, like a figure's "Figure N:" (gr592852);
     # pipe markdown not dumped
     paras = [p.text for p in doc.paragraphs]
     assert "Table 1: Issue register" in paras
     assert not any("| ID | Title |" in p for p in paras)
+    # the title is styled, not directly formatted (gr725239)
+    cap = next(p for p in doc.paragraphs if p.text == "Table 1: Issue register")
+    assert cap.style.name == "Table Caption"
+    assert cap.style.base_style.name == "Caption"
+    assert cap.runs[0].style.name == "Caption Label"
+    assert all(r.bold is None for r in cap.runs)
+    assert cap.style.font.bold is True
+    assert cap.style.paragraph_format.keep_with_next is True
 
 
 def test_table_numbers_in_document_order_and_cross_reference(
@@ -1680,6 +1699,7 @@ def test_si_cite_numbers_as_parent_with_si_note(monkeypatch) -> None:
     ctx = _si_docx_ctx(monkeypatch, with_parent=True)
     para = docx.Document().add_paragraph()
     dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
     assert ctx.cited == ["parent24"]
     assert para.text == "[1] (SI)"
 
@@ -1708,6 +1728,7 @@ def test_si_mark_survives_after_plain_mark_of_same_parent(monkeypatch) -> None:
     dx._cite("parent24", ctx, para)
     dx._cite("parent24si", ctx, para)  # same parent, SI flag differs
     dx._cite("parent24si", ctx, para)  # identical consecutive -> collapses
+    dx._flush_cites(ctx, para)
     assert para.text == "[1][1] (SI)"
 
 
@@ -1728,6 +1749,7 @@ def test_si_mark_separates_a_directly_adjacent_cite(monkeypatch) -> None:
     ctx2 = _si_docx_ctx(monkeypatch, with_parent=True)
     para2 = docx.Document().add_paragraph()
     dx._cite("parent24si", ctx2, para2)
+    dx._flush_cites(ctx2, para2)
     para2.add_run(" then ")
     dx._cite("parent24", ctx2, para2)
     dx._flush_cites(ctx2, para2)
@@ -1869,6 +1891,7 @@ def test_si_cite_via_alias_shares_the_parents_number(monkeypatch) -> None:
     dx._flush_cites(ctx, para)
     para.add_run(" and ")
     dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
     assert ctx.cited == ["parent24"]
     assert para.text == "[1] and [1] (SI)"
 
@@ -2114,6 +2137,7 @@ def test_export_numbers_headings_and_resolves_crossrefs(
     h1_match = re.search(r"dc\d+", h1.body)
     assert h1_match is not None
     h1_dc = h1_match.group(0)
+    draft.put(id="dxr", chunk_kind="heading", text="Methods", at={"last": True})
     draft.put(
         id="dxr",
         chunk_kind="paragraph",
@@ -2224,8 +2248,11 @@ def test_abbrev_followed_by_subscripted_index_keeps_the_subscript() -> None:
 def test_figure_captions_carry_figure_n_label(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    """Captions open with a bold "Figure N:" in reading order, and a bare
-    [dc<id>] cross-ref to the second figure prints the same number."""
+    """Captions open with "Figure N:" in reading order, and a bare
+    [dc<id>] cross-ref to the second figure prints the same number. The
+    caption's look comes from Word styles alone (gr725239): the paragraph is
+    ``Caption``, the label run ``Caption Label``, and no run carries direct
+    bold or italic, so editing the style in Word restyles every caption."""
     pid = _new_draft_project(hub)
     draft.put(id="dfig", title="T", project=pid)
     ref = hub.live_store.get_ref(kind="draft", id="dfig")
@@ -2255,13 +2282,23 @@ def test_figure_captions_carry_figure_n_label(
     )
     out = tmp_path / "dfig.docx"
     export_docx(hub.live_store, ref, target_path=out)
-    paras = docx.Document(str(out)).paragraphs
+    doc = docx.Document(str(out))
+    paras = doc.paragraphs
     texts = [p.text for p in paras]
     assert "Figure 1: First widget." in texts
     assert "Figure 2: Second widget." in texts
     assert "As in fig. 2." in texts
     cap = next(p for p in paras if p.text.startswith("Figure 1:"))
-    assert cap.runs[0].bold and cap.runs[1].italic and not cap.runs[0].italic
+    assert cap.style.name == "Caption"
+    assert cap.alignment is None
+    assert cap.runs[0].style.name == "Caption Label"
+    assert all(r.bold is None and r.italic is None for r in cap.runs)
+    caption_style = doc.styles["Caption"]
+    assert caption_style.font.italic is True and caption_style.font.bold is False
+    assert caption_style.font.name == "Times New Roman"
+    label_style = doc.styles["Caption Label"]
+    assert label_style.font.bold is True and label_style.font.italic is False
+    assert doc.styles["Figure"].paragraph_format.keep_with_next is True
 
 
 def test_bib_markup_runs_convert_html_and_math_to_styles() -> None:
@@ -2394,11 +2431,19 @@ def test_nested_layout_numbers_sections_from_one(
     scope_m = re.search(r"dc\d+", scope.body)
     assert scope_m is not None
     scope_h = scope_m.group(0)
+    next_sec = draft.put(
+        id="dnest",
+        chunk_kind="heading",
+        text="Next",
+        at={"into": title_dc, "last": True},
+    )
+    next_m = re.search(r"dc\d+", next_sec.body)
+    assert next_m is not None
     draft.put(
         id="dnest",
         chunk_kind="paragraph",
         text=f"See [{scope_h}].",
-        at={"into": scope_h, "last": True},
+        at={"into": next_m.group(0), "last": True},
     )
     out = tmp_path / "dnest.docx"
     export_docx(hub.live_store, ref, target_path=out)
@@ -2408,6 +2453,81 @@ def test_nested_layout_numbers_sections_from_one(
     assert "See section 1.1." in texts
     head = next(p for p in paras if p.text == "1.1 Scope")
     assert head.style.name == "Heading 2"
+
+
+def test_crossref_into_own_section_prints_above_or_below(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr725243: a ``[dc]`` into the citing chunk's own section or an
+    ancestor prints "above" / "below"; other sections keep "section N"."""
+    import re
+
+    def handle(resp) -> str:
+        m = re.search(r"dc\d+", resp.body)
+        assert m is not None
+        return m.group(0)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dabove", title="Own section", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dabove")
+    assert ref is not None
+    title_dc = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    intro = handle(
+        draft.put(
+            id="dabove",
+            chunk_kind="heading",
+            text="Introduction",
+            at={"into": title_dc, "last": True},
+        )
+    )
+    setup = handle(
+        draft.put(
+            id="dabove",
+            chunk_kind="paragraph",
+            text="The setup.",
+            at={"into": intro, "last": True},
+        )
+    )
+    scope = handle(
+        draft.put(
+            id="dabove",
+            chunk_kind="heading",
+            text="Scope",
+            at={"into": intro, "last": True},
+        )
+    )
+    later = handle(
+        draft.put(
+            id="dabove",
+            chunk_kind="paragraph",
+            text="The later claim.",
+            at={"into": scope, "last": True},
+        )
+    )
+    other = handle(
+        draft.put(
+            id="dabove",
+            chunk_kind="heading",
+            text="Other",
+            at={"into": title_dc, "last": True},
+        )
+    )
+    draft.put(
+        id="dabove",
+        chunk_kind="paragraph",
+        text=(
+            f"(see [{setup}]) and (see [{later}]). [{setup}] is the setup;"
+            f" [{other}] is elsewhere."
+        ),
+        at={"into": scope, "first": True},
+    )
+    out = tmp_path / "dabove.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    texts = [p.text for p in docx.Document(str(out)).paragraphs]
+    assert (
+        "(see above) and (see below). Above is the setup; section 2 is elsewhere."
+        in texts
+    )
 
 
 def test_endnote_field_record_quality(
@@ -2646,6 +2766,88 @@ def test_endnote_si_cite_carries_suffix(monkeypatch) -> None:
     assert "[1] (SI)" in texts
 
 
+def _si_next_to_plain_ctx(monkeypatch, *, endnote: bool):
+    """gr725246: the SI parent is cited first (number 1), ``other14`` second
+    (number 2); the paragraph then cites ``other14`` and the SI record back
+    to back."""
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    ctx.store._refs[("paper", "other14")] = SimpleNamespace(
+        id=3, slug="other14", kind="paper", pdf_role=None
+    )
+    ctx.endnote = endnote
+    ctx.cite_number("parent24")
+    ctx.cite_number("other14")
+    monkeypatch.setattr(
+        dx,
+        "_resolve_source",
+        lambda _s, slug: {
+            "rec_number": 1 if slug == "parent24" else 2,
+            "title": slug,
+            "authors": ["Doe, J."],
+            "year": 2024,
+            "slug": slug,
+        },
+    )
+    return ctx
+
+
+def test_si_cite_next_to_plain_cite_is_one_group(monkeypatch) -> None:
+    """gr725246: ``[14][9] (SI)`` becomes one group, the SI mark on its own
+    number, ascending: ``[1 (SI), 2]``."""
+    import docx as _docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_next_to_plain_ctx(monkeypatch, endnote=False)
+    para = _docx.Document().add_paragraph()
+    dx._cite("other14", ctx, para)
+    dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
+    assert para.text == "[1 (SI), 2]"
+
+
+def test_endnote_si_cite_next_to_plain_cite_is_one_field(monkeypatch) -> None:
+    """gr725246: EndNote mode: ONE ``ADDIN EN.CITE`` field, two ``<Cite>``
+    elements, ``<Suffix> (SI)</Suffix>`` on the SI one only."""
+    import docx as _docx
+    from lxml import etree
+
+    from precis.export import docx as dx
+
+    ctx = _si_next_to_plain_ctx(monkeypatch, endnote=True)
+    para = _docx.Document().add_paragraph()
+    dx._cite("other14", ctx, para)
+    dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    instrs = [e.text or "" for e in para._p.iter(w + "instrText")]
+    assert len(instrs) == 1
+    payload = instrs[0].strip()[len("ADDIN EN.CITE ") :]
+    cites = list(etree.fromstring(payload.encode("utf-8")))
+    assert [c.findtext("Suffix") for c in cites] == [" (SI)", None]
+    assert [c.findtext("DisplayText") for c in cites] == ["[1] (SI)", "[2]"]
+    assert [e.text for e in para._p.iter(w + "t")] == ["[1 (SI), 2]"]
+
+
+def test_merged_cite_numbers_si_keeps_mark_on_its_number() -> None:
+    """gr725246: ascending, the SI mark on its own number, ranges only
+    among plain numbers."""
+    from precis.export._cite_ids import merged_cite_numbers_si
+
+    assert merged_cite_numbers_si([(14, False), (9, True)]) == "[9 (SI), 14]"
+    assert (
+        merged_cite_numbers_si([(1, False), (2, False), (3, False), (4, True)])
+        == "[1\u20133, 4 (SI)]"
+    )
+    assert merged_cite_numbers_si([(1, False), (2, True), (3, False)]) == (
+        "[1, 2 (SI), 3]"
+    )
+
+
 def test_si_cite_plain_mode_keeps_si_note(monkeypatch) -> None:
     import docx as _docx
 
@@ -2655,6 +2857,7 @@ def test_si_cite_plain_mode_keeps_si_note(monkeypatch) -> None:
     assert not ctx.endnote
     para = _docx.Document().add_paragraph()
     dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
     assert para.text == "[1] (SI)"
 
 
@@ -2795,3 +2998,244 @@ def test_docx_back_matter_follows_shared_constant(
     )
     heads = _back_matter_headings(draft, hub, tmp_path)
     assert heads.index("Acronyms") < heads.index("References")
+
+
+# ── gr725240: superscript minus ────────────────────────────────────────
+
+
+def test_script_minus_is_u2212_before_a_digit_or_alone() -> None:
+    """A script-only math span ``$^{-1}$`` and authored ``<sup>-1</sup>``
+    print U+2212; a hyphen inside a word-like subscript stays a hyphen."""
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({})
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        "cm$^{-1}$, mAh g$^{-1}$, <sup>-2</sup>, x$^{-}$, y$^{+-}$,"
+        " k$_{in-plane}$, z$^{2-}$, w$_{-1}$.",
+        ctx,
+        para,
+    )
+    sups = [r.text for r in para.runs if r.font.superscript]
+    subs = [r.text for r in para.runs if r.font.subscript]
+    assert sups == ["\u22121", "\u22121", "\u22122", "\u2212", "+\u2212", "2\u2212"]
+    assert subs == ["in-plane", "\u22121"]
+    assert not para._p.xpath(".//m:oMath")
+
+
+def test_script_charge_minus_is_u2212_in_superscripts_only() -> None:
+    """A superscript that ends in a hyphen after a digit is a charge (``2-``);
+    a word-like superscript and a subscript keep the hyphen."""
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({})
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        "SO$^{2-}$, <sup>3-</sup>, a<sup>x-ray</sup>, b<sup>e-</sup>, c<sub>2-</sub>.",
+        ctx,
+        para,
+    )
+    sups = [r.text for r in para.runs if r.font.superscript]
+    subs = [r.text for r in para.runs if r.font.subscript]
+    assert sups == ["2\u2212", "3\u2212", "x-ray", "e-"]
+    assert subs == ["2-"]
+
+
+# ── gr725247: document properties ────────────────────────────────────
+
+
+def test_docx_core_properties_come_from_the_draft(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from datetime import UTC, datetime
+
+    pid = _new_draft_project(hub)
+    draft.put(id="props", title="Films of C$_{60}$ on <i>Au</i>", project=pid)
+    draft.edit(id="props", authors=[{"name": "Doe, Jane"}, {"name": "Roe, John"}])
+    ref = hub.live_store.get_ref(kind="draft", id="props")
+    out = tmp_path / "props.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    cp = docx.Document(str(out)).core_properties
+    assert cp.title == "Films of C60 on Au"
+    assert cp.author == "Jane Doe, John Roe"
+    assert cp.comments == ""
+    assert cp.last_modified_by == ""
+    assert cp.created is not None and cp.created.year >= datetime.now(UTC).year
+    assert cp.modified is not None and cp.modified.year >= datetime.now(UTC).year
+
+    # no byline: the author stays empty, never the template's "python-docx"
+    draft.put(id="props2", title="Plain", project=_new_draft_project(hub))
+    ref2 = hub.live_store.get_ref(kind="draft", id="props2")
+    out2 = tmp_path / "props2.docx"
+    export_docx(hub.live_store, ref2, target_path=out2)
+    cp2 = docx.Document(str(out2)).core_properties
+    assert cp2.author == "" and cp2.title == "Plain"
+    assert "python-docx" not in cp2._element.xml
+
+
+# ── gr725249: header rows, alt text, resolution ───────────────────────
+
+
+def test_back_matter_tables_repeat_their_header_row() -> None:
+    from precis.export import docx as dx
+
+    doc = docx.Document()
+    dx._append_supplement(
+        doc, [SimpleNamespace(number="S1", kind="figure", description="d")]
+    )
+    (table,) = doc.tables
+    assert [bool(r._tr.xpath("w:trPr/w:tblHeader")) for r in table.rows] == [
+        True,
+        False,
+    ]
+
+
+def test_alt_text_strips_marks_and_math_and_cuts_on_a_word() -> None:
+    from precis.export import docx as dx
+
+    assert (
+        dx._alt_text("Spectra of $\\mathrm{CO_2}$ [pc123] at **low** T.")
+        == "Spectra of CO2 at low T."
+    )
+    long = "word " * 80
+    alt = dx._alt_text(long)
+    assert len(alt) <= 250 and alt.endswith("word") and not alt.endswith(" ")
+    assert dx._alt_text("") == ""
+
+
+def _png_of_width(width: int) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, 10), "white").save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_raster_figure_alt_text_and_low_resolution_warning(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """1000 px over 5.5 in is 181.8 dpi: warned, rounded down so a value
+    just under the limit never prints as the limit. 1800 px is 327 dpi:
+    silent. Each picture carries its caption as ``descr``."""
+    pytest.importorskip("PIL")
+    pid = _new_draft_project(hub)
+    draft.put(id="dpi", title="T", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dpi")
+    assert ref is not None
+    for text, width in (("Low resolution.", 1000), ("High resolution.", 1800)):
+        draft.put(
+            id="dpi",
+            chunk_kind="figure",
+            text=text,
+            image=_png_of_width(width),
+            origin="original",
+            at={"last": True},
+        )
+    figs = [
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "figure"
+    ]
+    out = tmp_path / "dpi.docx"
+    res = export_docx(hub.live_store, ref, target_path=out)
+    assert [w for w in res.warnings if "dpi" in w] == [
+        f"figure {figs[0].dc}: 181 dpi at 5.5 in (1000 px wide); below 300 dpi"
+    ]
+    shapes = docx.Document(str(out)).inline_shapes
+    assert [s._inline.docPr.get("descr") for s in shapes] == [
+        "Low resolution.",
+        "High resolution.",
+    ]
+
+
+# ── gr725242: thin space in math ───────────────────────────────────────
+
+
+def test_latex_spacing_macros_survive_in_omml() -> None:
+    """``$6\\,\\mu_B$`` keeps a thin space between number and unit; ``\\;`` and
+    ``\\:`` give a medium space, ``\\ `` a no-break space, ``\\!`` stays dropped."""
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({})
+    for src, text in (
+        (r"$6\,\mu_B$", "6\u2009\u03bcB"),
+        (r"$5.76\,\mu_B$", "5.76\u2009\u03bcB"),
+        (r"$a\;b\:c$", "a\u205fb\u205fc"),
+        (r"$a\ b$", "a\u00a0b"),
+        (r"$a\!b$", "ab"),
+    ):
+        para = docx.Document().add_paragraph()
+        dx._render_inline(src, ctx, para)
+        omath = para._p.xpath(".//m:oMath")
+        assert len(omath) == 1, src
+        ns = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+        assert "".join(omath[0].xpath(".//m:t/text()", namespaces=ns)) == text, src
+
+
+# ── gr725241: upright operators and unit symbols ───────────────────────
+
+_M_NS = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+
+
+def test_named_operators_render_upright_in_omml() -> None:
+    """``\\sin`` (mi) and ``\\max``/``\\lim`` (mo) get ``m:sty p``; the
+    variables around them stay default (italic) math."""
+    from precis.export.omml import latex_to_omml
+
+    omath = latex_to_omml(
+        r"\sin(\theta/2) = 1 - P/6 + \cos x + \exp y + \log z + \ln w"
+        r" + \tan a + \min b + \max c + \det d + \lim_{x \to 0} e"
+    )
+    assert omath is not None
+    upright = {}
+    for r in omath.xpath(".//m:r", namespaces=_M_NS):
+        t = r.xpath("string(m:t)", namespaces=_M_NS)
+        upright[t] = r.xpath("m:rPr/m:sty/@m:val", namespaces=_M_NS) == ["p"]
+    for name in ("sin", "cos", "exp", "log", "ln", "tan", "min", "max", "det", "lim"):
+        assert upright[name], name
+    for var in ("x", "P", "\u03b8", "e"):
+        assert not upright[var], var
+
+
+def test_unit_mu_and_omega_become_plain_characters() -> None:
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({})
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        r"V/$\mu$m, 10 $\mu$A/cm$^2$, 150 $\Omega$, 5$\Omega$, k$\Omega$,"
+        r" M$\Omega$, 4.7k$\Omega$, (m$\Omega$) and 3"
+        "\u00a0"
+        r"$\Omega$",
+        ctx,
+        para,
+    )
+    assert para.text == (
+        "V/\u03bcm, 10 \u03bcA/cm2, 150 \u03a9, 5\u03a9, k\u03a9, M\u03a9,"
+        " 4.7k\u03a9, (m\u03a9) and 3\u00a0\u03a9"
+    )
+    assert not para._p.xpath(".//m:oMath")
+    # plain runs: not italic, not math
+    assert not any(r.italic for r in para.runs)
+
+
+def test_other_mu_and_omega_spans_stay_math() -> None:
+    from precis.export import docx as dx
+
+    ctx = _abbrev_ctx({})
+    for src in (
+        r"$\mu_B$",  # a subscripted mu
+        r"a lone $\mu$ here",  # mu before a space
+        r"in $\Omega$ space",  # Omega after a word and a space
+        r"$\Omega$ at the start",  # Omega with nothing before it
+        r"7  $\Omega$",  # two spaces: not a unit
+        r"$2\mu$m",  # not exactly \mu
+        r"system$\Omega$",  # the prefix letter ends a word
+        r"(a) system$\Omega$",
+    ):
+        para = docx.Document().add_paragraph()
+        dx._render_inline(src, ctx, para)
+        assert para._p.xpath(".//m:oMath"), src

@@ -2,8 +2,20 @@
 
 Three risky small bits flagged at design time live here:
 
-* **Ready convention.** A work item is a transient file under
-  ``docs/backlog/*.md`` with a YAML-ish front-matter block; it is
+* **Ready convention — retired lane.** Specifications moved to graph
+  memory (spec roots under the Specifications hub ``me568215``,
+  execution state on their plan todos — ``precis-spec-help``), so the
+  file-based proposal queue this lane read is gone: ``docs/backlog/``
+  takes no new spec files and holds only
+  ``se-protein-interface-first.md`` (``status: draft``), the one file
+  deliberately left behind. The fixer never learned to read plan
+  todos; its two sibling file-bound consumers from the same transfer
+  went graph-aware under ``gr696034`` — the ``spec_landed`` park
+  condition now takes a spec-root/plan-todo handle and
+  ``scripts/fleet-wave`` claims the plan root todo's lease — while
+  this glob stays file-bound on purpose: it serves only that residual
+  file under its documented convention: a file
+  under ``docs/backlog/*.md`` with a YAML-ish front-matter block is
   *pickable* only when ``status: ready`` (a human ran ``/ready`` in
   tandem, both keys turned). ``README.md``/``TEMPLATE.md`` and any
   other ``status:`` value (``idea``, ``draft``, …) are ignored.
@@ -125,6 +137,10 @@ _PRIO_ORDER = {"high": 0, "normal": 1, "low": 2}
 
 def ready_items(backlog_dir: Path) -> list[WorkItem]:
     """All ``status: ready`` proposals, highest ``prio:`` first.
+
+    Retired lane: this glob is the residual hook for the one spec file
+    left in ``docs/backlog/`` — the spec queue it used to read moved to
+    graph memory (module docstring, gr696034).
 
     Ordered by priority bucket (``high`` → ``normal`` → ``low``), then by
     filename within a bucket — the fixer picks the most important ready item

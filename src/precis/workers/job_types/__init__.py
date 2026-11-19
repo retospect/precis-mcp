@@ -30,6 +30,11 @@ removing body/hash/event evidence or calling a provider/model.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
+Park snapshots scan every unpublished commit, because even credentials
+deleted at the tip become fetchable when history is pushed. Parked resumes
+require the recorded snapshot before cleanup; unavailable saves must resume
+on their saving host or receive an explicit start-over.
+
 ``run_slice`` delegates CLI argv, stdin and output parsing to
 ``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
 Devin hand off through their final output, and all three pass the same
@@ -41,7 +46,18 @@ default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because cache/temp write
 scopes and Docker under Seatbelt remain unverified.
 The coordinator supplies acceptance tests before launch: new files ride
 ``params.acceptance_tests`` as path-to-source artifacts installed after
-worktree cleanup; checked-in paths come from the body/latest brief.
+worktree cleanup; checked-in paths come only from explicit Acceptance tests:
+or File set: lines in the body/latest brief, so quoted symptom paths do
+not become acceptance requests. Acceptance runs exclude nightly tests,
+matching the regular check gate.
+Plan dispatch and executor claims use the same brief selection as build
+and land to resolve overlap targets. This keeps brief-only release fixes
+isolated from main while holding overlapping work on the same branch.
+The overlap cap counts ended build runs that used a turn. A host refusal
+never launched a build, so it leaves the hold budget intact. The settings
+read uses a savepoint to preserve the claim transaction on read failure.
+The wake runner requeues legacy year-long pinned-lane parks so submit can
+recheck the current lane breaker.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot
@@ -51,6 +67,20 @@ all impacted behavior. First-line verdicts survive test-only dirty trees.
 Cloud ``devin_task`` appends a pending named-branch handoff contract; no
 consumer fetches or lands that branch yet, and the API executor has no
 local checkout.
+Land children and slice sessions retain service PATH precedence, with the
+user's uv install directory as a fallback so non-login coder services can
+run ship's nested helpers and the gate (gr702380). A clean exit whose
+session reported its commit blocked still lands: the worker commits the
+tree under a generated subject when no commit-msg.txt exists (gr702644),
+and a commit that fails park-saves the tree like every failed run.
+
+Builder ``skills:`` markers create skill-editor children after a successful
+land. A receipt under the source row lock prevents duplicate follow-ups
+when the land tail retries. The ``skill`` task class needs a live MCP lane
+and can write only skills and their evals; both poll and land enforce this
+scope. Governed skills retain their human-only fence. Editors open ruling
+provenance before loosening a rule, so tool drift cannot silently repeal
+human policy.
 
 A ``run_slice`` launch also writes one ``slice_run_features`` row
 (:mod:`precis.workers.job_types._run_features`, gr595544): cheap
@@ -94,6 +124,37 @@ log = logging.getLogger(__name__)
 _DISPATCH_PROTOCOL_EXECUTORS: frozenset[str] = frozenset(
     {"claude_inproc", "job_inproc", "ssh_node", "coordinator"}
 )
+
+
+@dataclass(frozen=True)
+class Reconcile:
+    """A ``submit``/``poll`` job_type's answer to the mid-submit-crash
+    question (gr708457): the reclaim found ``submit_started_at`` but no
+    ``compute_handle``, so the prior worker generation died inside
+    ``submit()`` — after the intent marker, before the handle persist.
+
+    Bind launch evidence to the intent's ``submit_attempt`` and
+    ``submit_host``. Factory run and land launches record the poll inputs
+    before spawn, including the review HEAD, Devin test inventory or mirror
+    tips as applicable. The detached shell records its PID and exit for that
+    attempt. A missing file may precede the child's first write, and a
+    released ship lock may follow a squash awaiting publication in the mirror.
+
+    The reconciler returns exactly one of:
+
+    * ``Reconcile(handle=<handle>)`` — the dead generation's launch is
+      *provable* and its handle re-derivable; the job is re-adopted and
+      resumes on ``poll``, the compute runs once.
+    * ``Reconcile(launched=False)`` — the dead ``submit()`` provably
+      never reached the launch; the row clears its marker and submits
+      fresh, safely.
+    * ``None`` — cannot tell; the gripe-standing loud failure stands
+      (gr191673) — the compute may be orphaned, so the job fails as
+      infrastructure uncertainty rather than risk a duplicate submit.
+    """
+
+    handle: Any = None
+    launched: bool = True
 
 
 @dataclass(frozen=True)
@@ -180,6 +241,18 @@ class JobTypeSpec:
     #: this protocol exists to fix).
     submit: Callable[..., Any] | None = None
     poll: Callable[..., Any] | None = None
+    #: Optional mid-submit-crash reconciler, ``reconcile(ctx) ->
+    #: Reconcile | None`` — called by ``ssh_node`` on a reclaimed
+    #: ``STATUS:running`` row carrying ``meta.submit_started_at`` but no
+    #: ``meta.compute_handle``: the prior worker generation died inside
+    #: ``submit()`` — after the intent marker committed, before the handle
+    #: persisted (gr708457). The reconciler's own launch evidence answers:
+    #: ``Reconcile(handle=<handle>)`` re-adopts the provable compute,
+    #: ``Reconcile(launched=False)`` clears the marker and resubmits
+    #: safely, ``None`` keeps the loud gr191673 infrastructure failure.
+    #: ``None`` here means the job_type has no reconcile surface — the
+    #: fail-loud default stands.
+    reconcile: Callable[..., Any] | None = None
     #: Optional wall-clock kill hook — a detached submit/poll job_type has
     #: no termination path once the sweeper's own wall-clock retirement
     #: excludes its executor: ``ssh_node``'s ``_poll_one``
@@ -711,6 +784,7 @@ def _load_run_slice() -> JobTypeSpec:
         validate_submit=run_slice.validate_submit,
         submit=run_slice.submit,
         poll=run_slice.poll,
+        reconcile=run_slice.reconcile,
         kill=run_slice.kill,
         release=run_slice.release,
         wall_seconds=run_slice.wall_seconds,
@@ -1053,6 +1127,7 @@ def _reset_plugin_cache() -> None:
 #: merely built a GripeHandler then reached the router unbound). Keep
 #: in sync with the ``get_job_type`` dispatch chain.
 _BUILTIN_JOB_TYPES: tuple[str, ...] = (
+    "weekly_report",
     "fix_gripe",
     "plan_tick",
     "doctor_tick",
@@ -1272,6 +1347,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
         _REGISTRY[name] = SPEC
         return SPEC
+    if name == "weekly_report":
+        from precis.workers.job_types.weekly_report import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "gripe_validate":
         # Gripe ladder's last rung: verify -> done once the resolved sha is in
         # the recorded prod head. Armed by a recurring todo (see its docstring).
@@ -1450,6 +1530,7 @@ def known_job_types() -> list[str]:
 __all__ = [
     "JOB_TYPE_PLUGIN_GROUP",
     "JobTypeSpec",
+    "Reconcile",
     "_reset_plugin_cache",
     "defer_on_pause",
     "fix_gripe_lane_on",

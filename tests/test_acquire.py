@@ -194,6 +194,47 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert "get(id=" in second.body
 
 
+def test_acquire_wiley_twin_doi_collapses(handler: PaperHandler, store: Store) -> None:
+    # The twin collapse must also hold when the anie twin is an
+    # already-HELD paper (pdf present): the ange acquire collapses onto
+    # it, registers the second DOI there, and must not pin it (nothing
+    # left to fetch).
+    held_ref = store.insert_ref(kind="paper", slug="angew1966", title="Held Angew")
+    held = held_ref.id
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', '10.1002/anie.5660280', %s, 'test')",
+            (held,),
+        )
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/stub')",
+            ("c" * 64, "c" * 64),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, prio = NULL, "
+            "meta = meta - 'prio_by' WHERE ref_id = %s",
+            ("c" * 64, held),
+        )
+        conn.commit()
+    r = handler.acquire(identifier="doi:10.1002/ange.5660280")
+    assert _ref_id(r.body) == held
+    assert "already tracked" in r.body
+    assert f"twin DOI of pa{held}, nothing minted" in r.body
+    assert "pinned" not in r.body
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/anie.5660280", kind="paper")
+        == held
+    )
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/ange.5660280", kind="paper")
+        == held
+    )
+    prio, prio_by, _ = _fetch_pin(store, held)
+    assert (prio, prio_by) == (None, None)
+
+
 def test_acquire_pmcid_mints_stub(handler: PaperHandler, store: Store) -> None:
     """gr663681: ``pmcid:`` identifiers queue a stub — the gripe's
     PMC-only reference could not be put at all."""
@@ -497,6 +538,133 @@ def test_put_book_stub_stores_supplied_authors(
         ).fetchall()
     assert rows == [("Doe", "human"), ("Smith", "human")]
     assert "stored 2 supplied authors" in response.body
+
+
+def test_put_s2_verified_stub_writes_byline(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr689211: S2 authors seed both the cite key and stored byline."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Resolved Paper",
+            "year": 2018,
+            "authors": [{"name": "Jane Clark"}, {"name": "John Smith"}],
+            "journal": "Test Journal",
+        },
+    )
+    response = handler.put(doi="10.1/s2-byline")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.slug == "clark18"
+    assert ref.authors is not None
+    assert [a["name"] for a in ref.authors] == ["Jane Clark", "John Smith"]
+    assert _meta(store, rid)["journal"] == "Test Journal"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT source FROM paper_authors WHERE ref_id = %s ORDER BY position",
+            (rid,),
+        ).fetchall()
+    assert rows == [("s2",), ("s2",)]
+
+
+def test_acquire_doi_year_crosscheck_prefers_registry(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr722127: S2's year for 10.1007/BF02650179 is 1999 (a reprint
+    date); the Crossref record says 1982. The registration agency is
+    authoritative for what the DOI names, so the stub year and the cite
+    key must come from the registry, not S2."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+            "journal": "International Journal of Theoretical Physics",
+        },
+    )
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1982,
+            "doi": "10.1007/BF02650179",
+            "journal": "International Journal of Theoretical Physics",
+            "source": "crossref",
+        },
+    )
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1982
+    assert ref.slug == "feynman82"
+    assert _meta(store, rid).get("acquire_year_registry") == "crossref"
+
+
+def test_acquire_doi_year_crosscheck_title_mismatch_keeps_s2(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry's year only wins when the registry vouches for the
+    same work — a title that doesn't match S2's keeps S2's year."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+        },
+    )
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "An entirely different proceedings volume",
+            "year": 1982,
+            "source": "crossref",
+        },
+    )
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1999
+    assert ref.slug == "feynman99"
+    assert "acquire_year_registry" not in _meta(store, rid)
+
+
+def test_acquire_doi_year_crosscheck_registry_fault_keeps_s2(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry fault on the cross-check leg is not evidence against
+    the DOI — S2 verified it and S2's year stands."""
+
+    def _down(*_a: object) -> None:
+        raise RuntimeError("crossref offline in test")
+
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+        },
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1999
+    assert "acquire:unverified" not in _tags(store, rid)
+    assert "acquire_year_registry" not in _meta(store, rid)
 
 
 def test_put_supplied_authors_override_registry_on_fresh_stub(
@@ -914,19 +1082,34 @@ def test_acquire_registry_fault_mints_unverified(
     assert "crossref" in str(_meta(store, rid).get("acquire_unverified_reason", ""))
 
 
-def test_acquire_registry_lookup_skipped_on_s2_hit(
-    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+def test_acquire_registry_lookup_on_s2_hit_crosschecks_year(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An S2 hit never reaches the registry fallback."""
+    """gr722127: an S2 hit for a DOI now still consults the registry —
+    the year cross-check. A registry that knows nothing leaves S2's
+    stub untouched."""
     consulted: list[str] = []
     monkeypatch.setattr(
         paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {"title": "Resolved Paper", "year": 2018},
+    )
+
+    def _registry(doi: str) -> None:
+        consulted.append(doi)
+        return None
+
+    monkeypatch.setattr(
+        paper_mod,
         "_lookup_doi_registry",
-        consulted.append,
+        _registry,
     )
     r = handler.acquire(identifier="doi:10.1/x")
     assert "minted stub" in r.body
-    assert consulted == []
+    assert consulted == ["10.1/x"]
+    ref = store.get_ref(kind="paper", id=_ref_id(r.body))
+    assert ref is not None
+    assert ref.year == 2018
 
 
 def test_acquire_registry_lookup_skipped_for_non_doi(

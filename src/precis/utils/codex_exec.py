@@ -232,7 +232,10 @@ def _probe_login_status(binary: str, *, timeout_s: float = 15.0) -> bool:
         return False
     if res.returncode != 0:
         return False
-    return "chatgpt" in (res.stdout or "").lower()
+    return (
+        "logged in using chatgpt"
+        in ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
+    )
 
 
 _login_lock = threading.Lock()
@@ -369,56 +372,78 @@ def _run_codex(
     reaps an in-flight run) and the same error mapping: ``FileNotFoundError``
     → ``binary_missing``, ``TimeoutExpired`` → ``timed_out``, non-zero exit
     → error carrying the exit detail. Raises :class:`CodexExecError`.
+
+    Admitted when a store is bound (gr657996/gr657245): the CLI burns real
+    CPU/memory on this host. A capacity refusal maps to
+    :class:`CodexExecError` — the router's ordinary retry class for this
+    lane — never an attempt at running unaccounted.
     """
-    try:
-        # MeasuredPopen: the reap captures this child's own rusage and
-        # attributes it to the job bound on this thread (gr595536).
-        proc = MeasuredPopen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=env,
-            cwd=cwd,
-        )
-    except FileNotFoundError as exc:
-        raise CodexExecError(
-            f"codex binary not found ({binary!r}); "
-            "set PRECIS_CODEX_BIN or install the Codex CLI",
-            binary_missing=True,
-        ) from exc
-    try:
-        out, err = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        terminate_claude(proc)
-        try:
-            out, err = proc.communicate(timeout=_REAP_DRAIN_S)
-        except subprocess.TimeoutExpired as drain:
-            out, err = to_str(drain.output), to_str(drain.stderr)
-        raise CodexExecError(
-            f"codex exec timed out after {timeout_s}s",
-            stdout=to_str(out),
-            stderr=to_str(err),
-            timed_out=True,
-        ) from None
-    except BaseException:
-        terminate_claude(proc)
-        raise
-    res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
-        argv, proc.returncode, to_str(out), to_str(err)
+    from precis.budget import meter
+    from precis.workers import admission
+
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=1000, mem_mb=2048, wall_s=float(timeout_s)
     )
-    if res.returncode != 0:
-        raise CodexExecError(
-            f"codex exec exited {res.returncode}: "
-            f"{exit_detail(res.stdout, res.stderr)}",
-            stdout=res.stdout,
-            stderr=res.stderr,
-            returncode=res.returncode,
-            reply=_reply_from_stream(res.stdout),
+
+    def _inner() -> subprocess.CompletedProcess[str]:
+        try:
+            # MeasuredPopen: the reap captures this child's own rusage and
+            # attributes it to the job bound on this thread (gr595536).
+            proc = MeasuredPopen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+                cwd=cwd,
+            )
+        except FileNotFoundError as exc:
+            raise CodexExecError(
+                f"codex binary not found ({binary!r}); "
+                "set PRECIS_CODEX_BIN or install the Codex CLI",
+                binary_missing=True,
+            ) from exc
+        try:
+            out, err = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            terminate_claude(proc)
+            try:
+                out, err = proc.communicate(timeout=_REAP_DRAIN_S)
+            except subprocess.TimeoutExpired as drain:
+                out, err = to_str(drain.output), to_str(drain.stderr)
+            raise CodexExecError(
+                f"codex exec timed out after {timeout_s}s",
+                stdout=to_str(out),
+                stderr=to_str(err),
+                timed_out=True,
+            ) from None
+        except BaseException:
+            terminate_claude(proc)
+            raise
+        res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
+            argv, proc.returncode, to_str(out), to_str(err)
         )
-    return res
+        if res.returncode != 0:
+            raise CodexExecError(
+                f"codex exec exited {res.returncode}: "
+                f"{exit_detail(res.stdout, res.stderr)}",
+                stdout=res.stdout,
+                stderr=res.stderr,
+                returncode=res.returncode,
+                reply=_reply_from_stream(res.stdout),
+            )
+        return res
+
+    try:
+        with admission.hold(
+            meter.active_store(), host, footprint, f"{host}:{os.getpid()}"
+        ):
+            return _inner()
+    except admission.Refused as exc:
+        raise CodexExecError(f"codex exec deferred, host at capacity: {exc}") from exc
 
 
 def _reply_from_stream(stdout: str) -> str | None:

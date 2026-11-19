@@ -439,10 +439,12 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
 
 def glyph_cite_hint(store: Store, text: str) -> str:
     """Warn per paper cited in ``text`` whose ingest flagged glyph damage
-    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters may
-    have been dropped or substituted in the extracted text, so quoted
-    numbers/units can be off by 10^3-10^6x. Advisory only. Scoped to the
-    cites present in the touched text; one batched ref fetch, deduped by ref.
+    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters
+    may have been dropped or substituted in the extracted text, so quoted
+    numbers/units can be off by 10^3-10^6x. A sign-damage-only record
+    (gr685717) instead warns about lost minus signs / mangled \u00b1.
+    Advisory only. Scoped to the cites present in the touched text; one
+    batched ref fetch, deduped by ref.
     """
     from precis.utils.glyph_health import glyph_suspected
     from precis.utils.mentions import resolve_handle_target
@@ -458,11 +460,26 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     for rid, ref in sorted(store.fetch_refs_by_ids(ids, include_deleted=False).items()):
         if ref.kind == "paper" and glyph_suspected(ref.meta):
             handle = handle_registry.try_format("paper", rid) or ids[rid]
-            lines.append(
-                f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
-                "have lost Greek/\u03bc characters \u2014 check quoted "
-                "numbers/units against the PDF"
+            rec = ref.meta.get("glyph_health") if isinstance(ref.meta, dict) else None
+            sign_only = (
+                isinstance(rec, dict)
+                and isinstance(rec.get("sign_damage"), dict)
+                and rec["sign_damage"].get("detected") is True
+                and not rec.get("modes")
+                and not rec.get("suspect_fonts")
             )
+            if sign_only:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted "
+                    "text may have lost minus signs or \u00b1 characters "
+                    "\u2014 check quoted numbers against the PDF"
+                )
+            else:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
+                    "have lost Greek/\u03bc characters \u2014 check quoted "
+                    "numbers/units against the PDF"
+                )
     return "".join(lines)
 
 

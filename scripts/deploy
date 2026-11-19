@@ -232,7 +232,22 @@ if [[ "$REF" =~ ^[0-9a-f]{7,39}$ ]]; then
 fi
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+# Exit code of a refusal before any rollout step (gr730609). scripts/round
+# journals its launch marker just before it runs this script; on this code
+# it puts the record back, so a refused deploy is not kept as a partial
+# rollout. `die` exits with it until _HOSTS_CONTACTED is set — just before
+# the reachability ping, the first ansible command that reaches the fleet —
+# and with 1 from then on. The guards ahead of the ping only read (the
+# backup-window probe of the prod DB) or reconcile the overlay mirror; none
+# installs or restarts anything. scripts/round, scripts/release and
+# release_deploy.py restate the number (tests/test_round_release.py pins them).
+DEPLOY_RC_UNTOUCHED=75
+_HOSTS_CONTACTED=0
+die() {
+    printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2
+    [[ "$_HOSTS_CONTACTED" == 1 ]] && exit 1
+    exit "$DEPLOY_RC_UNTOUCHED"
+}
 
 # ── which ansible runs ─────────────────────────────────────────────────────
 # scripts/release and scripts/round run under `uv run --no-project`; with a
@@ -1082,6 +1097,11 @@ _DEPLOY_TREE=""
 # under `set -euo pipefail` with `exit 0` prints A, never B, and exits 1.
 _deploy_cleanup() {
     local rc=$?
+    # From the reachability ping on nothing may exit with the "no host was
+    # touched" code, whatever command happened to return it (gr730609).
+    if [[ "${_HOSTS_CONTACTED:-0}" == 1 && "$rc" == "${DEPLOY_RC_UNTOUCHED:-75}" ]]; then
+        rc=1
+    fi
     if [[ -n "$_DEPLOY_TREE" ]]; then
         # Unlock first: `worktree remove` refuses a locked tree even with --force.
         git -C "$REPO_ROOT" worktree unlock "$_DEPLOY_TREE" 2>/dev/null || true
@@ -1497,6 +1517,9 @@ fi
 # used to abort the whole deploy and then the verdict-age guard refused
 # the resume hours later). Critical hosts down still abort the run.
 PING_TARGETS="gateway:scheduler:data:inference:serving:compute:agent_sandbox_hosts:builder_hosts"
+# The first ansible command that reaches the fleet: every `die` above exits
+# DEPLOY_RC_UNTOUCHED, every one from here exits 1 (gr730609).
+_HOSTS_CONTACTED=1
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
 _PING_OUT="/tmp/precis-deploy-ping.$$"
 _ping_rc=0

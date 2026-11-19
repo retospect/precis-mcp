@@ -6,29 +6,34 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
-measurement protocols, deduped dispatch/harvest drift logbook entries, and
+measurement protocols, deduped dispatch/harvest drift logbook entries,
 frontier/status protocol histograms; gr593142), `environment_basis` and
-`correction_policy` (engine-free hashes/tuples in the network basis), `atomcost` (static
-element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
+`correction_policy` (engine-free hashes/tuples), `atomcost` (element-price
+table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
-``precis quest figure``), `replay` (the optimisation-benchmark read of the
+``precis quest figure``), `replay` (optimisation-benchmark read of the
 measured history — per-axis top-5% coverage + best-so-far/regret of the
-LLM proposer's picks vs a seeded random baseline, gr608711; CLI
+proposer's picks vs a seeded random baseline, gr608711; CLI
 ``precis quest replay`` + ``get(kind='quest', view='replay')``),
 `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
 `narrative_budget` (the growth-ratchet gate,
-owner-agnostic — reusable by any rolling-context rewrite), `trap_check`
-(the planted-trap regression: a dormant sandbox quest whose candidate
-network carries a stale-engine measure, a swapped endpoint and an absurd
-barrier beside one control, ticked N times and scored on the frontier
-gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
-cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop itself is the
+reusable by any rolling-context rewrite), `trap_check`
+(the planted-trap regression: a dormant sandbox quest carrying a
+stale-engine measure, a swapped endpoint and an absurd barrier beside
+one control, ticked N times and scored on the frontier gate +
+ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
+cadence lands the score). The perpetual loop is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
 Package-level invariants (detail lives on the named module):
 
+- **Need citations do not create new capabilities.** ``needs.tool_key``
+  strips citation decoration and legacy capped stubs (cap before strip,
+  so a filed key re-keys to itself); repeats bump even parked gripes
+  without merging distinct lane prefixes.
+- **Operational commits advance ticks.**
 - **Environment objectives preserve missing evidence.**
   ``environment_optimizer`` evaluates one stored point without solving or
   stamping: the five eV terms, physical/trust mask and bottleneck J. Rates
@@ -37,7 +42,6 @@ Package-level invariants (detail lives on the named module):
   -infinity, unknown masks/terms stay unavailable with reasons. The
   log-rate term is unavailable for zero TOF, but its raw zero still fails
   a positive rate floor, so M=0 and J=-infinity.
-  The pathway plugin's ``optimum`` read supplies staircase/map/bulk evidence.
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).
@@ -54,18 +58,17 @@ Package-level invariants (detail lives on the named module):
   (``compute``; dossier-owned-by-process).
 - **Seed budgets preserve full-network search.** Defaults, caps, runner margins
   and retry eligibility: ``compute._autocatpath_wall_seconds`` (gr614723).
-- **Untrusted measures don't rank — but they stay visible.** A pathway with
-  NEB-not-converged / adsorbate-detached warnings, a nonphysical barrier
-  (> ``compute._BARRIER_ABSURD_EV``), a symmetry-twin pair whose barriers
-  disagree (same ``geom_hash_c``+tier, Δ > ``compute._TWIN_BARRIER_TOL_EV``
-  — both sides untrusted), or a kinetics solve whose
-  guard bracket disagrees / TOF is non-finite (``kinetics_trusted``), is
-  excluded from the
-  confirmed frontier and can never graduate (``compute._pathway_quality`` →
-  ``frontier`` → ``graduate``), but its measured values surface as a
-  **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,
-  untrusted keys + reasons named, own Pareto rank) in the tick prompt, text
-  view, and web scatter, so the loop is never blind to its own measurements.
+- **Barrier assurance separates ranking from strict credit.** PASS keeps
+  the strict gate; WARN needs converged, saddle-verified evidence and permits
+  only one independent seed, stale engine or BEP estimates. WARN ranks with
+  an approximation marker and reasons, but cannot graduate. The frontier
+  retains independent PASS-only and PASS+WARN Pareto sets. Physical failures
+  and missing verification remain FAIL and cannot rank, even when the
+  diagnostic provisional band retains their raw values.
+  The magnitude ceiling (``compute._BARRIER_ABSURD_EV``), symmetry-twin
+  disagreement (``compute._TWIN_BARRIER_TOL_EV``), and kinetics validity
+  (``kinetics_trusted``) remain independent guards. Diagnostic values stay
+  visible through ``frontier.ProvisionalCandidate`` in tick/text/web views.
   Seeded pathway runs record ``requested_seeds`` at dispatch and accumulate
   ``executed_seeds`` only after child launch, including later failures.
   Trust verdicts show both lists and flag dispatch mismatches, while the

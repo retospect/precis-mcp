@@ -13,8 +13,7 @@ nothing downstream (padplace/DRC/gerber/SVG) needs to know a component was
 generated rather than hand-authored — a :class:`GeneratorExpansion` is just
 a batch :meth:`_pcb_apply` was going to process anyway.
 
-**One component, one pad per pin.** The spec's own framing (docs/backlog/
-pcb-ewod-multitile.md, "the array generator emits the integrated unit") is
+**One component, one pad per pin.** The spec's own framing (me692460, "the array generator emits the integrated unit") is
 "the whole array is one component whose pins are the electrode nets" — so
 ``ewod_pad_array`` below emits exactly ONE ``components[]`` entry (one
 refdes) whose local footprint's ``pads`` list carries every electrode's
@@ -374,10 +373,10 @@ VERSIONS: dict[str, int] = {
     # Version 5 (2026-10-13, gr345859) gates puts/routes on the fabric
     # invariants; version 6 (same day) declares EVERY channel pin on a
     # sink (unwired ones carry `unused`), not only the wired share —
-    # pcb-lazy-netlist-and-checks.md Slice 2; version 7 emits `supplies` /
+    # me693232 Slice 2; version 7 emits `supplies` /
     # `client_of` (Slice 6) instead of `pin_swap_groups`; version 8 adds
     # the `sink_grid` control-pin keys (`clk_pin`/`le_pin`/`bl_pin`/
-    # `pol_pin`/`dir_pin`, ewod-controller-and-hv-supply.md Slice 2,
+    # `pol_pin`/`dir_pin`, me690877 Slice 2,
     # ruling 12) and the `tape_land` top-plate pad (same doc, Slice 3,
     # ruling 4) — both emitted only when the config asks, so a board
     # without them re-expands byte-identically. All changed the
@@ -1832,8 +1831,7 @@ class _Merge:
 def _parse_pad_sizes(
     params: dict[str, Any], layout: _Layout
 ) -> dict[tuple[int, int], _Merge]:
-    """Validate and resolve the ``pad_sizes`` param (docs/backlog/
-    pcb-ewod-multitile.md Slice 2: "a pad may span m x n grid cells --
+    """Validate and resolve the ``pad_sizes`` param (me692460 Slice 2: "a pad may span m x n grid cells --
     merged outline, zigzag preserved along its boundary, one net"), into a
     ``(row, col) -> _Merge`` lookup covering every cell any entry claims.
 
@@ -1901,8 +1899,7 @@ def _parse_pad_sizes(
 
 @dataclass
 class _SinkGrid:
-    """Resolved ``sink_grid`` param (round 7, docs/backlog/
-    pcb-ewod-multitile.md's "sink_grid emission — part-agnostic" decision;
+    """Resolved ``sink_grid`` param (round 7, me692460's "sink_grid emission — part-agnostic" decision;
     channel assignment rebalanced by the 2026-09-18 ruling, "9x9 sink
     packing → balanced by chain order"): a set of bottom-side sink
     component instances, one per ``channels_per_sink`` USABLE electrode
@@ -1978,7 +1975,7 @@ class _SinkGrid:
 
 
 #: The driven control lines a ``sink_grid`` may name, as ``{ctl}_pin``
-#: keys (ewod-controller-and-hv-supply.md Slice 2): HV507's CLK/LE/BL/
+#: keys (me690877 Slice 2): HV507's CLK/LE/BL/
 #: POL/DIR, kept part-agnostic (a different sink part names its own pins —
 #: the key is the FUNCTION, the value is the pin name). The list order is
 #: also the emission order, so a config's nets/components are
@@ -2070,7 +2067,7 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
     # One pin, one role: a pin named in two places (driven control AND a
     # power tie, two control functions, a channel and a serial line) is a
     # config bug, not an ambiguity to resolve -- refuse it by name
-    # (ewod-controller-and-hv-supply.md Slice 2's own acceptance).
+    # (me690877 Slice 2's own acceptance).
     seen: dict[str, str] = {}
     collisions: list[str] = []
     serial_in = str(cfg.get("serial_in_pin") or "DIN")
@@ -2201,7 +2198,7 @@ def _parse_tape_land(
     rows: int,
     cols: int,
 ) -> dict[str, Any] | None:
-    """Resolve the ``tape_land`` param (ewod-controller-and-hv-supply.md
+    """Resolve the ``tape_land`` param (me690877
     Slice 3 — ruling 4's copper-tape landing for the ITO top plate, the
     "Defect B" gap): ONE drill-free rect pad on F.Cu laid along one edge
     of the array's own footprint, ``role: 'tape_land'``, ``mask: 'open'``
@@ -2312,8 +2309,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         raise ValueError(
             "ewod_pad_array: sink_grid is not supported with variant='rim' "
             "yet -- a rim's hollow interior has no tracked plaza dict for a "
-            "tile block to key off (round-7 scope; see docs/backlog/"
-            "pcb-ewod-multitile.md)"
+            "tile block to key off (round-7 scope; see me692460)"
         )
 
     plazas_param = params.get("plazas")
@@ -2671,8 +2667,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 sink_connections.append(
                     {"net": f"{name}_{elec_pin}", "refdes": sink_refdes, "pin": ch_pin}
                 )
-            # Declare EVERY channel pin the part owns (docs/backlog/
-            # pcb-lazy-netlist-and-checks.md Slice 2), not only this sink's
+            # Declare EVERY channel pin the part owns (me693232 Slice 2), not only this sink's
             # wired share: a partly-filled sink used to declare fewer than
             # the part's channels, and `channels_per_sink` assigning a
             # contiguous run of HVOUTn put the undeclared remainder on
@@ -2771,8 +2766,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # the array's own authored plaza vias on `pb345846`: a
                 # placement no pass was allowed to fix, whose 14
                 # `via_pad_keepout` errors were all knowable before the
-                # router started (docs/backlog/
-                # pcb-always-valid-board-invariant.md).
+                # router started (me569373).
                 #
                 # A caller who genuinely needs the lock (a sink whose
                 # position is a mechanical constraint, not a routing
@@ -2785,7 +2779,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 **({"fixed": sink_cfg.fixed} if sink_cfg.fixed else {}),
                 "pins": pin_decls,
                 "roles": ["ewod_sink"],
-                # pcb-lazy-netlist-and-checks.md §1b: this sink SUPPLIES the
+                # me693232 §1b: this sink SUPPLIES the
                 # `pad_driver` role -- one one-pin block per channel pin the
                 # datasheet names, wired or not (an unwired block is a
                 # spare the Slice-6 matcher may bind). Each driven
@@ -2948,7 +2942,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         nets.append({"name": net_name, "net_class": pin_class})
         connections.append({"net": net_name, "refdes": name, "pin": pin})
 
-    # Ruling 4 / ewod-controller-and-hv-supply.md Slice 3 (Defect B): the
+    # Ruling 4 / me690877 Slice 3 (Defect B): the
     # copper-tape landing for the ITO top plate — one rect pad on the
     # array's own footprint, wired to the top-plate net so the ordinary
     # router closes it (no layer lock on this net: F.Cu pad -> via ->
@@ -3046,7 +3040,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             "h": tape_land["pad"]["h"],
         }
 
-    # ewod-controller-and-hv-supply.md Slice 4d: when the array declares a
+    # me690877 Slice 4d: when the array declares a
     # drive voltage and a top-plate (VPP) net exists (a sink's
     # top_plate_pin or the tape_land strip), that net carries the FULL
     # drive voltage — put it in an `ewod_{name}_hv` class whose
@@ -3068,7 +3062,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # a class floor binds every layer, so the array's own F.Cu plaza stubs
     # beside neighbouring electrodes become ERROR-tier clearance and every
     # put is refused. It waits on per-(net, layer) clearance
-    # (ewod-controller-and-hv-supply.md, ruling 19).
+    # (me690877, ruling 19).
     if drive_voltage_v is not None and (
         tape_land is not None
         or (

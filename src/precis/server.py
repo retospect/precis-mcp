@@ -92,7 +92,7 @@ import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
@@ -146,7 +146,10 @@ def _mask_protocol_secrets(text: str) -> str:
     # Personal bearer values have a known prefix; even a low-entropy token
     # must be masked when the general credential heuristic does not match.
     text = re.sub(
-        rf"\b{re.escape(mcp_identity.TOKEN_PREFIX)}[A-Za-z0-9_-]+", "[redacted]", text
+        rf"\b{re.escape(mcp_identity.TOKEN_PREFIX)}[A-Za-z0-9_-]+"
+        rf"|\b{re.escape(mcp_identity.CAP_TOKEN_PREFIX)}[A-Za-z0-9_-]+",
+        "[redacted]",
+        text,
     )
     return mask_secrets(text, warn=False)
 
@@ -1319,6 +1322,67 @@ def _kwarg_alias_hint(verb: str, exc: TypeError) -> str | None:
     return f"did you mean {alias}=? {verb}() has no {m.group(1)!r} kwarg"
 
 
+def _verb_typeerror_result(
+    verb: str, exc: TypeError, *, hint: str | None = None
+) -> Any:
+    """Render a verb-call ``TypeError`` as the ``[error:BadInput]`` envelope.
+
+    Shared by the command profile's ``precis`` and the typed profile's
+    strict-extras wrapper (:func:`_strict_wire_verb`, gr693011): both
+    *bind* the call against the verb's signature and pass only a bind
+    failure here — a ``TypeError`` raised inside the verb itself
+    propagates as the fault it is. The message shape (``verb(...):
+    <typeerror>`` plus a ``next:`` pointer, with a "did you mean" alias
+    hint when the bad kwarg is a known synonym) is identical in both
+    profiles. ``hint`` overrides the default ``precis-<verb>-help``
+    pointer for surfaces with no per-verb skill (the command profile's
+    ``precis`` tool).
+    """
+    from precis.errors import BadInput
+    from precis.tools import core as _tools_core
+
+    if hint is None:
+        hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
+    alias_hint = _kwarg_alias_hint(verb, exc)
+    if alias_hint is not None:
+        hint = f"{alias_hint}; {hint}"
+    body = _tools_core._get_runtime().render_error(
+        BadInput(f"{verb}(...): {exc}", next=hint)
+    )
+    return _tools_core._validation_error(body)
+
+
+def _strict_wire_verb(
+    verb: str, func: Callable[..., Any], *, hint: str | None = None
+) -> Callable[..., Any]:
+    """Wrap a non-slim verb so an undeclared wire kwarg refuses, not drops.
+
+    FastMCP's argument model drops undeclared keys (``extra='ignore'``),
+    so a kwarg the verb never declared used to vanish before our code
+    ran — gr693011: ``link(..., dry_run=True)`` silently wrote the edge
+    for real. :func:`~precis.tools.mcp_slim.allow_extra_arguments`
+    keeps extras through validation, so they reach ``func``'s fixed
+    signature as a ``TypeError``, rendered here as the same
+    ``[error:BadInput]`` envelope the command profile produces for the
+    same call. Slim verbs fold extras into ``args=`` (the legacy
+    top-level-kwarg compat path) and skip this wrapper.
+    """
+
+    @functools.wraps(func)
+    def strict(**kwargs: Any) -> Any:
+        # Bind before invoking, same as ``precis``: a signature mismatch
+        # (undeclared wire kwarg) is BadInput, but a TypeError raised
+        # inside the verb is a real fault and must propagate.
+        try:
+            inspect.signature(func).bind(**kwargs)
+        except TypeError as exc:
+            return _verb_typeerror_result(verb, exc, hint=hint)
+        return func(**kwargs)
+
+    cast(Any, strict).__signature__ = inspect.signature(func, eval_str=True)
+    return strict
+
+
 # Kept terse (~150-200 tokens): the whole point of the command profile
 # is a frozen, tiny standing schema. Teaches the call syntax, the
 # text= escape hatch for large bodies, and the two discovery
@@ -1397,14 +1461,15 @@ def precis(
     if "ctx" in TOOL_REGISTRY[verb]["signature"].parameters:
         kwargs["ctx"] = ctx
 
+    # Bind before invoking: only a signature mismatch (an undeclared
+    # kwarg, gr693011) is a caller-input BadInput. A TypeError raised
+    # inside the verb itself is a real fault and must propagate, not be
+    # misreported as [error:BadInput].
     try:
-        return func(**kwargs)
+        TOOL_REGISTRY[verb]["signature"].bind(**kwargs)
     except TypeError as e:
-        hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
-        alias_hint = _kwarg_alias_hint(verb, e)
-        if alias_hint is not None:
-            hint = f"{alias_hint}; {hint}"
-        return _bad_input(f"{verb}(...): {e}", hint=hint)
+        return _verb_typeerror_result(verb, e)
+    return func(**kwargs)
 
 
 def _install_command_profile() -> None:
@@ -1417,8 +1482,23 @@ def _install_command_profile() -> None:
     ``precis`` stays a plain sync function so
     ``tests/test_mcp_put_edit_kwarg_doors.py`` and friends can keep
     calling it directly, synchronously, without going through FastMCP.
+    ``precis`` gets the same strict-extras treatment the typed verbs get
+    in :func:`_register_tools_from_registry` (gr693011) — an undeclared
+    top-level kwarg (``dry_run=True`` beside ``command=``) must refuse,
+    not vanish while ``command=`` still executes its write.
     """
-    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(_offload_sync(precis))
+    from precis.tools.mcp_slim import allow_extra_arguments
+
+    mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(
+        _offload_sync(
+            _strict_wire_verb(
+                "precis", precis, hint=f"call must look like {_COMMAND_EXAMPLE}"
+            )
+        )
+    )
+    registered = mcp._tool_manager.get_tool("precis")
+    if registered is not None:
+        allow_extra_arguments(registered)
 
 
 def _verb_description(fn: Callable[..., Any]) -> str:
@@ -1454,8 +1534,11 @@ def _register_tools_from_registry() -> None:
     for tool_name, tool_info in TOOL_REGISTRY.items():
         # put/edit/search advertise a slim core schema (kind-specific
         # kwargs ride ``args=``); the CLI and the command profile keep
-        # calling the full TOOL_REGISTRY function.
-        func = slim.get(tool_name, tool_info["func"])
+        # calling the full TOOL_REGISTRY function. Every other verb gets
+        # the strict-extras wrapper: an undeclared wire kwarg refuses
+        # with BadInput instead of vanishing inside FastMCP's arg model
+        # (gr693011: ``link(..., dry_run=True)`` wrote the edge for real).
+        func = slim.get(tool_name) or _strict_wire_verb(tool_name, tool_info["func"])
         # Register the tool function with FastMCP — wrapped by
         # ``_offload_sync`` (gr330541) so it dispatches off the event-loop
         # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
@@ -1467,7 +1550,10 @@ def _register_tools_from_registry() -> None:
             **_TOOL_KW,
         )(_offload_sync(func))
         registered = mcp._tool_manager.get_tool(tool_name)
-        if tool_name in slim and registered is not None:
+        if registered is not None:
+            # Keep undeclared keys through arg validation on every verb:
+            # slim verbs fold them into ``args=`` with a deprecation
+            # note; strict verbs refuse them.
             allow_extra_arguments(registered)
 
         # Apply special schema constraints for edit tool
@@ -1557,6 +1643,66 @@ def _slice_request_refusal(request: Any, ctx: Context) -> str | None:
     return core._get_runtime().render_error(denied)
 
 
+def _capability_request_refusal(request: Any, ctx: Context) -> str | None:
+    """The capability-token boundary, checked on the raw request before the
+    SDK normalizes it (gr595554) — the twin of
+    :func:`_personal_request_refusal` / :func:`_slice_request_refusal`
+    for the ``precis_cap_`` stamps.
+
+    Pure compute over the trusted ASGI stamp — the scopes ride the
+    validated :class:`~precis.mcp_identity.CapabilityIdentity`, so no
+    store read and no thread hop. A ``tools/call`` is judged as
+    ``(tool name, arguments)`` (a ``precis`` command is parsed first,
+    like the personal path); ``resources/read`` is ``get`` on the
+    ``precis://<kind>/`` kind; prompts are skills; list/enumerate
+    requests are whole-surface reads only ``read`` covers. Everything
+    else refuses — a consumer credential reaches only what its
+    allow-list names.
+    """
+    from mcp import types
+
+    from precis.mcp_identity import SCOPE_CAPABILITY
+    from precis.tools import core
+    from precis.tools.command_parser import CommandParseError, parse_command
+
+    cap = core._asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return None
+    verb, payload = "", {}
+    if isinstance(request, types.CallToolRequest):
+        verb, payload = request.params.name, request.params.arguments or {}
+        if verb == "precis":
+            try:
+                if set(payload) <= {"command", "text"} and isinstance(
+                    payload.get("command"), str
+                ):
+                    verb, payload = parse_command(
+                        payload["command"], text=payload.get("text")
+                    )
+            except CommandParseError:
+                verb, payload = "", {}
+    elif isinstance(request, types.ReadResourceRequest):
+        verb = "get"
+        uri = str(request.params.uri)
+        kind = uri.removeprefix("precis://").split("/", 1)[0]
+        payload = {"kind": kind}
+    elif isinstance(request, types.GetPromptRequest):
+        verb, payload = "get", {"kind": "skill"}
+    elif isinstance(
+        request,
+        (
+            types.ListPromptsRequest,
+            types.ListResourcesRequest,
+            types.ListResourceTemplatesRequest,
+        ),
+    ):
+        verb = "search"
+    denied = core._capability_refusal(cap, verb, payload)
+    if denied is None:
+        return None
+    return core._get_runtime().render_error(denied)
+
+
 def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
     """Gate every registered content request, including indirect modalities.
 
@@ -1594,8 +1740,12 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                 )
             else:
                 # Pure compute over the trusted ASGI stamps — no store
-                # read, so no thread hop.
-                refusal = _slice_request_refusal(request, ctx)
+                # read, so no thread hop. The capability check (gr595554)
+                # runs first: its stamp is exclusive with the slice
+                # grant's — one bearer resolves to exactly one class.
+                refusal = _capability_request_refusal(
+                    request, ctx
+                ) or _slice_request_refusal(request, ctx)
             if refusal is not None:
                 if isinstance(request, types.CallToolRequest):
                     from precis.tools.core import _validation_error
@@ -1604,7 +1754,16 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                 raise McpError(
                     types.ErrorData(code=types.INVALID_PARAMS, message=refusal)
                 )
-            return await handler(request)
+            # Resources and prompts dispatch directly to the runtime rather
+            # than through tools/core. Keep the resolved-kind backstop bound
+            # across the SDK handler (and its worker-thread context copies).
+            from precis.runtime.dispatch import _KIND_GATE
+
+            gate_token = _KIND_GATE.set(core._capability_kind_gate(ctx))
+            try:
+                return await handler(request)
+            finally:
+                _KIND_GATE.reset(gate_token)
 
         return call
 
@@ -2264,7 +2423,8 @@ def _install_token_auth(
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
 
-    Every content request carries an install, slice, personal or OAuth bearer.
+    Every content request carries an install, slice, personal, OAuth or
+    capability bearer.
     Configured OAuth discovery is public. OAuth requests bind their user and
     app grant separately from API-token IDs; session ownership includes the
     grant, and dispatch rechecks live credentials and consented capabilities.
@@ -2278,6 +2438,13 @@ def _install_token_auth(
     personal data. Personal tools are scoped to learning and the exact
     learning-help read at dispatch; other content requests refuse at the
     MCP request boundary. Never applied to stdio.
+
+    ``precis_cap_`` capability tokens (gr595554) stamp a
+    :class:`~precis.mcp_identity.CapabilityIdentity` — a consumer, never a
+    personal principal — gated per call at dispatch by the token's own
+    kinds/verbs allow-list. They share the streamable-HTTP-only rule: the
+    URL-embedded carriage lives on ``/podcast/*`` (the ``feed`` scope),
+    not on the MCP endpoint, whose auth rules forbid query credentials.
 
     ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
     ``/run/precis-slice-tokens`` on the shared session server) enables the
@@ -2312,6 +2479,7 @@ def _install_token_auth(
                 mcp_identity.SCOPE_USER_ID,
                 mcp_identity.SCOPE_TOKEN_ID,
                 mcp_identity.SCOPE_OAUTH_IDENTITY,
+                mcp_identity.SCOPE_CAPABILITY,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
                 slice_tokens.SCOPE_GRANT_SCOPE,
@@ -2371,7 +2539,11 @@ def _install_token_auth(
                 raw = header.removeprefix("Bearer ")
                 if (
                     raw.startswith(
-                        (mcp_identity.TOKEN_PREFIX, oauth_store.ACCESS_PREFIX)
+                        (
+                            mcp_identity.TOKEN_PREFIX,
+                            oauth_store.ACCESS_PREFIX,
+                            mcp_identity.CAP_TOKEN_PREFIX,
+                        )
                     )
                     and not self.ownership_supported
                 ):
@@ -2422,6 +2594,12 @@ def _install_token_auth(
                     identity = await anyio.to_thread.run_sync(
                         mcp_identity.resolve_user_token, store, raw
                     )
+                    if identity is None:
+                        capability = await anyio.to_thread.run_sync(
+                            mcp_identity.resolve_capability_token, store, raw
+                        )
+                    else:
+                        capability = None
                 except Exception:
                     # Do not attach exception messages or credentials to logs.
                     response = JSONResponse(
@@ -2449,6 +2627,27 @@ def _install_token_auth(
                         send,
                         "precis-user",
                         subject=str(identity.user_id),
+                    )
+                    return
+                if capability is not None:
+                    if personal_path is None or scope.get("path") != personal_path:
+                        response = JSONResponse(
+                            {
+                                "error": "capability tokens require streamable HTTP",
+                                "next": "connect to the streamable HTTP MCP endpoint",
+                            },
+                            status_code=403,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                    scope[mcp_identity.SCOPE_CAPABILITY] = capability
+                    await self._authorized(
+                        scope,
+                        receive,
+                        send,
+                        "precis-cap",
+                        subject=str(capability.token_id),
                     )
                     return
             headers = {"Cache-Control": "no-store"}

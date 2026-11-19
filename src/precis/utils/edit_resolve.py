@@ -34,6 +34,7 @@ schema and error shapes leave room for them without breaking changes.
 from __future__ import annotations
 
 import difflib
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -51,11 +52,14 @@ __all__ = [
     "apply_edit",
     "classify_diff_hunks",
     "find_candidates",
+    "fold_anchor",
     "format_unified_diff",
     "normalize_dry_run",
+    "relaxed_candidates",
     "render_dry_run_full",
     "render_dry_run_header",
     "select_candidates",
+    "splice_edit",
 ]
 
 
@@ -321,6 +325,145 @@ def find_candidates(buffer: str, op: EditOp) -> list[EditCandidate]:
 
 
 # ---------------------------------------------------------------------------
+# Relaxed (folded) matching — the retype-drift retry
+# ---------------------------------------------------------------------------
+
+#: Per-character fold applied on top of NFKC for relaxed anchor matching
+#: (gr688478): an agent that retypes a span instead of copying it drifts
+#: on curly quotes, Unicode dashes, arrows, ellipses and zero-width glue.
+#: NFKC already covers ligatures (``ﬁ`` → ``fi``), NBSP and other compat
+#: forms; this map catches what NFKC leaves alone. Values of ``None``
+#: drop the character entirely.
+_ANCHOR_FOLD = str.maketrans(
+    {
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+        "′": "'",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "″": '"',
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "…": "...",
+        "→": "->",
+        "←": "<-",
+        "↔": "<->",
+        "\u00ad": None,  # soft hyphen
+        "\u200b": None,  # zero-width space
+        "\u200c": None,  # zero-width non-joiner
+        "\u200d": None,  # zero-width joiner
+        "\ufeff": None,  # BOM / zero-width no-break space
+    }
+)
+
+
+def _fold_mapped(
+    s: str, *, keep_edge_ws: bool = False
+) -> tuple[str, list[tuple[int, int]]]:
+    """Fold ``s`` for relaxed matching → ``(folded, index map)``.
+
+    Each raw char is NFKC-normalized then punctuation-folded; whitespace
+    runs collapse to a single space. Edge whitespace is dropped unless
+    ``keep_edge_ws`` — find/before/after keep theirs so a trailing-space
+    anchor still demands a whitespace run, the way literal matching
+    demands the space itself. Each folded character maps to its raw span.
+    A collapsed space covers the whole run, and characters from an
+    expansion such as ``ﬁ`` → ``fi`` share a span.
+    """
+    out: list[str] = []
+    spans: list[tuple[int, int]] = []
+    gap: tuple[int, int] | None = None
+    for i, ch in enumerate(s):
+        for c in unicodedata.normalize("NFKC", ch).translate(_ANCHOR_FOLD):
+            if c.isspace():
+                gap = (i if gap is None else gap[0], i + 1)
+            else:
+                if gap is not None:
+                    if out or keep_edge_ws:
+                        out.append(" ")
+                        spans.append(gap)
+                    gap = None
+                out.append(c)
+                spans.append((i, i + 1))
+    if keep_edge_ws and gap is not None and out:
+        out.append(" ")
+        spans.append(gap)
+    return "".join(out), spans
+
+
+def fold_anchor(s: str) -> str:
+    """``_fold_mapped``'s folded text alone — compare two spellings."""
+    return _fold_mapped(s)[0]
+
+
+def relaxed_candidates(buffer: str, op: EditOp) -> list[EditCandidate]:
+    """Folded-text candidates for ``op.find``, mapped to raw offsets.
+
+    The retry a missed anchor deserves before erroring: the agent saw the
+    text on a read but retyped it with drifted whitespace, quotes, dashes
+    or ligatures. ``before``/``after`` compare in the same folded space;
+    the returned spans, line numbers and line text are against the raw
+    buffer so the splice and any error listing cite real bytes. Returns
+    ``[]`` when folding changes nothing (the literal miss was honest) or
+    when nothing matches in folded space either.
+    """
+    fbuf, spans = _fold_mapped(buffer, keep_edge_ws=True)
+    ffind = _fold_mapped(op.find, keep_edge_ws=True)[0]
+    fbefore = _fold_mapped(op.before, keep_edge_ws=True)[0]
+    fafter = _fold_mapped(op.after, keep_edge_ws=True)[0]
+    if not ffind or (op.before and not fbefore) or (op.after and not fafter):
+        return []
+    if (fbuf, ffind, fbefore, fafter) == (buffer, op.find, op.before, op.after):
+        return []
+
+    def at_boundary(pos: int) -> bool:
+        return pos == 0 or pos == len(spans) or spans[pos - 1][1] <= spans[pos][0]
+
+    line_starts = _line_starts(buffer)
+    candidates: list[EditCandidate] = []
+    start = 0
+    flen = len(ffind)
+    blen = len(fbefore)
+    alen = len(fafter)
+    while True:
+        idx = fbuf.find(ffind, start)
+        if idx == -1:
+            break
+        start = idx + 1
+        end = idx + flen
+        if not at_boundary(idx) or not at_boundary(end):
+            continue
+        if blen and (
+            idx < blen
+            or fbuf[idx - blen : idx] != fbefore
+            or not at_boundary(idx - blen)
+        ):
+            continue
+        if alen and (fbuf[end : end + alen] != fafter or not at_boundary(end + alen)):
+            continue
+        raw_start = spans[idx][0]
+        raw_end = spans[end - 1][1]
+        line_no_local, line_text = _line_of(buffer, raw_start, line_starts)
+        candidates.append(
+            EditCandidate(
+                start=raw_start,
+                end=raw_end,
+                line_no=line_no_local + (op.base_line - 1),
+                line_text=line_text,
+            )
+        )
+    return candidates
+
+
+# ---------------------------------------------------------------------------
 # Match-policy selection (with sharp errors)
 # ---------------------------------------------------------------------------
 
@@ -440,22 +583,21 @@ def select_candidates(
 # ---------------------------------------------------------------------------
 
 
-def apply_edit(buffer: str, op: EditOp) -> EditResult:
-    """Resolve ``op`` against ``buffer`` and return the spliced result.
+def splice_edit(
+    buffer: str,
+    op: EditOp,
+    chosen: list[EditCandidate],
+    *,
+    n_matches: int | None = None,
+) -> EditResult:
+    """Splice every selected candidate into ``buffer``, end-to-start.
 
-    Steps:
-      1. Validate the EditOp shape (already done at construction).
-      2. Find candidate spans (literal find + anchor filter).
-      3. Apply the match policy (errors on ambiguous / not found).
-      4. Splice every chosen candidate, end-to-start so byte offsets
-         remain valid as we mutate.
-
-    Raises :class:`BadInput` on any policy or input violation. Pure —
-    does not touch disk.
+    Split out of :func:`apply_edit` so a caller that resolved candidates
+    its own way (the memory handler's folded retry, gr688478) reuses the
+    same splice, span reporting and no-op check. ``chosen`` must already
+    satisfy the match policy — run :func:`select_candidates` first.
+    ``n_matches`` overrides the reported pre-policy candidate count.
     """
-    candidates = find_candidates(buffer, op)
-    chosen = select_candidates(candidates, op, buffer=buffer)
-
     # Splice end-to-start so earlier offsets don't shift.
     new_buffer = buffer
     edited_spans: list[tuple[int, int]] = []
@@ -493,8 +635,26 @@ def apply_edit(buffer: str, op: EditOp) -> EditResult:
     return EditResult(
         new_buffer=new_buffer,
         edited_spans=tuple(edited_spans),
-        n_matches=len(candidates),
+        n_matches=len(chosen) if n_matches is None else n_matches,
     )
+
+
+def apply_edit(buffer: str, op: EditOp) -> EditResult:
+    """Resolve ``op`` against ``buffer`` and return the spliced result.
+
+    Steps:
+      1. Validate the EditOp shape (already done at construction).
+      2. Find candidate spans (literal find + anchor filter).
+      3. Apply the match policy (errors on ambiguous / not found).
+      4. Splice every chosen candidate, end-to-start so byte offsets
+         remain valid as we mutate.
+
+    Raises :class:`BadInput` on any policy or input violation. Pure —
+    does not touch disk.
+    """
+    candidates = find_candidates(buffer, op)
+    chosen = select_candidates(candidates, op, buffer=buffer)
+    return splice_edit(buffer, op, chosen, n_matches=len(candidates))
 
 
 # ---------------------------------------------------------------------------

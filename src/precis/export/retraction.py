@@ -5,8 +5,7 @@ One walk, two consumers — the export gate (`precis_web/routes/drafts.py`)
 and the draft's retraction-watch button — so the two can never disagree
 about what a draft cites or how bad it is.
 
-**DOI completeness rides the same walk** (docs/backlog/
-draft-doi-completeness-check.md, decided 2026-08-12: one walk, not a
+**DOI completeness rides the same walk** (gr690484, decided 2026-08-12: one walk, not a
 parallel module). DOI *presence* — does this cite carry a DOI at all, and
 if not, is it at least resolvable from another identifier (arxiv/pubmed/
 s2)? — is a pure read off ``ref_identifiers``, same cost profile as
@@ -25,12 +24,10 @@ TTL still fresh), so the two checks never both fetch the same DOI. Both DOI
 signals are advisory only — see :attr:`CitedPaper.doi_fetchable` /
 :attr:`DraftRetractionReport.missing_doi` — never :attr:`blocks_export`.
 
-The split that matters here is **read vs check**. Export is a read: it
-reports whatever the triggers happened to stamp and never touches the
-network, because discovering a minute of Crossref latency inside a
-download click is the wrong place to find out. The button is the check:
-it is the user deliberately waiting, and it is where stale cites get
-re-fetched (TTL-gated, see ``ingest/provenance.check_ref_retraction``).
+PDF export jobs deliberately check stale citations before rendering, using the
+persisted 30-day TTL; callers can request all citations or stored state only.
+Word exports remain read-only. The pane button offers a bounded check for
+interactive use; export jobs check the full draft before applying the gate.
 
 A caller that can't afford to walk every cite in one press narrows the
 network side with ``check_slugs`` — :func:`select_for_check` picks the
@@ -48,7 +45,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.ingest.provenance import (
@@ -243,6 +240,19 @@ class DraftRetractionReport:
     checked: bool = False
 
     @property
+    def recent_count(self) -> int:
+        """Citations with a persisted check within the retraction TTL."""
+        cutoff = datetime.now(UTC) - timedelta(days=RETRACTION_TTL_DAYS)
+        return sum(
+            isinstance(p.checked_at, datetime) and p.checked_at >= cutoff
+            for p in self.papers
+        )
+
+    def coverage_summary(self) -> str:
+        """Shared pane, progress and document coverage wording."""
+        return f"{self.recent_count} of {len(self.papers)} checked within 30 d"
+
+    @property
     def retracted(self) -> list[CitedPaper]:
         return [p for p in self.papers if p.blocks]
 
@@ -407,7 +417,7 @@ def draft_retraction_report(
     """Retraction state — and DOI completeness/validity — of everything
     ``ref`` cites (gr690484).
 
-    ``check=False`` (the export path) reads stored state only — no
+    ``check=False`` (a read-only export) reads stored state only — no
     network. ``check=True`` (the button) re-checks each cite through the
     TTL gate; ``force=True`` additionally ignores the TTL, which is what
     makes pressing the button twice in a day do something. DOI presence
@@ -535,6 +545,22 @@ def draft_retraction_report(
     return DraftRetractionReport(papers=papers, unresolved=unresolved, checked=check)
 
 
+def retraction_coverage_entries(
+    report: DraftRetractionReport, scope: str
+) -> list[tuple[str, bool]]:
+    """Shared end-matter lines and red-warning decisions; fresh coverage is quiet."""
+    if not report.papers:
+        return []
+    if scope != "none" and report.recent_count == len(report.papers):
+        return []
+    text = "Retraction coverage: " + report.coverage_summary() + "."
+    if scope == "none":
+        text += " No retraction checks requested for this export."
+    if report.unchecked:
+        text += f" {len(report.unchecked)} cited papers have never been checked."
+    return [(text, scope == "none" or bool(report.unchecked))]
+
+
 __all__ = [
     "BLOCKING_STATUSES",
     "SOFT_STATUSES",
@@ -544,6 +570,7 @@ __all__ = [
     "cited_paper_refs",
     "draft_retraction_report",
     "identifier_kind_for",
+    "retraction_coverage_entries",
     "select_for_check",
     "summarize_doi_completeness",
 ]

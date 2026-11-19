@@ -59,7 +59,7 @@ correct it.
 2. **me695330 items 4, 8, 9** (blob store, contamination
    detection, frozen eval world) — waits on Do next 3 and on local-compute's
    the GPU node prerequisites (the `/mnt/cluster` NFS hang and the GPU node host prep,
-   `gb10-provisioning.md` §Host items); reproducible, comparable
+   `gb10-provisioning (me695270)` §Host items); reproducible, comparable
    eval runs. gr692206 (unthreaded) is its first
    consumer.
 3. **me695348** (+ its prerequisite

@@ -41,6 +41,7 @@
 \usepackage{microtype}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
+\usepackage{xcolor}     % coverage warnings must work without optional pdfcomment
 \usepackage{booktabs}
 \usepackage{array}      % >{...}p{} column types for wrapping table cells
 \usepackage{longtable}  % page-breaking data tables (export/latex.py)
@@ -156,7 +157,7 @@ A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain
 
 Collapse \cite{smith20} \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
 
-Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cite[SI]{parent24}\cite{lee22}.\label{chunk:dc5}
+Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cites{lee22}[SI]{parent24}\relax.\label{chunk:dc5}
 
 \subsection{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 
@@ -188,7 +189,7 @@ E = mc^2
 \item Nested step \textbf{bold}.\label{chunk:dc23}
 
 \end{enumerate}
-\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+\item Second point, see above.\label{chunk:dc24}
 
 \end{itemize}
 % label{chunk:dc25}
@@ -234,6 +235,9 @@ Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
 \par\noindent Claim 8 (unverified) {\textemdash} source pending
 \par\noindent Claim 9 (unverified) {\textemdash} source pending
 \par\noindent Claim 10 (unverified) {\textemdash} source pending
+\section*{Retraction coverage}
+\textcolor{red}{Retraction coverage: 0 of 5 checked within 30 d. No retraction checks requested for this export. 5 cited papers have never been checked.}
+
 
 \clearpage
 \section*{Data package}

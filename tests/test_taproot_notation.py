@@ -341,6 +341,29 @@ def test_hyphen_numeric_range_does_not_fire_on_named_method() -> None:
     assert not any("hyphen-numeric-range" in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    ["qwen3.6-27b-q8_0", "package3.16-27b", "model_6-27b", "模型6-27b"],
+)
+def test_hyphen_numeric_range_preserves_identifiers(identifier: str) -> None:
+    sentence = f"The selected model is {identifier}."
+    assert not any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence
+    assert "hyphen-numeric-range" not in codes
+
+
+@pytest.mark.parametrize("numeric_range", ["0.7-0.9 mg", "6-27 mg", "16-27b"])
+def test_hyphen_numeric_range_preserves_standalone_detection(
+    numeric_range: str,
+) -> None:
+    sentence = f"The measured range is {numeric_range}."
+    assert any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence.replace("-", "–")
+    assert "hyphen-numeric-range" in codes
+
+
 # Pople basis sets are nomenclature hyphens, not ranges. Found on
 # fi191307, which no reword could clear: keeping the basis set kept the
 # lint, dropping it failed numeric-token preservation
@@ -399,6 +422,19 @@ def test_ascii_x_multiplier_does_not_fire_on_grid_label() -> None:
     assert not any("ascii-x-multiplier" in w for w in warnings)
 
 
+def test_ascii_x_multiplier_does_not_fire_on_handle_range() -> None:
+    # 'pa4249x' is a ref-handle range (pa42490 to pa42499), not a number
+    # times something: the digit run is glued to the handle prefix, so no
+    # word boundary sits before it (gr694538). The normalize path must not
+    # rewrite it either.
+    sentence = "The pa4249x range has 5 merged pairs."
+    warnings = lint_notation(sentence)
+    assert not any("ascii-x-multiplier" in w for w in warnings)
+    out, codes = normalize_notation(sentence)
+    assert "×" not in out, out
+    assert "ascii-x-multiplier" not in codes, codes
+
+
 # ── 2026-08-20 numeric-value policy: range-unit-repeated ─────────────────
 
 
@@ -436,6 +472,18 @@ def test_range_unit_repeated_does_not_fire_on_nomenclature() -> None:
             sentence,
             warnings,
         )
+
+
+@pytest.mark.parametrize("identifier", ["model_4b-4b", "model.4b-4b", "模型4b-4b"])
+def test_range_unit_repeated_does_not_fire_on_identifier(identifier: str) -> None:
+    # Same `(?<![-\w.])` guard as hyphen-numeric-range: `4b-4b` here is a
+    # model/package version tag, not a duplicated unit (gr695785) -- and
+    # normalize must leave the identifier byte-identical.
+    sentence = f"Runs used {identifier} throughout."
+    assert not any("range-unit-repeated" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert identifier in out
+    assert "range-unit-repeated" not in codes
 
 
 def test_range_unit_repeated_auto_fixes() -> None:
@@ -676,6 +724,10 @@ _NOMENCLATURE_HYPHEN_SENTENCES: list[str] = [
     "HKUST-1 exhibits a Langmuir surface area above 2000 m2 per gram.",
     "VOTCPP-PIF-1 was deployed as a chemiresistive sensor.",
     "Features below sub-10-nm scale were resolved by TEM.",
+    "The climate orchestrator's cycle-0 count is recorded.",
+    "E. coli K-12 was cultured overnight.",
+    "The K-12 strain was cultured overnight.",
+    "The cycle-00 label is preserved.",
 ]
 
 
@@ -704,6 +756,8 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         ("Mobility was 500 cm2 V-1 s-1.", "V⁻¹ s⁻¹"),
         ("The rate constant is 4.2 M-1 s-1.", "M⁻¹ s⁻¹"),
         ("Sheet resistance falls off as cm-2.", "cm⁻²"),
+        ("Sensitivity is 2 K-1.", "K⁻¹"),
+        ("The decay rate is 2 cycle-1.", "cycle⁻¹"),
     ]
     for sentence, expected_fragment in cases:
         warnings = lint_notation(sentence)
@@ -711,6 +765,15 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         out, codes = normalize_notation(sentence)
         assert "ascii-minus-exponent" in codes, (sentence, codes)
         assert expected_fragment in out, (sentence, out)
+
+
+def test_explicit_kelvin_minus_exponent_is_not_a_strain_name() -> None:
+    sentence = "The coefficient has units K^-12."
+    assert any("ascii-minus-exponent" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == "The coefficient has units K⁻¹²."
+    # Caret normalization runs before the bare-minus normalization.
+    assert "caret-exponent" in codes
 
 
 def test_fully_canon_compliant_sentence_produces_no_warnings() -> None:
