@@ -4011,6 +4011,11 @@ class NumericRefHandler(Handler):
         create_kw: dict[str, Any] = {}
         if self.accepts_put_meta and _kw.get("meta"):
             create_kw["put_meta"] = _kw["meta"]
+        # Kinds whose create writes its own link (memory: gr715265) accept
+        # the edge annotation split off the caller's meta= and forward it
+        # to that link write.
+        if _kw.get("link_meta"):
+            create_kw["link_meta"] = _kw["link_meta"]
 
         def create() -> Response:
             return self._create(

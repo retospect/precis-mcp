@@ -567,6 +567,135 @@ class TestLinkVerbMeta:
         assert _link_row(store, a, b, "related-to") is None
 
 
+# ── put(kind='memory', link=…) carries the annotation (gr715265) ───────
+
+
+class TestPutCreateEdgeMeta:
+    """``put(kind='memory', link=…, rel=…, meta={annotation})`` routes
+    ``meta.{model,prompt_version,run_id,why,evidence}`` onto the created
+    edge — previously the memory handler's meta allowlist refused those
+    keys as node metadata and the create path wrote its link bare, so a
+    machine writer hit the admission gate with an edge that could not
+    carry what the gate requires (precis-read-paper Step 2 fell back to
+    the bare recipe). Node meta (``hook`` …) and edge meta travel in one
+    ``meta=`` and land on their own rows."""
+
+    def _paper_chunk(self, store: Store) -> tuple[int, int]:
+        slug = f"me-{uuid.uuid4().hex[:10]}"
+        paper = int(store.insert_ref(kind="paper", slug=slug, title="p", meta={}).id)
+        from precis.store.types import ChunkInsert
+
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="body", meta={})])
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()
+        assert row is not None
+        return paper, int(row[0])
+
+    def test_machine_put_create_carries_annotation_on_the_edge(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        paper, chunk_id = self._paper_chunk(store)
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": "Setup: DFT PBE+U (VASP).",
+                    "link": f"pc{chunk_id}",
+                    "rel": "derived-from",
+                    "meta": {
+                        "hook": "one-line index text",
+                        **_meta(evidence=[f"pc{chunk_id}"]),
+                    },
+                },
+            )
+        assert "[error:" not in out, out
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT l.meta, r.meta FROM links l "
+                "JOIN refs r ON r.ref_id = l.src_ref_id "
+                "WHERE l.dst_ref_id = %s AND l.relation = 'derived-from'",
+                (paper,),
+            ).fetchone()
+        assert row is not None
+        edge_meta, node_meta = row[0], row[1]
+        for key in ("model", "prompt_version", "run_id", "why", "evidence"):
+            assert edge_meta[key] == _meta(evidence=[f"pc{chunk_id}"])[key]
+            assert key not in node_meta
+        assert node_meta["hook"] == "one-line index text"
+
+    def test_machine_put_create_missing_evidence_still_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        paper, chunk_id = self._paper_chunk(store)
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": "Setup note without its pin.",
+                    "link": f"pc{chunk_id}",
+                    "rel": "derived-from",
+                    "meta": dict(_ANNOTATION),
+                },
+            )
+        assert "[error:BadInput]" in out
+        assert "machine-edge-no-evidence" in out
+        with store.pool.connection() as conn:
+            live = conn.execute(
+                "SELECT 1 FROM refs WHERE kind = 'memory' AND retired_at IS NULL "
+                "AND title = 'Setup note without its pin.'",
+            ).fetchone()
+        assert live is None  # the refusal left no node behind either
+
+    def test_edge_annotation_keys_without_link_are_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        out = runtime_with_store.dispatch(
+            "put",
+            {
+                "kind": "memory",
+                "text": "A memory with nowhere for its annotation to go.",
+                "meta": _meta(),
+            },
+        )
+        assert "[error:BadInput]" in out
+        assert "annotate the link" in out
+        assert "link=" in out
+
+    def test_human_put_create_stores_edge_meta_ungated(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """Without a machine context no gate applies — the annotation
+        still lands on the edge, not the node."""
+        paper, chunk_id = self._paper_chunk(store)
+        out = runtime_with_store.dispatch(
+            "put",
+            {
+                "kind": "memory",
+                "text": "A plain agent setup note.",
+                "link": f"pc{chunk_id}",
+                "rel": "derived-from",
+                "meta": _meta(evidence=[f"pc{chunk_id}"]),
+            },
+        )
+        assert "[error:" not in out, out
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT l.meta, r.meta FROM links l "
+                "JOIN refs r ON r.ref_id = l.src_ref_id "
+                "WHERE l.dst_ref_id = %s AND l.relation = 'derived-from'",
+                (paper,),
+            ).fetchone()
+        assert row is not None
+        edge_meta, node_meta = row[0], row[1]
+        assert edge_meta["why"] == _ANNOTATION["why"]
+        assert "model" not in node_meta
+
+
 # ── the merge exemption ────────────────────────────────────────────────
 
 

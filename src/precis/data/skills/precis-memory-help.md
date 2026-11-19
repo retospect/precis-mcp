@@ -267,7 +267,12 @@ model id. Give `human` only when the content is that person's direct input
 rather than your own thought; it reads `human reto via claude-opus-5-5`.
 Both are labelled claims (`model_source='self'`), not proof. A model the
 run or client already records wins over yours. `written:` above the trust
-line on a bare `get` shows the first and last writer.
+line on a bare `get` shows the first and last writer. On a create that
+also writes a link (`put(..., link='pc<N>', rel='derived-from')`), the
+edge's machine annotation — `meta={'evidence': ['pc<N>'], 'model': ...,
+'prompt_version': ..., 'run_id': ..., 'why': ...}` — rides the same call
+onto the created edge, not the node ([[precis-relations]], machine-written
+edges).
 
 ## Edit a memory in place
 ## Rewrite a memory body without losing its id or links

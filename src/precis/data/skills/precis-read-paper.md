@@ -98,9 +98,21 @@ put(kind="memory", tags=["SPACE:research", "paper-setup"],
          "sampling: 4x4x1 Γ-centred k-mesh; forces < 0.02 eV/Å [pc<b>]\n"
          "model: 4-layer slab, bottom two fixed, 15 Å vacuum [pc<b>]",
     link="pc<a>", rel="derived-from",
-    args={"writer": {"model": "<your model id>"}})
-link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from")
+    args={"writer": {"model": "<your model id>"}},
+    meta={"evidence": ["pc<a>"], "model": "<your model id>",
+          "prompt_version": "<prompt version>", "run_id": "<run id>",
+          "why": "the setup note distils the conditions these chunks state"})
+link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from",
+     meta={"evidence": ["pc<b>"], "model": "<your model id>",
+           "prompt_version": "<prompt version>", "run_id": "<run id>",
+           "why": "the sampling parameters come from this chunk"})
 ```
+
+On create, `meta`'s `evidence`/`model`/`prompt_version`/`run_id`/`why`
+ride `link=` onto the created edge — they annotate the link, not the
+node (other `meta` keys stay node metadata). A bare `put(..., link=...)`
+under a model identity still fails the machine-edge gate: the edge
+arrives with no pin and no writer record.
 
 Write only what the paper states, at its precision; a parameter it does
 not give is absent, not guessed. Supplementary-only parameters are

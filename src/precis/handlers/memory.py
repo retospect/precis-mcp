@@ -206,6 +206,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._links_ops import MACHINE_EDGE_META_KEYS
 from precis.store._search_cut import semantic_fold_distance
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
@@ -498,6 +499,17 @@ _TITLE_MAX = 80
 #: gr568398); ``order`` is a numeric reading-order rank a child's
 #: ``view='toc'`` parent listing sorts on (gr631890).
 _META_ALLOWED = ("hook", "type", "expires", "order")
+
+#: ``meta=`` keys that ride a create-time ``link=`` onto the created
+#: edge instead of the node (gr715265): the machine-edge writer record
+#: plus its evidence chunk pins. ``add_link`` admission requires exactly
+#: these on a machine-written edge, and the link verb has always carried
+#: them — but ``put`` validated them as node metadata and refused, so a
+#: memory minted together with its ``derived-from`` edge could not carry
+#: the annotation (precis-read-paper Step 2 fell back to the bare
+#: recipe). Without ``link=`` they have no edge to land on and are
+#: refused with the call that carries them.
+_EDGE_ANNOTATION_META_KEYS: tuple[str, ...] = (*MACHINE_EDGE_META_KEYS, "evidence")
 
 #: ``meta.expires`` duration grammar — mirrors the alias handler's
 #: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``), resolved at write
@@ -1767,7 +1779,13 @@ class MemoryHandler(AuditedRetirementHandler):
         validity. Meaningless (but harmless) on a non-inference memory.
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
-        (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
+        (``refs.meta.hook``). The other general memory metadata keys are
+        ``type`` (user/feedback/project/reference), ``expires``, and ``order``.
+
+        On create with ``link=``, ``meta=`` also accepts ``model``,
+        ``prompt_version``, ``run_id``, ``why``, and ``evidence``.
+        These five keys are stored only on the created edge. The call
+        rejects them when ``link=`` is omitted.
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1861,6 +1879,26 @@ class MemoryHandler(AuditedRetirementHandler):
         is_ruling = any(
             isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
         )
+        link_meta: dict[str, Any] | None = None
+        if meta:
+            edge_keys = sorted(str(k) for k in meta if k in _EDGE_ANNOTATION_META_KEYS)
+            if edge_keys:
+                if link is None:
+                    raise BadInput(
+                        f"meta= key(s) {edge_keys} annotate the link created "
+                        "by link=, not the memory itself — put accepts them "
+                        "only together with link=...",
+                        next=(
+                            "put(kind='memory', text='...', link='pc<N>', "
+                            "rel='derived-from', meta={'evidence': ['pc<N>'], "
+                            "'model': <writer model>, 'prompt_version': <ver>, "
+                            "'run_id': <run>, 'why': <one sentence>})"
+                        ),
+                    )
+                link_meta = {k: meta[k] for k in edge_keys}
+                meta = {
+                    k: v for k, v in meta.items() if k not in _EDGE_ANNOTATION_META_KEYS
+                }
         create_meta = (
             _validate_meta(meta or {}, ruling=is_ruling)
             if meta is not None or is_ruling
@@ -1895,6 +1933,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
                 meta=create_meta,
+                link_meta=link_meta,
             )
             if is_ruling:
                 resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
@@ -2047,6 +2086,7 @@ class MemoryHandler(AuditedRetirementHandler):
         rel: str | None = None,
         auto_refresh_days: int | None = None,
         put_meta: dict[str, Any] | None = None,
+        link_meta: dict[str, Any] | None = None,
         set_by: ActorSlug = "agent",
         system_meta: dict[str, Any] | None = None,
         default_tags: bool = True,
@@ -2165,11 +2205,16 @@ class MemoryHandler(AuditedRetirementHandler):
                     conn=conn,
                 )
             if target is not None:
+                # link_meta is the edge annotation split off put's meta=
+                # (model/prompt_version/run_id/why/evidence — gr715265):
+                # it belongs on the edge, where the machine-edge admission
+                # gate reads it, not on the node.
                 self.store.add_link(
                     src_ref_id=ref.id,
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
+                    meta=link_meta,
                     conn=conn,
                 )
             if misses:
