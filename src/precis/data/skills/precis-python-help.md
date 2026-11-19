@@ -9,7 +9,7 @@ answers:
   - how do I find every caller of a function?
   - how do I trace the call path from a console script entry point to a function?
   - how do I replace a function body by its qualname?
-applies-to: get/search/put/edit/delete (kind='python')
+applies-to: get/search/put/edit/delete/link (kind='python')
 tags: orientation, addressing
 kinds: python
 status: active
@@ -326,7 +326,8 @@ toggle and a `mode='pattern'` search box at `/python/` (gr499107).
 ## Link a note to a Python symbol
 
 Write `python:<qualname>` (e.g. `python:precis.handlers.python.PythonHandler`)
-in a note or draft body to cite a symbol. The qualname is validated
+in a note or draft body to cite a symbol (a dotted qualname — a bare
+`python:word` stays prose). The qualname is validated
 against the live index and an anchor ref is minted on first mention;
 `link(kind='python', id='<qualname>', target=…)` adds or removes an edge
 by hand. Citing notes show as a `notes citing this symbol` section at
