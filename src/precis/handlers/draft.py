@@ -200,16 +200,25 @@ def _chunk_display_text(chunk: Any) -> str:
     (spreadsheet-tables 1a — the stored text stays plain GFM so the ids
     never reach the embedding or ``content_sha``). A stored ``ids:``
     trailer (written while the line still lived in the text) is dropped
-    first rather than printed twice — meta is the truth."""
+    first rather than printed twice — meta is the truth. Markdown tables
+    are re-rendered from canonical cells without storage backslash escaping
+    so LaTeX commands read verbatim; raw LaTeX tables keep their source."""
     text = chunk.text or ""
     if chunk.chunk_kind != "table":
         return text
-    tbl = (chunk.meta or {}).get("table")
+    meta = chunk.meta or {}
+    tbl = meta.get("table")
     if not isinstance(tbl, dict):
         return text
     lines = text.rstrip("\n").split("\n")
     if lines[-1].startswith("ids: "):
         text = "\n".join(lines[:-1])
+    if tbl.get("header") and (parsed := parse_markdown_table(text)) is not None:
+        text = table_to_markdown(
+            tbl,
+            caption=meta.get("caption") or parsed["caption"],
+            escape_backslashes=False,
+        )
     tail = "\n".join(
         line for line in (table_ids_line(tbl), table_footer_line(tbl)) if line
     )
@@ -7861,7 +7870,11 @@ class DraftHandler(Handler):
                 "header": [columns[i]["name"] for i in ci],
                 "rows": [[data[i][j] for j in ci] for i in ri],
             }
-            md = table_to_markdown(sub, caption=meta.get("caption") or None)
+            md = table_to_markdown(
+                sub,
+                caption=meta.get("caption") or None,
+                escape_backslashes=False,
+            )
             ids = table_ids_line(
                 {
                     "rowmeta": [rowmeta[i] for i in ri],
