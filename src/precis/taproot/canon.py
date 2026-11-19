@@ -249,19 +249,27 @@ class CanonicalClaim:
 #: this module. The strings are stored verbatim in ``refs.meta.claim_type``.
 CLAIM_TYPES: tuple[str, ...] = (
     "measurement",
+    "calculation",
     "definition",
     "capability",
     "mechanism",
     "landscape",
 )
+CLAIM_TYPE_CHOICES = "|".join(CLAIM_TYPES)
 
 #: Definitions shared verbatim by :data:`_EXTRACT_PROMPT` (mint path) and
 #: ``claim_type._PROMPT_CLASSIFY`` (backfill), so both sort the same way.
 CLAIM_TYPE_DEFINITIONS = """\
 type = the sort of claim, exactly one of:
-  measurement — a stated quantity, trend, or observed result of one study
-    under its method/regime ("…tensile strength of ~130 GPa", "…reduces the
-    binding energy from 1.5 to 0.74 eV").
+  measurement — an experimentally measured quantity, trend, or observed
+    result ("…a work function of 4.9 eV measured by photoemission").
+  calculation — a result or prediction obtained from a calculation,
+    simulation, or theoretical model ("…DFT with PBE predicts an adsorption
+    energy of −0.74 eV"; "…NEGF yields a current of 5 μA at 0.1 V").
+    Classify by how the result was obtained, even when the same quantity
+    can be measured experimentally. A value derived from experimental
+    observations (e.g. a fit to measured data) is still a measurement
+    when the claim reports the experimental result.
   definition — what a term, structure, or class is: identity, composition,
     classification ("A carbon nanobud is a fullerene covalently bonded to
     the sidewall of a nanotube").
@@ -856,7 +864,10 @@ Examples:
 For each claim you emit: give the normalized sentence, its type, plus any
 of material/method/quantity/regime it names (omit keys it doesn't name).
 material = the substance/compound the claim is about; method = the named
-technique, procedure, or instrument; quantity = a numeric measure with
+technique, procedure, or instrument. For a calculation keep the reported
+computational method and model (e.g. DFT with PBE, MD with the named force
+field) together in method, and retain them in the sentence when they qualify
+the result. Do not infer missing details. quantity = a numeric measure with
 units ("130 GPa", "450 h⁻¹", "92% yield") — never a bare description or
 label; regime = the named condition the claim holds under ("RT", "under
 UV", "homogeneous solution"). If the passage asserts nothing groundable at
@@ -878,7 +889,9 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "claims": [
     {{
       "claim": "<one normalized, atomic sentence>",
-      "type": "<measurement|definition|capability|mechanism|landscape>",
+      "type": "<"""
+    + CLAIM_TYPE_CHOICES
+    + """>",
       "material": "<optional>",
       "method": "<optional>",
       "quantity": "<optional>",

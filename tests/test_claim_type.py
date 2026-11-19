@@ -19,7 +19,12 @@ import pytest
 from precis.errors import BadInput
 from precis.store.types import Tag
 from precis.taproot import claim_type as ct
-from precis.taproot.canon import CanonicalClaim, Placement, _parse_claim_item
+from precis.taproot.canon import (
+    _EXTRACT_PROMPT,
+    CanonicalClaim,
+    Placement,
+    _parse_claim_item,
+)
 from precis.taproot.hub import (
     apply_placement,
     link_claims,
@@ -58,6 +63,28 @@ def test_parse_claim_item_keeps_a_known_type_and_drops_an_unknown_one() -> None:
     assert bad is not None and bad.claim_type is None
     legacy = _parse_claim_item({"claim": "X is Y."})
     assert legacy is not None and legacy.claim_type is None
+
+
+def test_claim_prompts_offer_calculation_and_parser_keeps_computational_scope() -> None:
+    for prompt in (
+        _EXTRACT_PROMPT.format(excerpt="DFT with PBE gives −0.74 eV."),
+        ct._PROMPT_CLASSIFY.format(
+            sentence="Adsorption energy is −0.74 eV.", scope_json="{}"
+        ),
+    ):
+        assert "<measurement|calculation|" in prompt
+        assert "experimentally measured" in prompt
+    claim = _parse_claim_item(
+        {
+            "claim": "The calculated adsorption energy is −0.74 eV.",
+            "type": "calculation",
+            "method": "DFT with PBE",
+            "quantity": "−0.74 eV",
+        }
+    )
+    assert claim is not None
+    assert claim.claim_type == "calculation"
+    assert claim.scope == {"method": "DFT with PBE", "quantity": "−0.74 eV"}
 
 
 def test_policy_table_is_static_and_only_landscape_deviates() -> None:
