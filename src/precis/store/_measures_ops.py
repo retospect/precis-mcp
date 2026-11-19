@@ -607,25 +607,88 @@ def _squash(text: str) -> str:
     return " ".join(t.split()).casefold()
 
 
+#: Math-mode spans a source may print *glued* to the same value in unicode
+#: ("3651±31$3651\pm31$"): markup-folded they weld into one digit run and
+#: every copy is digit-bounded, so the boundary lookarounds reject the real
+#: occurrence (gr715556).
+_MATH_SPAN_RE = re.compile(r"\$\$.*?\$\$|\$[^$]+\$|\\\(.+?\\\)|\\\[.+?\\\]", re.DOTALL)
+
+
+def _literal_pattern(lit: str) -> str:
+    """``lit`` (already squashed) as a boundary-checked pattern: gaps around
+    non-word characters are ``\\s*``-flexible so "3651±31" meets a spaced
+    "3651 ± 31" print. Two word tokens require whitespace. Digit runs keep
+    the "not part of a longer number"
+    lookarounds ("5" and "95" are not in "1950"). A decimal point between
+    digits stays glued to them: "1.5" must never meet a spaced "1. 5" print
+    (gr715556 review)."""
+    tokens = re.findall(r"\w+|[^\w\s]", lit)
+
+    def glued_decimal(idx: int) -> bool:
+        return (
+            tokens[idx] == "."
+            and 0 < idx < len(tokens) - 1
+            and tokens[idx - 1][-1].isdigit()
+            and tokens[idx + 1][0].isdigit()
+        )
+
+    parts: list[str] = []
+    for i, tok in enumerate(tokens):
+        if i:
+            if glued_decimal(i) or glued_decimal(i - 1):
+                gap = ""
+            elif re.match(r"\w", tokens[i - 1]) and re.match(r"\w", tok):
+                gap = r"\s+"
+            else:
+                gap = r"\s*"
+            parts.append(gap)
+        parts.append(re.escape(tok))
+    body = "".join(parts)
+    if lit[0].isdigit():
+        body = r"(?<!\d)(?<!\d\.)" + body
+    if lit[-1].isdigit():
+        body += r"(?!\d)(?!\.\d)"
+    return body
+
+
 def _literal_in(span_text: str, literal: str) -> bool:
     """Does the literal occur in the span text, on number boundaries? A digit
     run must not be preceded by a digit (or ``digit.``) nor followed by a digit
     (or ``.digit``): "5" and "95" are not in "1950".
 
+    Ordinary literals allow optional whitespace around punctuation. Word
+    tokens require a separator, and decimal points stay joined to their digits.
+
     A scientific literal also matches the ingest-flattened prints of its
     exponents — the PDF text layer drops the superscript raise, so
     ``5 × 10¹²`` extracts as ``5 × 1012`` or ``5 × 10 12`` — via
-    :func:`precis.utils.text.sci_anchor_pattern` (gr715568). Plain
-    literals match verbatim only."""
+    :func:`precis.utils.text.sci_anchor_pattern` (gr715568).
+
+    On a miss, retry after blanking only math spans that render the entire
+    literal. This separates copies welded into one digit run by markup folding
+    ("3651±31$3651\\pm31$", gr715556) and preserves intervening math such as
+    ``$\\times 2$`` in "3651 $\\times 2$ ± 31"."""
     lit = _squash(literal)
     if not lit:
         return False
-    pattern = sci_anchor_pattern(lit) or re.escape(lit)
-    if lit[0].isdigit():
-        pattern = r"(?<!\d)(?<!\d\.)" + pattern
-    if lit[-1].isdigit():
-        pattern += r"(?!\d)(?!\.\d)"
-    return re.search(pattern, _squash(span_text)) is not None
+    sci = sci_anchor_pattern(lit)
+    if sci is not None:
+        pattern = sci
+        if lit[0].isdigit():
+            pattern = r"(?<!\d)(?<!\d\.)" + pattern
+        if lit[-1].isdigit():
+            pattern += r"(?!\d)(?!\.\d)"
+    else:
+        pattern = _literal_pattern(lit)
+    if re.search(pattern, _squash(span_text)) is not None:
+        return True
+
+    def blank_duplicate(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        return " " if re.fullmatch(pattern, _squash(raw)) else raw
+
+    stripped = _MATH_SPAN_RE.sub(blank_duplicate, span_text)
+    return stripped != span_text and re.search(pattern, _squash(stripped)) is not None
 
 
 def _span_text(chunk_text: str, span: Any) -> str:

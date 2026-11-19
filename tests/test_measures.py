@@ -1987,6 +1987,22 @@ class TestLiteralAndUnits:
             ("-0.5", "at −0.5 V vs RHE", True),
             ("–1.0", "a drop of –1.0 eV", True),
             ("9.6 ± 1.7", "9.6 ± 1.7 mg", True),
+            # gr715556: a duplicate math rendering glued to the literal must
+            # not weld both copies into one digit run
+            ("3651±31", "UF$_{2,3}$ & 3651±31$3651\\pm31$", True),
+            ("3651±31", "cell $3651\\pm31$3651±31 next", True),
+            ("3651±31", "3651 ± 31 $3651 \\pm 31$", True),
+            ("3651±31", "$3651 \\pm 31$", True),
+            # gr715556 review: the blanking retry must not fabricate a match
+            # across unrelated math, and a decimal point stays glued to its
+            # digits
+            ("3651±31", "UF$_{2,3}$ & 3651 $\\times 2$ ± 31", False),
+            ("3651±31", "3651 $\\times 2$ ± 31$3651\\pm31$", False),
+            ("1.5", "a value of 1. 5 V", False),
+            ("1.5", "a value of 1.5 V", True),
+            ("1 2", "x 12 y", False),
+            ("V vs RHE", "VvsRHE", False),
+            ("V vs RHE", "V   vs RHE", True),
             # Ingest flattens raised exponents to the baseline (gr715568):
             # the literal keeps the glyphs/e-form, the chunk text does not.
             ("5 × 10¹²", "peak of 5 × 1012 W m-2", True),
@@ -2001,6 +2017,7 @@ class TestLiteralAndUnits:
             ("5 × 10¹²", "scaled 5 × 10123 times", False),
             ("5 × 10¹²", "scaled 5 × 10 123 times", False),
             ("12", "year 1012", False),
+            ("5", "a value of 55", False),
         ],
     )
     def test_extraction_status_matches_on_number_boundaries(
