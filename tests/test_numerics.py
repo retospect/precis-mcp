@@ -132,6 +132,7 @@ class TestExtractNumericsWide:
             ("a 2 μm film", "2 µm"),
             ("10-20 nm wide", "10 nm"),
             ("| Pore aperture [Å] |\n|---|\n| 2.6 |", "2.6 Å"),
+            ("| Row | I | II |\n|---|---|---|\n| Cutoff [Å] | 8.0 | 10.0 |", "10.0 Å"),
         ],
     )
     def test_reads(self, text, want):

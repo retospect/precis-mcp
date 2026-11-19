@@ -235,7 +235,8 @@ def _list_heads(text: str, spans: list[tuple[str, int, int]]) -> list[str]:
 def _table_quantities(text: str) -> list[str]:
     """Cells of a markdown table paired with the unit their header names:
     header ``Pore aperture [Å]`` over cell ``2.6`` yields "2.6 Å"; header
-    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa"."""
+    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa". A unit in the row label
+    (``Cutoff [Å]``) covers the row's cells under unit-less headers."""
     out: list[str] = []
     header: list[list[str]] | None = None
     for line in text.splitlines():
@@ -249,7 +250,11 @@ def _table_quantities(text: str) -> list[str]:
             continue
         if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
             continue
-        for units, cell in zip(header, cells, strict=False):
+        row_units = _HEADER_UNIT_RE.findall(cells[0]) if cells else []
+        for i, (units, cell) in enumerate(zip(header, cells, strict=False)):
+            if not units and i and len(row_units) == 1:
+                # The unit sits in the row label ("Cutoff [Å] | 10.0 | 12.0").
+                units = row_units
             if not units:
                 continue
             parts = cell.split("/") if len(units) > 1 else [cell]
