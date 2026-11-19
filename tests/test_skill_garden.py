@@ -216,7 +216,7 @@ def test_report_lists_three_buckets(
         [
             sg.SkillVerdict(
                 verdict="simplify",
-                evidence="gr resolved on main",
+                evidence="resolved: abc1234 on main",
                 rationale="shrink it",
                 model="m",
             ),
@@ -276,3 +276,126 @@ def test_registered_job_type() -> None:
     assert spec is not None and spec is sg.SPEC
     assert "skill_garden" in known_job_types()
     assert spec.compatible_executors == frozenset({"job_inproc"})
+
+
+def test_limit_counts_attempts_and_reaches_later_records(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decided records do not eat the limit: run 2 reaches the record
+    run 1 deferred."""
+    corpus = {f"s{i}": _skill(rulings=[f"gr{_gripe(store)}"]) for i in range(3)}
+    calls: list[str] = []
+
+    def _propose(store: Store, rec: sg.RuleRecord, **_kw: Any) -> sg.SkillVerdict:
+        calls.append(rec.skill)
+        return sg.SkillVerdict(verdict="keep", rationale="holds", model="m")
+
+    monkeypatch.setattr(sg, "_corpus", lambda: corpus)
+    monkeypatch.setattr(sg, "propose_llm", _propose)
+    monkeypatch.setattr(sg, "_run_example", lambda call: "out")
+    for _ in range(3):
+        sg._dispatch(_Ctx(store, {"limit": 1}), sg.SPEC)
+    assert calls == ["s0", "s1", "s2"]
+
+
+def test_closed_gripe_reopens_a_kept_rule(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keep under an open gripe is re-asked once the gripe resolves."""
+    gid = _gripe(store)
+    corpus = {"inc": _skill(rulings=[f"gr{gid}"])}
+    calls: list[int] = []
+
+    def _propose(store: Store, rec: sg.RuleRecord, **_kw: Any) -> sg.SkillVerdict:
+        calls.append(1)
+        return sg.SkillVerdict(verdict="keep", rationale="open", model="m")
+
+    monkeypatch.setattr(sg, "_corpus", lambda: corpus)
+    monkeypatch.setattr(sg, "propose_llm", _propose)
+    monkeypatch.setattr(sg, "_run_example", lambda call: "out")
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    assert len(calls) == 1
+    store.chunks.insert_chunks(
+        gid,
+        [
+            sg.ChunkInsert(
+                ord=5,
+                text="resolved: abc1234 (main)",
+                meta={"chunk_kind": "gripe_comment"},
+            )
+        ],
+    )
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    assert len(calls) == 2
+
+
+def test_section_attribution_and_ambiguity() -> None:
+    """A cited ruling pins its section; several rulings with none cited
+    is ambiguous (Reto); an unruled section in a ruled skill is not lost."""
+    body = "## A\n- never touch gr5 things\n\n## B\n- must ask first\n"
+    recs = sg.collect_records({"x": _skill(rulings=["gr5", "me2"], body=body)})
+    a = [r for r in recs if r.section == "A"]
+    b = [r for r in recs if r.section == "B"]
+    assert [(r.ruling, r.attribution, r.bucket) for r in a] == [
+        ("gr5", "cited", "check")
+    ]
+    assert [(r.ruling, r.attribution, r.bucket) for r in b] == [
+        (None, "ambiguous", "ask_reto")
+    ]
+    one = sg.collect_records({"y": _skill(rulings=["gr5"], body=body)})
+    assert {r.attribution for r in one} == {"cited", "assumed"}
+
+
+def test_ungrounded_evidence_is_demoted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evidence not traceable to the gripe or replay never proposes."""
+    gid = _gripe(store, done=True)
+    corpus = {"inc": _skill(rulings=[f"gr{gid}"])}
+    monkeypatch.setattr(sg, "_corpus", lambda: corpus)
+    monkeypatch.setattr(
+        sg,
+        "propose_llm",
+        lambda *a, **kw: sg.SkillVerdict(
+            verdict="drop", evidence="totally invented proof", rationale="x"
+        ),
+    )
+    monkeypatch.setattr(sg, "_run_example", lambda call: "out")
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    assert _proposals(store) == []
+    assert _rejections(store)[0]["reason"] == "no_evidence"
+
+
+def test_run_example_refuses_writes_and_unlisted_kinds() -> None:
+    assert "not a read-only verb" in sg._run_example("put(kind='memory', text='x')")
+    assert "replay list" in sg._run_example("get(kind='paper', id='10.1/x')")
+
+
+def test_report_accounts_decided_and_empty(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Earlier keeps keep their reason in the report; an empty run still
+    comments on the todo."""
+    gid = _gripe(store)
+    corpus = {"inc": _skill(rulings=[f"gr{gid}"])}
+    monkeypatch.setattr(sg, "_corpus", lambda: corpus)
+    monkeypatch.setattr(
+        sg,
+        "propose_llm",
+        lambda *a, **kw: sg.SkillVerdict(verdict="keep", rationale="still open"),
+    )
+    monkeypatch.setattr(sg, "_run_example", lambda call: "out")
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    ctx = _Ctx(store)
+    sg._dispatch(ctx, sg.SPEC)
+    report = ctx.meta["skill_garden"]["report"]
+    assert "earlier: still open" in report and f"(gr{gid})" in report
+
+    todo = int(store.insert_ref(kind="todo", slug=None, title="t", meta={}).id)
+    monkeypatch.setattr(sg, "_corpus", lambda: {})
+    ctx = _Ctx(store, dispatched_from_todo=todo)
+    sg._dispatch(ctx, sg.SPEC)
+    assert any(
+        c.chunk_kind == "todo_comment" for c in store.chunks.list_chunks_for_ref(todo)
+    )

@@ -28,6 +28,13 @@ brick the worker.
 expected-count guard and dry-run default re-arm existing fetch pins without
 removing body/hash/event evidence or calling a provider/model.
 
+``skill_garden`` reviews skill rules against their ``rulings:`` monthly:
+per-section records (a section citing a ruling handle is attributed to
+it; ambiguous or unruled sections go to Reto), one routed verdict per
+incident-born item, ``limit`` bounding judge attempts, evidence grounded
+in the gripe or a read-only example replay, proposals-only into the
+reviews ledger, and a report comment on the dispatching todo.
+
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
 Park snapshots scan every unpublished commit, because even credentials
