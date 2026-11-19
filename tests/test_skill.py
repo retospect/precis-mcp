@@ -37,6 +37,7 @@ from precis.handlers.skill import (
     _list_skills,
 )
 from precis.runtime.core import PrecisRuntime
+from tests._skill_corpus import _install_corpus
 
 
 @pytest.fixture
@@ -192,63 +193,40 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
     assert out.result_budget_hint is None
 
 
-def _shipped_cross_section_mention() -> tuple[str, int, int]:
-    """``(slug, i, j)``: a shipped skill whose section ``~i`` names its
-    sibling section ``~j`` as a backticked lone ``slug~j`` (``j != i``,
-    in bounds); the pair with the smallest span ``|j - i|``, first on a tie.
-
-    Picks the pair from the skill's real content so re-sectioning or
-    re-wording a skill can't strand the test on a hard-coded number. The
-    mention pattern is written here, not borrowed from the lift code, so a
-    broken detector can't quietly choose its own pair.
-    """
-    import re
-
-    from precis.handlers.skill import _list_skills, _load_skill
-    from precis.runtime.scope import current_scope
-    from precis.skill_index.chunker import chunk_by_h2
-    from precis.utils.skill_scope import render as scope_render
-
-    best: tuple[int, str, int, int] | None = None
-    for slug in _list_skills():
-        text = _load_skill(slug)
-        if text is None:
-            continue
-        mention = re.compile(rf"`{re.escape(slug)}~(\d+)`")
-        chunks = chunk_by_h2(scope_render(text, current_scope())[0])
-        for i, chunk in enumerate(chunks):
-            for m in mention.finditer(chunk.text):
-                j = int(m.group(1))
-                if j != i and j < len(chunks):
-                    if best is None or abs(j - i) < best[0]:
-                        best = (abs(j - i), slug, i, j)
-    if best is None:
-        pytest.fail("no shipped skill section names a sibling section handle")
-    return best[1], best[2], best[3]
+_SIBLING_SLUG = "probe-help"
+#: Section ~1 names only the backticked sibling handle ``probe-help~2``.
+_SIBLING_SKILL = (
+    "---\nflavor: reference\n---\n"
+    "# Probe\nintro\n"
+    "## One\nsee `probe-help~2` for the details.\n"
+    "## Two\nthe details.\n"
+)
 
 
-def test_skill_chunk_next_lifts_a_referenced_section(skill: SkillHandler) -> None:
+def test_skill_chunk_next_lifts_a_referenced_section(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr626104: a lone ``~N`` serve has no "below" — a sibling-section
     handle the chunk names rides the ``Next:`` trailer as a direct call,
-    and the prose names it too (``slug~i`` → ``slug~j``)."""
-    slug, i, j = _shipped_cross_section_mention()
-    out = skill.get(id=f"{slug}~{i}")
-    assert f"`{slug}~{j}`" in out.body
-    assert f"get(kind='skill', id='{slug}~{j}')" in out.body
+    and the prose names it too. A synthetic skill, so the pair doesn't
+    depend on how a shipped skill is sectioned or worded (gr735136)."""
+    _install_corpus(monkeypatch, {_SIBLING_SLUG: _SIBLING_SKILL})
+    out = skill.get(id=f"{_SIBLING_SLUG}~1")
+    assert f"`{_SIBLING_SLUG}~2`" in out.body
+    assert f"get(kind='skill', id='{_SIBLING_SLUG}~2')" in out.body
 
 
 def test_skill_chunk_next_skips_handles_inside_the_served_range(
-    skill: SkillHandler,
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A range serve already includes a self-referenced chunk — the
     trailer doesn't re-advertise it."""
-    slug, i, j = _shipped_cross_section_mention()
-    lo, hi = sorted((i, j))
-    out = skill.get(id=f"{slug}~{lo}..{hi}")
+    _install_corpus(monkeypatch, {_SIBLING_SLUG: _SIBLING_SKILL})
+    out = skill.get(id=f"{_SIBLING_SLUG}~1..2")
     # positive half: the served range carries the mention itself …
-    assert f"`{slug}~{j}`" in out.body
+    assert f"`{_SIBLING_SLUG}~2`" in out.body
     # … and the Next trailer doesn't re-advertise the handle it already holds
-    assert f"get(kind='skill', id='{slug}~{j}')" not in out.body
+    assert f"get(kind='skill', id='{_SIBLING_SLUG}~2')" not in out.body
 
 
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:
