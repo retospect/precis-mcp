@@ -9575,6 +9575,93 @@ def test_file_overlap_hold_uses_retry_brief_over_builder_handoff(store: Store) -
     assert _overlap_note(store, waiting)
 
 
+def test_file_overlap_hold_ignores_files_named_in_builder_handoffs(
+    store: Store,
+) -> None:
+    """gr734976: a builder session's plain ``handoff:`` names files it
+    read, ran or found red, not files it edits — two builds whose
+    handoffs mention the same untouched file do not wait on each other.
+    The same sentence as a ``brief:`` still holds."""
+    note = f"handoff: mypy reports import-not-found in {_SHARED}, files I didn't touch"
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, note)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, note)
+
+    assert not _overlap_note(store, waiting)
+    # Non-vacuous: the file is named, just not in a declaring comment.
+    _todo_comment(store, blocker, f"brief: also edit {_SHARED}")
+    _todo_comment(store, waiting, f"brief: edit {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_queued_builds_brief(store: Store) -> None:
+    """gr734976: a ``brief:`` comment on the queued build declares its
+    files, against the started build's stamped ``branch_files``."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    _todo_comment(store, waiting, f"brief: rework {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_landers_conflict_handoff(store: Store) -> None:
+    """gr734976: the lander's failure handoff is a machine instruction
+    that names the files to fix — a retried build whose land hit a merge
+    conflict in a started build's file is held on it."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        "handoff: lander: land FAILED: Auto-merging "
+        f"{_SHARED}\nCONFLICT (content): Merge conflict in {_SHARED}",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_retrys_own_branch_files(store: Store) -> None:
+    """gr734976: a retry that already has commits carries its own stamped
+    ``branch_files`` — held on a started build's file though no text of
+    its names one."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    store.stamp_ref_meta(waiting, {"branch_files": [_SHARED, 7]})
+    assert _overlap_note(store, waiting)
+    # A malformed stamp is no file set, not an error.
+    store.stamp_ref_meta(waiting, {"branch_files": "not-a-list"})
+    assert not _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_preland_handback(store: Store) -> None:
+    """gr734976: the tick's pre-land hand-back names the files the
+    reviewer's finding is about — the rebuild is held on them."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        f"handoff: review: FIX — the check in {_SHARED} is wrong\n\n"
+        f"(review td55, {PRELAND_HANDBACK_MARK} — rebuild on it "
+        "from the brief with this finding in mind)",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_mechanical_red_briefs_name_no_file_for_the_overlap_hold() -> None:
+    """gr734976: the skill-size and skill-vocab advice names a test as
+    advice; ``brief:`` comments count for the overlap hold, so the
+    text must carry no path-ish token ``brief_files`` would read."""
+    from precis.utils import dispatch_score as _dscore
+
+    for slug, _pat, brief in pd._MECHANICAL_REDS:
+        if slug in {"skill-size", "skill-vocab"}:
+            assert not _dscore.brief_files(brief), (slug, brief)
+
+
 def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
     store: Store,
 ) -> None:

@@ -7176,6 +7176,94 @@ def test_submit_attempt_tagged_review_handoff_still_launches(
     assert "the widget check is wrong" in brief
 
 
+def _mech_brief_comments() -> tuple[str, ...]:
+    """The prod shape (gr705291): builder handoff, the lander's conflict
+    handoff, then the tick's mechanical-red brief as the newest comment."""
+    from precis.plans.templates import MECH_BRIEF_MARK
+
+    return (
+        "brief: the real brief",
+        "handoff: built the widget, ready to land",
+        "handoff: lander: land FAILED: rebase conflict onto origin/main",
+        "brief: rebase on origin/main and resolve src/precis/x/y.py, keeping "
+        f"main's side for others' changes{MECH_BRIEF_MARK}9: "
+        "rebase conflict onto origin/main",
+    )
+
+
+def test_submit_mechanical_brief_launches_over_preland_review(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291: the tick's mechanical-red ``brief:`` follows the lander's
+    conflict handoff and asks for a rebase — a session launches; the
+    ahead branch is neither deferred to the pre-land review (which would
+    say LAND on the unchanged head) nor ended attempt-free."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=_mech_brief_comments(),
+        tags=("attempt:2",),
+    )
+    _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert "preland_review" not in ctx.meta_set
+    assert seams["lands"] == [] and seams["push"] == []
+    assert len(seams["launch"]) == 1
+
+
+def test_submit_mechanical_brief_launches_instead_of_a_land_mint(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291: with no pre-land reviewer the same newest mechanical
+    brief launches the session rather than minting a land of the head
+    that just failed to rebase."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=_mech_brief_comments(),
+        tags=("attempt:2",),
+    )
+    _ahead_retry(seams, tmp_path)
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert seams["lands"] == [] and len(seams["launch"]) == 1
+
+
+def test_submit_plain_brief_still_routes_an_ahead_branch_to_the_land(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291 guard: a ``brief:`` without the mechanical-red mark is not
+    a session request — the ahead branch still goes to its land."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=("brief: tighten the widget check",),
+        tags=("attempt:2",),
+    )
+    tree = _ahead_retry(seams, tmp_path)
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "branch-ahead"
+    assert seams["launch"] == []
+
+
 def test_submit_ahead_branch_route_failure_falls_back_to_launch(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -308,6 +308,10 @@ def slice_fetch_cmd(branch: str) -> str:
 #: tick's hand-back — the finding the rebuild exists to act on — from a
 #: session's own last message, which may also begin ``handoff: review:``.
 PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
+#: The text ``plan_dispatch`` puts between a mechanical-red ``brief:`` and
+#: the red job it names (gr705291). ``run_slice._wants_session`` reads it
+#: to tell that brief — an instruction to change the branch — from a plain one.
+MECH_BRIEF_MARK = " — mechanical red on jo"
 #: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
 #: finding, head?, anchors?, text?}`` — the pre-land FIX/REVERT verdicts in a
 #: row since the last land or coordinator ask, a digest of the newest

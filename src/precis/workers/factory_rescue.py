@@ -1070,44 +1070,30 @@ def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     build in the same repo touches a file this build's brief names (the
     same repo-relative path; ``dispatch_score.shared_files``) — the mint
     is not refused: the build's job queues and the executor claim loop
-    skips it until the blocker is on main (gr702610). Same inputs as the
-    dispatch step's diagnostic ``held`` computation, evaluated for this
-    one candidate: only ``run_slice`` tasks wait (generators commit
+    skips it until the blocker is on main (gr702610). The claim's own
+    read (``plan_dispatch._overlap_holds``) for this one candidate, so
+    the reason never names a hold the claim does not apply (gr734976:
+    this used to read file names from builder handoffs and ignored the
+    land target): only ``run_slice`` tasks wait (generators commit
     nothing), a node never holds itself, and the blocker's governing
-    ``repo:`` must match."""
-    from precis.utils import dispatch_score as _dscore
+    ``repo:`` and land target must match."""
     from precis.workers.job_types import plan_dispatch as pd
 
-    if pd._resolve_op(n)[0] != pd.DEFAULT_OP or pd._is_generator(n):
-        return None
     started = pd._started_slices(store)
     started.pop(n.id, None)
     if not started:
         return None
-    files = pd._brief_file_sets(store, [n.id, *started])
-    mine = files.get(n.id) or frozenset()
-    if not mine:
+    hit = pd._overlap_holds(plan, store, started, [n]).get(n.id)
+    if hit is None:
         return None
-    repo = pd._node_repo(plan, n)
-    for hid in sorted(started):
-        s = started[hid]
-        if s.repo != repo:
-            continue
-        shared = _dscore.shared_files(
-            mine,
-            (files.get(hid) or frozenset())
-            | _dscore.brief_files("\n".join(s.branch_files)),
-        )
-        if not shared:
-            continue
-        named = sorted(p for p in shared if "/" in p) or sorted(shared)
-        return (
-            f"file-overlap hold — waits on td{hid} ({s.state}): both touch "
-            f"{', '.join(f'`{p}`' for p in named[:3])}"
-            f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
-            "is on main"
-        )
-    return None
+    hid, shared = hit
+    named = sorted(p for p in shared if "/" in p) or sorted(shared)
+    return (
+        f"file-overlap hold — waits on td{hid} ({started[hid].state}): both "
+        f"touch {', '.join(f'`{p}`' for p in named[:3])}"
+        f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
+        "is on main"
+    )
 
 
 def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:

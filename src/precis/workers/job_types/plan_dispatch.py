@@ -250,7 +250,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    its pre-land review, or landing — stays queued until that one lands
    (td603849, widened 2026-11-15 — the ``_started_slices``/
    ``_overlap_inputs`` check; a started build's files are its stamped
-   ``meta.branch_files`` plus its brief's). "Overlaps" means the same
+   ``meta.branch_files`` plus the files its body, briefs and the lander's
+   failure handoff name — never a builder's plain ``handoff:``,
+   gr734976). "Overlaps" means the same
    repo-relative path: a brief's shorter suffix (``land_slice.py``,
    ``job_types/land_slice.py``) resolves only when exactly one of the
    started build's paths ends with it, so two builds touching different
@@ -897,14 +899,14 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "skill-size",
         re.compile(r"\bis \d+ bytes \(cap \d+\)", re.IGNORECASE),
-        "move detail into a child skill or trim; the cap is in "
-        "tests/test_skill_size.py",
+        "move detail into a child skill or trim; the cap is in the "
+        "skill-size test (test_skill_size)",
     ),
     (
         "skill-vocab",
         re.compile(r"appears? in no skill", re.IGNORECASE),
         "mention the named registry value in the skill that owns it "
-        "(tests/test_skill_vocabulary.py)",
+        "(the skill-vocabulary test, test_skill_vocabulary)",
     ),
     (
         "conflict",
@@ -6685,39 +6687,19 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
-def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
-    """``{todo id: normalised file paths}`` the todo's body chunks plus
-    its ``brief:``/``handoff:`` comments name (one path per token, as
-    written — no basename or last-two-segment keys; see
-    :func:`~precis.utils.dispatch_score.brief_files`) — one query for the
-    supplied todo ids."""
-    if not ids:
-        return {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT ref_id, text FROM chunks
-             WHERE ref_id = ANY(%s)
-               AND (chunk_kind = %s
-                    OR (chunk_kind = %s
-                        AND (starts_with(lower(ltrim(text)), 'brief:')
-                             OR starts_with(lower(ltrim(text)), 'handoff:'))))
-            """,
-            (ids, TODO_BODY_KIND, _COMMENT_KIND),
-        ).fetchall()
-    texts: dict[int, list[str]] = {}
-    for ref_id, text in rows:
-        texts.setdefault(int(ref_id), []).append(str(text or ""))
-    return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
-
-
 def _overlap_inputs(
     store: Any, ids: list[int]
 ) -> dict[int, tuple[frozenset[str], str]]:
     """Read file sets and effective land targets on the claim connection.
 
-    File matching considers every brief and handoff. Target resolution uses
-    the body and selected brief, as build and land do.
+    The file set is what the todo declares (gr734976): its body, its
+    ``brief:`` comments, the machine-written handoffs that name files to
+    fix (the lander's failure note and the pre-land hand-back,
+    :func:`~precis.workers.job_types.run_slice._outranks_brief`) and its
+    own stamped ``meta.branch_files``. A builder session's plain
+    ``handoff:`` names files it read, ran or found red, not files it
+    edits, so it contributes none. Target resolution still reads the
+    newest of every brief and handoff, as build and land do.
     """
     from precis.workers.job_types import run_slice
 
@@ -6725,7 +6707,8 @@ def _overlap_inputs(
         rows = conn.execute(
             """
             WITH inputs AS (
-                SELECT r.ref_id, r.meta->%s AS target, ARRAY(
+                SELECT r.ref_id, r.meta->%s AS target,
+                       r.meta->%s AS branch_files, ARRAY(
                     SELECT t.value
                       FROM ref_tags rt JOIN tags t USING (tag_id)
                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
@@ -6733,27 +6716,34 @@ def _overlap_inputs(
                 ) AS retry_tags
                   FROM refs r WHERE r.ref_id = ANY(%s)
             )
-            SELECT i.ref_id, i.target, i.retry_tags, c.ord, c.chunk_kind, c.text
+            SELECT i.ref_id, i.target, i.retry_tags, i.branch_files,
+                   c.ord, c.chunk_kind, c.text
               FROM inputs i
               LEFT JOIN chunks c ON c.ref_id = i.ref_id AND c.ord >= 0
                    AND c.chunk_kind IN (%s, %s)
              ORDER BY i.ref_id, c.ord
             """,
-            (_release.LAND_TARGET_KEY, ids, TODO_BODY_KIND, _COMMENT_KIND),
+            (
+                _release.LAND_TARGET_KEY,
+                _templates.BRANCH_FILES_KEY,
+                ids,
+                TODO_BODY_KIND,
+                _COMMENT_KIND,
+            ),
         ).fetchall()
 
     result: dict[int, tuple[frozenset[str], str]] = {}
     for rid, group in groupby(rows, key=itemgetter(0)):
         ref_rows = list(group)
-        _, target, tags, *_ = ref_rows[0]
+        _, target, tags, stamped, *_ = ref_rows[0]
         body = "\n\n".join(
             text
-            for _, _, _, _, kind, text in ref_rows
+            for _, _, _, _, _, kind, text in ref_rows
             if kind == TODO_BODY_KIND and text
         )
         briefs = [
             (ord_, text)
-            for _, _, _, ord_, kind, text in ref_rows
+            for _, _, _, _, ord_, kind, text in ref_rows
             if kind == _COMMENT_KIND
             and text
             and text.lstrip().lower().startswith(run_slice._BRIEF_PREFIXES)
@@ -6762,7 +6752,18 @@ def _overlap_inputs(
             briefs, reviewer=False, open_tags=partial(iter, tags)
         )
         meta = {_release.LAND_TARGET_KEY: target}
-        files = _dscore.brief_files("\n".join([body, *(text for _, text in briefs)]))
+        # gr734976: a builder's own ``handoff:`` is prose about files it
+        # read or found red; only briefs and the machine's file-naming
+        # handoffs, plus the stamped branch files, say what it touches.
+        declared = [
+            text
+            for _, text in briefs
+            if text.lstrip().lower().startswith("brief:")
+            or run_slice._outranks_brief(text.lstrip())
+        ]
+        if isinstance(stamped, list):
+            declared.extend(str(p) for p in stamped)
+        files = _dscore.brief_files("\n".join([body, *declared]))
         result[rid] = files, _release.land_target_of(meta, body, latest) or "main"
     return result
 
@@ -6993,9 +6994,14 @@ def _overlap_holds(
     enforced inside the executor claim transaction (gr702610). Only a default-op,
     non-generator build is held; ``started`` is :func:`_started_slices`;
     a started build blocks a candidate in the same repo when a file the
-    candidate's brief names is the same repo-relative path as one the
-    started build touches (its stamped ``branch_files`` plus its own
-    brief's; :func:`~precis.utils.dispatch_score.shared_files`). A brief
+    candidate declares is the same repo-relative path as one the
+    started build touches. Each side's declared files are its body, its
+    ``brief:`` comments, the lander's failure handoff and the pre-land
+    hand-back, and its stamped ``branch_files`` (so a retry that already
+    has commits carries them); a builder's plain ``handoff:`` names files
+    it merely read and counts for neither (gr734976;
+    :func:`_overlap_inputs`,
+    :func:`~precis.utils.dispatch_score.shared_files`). A brief
     that names a file by a shorter suffix counts only when exactly one of
     the started build's paths ends with it — the same basename in two
     directories, or an ambiguous ``__init__.py``, holds nothing; a real
@@ -7287,7 +7293,7 @@ def _step_dispatch(
                 if not (isinstance(prev, dict) and prev.get("job") == last_job):
                     w.comment(
                         n,
-                        f"brief: {brief} — mechanical red on jo{last_job}: "
+                        f"brief: {brief}{_templates.MECH_BRIEF_MARK}{last_job}: "
                         f"{line[:200]}",
                     )
                 mech_pinned = _mech_pin(plan, w, n, rungs, params, rules)
