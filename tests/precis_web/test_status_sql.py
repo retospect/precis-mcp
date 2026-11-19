@@ -20,15 +20,53 @@ from typing import Any
 from precis.store import Tag
 from precis.workers.chunk_keywords import KEYWORDS_VERSION
 from precis_web.routes.status import (
+    _HOSTS_SQL,
     _automations,
     _background_anomalies,
     _backlog_counts,
     _health_ctx,
     _health_panel,
+    _hosts,
     _llm_ops_ctx,
     _recent_passes,
     _services_ctx,
 )
+
+
+def test_hosts_preserves_liveness_and_problem_windows(store: Any) -> None:
+    """gr732476: split aggregates retain quiet hosts and exact error counts."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (host, ts, level, message) VALUES "
+            "('maple', now(), 'INFO', 'alive'),"
+            "('maple', now() - interval '1 hour', 'WARNING', 'warn'),"
+            "('maple', now() - interval '2 hours', 'ERROR', 'error'),"
+            "('maple', now() - interval '25 hours', 'ERROR', 'old'),"
+            "('maple', now(), 'CRITICAL', 'not counted by this panel'),"
+            "('birch', now() - interval '2 days', 'INFO', 'quiet'),"
+            "('elm', now() - interval '8 days', 'ERROR', 'expired')"
+        )
+        conn.commit()
+    rows = _hosts(store)
+    by_host = {row["host"]: row for row in rows}
+    assert by_host["maple"]["problems"] == 2
+    assert by_host["maple"]["stale"] is False
+    assert by_host["birch"]["problems"] == 0
+    assert by_host["birch"]["stale"] is True
+    assert "elm" not in by_host
+    assert rows.index(by_host["maple"]) < rows.index(by_host["birch"])
+
+
+def test_hosts_has_covering_liveness_and_partial_problem_index_paths(
+    store: Any,
+) -> None:
+    """Check eligibility, not tiny-fixture cost choices, for the actual SQL."""
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("SET LOCAL enable_seqscan = off")
+            plan = "\n".join(row[0] for row in conn.execute("EXPLAIN " + _HOSTS_SQL))
+    assert "Index Only Scan using worker_logs_host_ts_idx" in plan, plan
+    assert "worker_logs_level_ts_idx" in plan, plan
 
 
 def _log_runner_batch(
