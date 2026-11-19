@@ -282,8 +282,11 @@ duplicate; cite the hub instead.
   prior work, resolve the cited paper
   (`get(kind='skill', id='precis-cite-resolve-help')`). A review, or a
   result the paper attributes to someone else, yields the primary's DOI:
-  stub it (`put(kind='paper', doi=…)`) rather than grounding a hub on the
-  secondhand passage.
+  use `put(kind='paper', args={'doi': '<primary DOI>', 'context_ref_id':
+  'pa<source>', 'reason': 'cited primary'})`. `pa<source>` is the paper
+  being read. The context records which paper prompted the stub request
+  and gives approval review the source handle for any per-paper count.
+  Ground the hub on the primary passage once it is available.
 - **Quests** — a hub that serves an open quest attaches to it
   (`get(kind='skill', id='precis-quest-help')`).
 - **Cross-paper inference** — this paper's A plus another's B suggesting
