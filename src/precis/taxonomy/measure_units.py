@@ -39,6 +39,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from tokenize import TokenError
 from typing import Any, Final
 
 import pint
@@ -60,9 +61,11 @@ from precis.utils.text import markup_surface, markup_unit
 
 _UREG: pint.UnitRegistry | None = None
 
-#: pint parse failures that mean "not a unit" (see ``census._UNIT_PARSE_ERRORS``).
+#: Pint can leak the tokenizer's error for incomplete expressions such as
+#: ``s/(`` in an extracted table header (gr718774).
 _PARSE_ERRORS: Final[tuple[type[Exception], ...]] = (
     pint.PintError,
+    TokenError,
     TypeError,
     ValueError,
     SyntaxError,

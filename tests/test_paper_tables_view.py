@@ -30,7 +30,7 @@ _GRID_A = """| Source | sticking prefactor (ML) | rate (s <sup>-1</sup>) |
 | CO | 1.1 | 8.0 |
 """
 
-_GRID_B = """| Gas | desorption energy (kJ/mol) |
+_GRID_B = """| Gas [s/(] | desorption energy (kJ/mol) |
 | --- | --- |
 | Ar | 12.4 |
 """
@@ -105,6 +105,11 @@ def test_tables_view_renders_grid_caption_and_raw(store: Store) -> None:
     # Header-unit hint on the (ML) column; cell keeps its footnote.
     assert "[unit ML]" in out
     assert "13.5 ± 1.1^a" in out
+    # A malformed unit candidate keeps the printed header and the grid.
+    assert (
+        "columns: [1] Gas [s/(] · [2] desorption energy (kJ/mol) [unit kJ/mol]" in out
+    )
+    assert "| 1 | Ar | 12.4 |" in out
     # The non-grid table chunk renders raw, never guessed at.
     assert "unparsed — raw text:" in out
     assert "collapsed HTML table run" in out
