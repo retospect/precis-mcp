@@ -6160,12 +6160,26 @@ class JobHandler(NumericRefHandler):
                 id_min=id_min,
                 id_max=id_max,
             )
-        if (since_dt is not None or until_dt is not None) and view != "count":
+        q_raw = kw.get("q")
+        sort_raw = str(kw.get("sort") or "").strip().lower()
+        # A queryless sort= that isn't an explicit 'relevance' names the
+        # listing's own recency order — gr709771: dispatch keeps the
+        # queryless recency call on this path, and the base listing
+        # would refuse sort= for kind='job' ("queryless gripe/todo/quest
+        # browse" only), so the plain filtered listing applies it.
+        queryless_listing_sort = sort_raw not in {"", "relevance"} and not (
+            isinstance(q_raw, str) and q_raw.strip()
+        )
+        if (
+            since_dt is not None or until_dt is not None or queryless_listing_sort
+        ) and view != "count":
             # A queryless top-level since=/until= stays on the job
             # listing path (dispatch routes a q=-bearing call to the
             # source-search primitive instead), but the base listing
             # refuses those bounds: apply them through the same filtered
-            # listing the job_type search uses. view='count' deliberately
+            # listing the job_type search uses. The same branch takes
+            # the queryless explicit recency sort — the plain listing
+            # with no window at all. view='count' deliberately
             # falls through to super().search — the shared count path
             # applies the bounds and id_min/id_max itself; it does NOT
             # vet the rest of kw (NumericRefHandler.search ends in
@@ -6177,9 +6191,9 @@ class JobHandler(NumericRefHandler):
             leftover = sorted(k for k, v in kw.items() if v is not None)
             if leftover:
                 raise BadInput(
-                    f"{leftover!r} not applied by the dated job listing "
-                    "(kind='job' with since=/until= takes q/tags/link/"
-                    "status/id_min/id_max only)",
+                    f"{leftover!r} not applied by the job listing "
+                    "(kind='job' listing takes q/tags/link/status/"
+                    "since/until/id_min/id_max only)",
                     next=_job_search_call(
                         q=forwarded.get("q"),
                         tags=forwarded.get("tags"),
@@ -6603,7 +6617,8 @@ class JobHandler(NumericRefHandler):
         <type> jobs minted/finished/failed since <t>" needed raw
         ``refs.meta->>'job_type'`` SQL). ``job_type=None`` is the plain
         filtered listing — reached when a queryless top-level
-        ``since=``/``until=`` stays on the job listing path (dispatch
+        ``since=``/``until=`` stays on the job listing path, or when a queryless explicit
+        ``sort='recency'`` names that order (gr709771; dispatch
         keeps only the queryless call here; a ``q=``-bearing call goes
         to the source-search primitive, and the base listing path
         refuses those bounds) and by the base ``_bare_listing`` hook

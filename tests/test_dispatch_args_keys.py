@@ -26,7 +26,7 @@ from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.user_context import user_scope
 from precis.users import PasswordRecord
 
@@ -519,6 +519,62 @@ def test_job_search_nested_sort_routes_to_source_search(
     assert "[error" not in out, out
     assert "matches" in out.lower(), out
     assert "not accepted by job.search" not in out, out
+
+
+def test_job_queryless_recency_sort_stays_on_the_job_listing(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr709771: ``search(kind='job', sort='recency', status='running')``
+    is the queue-poll listing asking for its own order by name — it used
+    to fall through to the source-search primitive and die on "requires
+    q= — or a named cohort". The queryless recency sort now stays on the
+    job listing path, which already orders by recency and applies
+    status=/page=/page_size itself."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="queued sweep",
+        meta={"job_type": "sweep"},
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", "running"), set_by="agent")
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "job", "sort": "recency", "status": "running", "page_size": 60},
+    )
+    assert "[error" not in out, out
+    assert "job entr" in out, out
+    assert "requires q=" not in out, out
+    assert "queued sweep" in out, out
+    # And the bare spelling — no status at all — lists recent jobs.
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job", "sort": "recency", "page_size": 25}
+    )
+    assert "[error" not in out, out
+    assert "job entr" in out, out
+
+
+def test_job_queryless_relevance_sort_still_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Only sort='recency' names the listing — an explicit
+    sort='relevance' with no q= still opts into the ranked primitive,
+    which refuses for lack of a query."""
+    out = runtime_with_store.dispatch("search", {"kind": "job", "sort": "relevance"})
+    assert "[error:BadInput]" in out, out
+    assert "requires q=" in out, out
+
+
+def test_job_queryless_recency_sort_nested_args_spelling(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The args={'sort': 'recency'} nested spelling hoists to the same
+    queryless listing route — not the source-search gate."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "job", "status": "queued", "__extras__": {"sort": "recency"}},
+    )
+    assert "[error" not in out, out
+    assert "requires q=" not in out, out
 
 
 def test_search_nested_folder_routes_to_folder_scope(

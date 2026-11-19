@@ -204,8 +204,8 @@ what used to need `refs.meta->>'job_type'` SQL.
 `since=`/`until=` ride `args=` like `job_type=` on the queryless plain
 listing too — `search(kind='job', args={'since': '2026-10-20'},
 status='*')` is the same recency-ordered listing without a `job_type=`
-filter (adding `q=` makes it a ranked search and `sort=`/`mode=` legal
-again). A bare `search(kind='job')` — no window, no filter — is the
+filter (`sort='recency'` is accepted as that same ordering; only
+`sort='relevance'` needs `q=`, which makes it a ranked search). A bare `search(kind='job')` — no window, no filter — is the
 same listing over every job: "what ran lately".
 
 `view='count'` facet rows also name each group's newest/oldest member

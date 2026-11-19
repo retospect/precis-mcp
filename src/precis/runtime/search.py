@@ -1229,11 +1229,14 @@ class SearchMixin(RuntimeShape):
         * an ``under=`` the kind OWNS (``owns_under`` — todo/taxon trees,
           job's hierarchical scope) — source search would silently drop
           the scope;
-        * a queryless ``kind='job'`` dated listing —
-          ``since=``/``until=`` on a plain job listing are the kind's own
-          ``created_at`` bounds, so a bare window stays on the job
-          listing path, including its natural ``sort='recency'``.
-          A ``q=`` or ``sort='relevance'`` still opts into ranking.
+        * a queryless ``kind='job'`` listing — ``since=``/``until=`` on
+          a plain job listing are the kind's own ``created_at`` bounds,
+          and ``sort='recency'`` names the listing's own order, so a
+          bare window or a queryless recency sort stays on the job
+          listing path (gr709771: the undated ``sort='recency'``
+          spelling used to fall through here and die on "requires q="
+          at the source-search gate). Only a ``q=`` or an explicit
+          ``sort='relevance'`` opts into ranking.
         """
         if verb != "search" or not self._is_source_search_request(args):
             return False
@@ -1288,13 +1291,14 @@ class SearchMixin(RuntimeShape):
                 return False
             q = args.get("q")
             if resolved == "job" and not (isinstance(q, str) and q.strip()):
-                extras = args.get("__extras__")
-                dated = any(
-                    args.get(key) is not None
-                    or (isinstance(extras, dict) and extras.get(key) is not None)
-                    for key in ("since", "until")
-                )
-                if not sort or (dated and sort != "relevance"):
+                # A queryless job call never ranks: with no sort=, or
+                # with any sort= other than an explicit 'relevance', it
+                # stays on the job listing path — that listing is already
+                # recency-ordered, so sort='recency' names the listing,
+                # not a ranking opt-in (gr709771: the undated recency
+                # spelling used to reach the source-search primitive and
+                # die on "requires q= — or a named cohort").
+                if not sort or sort != "relevance":
                     return False
         return True
 
