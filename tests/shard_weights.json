@@ -4476,6 +4476,7 @@
         "tests/test_skill_refs.py": 12.1,
         "tests/test_skill_scope.py": 2.0,
         "tests/test_skill_search.py": 58.0,
+        "tests/test_skill_search_queries.py": 116.1,
         "tests/test_skill_semantic.py": 1.7,
         "tests/test_skill_size.py": 0.3,
         "tests/test_skill_state.py": 1.0,
