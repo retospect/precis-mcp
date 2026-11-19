@@ -4836,6 +4836,29 @@ class DispatchMixin(RuntimeShape):
                 next=f"get(kind='skill', id='precis-{verb}-help')",
             )
 
+        meta = clean.get("meta")
+        if (
+            verb == "edit"
+            and kind == "finding"
+            and clean.get("title") is not None
+            and isinstance(meta, dict)
+            and "model" in meta
+        ):
+            if (
+                writer_claim is None
+                or "model" not in writer_claim
+                or meta["model"] != writer_claim["model"]
+            ):
+                raise BadInput(
+                    "finding title edits record the writer model in args['writer']",
+                    next="pass args={'writer': {'model': '<model id>'}} and omit meta.model",
+                )
+            # A repeated writer label does not replace the mint annotation.
+            remaining_meta = {
+                key: value for key, value in meta.items() if key != "model"
+            }
+            clean["meta"] = remaining_meta or None
+
         try:
             with _write_context(
                 verb,

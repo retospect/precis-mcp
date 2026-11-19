@@ -13,6 +13,10 @@ stored bytes and one-hour read receipts persisted by authenticated credential.
 Without a bound principal, receipts remain session-local in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
 
+Finding retitles accept a redundant ``meta.model`` matching
+``args.writer.model``. The revision carries the edit's writer, preserving
+the finding's original machine-writer annotation.
+
 Table refusals select table help from explicit arguments or a best-effort chunk
 lookup for ambiguous edits, so prose and table edits retain specific recovery.
 

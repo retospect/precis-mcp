@@ -16,6 +16,8 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.runtime import PrecisRuntime
+from precis.store import Store
 from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
@@ -2646,6 +2648,36 @@ class TestRetitleHub:
 
         out = h.edit(id=pub_id, title="Reworded claim wording.")
         assert f"retitled claim hub fi{hub}" in out.body
+
+    def test_retitle_hub_with_redundant_writer_model(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        store.update_ref(hub, meta_patch={"model": "original-model"})
+        new_sentence = "Shorter claim wording."
+
+        out = runtime_with_store.dispatch(
+            "edit",
+            {
+                "kind": "finding",
+                "id": f"fi{hub}",
+                "title": new_sentence,
+                "__extras__": {"writer": {"model": "gpt-6-astra"}},
+                "meta": {"model": "gpt-6-astra"},
+            },
+        )
+
+        assert f"retitled claim hub fi{hub}" in out
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == new_sentence
+        assert self._finding_body(store, hub) == new_sentence
+        assert ref.meta["model"] == "original-model"
+        stamps = store.first_last_writer("ref", hub)
+        assert stamps is not None
+        assert stamps[1]["model"] == "gpt-6-astra"
 
     def test_retitle_hub_collision_raises_bad_input(self, store) -> None:
         hub = mint_hub(
