@@ -68,6 +68,23 @@ BARE_CONV_PATTERN = re.compile(
     r"(?!\w)"
 )
 
+#: A python symbol mention: ``python:<dotted.qualname>`` (gr702978). At
+#: least one dot is required — a bare ``python:word`` stays prose, since a
+#: python anchor's slug IS a dotted qualname (``precis.handlers.
+#: _memory_link_receipt.MentionSync``). ``python`` is already in
+#: :data:`LINKIFY_KINDS` (it is a registered record kind); what it lacked
+#: was a grammar arm long enough to capture the qualname — the generic
+#: :data:`REF_PATTERN` id stops at the first dot — and a refs row to
+#: resolve against. The write-time extraction pass below owns the
+#: ``python:`` kind outright (the REF_PATTERN pass skips ``python`` so a
+#: qualname can't double-resolve as ``python:<first-segment>``).
+PYTHON_QUALNAME_PATTERN = re.compile(
+    r"\bpython:"
+    r"(?P<qn>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)"
+    r"(?!\w)"
+)
+
+
 #: Bare paper cite_key: ``<surname><2-digit year><optional letter>``.
 #: Either a chunk suffix disambiguates a ≥2-letter key, or (no suffix)
 #: ≥3 surname letters keep ``ai99`` / ``ml22`` off prose. A trailing ``-``
@@ -357,6 +374,10 @@ def extract_handles(body: str) -> list[Handle]:
         kind = m.group("kind")
         if kind not in LINKIFY_KINDS or kind in LOW_SIGNAL_KINDS:
             continue
+        if kind == "python":
+            # The qualname pass below owns ``python:`` — REF_PATTERN's id
+            # arm would only capture the first dotted segment here.
+            continue
         _push(kind, m.group("id"), m.group("chunk"))
     for m in BARE_CONV_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
@@ -364,7 +385,52 @@ def extract_handles(body: str) -> list[Handle]:
     for m in BARE_PAPER_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
         _push("paper", slug, ("~" + suffix) if suffix else None)
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        _push("python", m.group("qn"), None)
     return out
+
+
+def extract_python_qualnames(body: str) -> list[str]:
+    """Every ``python:<dotted.qualname>`` mention in ``body`` —
+    deduplicated, appearance-ordered. Extraction only: whether a qualname
+    mints or resolves an anchor is the caller's call (gr702978)."""
+    if not body:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        qn = m.group("qn")
+        if qn not in seen:
+            seen.add(qn)
+            out.append(qn)
+    return out
+
+
+def mint_python_mentions(store: Any, text: str, handler: Any) -> None:
+    """Mint the lazy python anchor ref for every qualname mention that
+    resolves in the live python index (gr702978).
+
+    The note/draft autolinker doors call this before
+    :func:`resolve_link_targets` — the resolver itself never mints, so
+    read-side callers (fisheye, backfill) stay pure. ``handler`` is the
+    booted python handler (``hub.handler_for('python')``); ``None`` (kind
+    disabled, or a hub without it) mints nothing — a python mention then
+    stays unlinked, the same graceful no-op as a disabled kind. An
+    unknown qualname never mints: the handler validates it against the
+    code index and returns ``None``. Per-mention failures are logged and
+    skipped — the sync's best-effort contract.
+    """
+    ensure = getattr(store, "ensure_python_ref", None)
+    if ensure is None or handler is None:
+        return
+    for qn in extract_python_qualnames(text):
+        try:
+            anchor = handler.symbol_anchor(qn)
+            if anchor is None:
+                continue
+            ensure(qn, alias=anchor[0], file=anchor[1])
+        except Exception:
+            log.debug("mentions: python anchor mint failed for %r", qn, exc_info=True)
 
 
 def _norm_part_ident(ident: str) -> str | None:

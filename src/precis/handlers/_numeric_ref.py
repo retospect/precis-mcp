@@ -4697,6 +4697,12 @@ class NumericRefHandler(Handler):
                         mint_part(lcsc)
                     except NotFound:
                         continue
+            # Mint the lazy python anchor for every qualname mention the
+            # live index resolves, so the resolve pass below can see it
+            # (the resolver itself never mints). gr702978.
+            hub = getattr(self, "hub", None)
+            py_handler = hub.handler_for("python") if hub is not None else None
+            mentions.mint_python_mentions(self.store, text, py_handler)
             targets = sync.resolve(text)
             for link in sync.unmentioned_removals(targets):
                 removed = self.store.remove_link(
@@ -4725,8 +4731,8 @@ class NumericRefHandler(Handler):
             # an explicit ``part:C…`` mention may also queue the BIG-tier
             # facts read, under the per-write and daily spend caps —
             # ``queue_mentioned_parts`` owns both. Skip when the mint
-            # failed (no live part ref).
-            hub = getattr(self, "hub", None)
+            # failed (no live part ref). ``hub`` was bound above for the
+            # python anchor mint.
             if lcscs and hub is not None and hasattr(self.store, "part_ref_id"):
                 from precis.pcb import datasheets
 

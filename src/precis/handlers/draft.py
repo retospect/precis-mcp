@@ -4685,6 +4685,11 @@ class DraftHandler(Handler):
         try:
             chunks = self.store.drafts.reading_order(ref_id)
             ord_by_chunk = self.store.drafts.chunk_ord_map(ref_id)
+            # The booted python handler validates qualname mentions against
+            # the code index before an anchor mints (gr702978); absent
+            # (kind disabled / hub without it) mentions mint nothing.
+            _hub = getattr(self, "hub", None)
+            py_handler = _hub.handler_for("python") if _hub is not None else None
             # Scoped mode: a caller that names the chunk(s) it just wrote
             # re-resolves only those; every other live chunk keeps the
             # auto-mention edges it already has (carried over below). Its
@@ -4727,6 +4732,10 @@ class DraftHandler(Handler):
                     except NotFound:
                         continue
                 explicit_part_lcscs.update(mentions.extract_explicit_part_lcscs(c.text))
+                # Mint the lazy python anchor for each qualname mention the
+                # live index resolves, so the resolve pass below sees it
+                # (resolution itself never mints). gr702978.
+                mentions.mint_python_mentions(self.store, c.text, py_handler)
                 targets = draft_markup.resolve_draft_link_targets(
                     self.store, c.text, exclude_ref_id=ref_id
                 )
