@@ -1004,12 +1004,17 @@ def test_instructions_lead_with_skill_search_cta() -> None:
     the cold-start banner pushes agents to ``search(kind='skill', ...)``
     as the first action on a non-trivial request. Pin the CTA shape
     so future edits don't silently regress the discoverability story.
+
+    gr568491: the CTA is the multi-question form — several goal
+    phrasings in the caller's own words, one fused section index —
+    not the single-q guess-a-name spelling.
     """
     from precis import server
 
     text = server._INSTRUCTIONS
     assert "Discover:" in text
-    assert "search(kind='skill', q=" in text
+    assert "args={'queries':" in text
+    assert "own words" in text
     # Full-index pointer remains so an agent can list rather than
     # search when it doesn't have a query in mind.
     assert "get(kind='skill', id='toc')" in text

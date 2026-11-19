@@ -200,7 +200,7 @@ it words the idea differently than you did. Hand `search` **several
 angles at once** and let it fuse them; a chunk that surfaces across
 phrasings rises to the top.
 
-Two top-level params, both paper-side, fused with `q` into one ranked list:
+Paper search fuses two top-level params with `q` into one ranked list:
 
 - `queries=[…]` — **rephrasings of the question** (synonyms, broader /
   narrower framings, sub-questions hiding inside it). Up to 8.
@@ -746,15 +746,29 @@ args={'title': '…'})`.
 ## Discover a skill by topic
 
 ```python
-search(kind="skill", q="how do I edit a markdown file")
-search(kind="skill", q="paginate paper search")
-search(kind="skill", q="patent prior art")
+search(kind="skill", args={"queries": [
+    "store a new memory", "search memories", "tag a thought",
+]})
 ```
 
-Natural-language queries work — phrase your query the way you'd ask
-it. Skill hits whose kind or required tool isn't available in the current
-build carry `[not configured: <why>]` so you don't follow them to no-op
-recipes; add `args={'configured_only': True}` to drop them.
+Describe your goals in your own words. Use up to five related phrasings
+after deduplication. An optional `q=` counts as the first phrasing.
+Each phrasing drops matches below a minimum relevance score before
+reciprocal rank fusion. Sections found by several phrasings rise in the
+index. Attribution such as `q1,q3` identifies the matching phrasings in
+deduplicated order, and each phrasing with a confident eligible match
+keeps its top section. If that section exceeds the per-skill cap, the
+response provides a direct read link below the table.
+
+The table shows at most three sections per skill and 20 total. Open a
+section with `get(kind='skill', id='<slug>~N')` or map the rest with
+`get(kind='skill', id='<slug>/toc')`. When the index reports more
+matches, narrow the phrasings or filter by skill family or tag. The
+fused form never paginates.
+
+For a single ordinary search, use `q=` alone. Skill hits whose kind or
+required tool is unavailable carry `[not configured: <why>]`. Pass
+`configured_only=True` in `args` to drop them.
 
 ## Find patents not yet in the local store
 ## Search EPO directly via OPS

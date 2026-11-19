@@ -837,7 +837,8 @@ def _offload_sync(
 
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
-    "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
+    "Discover: search(kind='skill', args={'queries': ['<goal in your "
+    "own words>', '<rephrase it>']}) | get(kind='skill', id='toc'). "
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
     "the moment a call or a skill misbehaves, no asking first. "
     "Conduct: get(kind='skill', id='soul'). "
@@ -1396,7 +1397,8 @@ _COMMAND_TOOL_DESCRIPTION = (
     "body in the separate `text=` param instead of quoting it inside "
     "`command` (avoids escaping): "
     "command=\"put(kind='memory', title='...')\", text='...'. "
-    "Discover: search(kind='skill', q='<goal>') | "
+    "Discover: search(kind='skill', args={'queries': ['<goal in your "
+    "own words>', '<rephrase it>']}) | "
     "get(kind='skill', id='toc'). Build/sha/DB: "
     "get(kind='skill', id='precis-status')."
 )

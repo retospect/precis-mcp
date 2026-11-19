@@ -1933,27 +1933,13 @@ def _m_body(ctx: AssemblyContext) -> str:
 
 
 def _m_skill_injection(ctx: AssemblyContext) -> str:
-    """Bimodal skill injection (docs/backlog/skill-question-targets-and-
-    injection.md §2): embed this tick's task text against the skill
-    corpus's question-shaped retrieval targets; on a high-confidence
-    match, inject the WHOLE matched skill body instead of leaving
-    discovery to the model to decide on its own (measured: 5 of ~19,853
-    prod jobs used it). No cue/snippet tier — below threshold injects
-    nothing, on purpose (see :mod:`precis.skill_index.injection`).
-
-    Skipped (``""``) while autoskill is active — the router injects the
-    skills similar sessions used, with this same bimodal match as its
-    thin-history fallback, so a tick never gets both."""
-    from precis.skill_index.injection import match_skill, render_injection
+    """Inject high-confidence skill sections unless autoskill handles discovery."""
+    from precis.skill_index.injection import render_task_sections
     from precis.utils.llm import autoskill
 
     if autoskill.active():
         return ""
-    task_text = _ref_body(ctx)
-    match = match_skill(task_text)
-    if match is None:
-        return ""
-    return render_injection(match)
+    return render_task_sections(_ref_body(ctx))
 
 
 def _m_anchor(ctx: AssemblyContext) -> str:

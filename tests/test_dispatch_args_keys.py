@@ -1186,18 +1186,16 @@ def test_search_fused_knob_passed_twice_refuses(
 def test_search_queries_on_an_unsupported_kind_names_the_kind(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """``queries=`` on skill used to die as ``keys ['queries'] not
-    accepted by skill.search`` — the per-kind refusal now names the
-    verb-level knob and the contract: ``not on skill yet``."""
+    """Every spelling names the unsupported kind in its refusal."""
     for payload in (
         {"queries": ["rephrase"]},
         {"__extras__": {"queries": ["rephrase"]}},
     ):
         out = runtime_with_store.dispatch(
-            "search", {"kind": "skill", "q": "zz_no_such_token_zz", **payload}
+            "search", {"kind": "memory", "q": "zz_no_such_token_zz", **payload}
         )
         assert "[error:BadInput]" in out, (payload, out)
-        assert "queries= is not on skill yet" in out, out
+        assert "queries= is not on memory yet" in out, out
 
 
 def test_search_answers_on_an_unsupported_kind_names_the_kind(

@@ -560,6 +560,7 @@ from precis.store.types import ChunkInsert, ChunkRow, Density, Ref
 from precis.utils import handle_registry, search_trace
 from precis.utils.angle import angle_anchors
 from precis.utils.canon import RANK_BONUS, boost_ref_ids, lexical_q
+from precis.utils.rank_fusion import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -2572,19 +2573,17 @@ class ChunkStore:
         while True:
             legs = _fetch_legs()
 
-            # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
-            # Keep the first-seen (ChunkRow, Ref) per chunk for rendering;
-            # leg_hits records which legs ranked it (gr514952).
-            fused: dict[int, float] = {}
+            fused, leg_hits = reciprocal_rank_fusion(
+                (
+                    (name, ((block.id, score) for block, _ref, score in leg))
+                    for name, leg in legs
+                ),
+                k=k,
+            )
             seen: dict[int, tuple[ChunkRow, Ref]] = {}
-            leg_hits: dict[int, dict[str, tuple[int, float]]] = {}
-            for leg_name, leg in legs:
-                for rank, (block, ref, leg_score) in enumerate(leg):
-                    cid = block.id
-                    fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
-                    if cid not in seen:
-                        seen[cid] = (block, ref)
-                    leg_hits.setdefault(cid, {})[leg_name] = (rank, leg_score)
+            for _name, leg in legs:
+                for block, ref, _score in leg:
+                    seen.setdefault(block.id, (block, ref))
 
             # Sort by fused score desc; deterministic tiebreak on chunk id.
             ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))

@@ -60,12 +60,13 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
 `scope=` searches inside one ref (handle or slug) — the find-in-ref
-read; only kinds that implement it accept scope=, and their refusal
-names the ones that do. `status=` filters by
+read; only implementing kinds accept scope= — a refusal names the
+rest. `status=` filters by
 `STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
-`queries=`/`answers=` (paper, dated) and `batch=` (memory) are verb
-params; other kinds refuse `not on <kind> yet`. `NotFound … routes
+`queries=` (paper + `answers=`; skill: fused sections) and
+`batch=` (memory) are verb params; other kinds refuse `not on <kind>
+yet`. `NotFound … routes
 through host(s)` = a host-gated kind. Kind-specific fields (`exclude`, `reach`,
 `folder`, `per_paper`, `trust`, `wants`, `compose`,
 `property`/`min`/`max`/`unit`, ...) go in `args={...}`; an unknown key

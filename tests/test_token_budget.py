@@ -447,7 +447,7 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
     "anchor",
     [
         "Discover:",
-        "search(kind='skill', q=",
+        "args={'queries':",
         "Kinds:",
     ],
 )
@@ -456,7 +456,9 @@ def test_instructions_carries_anchor(anchor: str) -> None:
 
     - ``Discover:`` and the skill-search CTA pin the Phase-2
       framing — the first thing an agent should do on a non-trivial
-      request is a skill search. (Tersified from "First action" in v8.7.6.)
+      request is a skill search. (Tersified from "First action" in v8.7.6;
+      the CTA itself is the multi-question form since gr568491 —
+      ``args={'queries': [...]}`` with goals in the caller's own words.)
     - ``Kinds:`` pins the Phase-2 trailer — every banner
       reports the live registry, even on a stateless build.
 

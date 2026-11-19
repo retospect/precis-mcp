@@ -1449,6 +1449,9 @@ def search(
     per-hit rows — `scope=` implies it, and `per_paper=` caps hits per
     paper there); `queries=`/`answers=` (HyDE) fuse legs; `good=True`
     queues a deep search; `title=`/`author=` by byline.
+    skill: `queries=` (≤5 phrasings, one intent) fuses section rows by
+    rank with per-query attribution — never a page; memory `batch=`
+    stays its labelled envelope.
     finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.

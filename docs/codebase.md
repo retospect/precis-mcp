@@ -165,6 +165,11 @@ claim classifications and span coverage in SHA-pinned review rows outside the
 apply queue. Labelled memory search batches reuse ordinary
 search dispatch and preserve each query's results and errors separately.
 
+Skill discovery fuses up to five phrasings into attributed section matches.
+Planner and quest prompts use the same ranking and table after matching task
+sentences against question and heading embeddings. They include the selected
+section bodies. See `skill_index/__init__.py` for the index and prompt assembly.
+
 Explicit memory processing pins current body/header chunks in a bounded
 `embed_batch` job (`handlers/_memory_process.py::process_memory`). Its
 opt-in worker claim path shares chunk leases with bulk embedding; default
