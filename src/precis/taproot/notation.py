@@ -589,8 +589,25 @@ _ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 #: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
 #: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
 #: a duplication) never fires.
+#:
+#: The leading negative lookahead (gr720667) excludes an electronic-orbital
+#: label joined to its own repeat -- `4s–4s`, `3d–3d`, `4s²–4s²`. There
+#: the digit+letter is ONE name (principal quantum number + orbital
+#: letter, optionally carrying a superscript occupancy), not a value+unit
+#: pair: the `s` is never seconds, and rewriting to `4–4 s` corrupts the
+#: chemistry. Only superscript occupancy digits may follow the letter;
+#: anything else (`4fs`, `2ps`, `s⁻¹`, `dB`) is a genuine unit whose
+#: repeated range still fires (td732122). The guard anchors to a SINGLE
+#: digit (principal quantum numbers run 1-7), so a real unspaced unit
+#: repeat on a multi-digit value (`12s-15s`) still fires; the canonically
+#: spaced seconds form (`9 s-12 s`) never reaches the guard, since a space
+#: between the value and the letter already rules out an orbital label.
+#: The second label must repeat the first verbatim (`4s–4s`); two
+#: different labels (`4s–5s`) are a genuine seconds range and still fire.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-\w.])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])"
+    r"(?!(?P<orb>\d[spdf][¹²³⁴⁵⁶⁷⁸⁹⁰]*)\s?[–-]\s?(?P=orb)(?!\w))"
+    r"(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )

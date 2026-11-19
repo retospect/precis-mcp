@@ -486,6 +486,56 @@ def test_range_unit_repeated_does_not_fire_on_identifier(identifier: str) -> Non
     assert "range-unit-repeated" not in codes
 
 
+def test_range_unit_repeated_does_not_fire_on_orbital_label() -> None:
+    # `4s-4s` names one orbital interaction twice (gr720667): the digit and
+    # letter are a single orbital label, `s` is never seconds, and the
+    # suggested rewrite (`4 s-4 s` -> `4-4 s`) would corrupt the chemistry.
+    # Both dash spellings, every orbital letter, and superscript occupancy.
+    for label in ("4s-4s", "4s–4s", "2p–2p", "3d-3d", "5f–5f", "4s²–4s²"):
+        sentence = f"The Cu-Cu {label} orbital interaction defines the bond."
+        assert not any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            label
+        )
+        out, codes = normalize_notation(sentence)
+        assert label in out
+        assert "range-unit-repeated" not in codes
+
+
+def test_range_unit_repeated_still_fires_on_spaced_seconds() -> None:
+    # The orbital-label guard must not shield a real unit duplication:
+    # canonically spaced seconds, and a multi-digit unspaced value (the
+    # guard anchors to a single digit -- principal quantum numbers run 1-7),
+    # and two different single-digit labels (`4s–5s`), not a verbatim repeat.
+    for sentence in (
+        "The pulse lasts 9 s-12 s in the control run.",
+        "The pulse lasts 12s-15s in the control run.",
+        "The pulse lasts 4s–5s in the control run.",
+    ):
+        assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            sentence
+        )
+
+
+def test_range_unit_repeated_still_fires_on_orbital_like_units() -> None:
+    # A unit that merely STARTS with an orbital letter is still a unit:
+    # `fs`/`ps`/`ds` are femto-/pico-/deciseconds, `s⁻¹` a frequency, `dB`
+    # decibels. Only a bare orbital letter plus optional superscript
+    # occupancy is an orbital label (td732122 review of gr720667).
+    for sentence in (
+        "The pump pulse spans 4fs-5fs at the sample.",
+        "The jitter budget is 2ps–3ps across channels.",
+        "The gate holds 4ds–5ds before release.",
+        "Rates rose from 4s⁻¹-9s⁻¹ during the ramp.",
+        "The sweep ran 4dB-5dB above threshold.",
+    ):
+        assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            sentence
+        )
+    out, codes = normalize_notation("The pump pulse spans 4fs-5fs.")
+    assert "range-unit-repeated" in codes
+    assert "4–5 fs" in out
+
+
 def test_range_unit_repeated_auto_fixes() -> None:
     out, codes = normalize_notation(
         "The bulk modulus spans 9 GPa-12 GPa across samples."
