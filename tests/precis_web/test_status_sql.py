@@ -60,13 +60,27 @@ def test_hosts_preserves_liveness_and_problem_windows(store: Any) -> None:
 def test_hosts_has_covering_liveness_and_partial_problem_index_paths(
     store: Any,
 ) -> None:
-    """Check eligibility, not tiny-fixture cost choices, for the actual SQL."""
-    with store.pool.connection() as conn:
-        with conn.transaction():
-            conn.execute("SET LOCAL enable_seqscan = off")
-            plan = "\n".join(row[0] for row in conn.execute("EXPLAIN " + _HOSTS_SQL))
-    assert "Index Only Scan using worker_logs_host_ts_idx" in plan, plan
-    assert "worker_logs_level_ts_idx" in plan, plan
+    """Check eligibility, not tiny-fixture cost choices, for the actual SQL.
+
+    The planner prefers the bare-``ts`` index (0315) for the 7-day liveness
+    range, so each index is made the only viable path in turn: the host/ts
+    index must be usable as a covering index-only scan for liveness, and the
+    partial level/ts index for the problem count.
+    """
+
+    def plan(*off: str) -> str:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                for setting in off:
+                    conn.execute(f"SET LOCAL {setting} = off")
+                return "\n".join(
+                    row[0] for row in conn.execute("EXPLAIN " + _HOSTS_SQL)
+                )
+
+    liveness = plan("enable_seqscan", "enable_bitmapscan", "enable_indexscan")
+    assert "Index Only Scan using worker_logs_host_ts_idx" in liveness, liveness
+    problems = plan("enable_seqscan")
+    assert "worker_logs_level_ts_idx" in problems, problems
 
 
 def _log_runner_batch(
