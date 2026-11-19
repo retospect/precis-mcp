@@ -5157,7 +5157,11 @@ class NumericRefHandler(Handler):
         # (:data:`complete_get_view`) — the summary blocks are titles
         # only, and a bare get is not "in full" on a kind whose comments
         # live behind a view (gr572710).
-        read_call = f"get(kind={self.kind!r}, id={ref_ids[0]}"
+        # Stale batch inputs must not become single-ref drill hints (gr702040).
+        if not live:
+            return Response(body=body, result_count=len(ref_ids))
+        first_live = next(rid for rid in ref_ids if rid in live)
+        read_call = f"get(kind={self.kind!r}, id={first_live}"
         if self.complete_get_view is not None:
             read_call += f", view={self.complete_get_view!r}"
         body += render_next_section(

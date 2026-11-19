@@ -1769,19 +1769,24 @@ class MemoryHandler(AuditedRetirementHandler):
         if view is not None:
             return self._get_batch_view(ref_ids, view=view)
         blocks: list[str] = []
+        first_live: int | None = None
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
             try:
                 blocks.append(NumericRefHandler.get(self, id=rid).body)
+                if first_live is None:
+                    first_live = rid
             except NotFound:
                 blocks.append(f"{handle}  not found")
             except Gone:
                 blocks.append(f"{handle}  deleted")
         body = f"# {len(ref_ids)} memory (batch)\n\n" + "\n\n---\n\n".join(blocks)
+        if first_live is None:
+            return Response(body=body)
         body += render_next_section(
             [
                 (
-                    f"get(kind='memory', id={ref_ids[0]}, extent='fisheye+1hop')",
+                    f"get(kind='memory', id={first_live}, extent='fisheye+1hop')",
                     "read one with its linked neighbours",
                 )
             ]
