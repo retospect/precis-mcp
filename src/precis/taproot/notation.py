@@ -231,6 +231,15 @@ _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 #: of the accepted-unit set rather than an entry in it.
 _DIFFERENTIAL_DENOMINATOR_RE = re.compile(r"^d[A-Z]$")
 
+#: An all-caps acronym run immediately left of a `/` (gr722272): with an
+#: all-caps run right of the slash too, the solidus joins two *named
+#: methods* (`CBMC/CFCMC`, `DFT/MD`, `MD/MC`) -- a name pair as printed,
+#: not a value over a denominator, so the two-denominator ambiguity (which
+#: factor moves under the exponent) never arises. Real units fail this on
+#: the left side: `cm²/Vs` has lowercase letters before the slash, and the
+#: accepted-denominator check above already clears `S/cm`-style pairs.
+_ACRONYM_LEFT_OF_SOLIDUS_RE = re.compile(r"(?<![A-Za-z])[A-Z]{2,}$")
+
 #: One formula unit: an element symbol, optionally followed by
 #: stoichiometric digits (`Pd`, `Ni5`).
 _FORMULA_UNIT_RE = re.compile(r"[A-Z][a-z]?(?:\d+)?")
@@ -782,11 +791,16 @@ def lint_notation(sentence: str) -> list[str]:
             continue
         if _is_chemistry_run(stripped):
             continue
+        if stripped.isupper() and _ACRONYM_LEFT_OF_SOLIDUS_RE.search(
+            sentence[: dm.start()]
+        ):
+            continue  # '<ACRONYM>/<ACRONYM>' names two methods, not a unit
         warnings.append(
             f"two-denominator-solidus: '/{run}' found -- a solidus is fine "
             "for a single recognised unit ('mA/µm', 'S/cm') but ambiguous "
             "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹'); a chemical "
-            "formula or Miller-index facet ('PdH/Pd(111)') is not a unit."
+            "formula or Miller-index facet ('PdH/Pd(111)') and a pair of "
+            "all-caps named methods ('CBMC/CFCMC') are not units."
         )
 
     # ── canon v2: ASCII -> UTF-8 symbol respellings ─────────────────────

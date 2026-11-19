@@ -750,6 +750,30 @@ def test_chemical_formula_and_miller_surface_do_not_fire_solidus() -> None:
     )
 
 
+def test_named_method_pair_do_not_fire_solidus() -> None:
+    """gr722272: `CBMC/CFCMC` names two Monte Carlo methods as printed --
+    an all-caps acronym on both sides of the slash is a name pair, not a
+    compound-unit denominator. Real two-denominator units and a
+    non-acronym left token still fire."""
+    for sentence in [
+        "Adsorption free energies were computed by CBMC/CFCMC.",
+        "The DFT/MD scheme couples a static surface to dynamics.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert not any("two-denominator-solidus" in w for w in warnings), (
+            sentence,
+            warnings,
+        )
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("Mobility reaches 10 cm²/Vs at 300 K.")
+    )
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("The rate reaches 5 widgets/sprocket.")
+    )
+
+
 def test_nomenclature_hyphens_do_not_fire_ascii_minus_exponent() -> None:
     warnings = lint_notation(
         "The 5-8-5 defect pair is observed in the graphene lattice."
