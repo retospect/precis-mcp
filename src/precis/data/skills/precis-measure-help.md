@@ -242,8 +242,10 @@ readers that rank values skip flagged rows.
 
 Rows are append-only. Wrong or updated numbers are replaced by a new row that
 points at the old one (`supersedes`); the old row stays as history and drops out
-of live reads. The replacement must state the same number: same subject, subject
-label, measurand and direction. Only `trusted`, the first `superseded_by` /
+of live reads. The replacement must state the same number under the same
+conditions: same subject, subject label, measurand, direction and condition
+set — a row measured under different conditions is a new run, not a
+replacement. Only `trusted`, the first `superseded_by` /
 `superseded_at` pair and `extraction_status` set to `human_checked` ever change
 on a stored row. `meta.extra_anchors` is written when the row is written.
 
@@ -258,9 +260,14 @@ measures onto the survivor is not built yet.
 `put(kind='measure')` writes one run: the output's printed literal in `text=`,
 its fields in `meta=`, the input rows in `args={'items': [...]}`. All in one transaction; a
 refusal writes nothing. One more refusal: a live output row with the same
-measurand, subject, anchor scheme, span and value is a **duplicate** — the
-number is already written; `get` it, or re-write the run with
-`meta={'supersedes': id}` when it should replace that row.
+measurand, subject, anchor scheme, span, value **and input condition set** is
+a **duplicate** — the same number under the same conditions is already
+written; `get` it. The condition set is the run's canonical input rows plus
+the output's own `conditions`, compared independent of order, reported unit
+and label: one span reporting 12% FE at −1.35 V and again at −1.55 V is two
+runs, and the second lands. `supersedes` replaces a row only under the same
+conditions — a number measured under different conditions is a new run, not
+a supersession.
 
 ```python
 put(kind="measure", text="95",

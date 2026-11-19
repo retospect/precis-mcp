@@ -17,7 +17,7 @@ import pytest
 from precis.errors import BadInput
 from precis.ingest.dedup import merge_refs
 from precis.store import Migrator, Store
-from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import ConditionFilter, MeasureAnchor, MeasureSpec
 from precis.taxonomy.nodes import slugify, validate_taxon_meta
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -891,6 +891,43 @@ def test_a_value_repeated_on_the_same_anchor_span_is_refused(
     store.insert_measure(spec, actor="reader")
     with pytest.raises(BadInput, match="duplicate of measure"):
         store.insert_measure(spec, actor="reader")
+
+
+def test_same_span_output_under_distinct_potentials_is_searchable(
+    store: Store, world: dict[str, Any]
+) -> None:
+    output = MeasureSpec(
+        world["fe"], "12", world["paper"], reported_unit="%", anchor=_anchor(world)
+    )
+    first = store.insert_measure(
+        output, [_potential(world, "-1.35"), _product(world)], actor="reader"
+    )
+    second = store.insert_measure(
+        output, [_potential(world, "-1.55"), _product(world)], actor="reader"
+    )
+    assert first.run_key != second.run_key
+    detail = store.measure_detail(second.output_id)
+    assert any(c["value_num"] == -1.55 for c in detail["conditions"])
+    found = store.search_measures(
+        world["fe"], conditions=[ConditionFilter("potential", "=", value=-1.55)]
+    )
+    assert [row["id"] for row in found.rows] == [second.output_id]
+    # Presentation labels and input order do not create a new condition set.
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(
+            output,
+            [_product(world), _potential(world, "-1.55", subject="another label")],
+            actor="reader",
+        )
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(
+            output,
+            [
+                _with(_potential(world, "-1550"), reported_unit="mV"),
+                _product(world),
+            ],
+            actor="reader",
+        )
 
 
 def test_a_different_value_or_span_is_not_a_duplicate(
