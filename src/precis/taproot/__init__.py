@@ -1,5 +1,10 @@
 """Taproot — the evidence-grounded claim graph.
 
+Explicit setup mismatches are excluded before seniority and citation selection
+(see ``support.setup_mismatch``). Missing comparisons remain unknown; lexical
+similarity cannot establish scientific identity. Evidence rendering keeps every
+passage pointer because one paper may ground a claim at several passages.
+
 A claim lives on one **claim hub**: a ``finding`` tagged ``TAPROOT:claim`` +
 ``STATUS:canonical`` (off the ``chase`` STATUS lifecycle, so a re-picked
 finding is never mistaken for a hub). Papers attach as evidence edges. An

@@ -1508,6 +1508,9 @@ def test_grounding_surfaces_both_chunks_of_one_paper(store: Any) -> None:
     assert len(ev.corroborators) == 1  # one paper -> one seniority row
     assert {g.source_handle for g in ev.grounding} == {pc0, pc1}
     assert all(g.paper_ref_id == paper for g in ev.grounding)
+    body = _make_handler(store).get(id=hub, view="evidence").body
+    assert pc0 in body and pc1 in body
+    assert "passages" in body
 
 
 def test_grounding_falls_back_to_src_chunk_id_without_source_handle(
@@ -1527,6 +1530,7 @@ def test_grounding_falls_back_to_src_chunk_id_without_source_handle(
     ev = derive_evidence(store, hub)
 
     assert [g.source_handle for g in ev.grounding] == [pc0]
+    assert pc0 in _make_handler(store).get(id=hub, view="evidence").body
     assert ev.corroborators[0].paper_ref_id == paper
 
 
@@ -1715,3 +1719,32 @@ def test_derive_evidence_computed_no_claimed_barrier_no_mismatch(
     attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
 
     assert derive_evidence(store, hub).computed[0].mismatch_reason is None
+
+
+@pytest.mark.parametrize("container", [None, "widen", "reground", "inbound_ground"])
+def test_setup_mismatch_excluded_from_single_and_bulk_evidence(
+    store: Any, container: str | None
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    wrong = _paper(store, title="Unrelated membrane transport", year=1990)
+    right = _paper(store, title="Suzuki coupling measurement", year=2004)
+    comparison = {"same_setup": False}
+    meta = {
+        "support": "yes",
+        **(comparison if container is None else {container: comparison}),
+    }
+    attach_evidence(
+        store, hub_ref_id=hub, paper_ref_id=wrong, role="corroborates", meta=meta
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=right, role="corroborates")
+    _cites(store, src=right, dst=wrong)
+    evidence = derive_evidence(store, hub)
+    assert derive_evidence_bulk(store, [hub])[hub] == evidence
+    assert not evidence.originators
+    assert [e.paper_ref_id for e in evidence.corroborators] == [right]
+    assert [(e.src_ref_id, e.rule) for e in evidence.ineligible] == [
+        (wrong, "setup mismatch")
+    ]
+    body = _make_handler(store).get(id=hub, view="evidence").body
+    assert "independent supporters: 1 (1 papers)" in body
+    assert "setup mismatch" in body

@@ -25,6 +25,10 @@ from precis.response import Response
 def render_evidence_view(store: Store, ref: Ref) -> Response:
     """Render ``view='evidence'``: the hub's edges by derived role.
 
+    The ``passages`` column lists the available grounding handles for each
+    row. The ``excluded evidence`` header line lists ineligible sources and
+    their exclusion reasons.
+
     A patent evidence edge renders its full bibliography-style citation
     (applicant, title, publication number + kind code, year) instead of
     a bare title, and same-family patent edges within one role-list
@@ -79,6 +83,12 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     all_edges = evidence.originators + evidence.corroborators + evidence.contradictors
 
     header = [f"# evidence for finding {ref.id}", "", ref.title]
+    if evidence.ineligible:
+        header += [
+            "",
+            "excluded evidence (not counted as support): "
+            + "; ".join(f"ref{e.src_ref_id} ({e.rule})" for e in evidence.ineligible),
+        ]
     hub_type = claim_type_of(ref.meta)
     if hub_type:
         by = (ref.meta or {}).get("claim_type_by") or "llm"
@@ -93,7 +103,13 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
             header += _motivation_section(store, ref.id)
             header += _falsification_section(store, ref)
         else:
-            header.append("no evidence edges yet for this claim hub")
+            if evidence.ineligible:
+                header += [
+                    "no eligible evidence edges for this claim hub",
+                    "independent supporters: 0 (0 papers)",
+                ]
+            else:
+                header.append("no evidence edges yet for this claim hub")
             judging = judging_summary(ref.meta)
             if judging:
                 header += ["", judging]
@@ -118,19 +134,49 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
             label = f"★ {label}"
         return label
 
+    def _passages(edge: seniority.EvidenceEdge) -> str:
+        source = refs_by_id.get(edge.paper_ref_id)
+        family = (
+            (source.meta or {}).get("family_id")
+            if source and source.kind == "patent"
+            else None
+        )
+        paper_ids = {edge.paper_ref_id}
+        if family:
+            paper_ids.update(
+                pid
+                for pid, paper in refs_by_id.items()
+                if paper.kind == "patent"
+                and (paper.meta or {}).get("family_id") == family
+            )
+        roles = (
+            {"contradicts"}
+            if edge.derived_role == "contradicts"
+            else {"establishes", "corroborates"}
+        )
+        handles = {
+            g.source_handle
+            for g in evidence.grounding
+            if g.paper_ref_id in paper_ids and g.relation in roles
+        }
+        if edge.source_handle:
+            handles.add(edge.source_handle)
+        return ", ".join(sorted(handles)) or "—"
+
     def _table(edges: list[seniority.EvidenceEdge]) -> str:
         rows: list[dict[str, str]] = []
         for e, note in _collapse_patent_families(store, edges, refs_by_id):
             rows.append(
                 {
                     "paper": _label(e, note),
+                    "passages": _passages(e),
                     "year": str(e.year) if e.year is not None else "—",
                     "support": e.support or "—",
                     "integrity": e.integrity,
                     "caveats": "; ".join(e.caveats) if e.caveats else "—",
                 }
             )
-        schema = ["paper", "year", "support", "integrity", "caveats"]
+        schema = ["paper", "passages", "year", "support", "integrity", "caveats"]
         return render_agent_table(rows, schema=schema)
 
     lines = list(header)
