@@ -1,16 +1,17 @@
 """Handlers — kind adapters.
 
-Handlers register their :class:`precis.protocol.KindSpec` with
-:class:`precis.dispatch.Hub` at boot. Shared adapters live in underscore-prefixed
-modules such as :mod:`precis.handlers._numeric_ref`.
-Staged (URL-backed draft) findings preserve a URL and verbatim quote
-without fetching; paper import promotes only a source-and-quote match to
-the ordinary chase (:mod:`precis.finding_drafts`).
+Handlers register :class:`precis.protocol.KindSpec` with
+:class:`precis.dispatch.Hub` at boot. Shared adapters use underscore-prefixed
+modules (:mod:`precis.handlers._numeric_ref`).
+Staged findings retain the URL and verbatim quote without fetching.
+Paper import promotes source-and-quote matches (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
 Cached record selectors preserve ref identity despite numeric slug collisions.
 Cache eyes apply injection verdicts while retaining link rings.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
+Paper health reports Crossref misses as unverified because other agencies
+register DOIs.
 Paper tag batches commit edits and audit events together.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root

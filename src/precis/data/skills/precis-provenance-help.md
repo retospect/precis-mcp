@@ -54,8 +54,10 @@ which severity bucket it landed in.
 🟢 Info       — clean, or informational notice (clarification, new version)
 ```
 
-Malformed and unknown DOIs surface in their own sections — likely
-hallucinated or mistyped. The tool never silently substitutes.
+Malformed DOIs surface in their own section, likely mistyped. Unverified
+DOIs (no Crossref record) may be registered with another agency such as
+DataCite, so check the source before calling them wrong. The tool never
+silently substitutes.
 
 ## Pick a view for the output
 
