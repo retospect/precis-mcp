@@ -150,6 +150,9 @@ Pin it with `mode=` when you know better:
 | `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. When the scan is bounded — one ref (`scope=`/ref-id set) or the `memory` corpus — chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored: stopwords, LaTeX tokens). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). On `kind='memory'` a full-sentence query is the dedup check: a verbatim hit means the sentence already lives in some body. Empty query returns nothing. |
 | `'literal'` | Exact substring match over the chunk text itself (case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/app/config.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
 
+`kind='skill'` refuses `mode='literal'`. Use `mode='verbatim'` there
+for a substring match.
+
 ```python
 search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
 search(q="ways to stop catalyst poisoning", mode="semantic")  # paraphrase recall

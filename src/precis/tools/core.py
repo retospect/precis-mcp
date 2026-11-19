@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import json
 import logging
 import threading
@@ -30,6 +31,7 @@ from precis import principal, serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 from precis.private_kinds import private_kind_of
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
+from precis.store.types import _CATEGORIZER_AXES, _KIND_ALLOWED_AXES
 from precis.user_context import current_principal, user_actor_scope
 
 if TYPE_CHECKING:
@@ -2999,28 +3001,21 @@ def tag(
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
-    Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
-    replace within the prefix on add; flag tags toggle; open tags
-    are free-form. Bad axis on a kind raises
+    An added closed UPPERCASE tag replaces the value for its prefix.
+    Flags toggle. Open tags are free-form. A disallowed axis raises
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
-    finding: unrestricted. job: STATUS (lifecycle subsets).
-    memory: SPACE+MOVE (DREAM/STALE are system-set).
-    anki/conv: none. paper: SRC+CACHE+DREAM+categorizer axes; patent: SRC+CACHE.
-    web/perplexity-*/websearch/youtube: CACHE+WATCH.
-    oracle/skill: none. python/calc/math: tag unsupported.
+    {kind_allowed_axes}
+    finding: unrestricted. python/calc/math: tag unsupported.
+    Prefix ownership still applies to axes listed here.
 
-    `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
-    onto the ref's meta dict — see precis-todo-tree-help.
-    `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
-    `id=[...]` on paper applies the same edit to every paper in one
-    transaction. Use paper slugs, record handles, or numeric ref ids.
+    `meta=` (todo only) promotes allowlisted keys such as `llm_tier`.
+    `prio=` (todo/gripe/quest/job) sets priority (1..10, lower=hotter).
 
-    Full reference: get(kind='skill', id='precis-tag-help'), or
-    search(kind='skill', q='classifying refs') for a topical lookup.
-    `precis-tags` is the authoritative axis matrix.
+    get(kind='skill', id='precis-tag-help') for recipes or
+    search(kind='skill', q='add remove tags refs') for discovery.
+    `precis-tags` has the full axis matrix.
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -3040,6 +3035,29 @@ def tag(
         )
     finally:
         serve_ledger.unbind(token)
+
+
+def _tag_axis_summary() -> str:
+    """Group matching sets and abbreviate paper's categorizer axes to fit tools/list."""
+    groups: dict[str, list[str]] = {}
+    for kind, axes in sorted(_KIND_ALLOWED_AXES.items()):
+        if not axes:
+            continue
+        categorizer_axes = (
+            axes.intersection(_CATEGORIZER_AXES) if kind == "paper" else set()
+        )
+        labels = sorted(axes - categorizer_axes)
+        if categorizer_axes:
+            labels.append("categorizer axes")
+        groups.setdefault("+".join(labels), []).append(kind)
+    return "\n".join(f"{'/'.join(kinds)}: {axes}." for axes, kinds in groups.items())
+
+
+# Normalize the template before expanding it on both Python 3.12 and 3.13.
+tag.__doc__ = (inspect.getdoc(tag) or "").replace(
+    "{kind_allowed_axes}",
+    _tag_axis_summary(),
+)
 
 
 def link(
@@ -3076,19 +3094,19 @@ def link(
 ) -> str:
     """Add or remove a typed link between two refs.
 
-    `target=` uses canonical `kind:identifier[~selector]` form
-    (kind prefix required). A bare handle (`pa5`, `td158`) works
-    wherever the kind is self-identifying; the `kind:` form is
-    required for file-backed kinds (markdown/plaintext/tex), which
-    have no handle — get/edit/delete take that same handle in `id=`.
+    `target=` accepts a universal handle (`pa5`, `td158`) or
+    `kind:identifier[~selector]`. For file-backed targets, only the
+    `python` and `md` indexes require slug addressing with a kind
+    prefix. Stored `markdown`, `plaintext`, and `tex` refs accept
+    `md<N>`, `pl<N>`, and `tx<N>` handles, respectively.
     `mode='add'` (default) creates;
     `mode='remove'` with `rel=` removes one (target, rel) pair,
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
 
     Full reference: get(kind='skill', id='precis-link-help'), or
-    search(kind='skill', q='connecting refs') for a topical lookup.
-    `precis-relations` lists every rel (cites, blocks, ...).
+    search(kind='skill', q='typed links between refs') for a topical lookup.
+    `precis-relations` lists the rels agents write by hand (cites, blocks, ...).
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
