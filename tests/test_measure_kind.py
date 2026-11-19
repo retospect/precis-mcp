@@ -67,6 +67,19 @@ class TestDisplay:
             == "1 eV"
         )
 
+    def test_entropy_shows_in_multiples_of_the_boltzmann_constant(self) -> None:
+        # gr721110: ΔS reported as ΔS/k_B keeps that printed scale while the
+        # value stays stored as J/K.
+        assert (
+            format_value(
+                1.380649e-23, canonical_unit="J/K", display_unit="boltzmann_constant"
+            )
+            == "1 boltzmann_constant"
+        )
+        assert to_canonical(2, "boltzmann_constant", "J/K") == pytest.approx(
+            2 * 1.380649e-23, rel=1e-12, abs=0
+        )
+
     def test_ph_is_never_prefixed_or_converted(self) -> None:
         assert format_value(0.001, canonical_unit="pH") == "0.001 pH"
         with pytest.raises(BadInput, match="logarithmic"):
@@ -176,6 +189,25 @@ class TestDisplayUnitKey:
 
     def test_it_is_only_checked_once_canonical_unit_is_set(self) -> None:
         validate_taxon_meta({"display_unit": "Å"})  # merged and re-checked later
+
+    def test_a_named_constant_keeps_the_printed_scale(self) -> None:
+        # gr721110: an entropy reported as ΔS/k_B was forced into a
+        # dimensionless ratio because the parser refused the display unit.
+        meta = validate_taxon_meta(
+            {
+                "dimension_kind": "si",
+                "si_vector": "2,1,-2,0,-1,0,0",
+                "canonical_unit": "J/K",
+                "display_unit": "boltzmann_constant",
+            }
+        )
+        assert meta["display_unit"] == "boltzmann_constant"
+
+    def test_a_named_constant_of_another_dimension_is_refused(self) -> None:
+        with pytest.raises(BadInput, match="different dimension"):
+            validate_taxon_meta(
+                {"canonical_unit": "m", "display_unit": "boltzmann_constant"}
+            )
 
     def test_type_and_emptiness(self) -> None:
         with pytest.raises(BadInput, match="unit string"):
