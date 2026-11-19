@@ -1874,7 +1874,9 @@ class PaperHandler(Handler):
 
         1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:``/
            ``pubmed:``/``pmcid:`` or a bare DOI/arXiv id) and
-           best-effort enrich via S2.
+           best-effort enrich via S2 — a DOI also gets a registration-
+           agency year cross-check, the registry being authoritative
+           for what the DOI names (gr722127).
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
@@ -1945,7 +1947,9 @@ class PaperHandler(Handler):
 
         # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
         # ``year`` arrives as a caller hint (e.g. from put(kind='paper',
-        # year=…)); S2 overrides it when it has one, else the hint stands.
+        # year=…)); S2 overrides it when it has one, else the hint stands —
+        # except for a DOI, where the registration-agency cross-check below
+        # can override S2's year (gr722127).
         stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
@@ -1954,6 +1958,9 @@ class PaperHandler(Handler):
         registry_meta: dict[str, Any] | None = None
         meta: dict[str, Any] | None = None
         s2_down = False
+        # Set when the DOI-registry year cross-check below replaces S2's
+        # year — the value names the registry that vouched (gr722127).
+        year_registry_source: str | None = None
         if id_pair is not None:
             try:
                 meta = _lookup_acquire_metadata(*id_pair)
@@ -2009,6 +2016,34 @@ class PaperHandler(Handler):
                         pair = ("pmcid", f"pmc{pmc_digits}")
                         if pair not in identifiers:
                             identifiers.append(pair)
+                if id_pair[0] == "doi":
+                    # Year cross-check against the DOI's registration
+                    # agency (gr722127): S2's index is a secondary source
+                    # and its year can be wrong — S2 says 1999 for
+                    # Feynman's 1982 "Simulating physics with computers"
+                    # (10.1007/BF02650179), minting the cite key
+                    # ``feynman99``. The registry is authoritative for
+                    # what the DOI names; when it vouches for the same
+                    # title its year wins. A registry fault or a
+                    # non-matching title keeps S2's year.
+                    try:
+                        crosscheck = _lookup_doi_registry(id_pair[1])
+                    except Exception:
+                        crosscheck = None
+                    if crosscheck is not None:
+                        from precis.ingest._text_norm import best_jaccard
+
+                        score, _, _ = best_jaccard(
+                            str(meta.get("title") or ""),
+                            str(crosscheck.get("title") or ""),
+                        )
+                        if score >= _DOI_EDIT_TITLE_MISMATCH_THRESHOLD:
+                            reg_year = crosscheck.get("year")
+                            if isinstance(reg_year, int):
+                                year = reg_year
+                                year_registry_source = str(
+                                    crosscheck.get("source") or ""
+                                )
             elif resolver_err is not None:
                 # The resolver could not answer at all (S2 outage, 429
                 # storm, broken client) — mint anyway, marked unverified.
@@ -2167,6 +2202,10 @@ class PaperHandler(Handler):
                     journal = meta.get("journal")
                     if isinstance(journal, str) and journal.strip():
                         s2_patch["journal"] = journal.strip()
+                    if year_registry_source:
+                        # The registry's year replaced S2's in the mint
+                        # (gr722127) — leave the provenance on the stub.
+                        s2_patch["acquire_year_registry"] = year_registry_source
                     self.store.update_paper_fields(
                         ref_id,
                         authors=meta.get("authors") or None,
