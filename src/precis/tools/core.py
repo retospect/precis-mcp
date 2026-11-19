@@ -1168,14 +1168,13 @@ def get(
                 and (id == "/traces" or id.startswith("/traces?"))
             )
             # view='logbook' (gr592279) reads args['q'] as its in-window
-            # text filter — the one documented args= key that shares a
-            # name with an explicit kwarg. Top-level q= on get() stays
+            # text filter. Top-level q= on get() stays
             # find-in-ref's door, so the two never collide inside the
             # handler — but a call passing both is ambiguous and refuses.
             logbook_q = kind == "quest" and view == "logbook"
             reserved = (
                 ("id", "view", "q")
-                if trace_filters
+                if trace_filters or kind == "handle"
                 else ("kind", "id", "view")
                 if logbook_q
                 else ("kind", "id", "view", "q")

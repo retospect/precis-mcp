@@ -14,9 +14,8 @@ status: active
 
 # precis-handle-help — say an id in words
 
-`handle` is a stateless converter. Call it only when you need to speak or
-decode an id; rows and acks never carry word handles, so normal traffic pays
-no tokens. Computed in code, free.
+`handle` converts numeric ids and word handles locally. It also looks up
+references by spoken description when you supply a reference kind.
 
 ## Say a numeric id in words
 ## Number to words
@@ -40,7 +39,18 @@ Returns the number. Case, spaces, hyphens and commas are ignored. Words off
 the lists, or the wrong word count, raise `BadInput`. Use the resulting
 number as `id=` in `get`/`put`/`tag`; those verbs do not take the words.
 
+## Recover a reference from a spoken description
+
+```python
+get(kind="handle", q="the Miller paper", args={"kind": "paper"})
+```
+
+Choose the matching reference from up to five candidates, shown as
+`handle | spoken name | summary`. The supported kinds are paper, gripe,
+todo and memory. Include the year or topic when several candidates fit.
+
 ## See also
 
 - [[precis-overview]] — verbs and kinds
+- [[precis-word-handles-help]] — shared voice and transcript conventions
 - [[precis-calc-help]] — other local conversions
