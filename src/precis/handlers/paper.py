@@ -3841,7 +3841,9 @@ class PaperHandler(Handler):
         # intersection). Captured after ``injected_scope`` so the flag
         # keeps naming only the dispatch-injected cited=/uncited=/hubbed=
         # cohorts, which have no ``args=`` respelling.
-        if ids:
+        # ``ids=[]`` is a named cohort of nothing — it folds to zero hits,
+        # not to "no restriction" (the tags renderer agrees).
+        if ids is not None:
             wanted = resolve_exclude_paper_ids(
                 [str(i) for i in ids], store=self.store, kind=kind
             )

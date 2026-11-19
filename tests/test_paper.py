@@ -1445,6 +1445,10 @@ class TestSearch:
 
         empty = handler.search(stamp="s2_enriched_at", ids=["missing-paper-slug"])
         assert "no live paper entries stamped" in empty.body
+        # An explicit empty id list is a named cohort of nothing, not "no
+        # restriction" — it must not widen to every stamped paper.
+        none = handler.search(stamp="s2_enriched_at", ids=[])
+        assert "no live paper entries stamped" in none.body and keep_h not in none.body
 
     def test_search_link_scope_listing_intersects_ids(
         self, store: Store, handler: PaperHandler
@@ -1464,6 +1468,9 @@ class TestSearch:
 
         body = handler.search(linked_from="memory", ids=[keep_h]).body
         assert keep_h in body and drop_h not in body, body
+        # ``ids=[]`` names no paper: zero hits, never the whole linked cohort.
+        none = handler.search(linked_from="memory", ids=[])
+        assert keep_h not in none.body and drop_h not in none.body, none.body
 
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler

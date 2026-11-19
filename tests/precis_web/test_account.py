@@ -1057,7 +1057,7 @@ def test_default_mode_offers_every_mint_form(monkeypatch: pytest.MonkeyPatch) ->
     assert _PERSONAL_FORM in body and _CAPABILITY_FORM in body
     assert "Personal MCP tokens" in body and "Client capability tokens" in body
     assert "does not accept these tokens" not in body
-    assert client.app.state.mcp_credential_classes == frozenset(  # type: ignore[attr-defined]
+    assert client.app.state.mcp_credential_classes == frozenset(
         {"install", "slice", "personal", "capability", "oauth"}
     )
 
