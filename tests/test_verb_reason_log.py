@@ -210,9 +210,17 @@ def test_paper_tag_batch(
             "reason": "  conference reading list  ",
         },
     )
-    assert "tagged 2 paper refs in one transaction" in out
-    assert out.count("batch-first") == 1
-    assert out.count("batch-second") == 1
+    # Explicit lists retain their first address per paper. Kind inference
+    # resolves the handles to slugs before passing the list to the handler.
+    labels = (
+        (f"pa{first.id}", f"pa{second.id}")
+        if explicit_kind
+        else ("batch-first", "batch-second")
+    )
+    assert out.splitlines() == [
+        "tagged 2 paper refs in one transaction",
+        *(f"updated paper {label}: +1 tag, -1 tag" for label in labels),
+    ]
     for ref in (first, second):
         tags = {tag.value for tag in store.tags_for(ref.id)}
         assert "aixmat-2026" in tags

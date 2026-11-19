@@ -12,6 +12,7 @@ query-derived, so a slug round-trip would read as a fresh query), and
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 
 import pytest
@@ -187,7 +188,13 @@ def test_links_pagination_and_filters_through_dispatch(
 
 
 def _seed_cache(
-    store: Store, kind: str, *, slug: str, text: str, verdict: str = "clean"
+    store: Store,
+    kind: str,
+    *,
+    slug: str,
+    text: str,
+    verdict: str = "clean",
+    request_hash: str | None = None,
 ) -> Ref:
     ref, _cache = store.put_cache_entry(
         kind=kind,
@@ -195,7 +202,7 @@ def _seed_cache(
         title=f"{kind} answer",
         body_blocks=[ChunkInsert(ord=0, slug="answer", text=text)],
         provider=_PROVIDER[kind],
-        request_hash=f"h-{slug}",
+        request_hash=request_hash if request_hash is not None else f"h-{slug}",
         ttl_seconds=None,
         cache_meta={"query": slug, "inject": {"verdict": verdict}},
     )
@@ -436,7 +443,14 @@ def test_youtube_video_shaped_handle_reads_live_ref(
                 (previous,),
             )
     assert ref.id == 123456789
-    _seed_cache(store, "youtube", slug="yt123456789", text="competing video")
+    # The URL takes the language-specific query path, which looks up by hash.
+    _seed_cache(
+        store,
+        "youtube",
+        slug="yt123456789",
+        text="competing video",
+        request_hash=hashlib.sha256(b"yt123456789:en").hexdigest(),
+    )
     note = store.insert_ref(kind="memory", slug=None, title="handle evidence")
     store.add_link(src_ref_id=note.id, dst_ref_id=ref.id)
     for explicit in ({}, {"kind": "youtube"}):
