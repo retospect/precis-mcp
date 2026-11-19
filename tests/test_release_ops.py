@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,9 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
+    # The first cut is pinned to release.cut_host and held without one
+    # (gr713351); the hold and the pin are pinned in test_plan_dispatch.
+    monkeypatch.setattr(R, "cut_host", lambda store: "node-a")
     psettings.invalidate()
     # These op tests exercise approval, pins and rollout bookkeeping;
     # shared ancestry and exact-head CI refusal cases live in test_release_gate.
@@ -1245,6 +1249,12 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     root = tmp_path / "repo"
     (root / "scripts").mkdir(parents=True)
     (root / "scripts" / "release").write_text("#!/bin/sh\n", encoding="utf-8")
+    # The cut refuses a checkout with no deploy overlay (gr713351); this
+    # one has the local overlay, the overlay tests below remove it.
+    (root / "deploy" / "inventory").mkdir(parents=True)
+    (root / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
+    monkeypatch.delenv("PRECIS_OVERLAY_DIR", raising=False)
+    monkeypatch.delenv("PRECIS_DEPLOY_FROM_TREE", raising=False)
     runs = tmp_path / "runs"
     runs.mkdir()
     seen: dict[str, Any] = {"argv": [], "env": []}
@@ -1329,6 +1339,112 @@ def test_release_cut_marker_is_never_empty(
     handle = rc.submit(ctx, None)
     assert handle is not None and ctx.failures == []
     assert checkout["env"] == [{"PRECIS_RELEASE_PASS": "jo4242"}]
+
+
+def _strip_overlay(seen: dict[str, Any]) -> None:
+    shutil.rmtree(seen["root"] / "deploy")
+
+
+def test_release_cut_refuses_a_checkout_with_no_overlay(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr713351 (r333): a host with no deploy inventory / .vault-pass cuts a
+    release it cannot deploy — the job fails, nothing is staged or cut."""
+    _strip_overlay(checkout)
+    monkeypatch.setenv("PRECIS_NODE", "builder-host")
+    refreshed: list[Path] = []
+
+    def _refresh(root: Path) -> tuple[str, list[str]]:
+        refreshed.append(root)
+        return ("x", [])
+
+    monkeypatch.setattr(rc, "refresh_tooling", _refresh)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert len(ctx.failures) == 1
+    msg = ctx.failures[0]
+    assert "builder-host cannot deploy" in msg
+    assert "release.cut_host" in msg and "gr713351" in msg
+    assert checkout["argv"] == [] and refreshed == []
+    assert R.release_of(store, mint.ids["cut"]) is None
+
+
+def test_release_cut_refuses_an_overlay_with_no_vault_pass(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    (checkout["root"] / "deploy" / ".vault-pass").unlink()
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is None
+    assert "cannot deploy" in ctx.failures[0]
+    assert checkout["argv"] == []
+
+
+def test_release_cut_overlay_from_the_checkout_itself(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    assert rc.overlay_refusal(checkout["root"]) is None
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+
+
+def test_release_cut_overlay_from_precis_overlay_dir(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _strip_overlay(checkout)
+    shared = tmp_path / "private"
+    (shared / "inventory").mkdir(parents=True)
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
+    # No .vault-pass beside it yet: still refused.
+    assert rc.overlay_refusal(checkout["root"]) is not None
+    (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
+    assert rc.overlay_refusal(checkout["root"]) is None
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+
+
+def test_release_cut_overlay_from_the_main_checkout(
+    store: Store, checkout: dict[str, Any], tmp_path: Path
+) -> None:
+    """The checkout is a linked worktree: the overlay lives in the main
+    checkout (the parent of git's common dir), as scripts/deploy finds it."""
+    main = tmp_path / "main-checkout"
+    main.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+        ["worktree", "add", "-q", str(tmp_path / "wt")],
+    ):
+        subprocess.run(["git", "-C", str(main), *args], check=True)
+    wt = tmp_path / "wt"
+    assert rc.overlay_refusal(wt) is not None  # main has no overlay yet
+    (main / "deploy" / "inventory").mkdir(parents=True)
+    assert rc.overlay_refusal(wt) is not None  # the vault key is missing
+    (main / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
+    assert rc.overlay_refusal(wt) is None
+    assert rc.overlay_refusal(main) is None
+
+
+def test_release_cut_overlay_check_honours_the_legacy_escape(
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _strip_overlay(checkout)
+    assert rc.overlay_refusal(checkout["root"]) is not None
+    monkeypatch.setenv("PRECIS_DEPLOY_FROM_TREE", "")
+    assert rc.overlay_refusal(checkout["root"]) is None
 
 
 @pytest.mark.parametrize(
@@ -2439,6 +2555,12 @@ def stale_checkout(
     checkout["tip"] = _g(work, "rev-parse", "HEAD")
     checkout["origin"] = origin
     checkout["work"] = work
+    # The re-clone dropped the fixture's overlay (gr713351); keep it
+    # outside the clone so the tooling tests' tree stays clean.
+    shared = tmp_path / "overlay"
+    (shared / "inventory").mkdir(parents=True)
+    (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
     monkeypatch.setattr(rc, "refresh_tooling", _REAL_REFRESH_TOOLING)
     monkeypatch.setattr(
         rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
@@ -2780,7 +2902,8 @@ def test_tick_walks_a_release_pass_to_the_deploy(
     assert res.dispatched == 1
     job, meta = _only_job(store, ids["cut"])
     assert (meta["job_type"], meta["executor"]) == ("release_cut", "ssh_node")
-    assert meta["params"] == {"todo_id": ids["cut"]}
+    # The first cut has no meta.release.host: pinned to release.cut_host.
+    assert meta["params"] == {"todo_id": ids["cut"], "target_node": "node-a"}
 
     # The cut job: record the cut, succeed. The tick closes the cut and
     # dispatches the poll on job_inproc in the same pass.

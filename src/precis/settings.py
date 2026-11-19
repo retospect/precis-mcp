@@ -469,6 +469,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "ask a human.",
         ),
         SettingSpec(
+            key="release.cut_host",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The node (PRECIS_NODE) the first release_cut of a pass "
+            "is pinned to (gr713351): the cut's checkout is also the "
+            "deploy's, and only a host holding the private deploy "
+            "overlay (deploy/inventory + .vault-pass) can deploy from "
+            "it. Later cut-pinned jobs follow meta.release.host; this "
+            "names where the first cut runs, before that exists. Unset: "
+            "plan_dispatch holds the cut with a note (fail closed) "
+            "rather than let any ssh_node host claim it. A params."
+            "target_node on the node still wins. DB-only — no env "
+            "fallback, so a drifted host cannot redirect the cut.",
+        ),
+        SettingSpec(
             key="pr.factory_builders",
             type="str",
             env_var=None,

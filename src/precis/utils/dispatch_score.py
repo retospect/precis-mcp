@@ -218,6 +218,54 @@ _FILE_RE = re.compile(
 )
 _ANCHOR_RE = re.compile(r"::.*$")
 _LEADING_ROOTS = ("./", "src/precis/", "src/")
+#: A URL in a brief (``https://github.com/x/y.py``): its path and host
+#: fragments are not repo files (gr705093).
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"')\]]*")
+#: A leading dotted host segment (``github.com/x/y.py``, no scheme).
+_HOST_RE = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+_FILE_EXTS = frozenset(
+    [
+        "py",
+        "pyi",
+        "sql",
+        "sh",
+        "bash",
+        "yml",
+        "yaml",
+        "toml",
+        "json",
+        "j2",
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "css",
+        "html",
+        "md",
+        "rs",
+        "go",
+        "mjs",
+        "c",
+        "h",
+        "cc",
+        "cpp",
+        "tex",
+    ]
+)
+#: Basenames that name many files across the tree: a bare token for one is
+#: never a key (a full path to one still is) — gr705093.
+_NEVER_KEY_BASENAMES = frozenset({"__init__.py", "conftest.py", "__main__.py"})
+#: Shared ratchet tests every UI brief names; never a key in any spelling,
+#: so they never make two unrelated builds conflict (gr705093).
+_SHARED_RATCHET_BASENAMES = frozenset({"test_colour_ratchet.py"})
+
+
+def _is_host_path(path: str) -> bool:
+    """``github.com/x/y.py``: a scheme-less URL, not a repo path."""
+    head, sep, _ = path.partition("/")
+    if not sep or not _HOST_RE.fullmatch(head):
+        return False
+    return head.rsplit(".", 1)[1].lower() not in _FILE_EXTS
 
 
 def brief_files(text: str) -> frozenset[str]:
@@ -229,16 +277,25 @@ def brief_files(text: str) -> frozenset[str]:
     root: a short suffix is not widened to its basename or last two
     segments, because matching on those held two builds that touched
     different ``dispatch.py``/``__init__.py`` files on each other.
+    Dropped: tokens inside a URL or under a host name, a bare
+    :data:`_NEVER_KEY_BASENAMES` name, and the
+    :data:`_SHARED_RATCHET_BASENAMES` tests in any spelling.
     :func:`shared_files` decides whether two sets name the same file."""
     keys: set[str] = set()
-    for raw in _FILE_RE.findall(text or ""):
+    for raw in _FILE_RE.findall(_URL_RE.sub(" ", text or "")):
         path = _ANCHOR_RE.sub("", raw).strip("./")
         for root in _LEADING_ROOTS:
             if path.startswith(root):
                 path = path[len(root) :]
                 break
-        if path:
-            keys.add(path)
+        if not path or _is_host_path(path):
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if base in _SHARED_RATCHET_BASENAMES:
+            continue
+        if "/" not in path and base in _NEVER_KEY_BASENAMES:
+            continue
+        keys.add(path)
     return frozenset(keys)
 
 
@@ -251,8 +308,10 @@ def shared_files(mine: frozenset[str], theirs: frozenset[str]) -> frozenset[str]
     it is a path suffix (``job_types/land_slice.py``, a bare
     ``land_slice.py``) and resolves only when exactly one path of
     ``theirs`` is that suffix after a ``/``; a suffix that fits several
-    paths (``__init__.py`` under two packages) or none holds nothing.
-    The result holds the resolved ``theirs`` paths. Cost is
+    paths or none holds nothing. Conversely a multi-segment path of
+    ``theirs`` that is a suffix of a key of ``mine`` matches (the other
+    brief wrote the shorter spelling); a bare basename of ``theirs``
+    never does. The result holds the ``theirs`` paths. Cost is
     ``len(mine) * len(theirs)`` string tests on a per-tick path, both
     sets a handful of files."""
     shared: set[str] = set()
@@ -264,6 +323,8 @@ def shared_files(mine: frozenset[str], theirs: frozenset[str]) -> frozenset[str]
         hits = [p for p in theirs if p.endswith(tail)]
         if len(hits) == 1:
             shared.add(hits[0])
+        elif not hits and "/" in key:
+            shared.update(p for p in theirs if "/" in p and key.endswith("/" + p))
     return frozenset(shared)
 
 

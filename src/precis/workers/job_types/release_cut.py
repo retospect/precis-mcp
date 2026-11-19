@@ -48,6 +48,13 @@ detached submit/poll pair under ``ssh_node``:
   other refusal is ``unclassified``: the plan tick's retry cap files the ask,
   now quoting the line.
 
+Before any launch :func:`submit` refuses (:func:`overlay_refusal`,
+gr713351) a checkout with no deploy overlay — ``deploy/inventory`` and its
+``.vault-pass``, resolved as ``scripts/deploy`` does — so a host that cannot
+deploy never cuts. The first cut's host comes from ``release.cut_host``
+(plan_dispatch pins it; unset, the cut is held), a re-cut's from
+``meta.release.host``.
+
 Before any launch :func:`submit` runs :func:`refresh_tooling`: fetch
 origin/main and mirror ``scripts/release``, ``scripts/round`` and
 ``scripts/lib`` out of it into the checkout (those paths only; staged
@@ -953,6 +960,53 @@ def _handle_tooling(
     return handle
 
 
+def overlay_refusal(root: Path) -> str | None:
+    """Why a checkout at ``root`` cannot deploy, or ``None`` (gr713351).
+
+    The cut's checkout is also the deploy's (``release_deploy`` runs
+    ``scripts/release --deploy-only`` in it), and ``scripts/deploy`` dies
+    "install-from-tree: no overlay" without the private inventory and its
+    ``.vault-pass``. The same resolution as ``scripts/deploy``'s
+    install-from-tree block: ``<root>/deploy/inventory`` when it is a
+    directory, else ``$PRECIS_OVERLAY_DIR`` or the main checkout's
+    ``deploy/inventory`` (the parent of git's common dir) — in both cases
+    with ``.vault-pass`` beside the inventory. Checked before a cut is
+    launched: a cut on a host that cannot deploy it strands the release
+    (r333). ``PRECIS_DEPLOY_FROM_TREE`` set empty is the script's legacy
+    private-checkout escape and skips the check, as it does there."""
+    if os.environ.get("PRECIS_DEPLOY_FROM_TREE", "1") == "":
+        return None
+    local = root / "deploy" / "inventory"
+    if local.is_dir():
+        overlay = local
+    else:
+        env = os.environ.get("PRECIS_OVERLAY_DIR", "").strip()
+        if env:
+            overlay = Path(env)
+        else:
+            try:
+                proc = _rs._git(
+                    ["rev-parse", "--path-format=absolute", "--git-common-dir"], root
+                )
+            except (OSError, subprocess.SubprocessError):
+                proc = None
+            common = proc.stdout.strip() if proc and proc.returncode == 0 else ""
+            main = Path(common).parent if common else root
+            overlay = main / "deploy" / "inventory"
+    vault = overlay.parent / ".vault-pass"
+    if overlay.is_dir() and vault.is_file():
+        return None
+    node = os.environ.get("PRECIS_NODE", "").strip() or "this node"
+    return (
+        f"{NAME}: {node} cannot deploy — no deploy overlay for the checkout "
+        f"{root} (needs the inventory dir {overlay} and {vault}); the cut's "
+        "checkout is the deploy's, so nothing was cut. next: pin the first "
+        "cut to a host that holds the overlay with release.cut_host "
+        "(put(kind='job', mode='setting', args={'key': 'release.cut_host', "
+        "'value': '<host>', 'reason': '...'})) (gr713351)"
+    )
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
@@ -963,7 +1017,8 @@ def validate_submit(
         return reason
     # A re-cut runs where the plan's first cut ran: the .release-owner marker
     # is in that checkout, so --cut-only elsewhere cuts nothing (td543855).
-    # The first cut has no meta.release yet and is not pinned.
+    # The first cut has no meta.release yet: plan_dispatch pins it to
+    # release.cut_host (gr713351), submit checks the checkout's overlay.
     pin = _release.pin_refusal(
         _release.release_of(store, todo_id),
         host=str(params.get("target_node") or "").strip() or None,
@@ -1004,6 +1059,17 @@ def submit(ctx: Any, spec: Any) -> Any:
     if reason is not None:
         ctx.record_failure(reason)
         return None
+    try:
+        root = _rs.slice_root()
+    except Exception:
+        root = None  # launch_script fails the job with the real reason
+    if root is not None:
+        # gr713351: a host with no deploy overlay cuts a release it can
+        # never deploy (r333) — refuse before anything is cut or staged.
+        no_overlay = overlay_refusal(root)
+        if no_overlay is not None:
+            ctx.record_failure(no_overlay)
+            return None
     sha, refusal = _cut_target(ctx.store, params.get("todo_id"))
     if refusal is not None:
         if refusal.startswith(HOLD_PREFIX):

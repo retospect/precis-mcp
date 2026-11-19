@@ -28,6 +28,9 @@ gate read error refuses — fail closed.
 on ``meta.release``; the tick mints this job with ``params.target_node`` =
 that host, :func:`validate_submit` refuses any other (or no) node, and
 :func:`submit` refuses a worker whose ``PRECIS_NODE`` or checkout differs.
+The first cut has no host yet: plan_dispatch pins it to ``release.cut_host``
+(held when unset) and ``release_cut`` refuses a checkout with no deploy
+overlay, so the host recorded here is one that can deploy (gr713351).
 
 **Shared release policy** (gr702332). :func:`_refusal` calls
 :func:`precis.plans.release.may_release` at dispatch and launch:

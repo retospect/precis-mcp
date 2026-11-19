@@ -9273,6 +9273,62 @@ def test_file_overlap_hold_ignores_an_ambiguous_basename(store: Store) -> None:
     assert not _overlap_note(store, untouched.ids["task"])
 
 
+@pytest.mark.parametrize(
+    ("started", "brief"),
+    [
+        # never-key basename: one __init__.py is still no conflict
+        (["src/precis/a/__init__.py"], "Edit __init__.py"),
+        (["tests/a/conftest.py"], "Edit conftest.py"),
+        (["src/precis/a/__main__.py"], "Edit __main__.py"),
+        # a different directory's same basename; a full path has no basename key
+        (["src/precis/runtime/dispatch.py"], "Edit src/precis/workers/dispatch.py"),
+        (["src/precis/workers/dispatch.py"], "Edit runtime/dispatch.py"),
+        # URL fragments, with and without a scheme
+        (["src/precis/api.openai.c"], "see https://api.openai.com/v1/x"),
+        (["src/precis/clients/x.py"], "docs at https://example.org/a/clients/x.py"),
+        # shared ratchet test, in any spelling
+        (
+            ["tests/precis_web/test_colour_ratchet.py"],
+            "Edit src/precis_web/x.py; keep precis_web/test_colour_ratchet.py green",
+        ),
+    ],
+)
+def test_file_overlap_hold_ignores_non_conflicts(
+    store: Store, started: list[str], brief: str
+) -> None:
+    """gr705093: never-key basenames, a different directory's same
+    basename, URL fragments and the shared colour ratchet hold nothing."""
+    _pending_build(store, started)
+    waiting = _file_plan(store, brief)
+    assert not _overlap_note(store, waiting.ids["task"])
+
+
+@pytest.mark.parametrize(
+    ("started", "brief"),
+    [
+        # the same full path
+        (
+            ["src/precis/workers/job_types/land_slice.py"],
+            "Edit src/precis/workers/job_types/land_slice.py",
+        ),
+        # a full ``__init__.py`` path (not bare) still conflicts with itself
+        (["src/precis/a/__init__.py"], "Edit src/precis/a/__init__.py"),
+        # a >=2-segment suffix of the started build's full path
+        (
+            ["src/precis/workers/job_types/land_slice.py"],
+            "Edit job_types/land_slice.py",
+        ),
+    ],
+)
+def test_file_overlap_hold_keeps_full_paths_and_suffixes(
+    store: Store, started: list[str], brief: str
+) -> None:
+    """gr705093: the real conflicts still hold."""
+    _pending_build(store, started)
+    waiting = _file_plan(store, brief)
+    assert _overlap_note(store, waiting.ids["task"])
+
+
 _SHARED = "src/precis/workers/job_types/plan_dispatch.py"
 
 
@@ -9637,6 +9693,68 @@ def test_rescue_or_child_failed_pending_build_holds_no_overlap_lock(
     assert started[healthy].state == "in pre-land review"
 
 
+def _preland_review_of(
+    store: Store, build: int, *, frm: int | None = None, preland: bool = True
+) -> int:
+    """A reviewer todo gating ``build``'s land: ``generate={role: reviewer,
+    from: td<frm or build>}``, ``meta.preland_review`` unless not ``preland``."""
+    meta: dict[str, Any] = {
+        "generate": {"role": "reviewer", "from": f"td{frm or build}"}
+    }
+    if preland:
+        meta["preland_review"] = True
+    review = store.insert_ref(
+        kind="todo", slug=None, title="Pre-land review", meta=meta, parent_id=None
+    )
+    store.add_link(src_ref_id=review.id, dst_ref_id=build, relation="blocked-by")
+    return int(review.id)
+
+
+@pytest.mark.parametrize("tag", ["rescue:review", "child-failed:run_slice"])
+@pytest.mark.parametrize("shape", ["build", "slice"])
+def test_rescue_tagged_preland_review_releases_the_build_hold(
+    store: Store, tag: str, shape: str
+) -> None:
+    """A stuck pre-land review the rescue pass handed to a human carries
+    the ``rescue:`` tag; its done, stamped build carries none and held
+    the overlap lock forever. A build whose review is untagged, or whose
+    tagged reviewer is no pre-land gate, still holds."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="phase", meta={}, parent_id=None
+    )
+    sick = _pending_build(store, ["src/precis/a.py"], parent=phase.id)
+    # A slicer's reviewer names the parent of the slices it gates.
+    review = _preland_review_of(store, sick, frm=phase.id if shape == "slice" else None)
+    healthy = _pending_build(store, ["src/precis/b.py"])
+    _preland_review_of(store, healthy)
+    not_a_gate = _pending_build(store, ["src/precis/c.py"])
+    post = _preland_review_of(store, not_a_gate, preland=False)
+    store.add_tag(post, Tag.open(tag), set_by="system")
+    assert sick in pd._started_slices(store)  # review not tagged yet
+    store.add_tag(review, Tag.open(tag), set_by="system")
+    started = pd._started_slices(store)
+    assert sick not in started
+    assert started[healthy].state == "in pre-land review"
+    assert started[not_a_gate].state == "in pre-land review"
+
+
+def test_rescue_tagged_preland_review_lifts_the_file_overlap_hold(
+    store: Store,
+) -> None:
+    """End to end: the plan dispatcher holds a queued build behind a
+    stamped build until its review is rescue-tagged, then dispatches it."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    review = _preland_review_of(store, build)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    assert pd.run_pass(store, dry_run=True).held == 1
+    store.add_tag(review, Tag.open("rescue:review"), set_by="system")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
 def test_rescue_does_not_release_a_live_land(store: Store) -> None:
     """The tag release is for the bare stamp only: a build with a running
     land job still holds, rescue tag or not."""
@@ -9656,6 +9774,42 @@ def test_brief_files_needs_a_word_boundary_after_the_extension() -> None:
     assert keys == frozenset({"check.yml", "x.py", "a/b.pyi"})
     assert "github.c" not in ds.brief_files("github.com check.yml")
     assert ds.brief_files("run src/x.py::main") == frozenset({"x.py"})
+
+
+def test_brief_files_skips_urls_shared_and_ambiguous_names() -> None:
+    """gr705093: URL fragments, bare ``__init__.py``/``conftest.py``/
+    ``__main__.py`` and the colour ratchet are never keys; a full path to
+    them, and a full path in general, is one (and yields no basename)."""
+    from precis.utils import dispatch_score as ds
+
+    assert not ds.brief_files("see https://api.openai.com/v1/x.py")
+    assert not ds.brief_files("github.com/org/repo/foo.py")
+    assert not ds.brief_files("Edit __init__.py, conftest.py, __main__.py")
+    assert ds.brief_files("src/precis/a/__init__.py") == frozenset({"a/__init__.py"})
+    assert not ds.brief_files("tests/precis_web/test_colour_ratchet.py")
+    assert not ds.brief_files("precis_web/test_colour_ratchet.py")
+    assert ds.brief_files("src/precis/runtime/dispatch.py") == frozenset(
+        {"runtime/dispatch.py"}
+    )
+    # a URL does not hide a real path next to it
+    assert ds.brief_files("https://x.org/a.py then src/precis/b.py") == frozenset(
+        {"b.py"}
+    )
+
+
+def test_shared_files_matches_suffixes_and_basenames_narrowly() -> None:
+    from precis.utils import dispatch_score as ds
+
+    full = frozenset({"workers/job_types/land_slice.py", "runtime/dispatch.py"})
+    assert ds.shared_files(frozenset({"workers/job_types/land_slice.py"}), full)
+    assert ds.shared_files(frozenset({"job_types/land_slice.py"}), full)
+    assert ds.shared_files(frozenset({"land_slice.py"}), full)
+    assert not ds.shared_files(frozenset({"workers/dispatch.py"}), full)
+    # the other brief's multi-segment suffix matches; its bare basename does not
+    assert ds.shared_files(frozenset({"x/runtime/dispatch.py"}), full)
+    assert not ds.shared_files(
+        frozenset({"a/runtime/dispatch.py"}), frozenset({"dispatch.py"})
+    )
 
 
 def test_live_nodes_discounts_an_overlap_held_candidate(store: Store) -> None:
@@ -10313,6 +10467,10 @@ def test_a_release_cut_refusal_is_logged_once_per_reason(
     the same refusal on the next pass is not repeated."""
     from precis.workers.job_types import release_cut as rc
 
+    # The first cut is pinned to release.cut_host (gr713351); set, so the
+    # refusal under test is the cut target's, not the unset-host hold.
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
         m.node("cut", "Cut the release", {"op": "release_cut"})
@@ -10361,6 +10519,80 @@ def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
     pd._log_cut_refusal(pd._Writer(store, False), res, node, "td1: refused")
     assert res.logged == ["td1: refused"]
     assert _meta(store, int(ref.id))[pd.CUT_REFUSAL_LOGGED_KEY] == "td1: refused"
+
+
+# ── gr713351: the first cut is pinned to release.cut_host ───────────
+
+
+def _cut_jobs(store: Store, cut: int) -> list[dict[str, Any]]:
+    return [m for _id, m in _jobs_under(store, cut) if m["job_type"] == "release_cut"]
+
+
+def test_cut_host_setting_is_registered_db_only_no_default() -> None:
+    spec = psettings.REGISTRY["release.cut_host"]
+    assert spec.type == "str"
+    assert spec.default is None
+    assert spec.env_var is None
+    assert spec.doc.strip()
+
+
+def test_first_cut_is_pinned_to_release_cut_host(store: Store) -> None:
+    """r333: the first cut has no meta.release.host, so it went out
+    unpinned and a builder host with no deploy overlay claimed it."""
+    psettings.set_setting("release.cut_host", " deploy-host ", store=store)
+    mint = T.mint_release_pass(store)
+    pd.run_pass(store)
+    jobs = _cut_jobs(store, mint.ids["cut"])
+    assert len(jobs) == 1
+    assert jobs[0]["executor"] == "ssh_node"
+    assert jobs[0]["params"]["target_node"] == "deploy-host"
+    assert R.cut_host(store) == "deploy-host"
+
+
+def test_first_cut_is_held_when_release_cut_host_is_unset(store: Store) -> None:
+    """Fail closed: no dispatch, a note naming the setting write, logged
+    once on the tick's job_result."""
+    mint = T.mint_release_pass(store)
+    res = pd.run_pass(store)
+    cut = mint.ids["cut"]
+    assert _cut_jobs(store, cut) == []
+    held = [n for n in res.notes if f"td{cut}: release_cut held" in n]
+    assert len(held) == 1
+    assert "release.cut_host is unset" in held[0]
+    assert "mode='setting'" in held[0] and "'key': 'release.cut_host'" in held[0]
+    assert res.logged == held
+    assert R.cut_host(store) is None
+    # The same hold on the next pass is not logged again.
+    res2 = pd.run_pass(store)
+    assert _cut_jobs(store, cut) == []
+    assert res2.logged == []
+    # Setting the host releases the hold on the next pass.
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+    pd.run_pass(store)
+    assert [m["params"]["target_node"] for m in _cut_jobs(store, cut)] == [
+        "deploy-host"
+    ]
+
+
+def test_recorded_release_host_wins_over_release_cut_host(store: Store) -> None:
+    """A re-cut follows meta.release.host, setting or no setting."""
+    psettings.set_setting("release.cut_host", "other-host", store=store)
+    mint = T.mint_release_pass(store)
+    R.record_cut(
+        store, mint.ids["cut"], "r7", _R_SHA, _R_RNG, repo="o/r", host="node-a"
+    )
+    pd.run_pass(store)
+    jobs = _cut_jobs(store, mint.ids["cut"])
+    assert [m["params"]["target_node"] for m in jobs] == ["node-a"]
+
+
+def test_recorded_release_host_wins_with_the_setting_unset(store: Store) -> None:
+    mint = T.mint_release_pass(store)
+    R.record_cut(
+        store, mint.ids["cut"], "r7", _R_SHA, _R_RNG, repo="o/r", host="node-a"
+    )
+    res = pd.run_pass(store)
+    assert not any("release.cut_host is unset" in n for n in res.notes)
 
 
 def test_hidden_meta_key_matches_the_comment_timeline() -> None:

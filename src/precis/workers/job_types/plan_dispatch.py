@@ -253,8 +253,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    comes from metadata, body or selected brief, with main as the default.
    A build whose ``land_slice``
    died (newest job failed/cancelled/timed-out, none live) or that
-   carries or sits under a ``rescue:``/``child-failed:`` tag holds no
-   lock (gr701628); the dead-land drop reads only a failure of the
+   carries or sits under a ``rescue:``/``child-failed:`` tag — or whose
+   pending pre-land review todo carries one — holds no lock (gr701628);
+   the dead-land drop reads only a failure of the
    stamp's own ``head`` — a rebuild's fresh ``pending_land`` outlives the
    historical dead job (td701778). ``live_nodes`` counts a held
    candidate as not live.
@@ -6319,8 +6320,10 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     newest ``land_slice`` job died (``failed``/``cancelled``/
     ``timed-out``) — nothing re-mints it and only ``_record_land`` clears
     the stamp, so the dead land held the lock forever — or when the build
-    or an ancestor carries a ``rescue:`` or ``child-failed:`` tag (the
-    rescue pass owns it now). The dead-land drop is scoped to the current
+    or an ancestor — or its pending pre-land review todo — carries a
+    ``rescue:`` or ``child-failed:`` tag (the rescue pass owns it now;
+    the rescue machinery tags the review, not the build, when it hands
+    a stuck review to a human). The dead-land drop is scoped to the current
     build attempt (review td701778): the dying job carries the ``head``
     it was minted from (the stamp's pushed tip at mint time), and only a
     dead land OF THE CURRENT STAMP's head drops the hold — after a
@@ -6411,8 +6414,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
         out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
     if not out:
         return out
-    # A bare pending_land stamp under a rescue / child-failed tag (own or
-    # an ancestor's) holds no lock (gr701628).
+    # A bare pending_land stamp under a rescue / child-failed tag (own, an
+    # ancestor's, or its pending pre-land review's) holds no lock (gr701628).
     for rid in _rescued_ids(
         store, [i for i, s in out.items() if s.state == "in pre-land review"]
     ):
@@ -6461,10 +6464,20 @@ def _started_slices(store: Any) -> dict[int, _Started]:
 
 
 def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
-    """The todos in ``ids`` that carry a ``rescue:`` or ``child-failed:``
-    open tag themselves or on an ancestor — in the store, because a held
-    build can sit outside the loaded plan (:func:`_held_by_registry` is
-    the in-plan read of the same tags)."""
+    """The todos in ``ids`` that the rescue pass owns: one that carries a
+    ``rescue:`` or ``child-failed:`` open tag itself or on an ancestor,
+    or whose pending pre-land review does. The review is the reviewer
+    todo ``meta.generate = {role: reviewer, from: td<id>}`` with
+    ``meta.preland_review`` (the lookup of ``run_slice._preland_reviewer``),
+    with ``from`` naming the build or, for a slicer's slice, its
+    parent (:func:`_review_targets`). The rescue machinery tags the
+    review, not the build, when it hands a stuck review to a human, and
+    the build behind it parks ``done`` with ``pending_land`` set: without
+    this arm it held the file-overlap gate for as long as the human took.
+    Read in the store, because a held build can sit outside the loaded
+    plan; :func:`_held_by_registry` is the in-plan read of the same tags
+    for a node being dispatched, and a stamped build is closed, so it
+    needs no such arm."""
     if not ids:
         return set()
     with store.pool.connection() as conn:
@@ -6478,7 +6491,7 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
                   FROM up u JOIN refs r ON r.ref_id = u.anc
                  WHERE u.anc IS NOT NULL AND u.depth < 25
             )
-            SELECT DISTINCT u.origin
+            SELECT u.origin
               FROM up u
               JOIN refs r ON r.ref_id = u.anc
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -6487,8 +6500,23 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
                AND t.namespace = 'OPEN'
                AND (starts_with(t.value, 'rescue:')
                     OR starts_with(t.value, 'child-failed:'))
+            UNION
+            SELECT b.ref_id
+              FROM refs b
+              JOIN refs rv
+                ON rv.kind = 'todo' AND rv.retired_at IS NULL
+               AND rv.meta->'generate'->>'role' = 'reviewer'
+               AND rv.meta->%s = 'true'::jsonb
+               AND rv.meta->'generate'->>'from'
+                   IN ('td' || b.ref_id::text, 'td' || b.parent_id::text)
+              JOIN ref_tags rt2 ON rt2.ref_id = rv.ref_id
+              JOIN tags t2 ON t2.tag_id = rt2.tag_id
+             WHERE b.ref_id = ANY(%s)
+               AND t2.namespace = 'OPEN'
+               AND (starts_with(t2.value, 'rescue:')
+                    OR starts_with(t2.value, 'child-failed:'))
             """,
-            (sorted(ids),),
+            (sorted(ids), _templates.PRELAND_REVIEW_KEY, sorted(ids)),
         ).fetchall()
     return {int(r[0]) for r in rows}
 
@@ -7067,9 +7095,24 @@ def _step_dispatch(
         ):
             # The deploy, the cut, the red-run digest and the runtime
             # confirm run where the cut ran (meta.release.host, td543856,
-            # td543855, td573431, td573432); the first cut has none and
-            # stays unpinned.
+            # td543855, td573431, td573432). The first cut has none: it
+            # pins to release.cut_host (gr713351 — a builder host that
+            # claimed r333's cut had no deploy overlay), and with that
+            # unset it is held, never left for any ssh_node host to claim.
             host = _release.pinned_host(w.store, n.id)
+            if not host and job_type == "release_cut":
+                host = _release.cut_host(w.store)
+                if not host:
+                    no_host = (
+                        f"td{n.id}: release_cut held — release.cut_host is "
+                        "unset, so the first cut has no host that can "
+                        "deploy (gr713351); next: put(kind='job', "
+                        "mode='setting', args={'key': 'release.cut_host', "
+                        "'value': '<host>', 'reason': '...'})"
+                    )
+                    _log_cut_refusal(w, res, n, no_host)
+                    res.notes.append(no_host)
+                    continue
             if host:
                 params["target_node"] = host
         spec = get_job_type(job_type)

@@ -71,6 +71,13 @@ deploys"). Without it `release_deploy` fails with "install-from-tree: no
 overlay" and the round record is "not published: no prod DSN on this host".
 The deploy account then holds the same deploy authority as the operator.
 
+The first `release_cut` of a pass has no `meta.release.host` to pin to, and
+the cut's checkout is the deploy's, so name the host that holds the overlay:
+`put(kind='job', mode='setting', args={'key': 'release.cut_host', 'value':
+'<node>', 'reason': '...'})` (the node's `PRECIS_NODE`; DB-only). Unset, the
+tick holds the cut with a note instead of letting any `ssh_node` host claim
+it (gr713351), and `release_cut` itself refuses a checkout with no overlay.
+
 The job types also write the shared `release.round` record through the
 store (gr575362): the cut creates the row (`state: cut`, the script's own
 per-clone publish may have skipped on the slice host), the deploy merges

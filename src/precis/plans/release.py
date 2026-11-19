@@ -192,6 +192,27 @@ def pinned_host(store: Store, todo_id: int) -> str | None:
     return host or None
 
 
+#: The DB-only setting naming the host the first cut of a pass runs on
+#: (``precis.settings.REGISTRY``, gr713351).
+_CUT_HOST_KEY = "release.cut_host"
+
+
+def cut_host(store: Store) -> str | None:
+    """``release.cut_host`` resolved fresh, stripped; ``None`` when unset,
+    blank or unreadable. The first cut has no ``meta.release.host`` to pin
+    to (:func:`pinned_host`), and the cut's checkout is the deploy's — a
+    host with no private deploy overlay cannot deploy from it (gr713351).
+    A read fault answers ``None`` so the caller holds the cut."""
+    from precis import settings
+
+    try:
+        settings.invalidate(_CUT_HOST_KEY)
+        host = (settings.get_str(_CUT_HOST_KEY, store=store) or "").strip()
+    except Exception:
+        return None
+    return host or None
+
+
 def release_target_of(store: Store, todo_id: int) -> dict[str, Any] | None:
     """The pass's recorded cut — ``{sha, upto}`` on the plan root's
     ``meta.release_target``, stamped by ``release_poll`` at mint
