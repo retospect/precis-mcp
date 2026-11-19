@@ -4413,3 +4413,33 @@ def test_a_patch_main_made_twice_is_picked_from_one_of_them(
     picked, undone, _notes, _lands = _carries(repo, rel)
     assert list(picked) == [x] and undone == set()
     assert picked[x].sha in {first, second}
+
+
+def test_commit_paths_counts_both_endpoints_of_a_move_out_of_src(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real git: moving a runtime file into ``tests/`` is detected as a
+    rename, which ``--name-only`` reports by destination alone — the
+    corrective would read as test-only. Both endpoints must show."""
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    repo = _Repo(root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.name", "T")
+    repo.git("config", "user.email", "t@example.invalid")
+    repo.git("config", "commit.gpgsign", "false")
+    (root / "src" / "gate.py").write_text(
+        "".join(f"line {i}\n" for i in range(40)), encoding="utf-8"
+    )
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "base")
+    (root / "tests").mkdir()
+    repo.git("mv", "src/gate.py", "tests/gate.py")
+    repo.git("commit", "-q", "-m", "move runtime file into tests")
+    monkeypatch.setattr(rs, "_git", _real_git)
+    monkeypatch.setattr(rs, "slice_root", lambda: root)
+    paths = rp._commit_paths(repo.head())
+    assert paths is not None
+    assert set(paths) == {"src/gate.py", "tests/gate.py"}
+    text, test_only = rp._corrective_note([repo.head()])
+    assert not test_only and "`src/gate.py`" in text

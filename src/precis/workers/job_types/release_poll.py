@@ -1815,6 +1815,9 @@ def _log_lands(root: Any, rng: str) -> list[_GitLand]:
             "--first-parent",
             "--format=%x00%H%x1f%ct%x1f%s",
             "--name-only",
+            # Both endpoints of a move count: a rename's destination alone
+            # can hide a removed runtime file.
+            "--no-renames",
         ],
         root,
     )
