@@ -3028,16 +3028,24 @@ def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
     assert target is not None and "STALE CHECKOUT" not in target
     assert f"The branch head is `{new}`" in target
 
-    # A clean fetch that disagrees with the stamp is origin's answer: the
-    # head is named as read and the tick's judged-head check rules on it.
+    # A clean fetch that disagrees with the stamp is no safer than a
+    # failed one (td730820): the branch moved after the defer stamped
+    # the tip, and judging the read head would let a LAND release a land
+    # for a commit the review never read — the brief says judge nothing
+    # and the tick re-runs the review.
     monkeypatch.setattr(
         run_slice,
         "_git",
         lambda args, cwd: _proc(f"{old}\n") if args[:1] == ["rev-parse"] else _proc(),
     )
     target = run_slice._review_target(store, meta)
-    assert target is not None and "STALE CHECKOUT" not in target
-    assert f"The branch head is `{old}`" in target
+    assert target is not None
+    assert "STALE CHECKOUT" in target
+    assert "after a clean fetch" in target
+    assert new in target and old in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
 
 
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(

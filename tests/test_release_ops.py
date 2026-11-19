@@ -6203,7 +6203,7 @@ def test_partly_parsed_red_mints_a_fixer_per_cluster_and_a_catch_all(
     [catch_brief] = [b for b in briefs if ": job test-linux (3.13, 2) —" in b]
     assert "id list is incomplete" in catch_brief
     assert "id list truncated (+1 more)" in catch_brief
-    assert "read the check.yml run itself" in catch_brief
+    assert "read this section's log in the check.yml run" in catch_brief
     assert "fix only these failing ids" not in catch_brief
     assert sum("fix only these failing ids" in b for b in briefs) == 3
     for b in briefs:
@@ -6225,6 +6225,44 @@ def test_partly_parsed_red_mints_a_fixer_per_cluster_and_a_catch_all(
         )
         == 4
     )
+
+
+def test_a_run_catch_all_defers_section_failures_to_the_section_fixer(
+    store: Store,
+) -> None:
+    """td730820: a digest with a section catch-all AND a run-wide one
+    gives every unlisted failure exactly one owner — the section fixer
+    owns every failure its section's log shows, the run-wide fixer only
+    what no flagged section owns — so both fixers can no longer take the
+    same unlisted failure."""
+    failures, problems = _waiver.parse_failures(_PARTLY_PARSED_RED)
+    assert problems and problems[0].startswith("job test-linux (3.13, 2): ")
+    problems = [*problems, "a collection error or an interrupted session"]
+    clusters, catch = crd._clusters_of(_PARTLY_PARSED_RED, failures, problems, "31")
+    assert set(catch) == {"job test-linux (3.13, 2)", "run 31"}
+    nodes = [
+        int(store.insert_ref(kind="todo", slug=None, title=f"fix {i}", meta=None).id)
+        for i in range(len(clusters))
+    ]
+    posted = crd._cluster_briefs(
+        Ctx(store, {"todo_id": nodes[0]}),
+        nodes[0],
+        nodes,
+        clusters,
+        "head",
+        "digest",
+        catch_alls=catch,
+    )
+    by_key = {
+        key: text for (_tid, text), (key, _ids) in zip(posted, clusters, strict=True)
+    }
+    section = by_key["job test-linux (3.13, 2)"]
+    assert "read this section's log in the check.yml run" in section
+    assert "another section's log shows" in section
+    runwide = by_key["run 31"]
+    assert "fix only failures no flagged section owns" in runwide
+    assert "job test-linux (3.13, 2) (td" in runwide
+    assert "yours is only what no section's log claims" in runwide
 
 
 def test_release_pass_root_stamps_the_release_claim_band(store: Store) -> None:

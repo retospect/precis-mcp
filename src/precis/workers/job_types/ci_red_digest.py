@@ -37,7 +37,10 @@ pinned to that host the same way.
   still clusters the ids it did parse and adds one catch-all cluster per
   flagged section (:func:`_clusters_of`, keyed ``job <name>``; ``run
   <id>`` for a problem no section owns), so every failing shard gets a
-  fixer. A digest with no parsed id at all keeps one brief. The digest
+  fixer. With both kinds present their briefs split the unlisted
+  failures one way (td730820): a section catch-all owns every failure
+  its section's log shows, the run-wide one only failures no flagged
+  section owns. A digest with no parsed id at all keeps one brief. The digest
   reads the newest red run on ``meta.release.sha``: the cut, or — after
   a fix round's restamp (``ci_verdict_poll`` restamp mode) — the release
   head, so a second red digests the head's run, never the cut's. A fix
@@ -1290,7 +1293,12 @@ def _cluster_briefs(
     run minted among ``targets`` and mints none again; a surplus target
     (a re-digest that found fewer clusters) closes ``no-op``. A cluster
     named in ``catch_alls`` (:func:`_clusters_of`) has no ids: its brief
-    names the problem lines and sends the fixer to the run itself."""
+    names the problem lines and sends the fixer to the run itself. With
+    a run-wide catch-all next to section catch-alls, the unlisted
+    failures are partitioned between them (td730820): a section
+    catch-all owns every failure its section's log shows, the run-wide
+    one only failures no flagged section owns — a fixer each, never
+    both."""
     from precis.plans import templates as _templates
 
     catch_alls = catch_alls or {}
@@ -1318,14 +1326,43 @@ def _cluster_briefs(
             if t != tid
         )
         if key in catch_alls:
-            scope = (
-                f"cluster {i}/{len(clusters)}: {key} — the digest could not "
-                f"list every failing id of this part ({catch_alls[key]}), so "
-                "its id list is incomplete: read the check.yml run itself for "
-                "its failures and fix them, but only those the other clusters "
-                f"do not list. The other clusters are fixed in parallel by "
-                f"their own nodes — {OTHER_CLUSTERS_MARKER} {others}."
-            )
+            if key.startswith("run ") and any(k.startswith("job ") for k in catch_alls):
+                # td730820: the run-wide catch-all and the section
+                # catch-alls both read the run for what the id list
+                # missed — without an explicit split, one unlisted
+                # failure in a flagged section's shard is fixable by
+                # both. The section fixers own their sections' unlisted
+                # failures; the run-wide fixer takes only what no
+                # flagged section owns.
+                section_fixers = ", ".join(
+                    f"{k} (td{t})"
+                    for t, (k, _ids) in zip(nodes, clusters, strict=True)
+                    if k in catch_alls and k.startswith("job ")
+                )
+                scope = (
+                    f"cluster {i}/{len(clusters)}: {key} — the digest could "
+                    f"not list every failing id ({catch_alls[key]}), so its "
+                    "id list is incomplete: read the check.yml run for "
+                    "failures no listed id names, but fix only failures "
+                    "no flagged section owns — every failure a flagged "
+                    "section's log shows is that section's own fixer's "
+                    f"({section_fixers}), even when the id list missed "
+                    "it; yours is only what no section's log claims. The "
+                    "other clusters are fixed in parallel by their own "
+                    f"nodes — {OTHER_CLUSTERS_MARKER} {others}."
+                )
+            else:
+                scope = (
+                    f"cluster {i}/{len(clusters)}: {key} — the digest could "
+                    f"not list every failing id of this part "
+                    f"({catch_alls[key]}), so its id list is incomplete: "
+                    "read this section's log in the check.yml run and fix "
+                    "every failure it shows, including ones the id list "
+                    "missed, but none another cluster lists or another "
+                    "section's log shows. The other clusters are fixed "
+                    "in parallel by their own nodes — "
+                    f"{OTHER_CLUSTERS_MARKER} {others}."
+                )
         else:
             scope = (
                 f"cluster {i}/{len(clusters)}: {key} — fix only these failing "

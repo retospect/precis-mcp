@@ -69,7 +69,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    The ``(read-only, tests not run)`` marker is stripped where it ends a
    line before matching — accepted, never required, so a forgotten
    marker never strands a review. A LAND is a diff read, never a test
-   result. ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
+   result. A LAND on a held pre-land land mints the held ``land_slice``
+   only when the verdict's judged head (``verified head <sha>``,
+   :func:`_verdict_heads`) is the stamp's pushed tip — a LAND naming
+   another head read a different commit than the hold would ship, so
+   the hold stands and the reviewer re-runs, retry-capped like a
+   malformed verdict (td730820). ``LAND`` closes the node. ``FIX`` mints
+   one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
    and closes the node — the mint is stamped ``meta.fix_depth``, the
    count of consecutive FIX mints on the review→fix→land→review chain,
@@ -3042,7 +3048,10 @@ def _mint_preland_land(
     (``_record_land`` clears it): it is the marker keeping the done,
     not-yet-landed target out of ``_dead_land_targets`` while the land
     is in flight, and the stamp ``land_slice`` reads to admit a closed
-    todo. Returns the job id."""
+    todo. The caller gates this on the verdict's judged head: a LAND
+    naming a head other than the stamp's must not mint — it read a
+    different commit than the held land ships (td730820). Returns the
+    job id."""
     params = dict(t.meta[_templates.PENDING_LAND_KEY])
     job_id = _mint_job(
         store, t, "land_slice", "ssh_node", params, idem_key=f"land_slice:td{t.id}"
@@ -3556,8 +3565,49 @@ def _step_reviews(
         pending = _pending_targets(plan, n)
         preland = bool(pending) and len(pending) == len(_review_targets(plan, n))
         if kind == "LAND":
+            single = len(pending) == 1
+            judged = _verdict_heads(raw or "") if single else []
+            stale_reads: list[tuple[_Node, list[str], str]] = []
             for t in pending:
-                _mint_preland_land(store, w, res, n, t)
+                held = t.meta.get(_templates.PENDING_LAND_KEY)
+                pushed = str(held.get("head") or "") if isinstance(held, dict) else ""
+                if judged and pushed and not any(_same_sha(h, pushed) for h in judged):
+                    stale_reads.append((t, judged, pushed))
+                else:
+                    _mint_preland_land(store, w, res, n, t)
+            if stale_reads:
+                # td730820: the verdict named a head the held stamp does
+                # not hold — it read a different commit than the mint
+                # would ship, so the LAND releases nothing. The hold
+                # stands; the reviewer re-runs with a fresh read, bounded
+                # by the retry cap like a malformed verdict.
+                job_type_, params_ = _resolve_op(n)
+                cap = _retry_cap(
+                    n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules)
+                )
+                detail = "; ".join(
+                    f"td{t.id}: judged {heads[0][:12]} but the pushed tip "
+                    f"is {pushed[:12]}"
+                    for t, heads, pushed in stale_reads
+                )
+                w.stamp_meta(n, {"review": {**record, "verdict": None}})
+                w.comment(
+                    n,
+                    f"plan_dispatch: job:{newest.id} posted `review: LAND` "
+                    f"naming a judged head that is not the held land's "
+                    f"pushed tip ({detail}) — the verdict read a different "
+                    "commit than the hold would ship, so the land does not "
+                    "mint and the hold stands (td730820). Retrying "
+                    f"(retry cap {cap}), then rescue.",
+                )
+                if n.status != "open":
+                    w.set_status(n, "open")
+                res.notes.append(
+                    f"td{n.id}: review LAND for {handle} {marker} read a "
+                    "stale head — the held land stays held; reviewer "
+                    "re-runs (td730820)."
+                )
+                continue
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
         elif preland:

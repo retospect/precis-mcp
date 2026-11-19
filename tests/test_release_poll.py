@@ -3614,21 +3614,26 @@ def test_a_running_reviewer_on_the_corrective_holds_it(
     assert _gate(store)[0] == ""
 
 
-def _carry_release(store: Store, *, fix_on_branch: bool) -> tuple[int, int]:
-    """A cut ``r7`` whose branch carries engine land td42, cleared by a
+def _carry_release(
+    store: Store, *, fix_on_branch: bool, rn: str = "r7", land: bool = True
+) -> tuple[int, int]:
+    """A cut ``rn`` whose branch carries engine land td42, cleared by a
     FIX reviewer whose fix todo landed ``b``; ``b`` rides the branch
-    only with ``fix_on_branch``. Returns ``(deploy id, fix todo id)``."""
+    only with ``fix_on_branch``. ``land=False`` skips appending the
+    shared td42 land (a second release reusing the first's). Returns
+    ``(deploy id, fix todo id)``."""
     mint = T.mint_release_pass(store)
-    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "9" * 12 + ".." + "c" * 12)
+    R.record_cut(store, mint.ids["cut"], rn, "c" * 40, "9" * 12 + ".." + "c" * 12)
     a, b = "a" * 40, "b" * 40
-    _REL_LANDS.append(
-        rp._GitLand(
-            sha=a,
-            subject="fix(gate): the land (td42)",
-            committed_at=NOW,
-            paths=("scripts/ship",),
+    if land:
+        _REL_LANDS.append(
+            rp._GitLand(
+                sha=a,
+                subject="fix(gate): the land (td42)",
+                committed_at=NOW,
+                paths=("scripts/ship",),
+            )
         )
-    )
     if fix_on_branch:
         _REL_LANDS.append(
             rp._GitLand(sha=b, subject="fix(gate): fix", committed_at=NOW, paths=())
@@ -3657,7 +3662,9 @@ def test_a_carry_hold_files_the_review_wait_ask_and_an_answer_clears_it(
     )
     assert fatal is None and any("filed" in n for n in notes)
     [ask] = _review_wait_asks(store)
-    assert "release-review-wait:td42" in _tags(store, ask)
+    # td730820: the waiver is scoped to the release and the corrective
+    # commit, not the plain per-unit key.
+    assert f"release-review-wait:td42:carry:r7:{'b' * 12}" in _tags(store, ask)
     assert rp._CARRY_MARK in _todo_text(store, ask)
     # Deduped while open; the carry line still holds until answered.
     rp._engine_verdicts(store, rel=rel, now=NOW, file_asks=True)
@@ -3665,6 +3672,37 @@ def test_a_carry_hold_files_the_review_wait_ask_and_an_answer_clears_it(
     assert len(rp.deploy_review_blockers(store, deploy)) == 1
     _todo_comment(store, ask, "answer: acknowledged")
     assert rp.deploy_review_blockers(store, deploy) == []
+
+
+def test_a_carry_answer_waives_only_its_own_release(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td730820: r7 and r8 both carry the td42 land, both short the same
+    corrective commit — two asks under release-scoped keys. Answering
+    r7's drops r7's carry hold; r8's keeps holding. With the plain
+    per-unit key one answer used to clear both releases (and the main
+    gate's answered-ask read sees only that same plain key)."""
+    deploy7, _f7 = _carry_release(store, fix_on_branch=False, rn="r7")
+    deploy8, _f8 = _carry_release(store, fix_on_branch=False, rn="r8", land=False)
+    rel7 = R.release_of(store, deploy7)
+    rel8 = R.release_of(store, deploy8)
+    assert rel7 is not None and rel8 is not None
+    rp._engine_verdicts(store, rel=rel7, now=NOW, file_asks=True)
+    rp._engine_verdicts(store, rel=rel8, now=NOW, file_asks=True)
+    asks = _review_wait_asks(store)
+    assert len(asks) == 2
+    tails = sorted(
+        t.removeprefix("release-review-wait:")
+        for a in asks
+        for t in _tags(store, a)
+        if t.startswith("release-review-wait:")
+    )
+    assert tails == [f"td42:carry:r7:{'b' * 12}", f"td42:carry:r8:{'b' * 12}"]
+    ask7 = next(a for a in asks if "carry:r7:" in " ".join(_tags(store, a)))
+    _todo_comment(store, ask7, "answer: acknowledged")
+    assert rp.deploy_review_blockers(store, deploy7) == []
+    [line8] = rp.deploy_review_blockers(store, deploy8)
+    assert rp._CARRY_MARK in line8 and "td42" in line8
 
 
 def test_a_carried_corrective_files_no_ask(

@@ -6955,6 +6955,47 @@ def test_preland_review_land_mints_the_held_land(store: Store) -> None:
     assert _children(store, mint.root_id) == [build, review]
 
 
+def test_preland_review_land_naming_the_pushed_tip_mints_the_held_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND whose verdict names the stamped pushed tip is the
+    read the hold waited for — the held land mints and the reviewer
+    closes."""
+    h2 = "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h2}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    land_jobs = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    assert len(land_jobs) == 1
+
+
+def test_preland_review_land_on_a_stale_head_holds_the_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND naming a judged head other than the stamp's pushed
+    tip read a different commit than the held land ships — no land_slice
+    mints, the stamp stands, the reviewer reopens for a fresh read, and
+    the pass records no verdict (the retry cap bounds the re-runs)."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h1}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert not any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build)
+    )
+    assert isinstance(_meta(store, build).get("pending_land"), dict)
+    assert _status(store, review) == "open"
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert any("td730820" in n for n in res.notes)
+    # The rejected verdict is not re-read: a second pass makes no note.
+    assert not any("td730820" in n for n in pd.run_pass(store).notes)
+
+
 def test_preland_land_holds_a_phase_root_open(store: Store) -> None:
     """Build done (land held) and reviewer done on LAND, land still
     pending: the phase root must not close on "every child closed"."""

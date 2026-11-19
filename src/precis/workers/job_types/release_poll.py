@@ -1636,6 +1636,17 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
+def _carry_ask_key(unit: _GateLand, missing: list[str], rn: Any) -> str:
+    """The carry hold's ask key — the plain per-unit key plus the release
+    and the corrective commit(s) the waived cut lacked (td730820): an
+    answered ask waives the carry for THAT release and THAT corrective
+    commit only. The plain per-unit key would clear the same land's
+    carry hold on every release and the main gate too — "ship r318
+    without the fix" is not "ship r319 without it", and it says nothing
+    about main."""
+    return f"{unit.ask_key}:carry:{rn}:{'+'.join(missing)}"
+
+
 def _gate_lands(
     store: Any, rel: dict[str, Any] | None = None
 ) -> tuple[list[_GateLand], str, list[str]]:
@@ -1951,7 +1962,10 @@ def _file_review_wait_ask(
     land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
     when one claims it. ``carry`` is the "cleared on a corrective commit"
     blocker line of a land whose corrective commit is not on the release
-    branch (gr702442) — no reviewer is involved, the ask quotes the line.
+    branch (gr702442) — no reviewer is involved, the ask quotes the
+    line; its caller passes the release-and-commit-scoped
+    :func:`_carry_ask_key`, so the waiver cannot leak across releases
+    (td730820).
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -2347,10 +2361,16 @@ def _engine_verdicts(
     then, ``scanned`` empty).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
-    ``release-review-wait:<key>`` ask clears a gated unit; so does being
-    a cleared FIX/REVERT's recorded corrective commit while no covering
-    reviewer reached a verdict (:func:`_chain_corrective`, gr611217); no
-    covering reviewer
+    ``release-review-wait:<key>`` ask clears a gated unit; the carry
+    hold's ask (a cleared FIX/REVERT whose corrective commit is not on
+    ``release/r<N>``) files under a key scoped to the release and the
+    corrective commit(s) (:func:`_carry_ask_key`, td730820), so
+    answering it waives only that release's carry of that commit — the
+    plain per-unit key would clear the same land's hold on every
+    release and on main. Being a cleared FIX/REVERT's recorded
+    corrective commit while no covering
+    reviewer reached a verdict (:func:`_chain_corrective`, gr611217)
+    also clears a unit; no covering reviewer
     (``generate.from`` naming the landed todo or its parent, or the
     commit's ``sha:<sha12>`` — sha-keyed covers every unit of the
     commit) mints one —
@@ -2559,17 +2579,22 @@ def _engine_verdicts(
                 # The carry hold (a cleared FIX/REVERT whose corrective
                 # commit is not on release/r<N>) filed nothing, so the
                 # release waited silently — r316, nine hours (gr702442).
-                # The same per-unit ask clears it once answered: an
-                # answered ask short-circuits to a cleared, requires-free
-                # verdict above, so deploy_review_blockers drops the line.
+                # The release-scoped carry ask (:func:`_carry_ask_key`)
+                # clears it once answered: deploy_review_blockers drops
+                # the line, and here no new ask files over the answer
+                # (td730820).
                 missing = _carry_missing(verdict, scanned) if rel is not None else []
-                if file_asks and rel is not None and missing:
+                rn = rel.get("rN") if rel is not None else None
+                answered_carry = bool(missing) and _answered_wait_ask(
+                    store, _carry_ask_key(unit, missing, rn)
+                )
+                if file_asks and missing and not answered_carry:
                     note, _filed = _file_review_wait_ask(
                         store,
-                        unit.ask_key,
+                        _carry_ask_key(unit, missing, rn),
                         land=unit.land,
                         dry_run=dry_run,
-                        carry=_carry_line(unit, missing, rel.get("rN")),
+                        carry=_carry_line(unit, missing, rn),
                     )
                     notes.append(note)
                 verdicts.append(verdict)
@@ -2668,9 +2693,14 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
     lines = [v.line for v in verdicts or () if not v.cleared]
     for v in verdicts or ():
         missing = _carry_missing(v, scanned)
-        if missing:
+        # td730820: the waiver is scoped to the release and the
+        # corrective commit — an answered carry ask drops this line; it
+        # never touches another release's hold or the main gate.
+        if missing and not _answered_wait_ask(
+            store, _carry_ask_key(v.unit, missing, rn)
+        ):
             line = _carry_line(v.unit, missing, rn)
-            ask_id = _open_wait_ask_id(store, v.unit.ask_key)
+            ask_id = _open_wait_ask_id(store, _carry_ask_key(v.unit, missing, rn))
             if ask_id is not None:
                 line = f"{line} — the open ask is td{ask_id}"
             lines.append(line)
