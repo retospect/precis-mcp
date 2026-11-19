@@ -789,7 +789,23 @@ def concept_label_hint(
     return out
 
 
-def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
+def _table_pin_regions(text: str) -> list[str]:
+    """A table row (including its source column) is one citation scope."""
+    from precis.utils.table_data import table_payload
+
+    payload = table_payload(None, text)
+    if payload is None:
+        return text.splitlines()
+    return [
+        payload.get("caption") or "",
+        " | ".join(payload["header"]),
+        *(" | ".join(row) for row in payload["rows"]),
+    ]
+
+
+def pin_hint(
+    store: Store, new_text: str, old_text: str = "", *, table: bool = False
+) -> str:
     """Pin warnings for a write (G3 coverage, G4 pin rule — see
     :mod:`precis.nanopub.pin_lint`): a ``[fi<hub>>pc<chunk>]`` /
     ``[fi<hub>+pc<chunk>]`` whose pinned passage(s) no longer carry a term
@@ -797,15 +813,19 @@ def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
     frozen grounding. Fires only on what this write *changed* — a new pin,
     or a sentence edit that uncovered a term — so re-saving a chunk never
     re-nags about pins it left alone. Advisory; a failing check degrades to
-    no hint rather than taking the write path down."""
+    no hint rather than taking the write path down. With ``table=True``,
+    check the caption, header and each data row separately
+    (:func:`_table_pin_regions`)."""
     if "[fi" not in new_text:
         return ""
     try:
         from precis.nanopub import pin_lint
 
+        new = _table_pin_regions(new_text) if table else new_text
+        old = _table_pin_regions(old_text) if table else old_text
         lines = [
             line
-            for f in pin_lint.edit_findings(store, new_text, old_text)
+            for f in pin_lint.edit_findings(store, new, old)
             for line in pin_lint.render_finding(f)
         ]
     except Exception:  # pragma: no cover — advisory, not correctness

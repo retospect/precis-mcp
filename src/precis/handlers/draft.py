@@ -4990,6 +4990,7 @@ class DraftHandler(Handler):
                 f"edit table=/caption=/regen=, not text={eval_tail}"
             )
             + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
+            + _draft_lint.pin_hint(self.store, md, table=True)
         )
 
     @staticmethod
@@ -6020,9 +6021,13 @@ class DraftHandler(Handler):
         c = self.store.drafts.edit_text(
             handle, md, base_sha=base_sha, meta_patch=mpatch, expect_table=cas_table
         )
+        pin_hint = ""
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+            pin_hint = _draft_lint.pin_hint(
+                self.store, c.text or "", chunk.text or "", table=True
+            )
         if op_reply is not None:
             return Response(
                 body=self._table_op_reply(
@@ -6036,6 +6041,7 @@ class DraftHandler(Handler):
                 )
                 + label_loss_hint
                 + cap_hint
+                + pin_hint
             )
         n_rows, n_cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
@@ -6043,6 +6049,7 @@ class DraftHandler(Handler):
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
             f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}{cap_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            f"{pin_hint}"
         )
 
     def _table_op_reply(
@@ -6238,6 +6245,11 @@ class DraftHandler(Handler):
             "LaTeX in place — label/rules/multicolumn spans/spacing "
             f"untouched{label_loss_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            + (
+                _draft_lint.pin_hint(self.store, c.text or "", raw, table=True)
+                if c
+                else ""
+            )
         )
 
     def _resolve_project(self, project: str | int) -> int:
