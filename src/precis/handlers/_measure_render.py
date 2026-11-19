@@ -23,8 +23,9 @@ naming it; a rate is never guessed.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Final
 
 from precis.computed_sources import contract_fingerprint
 from precis.errors import BadInput
@@ -44,6 +45,7 @@ from precis.taxonomy.money import (
     split_currency,
 )
 from precis.utils import handle_registry
+from precis.utils.text import markup_surface
 
 
 def _money_label(currency: str, price_year: int | None, remainder: str) -> str:
@@ -192,11 +194,65 @@ def _with(label: str, *parts: str) -> str:
     return " ".join([*parts, label]).strip() if label else " ".join(parts)
 
 
+#: A bound's strictness lives only in the printed literal — ``value_form``
+#: folds ``<``, ``<=`` and ``≤`` (and the ``>`` family) into one
+#: ``upper_bound``/``lower_bound``. The rendered sign is read back from the
+#: literal: a strict marker or strict phrase prints ``<``/``>``; an
+#: inclusive marker or phrase (``≤``, ``<=``, 'at most', 'by') prints
+#: ``≤``/``≥``. A literal with no evidence keeps the long-standing strict
+#: rendering — flipping an evidence-less bound the other way would change
+#: its endpoint just as reading 'by 350 K' as ``< 350 K`` does (gr716878).
+_BOUND_STRICT_UPPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(?![=])|\bless than\b|\bfewer than\b|\bunder\b|\bbelow\b", re.IGNORECASE
+)
+_BOUND_STRICT_LOWER_RE: Final[re.Pattern[str]] = re.compile(
+    r">(?![=])|\bmore than\b|\bgreater than\b|\babove\b|\bover\b|"
+    r"\bexceed\w*|\bsurpass\w*",
+    re.IGNORECASE,
+)
+_BOUND_INCLUSIVE_UPPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"≤|<=|at most|no more than|not exceed\w*|never exceed\w*|up to|"
+    r"no greater than|\bwithin\b|maximum of|at maximum|\bby\b",
+    re.IGNORECASE,
+)
+_BOUND_INCLUSIVE_LOWER_RE: Final[re.Pattern[str]] = re.compile(
+    r"≥|>=|at least|no less than|no fewer than|minimum of|at minimum",
+    re.IGNORECASE,
+)
+
+
+def bound_sign(row: dict[str, Any]) -> str:
+    """The sign a bound row's value opens with: ``'< '``/``'> '`` when the
+    stored literal prints a strict reading, ``'≤ '``/``'≥ '`` when it prints
+    an inclusive one; ``'~'`` for an approximate point, '' otherwise.
+
+    The literal decides because the store keeps no inclusivity flag:
+    ``value_form='upper_bound'`` covers ``<5``, ``≤5`` and a phrase-cued
+    'at most 5' alike, so the sign is recovered from the only evidence
+    kept — the literal itself. An evidence-less literal keeps the strict
+    default (gr716878: 'by 350 K' is a ceiling that includes 350, rendered
+    ``≤ 350 K``, not ``< 350 K``)."""
+    form = row.get("value_form")
+    if form not in ("upper_bound", "lower_bound"):
+        return "~" if form == "approximate_point" else ""
+    lit = markup_surface(str(row.get("literal") or ""))
+    if form == "upper_bound":
+        if _BOUND_INCLUSIVE_UPPER_RE.search(lit) and not _BOUND_STRICT_UPPER_RE.search(
+            lit
+        ):
+            return "≤ "
+        return "< "
+    if _BOUND_INCLUSIVE_LOWER_RE.search(lit) and not _BOUND_STRICT_LOWER_RE.search(lit):
+        return "≥ "
+    return "> "
+
+
 def value_text(
     row: dict[str, Any], *, unit: str | None = None, money: MoneyTables | None = None
 ) -> str:
     """The row's reading in the output unit: ``95 %``, ``1.4–2.1 Å``, ``< 5 mA/m²``,
-    ``~3 V``, ``9.6 ± 1.7 mV``, a category as printed."""
+    ``~3 V``, ``9.6 ± 1.7 mV``, a category as printed. A bound shows ``≤``/``≥``
+    when the stored literal prints an inclusive reading (see :func:`bound_sign`)."""
     form = row.get("value_form")
     num, low, high = row.get("value_num"), row.get("value_low"), row.get("value_high")
     if num is None:
@@ -217,8 +273,7 @@ def value_text(
         text = format_number(nums[0])
         if err:
             text += f" ± {format_number(abs(nums[1] - nums[0]))}"
-        prefix = {"upper_bound": "< ", "lower_bound": "> ", "approximate_point": "~"}
-        return _with(label, prefix.get(form or "", "") + text)
+        return _with(label, bound_sign(row) + text)
     return str(row.get("value_text") or row.get("literal") or "—")
 
 

@@ -1092,6 +1092,70 @@ class TestSearchHandler:
         assert "1.8–2.2 Å" in out and "< 3 Å" in out and "9.6 ± 1.7 Å" in out
         assert "Cordierite" in out
 
+    def test_inclusive_bound_literals_render_an_inclusive_sign(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        # gr716878: 'by 350 K' is an inclusive ceiling — the measures view
+        # must not turn the endpoint strict.
+        _put(
+            store,
+            w,
+            "temperature",
+            "by 350",
+            unit="K",
+            value_num=350,
+            value_form="upper_bound",
+        )
+        _put(store, w, "temperature", "≤573", unit="K")
+        _put(
+            store,
+            w,
+            "temperature",
+            "at most 0.2",
+            unit="K",
+            value_num=0.2,
+            value_form="upper_bound",
+        )
+        out = h.search(property=str(w["temperature"]), unit="K").body
+        assert "≤ 350 K" in out and "≤ 573 K" in out and "≤ 0.2 K" in out
+
+    def test_strict_bound_literals_keep_the_strict_sign(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        _put(store, w, "temperature", "<3", unit="K")
+        _put(
+            store,
+            w,
+            "temperature",
+            "less than 5",
+            unit="K",
+            value_num=5,
+            value_form="upper_bound",
+        )
+        _put(
+            store,
+            w,
+            "temperature",
+            "more than 1",
+            unit="K",
+            value_num=1,
+            value_form="lower_bound",
+        )
+        _put(
+            store,
+            w,
+            "temperature",
+            "1.4",
+            unit="K",
+            value_low=1.4,
+            value_form="lower_bound",
+        )
+        out = h.search(property=str(w["temperature"]), unit="K").body
+        assert "< 3 K" in out and "< 5 K" in out and "> 1 K" in out
+        # a bare-number literal carries no evidence either way: the
+        # long-standing strict rendering stands
+        assert "> 1.4 K" in out
+
 
 class TestDispatchSurface:
     @pytest.fixture
@@ -1459,6 +1523,23 @@ class TestGetRow:
         )
         out = h.get(id=run.output_id).body
         assert "value: > 1.4 Å" in out and "SI: > 1.4e-10 m" in out
+
+    def test_an_inclusive_bound_shows_its_sign_on_get(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        run = _put(
+            store,
+            w,
+            "temperature",
+            "by 350",
+            unit="K",
+            value_num=350,
+            value_form="upper_bound",
+        )
+        out = h.get(id=run.output_id).body
+        # the SI line shows the stored (canonical) reading: the inclusive
+        # endpoint survives conversion, not just the display-unit line
+        assert "SI: ≤ 350 K" in out
 
     def test_the_si_line_keeps_bounds_intervals_and_error(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
