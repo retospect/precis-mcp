@@ -2774,6 +2774,12 @@ def edit(
     quest wants 'replace' (explicit). Other kinds' sets are per kind —
     the table is precis-edit-help's; paper, structure ignore it.
 
+    Draft accepts `mode='replace-content'` for a block rewrite and
+    `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`
+    to insert text around an anchor within a chunk. To add a paragraph
+    next to a chunk, use `put(kind='draft', id='<draft>', text='…',
+    args={'at': {'before': 'dc<id>'}})` (or use `after`).
+
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
     edit. `dry_run=True` previews; `reason=` why.
@@ -3009,6 +3015,8 @@ def tag(
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.
     `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
+    `id=[...]` on paper applies the same edit to every paper in one
+    transaction. Use paper slugs, record handles, or numeric ref ids.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.
