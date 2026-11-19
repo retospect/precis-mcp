@@ -67,13 +67,13 @@ def test_a_corrective_for_a_main_commit_the_branch_repeats_targets_its_branch(
                 sha=x,
                 subject="",
                 committed_at=None,
-                paths=("scripts/ship",),
+                paths=("src/precis/plans/release.py",),
                 branch_only=True,
             )
         ],
     )
     main_land = release_poll._GitLand(
-        sha=m, subject="", committed_at=None, paths=("scripts/ship",)
+        sha=m, subject="", committed_at=None, paths=("src/precis/plans/release.py",)
     )
     monkeypatch.setattr(
         release_poll, "_branch_carries", lambda rel, lands: ({x: main_land}, set(), [])
