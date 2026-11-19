@@ -39,6 +39,8 @@ Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
 matches while retaining strict-AND eligibility and the existing RRF weights;
 multi-query search inherits the same ranking through its lexical legs.
+Taxon lexical legs fetch chunks by ref first so an OR retry over common
+terms only tests taxon chunks.
 
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and

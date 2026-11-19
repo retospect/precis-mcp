@@ -908,6 +908,21 @@ class TestSearchFacets:
             "facet alpha grandchild",
         ]
 
+    def test_oversized_descendant_listing_gives_taxon_guidance(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        root = _mk(store, "listing size root")
+        child = _mk(store, "listing size child", under=root)
+        args = {"under": f"tn{root}", "depth": 1}
+        refused = _verb_text(core.search(kind="taxon", args=args, page_size=300))
+        assert "page_size=300 exceeds maximum 100" in refused
+        assert "page_size=100" in refused
+        assert "'depth': 1" in refused
+        accepted = _verb_text(core.search(kind="taxon", args=args, page_size=100))
+        assert f"tn{child} listing size child" in accepted
+
     def test_axis_and_depth_narrow(self, store: Any) -> None:
         t = self._tree(store)
         h = _handler(store)
@@ -973,6 +988,36 @@ class TestSearchFacets:
 
 
 class TestLexicalNameAndDefinition:
+    @pytest.mark.parametrize("with_embedding", [False, True])
+    def test_long_query_recovers_partial_definition_match(
+        self,
+        store: Any,
+        mounted_runtime: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        with_embedding: bool,
+    ) -> None:
+        from precis.tools import core
+        from precis.utils import ref_hybrid
+
+        rid = _mk(
+            store,
+            "quux surrogate",
+            definition="A quuxatomistic model of interatomic potential energy.",
+        )
+        if with_embedding:
+            # Exercise the fused SQL; the unembedded card must hit via lexical recall.
+            monkeypatch.setattr(
+                ref_hybrid,
+                "query_vec_for",
+                lambda *_: [1.0] + [0.0] * 1023,
+            )
+        q = (
+            "quuxatomistic simulation method interatomic potential energy "
+            "learned from structure and energy data"
+        )
+        out = _verb_text(core.search(kind="taxon", q=q, page_size=10))
+        assert f"tn{rid}" in out
+
     def test_definition_only_and_name_only_words_via_search(
         self, store: Any, mounted_runtime: Any
     ) -> None:

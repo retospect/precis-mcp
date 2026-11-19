@@ -1539,7 +1539,11 @@ def search(
                 BadInput(
                     f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
-                        f"narrow with scope= or refine q=; "
+                        f"retry with page_size={_SEARCH_PAGE_SIZE_MAX}; "
+                        "use args={'under': '<taxon>', 'depth': 1, 'axis': '<axis>'} "
+                        "to narrow descendants, or refine q="
+                        if kind == "taxon"
+                        else f"narrow with scope= or refine q=; "
                         f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
