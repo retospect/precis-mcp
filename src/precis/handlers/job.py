@@ -642,22 +642,6 @@ _EXTEND_NEXT = (
 
 # ── id='/garden/proposals' + put(mode='garden-reject') — the pending
 # garden queue over MCP (gr681311) ────────────────────────────────────
-#: The action filter's vocabulary — the same choices
-#: ``precis garden proposals --action`` declares.
-_GARDEN_PROPOSAL_ACTIONS: frozenset[str] = frozenset(
-    {
-        "merge",
-        "split",
-        "relink",
-        "prune",
-        "tag",
-        "rewrite",
-        "supersede",
-        "retire",
-        "compact",
-    }
-)
-
 #: Default row cap for ``/garden/proposals``; 200 matches the CLI's
 #: ``--limit`` ceiling.
 _GARDEN_PROPOSALS_DEFAULT_LIMIT = 20
@@ -1609,7 +1593,8 @@ class JobHandler(NumericRefHandler):
         :func:`proposal_holds` reads — per row the review id, action,
         target handle, a ``stale`` flag when the target drifted past the
         proposed sha, title, rationale and the hold's next step.
-        ``action`` narrows to one action kind; ``limit`` caps the rows.
+        ``action`` matches the stored label, including historical actions;
+        ``limit`` caps the rows.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
         if set(params) - {"action", "limit"}:
@@ -1618,12 +1603,6 @@ class JobHandler(NumericRefHandler):
                 next=_GARDEN_PROPOSALS_NEXT,
             )
         raw_action = params.get("action", action)
-        if raw_action is not None and str(raw_action) not in _GARDEN_PROPOSAL_ACTIONS:
-            raise BadInput(
-                f"unknown /garden/proposals action {raw_action!r}",
-                options=sorted(_GARDEN_PROPOSAL_ACTIONS),
-                next=_GARDEN_PROPOSALS_NEXT,
-            )
         raw_limit = params.get(
             "limit", limit if limit is not None else _GARDEN_PROPOSALS_DEFAULT_LIMIT
         )
