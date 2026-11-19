@@ -1900,6 +1900,27 @@ def _review_outcome(
             ),
             (),
         )
+    rescue = next(
+        (
+            str(t.value)
+            for t in store.tags_for(rid)
+            if t.namespace == "open" and str(t.value).startswith("rescue:")
+        ),
+        None,
+    )
+    if rescue is not None:
+        # A reviewer parked in rescue belongs to the rescue pass and will
+        # not run again by itself; waiting REVIEW_WAIT_AFTER to ask hid
+        # r316's hold for hours (gr702442).
+        return (
+            "hopeless",
+            (
+                f"{base} is parked in rescue ({rescue}); it will not finish "
+                f"on its own — next: resolve its rescue, re-review {land}, "
+                "or acknowledge the review-wait ask"
+            ),
+            (),
+        )
     return (
         "waiting",
         (
@@ -1918,6 +1939,7 @@ def _file_review_wait_ask(
     job_id: int | None = None,
     dry_run: bool,
     reason: str | None = None,
+    carry: str | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
     unit (a landed todo, or a sha-keyed hand land), deduped by its
@@ -1927,7 +1949,9 @@ def _file_review_wait_ask(
     closed without an ``answer:`` (comment or body line, gr645663) is
     refiled. ``land`` names the
     land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
-    when one claims it.
+    when one claims it. ``carry`` is the "cleared on a corrective commit"
+    blocker line of a land whose corrective commit is not on the release
+    branch (gr702442) — no reviewer is involved, the ask quotes the line.
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -1936,7 +1960,24 @@ def _file_review_wait_ask(
 
     tag = f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}"
     job = f" (jo{job_id})" if job_id is not None else ""
-    if rid is not None:
+    if carry is not None:
+        what = f"the {land} engine land{job}"
+        title = (
+            f"engine land {land}{job} is cleared but its corrective commit "
+            "is not on the release branch — acknowledge it, or is this a "
+            "false alarm?"
+        )
+        body = (
+            f"The engine-review gate (td574937 E1) holds the deploy of "
+            f"the release carrying the {land} engine land{job}: {carry}. "
+            "Answering clears this one land, so the release then deploys "
+            "WITHOUT that corrective commit; to ship the fix with this "
+            "release, land it on the release branch instead and leave "
+            "this ask alone. This ask is the only write the gate makes; "
+            "answering it executes nothing — a comment starting `answer:` "
+            "('acknowledged' or 'false alarm') just closes it."
+        )
+    elif rid is not None:
         what = f"engine review td{rid} on the {land} land"
         title = (
             f"engine review td{rid} on the {land} land will not "
@@ -2264,6 +2305,27 @@ def _chain_corrective(
     return False
 
 
+def _carry_missing(verdict: _LandVerdict, scanned: list[str]) -> list[str]:
+    """The cleared ``verdict``'s corrective shas (12 chars) that are not
+    among the release's ``scanned`` commits — the "carry" hold's subject
+    (:func:`deploy_review_blockers`, :func:`_engine_verdicts`)."""
+    return [
+        r[:12]
+        for r in verdict.requires
+        if verdict.cleared and not any(_same_sha(r, s) for s in scanned)
+    ]
+
+
+def _carry_line(unit: _GateLand, missing: list[str], rn: Any) -> str:
+    """The "cleared on a corrective commit" blocker line for ``unit``
+    whose ``missing`` corrective shas are not on ``release/r<rn>``."""
+    return (
+        f"engine land {unit.label} {_CARRY_MARK} "
+        f"({', '.join(missing)}) that is not on release/{rn} — next: "
+        f"land the fix on release/{rn} or answer the review-wait ask"
+    )
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2494,6 +2556,22 @@ def _engine_verdicts(
                     hopeless = (rid, line)
             if satisfied:
                 verdict.cleared = True
+                # The carry hold (a cleared FIX/REVERT whose corrective
+                # commit is not on release/r<N>) filed nothing, so the
+                # release waited silently — r316, nine hours (gr702442).
+                # The same per-unit ask clears it once answered: an
+                # answered ask short-circuits to a cleared, requires-free
+                # verdict above, so deploy_review_blockers drops the line.
+                missing = _carry_missing(verdict, scanned) if rel is not None else []
+                if file_asks and rel is not None and missing:
+                    note, _filed = _file_review_wait_ask(
+                        store,
+                        unit.ask_key,
+                        land=unit.land,
+                        dry_run=dry_run,
+                        carry=_carry_line(unit, missing, rel.get("rN")),
+                    )
+                    notes.append(note)
                 verdicts.append(verdict)
                 continue
             pick = waiting or hopeless
@@ -2589,17 +2667,13 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
     rn = rel.get("rN")
     lines = [v.line for v in verdicts or () if not v.cleared]
     for v in verdicts or ():
-        missing = [
-            r[:12]
-            for r in v.requires
-            if v.cleared and not any(_same_sha(r, s) for s in scanned)
-        ]
+        missing = _carry_missing(v, scanned)
         if missing:
-            lines.append(
-                f"engine land {v.unit.label} {_CARRY_MARK} "
-                f"({', '.join(missing)}) that is not on release/{rn} — next: "
-                f"land the fix on release/{rn} or answer the review-wait ask"
-            )
+            line = _carry_line(v.unit, missing, rn)
+            ask_id = _open_wait_ask_id(store, v.unit.ask_key)
+            if ask_id is not None:
+                line = f"{line} — the open ask is td{ask_id}"
+            lines.append(line)
     return lines
 
 

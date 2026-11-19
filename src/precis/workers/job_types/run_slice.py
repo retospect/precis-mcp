@@ -2110,13 +2110,15 @@ def _followups_on_main(root: Path, landed: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.strip()][:10]
 
 
-def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> None:
+def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> str | None:
     """Best-effort fetch of origin's ``<namespace><branch>`` into the slice
     checkout's ``origin/<branch>``, so a reviewer's ``git show`` of a
     release-branch squash resolves (release-train T3 review F3); a held
-    slice passes the hidden ``refs/factory/`` namespace."""
+    slice passes the hidden ``refs/factory/`` namespace. ``None`` when
+    the fetch ran clean, else why it did not (git's last line) — the
+    tracking ref then still holds whatever this checkout last saw."""
     try:
-        _git(
+        proc = _git(
             [
                 "fetch",
                 "-q",
@@ -2125,19 +2127,42 @@ def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> None
             ],
             slice_root(),
         )
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        pass
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        return f"{type(exc).__name__}: {exc}"[:200]
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()[-1:]
+        return (tail[0] if tail else f"git fetch exited {proc.returncode}")[:200]
+    return None
 
 
-def _preland_head(branch: str) -> str | None:
+def _sha_matches(a: str, b: str) -> bool:
+    """``a`` and ``b`` name one commit: equal, or one abbreviates the other."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def _preland_head(
+    branch: str, expected: str | None = None
+) -> tuple[str | None, str | None]:
     """Fetch ``origin/main`` and ``origin/<branch>`` into the slice
-    checkout and return the branch head, ``None`` when unreadable
-    (gr681634). The worker fetches because a sandboxed reviewer lane
+    checkout and return ``(head, stale)``: the branch head, ``None``
+    when unreadable (gr681634), and ``stale`` — why this checkout could
+    not be brought to the ``expected`` pushed tip
+    (``meta.pending_land.head``), else ``None``. The worker fetches
+    because a sandboxed reviewer lane
     cannot write the checkout's ``FETCH_HEAD``: left to its own
     ``git fetch`` it read whatever head this checkout last saw, and a
     branch pushed from another clone was reviewed stale. A stale
     ``origin/main`` would also widen the three-dot diff with main's own
-    commits once the branch is rebased past it."""
+    commits once the branch is rebased past it.
+
+    A failed fetch leaves the old tracking ref in place, and the brief
+    used to name it as the head (td707034: the reviewer judged the tip
+    of two days earlier). So with ``expected`` known, a head that is not
+    it retries the hidden-ref fetch once; a head still off after a fetch
+    that FAILED is reported stale. A clean fetch that disagrees with
+    ``expected`` is origin's answer — the head is named as read and the
+    tick's judged-head check rules on it."""
     from precis.plans.templates import SLICE_REF_NS
 
     _fetch_review_branch("main")
@@ -2146,13 +2171,33 @@ def _preland_head(branch: str) -> str | None:
     # that is still a branch: fetch it first, so the hidden ref (when
     # there is one) overwrites it and an absent one leaves it in place.
     _fetch_review_branch(branch)
-    _fetch_review_branch(branch, namespace=SLICE_REF_NS)
-    try:
-        proc = _git(["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root())
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        return None
-    head = proc.stdout.strip()
-    return head if proc.returncode == 0 and head else None
+    head: str | None = None
+    failed: str | None = None
+    for _attempt in range(2):
+        failed = _fetch_review_branch(branch, namespace=SLICE_REF_NS)
+        try:
+            proc = _git(
+                ["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root()
+            )
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            return None, None
+        out = proc.stdout.strip()
+        head = out if proc.returncode == 0 and out else None
+        if not expected or (head is not None and _sha_matches(head, expected)):
+            return head, None
+    if failed is None:
+        return head, None
+    log.warning(
+        "run_slice: pre-land fetch of %s%s failed (%s); origin/%s is at %s, "
+        "the pushed tip is %s",
+        SLICE_REF_NS,
+        branch,
+        failed,
+        branch,
+        head,
+        expected,
+    )
+    return head, failed
 
 
 def _review_target(store: Any, meta: Any) -> str | None:
@@ -2224,8 +2269,28 @@ def _review_target(store: Any, meta: Any) -> str | None:
             if isinstance(pending, dict) and pending.get("branch")
             else f"slice/{target_id}"
         )
+        head: str | None = None
+        stale: str | None = None
+        pushed = str(pending.get("head") or "") if isinstance(pending, dict) else ""
         if pending:
-            head = _preland_head(branch)
+            head, stale = _preland_head(branch, pushed or None)
+        if stale:
+            # td707034: never name a head this checkout failed to fetch
+            # as the one to judge. A run that leaves no ``review:``
+            # comment is retried by the tick (plan_dispatch._step_reviews),
+            # so the next run gets a fresh fetch.
+            lines.append(
+                f"STALE CHECKOUT — judge nothing. td{target_id}'s branch is "
+                f"pushed to origin as `{SLICE_REF_NS}{branch}` at "
+                f"`{pushed}`, but this checkout's fetch of it failed "
+                f"({stale}) and origin/{branch} still reads "
+                f"`{head or 'nothing'}`, an older tip. Run `git rev-parse "
+                f"origin/{branch}`: unless it prints `{pushed}`, write NO "
+                "`review:` comment and no verdict — end with the one line "
+                "`stale checkout: <the fetch error>`. The tick then runs "
+                "this review again."
+            )
+        elif pending:
             lines.append(
                 "Pre-land review (gr570506): nothing is on main yet — the "
                 f"diff is td{target_id}'s branch, pushed to origin as the "

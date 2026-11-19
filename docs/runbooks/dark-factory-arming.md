@@ -1016,9 +1016,16 @@ Known limits:
   once only where minting cannot run (no review-fit lane, the mint
   raised), where `plan_dispatch` itself is switched
   off, or the wait can never resolve — a dead verdict, a dead root,
-  a fix that ended unlanded — and an answered ask clears that one
+  a fix that ended unlanded, a reviewer parked in rescue (an open
+  `rescue:` tag) — and an answered ask clears that one
   land. An ask closed without an `answer:` comment holds nothing:
   the next pass refiles it and the blocker names the live ask's id.
+  A land cleared on a corrective commit that is not on `release/r<N>`
+  files the same ask at once: answering it deploys the release without
+  that commit, landing the commit on the release branch clears the hold
+  without an answer. While the gate holds a deploy, the tick writes the
+  refusal as a comment on the `release_deploy` node, once per distinct
+  text (gr702442).
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude

@@ -1688,9 +1688,17 @@ def mint_release_pass(
     def build(m: _Minter) -> None:
         root = m.node("root", "Release pass", _phase())
         _tag(m, root, "release-pass")
-        # The release-fixer class outranks routine builds (gr604593).
+        # The release-fixer class outranks routine builds (gr604593). The
+        # claim band rides every job minted under the root (the fixers'
+        # run_slice and their lands), so a release fixer claims in the
+        # release band, not as background (gr681901).
         m.store.stamp_ref_meta(
-            root, {_dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE}, conn=m.conn
+            root,
+            {
+                _dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE,
+                _dscore.CLAIM_BAND_META_KEY: _dscore.RELEASE_CLAIM_BAND,
+            },
+            conn=m.conn,
         )
         stamped = release_main_tag(main_sha)
         if stamped is not None:

@@ -24,7 +24,6 @@ pinned to that host the same way.
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
-  whose ids parse complete (``red_waiver.parse_failures``, no problem)
   is split by the failing ``src`` module an id's assertion line names
   (a ``src/…py`` path, or the module an ``ImportError`` /
   ``ModuleNotFoundError`` names — test files that fail on one module's
@@ -33,14 +32,17 @@ pinned to that host the same way.
   than one cluster each fix node gets one cluster's brief — the
   iteration's ``fix`` the first, one sibling minted per further cluster
   (``templates.mint_release_fix_clusters``, each also blocking the
-  restamp node) — so the fixers run in parallel. The digest reads the
-  newest red run on ``meta.release.sha``: the cut, or — after a fix
-  round's restamp (``ci_verdict_poll`` restamp mode) — the release
-  head, so a second red digests the head's run, never the cut's. An
-  unparsable or partial
-  digest keeps one brief. A fix node carrying ``meta.land_target`` gets
-  the release-branch rule (:data:`_RELEASE_RULE`) instead of the
-  main-land one. A run still in progress prints the ``no
+  restamp node) — so the fixers run in parallel. A digest that could not
+  parse every id (``red_waiver.parse_failures`` problems, gr681901)
+  still clusters the ids it did parse and adds one catch-all cluster per
+  flagged section (:func:`_clusters_of`, keyed ``job <name>``; ``run
+  <id>`` for a problem no section owns), so every failing shard gets a
+  fixer. A digest with no parsed id at all keeps one brief. The digest
+  reads the newest red run on ``meta.release.sha``: the cut, or — after
+  a fix round's restamp (``ci_verdict_poll`` restamp mode) — the release
+  head, so a second red digests the head's run, never the cut's. A fix
+  node carrying ``meta.land_target`` gets the release-branch rule
+  (:data:`_RELEASE_RULE`) instead of the main-land one. A run still in progress prints the ``no
   failed-job log lines yet`` marker instead: the job parks its handle on
   ``not_before`` (:func:`_park_for_run`, land_slice's deferral —
   ``ssh_node`` wires no ``ctx.defer``) and re-digests, so a brief always
@@ -361,22 +363,67 @@ def _cluster_key(test_id: str, reason: str) -> str:
     return path or test_id
 
 
-def cluster_failures(failures: dict[str, str]) -> list[tuple[str, list[str]]]:
+def cluster_failures(
+    failures: dict[str, str], cap: int = _CLUSTER_CAP
+) -> list[tuple[str, list[str]]]:
     """``[(key, ids)]`` of the parsed failing ids (``red_waiver.
     parse_failures``), grouped by test file, then by failing ``src``
-    module (:func:`_cluster_key`), largest cluster first. Past
-    :data:`_CLUSTER_CAP` the smallest clusters fold into the last kept
-    one, keyed ``<key> +<n> more``. No ids, no clusters: the caller
-    briefs every fix node with the whole digest, as before."""
+    module (:func:`_cluster_key`), largest cluster first. Past ``cap``
+    (:data:`_CLUSTER_CAP`; less the catch-alls of a partly parsed
+    digest, :func:`_clusters_of`) the smallest clusters fold into the
+    last kept one, keyed ``<key> +<n> more``. No ids, no clusters: the
+    caller briefs every fix node with the whole digest, as before."""
     groups: dict[str, list[str]] = {}
     for tid, reason in failures.items():
         groups.setdefault(_cluster_key(tid, reason), []).append(tid)
     ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    if len(ranked) <= _CLUSTER_CAP:
+    if len(ranked) <= cap:
         return ranked
-    kept, rest = ranked[: _CLUSTER_CAP - 1], ranked[_CLUSTER_CAP - 1 :]
+    kept, rest = ranked[: cap - 1], ranked[cap - 1 :]
     folded = [tid for _key, ids in rest for tid in ids]
     return [*kept, (f"{rest[0][0]} +{len(rest) - 1} more", folded)]
+
+
+def _clusters_of(
+    log_text: str,
+    failures: dict[str, str],
+    problems: list[str],
+    run_id: str,
+) -> tuple[list[tuple[str, list[str]]], dict[str, str]]:
+    """``(clusters, catch_alls)`` for one digest (gr681901). ``catch_alls``
+    maps a catch-all cluster's key to the problem lines behind it; its
+    clusters carry no ids. A digest that parsed every id is only the id
+    clusters. When ``problems`` is non-empty the parsed ids still
+    cluster, and each section a problem names (``job <name>: ...``, the
+    shape :func:`red_waiver.parse_failures` writes) gets one catch-all
+    keyed ``job <name>`` so its fixer reads the run for what the id list
+    missed; a problem no section owns (a collection error, the skipped
+    matrix) folds into one catch-all keyed ``run <id>``. Nothing parsed
+    at all keeps ``([], {})``: the caller's single whole-digest brief.
+    The total stays within :data:`_CLUSTER_CAP`: catch-alls past
+    ``cap - 2`` fold into one keyed ``<key> +<n> more``, the id clusters
+    take what is left."""
+    if not problems or not failures:
+        return cluster_failures(failures), {}
+    names = sorted((n for n, _ in _sections(log_text)), key=len, reverse=True)
+    owned: dict[str, list[str]] = {}
+    for problem in problems:
+        owner = next((n for n in names if problem.startswith(f"job {n}: ")), None)
+        key = f"job {owner}" if owner is not None else f"run {run_id}".strip()
+        owned.setdefault(key, []).append(problem)
+    # Section order, then the run-level one: a stable order across retries.
+    order = {f"job {n}": i for i, n in enumerate(n for n, _ in _sections(log_text))}
+    keys = sorted(owned, key=lambda k: (order.get(k, len(order)), k))
+    catch = [(k, "; ".join(owned[k])) for k in keys]
+    if len(catch) > _CLUSTER_CAP - 1:
+        kept, rest = catch[: _CLUSTER_CAP - 2], catch[_CLUSTER_CAP - 2 :]
+        catch = [
+            *kept,
+            (f"{rest[0][0]} +{len(rest) - 1} more", "; ".join(p for _, p in rest)),
+        ]
+    clusters = cluster_failures(failures, _CLUSTER_CAP - len(catch))
+    clusters += [(key, []) for key, _ in catch]
+    return clusters, dict(catch)
 
 
 def _fix_rule(store: Any, fix_id: int) -> str:
@@ -1180,11 +1227,12 @@ def _digest_done(
         ),
     )
     head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
-    # Split only a digest that provably lists every failing id: an id a
-    # truncated list or a non-pytest red hides would belong to no
-    # cluster, so such a red keeps one brief with the whole digest.
+    # A digest that could not parse everything still splits (gr681901):
+    # the parsed ids cluster as usual and each flagged section gets a
+    # catch-all fixer that reads the run itself. Only a digest with no
+    # parsed id at all keeps one brief with the whole digest.
     failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
-    clusters = [] if problems else cluster_failures(failures)
+    clusters, catch_alls = _clusters_of(log_text or "", failures, problems, run_id)
     if len(clusters) <= 1:
         posted = [
             (
@@ -1199,7 +1247,7 @@ def _digest_done(
         ]
     else:
         posted = _cluster_briefs(
-            ctx, todo_id, targets, clusters, head, digest, suspects
+            ctx, todo_id, targets, clusters, head, digest, suspects, catch_alls
         )
     for tid, text in posted:
         _rs._append_comment(ctx.store, tid, text)
@@ -1232,6 +1280,7 @@ def _cluster_briefs(
     head: str,
     digest: str,
     suspects: str = "",
+    catch_alls: dict[str, str] | None = None,
 ) -> list[tuple[int, str]]:
     """One ``(fix node, brief)`` per cluster (release-train T1): the
     iteration's own fix nodes take the first clusters, and one sibling is
@@ -1239,9 +1288,12 @@ def _cluster_briefs(
     (:func:`precis.plans.templates.mint_release_fix_clusters`) so the
     fixers run in parallel. A retried digest finds the nodes its first
     run minted among ``targets`` and mints none again; a surplus target
-    (a re-digest that found fewer clusters) closes ``no-op``."""
+    (a re-digest that found fewer clusters) closes ``no-op``. A cluster
+    named in ``catch_alls`` (:func:`_clusters_of`) has no ids: its brief
+    names the problem lines and sends the fixer to the run itself."""
     from precis.plans import templates as _templates
 
+    catch_alls = catch_alls or {}
     nodes = list(targets[: len(clusters)])
     if len(clusters) > len(nodes):
         nodes += _templates.mint_release_fix_clusters(
@@ -1265,11 +1317,21 @@ def _cluster_briefs(
             for t, (k, _) in zip(nodes, clusters, strict=True)
             if t != tid
         )
-        scope = (
-            f"cluster {i}/{len(clusters)}: {key} — fix only these failing "
-            f"ids: {', '.join(ids)}. The other clusters are fixed in "
-            f"parallel by their own nodes — {OTHER_CLUSTERS_MARKER} {others}."
-        )
+        if key in catch_alls:
+            scope = (
+                f"cluster {i}/{len(clusters)}: {key} — the digest could not "
+                f"list every failing id of this part ({catch_alls[key]}), so "
+                "its id list is incomplete: read the check.yml run itself for "
+                "its failures and fix them, but only those the other clusters "
+                f"do not list. The other clusters are fixed in parallel by "
+                f"their own nodes — {OTHER_CLUSTERS_MARKER} {others}."
+            )
+        else:
+            scope = (
+                f"cluster {i}/{len(clusters)}: {key} — fix only these failing "
+                f"ids: {', '.join(ids)}. The other clusters are fixed in "
+                f"parallel by their own nodes — {OTHER_CLUSTERS_MARKER} {others}."
+            )
         out.append(
             (
                 tid,

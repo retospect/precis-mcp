@@ -3073,6 +3073,25 @@ def test_an_open_reviewer_under_a_dead_root_asks_at_once(
     assert len(_review_wait_asks(store)) == 1
 
 
+def test_an_open_reviewer_parked_in_rescue_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702442: an open reviewer carrying a ``rescue:`` tag belongs to
+    the rescue pass and will not finish by itself — hopeless, so the
+    ask files at once instead of after 24 h. The same reviewer without
+    the tag still waits (no ask under 24 h)."""
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=2)
+    rid = _reviewer(store, 42)
+    blocker, _notes = _gate(store)
+    assert "is open; the release waits" in blocker
+    assert _review_wait_asks(store) == []
+    store.add_tag(rid, Tag.open("rescue:review"), set_by="system")
+    blocker, _notes = _gate(store)
+    assert f"td{rid} on the td42 land is parked in rescue (rescue:review)" in blocker
+    assert "re-review td42" in blocker
+    assert len(_review_wait_asks(store)) == 1
+
+
 def test_non_engine_land_does_not_block(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3593,6 +3612,72 @@ def test_a_running_reviewer_on_the_corrective_holds_it(
         running, Tag.closed("STATUS", "cancelled"), set_by="agent", replace_prefix=True
     )
     assert _gate(store)[0] == ""
+
+
+def _carry_release(store: Store, *, fix_on_branch: bool) -> tuple[int, int]:
+    """A cut ``r7`` whose branch carries engine land td42, cleared by a
+    FIX reviewer whose fix todo landed ``b``; ``b`` rides the branch
+    only with ``fix_on_branch``. Returns ``(deploy id, fix todo id)``."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "9" * 12 + ".." + "c" * 12)
+    a, b = "a" * 40, "b" * 40
+    _REL_LANDS.append(
+        rp._GitLand(
+            sha=a,
+            subject="fix(gate): the land (td42)",
+            committed_at=NOW,
+            paths=("scripts/ship",),
+        )
+    )
+    if fix_on_branch:
+        _REL_LANDS.append(
+            rp._GitLand(sha=b, subject="fix(gate): fix", committed_at=NOW, paths=())
+        )
+    fix = int(store.insert_ref(kind="todo", slug=None, title="the fix", meta=None).id)
+    _landed_comment(store, fix, sha=b)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": fix})
+    return mint.ids["deploy"], fix
+
+
+def test_a_carry_hold_files_the_review_wait_ask_and_an_answer_clears_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702442: a cleared FIX whose corrective commit is not on
+    ``release/r<N>`` held r316's deploy silently for nine hours — the
+    poll's release-scoped read now files the per-unit review-wait ask,
+    and answering it drops the carry line."""
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    [line] = rp.deploy_review_blockers(store, deploy)
+    assert rp._CARRY_MARK in line and "td42" in line
+    assert _review_wait_asks(store) == []  # the deploy's read files nothing
+    _verdicts, notes, fatal, _pin, _scanned = rp._engine_verdicts(
+        store, rel=rel, now=NOW, file_asks=True
+    )
+    assert fatal is None and any("filed" in n for n in notes)
+    [ask] = _review_wait_asks(store)
+    assert "release-review-wait:td42" in _tags(store, ask)
+    assert rp._CARRY_MARK in _todo_text(store, ask)
+    # Deduped while open; the carry line still holds until answered.
+    rp._engine_verdicts(store, rel=rel, now=NOW, file_asks=True)
+    assert _review_wait_asks(store) == [ask]
+    assert len(rp.deploy_review_blockers(store, deploy)) == 1
+    _todo_comment(store, ask, "answer: acknowledged")
+    assert rp.deploy_review_blockers(store, deploy) == []
+
+
+def test_a_carried_corrective_files_no_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The corrective commit IS on the release branch: no carry line,
+    no ask."""
+    deploy, _fix = _carry_release(store, fix_on_branch=True)
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    rp._engine_verdicts(store, rel=rel, now=NOW, file_asks=True)
+    assert _review_wait_asks(store) == []
+    assert rp.deploy_review_blockers(store, deploy) == []
 
 
 def test_an_open_round_still_mints_engine_reviewers(

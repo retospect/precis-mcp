@@ -2943,6 +2943,68 @@ def test_review_target_fetches_a_preland_branch_and_names_its_head(
     assert "The branch head is" not in target
 
 
+def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td707034: the hidden-ref fetch failed, nothing checked its exit
+    code, and the brief named the tracking ref of two days earlier as
+    "the branch head" — the reviewer judged it. With the pushed tip
+    known (``pending_land.head``) a head that is not it retries the
+    fetch once; still off after a failed fetch, the brief names no head
+    to judge and asks for no verdict, so the tick re-runs the review."""
+    old, new = "5" * 40, "7" * 40
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        meta={"pending_land": {"todo_id": 7, "branch": "slice/7", "head": new}},
+    )
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+    hidden = "+refs/factory/slice/7:refs/remotes/origin/slice/7"
+    state = {"hidden_fetches": 0, "ok_from": 99}
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["fetch"] and args[-1] == hidden:
+            state["hidden_fetches"] += 1
+            if state["hidden_fetches"] < state["ok_from"]:
+                return subprocess.CompletedProcess(
+                    [], 128, stdout="", stderr="fatal: unable to access origin\n"
+                )
+        if args[:1] == ["rev-parse"]:
+            fresh = state["hidden_fetches"] >= state["ok_from"]
+            return _proc(f"{new if fresh else old}\n")
+        return _proc()
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert state["hidden_fetches"] == 2
+    assert "STALE CHECKOUT" in target and "fatal: unable to access origin" in target
+    assert new in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
+
+    # The retry reaches the pushed tip: the usual brief, naming it.
+    state.update(hidden_fetches=0, ok_from=2)
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "STALE CHECKOUT" not in target
+    assert f"The branch head is `{new}`" in target
+
+    # A clean fetch that disagrees with the stamp is origin's answer: the
+    # head is named as read and the tick's judged-head check rules on it.
+    monkeypatch.setattr(
+        run_slice,
+        "_git",
+        lambda args, cwd: _proc(f"{old}\n") if args[:1] == ["rev-parse"] else _proc(),
+    )
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "STALE CHECKOUT" not in target
+    assert f"The branch head is `{old}`" in target
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

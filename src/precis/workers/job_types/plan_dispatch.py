@@ -2860,7 +2860,11 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     IS right that nothing landed; :func:`_close_dead_chain` turns that
     case into an ask instead of a close while the target still claims
     ``done``, and honors a ``won't-do`` drop ruling as a plain close
-    (gr663738, review td676510)."""
+    (gr663738, review td676510).
+
+    A sha-keyed reviewer (:func:`_review_sha`) with no td target has
+    nothing that could fail to land, so it is never dead here whatever
+    its blockers did."""
     pairs: list[tuple[int, str]] = [(t.id, t.status) for t in _review_targets(plan, n)]
     if not pairs:
         fid = _review_from(n)
@@ -2879,6 +2883,13 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
                     else _todo_status(store, fid),
                 )
             ]
+        elif _review_sha(n) is not None:
+            # A sha-keyed reviewer judges a commit already on main: it has
+            # no land that could fail. Its ``blocked-by`` edges are other
+            # work (a rescue's diagnose task), whose close without a
+            # ``landed:`` comment is not "nothing landed to review"
+            # (td704507, td728642).
+            return []
         else:
             pairs = [
                 (b.id, plan.status_of(b))
@@ -3196,6 +3207,31 @@ def _token_jaccard(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+#: Why the pre-land review loop stops (:func:`_preland_round`), each with
+#: the reading its coordinator ask gives — the four stops need different
+#: answers, and one shared sentence made the asks read alike (gr709688).
+_PRELAND_STOPS: dict[str, str] = {
+    "same finding": (
+        "the rebuild did not resolve the finding, or the reviewer is wrong "
+        "about it; the verdict names no head other than the pushed tip"
+    ),
+    "unchanged head": (
+        "the rebuild pushed no new commit, so the reviewer judged the same "
+        "tree again: read the rebuild job for why it committed nothing (a "
+        "rebase conflict, a no-op verdict)"
+    ),
+    "stale read": (
+        "the reviewer judged an older head than the one pushed, so its "
+        "finding may already be fixed; nothing is known to be wrong with "
+        "the pushed tip until a review reads it"
+    ),
+    "round cap": (
+        "every round found something new on a new head; the build is not "
+        "converging — its scope may be too large for one slice"
+    ),
+}
+
+
 def _preland_round(
     n: _Node,
     t: _Node,
@@ -3204,13 +3240,14 @@ def _preland_round(
     pushed: str,
     raw: str,
     single: bool,
-) -> tuple[int, dict[str, Any], str | None]:
-    """``(count, record, stop reason)`` of the pre-land FIX/REVERT sent
+) -> tuple[int, dict[str, Any], tuple[str, str] | None]:
+    """``(count, record, stop)`` of the pre-land FIX/REVERT sent
     back to ``t`` (gr684815, gr688058): ``count`` one more than the
     ``meta.preland_fix_rounds`` stamp holds, ``record`` the value to
     write while the loop goes on (the finding's digest and anchors plus
-    the pushed head this verdict judged), and the ``why`` for
-    :func:`_park_preland_rounds` — ``None`` while the loop should run.
+    the pushed head this verdict judged), and ``stop`` — the
+    ``(reason, why)`` for :func:`_park_preland_rounds`, ``reason`` a
+    :data:`_PRELAND_STOPS` key — ``None`` while the loop should run.
 
     The stop is the failure the ask describes, never the round count
     alone: the newest finding is the last one's again (same digest of the
@@ -3240,6 +3277,20 @@ def _preland_round(
         "anchors": anchors,
         "text": text[:_FINDING_TEXT_CAP],
     }
+    # The stale read is judged first: a reviewer that read the old head
+    # re-reports the old finding, which would otherwise read as "same
+    # finding" and blame the builder (td707034).
+    heads = _verdict_heads(raw) if single else []
+    if heads and pushed and not any(_same_sha(h, pushed) for h in heads):
+        return (
+            count,
+            record,
+            (
+                "stale read",
+                f"review td{n.id} judged head {heads[0][:12]} but the pushed "
+                f"tip is {pushed[:12]} — the reviewer read a stale branch",
+            ),
+        )
     prev_anchors = set(prev.get("anchors") or [])
     same_digest = digest == prev.get("finding")
     if same_digest or (
@@ -3251,12 +3302,16 @@ def _preland_round(
         return (
             count,
             record,
-            f"review td{n.id} returned the same pre-land {kind} twice running "
-            + (
-                "(same normalized finding digest)"
-                if same_digest
-                else "(shared active anchor and token Jaccard similarity "
-                f">= {PRELAND_SAME_FINDING_JACCARD})"
+            (
+                "same finding",
+                f"review td{n.id} returned the same pre-land {kind} twice "
+                "running "
+                + (
+                    "(same normalized finding digest)"
+                    if same_digest
+                    else "(shared active anchor and token Jaccard similarity "
+                    f">= {PRELAND_SAME_FINDING_JACCARD})"
+                ),
             ),
         )
     prev_head = str(prev.get("head") or "")
@@ -3264,22 +3319,20 @@ def _preland_round(
         return (
             count,
             record,
-            f"review td{n.id} sent the branch back on an unchanged head "
-            f"{pushed[:12]} — the rebuild pushed nothing new",
-        )
-    heads = _verdict_heads(raw) if single else []
-    if heads and pushed and not any(_same_sha(h, pushed) for h in heads):
-        return (
-            count,
-            record,
-            f"review td{n.id} judged head {heads[0][:12]} but the pushed "
-            f"tip is {pushed[:12]} — the reviewer read a stale branch",
+            (
+                "unchanged head",
+                f"review td{n.id} sent the branch back on an unchanged head "
+                f"{pushed[:12]} — the rebuild pushed nothing new",
+            ),
         )
     if count >= PRELAND_FIX_CAP:
         return (
             count,
             record,
-            f"review td{n.id} sent the branch back {count} times in a row",
+            (
+                "round cap",
+                f"review td{n.id} sent the branch back {count} times in a row",
+            ),
         )
     return count, record, None
 
@@ -3292,14 +3345,17 @@ def _park_preland_rounds(
     t: _Node,
     kind: str,
     rest: str,
-    why: str,
+    stop: tuple[str, str],
     now: datetime,
 ) -> None:
     """Hold the sent-back build ``t`` on a coordinator ask instead of
-    rebuilding again (gr684815, gr688058): ``why`` names the failure —
-    the same finding twice running, an unchanged reviewed head, a
-    stale-read verdict, or :data:`PRELAND_FIX_CAP` rounds. The count
-    clears, so the answer buys a fresh one."""
+    rebuilding again (gr684815, gr688058): ``stop`` is
+    :func:`_preland_round`'s ``(reason, why)`` — the same finding twice
+    running, an unchanged reviewed head, a stale-read verdict, or
+    :data:`PRELAND_FIX_CAP` rounds. The ask's title names the reason and
+    its body that reason's own reading (:data:`_PRELAND_STOPS`). The
+    count clears, so the answer buys a fresh one."""
+    reason, why = stop
     w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
     res.asks += 1
     if w.dry_run:
@@ -3313,13 +3369,13 @@ def _park_preland_rounds(
         w.store,
         plan,
         t,
-        title=f"td{t.id}: pre-land review loop stopped — a coordinator call",
+        title=(
+            f"td{t.id}: pre-land review loop stopped ({reason}) — a coordinator call"
+        ),
         body=(
             f"The plan tick stopped rebuilding td{t.id} "
             f"({t.title.splitlines()[0] if t.title else ''}): {why}. "
-            "Another rebuild is unlikely to end differently: either the "
-            "builder is not acting on the finding, or the reviewer is not "
-            "reading the rebuilt branch.\n\n"
+            f"Stop reason: {reason} — {_PRELAND_STOPS[reason]}.\n\n"
             f"Newest verdict (review td{n.id}):\n{kind} — {rest}\n\n"
             f"The branch is on origin and td{t.id} is open, blocked by "
             "this ask. Read the branch against the finding, then leave a "
@@ -3411,9 +3467,9 @@ def _review_back_to_builder(
         )
         if t.status != "open":
             w.set_status(t, "open")
-        count, record, why = _preland_round(n, t, kind, rest, pushed, raw, single)
-        if why is not None:
-            _park_preland_rounds(plan, w, res, n, t, kind, rest, why, now)
+        count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single)
+        if stop is not None:
+            _park_preland_rounds(plan, w, res, n, t, kind, rest, stop, now)
         else:
             w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: record})
     sent_back = [t.id for t in targets if t.id not in ruled]
@@ -6740,6 +6796,43 @@ def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) ->
         log.info("plan_dispatch: %s", note)
 
 
+#: The release_deploy node's refusal texts already commented since it
+#: last dispatched (:func:`_comment_deploy_refusal`).
+DEPLOY_REFUSAL_SEEN_KEY = "deploy_refusal_seen"
+
+#: How many refusal texts :data:`DEPLOY_REFUSAL_SEEN_KEY` keeps.
+_DEPLOY_REFUSAL_SEEN_CAP = 8
+
+
+def _comment_deploy_refusal(
+    w: _Writer, res: PassResult, n: _Node, note: str | None
+) -> None:
+    """Write a ``release_deploy`` node's dispatch refusal as ONE comment
+    the first time its text is seen (gr702442): the engine-review gate
+    held r316's deploy for nine hours and nothing on the node said why.
+    Unlike :func:`_log_cut_refusal` this leaves a comment, so the texts
+    already written are kept in ``meta.deploy_refusal_seen`` (newest
+    :data:`_DEPLOY_REFUSAL_SEEN_CAP`) — a refusal that flaps between two
+    texts comments each once, not every tick. A dispatch (``note``
+    ``None``) clears the key so the next hold comments afresh. A dry run
+    writes nothing."""
+    if w.dry_run:
+        return
+    seen = [str(s) for s in (n.meta.get(DEPLOY_REFUSAL_SEEN_KEY) or [])]
+    if note is None:
+        if seen:
+            w.stamp_meta(n, {DEPLOY_REFUSAL_SEEN_KEY: None})
+        return
+    if note in seen:
+        return
+    w.comment(n, f"plan_dispatch: {note}")
+    w.stamp_meta(
+        n, {DEPLOY_REFUSAL_SEEN_KEY: [*seen, note][-_DEPLOY_REFUSAL_SEEN_CAP:]}
+    )
+    res.logged.append(note)
+    log.info("plan_dispatch: %s", note)
+
+
 def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     """Why the reviewer ``n`` must not dispatch: the repo it resolves to
     (:func:`_node_repos`, none = the default) is not the repo its review
@@ -7127,6 +7220,8 @@ def _step_dispatch(
         note = f"td{n.id}: {job_type} not dispatched — {problem}" if problem else None
         if job_type == "release_cut":
             _log_cut_refusal(w, res, n, note)
+        elif job_type == "release_deploy":
+            _comment_deploy_refusal(w, res, n, note)
         if note:
             res.notes.append(note)
             continue

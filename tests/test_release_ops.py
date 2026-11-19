@@ -21,10 +21,12 @@ import pytest
 from precis import settings as psettings
 from precis.plans import gates
 from precis.plans import pr_class as P
+from precis.plans import red_waiver as _waiver
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.utils import dispatch_score as _dscore
 from precis.workers import factory_git as _fg
 from precis.workers.job_types import ci_red_digest as crd
 from precis.workers.job_types import ci_verdict_poll as cvp
@@ -6076,3 +6078,184 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
     assert len(checkout["argv"]) == launches + 1
     assert checkout["argv"][-1][1:] == ["--cut-only"]
+
+
+_PARTLY_PARSED_RED = (
+    "== test-linux (3.13, 1) ==\n"
+    "  FAILED tests/test_alpha.py::test_one - assert 1 == 2\n"
+    "  ===== 1 failed, 40 passed in 3.00s =====\n"
+    "== test-linux (3.13, 2) ==\n"
+    "  failed ids (3):\n"
+    "    tests/test_beta.py::test_a\n"
+    "    tests/test_beta.py::test_b\n"
+    "    … +1 more\n"
+    "  FAILED tests/test_beta.py::test_a - boom\n"
+    "  ===== 3 failed, 10 passed in 2.00s =====\n"
+    "== test-linux (3.13, 3) ==\n"
+    "  FAILED tests/test_gamma.py::test_g - assert 0\n"
+    "  ===== 1 failed in 1.00s =====\n"
+)
+
+
+def test_clusters_of_adds_one_catch_all_per_flagged_section() -> None:
+    """gr681901: a digest that could not parse everything still clusters
+    the ids it did parse and adds one catch-all (no ids) per flagged
+    section, keyed by its job name; a clean section gets none."""
+    failures, problems = _waiver.parse_failures(_PARTLY_PARSED_RED)
+    assert problems  # the premise: the old code collapsed to no clusters
+    clusters, catch = crd._clusters_of(_PARTLY_PARSED_RED, failures, problems, "31")
+    assert catch.keys() == {"job test-linux (3.13, 2)"}
+    assert "id list truncated (+1 more)" in catch["job test-linux (3.13, 2)"]
+    assert clusters[-1] == ("job test-linux (3.13, 2)", [])
+    id_clusters = dict(clusters[:-1])
+    assert set(id_clusters) == {
+        "tests/test_alpha.py",
+        "tests/test_beta.py",
+        "tests/test_gamma.py",
+    }
+    assert id_clusters["tests/test_beta.py"] == [
+        "tests/test_beta.py::test_a",
+        "tests/test_beta.py::test_b",
+    ]
+
+
+def test_clusters_of_folds_an_unowned_problem_into_a_run_catch_all() -> None:
+    """A problem no section owns (a collection error) is one catch-all
+    named for the run, after the section catch-alls."""
+    text = (
+        "== test-linux ==\n"
+        "  FAILED tests/test_alpha.py::test_one - boom\n"
+        "  ===== 1 failed in 1.00s =====\n"
+    )
+    failures, problems = _waiver.parse_failures(
+        text, {"x": ["Interrupted: 1 error during collection"]}
+    )
+    assert problems == ["a collection error or an interrupted session"]
+    clusters, catch = crd._clusters_of(text, failures, problems, "31")
+    assert catch == {"run 31": problems[0]}
+    assert clusters == [
+        ("tests/test_alpha.py", ["tests/test_alpha.py::test_one"]),
+        ("run 31", []),
+    ]
+
+
+def test_clusters_of_fully_parsed_digest_is_unchanged() -> None:
+    """No problem: exactly :func:`cluster_failures`, no catch-all."""
+    failures, problems = _waiver.parse_failures(_TWO_FILE_RED)
+    assert problems == []
+    clusters, catch = crd._clusters_of(_TWO_FILE_RED, failures, problems, "31")
+    assert catch == {}
+    assert clusters == crd.cluster_failures(failures)
+
+
+def test_clusters_of_nothing_parsed_keeps_the_single_fallback() -> None:
+    """Problems but not one parsed id: no clusters, so the caller keeps
+    its one whole-digest brief."""
+    text = "== test-linux ==\n  (no signal lines — last 1 of 1 lines)\n  noise\n"
+    failures, problems = _waiver.parse_failures(text)
+    assert failures == {} and problems
+    assert crd._clusters_of(text, failures, problems, "31") == ([], {})
+
+
+def test_clusters_of_keeps_the_cluster_cap() -> None:
+    """Catch-alls and id clusters together stay within ``_CLUSTER_CAP``:
+    excess catch-alls fold into one, the id clusters keep a slot."""
+    n = crd._CLUSTER_CAP + 3
+    text = "".join(
+        f"== job{i} ==\n  FAILED tests/test_f{i}.py::t - boom\n" for i in range(n)
+    )
+    failures, problems = _waiver.parse_failures(text)
+    assert len(problems) == n  # each section lacks its pytest count
+    clusters, catch = crd._clusters_of(text, failures, problems, "31")
+    assert len(clusters) == crd._CLUSTER_CAP
+    assert len(catch) == crd._CLUSTER_CAP - 1
+    assert any(ids for _key, ids in clusters)
+    assert any(key.endswith(" more") for key in catch)
+    # Every parsed id still belongs to some cluster.
+    assert sorted(t for _k, ids in clusters for t in ids) == sorted(failures)
+
+
+def test_partly_parsed_red_mints_a_fixer_per_cluster_and_a_catch_all(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr681901 (release r332: one fixer for 2 of 9 red shards): a red
+    whose id list is truncated still splits — one fixer per parsed id
+    cluster plus a catch-all fixer for the flagged shard whose brief says
+    the id list is incomplete, names the problem and sends it to the run."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, _PARTLY_PARSED_RED)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+
+    fixes = sorted(
+        tid
+        for tid in _children(store, mint.ids["loop"])
+        if _meta(store, tid).get("op") == "run_slice"
+    )
+    assert len(fixes) == 4 and fixes[0] == it["fix"]  # 3 id clusters + 1 catch-all
+    assert _blockers(store, it["restamp"]) == set(fixes)
+    briefs = [_todo_comments(store, tid)[0] for tid in fixes]
+    [catch_brief] = [b for b in briefs if ": job test-linux (3.13, 2) —" in b]
+    assert "id list is incomplete" in catch_brief
+    assert "id list truncated (+1 more)" in catch_brief
+    assert "read the check.yml run itself" in catch_brief
+    assert "fix only these failing ids" not in catch_brief
+    assert sum("fix only these failing ids" in b for b in briefs) == 3
+    for b in briefs:
+        assert "/4:" in b and "lander lands it onto release/r7, never main" in b
+
+    # A retried digest finds all four nodes and mints no fifth.
+    ctx2 = Ctx(store, {"todo_id": it["digest"]})
+    handle2 = crd.submit(ctx2, None)
+    _exit(checkout, 0, _PARTLY_PARSED_RED)
+    assert crd.poll(ctx2, handle2) is True
+    assert ctx2.status == "succeeded", ctx2.failures
+    assert (
+        len(
+            [
+                t
+                for t in _children(store, mint.ids["loop"])
+                if _meta(store, t).get("op") == "run_slice"
+            ]
+        )
+        == 4
+    )
+
+
+def test_release_pass_root_stamps_the_release_claim_band(store: Store) -> None:
+    """gr698700: the pass root carries ``meta.claim_band = release`` next
+    to its dispatch score, so the jobs minted under it claim in the
+    release band, not as ``origin=background``."""
+    mint = T.mint_release_pass(store)
+    meta = _meta(store, mint.root_id)
+    assert meta[_dscore.CLAIM_BAND_META_KEY] == _dscore.RELEASE_CLAIM_BAND == "release"
+    assert meta[_dscore.SCORE_META_KEY] == _dscore.RELEASE_SCORE
+
+
+def test_a_release_fix_node_dispatches_its_run_slice_in_the_release_band(
+    store: Store,
+) -> None:
+    """gr698700: a fixer under a release pass (the iteration's own and a
+    cluster sibling) gets its ``run_slice`` job minted with
+    ``claim_band == "release"`` — ``plan_dispatch._mint_job`` reads the
+    band off the pass root, ``run_slice._mint_land`` carries it onto the
+    land from the job's own meta."""
+    mint, it = _red_iteration(store)
+    [extra] = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_beta.py"]
+    )
+    pd.run_pass(store)
+    job, _ = _only_job(store, it["digest"])
+    _succeed(store, job)
+    _close(store, it["digest"])
+    pd.run_pass(store)
+    for fix_id in (it["fix"], extra):
+        _job, meta = _only_job(store, fix_id)
+        assert meta["job_type"] == "run_slice"
+        assert meta[_dscore.CLAIM_BAND_META_KEY] == _dscore.RELEASE_CLAIM_BAND
+        assert meta["plan_root"] == mint.root_id

@@ -5258,6 +5258,37 @@ def test_dead_chain_straggler_closes_once_its_job_ends(store: Store) -> None:
     assert (res.asks, res.dispatched) == (0, 0)
 
 
+@pytest.mark.parametrize("keyed", ["td", "sha"])
+def test_dead_chain_spares_a_sha_keyed_reviewer(store: Store, keyed: str) -> None:
+    """td704507, td728642: a sha-keyed reviewer reviews a commit already
+    on main, so a blocker of it (a rescue's diagnose task) closing with
+    no ``landed:`` comment is not "nothing landed to review". A
+    td-keyed reviewer whose target closed without landing is still
+    closed won't-do."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("diag", "Diagnose the rescue", {"op": "run_slice"})
+        m.node(
+            "review",
+            "Review",
+            {"generate": {"role": "reviewer", "from": "sha:abc1234def56"}},
+            blocked_by=("diag",),
+        )
+
+    mint = T._run(store, None, build)
+    diag, review = mint.ids["diag"], mint.ids["review"]
+    if keyed == "td":
+        store.stamp_ref_meta(
+            review, {"generate": {"role": "reviewer", "from": f"td{diag}"}}
+        )
+    store.add_tag(
+        diag, Tag.closed("STATUS", "won't-do"), set_by="system", replace_prefix=True
+    )
+    pd.run_pass(store)
+    assert (_status(store, review) == "won't-do") is (keyed == "td")
+
+
 def test_dead_chain_after_failed_defer_asks_not_closes(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7380,6 +7411,43 @@ def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
     assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_stale_read_outranks_the_same_finding(store: Store) -> None:
+    """td707034: a reviewer that read the old head re-reports the old
+    finding. The ask names the stale read — the same-finding stop would
+    send the coordinator to the builder — and the title and body carry
+    the stop reason, so the four stops no longer read alike."""
+    h1, h2 = "1" * 40, "2" * 40
+    verdict = f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+    mint = _reviewed_pending(store, verdict, head=h1)
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(store, build, review, verdict, head=h2)
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (stale read)" in str(ref.title)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "Stop reason: stale read" in body
+    assert "same pre-land" not in body
+
+
+def test_preland_stop_asks_name_their_reason(store: Store) -> None:
+    """gr709688: the same-finding stop's ask says so in its title and
+    gives that reason's reading, not one sentence shared by every stop."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    _rebuild_and_review(
+        store, build, review, "review: FIX — a.py misses the empty case"
+    )
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (same finding)" in str(ref.title)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "Stop reason: same finding" in body
+    assert "is not reading the rebuilt branch" not in body
 
 
 def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
@@ -10554,6 +10622,75 @@ def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
     pd._log_cut_refusal(pd._Writer(store, False), res, node, "td1: refused")
     assert res.logged == ["td1: refused"]
     assert _meta(store, int(ref.id))[pd.CUT_REFUSAL_LOGGED_KEY] == "td1: refused"
+
+
+# ── gr702442: a refused deploy is visible on its node ───────────────
+
+
+def _refusal_comments(store: Store, todo: int) -> list[str]:
+    return [t for t in _comment_texts(store, todo) if t.startswith("plan_dispatch: td")]
+
+
+def test_a_release_deploy_refusal_is_commented_once_per_text(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine-review gate held r316's deploy nine hours with nothing
+    on the node saying why: each new refusal text is ONE comment, a
+    flap between two texts comments each once, and a ``release_cut``
+    refusal still writes no comment."""
+    from precis.workers.job_types import release_cut as rc
+    from precis.workers.job_types import release_deploy as rd
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("deploy", "Deploy", {"op": "release_deploy"})
+        m.node("cut", "Cut", {"op": "release_cut"})
+
+    mint = T._run(store, None, build)
+    deploy, cut = mint.ids["deploy"], mint.ids["cut"]
+    why = ["first hold"]
+    monkeypatch.setattr(rd, "_refusal", lambda store, params: (why[0], None))
+    monkeypatch.setattr(rc, "_cut_target", lambda store, todo_id: (None, "cut hold"))
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+    ctx = SimpleNamespace(
+        store=store,
+        meta={"params": {}},
+        set_meta=lambda **kw: None,
+        append_chunk=lambda kind, text: None,
+    )
+    note = f"td{deploy}: release_deploy not dispatched — first hold"
+    pd._dispatch(ctx, pd.SPEC)
+    assert _refusal_comments(store, deploy) == [f"plan_dispatch: {note}"]
+    assert _comment_texts(store, cut) == []  # release_cut: still no comment
+    pd._dispatch(ctx, pd.SPEC)
+    assert len(_refusal_comments(store, deploy)) == 1  # same text, no repeat
+    why[0] = "second hold"
+    pd._dispatch(ctx, pd.SPEC)
+    why[0] = "first hold"
+    pd._dispatch(ctx, pd.SPEC)  # flaps back: already commented
+    assert len(_refusal_comments(store, deploy)) == 2
+    assert len(_meta(store, deploy)[pd.DEPLOY_REFUSAL_SEEN_KEY]) == 2
+
+
+def test_a_deploy_refusal_seen_list_is_capped_cleared_and_dry_run_silent(
+    store: Store,
+) -> None:
+    ref = store.insert_ref(kind="todo", slug=None, title="deploy", meta=None)
+    node: Any = SimpleNamespace(id=int(ref.id), meta={})
+    dry = pd.PassResult(dry_run=True)
+    pd._comment_deploy_refusal(pd._Writer(store, True), dry, node, "td1: held")
+    assert dry.logged == [] and node.meta == {}
+    assert _comment_texts(store, int(ref.id)) == []
+    res = pd.PassResult(dry_run=False)
+    w = pd._Writer(store, False)
+    for i in range(10):
+        pd._comment_deploy_refusal(w, res, node, f"td1: held {i}")
+    seen = _meta(store, int(ref.id))[pd.DEPLOY_REFUSAL_SEEN_KEY]
+    assert seen == [f"td1: held {i}" for i in range(2, 10)]  # newest 8
+    assert res.logged == [f"td1: held {i}" for i in range(10)]
+    assert len(_comment_texts(store, int(ref.id))) == 10
+    pd._comment_deploy_refusal(w, res, node, None)  # a dispatch clears it
+    assert not _meta(store, int(ref.id)).get(pd.DEPLOY_REFUSAL_SEEN_KEY)
 
 
 # ── gr713351: the first cut is pinned to release.cut_host ───────────
