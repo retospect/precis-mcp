@@ -16,6 +16,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.store import Store
 from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
@@ -2632,6 +2633,68 @@ class TestRetitleHub:
         assert ref.title == new_sentence
         assert self._finding_body(store, hub) == new_sentence
 
+    @pytest.mark.parametrize("rescope", [False, True])
+    def test_retitle_with_writer_attribution(self, store: Store, rescope: bool) -> None:
+        """gr715597: title attribution must pass the scope-only edit door."""
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        annotation = {
+            "model": "gpt-6-astra",
+            "prompt_version": "2",
+            "run_id": "test-run",
+            "why": "Add the measured method.",
+        }
+        meta: dict[str, Any] = dict(annotation)
+        if rescope:
+            meta["scope"] = {"material": "Pd/C"}
+        handler = _make_handler(store)
+        for forbidden in ("source", "claim_type"):
+            with pytest.raises(BadInput):
+                handler.edit(
+                    id=hub,
+                    title="TEM measures Pd particles.",
+                    meta={**meta, forbidden: "unsupported"},
+                )
+        handler.edit(id=hub, title="TEM measures Pd particles.", meta=meta)
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == "TEM measures Pd particles."
+        assert self._finding_body(store, hub) == ref.title
+        assert all(ref.meta[k] == v for k, v in annotation.items())
+        assert ref.meta["scope"] == ({"material": "Pd/C"} if rescope else {})
+
+    def test_unchanged_retitle_preserves_writer_attribution(self, store: Store) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        handler = _make_handler(store)
+        sentence = "TEM measures Pd particles."
+        handler.edit(id=hub, title=sentence, meta={"model": "original-writer"})
+
+        handler.edit(id=hub, title=sentence, meta={"model": "later-writer"})
+
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.meta["model"] == "original-writer"
+
+    @pytest.mark.parametrize("value", [{"name": "writer"}, ["writer"], 1, None])
+    def test_retitle_rejects_non_string_writer_value(
+        self, store: Store, value: Any
+    ) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        handler = _make_handler(store)
+        with pytest.raises(BadInput, match=r"meta\['model'\] must be a string"):
+            handler.edit(
+                id=hub, title="TEM measures Pd particles.", meta={"model": value}
+            )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == "Original claim wording."
+        assert "model" not in ref.meta
+
     def test_retitle_hub_by_pub_id(self, store) -> None:
         hub = mint_hub(
             store, CanonicalClaim(sentence="Original claim wording.", scope={})
@@ -2655,7 +2718,14 @@ class TestRetitleHub:
         h = _make_handler(store)
 
         with pytest.raises(BadInput, match="dedup/merge candidate"):
-            h.edit(id=hub, title="Second claim sentence.")
+            h.edit(
+                id=hub,
+                title="Second claim sentence.",
+                meta={"model": "gpt-6-astra"},
+            )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref.title == "First claim sentence."
+        assert "model" not in ref.meta
 
     def test_retitle_non_hub_finding_rejected(self, store) -> None:
         """A plain chase finding has no ``edit(title=…)`` door."""

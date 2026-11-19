@@ -166,6 +166,8 @@ supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);
 no evidence flow — ``disputes`` never blocks, free to file by anyone);
 ``precis taproot backfill`` / the ``taproot_backfill`` job (:mod:`.backfill`,
 runs on the cluster worker, never in the MCP handler).
+Title edits save writer attribution in the same transaction as the
+claim's identity change so a failed edit leaves provenance intact.
 
 Read surfaces: ``get(kind='finding', view='evidence')`` (originators/
 corroborators/contradicts tables); the default ``finding`` search cohort

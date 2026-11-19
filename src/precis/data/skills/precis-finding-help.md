@@ -551,13 +551,22 @@ and the `pub_id` in sync.
 `meta={'scope': …}` with `title=`). `title=` retitles a `TAPROOT:claim`
 hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
 "Reword a hub in place". `meta={'scope': {...}}` replaces a hub's scope
-(`{}` clears it; only the `scope` key is accepted; `dry_run=True`
-previews) — scope is part of the hub's identity, so it re-derives the
+(`{}` clears it and `dry_run=True` previews). Scope is part of the hub's
+identity, so a scope change re-derives the
 `pub_id` and keeps the old one as an alias, like a retitle; see
 `precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=`
 sharpen an unsigned (`candidate`/`reviewed`) hypothesis's falsification terms.
 Unsigned edits reopen its review and flag/list consumers; signed claims refuse.
 See `precis-nanopub-help`'s "Sharpening".
+
+With `title=`, `meta=` also accepts string writer fields `model`,
+`prompt_version`, `run_id`, and `why`. They are saved atomically with
+the title or scope change. If both are unchanged, existing attribution
+stays as is. Unsupported keys and non-string writer values raise
+`BadInput`.
+
+## Record an unacquirable source
+
 `unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/

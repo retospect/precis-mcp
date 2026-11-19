@@ -147,9 +147,13 @@ def edit(
     door — mutate its claim via a fresh ``put()``.
 
     **Rescope a hub.** ``meta={'scope': {...}}`` is the write door for a
-    claim hub's ``refs.meta.scope`` (only the ``scope`` key is accepted in
-    ``meta=`` here — any other key is a ``BadInput`` naming the accepted
-    set). Same single write door as ``title=`` — a scope edit **is** an
+    claim hub's ``refs.meta.scope``. Title edits also accept writer
+    attribution (``model``, ``prompt_version``, ``run_id``, ``why``) in
+    ``meta=``. Values must be strings. Attribution is saved atomically
+    with the title and scope edit. If the normalized title and scope are
+    both unchanged, the edit leaves attribution as is. Unsupported keys
+    raise ``BadInput``.
+    Same single write door as ``title=`` — a scope edit **is** an
     identity edit: ``scope`` is part of the content-derived ``pub_id``
     (:func:`~precis.identity.make_taproot_hub_paper_id`) and of the
     ``(sentence, scope)`` dedup key, so changing it moves the claim's
@@ -236,7 +240,22 @@ def edit(
     Only the body edit and the ``meta={'scope': …}`` door support
     ``dry_run`` (see above); every other op rejects it.
     """
-    meta_scope = _scope_from_meta(meta) if meta is not None else None
+    # Attribution accompanies a title edit; it is not a separate mutation.
+    attribution: dict[str, str] = {}
+    scope_meta = meta
+    if title is not None and meta is not None:
+        scope_meta = dict(meta)
+        for key in sorted(_WRITER_KEYS & meta.keys()):
+            value = scope_meta.pop(key)
+            if not isinstance(value, str):
+                raise BadInput(
+                    f"edit(kind='finding') meta[{key!r}] must be a string",
+                    next=f"Supply a string for meta[{key!r}] or omit the key.",
+                )
+            attribution[key] = value
+        if attribution and not scope_meta:
+            scope_meta = None
+    meta_scope = _scope_from_meta(scope_meta) if scope_meta is not None else None
     if mode not in (None, "find-replace", "replace"):
         # Dispatch's mode gate catches this for MCP callers (the wrapper
         # default 'find-replace' is exempt — it arrives on every edit()
@@ -351,7 +370,12 @@ def edit(
     if rescoping:
         assert meta_scope is not None
         return _rescope_hub(
-            store, id=id, title=title, scope=meta_scope, dry_run=bool(dry_run)
+            store,
+            id=id,
+            title=title,
+            scope=meta_scope,
+            dry_run=bool(dry_run),
+            attribution=attribution,
         )
     if title is not None:
         if dry_run:
@@ -360,7 +384,7 @@ def edit(
                 "the retitle has no preview; omit dry_run to apply",
                 next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
             )
-        return _retitle_hub(store, id=id, title=title)
+        return _retitle_hub(store, id=id, title=title, attribution=attribution)
     if sharpening:
         if dry_run:
             raise BadInput(
@@ -511,17 +535,20 @@ def edit(
     )
 
 
-#: The only ``meta=`` key the finding edit handler accepts — the hub
-#: ``scope`` write door. Anything else is a BadInput naming this set;
+#: Keys accepted by the scope parser after edit() extracts writer keys
+#: on title edits. Anything else is a BadInput naming this set;
 #: ``claim_type`` gets its own refusal pointing at the human doors
 #: (this door cannot tell a human from an agent).
 _META_KEYS = frozenset({"scope"})
+_WRITER_KEYS = frozenset({"model", "prompt_version", "run_id", "why"})
 
 
 def _scope_from_meta(meta: dict[str, Any]) -> dict[str, str]:
-    """Validate ``meta=`` for ``edit(kind='finding')`` and return the
-    ``scope`` dict. Only ``scope`` is accepted; it must be a dict of
-    str -> str (``{}`` clears it)."""
+    """Validate the scope-only metadata and return the scope dict.
+
+    ``edit()`` extracts writer keys before calling this parser on a title
+    edit. Scope maps strings to strings (``{}`` clears it).
+    """
     if "claim_type" in meta:
         raise BadInput(
             "edit(kind='finding') does not set claim_type — reclassification "
@@ -565,6 +592,7 @@ def _rescope_hub(
     title: str | None,
     scope: dict[str, str],
     dry_run: bool,
+    attribution: dict[str, str],
 ) -> Response:
     """``edit(kind='finding', meta={'scope': …}[, title=…])`` — replace a
     claim hub's scope through :func:`~precis.taproot.hub.refine_claim_sentence`
@@ -630,7 +658,12 @@ def _rescope_hub(
         )
     try:
         result = hub.refine_claim_sentence(
-            store, hub_ref_id, new_title, scope=scope, set_by="agent"
+            store,
+            hub_ref_id,
+            new_title,
+            scope=scope,
+            set_by="agent",
+            attribution=attribution,
         )
     except BadInput:
         raise
@@ -684,7 +717,9 @@ def _rescope_body(
     return "\n".join(lines)
 
 
-def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
+def _retitle_hub(
+    store: Store, *, id: int | str | None, title: str, attribution: dict[str, str]
+) -> Response:
     """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
 
     ``id`` must resolve to a live ``TAPROOT:claim`` hub (mirrors the
@@ -709,7 +744,9 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             ),
         )
     try:
-        result = hub.refine_claim_sentence(store, hub_ref_id, title, set_by="agent")
+        result = hub.refine_claim_sentence(
+            store, hub_ref_id, title, set_by="agent", attribution=attribution
+        )
     except BadInput:
         raise
     except ValueError as exc:

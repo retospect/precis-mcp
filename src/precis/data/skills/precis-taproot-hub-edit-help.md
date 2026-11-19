@@ -107,8 +107,9 @@ edit(kind="finding", id="fi42", title="…reworded…", meta={"scope": {...}})
 edit(kind="finding", id="fi42", meta={"scope": {...}}, dry_run=True)   # preview
 ```
 
-`scope` is **replaced**, not merged; values must be strings; only the
-`scope` key is accepted in `meta=`. Same effects as a retitle: the
+`scope` replaces the entire scope and maps strings to strings. Supply
+`title=` to include writer attribution in `meta=` (see
+`precis-finding-help`). Same effects as a retitle: the
 `pub_id` is re-derived and the **old one kept as an alias**, a `pub_id`
 that collides with a *different* live hub raises (duplicate-hub signal —
 see "Merge duplicate hubs"), and a non-hub finding is rejected. Scope lint

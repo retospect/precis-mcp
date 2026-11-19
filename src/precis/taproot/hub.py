@@ -704,6 +704,7 @@ def refine_claim_sentence(
     *,
     scope: dict[str, Any] | None = None,
     set_by: str = "agent",
+    attribution: dict[str, str] | None = None,
     conn: Any = None,
 ) -> dict[str, Any]:
     """Reword a ``TAPROOT:claim`` hub's claim sentence in place. Returns a
@@ -733,6 +734,10 @@ def refine_claim_sentence(
        the new pub_id already belongs to a *different* live ref, raises
        :class:`ValueError` rather than silently merging.
 
+    ``attribution`` carries the title editor's writer annotation, saved
+    in the same transaction as a changed title or scope so provenance
+    cannot outlive a failed edit. An unchanged title and scope leave
+    existing attribution intact.
     ``scope=None`` keeps the hub's existing scope; ``conn`` folds the write
     into a caller's open transaction (default: own ``store.tx()``).
 
@@ -820,7 +825,11 @@ def refine_claim_sentence(
         store.update_ref(
             hub_ref_id,
             title=new_title,
-            meta_patch={"scope": effective_scope} if scope is not None else None,
+            meta_patch={
+                **(attribution or {}),
+                **({"scope": effective_scope} if scope is not None else {}),
+            }
+            or None,
             conn=c,
         )
         _assert_title_round_trip(c, hub_ref_id, new_title, op="refine_claim_sentence")
