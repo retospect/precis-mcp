@@ -56,6 +56,12 @@ merging blocks, paper extraction drops recognised leading advert pages
 when the target title and abstract confirm the next page is the article
 opening. Exact OCR sentence loops are removed before splitting so
 fragments of the loop cannot become searchable chunks.
+arXiv HTML can display citation numbers that disagree with their linked
+bibliography entries. Before flattening the HTML, ``markup.parse_arxiv_html``
+uses the destination labels for fully linked numeric citation groups and
+emits each structured bibliography item separately for ``bib_parse``.
+Repeated numeric labels trigger the markup fallback because citation
+storage has one number namespace per paper.
 
 Figure alt text and captions are authored inside the dependency stack,
 not in this package: marker-pdf's surya-ocr VLM emits them from its
