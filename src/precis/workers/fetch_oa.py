@@ -1786,14 +1786,8 @@ _ZENODO_DOI_RE = re.compile(r"10\.5281/zenodo\.([0-9]+)", re.IGNORECASE | re.ASC
 def _zenodo_pdf_urls(record_id: str) -> list[str]:
     """Content URLs of the PDF files on one Zenodo record (API lookup).
 
-    ``follow_redirects=True`` is deliberate: a Zenodo **concept** DOI
-    (``10.5281/zenodo.<concept-id>``, the "cite all versions" DOI Zenodo
-    recommends) resolves ``/api/records/<concept-id>`` with a 302 to the
-    latest record, so without redirect-following ``resp.json()`` would
-    raise on the redirect HTML and record ``api_error``. The host is
-    fixed and trusted (and ``record_id`` is digits-only), which is the
-    one shape :func:`~precis.utils.http.http_client`'s docstring allows
-    redirect-following for.
+    A Zenodo concept DOI can redirect the records API to the latest
+    version. :func:`safe_get` follows that redirect and validates each hop.
     """
     api = f"https://zenodo.org/api/records/{record_id}"
 
@@ -1801,9 +1795,8 @@ def _zenodo_pdf_urls(record_id: str) -> list[str]:
         with http_client(
             timeout=_API_TIMEOUT_S,
             headers={"User-Agent": _user_agent_header()},
-            follow_redirects=True,
         ) as client:
-            resp = client.get(api)
+            resp = safe_get(client, api)
             resp.raise_for_status()
             return resp.json()
 
