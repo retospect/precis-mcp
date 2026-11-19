@@ -630,6 +630,7 @@ def _validate_meta(
     *,
     ruling: bool = False,
     existing: dict[str, Any] | None = None,
+    creating: bool = False,
 ) -> dict[str, Any]:
     """Check a caller's ``meta=`` and return the cleaned patch.
 
@@ -640,6 +641,9 @@ def _validate_meta(
     (:func:`precis.utils.memory_rulings.validate_ruling_meta`; ``existing`` =
     the node's meta on an edit, ``None`` on a create, which stamps the
     defaults). Anything else raises :class:`BadInput` naming the allowed keys.
+    ``creating=True`` (a ``put``) also makes a rejection of creation-edge keys
+    (model/run_id/why/evidence…) point at the ``put(link=…)`` route; an edit
+    never gets that hint, since it would steer a repair into a second memory.
     """
     example = "meta={'hook': 'one-line index text'}"
     ruling_note = f"; a node tagged {RULING_TAG!r} also takes {list(_RULING_META_KEYS)}"
@@ -653,10 +657,22 @@ def _validate_meta(
         str(k) for k in meta if k not in _META_ALLOWED and k not in _RULING_META_KEYS
     )
     if unknown:
+        next_step = example
+        edge_keys = sorted(set(unknown) & _CREATE_EDGE_META_KEYS)
+        if creating and edge_keys:
+            # The caller is following the creation-edge annotation shape
+            # (precis-memory-help) without a link= for it to land on —
+            # name that route instead of the bare allowlist (gr725289).
+            next_step = (
+                f"meta key(s) {edge_keys} annotate the creation edge, not "
+                "the memory: pass them on put(kind='memory', link='<target>', "
+                "rel='derived-from', meta={...}) so they land on the edge, "
+                "or drop them"
+            )
         raise BadInput(
             f"meta= key(s) {unknown} not writable on kind='memory'; "
             f"allowed keys: {list(_META_ALLOWED)}{ruling_note}",
-            next=example,
+            next=next_step,
         )
     ruling_keys = {k: meta[k] for k in _RULING_META_KEYS if k in meta}
     if ruling_keys and not ruling:
@@ -1873,7 +1889,7 @@ class MemoryHandler(AuditedRetirementHandler):
             edge_meta = {k: v for k, v in meta.items() if k in _CREATE_EDGE_META_KEYS}
             meta = {k: v for k, v in meta.items() if k not in _CREATE_EDGE_META_KEYS}
         create_meta = (
-            _validate_meta(meta or {}, ruling=is_ruling)
+            _validate_meta(meta or {}, ruling=is_ruling, creating=True)
             if meta is not None or is_ruling
             else {}
         )

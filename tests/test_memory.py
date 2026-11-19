@@ -1098,6 +1098,30 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
         handler.put(text="x", meta={"nope": "y"})
 
 
+def test_edge_meta_keys_without_link_name_the_edge_route(
+    handler: MemoryHandler,
+) -> None:
+    """gr725289: edge-annotation keys refused without link= must point at
+    the put(link=...) route, not just the bare node-meta allowlist."""
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(
+            text="x",
+            meta={"model": "m", "prompt_version": "p", "run_id": "r", "why": "w"},
+        )
+    assert "annotate the creation edge" in str(excinfo.value.next)
+
+
+def test_edit_edge_meta_keys_do_not_recommend_put(
+    handler: MemoryHandler,
+) -> None:
+    """The put(link=...) hint is creation-only: an edit must not be steered
+    into minting a second memory."""
+    mid = id_of(handler.put(text="body").body)
+    with pytest.raises(BadInput) as excinfo:
+        handler.edit(id=mid, meta={"why": "w"})
+    assert "put(" not in str(excinfo.value.next)
+
+
 # ---------------------------------------------------------------------------
 # args={'scratch_for': '<owner>'} — the task-scratch pair (gr605669):
 # SPACE:scratch + scratch-for:<owner> in one call
