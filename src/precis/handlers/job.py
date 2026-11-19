@@ -1608,7 +1608,8 @@ class JobHandler(NumericRefHandler):
         :func:`pending_proposals` plus the consumer holds
         :func:`proposal_holds` reads — per row the review id, action,
         target handle, a ``stale`` flag when the target drifted past the
-        proposed sha, title, rationale and the hold's next step.
+        proposed sha or already carries a tombstone (gr714718), title,
+        rationale and the hold's next step.
         ``action`` narrows to one action kind; ``limit`` caps the rows.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
@@ -1675,8 +1676,9 @@ class JobHandler(NumericRefHandler):
             header += f" (action={raw_action})"
         lines = [header]
         for p in rows:
-            stale = "" if p.current else "  [stale: target changed]"
-            lines.append(f"review {p.review_id}: {p.action} {_target(p)}{stale}")
+            lines.append(
+                f"review {p.review_id}: {p.action} {_target(p)}{p.stale_marker()}"
+            )
             lines.append(f"    {p.title} — {p.rationale}")
             if hold := holds.get(p.review_id):
                 lines.append(f"    held: {hold['held']} — {hold.get('why', '')}")

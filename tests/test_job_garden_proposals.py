@@ -7,8 +7,12 @@ mode mirrors ``precis garden reject`` — one append-only terminal
 
 from __future__ import annotations
 
+import pytest
+
+from precis.graph.garden import consumer
 from precis.graph.garden.candidates import GardenCandidate
 from precis.graph.garden.proposals import (
+    GardenProposal,
     emit_proposal,
     pending_proposals,
     resolve_proposal,
@@ -16,6 +20,7 @@ from precis.graph.garden.proposals import (
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store.types import ChunkInsert
+from precis.utils import handle_registry
 from tests._skill_roots import BUILTIN_SKILLS_DIR
 
 
@@ -42,6 +47,115 @@ def _proposal(store: Store) -> tuple[int, int]:
     review_id = emit_proposal(store, candidate, rationale="fixture")
     assert review_id is not None
     return review_id, ref.id
+
+
+def _memory(store: Store, title: str) -> int:
+    ref = store.insert_ref(kind="memory", slug=None, title=title)
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="A dated claim.", meta={"chunk_kind": "memory_body"})],
+    )
+    return int(ref.id)
+
+
+def _retire_proposal(store: Store, target: int, *, key: str | None = None) -> int:
+    candidate = GardenCandidate(
+        detector="thread_shape",
+        action="retire",
+        target_kind="ref",
+        target_id=target,
+        title="Retire a dated memory",
+        evidence={},
+        payload={},
+    )
+    review_id = emit_proposal(store, candidate, rationale="fixture", key=key)
+    assert review_id is not None
+    return review_id
+
+
+def test_retired_targets_are_marked_stale_pending_gr714718(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    # Redirected tombstone — retired with a successor, stamped as a raw
+    # ref id like the supersede door records it.
+    redirected = _memory(store, "Redirected memory")
+    successor = _memory(store, "Survivor memory")
+    rid_redirected = _retire_proposal(store, redirected)
+    store.stamp_ref_meta(redirected, {"superseded_by": successor})
+    store.retire_ref(redirected)
+
+    # Successorless tombstone, with a second distinct pending row on the
+    # same retired target (another detector's question, distinct key).
+    plain = _memory(store, "Plain memory")
+    rid_plain = _retire_proposal(store, plain)
+    rid_second = _retire_proposal(store, plain, key=f"retire:ref:{plain}:grab_bag")
+    store.retire_ref(plain)
+
+    rows = {p.review_id: p for p in pending_proposals(store, limit=50)}
+    redirected_row = rows[rid_redirected]
+    assert redirected_row.target_retired
+    assert not redirected_row.current
+    assert redirected_row.retired_successor == handle_registry.format_handle(
+        "memory", successor
+    )
+    for rid in (rid_plain, rid_second):
+        assert rows[rid].target_retired
+        assert not rows[rid].current
+        assert rows[rid].retired_successor is None
+
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "job", "id": "/garden/proposals"}
+    )
+    assert f"review {rid_redirected}" in body
+    assert (
+        f"[stale: target retired → {handle_registry.format_handle('memory', successor)}]"
+        in body
+    )
+    assert f"review {rid_plain}" in body
+    assert f"review {rid_second}" in body
+    assert body.count("[stale: target retired (no successor)]") == 2
+    assert "[stale: target changed]" not in body
+
+
+def test_consumer_closes_retired_target_memory_proposal_gr714718(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    target = _memory(store, "Memory retired elsewhere")
+    successor = _memory(store, "Successor memory")
+    review_id = _retire_proposal(store, target)
+    # The audited delete door stamps a handle string.
+    store.stamp_ref_meta(
+        target, {"superseded_by": handle_registry.format_handle("memory", successor)}
+    )
+    store.retire_ref(target)
+
+    def unexpected(
+        _store: Store, _proposal: GardenProposal
+    ) -> consumer.ConsumerVerdict:
+        pytest.fail("a retired target must not buy a model review")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    report = consumer.consume_proposals(store, review=unexpected)
+    assert report.rejected == 1
+    assert pending_proposals(store) == []
+
+    # Both decisions survive in the audit history: the tombstone on the
+    # ref, and the terminal row recording why the proposal closed.
+    tomb = store.fetch_refs_by_ids([target], include_deleted=True)[target]
+    assert tomb.retired_at is not None
+    terminal = [
+        rev
+        for rev in store.reviews_for("ref", target)
+        if rev.verdict == "rejected" and rev.actor == consumer.CONSUMER_ACTOR
+    ]
+    assert len(terminal) == 1
+    assert f'"resolves": {review_id}' in (terminal[0].note or "")
+    assert '"reason": "target_gone"' in (terminal[0].note or "")
+    assert "already retired elsewhere" in (terminal[0].note or "")
+    assert handle_registry.format_handle("memory", successor) in (
+        terminal[0].note or ""
+    )
 
 
 def test_proposals_view_lists_pending_and_flags_stale(

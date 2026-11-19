@@ -1708,6 +1708,27 @@ def review_pending(
             and prop.detector in MEMORY_APPLY_DETECTORS
             and env_flag("PRECIS_GARDEN_MEMORY_APPLY")
         )
+        if memory_enabled and prop.target_retired:
+            # The retirement completed elsewhere (another door, a human)
+            # — the tombstone is terminal, so this close is not retryable
+            # and the reason says retired, not merely changed (gr714718).
+            # Both decisions stay in the audit history: the tombstone on
+            # the ref, this terminal row on the proposal.
+            successor = (
+                f" (successor {prop.retired_successor})"
+                if prop.retired_successor
+                else " without a successor"
+            )
+            _close(
+                store,
+                prop,
+                actor=CONSUMER_ACTOR,
+                reason="target_gone",
+                why=f"the target already retired elsewhere{successor}",
+                model=None,
+                report=report,
+            )
+            continue
         if memory_enabled and not prop.current:
             _close(
                 store,
