@@ -251,6 +251,11 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "Tafel plot",
         "Tafel plots",
         "Tafel analysis",
+        # 2026-11-19: named experimental method (gr717322). The finding
+        # preflight rejected an "Atom probe tomography ..." claim for
+        # want of a mode token; the full method name is the corpus
+        # spelling (the acronym "APT" collides with ordinary words).
+        "atom probe tomography",
     }
 )
 

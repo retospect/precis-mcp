@@ -254,6 +254,7 @@ def test_no_epistemic_mode_does_not_fire_on_method_tokens() -> None:
         "First-principles calculations predict a direct band gap.",
         "Monte Carlo predicts a critical temperature near 300 K.",
         "Nanoindentation measures a hardness of 12 GPa.",
+        "Atom probe tomography shows boron enrichment at grain boundaries.",
     ]:
         warnings = lint_claim_sentence(sentence)
         assert not any("no-epistemic-mode" in w for w in warnings), sentence
