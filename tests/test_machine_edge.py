@@ -362,7 +362,10 @@ def test_memory_put_creation_edge_meta(
                 "link": pin,
                 "rel": "derived-from",
                 "meta": {"hook": hook, **edge_meta},
-                "args": {"writer": {"model": "test-model"}},
+                # The direct-dispatch channel spells the extras dict
+                # ``__extras__``; the MCP tool layer lifts wire-level
+                # ``args=`` into it before dispatch (tools/core.py).
+                "__extras__": {"writer": {"model": "test-model"}},
             },
         )
 
