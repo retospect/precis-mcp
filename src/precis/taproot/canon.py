@@ -1705,15 +1705,23 @@ SAME           — the same fact under the same conditions, differing only in
                  wording or restated detail.
 COMPONENT      — NEW CLAIM is one atomic piece of EXISTING CLAIM: the
                  existing claim is a compound that asserts NEW CLAIM
-                 together with other findings.
+                 together with other findings. The existing claim must
+                 itself state NEW CLAIM's content; sharing a dataset,
+                 calculation campaign, material or paper does not make one
+                 claim a component of the other.
 GENERALIZATION — NEW CLAIM is a broader or narrower statement of the same
                  finding (one contains the other, same subject and
                  conditions family), so that two hubs would double-count it.
 DIFFERENT      — a genuinely distinct claim, a different scope, or only
                  topically related.
 
-Default to DIFFERENT unless the overlap is clear. A different material,
-method, quantity or regime makes the claims DIFFERENT.
+Default to DIFFERENT unless the overlap is clear. If each claim could be
+true while the other is false, the claims are DIFFERENT. For example,
+reproducing an experimental peak splitting and reporting how many spectra
+were simulated are DIFFERENT, even for the same simulation campaign. If the
+existing claim asserts both the reproduction and the count, reproduction
+alone is a COMPONENT. A different material, method, quantity or regime
+makes the claims DIFFERENT.
 
 NEW CLAIM: {new}
 

@@ -45,11 +45,8 @@ freeze boundary: a historical signed artifact on a reopened row still requires
 supersession, internal edits mint no versions, and artifact/proof bytes stay
 untouched (signed reopen/demotion alignment: the nanopub supersede slice).
 
-Three layers, one domain (glossary "finding / taproot / nanopub"):
-``finding``, the ref kind this module overlays, is owned by
-:mod:`precis.handlers.finding`; ``nanopub``, the downstream pipeline that
-freezes an approved hub into a signed nanopublication, is owned by
-:mod:`precis.nanopub`. This module owns the claim-graph layer only.
+:mod:`precis.handlers.finding` owns the underlying ref kind. Taproot owns
+the claim graph. :mod:`precis.nanopub` signs approved hubs.
 
 Extraction starts with a measured 1536-token budget and retries a truncated
 reply once at 3072. Provider ``length``/``max_tokens`` stops override even
