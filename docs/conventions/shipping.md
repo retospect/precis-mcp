@@ -61,10 +61,11 @@ landed set (Requires is checked in both directions — a cut at B with A
 above it, A requiring B, holds) refuses with a `holding: ` line: a
 classified wait, attempt-free, and the next cut re-targets to origin/main's
 tip where the set ships whole. An incomplete set moves the cut below its
-oldest landed member — shipping none of it — or holds when the cut is the
-tip (a pipelined cut can take only the tip) or the move would leave nothing
-shippable. An unreadable history holds too; the cut never proceeds
-unchecked.
+oldest landed member for an older hand-pinned cut when there is earlier
+work to ship. Tip cuts and factory cuts hold for completion. A factory
+pass needs a release containing its requested SHA. Reconciliation checks
+the pending cut's recorded base and holds if that base would split a
+set. Unreadable history also holds.
 
 After a landing, `scripts/ship` comments `landed <sha> on main` on each
 gripe the landed commit fixes. On a deploy, `scripts/release` comments

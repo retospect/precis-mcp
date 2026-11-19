@@ -19,7 +19,12 @@ from precis.workers.job_types.release_cut import (
     REFUSAL_HOLDING,
     classify_cut_refusal,
 )
-from tests.test_release_script import FAST, _load_release, _release
+from tests.test_release_script import (
+    FAST,
+    _load_release,
+    _reject_release_pushes,
+    _release,
+)
 from tests.test_round_gate import Rig, _commit, _git, _push_branch
 from tests.test_round_gate import rig as rig
 
@@ -77,11 +82,36 @@ def test_pinned_cut_moves_below_an_incomplete_set(rig: Rig) -> None:
     d1 = _commit_trailer(rig, "src/d1.py", "d1 half", "Change-Set: pair-1")
     _commit(rig.root, "src/d2.py", "d2 plain")
     _push_main(rig)
-    out = _release(rig, "--cut-only", "--sha", d1, *FAST)
+    out = _release(rig, "--cut-only", "--sha", d1, *FAST, PRECIS_RELEASE_PASS="")
     assert out.returncode == 0, out.stdout + out.stderr
     assert "change-set guard" in out.stdout
     assert f"RELEASE_CUT: r1 {rig.shas['c3']}" in out.stdout.splitlines()
     assert rig.origin_ref("release/r1") == rig.shas["c3"]
+
+
+def test_factory_pinned_cut_waits_for_an_incomplete_set(rig: Rig) -> None:
+    member = _commit_trailer(rig, "src/d1.py", "first half", "Change-Set: pair-1")
+    _commit(rig.root, "src/d2.py", "unrelated")
+    _push_main(rig)
+    out = _release(rig, "--cut-only", "--sha", member, *FAST, PRECIS_RELEASE_PASS="td5")
+    assert out.returncode == 1
+    assert _hold(out)["class"] == REFUSAL_HOLDING
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_pending_cut_is_rechecked_at_its_recorded_base(rig: Rig) -> None:
+    base = rig.shas["c3"]
+    hook = _reject_release_pushes(rig)
+    assert _release(rig, "--cut-only", "--sha", base, *FAST).returncode == 1
+    hook.unlink()
+    _commit_trailer(rig, "src/d1.py", "requires pending base", f"Requires: {base}")
+    _push_main(rig)
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 1
+    refusal = _hold(out)
+    assert refusal["class"] == REFUSAL_HOLDING
+    assert f"pending cut at {base[:9]}" in refusal["line"]
+    assert rig.origin_ref("release/r1") == ""
 
 
 def test_change_set_count_incomplete_holds(rig: Rig) -> None:
@@ -157,7 +187,7 @@ def test_move_below_never_reaches_prod(rig: Rig) -> None:
     d1 = _commit_trailer(rig, "src/d1.py", "d1 half", "Change-Set: pair-1")
     _commit(rig.root, "src/d2.py", "d2 plain")
     _push_main(rig)
-    out = _release(rig, "--cut-only", "--sha", d1, *FAST)
+    out = _release(rig, "--cut-only", "--sha", d1, *FAST, PRECIS_RELEASE_PASS="")
     assert out.returncode == 1
     refusal = _hold(out)
     assert refusal["class"] == REFUSAL_HOLDING

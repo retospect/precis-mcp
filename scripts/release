@@ -101,9 +101,10 @@ may not be split across releases — a cut carries the whole declared set or
 none of it. Before any cut the target is checked over origin/main's
 first-parent line: a cut below the tip that would split a landed set holds
 with a `holding: ` line (a classified wait, like in-flight); an incomplete
-set (fewer than n members landed, an unresolvable Requires) moves the cut
-below its oldest landed member, or holds from a tip cut. Lands stay free;
-only the cut is constrained.
+set (fewer than n members landed, an unresolvable Requires) moves an
+older hand-pinned cut below its oldest landed member. Tip and factory
+cuts hold for completion. Pending cuts are rechecked at their recorded
+base before reconciliation.
 
 --dry-run only reads; it prints the plan and passes --dry-run to round cut and
 round deploy where they apply.
@@ -869,7 +870,7 @@ def _requires(walk: list[tuple[str, str]]) -> list[tuple[str, str]]:
         (sha, value)
         for sha, body in walk
         for key, value in _trailers(body)
-        if key.lower() == _REQUIRES_KEY and value
+        if key.lower() == _REQUIRES_KEY
     ]
 
 
@@ -951,9 +952,9 @@ def _split_set_cut(s: str) -> tuple[str, str | None]:
         if not drops:
             return walk[cut][0], None
         why = "; ".join(dict.fromkeys(drop_why))
-        if cut == 0:
-            # A pipelined cut can take only origin/main's tip; a first cut
-            # pinning the tip behaves the same: hold for the missing member.
+        if cut == 0 or release_pass():
+            # A factory pass records a cut that contains its requested SHA.
+            # Pipelined cuts also require the tip.
             return s, f"{why} — waiting for the rest to land"
         target = max(drops) + 1
         if target >= len(walk):
@@ -2624,12 +2625,21 @@ def resume(
     branch = str(rel["branch"])
     dep = rel.get("deployment") or {}
     if rel.get("cut_pending"):
+        base = str(rel["base"])
+        safe, hold_why = _split_set_cut(base)
+        if hold_why or safe != base:
+            why = hold_why or f"the safe cut is {safe[:9]}"
+            return die(
+                1,
+                f"scripts/release: holding: pending cut at {base[:9]}: {why}. "
+                "Abandon the pending cut before cutting again.",
+            )
         say(f"resuming: {branch} has a pending cut — reconciling")
         if args.dry_run:
             say("would reconcile the cut, wait for CI, deploy")
             return 0
         # the recorded base, not S: cut refuses a different pending SHA
-        rc = cut_and_finish(args, str(rel["base"]), branch)
+        rc = cut_and_finish(args, base, branch)
         return die(1, "scripts/release: lost the pending cut") if rc == -1 else rc
     if has:
         say(f"resuming release {branch} at {tip[:9]}: it ships {s[:9]}")
