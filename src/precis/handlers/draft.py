@@ -3603,6 +3603,20 @@ class DraftHandler(Handler):
         # data-loss footgun). Now ``find`` drives a literal substitution,
         # and a ``find`` that is absent from the chunk *refuses* the edit
         # (leaving the text untouched) instead of erasing it.
+        # ``mode='insert'`` without ``find=`` has no anchor to splice next
+        # to; it used to fall through to the whole-chunk rewrite below and
+        # overwrite the paragraph with ``text`` (gr720455). Refuse it.
+        if find is None and (mode or "").strip() == "insert":
+            raise BadInput(
+                "mode='insert' needs find= (the anchor text inside the chunk) "
+                "plus where='before'|'after'; it never adds a new chunk. To add "
+                "a paragraph next to this chunk use put(kind='draft', ..., "
+                "args={'at': {'before': 'dc…'}})",
+                next=(
+                    f"edit(kind='draft', id={_base.dc!r}, mode='insert', "
+                    "find='anchor text', text='…', where='after')"
+                ),
+            )
         if find is not None:
             if not find:
                 raise BadInput(

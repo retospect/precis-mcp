@@ -2765,8 +2765,13 @@ def edit(
     options. todo uses `text=`/`body=`, memory also takes
     `ops=[{find,text,...}]`; quest takes `replace` (explicit), `pause`,
     `resume`; finding takes `replace`/`find-replace`; fleet and learning
-    take `replace`; draft takes
-    `'replace-content'`; paper, structure ignore it.
+    take `replace`; paper and structure ignore it.
+
+    Draft accepts `mode='replace-content'` for a block rewrite and
+    `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`
+    to insert text around an anchor within a chunk. To add a paragraph
+    next to a chunk, use `put(kind='draft', id='<draft>', text='…',
+    args={'at': {'before': 'dc<id>'}})` (or use `after`).
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
@@ -3176,7 +3181,8 @@ _EDIT_HELP: dict[str, str] = {
     "memory: replace/find-replace/insert/append/delete — or "
     "ops=[{find,text,...}] for several anchored ops in one call; "
     "finding: replace/find-replace; fleet/learning: replace. "
-    "Draft: replace-content; paper/structure ignore mode=.",
+    "Draft: replace-content or insert (requires find=, text= and where=); "
+    "paper/structure ignore mode=.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",
