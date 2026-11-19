@@ -4,16 +4,22 @@ Split out of ``finding.py`` (me690495):
 this rendering pass only ever touched ``self.store``, never any other
 handler state, so it moves cleanly as free functions taking the store
 directly. ``FindingHandler.get`` calls :func:`render_evidence_view`.
+
+Composite evidence labels passages by conjunct because each constituent
+has its own warrants.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis.format import render_agent_table
 from precis.handlers._finding_judgments import judging_summary
+from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP, render_links_section
 from precis.store.types import Ref
 from precis.taproot import seniority
 from precis.taproot.claim_type import claim_type_of, consensus_line
+from precis.utils import handle_registry
 from precis.utils.authors import author_names
 
 if TYPE_CHECKING:
@@ -24,6 +30,8 @@ from precis.response import Response
 
 def render_evidence_view(store: Store, ref: Ref) -> Response:
     """Render ``view='evidence'``: the hub's edges by derived role.
+
+    Show inherited evidence by conjunct and list open disputes separately.
 
     The ``passages`` column lists the available grounding handles for each
     row. The ``excluded evidence`` header line lists ineligible sources and
@@ -71,7 +79,6 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     (docs/backlog/hypothesis-cites-render-not-stored.md).
     """
     from precis.export._patent_cite import format_patent_bibliography_entry
-    from precis.format import render_agent_table
     from precis.handlers._finding_hypothesis import (
         ARTIFACT_HYPOTHESIS,
         META_ARTIFACT_TYPE,
@@ -81,6 +88,13 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
 
     evidence = seniority.derive_evidence(store, ref.id)
     all_edges = evidence.originators + evidence.corroborators + evidence.contradictors
+    conjuncts = _conjunct_evidence_section(store, ref.id) if not is_hypothesis else []
+    disputes = render_links_section(
+        store, ref, rel="disputes", limit=DEFAULT_LINK_ROW_CAP
+    )
+    related = conjuncts + (
+        ["", "## disputes (open questions)", disputes] if disputes else []
+    )
 
     header = [f"# evidence for finding {ref.id}", "", ref.title]
     if evidence.ineligible:
@@ -108,12 +122,12 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
                     "no eligible evidence edges for this claim hub",
                     "independent supporters: 0 (0 papers)",
                 ]
-            else:
+            elif not conjuncts:
                 header.append("no evidence edges yet for this claim hub")
             judging = judging_summary(ref.meta)
             if judging:
                 header += ["", judging]
-        return Response(body="\n".join(header))
+        return Response(body="\n".join(header + related))
 
     refs_by_id = store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
     fetched_paper_ids = store.chunks.usable_body_ref_ids(
@@ -149,19 +163,7 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
                 if paper.kind == "patent"
                 and (paper.meta or {}).get("family_id") == family
             )
-        roles = (
-            {"contradicts"}
-            if edge.derived_role == "contradicts"
-            else {"establishes", "corroborates"}
-        )
-        handles = {
-            g.source_handle
-            for g in evidence.grounding
-            if g.paper_ref_id in paper_ids and g.relation in roles
-        }
-        if edge.source_handle:
-            handles.add(edge.source_handle)
-        return ", ".join(sorted(handles)) or "—"
+        return _passage_handles(evidence, edge, paper_ids)
 
     def _table(edges: list[seniority.EvidenceEdge]) -> str:
         rows: list[dict[str, str]] = []
@@ -206,13 +208,78 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
 
     lines += _citation_fallback_section(store, evidence, refs_by_id)
 
-    lines += ["", "## contradicts", ""]
-    lines.append(_table(evidence.contradictors) if evidence.contradictors else "(none)")
+    if evidence.contradictors:
+        lines += ["", "## contradicts", "", _table(evidence.contradictors)]
+
+    lines += related
 
     if not any(e.support for e in all_edges):
         lines += ["", "support outcomes are populated by chase (Phase 3)"]
 
     return Response(body="\n".join(lines))
+
+
+def _passage_handles(
+    evidence: seniority.HubEvidence, edge: seniority.EvidenceEdge, source_ids: set[int]
+) -> str:
+    roles = (
+        {"contradicts"}
+        if edge.derived_role == "contradicts"
+        else {"establishes", "corroborates"}
+    )
+    handles = {
+        g.source_handle
+        for g in evidence.grounding
+        if g.paper_ref_id in source_ids and g.relation in roles
+    }
+    if edge.source_handle:
+        handles.add(edge.source_handle)
+    passages = {
+        handle
+        for handle in handles
+        if (parsed := handle_registry.parse(handle)) and parsed[1]
+    }
+    return ", ".join(sorted(passages or handles)) or "—"
+
+
+def _conjunct_evidence_section(store: Store, hub_ref_id: int) -> list[str]:
+    atoms = seniority.derive_conjuncts(store, hub_ref_id).refined_by
+    if not atoms:
+        return []
+    evidence_by_atom = seniority.derive_evidence_bulk(
+        store, (atom.hub_ref_id for atom in atoms)
+    )
+    rows: list[dict[str, str]] = []
+    for atom in atoms:
+        evidence = evidence_by_atom[atom.hub_ref_id]
+        edges = evidence.originators + evidence.corroborators + evidence.contradictors
+        for edge in edges:
+            rows.append(
+                {
+                    "atom": f"fi{atom.hub_ref_id}",
+                    "role": edge.derived_role,
+                    "source": edge.title[:80],
+                    "passages": _passage_handles(evidence, edge, {edge.paper_ref_id}),
+                    "support": edge.support or "—",
+                }
+            )
+        if not edges:
+            rows.append(
+                {
+                    "atom": f"fi{atom.hub_ref_id}",
+                    "role": "no eligible paper or patent evidence",
+                }
+            )
+    return [
+        "",
+        "## inherited evidence via conjuncts",
+        "",
+        "Each row applies to the named conjunct.",
+        "",
+        render_agent_table(
+            rows, schema=["atom", "role", "source", "passages", "support"]
+        ),
+    ]
 
 
 def _citation_fallback_section(

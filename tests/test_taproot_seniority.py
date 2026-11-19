@@ -554,6 +554,73 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     assert "no evidence edges yet for this claim hub" in resp.body
 
 
+def test_finding_view_evidence_shows_conjunct_grounding(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
+    atom = mint_hub(store, CanonicalClaim(sentence="A grounded conjunct.", scope={}))
+    empty = mint_hub(
+        store, CanonicalClaim(sentence="An ungrounded conjunct.", scope={})
+    )
+    paper = _paper(store, title="Result paper")
+    chunk = seed_chunk(store, ref_id=paper, text="Reported result.")
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=atom,
+        relation="corroborates",
+        meta={"source_handle": f"pa{paper}"},
+    )
+    store.add_link(
+        src_ref_id=paper,
+        src_chunk_id=chunk,
+        dst_ref_id=atom,
+        relation="corroborates",
+    )
+    for member in (atom, empty):
+        link_claims(
+            store,
+            from_hub_ref_id=member,
+            to_hub_ref_id=composite,
+            relation="conjunct-of",
+        )
+
+    handler = _make_handler(store)
+    inherited = handler.get(id=composite, view="evidence").body
+    direct = handler.get(id=atom, view="evidence").body
+
+    assert "inherited evidence via conjuncts" in inherited
+    assert f"fi{atom}" in inherited and f"fi{empty}" in inherited
+    assert "no eligible paper or patent evidence" in inherited
+    assert "no evidence edges yet for this claim hub" not in inherited
+    assert "independent supporters:" not in inherited
+    for body in (inherited, direct):
+        assert f"pc{chunk}" in body
+        assert f"pa{paper}" not in body
+
+
+def test_finding_view_evidence_distinguishes_disputes_and_reports_overflow(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    source = _paper(store, title="Supporting paper")
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=source,
+        role="corroborates",
+        check_retraction=False,
+    )
+    for index in range(21):
+        rival = _paper(store, title=f"Disputing paper {index}")
+        store.add_link(src_ref_id=rival, dst_ref_id=hub, relation="disputes")
+
+    body = _make_handler(store).get(id=hub, view="evidence").body
+
+    assert "## disputes (open questions)" in body
+    assert "## contradicts" not in body
+    assert "Links (20 of 21)" in body
+    assert "+1 more" in body and "view='links'" in body
+    assert "independent supporters: 1 (1 papers)" in body
+
+
 def _log_entry(i: int, **over: Any) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "at": f"2026-10-03T10:{i:02d}:00+00:00",

@@ -39,7 +39,7 @@ legacy `[pc<id>]`/`[pa<id>]` cites into hub cites in bulk** →
 
 ```python
 search(kind="finding", tags=["TAPROOT:claim"])  # every claim hub
-get(id="fi42", view="evidence")  # originators / corroborators / contradicts + passages
+get(id="fi42", view="evidence")  # direct and inherited evidence, plus open disputes
 ```
 
 A hub surfaces in the **default** `finding` search — no `status=`
@@ -149,8 +149,12 @@ passages of one paper become **two edges** ("the set of chunks that
 support this point"). Omit `source_handle` and the edge falls back to a
 coarse ref-level `pa<id>` — the whole paper, no passage — exactly what
 makes a claim tree hard to walk. Always ground the edge when you know
-the chunk. The evidence view's `passages` column lists every grounding
-handle behind each paper row (a patent row: its whole family). See
+the chunk. The evidence view's `passages` column prefers passage handles
+and falls back to whole-source handles (a direct patent row covers its
+family). It reports inherited evidence by conjunct and shows a
+`contradicts` section when there are contradictors. Open disputes have
+their own section, with a shown/total count and a `view='links'` pointer
+when capped. See
 `precis-fisheye-help`'s Claims group (`fisheye+1hop` on
 prose that cites a hub) for the read-time render.
 

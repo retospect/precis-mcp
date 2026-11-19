@@ -354,10 +354,15 @@ get(id="fi42")  # by handle (prefix infers kind)
 get(id="fi42", view="log")  # chase event history
 get(
     id="fi42", view="evidence"
-)  # taproot claim-hub evidence (originators/corroborators/contradicts)
+)  # direct and inherited evidence, plus open disputes
 get(id="fi42", view="fisheye+1hop")  # the hub's claim-graph neighborhood
 get(id="fi42", view="judgments")  # what the refine judges withheld or removed, and why
 ```
+
+The evidence view prefers passage handles and groups inherited evidence by
+conjunct. It shows `contradicts` when there are contradictors and lists open
+disputes separately. Use `view='links'` for the full list when the dispute
+section reports a row cap.
 
 ```text
 # finding 42
