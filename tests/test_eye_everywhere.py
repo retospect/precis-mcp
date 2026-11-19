@@ -435,7 +435,9 @@ class TestPerKind:
             memo.id,
             [
                 ChunkInsert(
-                    ord=0, text="A busy worker has a queue; a starved one has none."
+                    ord=0,
+                    text="A busy worker has a queue; a starved one has none.",
+                    meta={"chunk_kind": "memory_body"},
                 )
             ],
         )

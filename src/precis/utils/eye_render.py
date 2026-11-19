@@ -1175,12 +1175,30 @@ def _note_body(store: Store, ref: Any, kind: str, *, cap: int) -> tuple[str, int
     composed from ``refs.title``/``refs.meta`` by
     :func:`precis.handlers.quest.quest_gist` (``fisheye-everywhere.md``
     in-scope 4). Composed, not stored: meta rubric edits can't drift a
-    derived gist, and pre-change quests need no backfill."""
+    derived gist, and pre-change quests need no backfill.
+
+    A memory renders through the handler's display projection
+    (:meth:`precis.handlers.memory.MemoryHandler._display_body`) fed the
+    same stored ``memory_body`` chunk the ordinary and ``~body`` reads
+    project, so the eye hides the same legacy title echo — the stamped
+    decision survives partial edits and metadata-only retitles (gr715698)."""
     if kind == "quest":
         from precis.handlers.quest import quest_gist
 
         gist = quest_gist(ref)
         return _cap(gist, cap), len(gist)
+    if kind == "memory":
+        # ``_stored_body``, not the ord≥0 join: the stamped
+        # ``_memory_body_display`` policy sha-fingerprints the first body
+        # chunk alone, so a second body chunk or a ``tag_overflow`` in the
+        # join would miss it — resurrecting the hidden lead or eating an
+        # authored first line.
+        from precis.handlers.memory import MemoryHandler
+
+        shown = MemoryHandler._display_body(
+            ref, MemoryHandler._stored_body(store, ref)
+        ).strip()
+        return _cap(shown, cap), len(shown)
     return _ordered_body(store, int(ref.id), cap=cap)
 
 

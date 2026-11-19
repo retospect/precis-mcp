@@ -152,7 +152,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
@@ -258,6 +258,9 @@ from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.timeutil import as_utc
 from precis.workers.embed import nudge_fresh_embed
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 #: Heading line that opens a memory-body section — the ``~<slug>``
 #: selector grammar (``me<id>~<section>``) splits on these.
@@ -4084,16 +4087,25 @@ class MemoryHandler(AuditedRetirementHandler):
 
     # ── read: title header + body chunk ─────────────────────────────
 
+    @staticmethod
+    def _stored_body(store: Store, ref: Ref) -> str:
+        """The stored body bytes every read projects — the first
+        ``memory_body`` chunk. The note eye fingerprints this same chunk
+        for the ``_memory_body_display`` stamp (gr715698): joined ord≥0
+        text can carry a second body chunk or a ``tag_overflow`` and miss
+        it."""
+        for block in store.chunks.list_chunks_for_ref(ref.id):
+            if block.chunk_kind == _BODY_KIND:
+                return block.text
+        return ref.title or ""
+
     def _body_text(self, ref: Ref) -> str:
         """The memory's body prose from its ``memory_body`` chunk.
 
         Falls back to ``refs.title`` for any pre-0050 row that never got a
         body chunk (defensive — the migration backfilled every live memory).
         """
-        for block in self.store.chunks.list_chunks_for_ref(ref.id):
-            if block.chunk_kind == _BODY_KIND:
-                return block.text
-        return ref.title or ""
+        return self._stored_body(self.store, ref)
 
     @staticmethod
     def _body_display_policy(body: str, echo_title: str) -> dict[str, str]:
@@ -4102,8 +4114,8 @@ class MemoryHandler(AuditedRetirementHandler):
             "echo_title": echo_title,
         }
 
+    @staticmethod
     def _body_echo_title(
-        self,
         body: str,
         title: str,
         meta: dict[str, Any],
@@ -4117,16 +4129,23 @@ class MemoryHandler(AuditedRetirementHandler):
         policy = meta.get("_memory_body_display")
         if (
             isinstance(policy, dict)
-            and policy.get("sha256") == self._body_display_policy(body, "")["sha256"]
+            and policy.get("sha256")
+            == MemoryHandler._body_display_policy(body, "")["sha256"]
             and isinstance(policy.get("echo_title"), str)
         ):
             return str(policy["echo_title"])
 
         return title
 
-    def _display_body(self, ref: Ref, raw_body: str) -> str:
-        echo_title = self._body_echo_title(raw_body, ref.title or "", ref.meta or {})
-        return self._strip_title_echo(raw_body, echo_title)
+    @staticmethod
+    def _display_body(ref: Ref, raw_body: str) -> str:
+        """The body as every read renders it: the raw chunk minus its
+        stamped legacy title echo. The note eye shares this projection
+        (gr715698 — its raw-chunk render kept the hidden lead visible)."""
+        echo_title = MemoryHandler._body_echo_title(
+            raw_body, ref.title or "", ref.meta or {}
+        )
+        return MemoryHandler._strip_title_echo(raw_body, echo_title)
 
     def _apply_body_edit(
         self,
@@ -4234,7 +4253,8 @@ class MemoryHandler(AuditedRetirementHandler):
             return self._body_text(ref)
         return str(block.text or "")
 
-    def _strip_title_echo(self, body: str, title: str) -> str:
+    @staticmethod
+    def _strip_title_echo(body: str, title: str) -> str:
         """Drop a leading line identified as a legacy title echo.
 
         ``_derive_title`` copies the first non-empty body line into the
