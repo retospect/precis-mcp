@@ -2105,6 +2105,13 @@ def put(
     # position). Declared at the verb level (the gr262482 pattern) so
     # strict-schema MCP clients don't strip it.
     terms: list[dict[str, Any]] | None = None,
+    # draft chunk batch: put(kind='draft', id=<slug>, chunks=[{'text': …,
+    # 'chunk_kind': …, 'meta': {…}, 'at': {…}}, ...]) writes many chunks of
+    # any kind in one transaction (≤50; a rejected entry rolls the call
+    # back and names chunks[i]). Verb-level chunk_kind=/meta=/at= are
+    # per-batch defaults. Declared at the verb level (gr262482 pattern).
+    # Keep entries raw so the draft handler can report indexed shape errors.
+    chunks: list[Any] | None = None,
     # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
@@ -2420,6 +2427,7 @@ def put(
                 "until": until,
                 "scratch_for": scratch_for,
                 "terms": terms,
+                "chunks": chunks,
                 "table": table,
                 "caption": caption,
                 "regen": regen,

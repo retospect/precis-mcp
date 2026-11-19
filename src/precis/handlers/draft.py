@@ -15,7 +15,10 @@ behind the existing seven verbs — **no new verbs**:
 - ``put``   — create a draft (`project=`, born with a title heading) or
   add a chunk (`chunk_kind=`, `text=`, placed by `at=`; `id=` may be a
   `dc<id>` anchor — insert after that chunk); `terms=[...]` batches
-  many `chunk_kind='term'` leaves in one transaction.
+  many `chunk_kind='term'` leaves in one transaction. `chunks=[...]`
+  batches mixed kinds and preserves one receipt handle per entry, even
+  when a markdown list expands into a tree. Placement is checked inside
+  the transaction so later entries can see earlier inserts.
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`), move it (`move=`), or
@@ -1854,6 +1857,7 @@ class DraftHandler(Handler):
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         terms: list[Any] | None = None,
+        chunks: list[Any] | None = None,
         image: str | None = None,
         mime: str | None = None,
         origin: str | None = None,
@@ -1891,6 +1895,12 @@ class DraftHandler(Handler):
                     "new draft; a terms batch writes into an existing one)",
                     next="put(kind='draft', id='<slug>', chunk_kind='term', terms=[...])",
                 )
+            if chunks is not None:
+                raise BadInput(
+                    "copy_of= does not combine with chunks= (a fork mints a "
+                    "new draft; a chunks batch writes into an existing one)",
+                    next="put(kind='draft', id='<slug>', chunks=[{'text': '…'}, …])",
+                )
             # Draft fork/deep-copy primitive: put(kind='draft',
             # copy_of='<src-slug>', project=<todo>) deep-copies the WHOLE
             # source draft (chunks + hierarchy + links) into a NEW draft
@@ -1914,6 +1924,21 @@ class DraftHandler(Handler):
                 f"put(kind='draft') slug {slug!r} may not contain a path "
                 "separator or be a '.'/'..' segment",
                 next="use a plain slug, e.g. put(kind='draft', id='nanotrans', …)",
+            )
+
+        if chunks is not None and terms is not None:
+            raise BadInput(
+                "chunks= does not combine with terms= (terms= is the "
+                "chunk_kind='term' batch; chunks= takes any kind)",
+                next="put(kind='draft', id='<slug>', chunks=[{'text': '…', "
+                "'chunk_kind': 'term', 'meta': {'short': '…'}}, …])",
+            )
+        if chunks is not None and _CHUNK_HANDLE.match(slug):
+            raise BadInput(
+                f"chunks= takes the draft slug as id=, got the chunk handle {slug!r} "
+                "(place entries with per-entry at={'after': 'dc<id>'})",
+                next="put(kind='draft', id='<slug>', chunks=[{'text': '…', "
+                "'at': {'after': 'dc<id>'}}, …])",
             )
 
         if _CHUNK_HANDLE.match(slug):
@@ -1946,6 +1971,37 @@ class DraftHandler(Handler):
                     next="get(kind='draft', id='<slug>', view='toc') lists "
                     "live chunk handles",
                 )
+
+        if chunks is not None:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
+            return self._put_chunks_batch(
+                slug,
+                ref,
+                chunks,
+                chunk_kind=chunk_kind,
+                at=at,
+                meta=meta,
+                extras={
+                    "text": text,
+                    "title": title,
+                    "project": project,
+                    "table": table,
+                    "caption": caption,
+                    "regen": regen,
+                    "columns": columns,
+                    "rows": rows,
+                    "footer": footer,
+                    "image": image,
+                    "mime": mime,
+                    "origin": origin,
+                    "permission": permission,
+                    "render": render,
+                    "plots": plots,
+                    "voice": voice,
+                    "lang": lang,
+                },
+            )
 
         if terms is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
@@ -2214,6 +2270,209 @@ class DraftHandler(Handler):
                 f"linked draft-of project {project_ref_id}"
             )
         )
+
+    # ── batch chunk writes (``chunks=[...]``) ──────────────────────
+
+    _CHUNKS_SHAPE = (
+        "chunks=[{'text': '…', 'chunk_kind': 'paragraph', 'meta': {…}, 'at': {…}}, …]"
+    )
+
+    def _put_chunks_batch(
+        self,
+        slug: str,
+        ref: Ref,
+        chunks: list[Any],
+        *,
+        chunk_kind: str | None,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+        extras: dict[str, Any],
+    ) -> Response:
+        """``put(kind='draft', id=<slug>, chunks=[...])`` — many chunks of
+        any chunk kind in one transaction, all or nothing.
+
+        Each entry is ``{'text', 'chunk_kind', 'meta', 'at'}``; verb-level
+        ``chunk_kind=``/``meta=``/``at=`` are defaults an entry overrides.
+        One ``store.atomic()`` wraps the loop, so the first rejected entry
+        rolls everything back and names ``chunks[i]``; the link re-resolve
+        and the attribution touch run once, after the loop. An ``at``
+        anchor resolves against the draft as written so far, so it may
+        name an earlier chunk of the draft — there is no forward reference
+        inside a batch (the handles are minted by it).
+        """
+        conflicts = sorted(k for k, v in extras.items() if v is not None)
+        if conflicts:
+            raise BadInput(
+                f"chunks= does not combine with "
+                f"{', '.join(f'{k}=' for k in conflicts)} — per-chunk fields "
+                "go inside each entry ({'text': …, 'chunk_kind': …, "
+                "'meta': {…}, 'at': {…}})",
+                next=f"put(kind='draft', id=…, {self._CHUNKS_SHAPE})",
+            )
+        entries = self._coerce_chunks(chunks)
+        lines: list[str] = []
+        new_chunk_ids: list[int] = []
+        with self.store.atomic():
+            for pos, entry in enumerate(entries):
+                try:
+                    kind = entry.get("chunk_kind")
+                    if kind is None:
+                        kind = chunk_kind if chunk_kind is not None else "paragraph"
+                    self._require_known_chunk_kind(kind)
+                    m = {**(meta or {}), **entry["meta"]}
+                    entry_at = entry["at"] if entry["at"] is not None else at
+                    self._check_chunks_at(ref.id, entry_at)
+                    if kind == "term":
+                        m, role = self._prepare_term_meta(ref.id, m)
+                        if entry_at is None:
+                            entry_at = {
+                                "into": self.store.drafts.ensure_registry_heading(
+                                    ref.id, role
+                                )
+                            }
+                    text = entry["text"]
+                    if kind == "figure" and "view" in m:
+                        chunk, _ = self._insert_view_figure(
+                            ref_id=ref.id,
+                            caption=text,
+                            view=m.pop("view"),
+                            at=entry_at,
+                            meta=m,
+                        )
+                        made_chunks = [chunk]
+                    else:
+                        if kind == "table":
+                            text, m, _, _ = self._prepare_table_chunk(
+                                slug,
+                                table=None,
+                                caption=None,
+                                regen=None,
+                                meta=m,
+                                text=text,
+                            )
+                        if kind != "code":
+                            self._raise_on_new_dangling_refs(text)
+                        made_chunks = self.store.drafts.add_chunks(
+                            ref_id=ref.id,
+                            chunk_kind=kind,
+                            text=text,
+                            at=entry_at,
+                            meta=m or None,
+                            split=False,
+                        )
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"chunks[{pos}]: {exc.cause} — batch of "
+                        f"{len(entries)} rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                new_chunk_ids.extend(c.chunk_id for c in made_chunks)
+                # Structured markdown lists return their root first.
+                root = made_chunks[0]
+                lines.append(f"{root.dc} ({root.chunk_kind})")
+        deferred = self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
+        self._attribute_touch(new_chunk_ids)
+        head = (
+            f"added {len(entries)} chunk{'' if len(entries) == 1 else 's'} to {slug}:"
+        )
+        return Response(body=_facts_deferred(head + "\n" + "\n".join(lines), deferred))
+
+    def _check_chunks_at(self, ref_id: int, at: dict[str, Any] | None) -> None:
+        if not at:
+            return
+        anchors = set(at) & {"before", "after", "into"}
+        edges = set(at) & {"first", "last"}
+        nxt = "use at={'after': 'dc…'} or at={'into': 'dc…', 'first': True}"
+        if (
+            set(at) - anchors - edges
+            or len(anchors) > 1
+            or len(edges) > 1
+            or (edges and anchors - {"into"})
+        ):
+            raise BadInput(f"invalid placement at={at!r}", next=nxt)
+        for edge in edges:
+            if not isinstance(at[edge], bool):
+                raise BadInput(f"at[{edge!r}] must be a boolean", next=nxt)
+        for key in anchors:
+            handle = at[key]
+            if not isinstance(handle, str) or not handle.strip():
+                raise BadInput(f"at[{key!r}] must be a chunk handle", next=nxt)
+            anchor = self.store.drafts.get_draft_chunk(handle.removeprefix("¶"))
+            if (
+                anchor is None
+                or anchor.ref_id != ref_id
+                or not anchor.pos
+                or (key == "into" and anchor.retired)
+            ):
+                raise BadInput(
+                    f"at[{key!r}] anchor {handle!r} must resolve to a chunk "
+                    "in this draft at this point in the batch",
+                    next="get(kind='draft', id='<slug>', view='toc') lists chunk handles",
+                )
+
+    def _coerce_chunks(self, chunks: list[Any]) -> list[dict[str, Any]]:
+        """Normalise ``chunks=[...]`` to ``{'text', 'chunk_kind', 'meta',
+        'at'}`` dicts, refusing a malformed entry up front (before the
+        transaction opens) with its ``chunks[i]`` position."""
+        shape = self._CHUNKS_SHAPE
+        if not isinstance(chunks, list):
+            raise BadInput(
+                f"chunks= takes a list of entries, got {type(chunks).__name__}",
+                next=f"put(kind='draft', id=…, {shape})",
+            )
+        if not chunks:
+            raise BadInput(
+                "chunks=[] is empty", next=f"put(kind='draft', id=…, {shape})"
+            )
+        if len(chunks) > BATCH_ID_CAP:
+            raise BadInput(
+                f"chunks=[...] takes at most {BATCH_ID_CAP} entries, got {len(chunks)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        out: list[dict[str, Any]] = []
+        for pos, entry in enumerate(chunks):
+            if not isinstance(entry, dict):
+                raise BadInput(
+                    f"chunks[{pos}] must be a dict, got {type(entry).__name__} "
+                    "(an entry is {'text': …, 'chunk_kind': …, 'meta': {…}, "
+                    "'at': {…}})",
+                    next=shape,
+                )
+            unknown = set(entry) - {"text", "chunk_kind", "meta", "at"}
+            if unknown:
+                raise BadInput(
+                    f"chunks[{pos}] has unknown keys {sorted(unknown)} "
+                    "(an entry is {'text': …, 'chunk_kind': …, 'meta': {…}, "
+                    "'at': {…}})",
+                    next=shape,
+                )
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise BadInput(f"chunks[{pos}] requires a non-empty 'text'", next=shape)
+            ck = entry.get("chunk_kind")
+            if ck is not None and not isinstance(ck, str):
+                raise BadInput(
+                    f"chunks[{pos}]['chunk_kind'] must be a string, "
+                    f"got {type(ck).__name__}",
+                    next=shape,
+                )
+            for key in ("meta", "at"):
+                if entry.get(key) is not None and not isinstance(entry[key], dict):
+                    raise BadInput(
+                        f"chunks[{pos}]['{key}'] must be a dict, "
+                        f"got {type(entry[key]).__name__}",
+                        next=shape,
+                    )
+            out.append(
+                {
+                    "text": text,
+                    "chunk_kind": ck,
+                    "meta": dict(entry.get("meta") or {}),
+                    "at": entry.get("at"),
+                }
+            )
+        return out
 
     # ── batch term writes (``terms=[...]``) ────────────────────────
 
@@ -2589,6 +2848,28 @@ class DraftHandler(Handler):
         when the structure's geometry changes or its slug is re-minted (a
         re-generate deletes and re-mints ``<design>-<block>``).
         ``origin='original'``."""
+        chunk, prov = self._insert_view_figure(
+            ref_id=ref_id, caption=caption, view=view, at=at
+        )
+        self.sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added view figure {chunk.dc} to {slug} ({prov}); "
+                "image renders on first export/view — render pending"
+            )
+            + _draft_lint.caption_number_hint(str(caption), "figure")
+        )
+
+    def _insert_view_figure(
+        self,
+        *,
+        ref_id: int,
+        caption: str | None,
+        view: Any,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None = None,
+    ) -> tuple[DraftChunk, str]:
         nxt = (
             "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
             "meta={'view': {'source': 'structure:<slug>', "
@@ -2606,6 +2887,7 @@ class DraftHandler(Handler):
             mime="image/png",
             at=at,
             figure_meta={"render_pending": True},
+            meta=meta,
         )
         self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
         if recipe.get("kind") == "pathway_profile":
@@ -2618,15 +2900,7 @@ class DraftHandler(Handler):
                 relation="derived-from",
                 set_by="agent",
             )
-        self.sync_draft_links(ref_id)
-        self._attribute_touch([chunk.chunk_id])
-        return Response(
-            body=(
-                f"added view figure {chunk.dc} to {slug} ({prov}); "
-                "image renders on first export/view — render pending"
-            )
-            + _draft_lint.caption_number_hint(str(caption), "figure")
-        )
+        return chunk, prov
 
     def _validated_view_recipe(
         self, view: Any, *, nxt: str
@@ -4668,6 +4942,60 @@ class DraftHandler(Handler):
         dropping silently), cells get the same Excel-style
         :func:`infer_scalar` typing a ``cell=`` edit applies, and it never
         combines with the data args — one source per write."""
+        md, chunk_meta, cap, eval_notes = self._prepare_table_chunk(
+            slug,
+            table=table,
+            caption=caption,
+            regen=regen,
+            meta=meta,
+            text=text,
+            columns=columns,
+            rows=rows,
+            footer=footer,
+        )
+        chunks = self.store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="table",
+            text=md,
+            at=at,
+            meta=chunk_meta,
+            split=False,
+        )
+        self.sync_draft_links(ref.id)
+        self._attribute_touch([c.chunk_id for c in chunks])
+        c = chunks[0]
+        grid = chunk_meta["table"]
+        n_rows, n_cols = len(grid["rows"]), len(grid["header"])
+        eval_tail = (
+            "; "
+            + "; ".join(eval_notes[:8])
+            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
+            if eval_notes
+            else ""
+        )
+        return Response(
+            body=(
+                f"added table {c.dc} to {slug} ({n_rows} row"
+                f"{'' if n_rows == 1 else 's'} × {n_cols} col"
+                f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
+                f"edit table=/caption=/regen=, not text={eval_tail}"
+            )
+            + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
+        )
+
+    @staticmethod
+    def _prepare_table_chunk(
+        slug: str,
+        *,
+        table: str | dict[str, Any] | None,
+        caption: str | None,
+        regen: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+        text: str | None,
+        columns: list[dict[str, Any]] | None = None,
+        rows: list[list[Any]] | None = None,
+        footer: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any], str | None, list[str]]:
         tobj: Any = table
         md_caption: str | None = None
         coercions: list[str] = []
@@ -4763,34 +5091,7 @@ class DraftHandler(Handler):
             chunk_meta["caption"] = cap
         if regen is not None:
             chunk_meta["regen"] = regen
-        chunks = self.store.drafts.add_chunks(
-            ref_id=ref.id,
-            chunk_kind="table",
-            text=md,
-            at=at,
-            meta=chunk_meta,
-            split=False,
-        )
-        self.sync_draft_links(ref.id)
-        self._attribute_touch([c.chunk_id for c in chunks])
-        c = chunks[0]
-        n_rows, n_cols = len(norm["rows"]), len(norm["header"])
-        eval_tail = (
-            "; "
-            + "; ".join(eval_notes[:8])
-            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
-            if eval_notes
-            else ""
-        )
-        return Response(
-            body=(
-                f"added table {c.dc} to {slug} ({n_rows} row"
-                f"{'' if n_rows == 1 else 's'} × {n_cols} col"
-                f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
-                f"edit table=/caption=/regen=, not text={eval_tail}"
-            )
-            + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
-        )
+        return md, chunk_meta, cap, eval_notes
 
     def _edit_table(
         self,

@@ -3953,3 +3953,149 @@ def test_put_logs_phase_timings(
         "slug=nt",
     ):
         assert key in msg
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a bare string",
+        {"text": "ok", "bogus": 1},
+        42,
+        {"chunk_kind": "paragraph"},
+    ],
+)
+def test_put_chunks_rejects_malformed_entries(
+    draft: DraftHandler, hub: Hub, bad: Any
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    with pytest.raises(BadInput) as ei:
+        draft.put(id="nt", chunks=[{"text": "fine"}, bad])
+    assert "chunks[1]" in ei.value.cause
+    for whole in ([], [{"text": "x"}] * 51):
+        with pytest.raises(BadInput):
+            draft.put(id="nt", chunks=whole)
+
+
+def test_put_chunks_schema_keeps_raw_entries() -> None:
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    from precis.tools import put
+
+    schema = func_metadata(put, structured_output=False)
+    entries = [{"text": "valid"}, "a bare string", 42]
+    model = schema.arg_model.model_validate(
+        {"kind": "draft", "id": "nt", "chunks": entries}
+    )
+    assert model.model_dump()["chunks"] == entries
+
+
+def test_put_chunks_refuses_combinations(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    anchor = _dc(draft.put(id="nt", chunk_kind="paragraph", text="seed").body)
+    entries = [{"text": "x"}]
+    with pytest.raises(BadInput):
+        draft.put(id="nt", chunks=entries, terms=["t"])
+    with pytest.raises(BadInput):
+        draft.put(id="nt", chunks=entries, copy_of="nt")
+    with pytest.raises(BadInput):
+        draft.put(id=anchor, chunks=entries)
+
+
+def test_put_chunks_batch_is_atomic(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    before = len(_order(hub, "nt"))
+    good: list[dict[str, Any]] = [
+        {"text": "first para\n\nsecond block of the same entry"},
+        {"text": "A heading", "chunk_kind": "heading", "meta": {"level": 2}},
+        {"text": "- one\n- two", "chunk_kind": "ulist"},
+    ]
+    with pytest.raises(BadInput) as ei:
+        draft.put(
+            id="nt",
+            chunks=[*good, {"text": "bad", "chunk_kind": "no-such-kind"}],
+        )
+    assert "chunks[3]" in ei.value.cause
+    assert len(_order(hub, "nt")) == before
+
+    calls: list[Any] = []
+    orig = draft.sync_draft_links
+
+    def spy(*a: Any, **kw: Any) -> Any:
+        calls.append((a, kw))
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(draft, "sync_draft_links", spy)
+    body = draft.put(
+        id="nt", chunks=[*good, {"text": "last para", "chunk_kind": "paragraph"}]
+    ).body
+    assert body.startswith("added 4 chunks to nt:")
+    assert len(calls) == 1
+    order = _order(hub, "nt")[before:]
+    assert [c.text for c in order] == [entry["text"] for entry in good] + ["last para"]
+    assert calls == [
+        ((order[0].ref_id,), {"restamp_chunk_ids": {c.chunk_id for c in order}})
+    ]
+    assert len(re.findall(r"dc\d+ \(", body)) == 4
+
+
+def test_put_chunks_placement(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    foreign = _dc(draft.put(id="other", title="Other", project=_proj(hub)).body)
+    seed = _dc(draft.put(id="nt", chunk_kind="paragraph", text="seed").body)
+    for at in (
+        {"into": foreign},
+        {"before": foreign},
+        {"after": foreign},
+        {"before": None, "after": seed},
+        {"after": None},
+        {"into": 1},
+        {"after": "dc0"},
+    ):
+        with pytest.raises(BadInput, match=r"chunks\[1\]"):
+            draft.put(id="nt", chunks=[{"text": "first"}, {"text": "bad", "at": at}])
+        assert [c.text for c in _order(hub, "nt")] == ["T", "seed"]
+
+    draft.put(
+        id="nt",
+        at={"before": seed},
+        chunks=[{"text": "before"}, {"text": "root", "at": {}}],
+    )
+    assert [c.text for c in _order(hub, "nt")] == ["T", "before", "seed", "root"]
+
+
+def test_put_chunks_resolves_earlier_entry(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    handles = iter(["HeadingAnchor", "ChildAnchor"])
+    monkeypatch.setattr("precis.store._draft_ops.new_handle", lambda: next(handles))
+    draft.put(
+        id="nt",
+        chunks=[
+            {"text": "Section", "chunk_kind": "heading", "meta": {"level": 2}},
+            {"text": "Child", "at": {"into": "¶HeadingAnchor"}},
+        ],
+    )
+    _, heading, child = _order(hub, "nt")
+    assert child.parent_chunk_id == heading.chunk_id
+
+
+def test_put_chunks_accepts_tables_and_figures(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    body = draft.put(
+        id="nt",
+        chunks=[
+            {"chunk_kind": "table", "text": "| Count |\n| --- |\n| 2 |"},
+            {"chunk_kind": "figure", "text": "Caption"},
+        ],
+    ).body
+    _, table, figure = _order(hub, "nt")
+    assert table.meta["table"]["rows"] == [[2]]
+    assert figure.text == "Caption"
+    assert body.splitlines() == [
+        "added 2 chunks to nt:",
+        f"{table.dc} (table)",
+        f"{figure.dc} (figure)",
+    ]

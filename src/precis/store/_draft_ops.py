@@ -2980,6 +2980,7 @@ class DraftStore(_AbbrevMixin):
         mime: str,
         at: dict[str, Any] | None = None,
         figure_meta: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> DraftChunk:
         """Add a single ``figure`` chunk: caption is the face (``text`` —
         embedded, searchable), image bytes go to ``chunk_blobs``,
@@ -3003,7 +3004,7 @@ class DraftStore(_AbbrevMixin):
                 text=caption,
                 parent_chunk_id=parent,
                 pos=key_between(lo, hi),
-                meta={"figure": fig},
+                meta={**(meta or {}), "figure": fig},
                 source=source,
             )
             conn.execute(
