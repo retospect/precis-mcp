@@ -4213,9 +4213,11 @@ class MemoryHandler(AuditedRetirementHandler):
         for the ``_memory_body_display`` stamp (gr715698): joined ord≥0
         text can carry a second body chunk or a ``tag_overflow`` and miss
         it. Reads the ``memory_body`` rows alone, not the ref's whole
-        chunk list."""
+        chunk list; ``ord >= 0`` keeps the ``list_chunks_for_ref`` meaning
+        (the by-kind read also returns the off-body ord<0 band)."""
         for block in store.chunks.list_chunks_for_ref_by_kind(ref.id, _BODY_KIND):
-            return block.text
+            if block.ord >= 0:
+                return block.text
         return ref.title or ""
 
     def _body_text(self, ref: Ref) -> str:

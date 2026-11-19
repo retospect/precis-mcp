@@ -625,17 +625,22 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     monkeypatch.setattr(eye_render, "_HUB_LIST_CAP", 5)
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)
+    members = []
     for i in range(9):
-        _part_of(store, _note(handler, f"M{i}", f"first line {i}\nsecond"), root)
+        members.append(_note(handler, f"M{i}", f"first line {i}\nsecond"))
+        _part_of(store, members[-1], root)
 
-    seen: list[str] = []
-    orig = store.chunks.list_chunks_for_ref
+    # Every chunk read of a ref, by either store door, with the id asked for.
+    seen: list[int] = []
+    for name in ("list_chunks_for_ref", "list_chunks_for_ref_by_kind"):
 
-    def spy(*a: Any, **k: Any) -> Any:
-        seen.append("x")
-        return orig(*a, **k)
+        def spy(
+            ref_id: int, *a: Any, _orig: Any = getattr(store.chunks, name), **k: Any
+        ) -> Any:
+            seen.append(ref_id)
+            return _orig(ref_id, *a, **k)
 
-    monkeypatch.setattr(store.chunks, "list_chunks_for_ref", spy)
+        monkeypatch.setattr(store.chunks, name, spy)
     out = render_eye(store, _h(root), "fisheye+1hop")
 
     assert "  contains (9):" in out
@@ -643,7 +648,10 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     assert f"… +4 more · get(kind='memory', id='{_h(root)}'" in out
     assert "q='contains')" in out
     assert out.splitlines()[-1].startswith("search within:")
-    assert "first line" in out and seen == []  # no per-member chunk reads
+    assert "first line" in out
+    # no per-member chunk reads; the focal node's own body is read at most once
+    assert not set(seen) & set(members)
+    assert seen.count(root) <= 1
 
 
 def test_first_hop_shape_ignores_inbound_edges_from_retired_sources(hub: Hub) -> None:
