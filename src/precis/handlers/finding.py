@@ -930,6 +930,7 @@ class FindingHandler(AuditedRetirementHandler):
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
         reason: str | None = None,
+        note: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Taproot-aware link door for findings.
@@ -959,6 +960,13 @@ class FindingHandler(AuditedRetirementHandler):
         ``meta.{model,prompt_version,run_id,why}``) reaches the gate at
         ``store.add_link`` (gr504789). ``reason=`` is the kwarg spelling
         of ``meta={'reason': …}`` (:func:`merge_link_reason`, gr626896).
+        ``note=`` is the same annotation under the name callers reach
+        for first (gr680236): a ``kind='finding'``-only alias for
+        ``reason=`` that must agree with ``reason=``/``meta['reason']``
+        when several spellings arrive together, and is refused on
+        ``mode='remove'``. Other kinds still refuse ``note=`` at the
+        signature gate — ``structure``'s own ``note=`` is a different
+        thing (a provenance ``meta.note``, not this door).
 
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
@@ -976,7 +984,17 @@ class FindingHandler(AuditedRetirementHandler):
                     "target=..., rel=...); get and tag do take id=[...]"
                 ),
             )
-        meta = merge_link_reason(meta, reason, mode=mode)
+        # ``note=`` folds onto the ``reason=`` door before the shared
+        # merge (gr680236): when both spellings arrive they must agree —
+        # the edge carries one reason — and when they agree either value
+        # lands, so ``note`` wins by convention in the call below.
+        if note is not None and reason is not None and note != reason:
+            raise BadInput(
+                "note= and reason= disagree — the edge carries one reason",
+                next="pass one spelling: note='…' or reason='…' "
+                "(note= is a kind='finding' alias for reason=)",
+            )
+        meta = merge_link_reason(meta, note if note is not None else reason, mode=mode)
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)

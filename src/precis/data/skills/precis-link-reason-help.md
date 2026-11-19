@@ -20,7 +20,12 @@ scope: write
 
 `link(..., reason='…')` stores `links.meta.reason`. Every link surface
 (Links table, `view='links'`, the eye's ring rows) appends
-` — <reason>` to the row.
+` — <reason>` to the row. On `kind='finding'` the same kwarg also
+answers to `note=` — an alias, nothing more: it must agree with
+`reason=`/`meta['reason']` when several spellings arrive together and
+is refused on `mode='remove'`. (`kind='structure'`'s own `note=` is a
+different thing — a provenance `meta.note`, not `meta.reason`.) Other
+kinds still reject `note=` — write `reason=`.
 
 ## What do I write in reason=?
 ## What is a reason for?
