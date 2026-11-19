@@ -1363,6 +1363,72 @@ class TestSearch:
         assert handle_registry.format_handle("paper", measured_id) in measured
         assert handle_registry.format_handle("paper", simulated_id) not in measured
 
+    def test_search_tags_only_intersects_ids(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        tagged_handles = []
+        for slug in ("selected-alpha", "selected-beta", "outside-cohort"):
+            ref_id = _seed_paper(store, slug=slug, doi=None)
+            store.add_tag(ref_id, Tag.open("studytype:review"), set_by="system")
+            tagged_handles.append(handle_registry.format_handle("paper", ref_id))
+        untagged_id = _seed_paper(store, slug="untagged-selection", doi=None)
+        untagged = handle_registry.format_handle("paper", untagged_id)
+        selected = [*tagged_handles[:2], untagged]
+        kwargs = {"kind": "paper", "tags": ["studytype:review"]}
+
+        body = runtime_with_store.dispatch("search", {**kwargs, "ids": selected})
+        assert all(handle in body for handle in tagged_handles[:2])
+        assert tagged_handles[2] not in body
+        assert untagged not in body
+
+        first_page = runtime_with_store.dispatch(
+            "search", {**kwargs, "page_size": 1, "ids": selected}
+        )
+        assert "of 2" in first_page
+        assert f"args={{'ids': {selected!r}}}" in first_page
+        for ids in ([untagged], ["missing-paper-slug"], []):
+            empty = runtime_with_store.dispatch("search", {**kwargs, "ids": ids})
+            assert "no paper entries" in empty
+
+    def test_search_stamp_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the stamp door consumed only the include channel, so
+        ``args={'ids': …}`` on a stamp listing silently widened past the
+        named cohort — ids= now folds onto ``include_ref_ids`` ahead of
+        every no-q door."""
+        keep = _seed_paper(store, slug="stamp-keep", doi=None)
+        drop = _seed_paper(store, slug="stamp-drop", doi=None)
+        for ref_id in (keep, drop):
+            store.update_ref(ref_id, meta_patch={"s2_enriched_at": "2026-11-19"})
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(stamp="s2_enriched_at", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
+
+        empty = handler.search(stamp="s2_enriched_at", ids=["missing-paper-slug"])
+        assert "no live paper entries stamped" in empty.body
+
+    def test_search_link_scope_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the link-scope door had the same silent drop — a
+        linked_from listing combined with ``args={'ids': …}`` returned
+        papers outside the requested id set."""
+        keep = _seed_paper(store, slug="linked-keep", doi=None)
+        drop = _seed_paper(store, slug="linked-drop", doi=None)
+        mem = store.insert_ref(kind="memory", slug=None, title="cites both").id
+        for target in (keep, drop):
+            store.add_link(
+                src_ref_id=mem, dst_ref_id=target, relation="related-to", set_by="agent"
+            )
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(linked_from="memory", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
+
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler
     ) -> None:

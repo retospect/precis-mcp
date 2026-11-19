@@ -3583,6 +3583,26 @@ class PaperHandler(Handler):
         # flags the scope instead of silently dropping it. Captured
         # before the quartile fold, which re-issues as ``min_quartile``.
         injected_scope = include_ref_ids is not None or bool(exclude_ref_ids)
+        # ``args={'ids': …}`` (gr719628) — the named-id cohort resolves
+        # onto the include channel ahead of every no-q listing door: the
+        # stamp and link-scope listings consume only ``include_ref_ids``,
+        # so without this fold a caller's id restriction would silently
+        # widen past the named cohort (r2 S2 — a queryless listing must
+        # never drop a filter). The q= path rides the same channel into
+        # the fused search; the read-state/tags listings fold ``ids=``
+        # again inside their renderers (idempotent — same set, same
+        # intersection). Captured after ``injected_scope`` so the flag
+        # keeps naming only the dispatch-injected cited=/uncited=/hubbed=
+        # cohorts, which have no ``args=`` respelling.
+        if ids:
+            wanted = resolve_exclude_paper_ids(
+                [str(i) for i in ids], store=self.store, kind=kind
+            )
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & set(wanted))
+                if include_ref_ids is not None
+                else wanted
+            )
         # ``args={'min_quartile': 'Qn'}`` (gr606422) — the venue-quartile
         # cohort intersects the include channel. Resolved here, ahead of
         # the no-q listing doors, so it composes into linked_from/lacks,
@@ -3744,6 +3764,7 @@ class PaperHandler(Handler):
                     tags=tags,
                     page=page,
                     page_size=page_size if page_size is not None else 10,
+                    ids=ids,
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
                     exclude=exclude,
@@ -11679,6 +11700,7 @@ class PaperHandler(Handler):
         page: int,
         page_size: int,
         sort: str | None = None,
+        ids: list[str] | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         exclude: list[str] | None = None,
@@ -11700,7 +11722,7 @@ class PaperHandler(Handler):
         The dispatch-injected id channels and the date bounds are
         honoured too (r2 S2 — a queryless listing must never drop a
         filter silently): ``include_ref_ids``/``exclude_ref_ids``
-        (cited=/hubbed=/uncited=), ``exclude=``, publish-year
+        (cited=/hubbed=/uncited=), ``ids=``, ``exclude=``, publish-year
         ``after=``/``before=`` and the ``since=``/``until=`` created
         window all intersect the listing with an honest total.
 
@@ -11712,6 +11734,13 @@ class PaperHandler(Handler):
         """
         kind = self.spec.kind
         normalized_tags = Tag.normalize_filter(tags, kind=kind)
+        if ids is not None:
+            wanted = resolve_exclude_paper_ids(
+                [str(i) for i in ids], store=self.store, kind=kind
+            )
+            include_ref_ids = sorted(
+                set(include_ref_ids) & wanted if include_ref_ids is not None else wanted
+            )
         bf = self._resolve_browse_filters(
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
@@ -11784,10 +11813,11 @@ class PaperHandler(Handler):
         # 100-row search cap (tools/core.py refuses above it), and at the
         # cap itself nothing is offered.
         if offset + len(refs) < total and page_size < 100:
+            ids_arg = f", args={{'ids': {ids!r}}}" if ids is not None else ""
             next_ops.append(
                 (
                     f"search(kind='{kind}', tags={normalized_tags!r}, "
-                    f"page_size={min(100, page_size * 2)})",
+                    f"page_size={min(100, page_size * 2)}{ids_arg})",
                     "see more entries (raise page_size)",
                 )
             )
