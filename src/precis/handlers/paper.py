@@ -370,6 +370,7 @@ _BATCH_ID_CAP = 50
 _BATCH_DOI_QUEUE_CAP = 5
 
 _SUPPORTED_VIEWS = (
+    "lookup",
     "bibtex",
     "ris",
     "endnote",
@@ -2491,6 +2492,37 @@ class PaperHandler(Handler):
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find; ``id=None`` keeps its older meaning below (delegate to
         # ``search``). Eye views keep their own ``q`` (ring expansion).
+        if (
+            isinstance(id, str)
+            and id.endswith("/lookup")
+            and detect_identifier_scheme(id) is None
+        ):
+            id = id.removesuffix("/lookup")
+            view = "lookup"
+        if view == "lookup":
+            if id is None or q is not None:
+                raise BadInput(
+                    "lookup requires id and does not accept q",
+                    next="get(kind='paper', id='<DOI or handle>', view='lookup')",
+                )
+            if isinstance(id, list):
+                return self._get_batch(id, view=view, args=args)
+            try:
+                _, slug, _, _ = self._resolve_batch_element(id)
+                ref = resolve_live_slug_ref(
+                    self.store,
+                    kind=self.spec.kind,
+                    id=slug,
+                    next_hint="search(kind='paper', q='<title>')",
+                )
+            except NotFound:
+                return Response(
+                    body=f"{id}: not held (no ingest queued)", result_count=0
+                )
+            return Response(
+                body=f"{id}: held — pa{ref.id} — {ref.title} (may be a stub)",
+                result_count=1,
+            )
         if q is not None and not is_eye_view(view):
             return self.find_in_ref(id=id, view=view, q=q)
         # Round-2 picky 2026-05-30: ``get(kind='paper', q='...')`` was
@@ -2725,6 +2757,12 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(ids)}",
                 next=_id_batch_next("get", kind, ids),
+            )
+        if view == "lookup":
+            results = [self.get(id=elem, view="lookup") for elem in ids]
+            return Response(
+                body="\n\n".join(result.body for result in results),
+                result_count=sum(result.result_count or 0 for result in results),
             )
         if str(view or "").strip() == "status":
             # ``search(kind='paper', view='status', ids=[…])`` is the

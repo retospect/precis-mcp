@@ -126,6 +126,42 @@ class TestParsePaperId:
 class TestResolveDoi:
     """``_maybe_resolve_doi`` routes DOI-form ids through meta->>'doi'."""
 
+    def test_lookup_never_queues_or_marks(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr715563: holdings checks must not acquire or schedule work."""
+        from unittest.mock import Mock
+
+        queued = Mock(side_effect=AssertionError("lookup queued ingest"))
+        active = Mock(side_effect=AssertionError("lookup marked active"))
+        cite = Mock(side_effect=AssertionError("lookup marked cite resolve"))
+        monkeypatch.setattr("precis.handlers.paper._queue_doi_ingest", queued)
+        monkeypatch.setattr("precis.workers.inbound_chase.mark_paper_active", active)
+        monkeypatch.setattr(
+            "precis.workers.cite_resolve.mark_paper_for_cite_resolve", cite
+        )
+        ref_id = _seed_paper(store, doi="10.1111/jnc.13915")
+        handler = PaperHandler(hub=Hub(store=store))
+        for address in ("10.1111/jnc.13915", "wang2020state", f"pa{ref_id}"):
+            result = handler.get(id=address, view="lookup")
+            assert f"held — pa{ref_id}" in result.body
+        assert f"held — pa{ref_id}" in handler.get(id="wang2020state/lookup").body
+        with pytest.raises(BadInput):
+            handler.get(view="lookup")
+        with pytest.raises(BadInput):
+            handler.get(id="10.1111/jnc.13915", view="lookup", q="text")
+        missing = [f"10.9999/missing{i}" for i in range(6)]
+        for address in missing:
+            result = handler.get(id=address, view="lookup")
+            assert "not held" in result.body
+            assert result.result_count == 0
+        result = handler.get(id=["10.1111/jnc.13915", *missing], view="lookup")
+        assert result.result_count == 1
+        assert result.body.count("not held") == 6
+        queued.assert_not_called()
+        active.assert_not_called()
+        cite.assert_not_called()
+
     def test_non_doi_passthrough(self, store: Store) -> None:
         # Slug-form inputs are untouched — no DB lookup, no error.
         assert _maybe_resolve_doi(store, "wang2020state") == "wang2020state"

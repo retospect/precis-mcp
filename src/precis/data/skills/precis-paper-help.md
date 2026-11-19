@@ -44,6 +44,12 @@ already held — once the paper is held, `pa<id>` is its canonical address.
 DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg — the
 `id/view` path form is ambiguous.
 
+## Check whether the library holds a DOI without queuing ingest
+
+`get(kind="paper", id="<DOI or handle>", view="lookup")` checks stored
+holdings without queuing ingest or marking worker processing. It reports a
+held handle (possibly a stub) or not held. Pass `id=[...]` to check a batch.
+
 ## The DOI isn't indexed yet — how do I get the paper?
 
 `get` on a well-formed DOI that is not held queues a `paper_ingest` job
@@ -593,7 +599,7 @@ get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
 get(kind="paper", id="pa40", view="measures")
 ```
 
-Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
+Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `comments` (the note timeline — see Add a note to a paper),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`

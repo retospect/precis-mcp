@@ -31,10 +31,9 @@ body preference and diversity caps; inserting a representative card after
 that slice could hide a ranked paper and repeat the title match on later
 pages. Uncapped title promotion retains its existing behavior.
 
-Paper same-search hints retain scope, requested mode and broad arguments:
-dropping those selects a different corpus or ranking. Next-page hints keep
-page size; the single-hit larger-page action explicitly restarts at page 1.
-Omitted mode stays omitted so the default retrieval contract is unchanged.
+Paper same-search hints preserve scope, mode (including omission) and broad
+arguments to maintain corpus and ranking. Next-page hints preserve page size.
+The single-hit larger-page action restarts at page 1.
 
 ``search(kind='paper')`` defaults to ``unique_per='paper'``: one row per
 ref — the best surviving hit's ``pc`` handle, a ``+N`` count of its other
@@ -52,12 +51,14 @@ forwards ``page_size=None`` when unset so the handler resolves it *after*
 Explicit ``unique_per=`` echoes into same-search continuations so a
 ``page=N+1`` hint can't flip shapes mid-walk.
 
-Routine reads cap child collections and link to the full view.
-Inline links use :mod:`precis.handlers._capped_section`. Shared comment
-timelines show the newest comment in full and summarize older rows
-(:mod:`precis.handlers._comment_timeline`).
+Routine reads cap child collections and link to full views
+(:mod:`precis.handlers._capped_section`). Comment timelines show the newest
+comment in full and summarize older rows (:mod:`precis.handlers._comment_timeline`).
 
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
+
+Paper ``view="lookup"`` bypasses acquisition and processing marks. Held
+records can be stubs.
 
 Paper identity warnings exclude misleading issue-page prefixes.
 
