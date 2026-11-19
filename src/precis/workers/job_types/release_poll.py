@@ -2252,6 +2252,7 @@ def _file_review_wait_ask(
     dry_run: bool,
     reason: str | None = None,
     carry: str | None = None,
+    corrective: list[str] | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
     unit (a landed todo, or a sha-keyed hand land), deduped by its
@@ -2266,7 +2267,11 @@ def _file_review_wait_ask(
     branch (gr702442) — no reviewer is involved, the ask quotes the
     line; its caller passes the release-and-commit-scoped
     :func:`_carry_ask_key`, so the waiver cannot leak across releases
-    (td730820).
+    (td730820). ``corrective`` is that hold's missing commit shas: the
+    ask names the paths each one touches and says so when every path is
+    under tests/ or docs/ (:func:`_corrective_note`, gr735222) — r336's
+    deploy waited 3.6 h on an ask whose answer was "a test-only rewrite".
+    The ask still needs its answer; the text only makes it a quick one.
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -2275,16 +2280,37 @@ def _file_review_wait_ask(
 
     tag = f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}"
     job = f" (jo{job_id})" if job_id is not None else ""
+    no_runtime = False
     if carry is not None:
+        touches = ""
+        # Read git only for an ask about to be filed, not on every tick
+        # of a hold whose ask is already open.
+        if corrective and _open_wait_ask_id(store, ask_key) is None:
+            touches, no_runtime = _corrective_note(corrective)
         what = f"the {land} engine land{job}"
-        title = (
-            f"engine land {land}{job} is cleared but its corrective commit "
-            "is not on the release branch — acknowledge it, or is this a "
-            "false alarm?"
-        )
+        if no_runtime:
+            title = (
+                f"test-only corrective for engine land {land}{job} is not "
+                "on the release branch — acknowledge it, or is this a "
+                "false alarm?"
+            )
+        else:
+            title = (
+                f"engine land {land}{job} is cleared but its corrective "
+                "commit is not on the release branch — acknowledge it, or "
+                "is this a false alarm?"
+            )
+        if touches:
+            touches = f"Corrective commit {touches}. "
+        if no_runtime:
+            touches += (
+                "Every path it touches is under tests/ or docs/ — a "
+                "test-only corrective: no runtime file changes. "
+            )
         body = (
             f"The engine-review gate (td574937 E1) holds the deploy of "
             f"the release carrying the {land} engine land{job}: {carry}. "
+            f"{touches}"
             "Answering clears this one land, so the release then deploys "
             "WITHOUT that corrective commit; to ship the fix with this "
             "release, land it on the release branch instead and leave "
@@ -2327,6 +2353,8 @@ def _file_review_wait_ask(
         f"{what} holds the deploy of the release carrying it until "
         "cleared — answering executes nothing"
     )
+    if no_runtime:
+        context += "; its missing corrective commit touches only tests/ or docs/"
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
@@ -2641,6 +2669,50 @@ def _carry_line(unit: _GateLand, missing: list[str], rn: Any) -> str:
     )
 
 
+#: Path prefixes that hold no runtime code: a corrective commit touching
+#: only these is "test-only" in the carry ask (:func:`_corrective_note`).
+_NO_RUNTIME_PREFIXES = ("tests/", "docs/")
+
+#: How many paths per corrective commit the carry ask names.
+_CORRECTIVE_PATHS_CAP = 6
+
+
+def _commit_paths(sha: str) -> tuple[str, ...] | None:
+    """The paths commit ``sha`` touches, read from the slice root's
+    checkout; ``None`` when it cannot be read (no checkout, a sha the
+    checkout lacks) — the ask then names no path and claims nothing."""
+    from precis.workers.job_types import run_slice as _rs
+
+    try:
+        lands = _log_lands(_rs.slice_root(), f"{sha}^!")
+    except Exception:
+        log.info("release_poll: corrective paths read failed", exc_info=True)
+        return None
+    return lands[0].paths if len(lands) == 1 else None
+
+
+def _corrective_note(missing: list[str]) -> tuple[str, bool]:
+    """``(text, test_only)`` for the carry ask: what each ``missing``
+    corrective commit touches (``<sha12> touches `a`, `b```), and whether
+    EVERY path of EVERY commit sits under :data:`_NO_RUNTIME_PREFIXES`.
+    A commit whose paths cannot be read (or that touches none) is left
+    out of the text and makes ``test_only`` false: the ask never calls a
+    corrective test-only on a guess."""
+    parts: list[str] = []
+    test_only = True
+    for sha in missing:
+        paths = _commit_paths(sha)
+        if not paths:
+            test_only = False
+            continue
+        shown = ", ".join(f"`{p}`" for p in paths[:_CORRECTIVE_PATHS_CAP])
+        more = len(paths) - _CORRECTIVE_PATHS_CAP
+        parts.append(f"{sha} touches {shown}{f' and {more} more' if more > 0 else ''}")
+        if not all(p.startswith(_NO_RUNTIME_PREFIXES) for p in paths):
+            test_only = False
+    return "; ".join(parts), test_only and bool(parts)
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2897,6 +2969,7 @@ def _engine_verdicts(
                         land=unit.land,
                         dry_run=dry_run,
                         carry=_carry_line(unit, missing, rn),
+                        corrective=missing,
                     )
                     notes.append(note)
                 verdicts.append(verdict)

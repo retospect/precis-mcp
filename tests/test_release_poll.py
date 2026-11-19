@@ -3676,6 +3676,74 @@ def test_a_carry_hold_files_the_review_wait_ask_and_an_answer_clears_it(
     assert rp.deploy_review_blockers(store, deploy) == []
 
 
+def _carry_ask(store: Store, deploy: int) -> tuple[str, str]:
+    """File the carry ask of ``deploy``'s release; its ``(title, body)``."""
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    rp._engine_verdicts(store, rel=rel, now=NOW, file_asks=True)
+    [ask] = _review_wait_asks(store)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None
+    return str(ref.title), _todo_text(store, ask)
+
+
+def test_the_carry_ask_names_the_correctives_paths_and_says_test_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr735222: r336's deploy waited 3.6 h on a carry ask whose answer
+    was "a test-only rewrite". The ask now says which paths the missing
+    corrective touches and that it is test-only — and still holds."""
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    read: list[str] = []
+
+    def paths(sha: str) -> tuple[str, ...]:
+        read.append(sha)
+        return ("tests/test_gate.py", "docs/gate.md")
+
+    monkeypatch.setattr(rp, "_commit_paths", paths)
+    title, body = _carry_ask(store, deploy)
+    assert title.startswith("test-only corrective for engine land td42 ")
+    assert f"{'b' * 12} touches `tests/test_gate.py`, `docs/gate.md`" in body
+    assert "a test-only corrective: no runtime file changes" in body
+    # The next tick finds the open ask and does not read git again.
+    _carry_ask(store, deploy)
+    assert read == ["b" * 12]
+    # The text clears nothing: the deploy holds until the ask is answered.
+    assert len(rp.deploy_review_blockers(store, deploy)) == 1
+
+
+def test_a_corrective_touching_runtime_code_is_not_called_test_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    monkeypatch.setattr(
+        rp, "_commit_paths", lambda sha: ("tests/test_gate.py", "src/precis/gate.py")
+    )
+    title, body = _carry_ask(store, deploy)
+    assert title.startswith("engine land td42 is cleared but its corrective commit")
+    assert "touches `tests/test_gate.py`, `src/precis/gate.py`" in body
+    assert "test-only" not in title + body
+
+
+def test_an_unreadable_corrective_is_never_called_test_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    title, body = _carry_ask(store, deploy)
+    assert "touches" not in body and "test-only" not in title + body
+    assert rp._CARRY_MARK in body
+
+
+def test_the_carry_ask_caps_the_paths_it_names() -> None:
+    many = tuple(f"tests/test_{i}.py" for i in range(9))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rp, "_commit_paths", lambda sha: many)
+        text, test_only = rp._corrective_note(["c" * 12])
+    assert test_only and text.endswith("`tests/test_5.py` and 3 more")
+    assert "test_6" not in text
+
+
 def test_a_carry_answer_waives_only_its_own_release(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
