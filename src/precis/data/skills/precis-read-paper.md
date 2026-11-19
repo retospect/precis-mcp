@@ -98,8 +98,16 @@ put(kind="memory", tags=["SPACE:research", "paper-setup"],
          "sampling: 4x4x1 Γ-centred k-mesh; forces < 0.02 eV/Å [pc<b>]\n"
          "model: 4-layer slab, bottom two fixed, 15 Å vacuum [pc<b>]",
     link="pc<a>", rel="derived-from",
+    meta={"model": "<your model id>", "prompt_version": "<prompt version>",
+          "run_id": "<run id>",
+          "why": "<one sentence a reader can't get from the pin>",
+          "evidence": ["pc<a>"]},
     args={"writer": {"model": "<your model id>"}})
-link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from")
+link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from",
+     meta={"model": "<your model id>", "prompt_version": "<prompt version>",
+           "run_id": "<run id>",
+           "why": "<one sentence a reader can't get from the pin>",
+           "evidence": ["pc<b>"]})
 ```
 
 Write only what the paper states, at its precision; a parameter it does
@@ -307,7 +315,9 @@ to the caller, with each hub labelled new or existing.
   gardener proposal; the typed edges above need a chunk pin in
   `meta.evidence` and the `meta.{model,prompt_version,run_id,why}`
   annotation (`get(kind='skill', id='precis-relations')`, machine-written
-  edges).
+  edges). On an inline
+  `put(link=…, rel='derived-from', meta={…})` those five keys land on the
+  edge, not the node; `link(…, meta={…})` takes them the same way.
 - **Write nothing to the body.** Body chunks are the paper; notes,
   memories, hubs and links are the reading.
 - **Caps keep approvals cheap.** Every hub and every new memory is a

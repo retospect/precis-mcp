@@ -3345,3 +3345,102 @@ def test_put_thread_node_no_hint_on_a_fresh_prefix(
         tags=["SPACE:repo-dev"],
     )
     assert "already covers" not in plain.body
+
+
+def test_put_inline_link_routes_edge_annotation_to_the_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314: ``put(link=, rel='derived-from', meta={model, prompt_version,
+    run_id, why, evidence})`` annotates the new edge; the node's meta keeps
+    only its own allowlisted keys."""
+    src = id_of(handler.put(text="the source memory").body)
+    edge = {
+        "model": "m1",
+        "prompt_version": "v1",
+        "run_id": "r1",
+        "why": "setup read from the paper",
+        "evidence": "pc1",
+    }
+    new = id_of(
+        handler.put(
+            text="a derived setup",
+            link=f"memory:{src}",
+            rel="derived-from",
+            meta={"hook": "setup note", **edge},
+        ).body
+    )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    assert "link_meta" not in node_meta
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (new, src),
+        ).fetchone()
+    assert row is not None and edge.items() <= row[0].items()
+
+
+def test_put_edge_annotation_without_link_still_refused(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="not writable"):
+        handler.put(text="no link", meta={"run_id": "r1"})
+
+
+def test_put_inline_link_to_paper_chunk_under_machine_writer(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314's reported shape, end to end: a worker's setup put targets
+    an actual paper chunk (a ``pc…`` handle) under a model writer context.
+    All five annotation keys land on the chunk edge — admitted by the
+    machine-edge gate — while the memory node keeps only its own meta."""
+    from precis.store.revision_context import revision_context
+    from precis.utils import handle_registry
+
+    paper = store.insert_ref(kind="paper", slug="gr715314-setup-paper", title="p")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 0, 'paragraph', 'methods chunk', '{}'::jsonb) "
+            "RETURNING chunk_id",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    pin = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    edge = {
+        "model": "gpt-6-astra",
+        "prompt_version": "read-paper-v2",
+        "run_id": "run-gr715314",
+        "why": "the setup is stated in this methods chunk",
+        "evidence": [pin],
+    }
+    with revision_context(trust_origin="generated", model="gpt-6-astra"):
+        new = id_of(
+            handler.put(
+                text="Setup: DFT PBE+U (VASP)",
+                link=pin,
+                rel="derived-from",
+                meta={"hook": "setup note", **edge},
+            ).body
+        )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT l.meta, dc.ord AS dst_ord, l.dst_chunk_id "
+            "FROM links l LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s",
+            (new, paper.id),
+        ).fetchone()
+    assert row is not None
+    link_meta, dst_ord, dst_chunk_id = row
+    assert edge.items() <= link_meta.items()
+    assert dst_ord == 0
+    assert dst_chunk_id == chunk_id
