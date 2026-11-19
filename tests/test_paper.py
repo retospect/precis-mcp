@@ -1332,22 +1332,36 @@ class TestSearch:
         assert record_handle(store, "tagged-paper") in resp.body
         assert record_handle(store, "untagged-paper") not in resp.body
 
-    def test_search_tags_only_enumerates_matching_papers(
+    def test_search_studytype_filters_computational_and_measured_papers(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        review_id = _seed_paper(
-            store, slug="review-paper", title="A review", doi="10.1/review"
+        simulated_id = _seed_paper(
+            store,
+            slug="simulated-paper",
+            title="Simulated adsorption isotherms",
+            doi="10.1/simulated",
         )
-        store.add_tag(review_id, Tag.open("studytype:review"), set_by="system")
-        other_id = _seed_paper(
-            store, slug="other-paper", title="Not a review", doi="10.1/other"
+        measured_id = _seed_paper(
+            store,
+            slug="measured-paper",
+            title="Measured adsorption isotherms",
+            doi="10.1/measured",
         )
-        store.add_tag(other_id, Tag.open("studytype:synthesis"), set_by="system")
+        store.add_tag(
+            simulated_id, Tag.closed("STUDYTYPE", "computational"), set_by="system"
+        )
+        store.add_tag(
+            measured_id,
+            Tag.closed("STUDYTYPE", "experimental-ensemble"),
+            set_by="system",
+        )
 
-        resp = handler.search(tags=["studytype:review"])
-        assert "A review" in resp.body
-        assert handle_registry.format_handle("paper", review_id) in resp.body
-        assert "Not a review" not in resp.body
+        simulated = handler.search(tags=["STUDYTYPE:computational"]).body
+        measured = handler.search(tags=["STUDYTYPE:experimental-ensemble"]).body
+        assert handle_registry.format_handle("paper", simulated_id) in simulated
+        assert handle_registry.format_handle("paper", measured_id) not in simulated
+        assert handle_registry.format_handle("paper", measured_id) in measured
+        assert handle_registry.format_handle("paper", simulated_id) not in measured
 
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler
