@@ -6950,6 +6950,27 @@ def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     )
 
 
+def _same_red_digest(plan: _Plan, n: _Node, other: _Node | None) -> bool:
+    """``n`` and ``other`` are fix nodes of one red run: both
+    ``blocked-by`` the same ``ci_red_digest`` node (:func:`_digest_of`).
+    Their briefs all carry that run's whole digest and changed-files
+    table (``ci_red_digest._cluster_briefs``), so each names every file
+    its siblings' clusters name: the file-overlap hold read them as one
+    conflict and ran the fixers of a red release one at a time, each
+    waiting for the one before it to land. They build side by side
+    instead (Reto 2026-11-19). The lands still go one at a time: ship's
+    round lock admits one release push, and a land that finds it held
+    runs again a minute later (``land_slice.RELEASE_BUSY_MARK``); a fix
+    that conflicts with a sibling's goes back to its builder at the
+    land, like any conflicting land. Fix nodes of different iterations
+    wait on different digests and keep the hold."""
+    if other is None or other.id == n.id:
+        return False
+    mine = _digest_of(plan, n)
+    theirs = _digest_of(plan, other)
+    return mine is not None and theirs is not None and mine.id == theirs.id
+
+
 def _overlap_holds(
     plan: _Plan,
     store: Any,
@@ -6969,7 +6990,9 @@ def _overlap_holds(
     directories, or an ambiguous ``__init__.py``, holds nothing; a real
     conflict still rebuilds at land. Only started work holds, never
     another candidate, so two candidates never hold each other. Builds
-    hold each other only on the same land target (gr688291).
+    hold each other only on the same land target (gr688291), and the
+    fix nodes of one red digest never hold each other
+    (:func:`_same_red_digest`).
     One ``_overlap_inputs`` query for the lot; empty without a started
     build or a build candidate."""
     builds = [
@@ -7000,6 +7023,8 @@ def _overlap_holds(
             # gr688291: another land target is another branch; a release
             # fix's wide digest brief must not wait on unrelated main work.
             if inputs.get(hid, default)[1] != target:
+                continue
+            if _same_red_digest(plan, n, plan.nodes.get(hid)):
                 continue
             shared = _dscore.shared_files(mine, held_sets[hid])
             if hid != n.id and shared:

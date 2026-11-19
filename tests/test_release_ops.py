@@ -457,6 +457,11 @@ def _fake_github(
         calls.append((url, params, headers))
         if runs is None:
             raise OSError("network down")
+        if url.endswith("/jobs"):
+            # A readable, soakless listing: the run's own conclusion stands.
+            return SimpleNamespace(
+                status_code=status, json=lambda: {"total_count": 0, "jobs": []}
+            )
         return SimpleNamespace(status_code=status, json=lambda: {"workflow_runs": runs})
 
     monkeypatch.setattr(cvp, "_http_get", get)
@@ -497,6 +502,220 @@ def test_poll_records_red(store: Store, monkeypatch: pytest.MonkeyPatch) -> None
     spec = _meta(store, mint.ids["gate"])["gate"]
     verdict = gates.evaluate(store, spec, todo_id=mint.ids["gate"])
     assert not verdict.open and "CI red" in verdict.why
+
+
+def _job(
+    name: str, status: str = "completed", conclusion: str | None = "success"
+) -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def _gate_jobs(
+    soak: tuple[str, str | None] | None = ("in_progress", None),
+    **over: tuple[str, str | None] | None,
+) -> list[dict[str, Any]]:
+    """The jobs of a gate-shaped check.yml run: plan, lint, three
+    gate-fast legs, then the soak legs and ``verdict-soak`` in the
+    ``soak`` state (``None``: the matrix has not expanded — no soak job
+    at all). ``over`` replaces the ``(status, conclusion)`` of ``lint``,
+    ``plan`` or ``leg2`` (the second gate-fast leg); ``None`` drops it."""
+    jobs: dict[str, tuple[str, str | None]] = {
+        "plan": ("completed", "success"),
+        "lint": ("completed", "success"),
+        "failed-first": ("completed", "skipped"),
+        "gate-fast (3.13, 1)": ("completed", "success"),
+        "gate-fast (3.13, 2)": ("completed", "success"),
+        "gate-fast (3.13, 3)": ("completed", "success"),
+        "test-other": ("completed", "skipped"),
+    }
+    if soak is not None:
+        jobs["soak (3.13, 1)"] = soak
+        jobs["soak (3.13, 2)"] = soak
+        jobs["verdict-soak"] = (
+            ("queued", None) if soak[0] != "completed" else ("completed", soak[1])
+        )
+    keys = {"lint": "lint", "plan": "plan", "leg2": "gate-fast (3.13, 2)"}
+    for key, value in over.items():
+        if value is None:
+            del jobs[keys[key]]
+        else:
+            jobs[keys[key]] = value
+    return [_job(name, *state) for name, state in jobs.items()]
+
+
+@pytest.mark.parametrize(
+    ("jobs", "green"),
+    [
+        (_gate_jobs(), True),
+        (_gate_jobs(soak=("queued", None)), True),
+        (_gate_jobs(soak=("completed", "failure")), True),
+        (_gate_jobs(soak=("completed", "success")), True),
+        (_gate_jobs(soak=None), False),
+        (_gate_jobs(soak=("completed", "skipped")), False),
+        (_gate_jobs(leg2=("in_progress", None)), False),
+        (_gate_jobs(leg2=("completed", "failure")), False),
+        (_gate_jobs(leg2=("completed", "skipped")), False),
+        (_gate_jobs(leg2=None), False),
+        (_gate_jobs(lint=("in_progress", None)), False),
+        (_gate_jobs(lint=("completed", "failure")), False),
+        (_gate_jobs(lint=None), False),
+        (_gate_jobs(plan=("completed", "failure")), False),
+        ([*_gate_jobs(), _job("gate-fast (3.13, 2)")], False),
+        ([*_gate_jobs(), _job("lint")], False),
+        ([], False),
+    ],
+    ids=[
+        "soak-running",
+        "soak-queued",
+        "soak-red",
+        "soak-green",
+        "no-soak-job-yet",
+        "soak-skipped",
+        "gate-leg-running",
+        "gate-leg-red",
+        "gate-leg-skipped",
+        "gate-leg-missing",
+        "lint-running",
+        "lint-red",
+        "no-lint",
+        "another-job-red",
+        "gate-leg-listed-twice",
+        "lint-listed-twice",
+        "no-jobs",
+    ],
+)
+def test_gate_legs_green_is_lint_plus_the_whole_gate_matrix(
+    jobs: list[dict[str, Any]], green: bool
+) -> None:
+    """Reto 2026-11-19 (me580555): the gate legs are the release verdict,
+    the soak is not. A started soak leg is GitHub's word that the whole
+    gate-fast matrix passed; without one — the matrix not expanded yet,
+    or a FULL shape — there is no early verdict."""
+    assert cvp.gate_legs_green(jobs) is green
+
+
+def _fake_github_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+    runs: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+    total: int | None = None,
+) -> list[str]:
+    """``_fake_github`` that also answers the run's jobs listing."""
+    urls: list[str] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        urls.append(url)
+        if url.endswith("/jobs"):
+            body: dict[str, Any] = {
+                "total_count": len(jobs) if total is None else total,
+                "jobs": jobs,
+            }
+            assert params == {"filter": "latest", "per_page": 100}
+        else:
+            body = {"workflow_runs": runs}
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    monkeypatch.setattr(cvp, "_http_get", get)
+    return urls
+
+
+@pytest.mark.parametrize(
+    ("run", "soak"),
+    [
+        (_run(41, "in_progress", None), ("in_progress", None)),
+        (_run(41, "completed", "failure"), ("completed", "failure")),
+        (_run(41, "completed", "cancelled"), ("completed", "cancelled")),
+    ],
+    ids=["soak-still-running", "soak-red", "soak-cancelled"],
+)
+def test_poll_records_green_on_the_gate_legs_whatever_the_soak_does(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    run: dict[str, Any],
+    soak: tuple[str, str | None],
+) -> None:
+    """The deploy does not wait for the soak: lint and the gate-fast
+    matrix green record the release green while the run is still going,
+    and a run the soak alone turned red is not a red release."""
+    mint = _cut(store)
+    urls = _fake_github_jobs(monkeypatch, [run], _gate_jobs(soak=soak))
+    parks: list[Any] = []
+    ctx = Ctx(
+        store, {"todo_id": mint.ids["poll"]}, defer=lambda at, note: parks.append(at)
+    )
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and parks == []
+    assert urls[-1] == "https://api.github.com/repos/o/r/actions/runs/41/jobs"
+    row = gates.read_ci_verdicts(store)[-1]
+    assert (row["sha"], row["verdict"], row["run_id"]) == (SHA[:12], "green", "41")
+    assert "the soak does not gate" in ctx.chunks[-1][1]
+    spec = _meta(store, mint.ids["gate"])["gate"]
+    assert gates.evaluate(store, spec, todo_id=mint.ids["gate"]).open
+
+
+@pytest.mark.parametrize(
+    ("jobs", "total"),
+    [
+        (_gate_jobs(soak=None), None),
+        (_gate_jobs(leg2=("in_progress", None)), None),
+        (_gate_jobs(), 40),
+    ],
+    ids=["matrix-not-expanded", "gate-leg-running", "partial-listing"],
+)
+def test_poll_keeps_waiting_until_the_gate_legs_are_in(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    jobs: list[dict[str, Any]],
+    total: int | None,
+) -> None:
+    mint = _cut(store)
+    _fake_github_jobs(monkeypatch, [_run(42, "in_progress", None)], jobs, total)
+    parks: list[Any] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append(at)
+        return True
+
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=defer)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_poll_stays_pending_on_a_red_run_whose_jobs_are_unreadable(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that ended not-green may be red on the soak alone. With the
+    jobs listing unreadable the poll records nothing — a recorded red is
+    final and would start the fix loop on a green release."""
+    mint = _cut(store)
+    _fake_github_jobs(
+        monkeypatch, [_run(44, "completed", "failure")], _gate_jobs(), total=40
+    )
+    parks: list[Any] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append(note)
+        return True
+
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=defer)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert "its jobs are unreadable" in parks[0]
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_poll_records_red_when_a_gate_leg_failed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A red gate leg is a red release: the soak never started, so the
+    jobs listing changes nothing."""
+    mint = _cut(store)
+    jobs = _gate_jobs(soak=None, leg2=("completed", "failure"))
+    _fake_github_jobs(monkeypatch, [_run(43, "completed", "failure")], jobs)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "failure", "success"])
@@ -604,7 +823,7 @@ def test_poll_parks_while_pending_and_records_nothing(
     [
         (None, cvp.POLL_INTERVAL),
         (5, cvp.POLL_INTERVAL),
-        (18, cvp.POLL_INTERVAL_LATE),
+        (8, cvp.POLL_INTERVAL_LATE),
         (19, cvp.POLL_INTERVAL_LATE),
         (40, cvp.POLL_INTERVAL_LATE),
     ],
@@ -612,7 +831,7 @@ def test_poll_parks_while_pending_and_records_nothing(
 def test_poll_interval_quickens_on_an_old_run(
     age_min: int | None, expected: timedelta
 ) -> None:
-    """gr611302: a run 18+ min old is near check.yml's end — poll every
+    """gr611302: a run 8+ min old can have its gate legs in — poll every
     2 min instead of 10 so the gate stops eating the fixed wait."""
     age = timedelta(minutes=age_min) if age_min is not None else None
     assert cvp.poll_interval(age) == expected
@@ -4800,11 +5019,14 @@ def _walk_to_confirm(
     checkout: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     deploy_log: str = "",
+    merge_back: dict[str, Any] | None = {"state": "noop"},  # noqa: B006
 ) -> tuple[T.PlanMint, int, dict[str, Any]]:
     """Walk a release pass to a succeeded deploy on ``node-a``; the tick
     then dispatches the confirm node. ``deploy_log`` is extra deploy
-    output after the ``RELEASE_DEPLOYED`` line. Returns ``(mint, confirm
-    job id, the job's params)``."""
+    output after the ``RELEASE_DEPLOYED`` line. ``merge_back`` is the
+    outcome the pass's merge-back node recorded (``None``: it has not
+    run) — the confirm holds its retirement script until it is settled.
+    Returns ``(mint, confirm job id, the job's params)``."""
     mint = T.mint_release_pass(store)
     ids = mint.ids
     monkeypatch.setenv("PRECIS_NODE", "node-a")
@@ -4844,7 +5066,15 @@ def _walk_to_confirm(
     job_id, meta = _only_job(store, ids["confirm"])
     assert (meta["job_type"], meta["executor"]) == ("release_confirm", "ssh_node")
     assert meta["params"] == {"todo_id": ids["confirm"], "target_node": "node-a"}
+    if merge_back is not None:
+        _record_merge_back(store, mint, merge_back)
     return mint, job_id, dict(meta["params"])
+
+
+def _record_merge_back(store: Store, mint: T.PlanMint, outcome: dict[str, Any]) -> None:
+    """What ``release_merge_back._record`` writes on the plan root."""
+    rel = _meta(store, mint.root_id)["release"]
+    store.stamp_ref_meta(mint.root_id, {"release": {**rel, "merge_back": outcome}})
 
 
 def _round_row(n: int, state: str, deploy: dict[str, Any] | None = None) -> str:
@@ -5190,6 +5420,85 @@ def test_probe_parks_until_the_worker_restarts(
         "--runtime-evidence",
         text,
     ]
+
+
+def test_confirm_holds_the_retirement_until_the_merge_back_settles(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r335, r336 (2026-11-19): ``round deploy --confirm-runtime`` merges
+    the release head into main itself and exits 1 on a conflict the
+    pass's merge-back node resolves a few minutes later. An attested
+    release parks instead — no script — until the merge-back recorded
+    ``merged`` or ``noop``, through its conflict and resolver."""
+    script = _round_script(checkout)
+    mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch, merge_back=None)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert checkout["argv"] == launches
+    assert "holding scripts/round deploy --confirm-runtime" in ctx.chunks[-1][1]
+    assert "has not put the release head on main yet" in ctx.chunks[-1][1]
+
+    _record_merge_back(store, mint, {"state": "conflict", "resolver": 99})
+    for _ in range(2):  # the reason is noted once, not once per look
+        handle["not_before"] = "2000-01-01T00:00:00Z"
+        assert rcf.poll(ctx, handle) is False
+        assert handle["phase"] == "probe"
+    notes = [text for _kind, text in ctx.chunks if "holding scripts/round" in text]
+    assert len(notes) == 2 and "resolver td99" in notes[-1]
+    assert checkout["argv"] == launches and ctx.failures == []
+
+    _record_merge_back(
+        store, mint, {"state": "merged", "strategy": "ours", "resolver": 99}
+    )
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm"
+    assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
+
+
+def test_confirm_stops_waiting_for_a_merge_back_that_never_settles(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait is bounded: past it the retirement script runs as it did
+    before the wait existed, and a conflict fails it into the ask."""
+    script = _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(
+        store, checkout, monkeypatch, merge_back=None
+    )
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    long_ago = datetime.now(UTC) - rcf._MERGE_BACK_WAIT - timedelta(minutes=1)
+    handle["merge_wait_since"] = long_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm"
+    assert "running scripts/round deploy --confirm-runtime anyway" in "\n".join(
+        text for _kind, text in ctx.chunks
+    )
+    assert checkout["argv"][-1][:3] == [str(script), "deploy", "--confirm-runtime"]
+
+
+def test_confirm_with_a_failed_probe_does_not_wait_for_the_merge_back(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The evidence comes first: a deploy that did not take fails at
+    once, merge-back or not."""
+    _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(
+        store, checkout, monkeypatch, merge_back=None
+    )
+    store.record_heartbeat("node-a", meta={"code_sha": SHA2})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    if handle is not None:  # the restart race parks first; past it, it fails
+        assert "merge_wait_since" not in handle
+    else:
+        assert ctx.failures and "probe failed" in ctx.failures[0]
 
 
 def test_probe_still_stale_at_the_deadline_files_an_ask(
@@ -6297,3 +6606,91 @@ def test_a_release_fix_node_dispatches_its_run_slice_in_the_release_band(
         assert meta["job_type"] == "run_slice"
         assert meta[_dscore.CLAIM_BAND_META_KEY] == _dscore.RELEASE_CLAIM_BAND
         assert meta["plan_root"] == mint.root_id
+
+
+#: What every cluster brief of one red run repeats: the whole digest and
+#: the changed-files table (``ci_red_digest._cluster_briefs``).
+_RUN_DIGEST = (
+    "== gate-fast (3.13, 5) ==\n"
+    "  failed ids (2):\n"
+    "    tests/test_alpha.py::test_one\n"
+    "    tests/test_beta.py::test_two\n"
+    "changed since the last green build:\n"
+    "  src/precis/tools/core.py | 12 +++---"
+)
+
+
+def _sibling_fixers_one_building(store: Store) -> tuple[int, int]:
+    """``(building, waiting)`` — two fix nodes of one digest, briefed the
+    way the digest briefs clusters, both dispatched; the first one's
+    ``run_slice`` is running."""
+    _mint, it = _red_iteration(store)
+    [extra] = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_beta.py"]
+    )
+    pd.run_pass(store)
+    job, _ = _only_job(store, it["digest"])
+    _succeed(store, job)
+    _close(store, it["digest"])
+    clusters = ((it["fix"], "tests/test_alpha.py"), (extra, "tests/test_beta.py"))
+    for i, (fix_id, key) in enumerate(clusters, start=1):
+        other, other_key = clusters[2 - i]
+        _comment(
+            store,
+            fix_id,
+            f"brief: release r7 is red at {SHA[:9]} (range {RNG}), check.yml run 31\n"
+            f"cluster {i}/2: {key} — fix only these failing ids: {key}::test. "
+            "The other clusters are fixed in parallel by their own nodes — "
+            f"{crd.OTHER_CLUSTERS_MARKER} {other_key} (td{other}).\n{_RUN_DIGEST}",
+        )
+    pd.run_pass(store)
+    building, _ = _only_job(store, it["fix"])
+    store.add_tag(
+        building, Tag.closed("STATUS", "running"), set_by="system", replace_prefix=True
+    )
+    return it["fix"], extra
+
+
+def test_sibling_fixers_of_one_red_run_do_not_hold_each_other(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reto 2026-11-19: the fixers of one red release build side by side.
+    Each cluster brief repeats the run's whole digest, so every sibling
+    names every other sibling's files on the same land target — the
+    file-overlap hold used to run them one at a time. A fix node whose
+    sibling (same digest) is building is not held at claim; without the
+    sibling rule the shared digest holds it, as it holds any two builds
+    on one release branch."""
+    from precis.workers.executors._common import build_overlap_holds
+
+    building, waiting = _sibling_fixers_one_building(store)
+    with store.pool.connection() as conn:
+        assert build_overlap_holds(conn, [waiting]) == set()
+    plan = pd._load(store)
+    assert pd._same_red_digest(plan, plan.nodes[waiting], plan.nodes[building])
+    assert not pd._same_red_digest(plan, plan.nodes[waiting], plan.nodes[waiting])
+    assert not pd._same_red_digest(plan, plan.nodes[waiting], None)
+
+    monkeypatch.setattr(pd, "_same_red_digest", lambda plan, n, other: False)
+    with store.pool.connection() as conn:
+        assert build_overlap_holds(conn, [waiting]) == {waiting}
+
+
+def test_fixers_of_different_red_runs_keep_the_file_overlap_hold(
+    store: Store,
+) -> None:
+    """The sibling rule covers one digest only: a build that waits on no
+    digest, or on another run's, is not a sibling."""
+    from precis.workers.executors._common import build_overlap_holds
+
+    building, waiting = _sibling_fixers_one_building(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM links WHERE relation = 'blocked-by' AND src_ref_id = %s",
+            (building,),
+        )
+    plan = pd._load(store)
+    assert pd._digest_of(plan, plan.nodes[waiting]) is not None
+    assert not pd._same_red_digest(plan, plan.nodes[waiting], plan.nodes[building])
+    with store.pool.connection() as conn:
+        assert build_overlap_holds(conn, [waiting]) == {waiting}

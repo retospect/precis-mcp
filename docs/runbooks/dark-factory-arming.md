@@ -45,7 +45,9 @@ Mint one plan; the armed `plan_dispatch` tick drives it:
 The nodes run in order: `cut` (`release_cut`: `scripts/release --cut-only`
 in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
-in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
+in `release.ci_verdicts`, parked between polls while CI runs; the verdict
+is `lint` plus the `gate-fast` legs, so the deploy does not wait for the
+run's soak legs and a red soak is not a red release) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
 `release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
 red run, the digest posted as a `brief:` on the fix) → fix → `recut`
@@ -138,7 +140,11 @@ The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
 heartbeat `code_sha`, read from the store with no network, must equal the
 release sha, and when `release.health_url` is set the live web's
-`X-Precis-Boot-Sha` header must too. On pass it runs `scripts/round deploy
+`X-Precis-Boot-Sha` header must too. On pass it first waits for the pass's
+`merge_back` node to record `merged` or `noop` (up to two hours): the
+script below merges the release head into main itself and stops on a
+conflict that only the merge-back's resolver can settle. Then it runs
+`scripts/round deploy
 --confirm-runtime <sha> --runtime-evidence "<text>"` then `scripts/round
 close`, stamps the evidence on the plan root and `release.round`, and the
 release is tagged `deployed/r<N>`; a failed close still succeeds the job —

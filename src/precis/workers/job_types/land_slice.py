@@ -527,11 +527,20 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 #: the lander's own node cannot run a gate right now. Same deferral as a
 #: main refusal (gr552214): nothing on the branch caused it, and a builder
 #: cannot change it.
+#: ``ship --onto``'s round lock is non-blocking: a release-fix land that
+#: reaches its push while a sibling's (or the release's own cut or
+#: deploy step) holds the lock dies on it with nothing pushed. The
+#: holder is seconds from done, so this wait is its own short one
+#: (:data:`RELEASE_BUSY_BACKOFF_S`, counted in ``handle.release_busy``
+#: up to :data:`MAX_RELEASE_BUSY_WAITS`) — on the half-hour main-refusal
+#: backoff the fixers of one red release, building side by side, landed
+#: half an hour apart.
+RELEASE_BUSY_MARK = "release lifecycle busy"
+RELEASE_BUSY_BACKOFF_S = 60
+MAX_RELEASE_BUSY_WAITS = 30
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
-    # release-train T3 review F4: ``ship --onto``'s round lock is
-    # non-blocking — a second near-simultaneous release-fix land dies on
-    # it with nothing pushed. A wait on a sibling, not a red: defer.
-    "release lifecycle busy",
+    # release-train T3 review F4: a wait on a sibling, not a red: defer.
+    RELEASE_BUSY_MARK,
     "docker VM disk has",
     "disk probe failed:",
     # The docker CLI itself is broken for the lander's user (no compose
@@ -3686,7 +3695,7 @@ def _launch_ship(
                 "subject": subject,
                 "flag": flag,
             }
-            for key in ("main_refusals", "last_refusal", "gate_kills"):
+            for key in ("main_refusals", "last_refusal", "gate_kills", "release_busy"):
                 if carry is not None and key in carry:
                     parked[key] = carry[key]
             refusals = int(parked.get("main_refusals") or 0) + 1
@@ -3814,6 +3823,7 @@ def _launch_ship(
                 "main_refusals",
                 "last_refusal",
                 "gate_kills",
+                "release_busy",
                 "fell_back_full",
             ):
                 if carry is not None and key in carry:
@@ -5350,7 +5360,22 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
                 return False
         side = refusal_side(cross)
-        if side is not None:
+        if side is not None and RELEASE_BUSY_MARK in str(cross):
+            # Another release push holds ship's round lock: run again
+            # in a minute, on this wait's own counter.
+            waits = int(handle.get("release_busy") or 0) + 1
+            if waits <= MAX_RELEASE_BUSY_WAITS:
+                return _defer_to_main(
+                    ctx,
+                    handle,
+                    cross,
+                    waits,
+                    side=side,
+                    backoff_s=RELEASE_BUSY_BACKOFF_S,
+                    counter="release_busy",
+                )
+            reason, handoff = _blocked_handoff(branch, waits, cross, side)
+        elif side is not None:
             # Main's or the host's state, not the branch's: park and retry
             # later, up to the cap.
             refusals = int(handle.get("main_refusals") or 0) + 1
