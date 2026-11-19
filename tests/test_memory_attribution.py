@@ -256,6 +256,13 @@ def test_unit_aware_comparison(world):
     assert _check("thickness 10 um [pa12]") == []
 
 
+def test_tex_angstrom_macro_grounds_utf8_claim(world):
+    """gr716055: the passage prints ``6 \AA``; a ``6 Å`` claim must ground."""
+    world[(12, None)] = r"binding is negligible beyond the 6 \AA cutoff"
+    assert _check("stated 6 Å cutoff [pa12]") == []
+    assert [m.token for m in _check("stated 7 Å cutoff [pa12]")] == ["7 Å"]
+
+
 def test_bare_digit_run_never_grounds_a_unit_claim(world):
     # The first prod dogfood write (2026-10-09) passed because the cited
     # websearch body carried "10." as a DOI prefix and nothing in nm.

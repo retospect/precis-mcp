@@ -167,6 +167,16 @@ _DEGREE_LIGATURE_RE = re.compile(r"\s*([℃℉])")
 _PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
 #: PDF micro: ``$\mu$ m`` / ``\mu m`` / Greek ``μm`` all read as ``µm`` (U+00B5).
 _TEX_MU_RE = re.compile(r"\$?\\mu\$?\s*(?=[mAMgs]\b)")
+#: PDF TeX angstrom: ``6 \AA`` / ``6\,\AA`` / ``6~$\AA$`` / ``6\,{\AA}``
+#: read as ``6 Å`` (gr716055: a correctly-cited ``6 Å`` cutoff printed with
+#: the TeX macro flagged ungrounded against the UTF-8 spelling). The leading
+#: group eats only TeX spacing (``\,``/``\;``/``~``/math dollars/braces),
+#: never plain whitespace, so ``6 \AA`` keeps its separating space; a letter
+#: right after the macro name means a different command and is left alone.
+_TEX_ANGSTROM_RE = re.compile(
+    r"(?:\\[,;:! ]|[~${])*(?:\\r\s*\{A\}|\\(?:AA|Angstrom|angstrom))"
+    r"(?![A-Za-z])\}?\$?"
+)
 
 
 #: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
@@ -319,13 +329,15 @@ def normalize_spellings(text: str) -> str:
     """PDF number spellings the tokenizer misses, rewritten to the plain
     form: "2,000 p.p.m." → "2000 ppm", "$1.78\\pm0.11$  Å" → "1.78 and 0.11 Å"
     (inline math unwrapped, LaTeX ``\\pm``/``\\times``/``\\%``/``^\\circ`` mapped
-    to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm"."""
+    to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm",
+    and the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å"."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
     norm = _TEX_MU_RE.sub("µ", norm)
     norm = _TEX_WRAP_RE.sub(r"\1", norm)
     for rx, sym in _TEX_SYMBOLS:
         norm = rx.sub(sym, norm)
     norm = _MATH_INLINE_RE.sub(_unwrap_math, norm)
+    norm = _TEX_ANGSTROM_RE.sub("Å", norm)
     norm = _DEGREE_LIGATURE_RE.sub(lambda m: "°C" if m.group(1) == "℃" else "°F", norm)
     norm = _DEGREE_UNIT_RE.sub("°", norm)
     norm = _DEGREE_LONE_RE.sub("°", norm)

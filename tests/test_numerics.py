@@ -164,6 +164,20 @@ def test_wide_reads_tex_micro_with_double_space():
     assert "5 µm" in extract_numerics_wide(r"a pore of 5 \mu m width")
 
 
+def test_wide_reads_tex_angstrom_macro():
+    """gr716055: the paper prints the TeX macro; the UTF-8 ``Å`` claim grounds."""
+    for raw in (
+        r"cutoff of 6 \AA",
+        r"cutoff of 6\,\AA",
+        r"cutoff of 6~$\AA$",
+        r"cutoff of 6\,{\AA}",
+        r"cutoff of 6 \angstrom",
+    ):
+        assert "6 Å" in extract_numerics_wide(raw), raw
+    # A longer command name is not the macro.
+    assert extract_numerics_wide(r"6 \AAA") == []
+
+
 def test_wide_leaves_dollar_amounts_alone():
     assert extract_numerics_wide("costs $5 and $10 each") == []
     assert extract_numerics_wide("a $5 nm rope") == ["5 nm"]
