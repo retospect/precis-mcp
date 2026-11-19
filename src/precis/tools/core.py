@@ -2299,9 +2299,15 @@ def put(
     only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
     takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
     fields are per kind (precis-put-help). `mode=`: file kinds 'create';
-    paid-import kinds 'import'; numeric-ref kinds omit it. `text=`/`body=`
+    paid-import kinds 'import'; paper 'fetch-si'; structure
+    'rerun'/'neb'/'md'/'analyze'/'trust'; machine 'sync'; numeric-ref
+    kinds mostly omit it. Exceptions: gripe 'create'/'comment' confirm
+    id= selection; job 'retry'/'retarget'/'setting'/'wake'/'extend'/
+    'garden-reject'; memory 'process'; measure 'recheck'; fleet 'report';
+    todo 'plan' (outside the declared gate). `text=`/`body=`
     alias a kind's single prose field (finding says `body=`; both at once
-    errors); `todo` declares both — `text=` title, `body=` details, either or
+    errors); memory reads both as title/prose. `todo` and `gripe` declare
+    both — `text=` title/first line, `body=` details, either or
     both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
     `text={'$ref': '<handle>'}` = that handle's body (needs a recent exact `get`).
@@ -2758,7 +2764,9 @@ def edit(
 
     `mode=` defaults to `find-replace`; kinds excluding it refuse with
     options. todo uses `text=`/`body=`, memory also takes
-    `ops=[{find,text,...}]`; quest needs `mode='replace'`; draft takes
+    `ops=[{find,text,...}]`; quest takes `replace` (explicit), `pause`,
+    `resume`; finding takes `replace`/`find-replace`; fleet and learning
+    take `replace`; draft takes
     `'replace-content'`; paper, structure ignore it.
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
@@ -3144,8 +3152,11 @@ _PUT_HELP: dict[str, str] = {
     "kind": "Which kind to write to.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'create' (only). "
     "Paid-cache kinds (websearch/perplexity-reasoning/perplexity-research): "
-    "'import' registers a free web-UI answer. Numeric-ref kinds "
-    "(memory/todo/gripe/...): omit — an explicit mode= is rejected.",
+    "'import' registers a free web-UI answer. paper 'fetch-si'; structure "
+    "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
+    "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
+    "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
+    "measure recheck; fleet report; todo plan (outside the declared gate).",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
@@ -3159,12 +3170,12 @@ _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
-    "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
-    "'replace' only — the default 'find-replace' is rejected there; "
-    "memory: 'replace' | 'find-replace' | 'insert' | 'append' — or "
-    "ops=[{find,text,...}] for several anchored ops in one call. "
-    "Most other kinds don't branch on mode= (silently ignored) or don't "
-    "support edit at all.",
+    "(default) | 'append' | 'insert' | 'replace'. todo: "
+    "replace/find-replace/insert/delete/gate; quest: replace (explicit)/pause/resume; "
+    "memory: replace/find-replace/insert/append/delete — or "
+    "ops=[{find,text,...}] for several anchored ops in one call; "
+    "finding: replace/find-replace; fleet/learning: replace. "
+    "Draft: replace-content; paper/structure ignore mode=.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",
