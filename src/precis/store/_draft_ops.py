@@ -1472,6 +1472,87 @@ class DraftStore(_AbbrevMixin):
             for r in rows
         ]
 
+    def retirement_event(self, chunk_id: int) -> dict[str, Any] | None:
+        """The ``retired`` event that took ``chunk_id`` out of the draft.
+
+        A cascade logs one event, on the subtree *root* only — a retired
+        descendant has none of its own, so the walk climbs the parent
+        chain to the nearest ancestor that does. Returns ``{chunk_id,
+        ts, source, via}`` (``via`` = ``'self'`` or ``'ancestor'``), or
+        ``None`` when no retirement was logged (a whole-draft retire
+        stamps ``retired_at`` without events)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """WITH RECURSIVE up AS (
+                       SELECT chunk_id, parent_chunk_id, 0 AS hops
+                         FROM chunks WHERE chunk_id = %s
+                       UNION ALL
+                       SELECT c.chunk_id, c.parent_chunk_id, u.hops + 1
+                         FROM chunks c JOIN up u ON c.chunk_id = u.parent_chunk_id
+                   )
+                   SELECT e.chunk_id, e.ts, e.source, up.hops
+                     FROM up JOIN chunk_events e ON e.chunk_id = up.chunk_id
+                    WHERE e.event_kind = 'retired'
+                      AND e.ts = (SELECT retired_at FROM chunks WHERE chunk_id = %s)
+                      AND (up.hops = 0 OR e.source->>'mode' = 'cascade')
+                    ORDER BY up.hops, e.ts DESC, e.event_id DESC LIMIT 1""",
+                (chunk_id, chunk_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "chunk_id": int(row[0]),
+            "ts": row[1],
+            "source": dict(row[2] or {}),
+            "via": "self" if row[3] == 0 else "ancestor",
+        }
+
+    def cascade_retired_descendants(self, chunk: DraftChunk) -> list[DraftChunk]:
+        """Recover the subtree retired with this chunk, in reading order.
+
+        A cascade stamps its live subtree and logs the root event in the
+        same transaction. Matching the stamp at every level excludes
+        branches that had already been retired.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """WITH RECURSIVE sub AS (
+                        SELECT c.chunk_id, c.handle, c.chunk_kind, c.text, c.pos,
+                               c.parent_chunk_id, c.meta, c.retired_at,
+                               c.pos AS sort_path, 0 AS depth
+                          FROM chunks c JOIN chunks p ON p.chunk_id = c.parent_chunk_id
+                         WHERE p.chunk_id = %s AND c.pos IS NOT NULL
+                           AND c.retired_at = p.retired_at
+                        UNION ALL
+                        SELECT c.chunk_id, c.handle, c.chunk_kind, c.text,
+                               c.pos, c.parent_chunk_id, c.meta, c.retired_at,
+                               sub.sort_path || '/' || c.pos, sub.depth + 1
+                          FROM chunks c JOIN sub
+                            ON c.parent_chunk_id = sub.chunk_id
+                         WHERE c.pos IS NOT NULL AND c.retired_at = sub.retired_at
+                    )
+                    SELECT chunk_id, handle, chunk_kind, text, pos,
+                           parent_chunk_id, meta, depth
+                      FROM sub ORDER BY sort_path COLLATE "C" ASC""",
+                (chunk.chunk_id,),
+            ).fetchall()
+        return [
+            DraftChunk(
+                chunk_id=int(r[0]),
+                ref_id=chunk.ref_id,
+                handle=r[1],
+                chunk_kind=r[2],
+                text=r[3],
+                pos=r[4],
+                parent_chunk_id=r[5],
+                depth=int(r[7]),
+                meta=dict(r[6] or {}),
+                kind=chunk.kind,
+                retired=True,
+            )
+            for r in rows
+        ]
+
     def open_proposals(self, chunk_id: int) -> list[dict[str, Any]]:
         """Open anchored todos on ``chunk_id`` that carry
         ``meta.proposed_text``, oldest first — ``[{ref_id, title,

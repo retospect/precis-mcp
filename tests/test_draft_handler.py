@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import re
 from typing import Any
@@ -1284,6 +1285,225 @@ def test_retired_chunk_read_discloses_retired_state(
     # a live chunk carries no retired marker
     live = draft.get(id=f"¶{_order(hub, 'nt')[0].handle}").body
     assert "RETIRED" not in live
+
+
+def test_retired_chunk_read_names_event_and_restore(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr700659: a cascade-retired descendant read names the ancestor's
+    ``retired`` event, still shows its text, and points at a restore."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="body to keep", at={"into": sec_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="other", at={"last": True})
+    sec_chunk = hub.live_store.drafts.get_draft_chunk(sec_h)
+    assert sec_chunk is not None
+    hub.live_store.drafts.retire_chunk(sec_chunk.handle, mode="cascade")
+
+    out = draft.get(id=para_h).body
+    assert "body to keep" in out
+    assert f"its ancestor {sec_h}" in out
+    assert "mode=cascade" in out
+    assert "Restore" in out
+    # the restore call names the real draft slug and the chunk's own kind
+    assert "id='nt'" in out
+    assert "chunk_kind='paragraph'" in out
+    assert f"at={{'into': restored_{sec_h}, 'last': True}}" in out
+
+
+def test_retired_chunk_restore_targets_recreated_parent(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A separate child read points back to the parent recovery."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    outer = draft.put(id="nt", chunk_kind="heading", text="Outer", at={"last": True})
+    outer_h = _dc(outer.body)
+    inner = draft.put(id="nt", chunk_kind="heading", text="Inner", at={"into": outer_h})
+    inner_h = _dc(inner.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="nested body", at={"into": inner_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="tail", at={"last": True})
+    inner_chunk = hub.live_store.drafts.get_draft_chunk(inner_h)
+    assert inner_chunk is not None
+    hub.live_store.drafts.retire_chunk(inner_chunk.handle, mode="cascade")
+
+    out = draft.get(id=para_h).body
+    assert "nested body" in out
+    assert f"its ancestor {inner_h}" in out
+    assert f"id={inner_h!r}) to recover the parent first" in out
+    assert f"at={{'into': restored_{inner_h}, 'last': True}}" in out
+    assert f"at={{'after': '{para_h}'}}" not in out
+
+
+def test_retired_chunk_under_live_parent_restores_into_ghost_slot(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The single-retire case: parent still live, so ``after`` the
+    retired chunk recovers its old position (the ghost-slot bracket of
+    gripe 49153)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="drop me", at={"into": sec_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="stays", at={"last": True})
+    para_chunk = hub.live_store.drafts.get_draft_chunk(para_h)
+    assert para_chunk is not None
+    hub.live_store.drafts.retire_chunk(para_chunk.handle)
+
+    out = draft.get(id=para_h).body
+    assert "drop me" in out
+    # parent (sec) is live → after-self ghost slot, not an ``into`` anchor
+    assert f"at={{'after': '{para_h}'}}" in out
+    assert "'into'" not in out
+
+
+def test_retired_list_read_shows_items_and_restore(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr700659: a retired ulist/olist read expands to its retired
+    subtree — before, the live-only expansion rendered a completely
+    empty body. The retirement notice must still fire even though the
+    window holds more than one chunk."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- alpha\n- beta",
+        at={"last": True},
+    )
+    draft.put(id="nt", chunk_kind="paragraph", text="tail", at={"last": True})
+    ulist = next(c for c in _order(hub, "nt") if c.chunk_kind == "ulist")
+    hub.live_store.drafts.retire_chunk(ulist.handle, mode="cascade")
+
+    out = draft.get(id=ulist.dc).body
+    assert "alpha" in out and "beta" in out
+    assert "⚠ RETIRED" in out
+    assert "mode=cascade" in out
+    assert "Restore" in out
+    assert f"at={{'after': '{ulist.dc}'}}" in out  # root chunk → ghost slot
+
+
+def test_retired_heading_lists_retired_children(draft: DraftHandler, hub: Hub) -> None:
+    """gr700659: a retired heading's read names the retired descendants
+    the cascade took with it — the "~20 headings lost their bodies"
+    case — each still readable by its own handle."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    p1 = draft.put(
+        id="nt", chunk_kind="paragraph", text="first body", at={"into": sec_h}
+    )
+    p1_h = _dc(p1.body)
+    sub = draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Sub",
+        at={"into": sec_h, "last": True},
+    )
+    sub_h = _dc(sub.body)
+    p2 = draft.put(id="nt", chunk_kind="paragraph", text="sub body", at={"into": sub_h})
+    p2_h = _dc(p2.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="after", at={"last": True})
+    sec_chunk = hub.live_store.drafts.get_draft_chunk(sec_h)
+    assert sec_chunk is not None
+    hub.live_store.drafts.retire_chunk(sec_chunk.handle, mode="cascade")
+
+    out = draft.get(id=sec_h).body
+    assert "⚠ RETIRED" in out
+    assert f"at={{'into': restored_{sec_h}, 'last': True}}" in out
+    assert f"at={{'into': restored_{sub_h}, 'last': True}}" in out
+    assert p1_h in out and "first body" in out
+    assert sub_h in out and "Sub" in out
+    assert p2_h in out and "sub body" in out
+    # and each listed child read gives its own restore call
+    child = draft.get(id=p1_h).body
+    assert "Restore" in child and "first body" in child
+
+
+def _execute_restore(draft: DraftHandler, body: str) -> dict[str, str]:
+    """Run the displayed calls with the handles returned by previous puts."""
+    handles: dict[str, str] = {}
+    for line in body.splitlines():
+        if not line.startswith("restored_"):
+            continue
+        assignment = ast.parse(line).body[0]
+        assert isinstance(assignment, ast.Assign)
+        target = assignment.targets[0]
+        call = assignment.value
+        assert isinstance(target, ast.Name) and isinstance(call, ast.Call)
+        # Only placement values can refer to earlier acknowledgments.
+        for kwarg in call.keywords:
+            if kwarg.arg == "at":
+                assert isinstance(kwarg.value, ast.Dict)
+                kwarg.value.values = [
+                    ast.Constant(handles[value.id])
+                    if isinstance(value, ast.Name)
+                    else value
+                    for value in kwarg.value.values
+                ]
+        kwargs = {
+            kwarg.arg: ast.literal_eval(kwarg.value)
+            for kwarg in call.keywords
+            if kwarg.arg is not None
+        }
+        assert kwargs.pop("kind") == "draft"
+        handles[target.id] = _dc(draft.put(**kwargs).body)
+    return handles
+
+
+def test_retired_wrapper_restores_mixed_content_in_cascade_order(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    drafts = hub.live_store.drafts
+    sec = _dc(
+        draft.put(id="nt", chunk_kind="heading", text="Section", at={"last": True}).body
+    )
+    holder = drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="", at={"into": sec}
+    )[0]
+    draft.put(
+        id="nt", text="1. Previously removed\n2. Kept item", at={"into": holder.dc}
+    )
+    old_item = next(c for c in _order(hub, "nt") if c.text == "Previously removed")
+    drafts.retire_chunk(old_item.handle)
+    source = "def f():\n    return 1\n\n\ndef g():\n    pass"
+    draft.put(id="nt", chunk_kind="code", text=source, at={"into": holder.dc})
+    draft.put(id="nt", text="Final prose", at={"into": holder.dc})
+    draft.put(id="nt", text="Live tail", at={"last": True})
+    heading = drafts.get_draft_chunk(sec)
+    assert heading is not None
+    drafts.retire_chunk(heading.handle, mode="cascade")
+
+    out = draft.get(id=sec).body
+    assert "Previously removed" not in out
+    assert out.index("chunk_kind='olist'") < out.index("chunk_kind='code'")
+    assert out.index("chunk_kind='code'") < out.index("text='Final prose'")
+    handles = _execute_restore(draft, out)
+    order = _order(hub, "nt")
+    new_heading = next(c for c in order if c.dc == handles[f"restored_{sec}"])
+    children = [c for c in order if c.parent_chunk_id == new_heading.chunk_id]
+    assert [c.chunk_kind for c in children] == ["olist", "code", "paragraph"]
+    assert children[1].text == source and children[2].text == "Final prose"
+    assert [c.text for c in order if c.parent_chunk_id == children[0].chunk_id] == [
+        "Kept item"
+    ]
 
 
 def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:

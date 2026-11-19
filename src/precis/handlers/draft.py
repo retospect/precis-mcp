@@ -77,6 +77,7 @@ from precis.response import Response, ResponseImage
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store._draft_ops import (
     _HEADING_LINE_RE,
+    DraftChunk,
     content_sha,
     own_content_sha,
 )
@@ -7634,11 +7635,8 @@ class DraftHandler(Handler):
                     "live chunk handles",
                 )
             window = [chunk]
-            if chunk.chunk_kind in ("ulist", "olist"):
-                # A list container carries no prose — rendering it alone
-                # shows an empty block. Its items *are* its content, and
-                # the outline collapses a list to this one handle, so this
-                # read is where the items live.
+            if chunk.chunk_kind in ("ulist", "olist") and not chunk.retired:
+                # A list container carries no prose. Its items are its content.
                 ids = set(self.store.drafts.draft_subtree_chunk_ids(core))
                 window = [
                     c
@@ -7679,14 +7677,145 @@ class DraftHandler(Handler):
                 "excluded from reading order, search (all modes), and export. "
                 "A live replacement may exist; read the enclosing section."
             )
+        for chunk in window:
+            if chunk.retired:
+                body += self._retirement_notice(chunk)
         window_text = "\n\n".join(c.text for c in window)
         body += _draft_lint.dangling_finding_hint(self.store, window_text)
         body += _draft_lint.dangling_chunk_hint(self.store, window_text)
         body += _draft_lint.tombstone_chunk_hint(self.store, window_text)
         if len(window) == 1:
-            body += self._children_hint(window[0])
+            if not window[0].retired:
+                # ``descendant_chunk_ids`` counts live only, and the span
+                # it points at resolves live-only too — on a retired chunk
+                # the hint dangles (``_retired_container_lines`` covers the
+                # subtree instead).
+                body += self._children_hint(window[0])
             body += self._fisheye_affordance()
         return Response(body=body)
+
+    def _retirement_notice(self, chunk: DraftChunk) -> str:
+        """Show the retirement event and a recipe for copying the lost text."""
+        drafts = self.store.drafts
+        ev = drafts.retirement_event(chunk.chunk_id)
+        lines = [f"Retirement of {chunk.dc}"]
+        cascade = False
+        if ev is None:
+            lines[0] += " — no retirement event logged."
+        else:
+            mode = ev["source"].get("mode")
+            cascade = mode == "cascade"
+            ts = ev["ts"].astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines[0] += f" — retired {ts}"
+            if ev["via"] == "ancestor":
+                root = handle_registry.format_handle(
+                    chunk.kind, ev["chunk_id"], chunk=True
+                )
+                lines[0] += f" with its ancestor {root}"
+            if mode:
+                lines[0] += f" (mode={mode})"
+
+        ref = self.store.get_ref(kind=chunk.kind, id=chunk.ref_id)
+        if ref is None:
+            lines.append("Restore the draft before re-adding its chunks.")
+            return "\n\n" + "\n".join(lines)
+
+        parent = (
+            drafts.get_draft_chunk(
+                handle_registry.format_handle(
+                    chunk.kind, chunk.parent_chunk_id, chunk=True
+                ),
+                kind=chunk.kind,
+            )
+            if chunk.parent_chunk_id is not None
+            else None
+        )
+        if parent is not None and parent.retired:
+            if (
+                cascade
+                and not parent.text.strip()
+                and parent.chunk_kind
+                not in (
+                    "ulist",
+                    "olist",
+                )
+            ):
+                lines.append(
+                    f"Read get(kind={chunk.kind!r}, id={parent.dc!r}) for "
+                    "the recovery recipe for this textless parent and its contents."
+                )
+                return "\n\n" + "\n".join(lines)
+            lines.append(
+                f"Read get(kind={chunk.kind!r}, id={parent.dc!r}) to recover the "
+                f"parent first. Use its live replacement handle as restored_{parent.dc} "
+                "below. If its recipe already includes this chunk, follow that recipe once."
+            )
+            at = f"{{'into': restored_{parent.dc}, 'last': True}}"
+        else:
+            at = f"{{'after': {chunk.dc!r}}}"
+
+        descendants = drafts.cascade_retired_descendants(chunk) if cascade else []
+        lines.extend(
+            self._retired_container_lines(chunk, descendants, ref.slug or ref.id, at)
+        )
+        return "\n\n" + "\n".join(lines)
+
+    def _retired_container_lines(
+        self,
+        chunk: DraftChunk,
+        descendants: list[DraftChunk],
+        draft_id: str | int,
+        at: str,
+    ) -> list[str]:
+        """Emit typed puts in source order, with children attached to new handles."""
+        children: dict[int, list[DraftChunk]] = {}
+        for child in descendants:
+            if child.parent_chunk_id is not None:
+                children.setdefault(child.parent_chunk_id, []).append(child)
+
+        steps: list[str] = []
+
+        def restore(node: DraftChunk, placement: str) -> str:
+            kids = children.get(node.chunk_id, [])
+            text = node.text
+            if node.chunk_kind in ("ulist", "olist"):
+                # The public put requires text even for structural list nodes.
+                text = text if text.strip() else "Restored list"
+            elif not text.strip():
+                text = next(
+                    (
+                        e["prev_text"]
+                        for e in self.store.drafts.chunk_events(node.chunk_id)
+                        if (e["prev_text"] or "").strip()
+                    ),
+                    "",
+                )
+            if text:
+                new_handle = f"restored_{node.dc}"
+                steps.append(
+                    f"{new_handle} = put(kind={node.kind!r}, id={draft_id!r}, "
+                    f"chunk_kind={node.chunk_kind!r}, text={text!r}, at={placement})"
+                )
+                child_at = f"{{'into': {new_handle}, 'last': True}}"
+                for child in kids:
+                    child_at = restore(child, child_at)
+                return f"{{'after': {new_handle}}}"
+
+            # A textless wrapper has no payload to put. Its children take its slot.
+            for child in kids:
+                placement = restore(child, placement)
+            return placement
+
+        restore(chunk, at)
+        if not steps:
+            return [
+                "No recoverable text found. Read view='history' for the recorded events."
+            ]
+        return [
+            "Restore text with these puts in order. For each restored_* variable, "
+            "use the new chunk handle from that put's acknowledgment.",
+            *steps,
+        ]
 
     def _children_hint(self, chunk: Any) -> str:
         """Pointer on a single-chunk read when the chunk has live children:
