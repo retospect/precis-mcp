@@ -190,11 +190,12 @@ def _make_skill_prompt_fn(runtime: PrecisRuntime, slug: str):
 def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
     """Resolve ``PRECIS_STARTUP_SKILLS`` to the surviving pinned set.
 
-    Honours the cap and silently drops unknowns — the banner notice
-    from :mod:`precis.startup_skills.format_banner` already surfaces
-    those errors. Resolution runs once per ``register_skill_prompts``
-    call; the returned set is immutable so callers can use it as a
-    membership-test only.
+    Silently drops unknowns — the banner notice from
+    :mod:`precis.startup_skills.format_banner` already surfaces those
+    errors. Not body-size-capped: only names/tags ride on this path
+    (gr681315). Resolution runs once per
+    ``register_skill_prompts`` call; the returned set is immutable so
+    callers can use it as a membership-test only.
     """
     from precis import startup_skills
 
@@ -202,8 +203,7 @@ def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
     slugs = startup_skills.parse(getattr(config, "startup_skills", None))
     if not slugs:
         return frozenset()
-    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
-    result = startup_skills.resolve(slugs, cap_kb=cap_kb)
+    result = startup_skills.resolve(slugs)
     return frozenset(result.pinned)
 
 
@@ -261,7 +261,7 @@ def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     duplicated.
 
     Skills listed in ``PRECIS_STARTUP_SKILLS`` and surviving the
-    cap-and-lookup resolution land with a ``pinned`` tag so modern
+    lookup resolution land with a ``pinned`` tag so modern
     MCP clients can prioritise the operator-recommended starting
     set.
     """

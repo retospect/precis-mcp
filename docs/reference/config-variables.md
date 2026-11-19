@@ -253,7 +253,7 @@ as "no matches". 4 of anyio's 40 leaves ~90% of the pool for verbs that
 never touch the embedder, and matches the service's own
 `PRECIS_EMBEDDER_MAX_INFLIGHT`. Workers are deliberately unwrapped, as
 are bulk CLI passes via `build_runtime(interactive=False)`.
-`PRECIS_STARTUP_SKILLS_CAP_KB` (50), `PRECIS_INPROC_CONCURRENCY` (1),
+`PRECIS_INPROC_CONCURRENCY` (1),
 `PRECIS_CLUSTER_INTERVAL_HOURS` (20), good-search knobs
 (`PRECIS_GOOD_SEARCH_*` — heartbeat 180, deadline 1200, slices 30, pool
 100, per-paper 3, max-children 4), quest allocator

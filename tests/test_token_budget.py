@@ -430,7 +430,6 @@ def test_instructions_under_relaxed_budget_with_features() -> None:
 
     config = PrecisConfig(
         startup_skills="precis-overview,precis-search-help,precis-patent-help",
-        startup_skills_cap_kb=50,
         kinds_disabled="patent",
     )
     rt = PrecisRuntime(config=config, hub=cast(Hub, _FakeHub()))
@@ -505,8 +504,7 @@ def test_env_var_parsers_share_semantics(
     """
     from precis import default_tags, kind_gate, startup_skills
 
-    # startup_skills.parse returns a list (operator order matters
-    # for drop-tail truncation); the others return a tuple/frozenset.
+    # startup_skills.parse returns a list in banner order.
     # Compare on contents not container.
     assert tuple(startup_skills.parse(value)) == expected
     assert default_tags.parse(value) == expected
