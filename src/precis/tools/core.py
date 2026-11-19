@@ -2759,22 +2759,17 @@ def edit(
     (`text=''` deletes the matched span);
     `insert` needs `find=`, `text=`, `where='before'|'after'`;
     `append` / `replace` need `text=`.
-    `replace` with `id='slug~selector'` rewrites one chunk.
 
     `mode=` defaults to `find-replace`; kinds excluding it refuse with
     options. todo uses `text=`/`body=`; memory takes `ops=[{find,text,...}]`;
     quest wants 'replace' (explicit). Other kinds' sets are per kind —
     the table is precis-edit-help's; paper, structure ignore it.
+    Draft: `replace-content` rewrites a block; insert recipes:
+    precis-edit-help.
 
-    Draft accepts `mode='replace-content'` for a block rewrite and
-    `mode='insert'` with `find=`, `text=`, and `where='before'|'after'`
-    to insert text around an anchor within a chunk. To add a paragraph
-    next to a chunk, use `put(kind='draft', id='<draft>', text='…',
-    args={'at': {'before': 'dc<id>'}})` (or use `after`).
-
-    Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
-    edit. `dry_run=True` previews; `reason=` why.
+    Anchors: `before=` / `after=` / `match=` / `nth=`. `base_sha=`
+    (python `~L`: the read's `sha=`) refuses a stale edit.
+    `dry_run=True` previews; `reason=` why.
     `text={'$ref': '<handle>'}` = its body (needs a recent exact `get`).
 
     Full reference: get(kind='skill', id='precis-edit-help').
@@ -2996,13 +2991,10 @@ def tag(
     are free-form. Bad axis on a kind raises
     `[error:BadInput] axis not allowed on kind 'K'`.
 
-    Per-kind closed-prefix gating (summary):
-    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
-    finding: unrestricted. job: STATUS (lifecycle subsets).
-    memory: SPACE+MOVE (DREAM/STALE are system-set).
-    anki/conv: none. paper: SRC+CACHE+DREAM+categorizer axes; patent: SRC+CACHE.
-    web/perplexity-*/websearch/youtube: CACHE+WATCH.
-    oracle/skill: none. python/calc/math: tag unsupported.
+    Per-kind closed-prefix gating (matrix: `precis-tags`):
+    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO. job: STATUS.
+    memory: SPACE+MOVE. paper/patent: SRC+CACHE (+DREAM on paper).
+    finding: unrestricted. python/calc/math: tag unsupported.
 
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.

@@ -46,6 +46,10 @@ from precis.skill_eval.report import (
 )
 from precis.skill_eval.runners import ExecutedClaudeRunner
 
+#: git calls hang rather than fail on a dying filesystem/lock; bound them
+#: like the other repo git helpers (``_GIT_TIMEOUT_S = 30`` convention).
+_GIT_TIMEOUT_S = 30
+
 #: Where retained review reports live — the selector's "previously
 #: failed" input and the sampler's memory across runs.
 CACHE_DIR = Path("~/.cache/precis/skill-discovery").expanduser()
@@ -177,6 +181,7 @@ def changed_skills_since(date_str: str, *, repo: Path = Path(".")) -> set[str]:
         text=True,
         encoding="utf-8",
         check=True,
+        timeout=_GIT_TIMEOUT_S,
     ).stdout
     return {Path(line).stem for line in out.splitlines() if line.endswith(".md")}
 
@@ -192,10 +197,11 @@ def _revision(spec: str, *, repo: Path = Path(".")) -> str | None:
                 text=True,
                 encoding="utf-8",
                 check=True,
+                timeout=_GIT_TIMEOUT_S,
             ).stdout.strip()
             or None
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
 
 
