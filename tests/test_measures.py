@@ -1134,6 +1134,43 @@ def test_a_unitless_count_is_not_an_outlier(
     assert _row(store, big.output_id)["meta"].get("escalation") is None
 
 
+def test_a_bare_one_count_is_not_an_outlier(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr722340: the extractor writes '1' for a unitless cell on a
+    # canonical-'1' measurand — that bare token is the unitless case too.
+    count = _taxon(store, "conformer count", unit="1", parent=world["start"])
+    for v in ("100", "150", "170", "200"):
+        store.insert_measure(
+            MeasureSpec(count, v, world["paper"], reported_unit="1"),
+            actor="reader",
+        )
+    big = store.insert_measure(
+        MeasureSpec(count, "1132808", world["paper"], reported_unit="1"),
+        actor="reader",
+    )
+    assert _row(store, big.output_id)["meta"].get("escalation") is None
+
+
+def test_a_spelled_unit_ratio_keeps_the_outlier_check(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr722340: the exemption is on the reading, not the measurand — a ratio
+    # reported in '%' keeps the check though it stores under canonical '1'.
+    yield_tax = _taxon(store, "reaction yield", unit="1", parent=world["start"])
+    for v in ("90", "85", "95", "88"):
+        store.insert_measure(
+            MeasureSpec(yield_tax, v, world["paper"], reported_unit="%"),
+            actor="reader",
+        )
+    outlier = store.insert_measure(
+        MeasureSpec(yield_tax, "900000", world["paper"], reported_unit="%"),
+        actor="reader",
+    )
+    (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
+    assert esc["rule"] == "implausible_value"
+
+
 def test_a_thin_distribution_flags_nothing(store: Store, world: dict[str, Any]) -> None:
     store.insert_measure(
         MeasureSpec(world["energy"], "1", world["paper"], reported_unit="eV"),

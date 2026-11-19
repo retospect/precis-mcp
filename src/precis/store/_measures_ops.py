@@ -42,7 +42,9 @@ whose product has no formula, lands in ``meta.escalation`` (a list of
 flags join them (needs-review, never a drop): ``implausible_value`` — the
 canonical value sits ``_OUTLIER_DECADES`` or more orders of magnitude off the
 measurand's live median, which is what a stripped ``µ`` looks like ("6 µm"
-extracts as "6 m", gr228594) — and ``glyph_suspected`` — the source paper's
+extracts as "6 m", gr228594); the check skips a reading that states no unit
+(nothing, or the bare ``'1'``) since a bare count's spread is real
+(gr722340) — and ``glyph_suspected`` — the source paper's
 extracted text carries the ingest ``glyph_health`` flag (gr228652). The
 required names come from the output measurand taxon's ``meta.required_conditions``
 and those of every ancestor along ``specialises`` (union); an input row
@@ -998,12 +1000,14 @@ class MeasuresMixin:
         price_year: int | None = None,
         currency_taxon: bool = False,
         canonical_unit: str | None = None,
+        reported_unit: str | None = None,
     ) -> list[dict[str, Any]]:
         """Slice-8 sanity flags on an output row (canonical ``values`` are
         ``(value_num, value_low, value_high)``). Both are needs-review, never
         a refusal or a drop: ``implausible_value`` when a reading sits
         ``_OUTLIER_DECADES`` or more orders of magnitude from the measurand's
-        live median (unitless measurands are exempt: no unit, no stripped µ),
+        live median (a reading that states no unit — nothing or the bare
+        ``'1'`` — is exempt: a bare count has no prefix to strip),
         and ``glyph_suspected`` when the source paper carries the
         ingest glyph-health flag. The median is computed per effective
         ``(currency, price_year)`` group — a NULL year is its own group;
@@ -1014,10 +1018,13 @@ class MeasuresMixin:
         in the one group and no unit is parsed."""
         out: list[dict[str, Any]] = []
         nums = [float(v) for v in values if v is not None and v != 0]
-        # A stripped µ needs a unit to strip: a unitless count (dataset size,
-        # number of conformations) has no prefix to lose, and its spread across
-        # unrelated uses is real, not an extraction artefact (gr722340).
-        if canonical_unit in (None, "", "1"):
+        # A stripped µ needs a unit to strip: a reading that states no unit
+        # (none, or the bare '1' the extractor writes for a unitless cell on a
+        # canonical-'1' measurand) has no prefix to lose, and its spread across
+        # unrelated uses — dataset sizes, conformation counts — is real, not
+        # an extraction artefact (gr722340). A spelled unit keeps the check:
+        # '95 %' on a canonical-'1' yield still carries a scale.
+        if (reported_unit or "").strip() in ("", "1"):
             nums = []
         if nums:
             if currency is None and not currency_taxon:
@@ -1351,6 +1358,7 @@ class MeasuresMixin:
                     price_year=price_year,
                     currency_taxon=is_currency_taxon,
                     canonical_unit=canonical,
+                    reported_unit=reported_unit,
                 )
             )
         if escalation:

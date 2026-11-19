@@ -308,7 +308,9 @@ put(kind="measure", text="95",
   `flagged:` lines for anything flagged, each with its reason: a
   `meta.escalation` entry — a missing required condition, no molar mass, an
   `implausible_value` (the canonical value sits 3+ orders of magnitude off the
-  measurand's live median — a stripped µ looks exactly like that) or
+  measurand's live median — a stripped µ looks exactly like that; a reading
+  with no stated unit, or the bare `1`, skips it since a bare count has no
+  prefix to strip) or
   `glyph_suspected` (the source paper's extracted text is flagged) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 
