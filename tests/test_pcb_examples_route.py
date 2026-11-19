@@ -44,13 +44,22 @@ pad's side off the routed pose, VBUS routes and GND/3V3 fail on
 legalise spacing instead. The numbers document the baseline; the
 assertion always targets complete routing at DRC 0. Strict xfails turn a
 completed board into a loud XPASS.
+
+The three nano boards route for 25-90 minutes each, longer than any
+sharded CI job runs: they carry ``_LONG_BOARD`` and run only where
+``PRECIS_PCB_LONG_BOARDS=1`` — check.yml's nightly ``long-boards`` job.
+Locally: ``PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" scripts/test
+tests/test_pcb_examples_route.py``.
 """
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 from precis.pcb import local
 from tests._script import load_script
@@ -61,6 +70,22 @@ BOARD_NAMES = sorted(
     path.name
     for path in (ROOT / "examples/boards").iterdir()
     if path.is_dir() and (path / "main.py").is_file()
+)
+#: Opt-in for the boards marked ``_LONG_BOARD``; check.yml's nightly
+#: ``long-boards`` job sets it, every other lane skips them.
+LONG_BOARDS_ENV = "PRECIS_PCB_LONG_BOARDS"
+# A board whose route outlasts a CI shard. They were nightly-marked into
+# test-linux shard 7 (40-minute job cap) and r2 alone runs 5371 s, so the
+# shard was cancelled on both Pythons for 11 nightlies running
+# (2026-11-08..18, e.g. run 44322386479) and nothing behind them in the
+# shard got a verdict; on macOS nano still held one of three workers when
+# that shard's 90-minute cap hit.
+_LONG_BOARD = pytest.mark.skipif(
+    os.environ.get(LONG_BOARDS_ENV) != "1",
+    reason=(
+        "long board: runs in check.yml's nightly long-boards job "
+        f"({LONG_BOARDS_ENV}=1 opts in)"
+    ),
 )
 BOARD_MARKS = {
     "usbc_attiny": [
@@ -90,6 +115,7 @@ BOARD_MARKS = {
         ),
     ],
     "nano": [
+        _LONG_BOARD,
         pytest.mark.slow,
         pytest.mark.nightly,
         pytest.mark.timeout(3600),
@@ -103,6 +129,7 @@ BOARD_MARKS = {
         ),
     ],
     "nano_usb_pd": [
+        _LONG_BOARD,
         pytest.mark.slow,
         pytest.mark.nightly,
         pytest.mark.timeout(3600),
@@ -116,10 +143,14 @@ BOARD_MARKS = {
         ),
     ],
     "nano_usb_pd_r2": [
+        _LONG_BOARD,
         pytest.mark.slow,
         pytest.mark.nightly,
-        # Measured 5371 s baseline plus ~1.5x margin, as for the nano rows.
-        pytest.mark.timeout(8100),
+        # Measured 5371 s on a dev host. 3x, not the nano rows' ~1.5x: it
+        # runs only in check.yml's long-boards job, on a hosted runner no
+        # leg has finished it on yet — tighten once that job's junit has a
+        # measured time.
+        pytest.mark.timeout(16200),
         pytest.mark.xfail(
             strict=True,
             raises=AssertionError,
@@ -130,6 +161,9 @@ BOARD_MARKS = {
         ),
     ],
 }
+LONG_BOARDS = sorted(
+    name for name, marks in BOARD_MARKS.items() if _LONG_BOARD in marks
+)
 
 
 def test_expected_failure_board_names_exist() -> None:
@@ -137,6 +171,39 @@ def test_expected_failure_board_names_exist() -> None:
     assert not stale_names, (
         f"Expected-failure board names no longer exist: {sorted(stale_names)}; "
         f"discovered boards: {BOARD_NAMES}"
+    )
+
+
+def test_long_boards_job_runs_exactly_the_long_boards() -> None:
+    """check.yml's nightly ``long-boards`` job is the only lane that runs
+    the ``_LONG_BOARD`` params: it must name exactly them, set the opt-in,
+    run on the nightly shape only, and outlast the longest board's own
+    timeout mark — a test timeout above its job's cap is a cancel with no
+    verdict, which is how shard 7 lost 11 nightlies."""
+    jobs = yaml.safe_load(
+        (ROOT / ".github/workflows/check.yml").read_text(encoding="utf-8")
+    )["jobs"]
+    job = jobs["long-boards"]
+    step = next(s for s in job["steps"] if LONG_BOARDS_ENV in (s.get("env") or {}))
+    assert step["env"][LONG_BOARDS_ENV] == "1"
+    named = re.findall(
+        r"test_pcb_examples_route\.py::test_example_routes_fully_at_drc_zero\[(\w+)\]",
+        step["run"],
+    )
+    assert sorted(named) == LONG_BOARDS == sorted(set(LONG_BOARDS) & set(BOARD_NAMES))
+    # One xdist worker per board: the cap below is the longest single
+    # board, not their sum.
+    assert f"-n {len(LONG_BOARDS)} " in step["run"]
+    assert job["if"] == jobs["coverage-db"]["if"]
+    longest = max(
+        mark.args[0]
+        for name in LONG_BOARDS
+        for mark in BOARD_MARKS[name]
+        if mark.name == "timeout"
+    )
+    assert job["timeout-minutes"] * 60 >= longest + 600, (
+        f"long-boards caps at {job['timeout-minutes']} min but a board may run "
+        f"{longest} s: raise the job's timeout-minutes with the timeout mark"
     )
 
 
