@@ -39,7 +39,7 @@ legacy `[pc<id>]`/`[pa<id>]` cites into hub cites in bulk** →
 
 ```python
 search(kind="finding", tags=["TAPROOT:claim"])  # every claim hub
-get(id="fi42", view="evidence")  # originators / corroborators / contradicts
+get(id="fi42", view="evidence")  # originators / corroborators / contradicts + passages
 ```
 
 A hub surfaces in the **default** `finding` search — no `status=`
@@ -63,6 +63,14 @@ not stored — whichever supporter(s) the *other* supporters' citations
 converge on (`src/precis/taproot/seniority.py::derive_evidence`, over
 the held `cites` graph). No intra-supporter citation edge held → every
 supporter stays `corroborates` (never guessed).
+
+**A setup mismatch never counts as support.** A support edge whose
+recorded verdict says `same_setup: false` (on the edge meta or its
+`widen`/`reground`/`inbound_ground` verdict) is excluded before the
+seniority split, even with `support: yes` — so the citation fallback
+cannot revive it either. The evidence view lists it on an `excluded
+evidence (not counted as support)` line with rule `setup mismatch`. A
+missing comparison stays unknown, not a mismatch.
 
 Attaching evidence from a paper tagged `multi-article` (one stored body bundling several articles) succeeds but the response carries an advisory: confirm the cited passage's page carries that paper's own title or DOI before relying on the edge.
 
@@ -104,7 +112,7 @@ becomes its own hub through the directed-mint path and the pair gets a
 body just finished embedding, ANN-matches its passages against the
 claim-hub index (top-k hubs, default 5), verifies each near pair with
 the shared chase verifier (capped per paper) and writes the verdict:
-support → a chunk-grounded `corroborates` edge born certified
+support (never with `same_setup: false`) → a chunk-grounded `corroborates` edge born certified
 (`meta.verified_by='inbound-ground'`), a same-setup contradiction → a
 non-blocking `disputes` edge (`meta.via='inbound_ground'`), neutral →
 the hub's rejection memo only. No citation path is needed. The paper
@@ -141,7 +149,9 @@ passages of one paper become **two edges** ("the set of chunks that
 support this point"). Omit `source_handle` and the edge falls back to a
 coarse ref-level `pa<id>` — the whole paper, no passage — exactly what
 makes a claim tree hard to walk. Always ground the edge when you know
-the chunk. See `precis-fisheye-help`'s Claims group (`fisheye+1hop` on
+the chunk. The evidence view's `passages` column lists every grounding
+handle behind each paper row (a patent row: its whole family). See
+`precis-fisheye-help`'s Claims group (`fisheye+1hop` on
 prose that cites a hub) for the read-time render.
 
 **Patent evidence grounds in description text, not legal claims.** A
