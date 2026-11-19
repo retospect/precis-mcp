@@ -1187,6 +1187,116 @@ class TestDispatchSurface:
         """Every registered handler either has the ladder or says why not."""
         assert MeasureHandler.spec.is_numeric and MeasureHandler.spec.kind == "measure"
 
+    def test_put_run_through_slim_args_reason_and_items(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """gr716949: the slim schema hides ``items=``/``reason=`` (they are
+        not CORE_PARAMS), so the skills document them inside ``args=``.
+        That spelling must write the full run: ``args['items']`` promotes to
+        the handler's top-level ``items=`` and ``args['reason']`` hoists to
+        the revision context — silently dropping the input rows would leave
+        every condition unrecorded."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        verb = make_slim_verb("put", mounted.put)
+        out = self._text(
+            verb(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                args={
+                    "reason": "read-paper pa1",
+                    "items": TestPutRun._items(),
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        assert "deprecated" not in out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+        rows = [store.measure_detail(i) for i in ids]
+        assert {r["direction"] for r in rows} == {"output", "input"}
+
+    def test_put_run_through_slim_top_level_items_is_deprecated_but_works(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """The pre-slim top-level spelling still lands (folded into ``args=``
+        with a deprecation note) so legacy callers do not silently no-op."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        verb = make_slim_verb("put", mounted.put)
+        out = self._text(
+            verb(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                items=TestPutRun._items(),
+                reason="read-paper pa1",
+            )
+        )
+        assert "[error:" not in out, out
+        assert "deprecated" in out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+
+    def test_put_run_full_verb_args_reason_and_items(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """The full (non-slim) verb has no promotion layer: the documented
+        ``args={'reason':…, 'items':[…]}`` spelling must still write the
+        input rows, not drop them silently."""
+        out = self._text(
+            mounted.put(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                args={
+                    "reason": "read-paper pa1",
+                    "items": TestPutRun._items(),
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+
+    def test_review_through_slim_args_spelling(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """td730858 moved the review spelling into ``args=`` too; pin it."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        run = _put(
+            store,
+            w,
+            "fe",
+            "95",
+            unit="%",
+            reference="RHE",
+            tier="measured",
+            source_attribution="own_work",
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            conds=(
+                _cond(w, "product", "NH3", label="product"),
+                _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
+            ),
+        )
+        verb = make_slim_verb("edit", mounted.edit)
+        out = self._text(
+            verb(
+                kind="measure",
+                id=f"mx{run.output_id}",
+                text="95 is printed in the anchor sentence",
+                args={
+                    "review": "model",
+                    "verdict": "approved",
+                    "meta": {"model": "claude-opus-5-5"},
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        assert "approved" in out
+
 
 class TestGetRow:
     def _measured(self, store: Store, w: dict[str, Any]) -> Any:
