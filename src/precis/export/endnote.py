@@ -347,22 +347,24 @@ def add_citation_field(
 
 
 def add_reflist_field(doc: Any, cached_lines: list[str]) -> None:
-    """Append the ``ADDIN EN.REFLIST`` bibliography field. EndNote
-    regenerates the list on update, so ``cached_lines`` is just placeholder
-    text shown until then (one paragraph per reference, matching how EndNote
-    lays the formatted list out)."""
-    from docx.oxml import OxmlElement
+    """Append one ``ADDIN EN.REFLIST`` field spanning the cached entries."""
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.shared import Inches
 
-    para = doc.add_paragraph()
-    p = para._p
+    style_name = "EndNote Bibliography"
+    if style_name not in doc.styles:
+        style = doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+        style.base_style = doc.styles["Normal"]
+        style.paragraph_format.left_indent = Inches(0.5)
+        style.paragraph_format.first_line_indent = Inches(-0.5)
+
+    p = doc.add_paragraph(style=style_name)._p
     p.append(_fld_char("begin"))
     p.append(_instr_text(" ADDIN EN.REFLIST "))
     p.append(_fld_char("separate"))
     for i, line in enumerate(cached_lines):
         if i:
-            br = OxmlElement("w:r")
-            br.append(OxmlElement("w:br"))
-            p.append(br)
+            p = doc.add_paragraph(style=style_name)._p
         p.append(_cached_run(line))
     p.append(_fld_char("end"))
 

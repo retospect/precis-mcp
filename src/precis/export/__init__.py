@@ -15,6 +15,10 @@ reapplying the retracted-citation gate. Word stays read-only; both formats
 place shared coverage warnings after Unverified claims so an unchecked
 citation cannot silently read as clean.
 
+Word's EndNote mode keeps the cached bibliography in one ``EN.REFLIST``
+field spanning styled paragraphs, so each entry has a hanging indent and
+can be edited in Word before EndNote regenerates the list.
+
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
 claim artifacts" (:mod:`._nanopub_appendix`), and the "Data package"
