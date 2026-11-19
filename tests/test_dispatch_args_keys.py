@@ -30,55 +30,6 @@ from precis.store import Store
 from precis.user_context import user_scope
 from precis.users import PasswordRecord
 
-#: (kind, verb) for every in-repo handler verb that declares ``args``.
-PASSTHROUGH = [
-    ("learning", "get"),
-    ("learning", "put"),
-    ("learning", "edit"),
-    ("todo", "search"),
-    ("todo", "delete"),
-    ("gripe", "delete"),
-    ("measure", "search"),
-    # measure.put's recheck door reads args{'papers','dry_run'}
-    # (gr506762 subset-4)
-    ("measure", "put"),
-    ("draft", "get"),
-    ("python", "get"),
-    ("pcb", "put"),
-    ("pcb", "get"),
-    ("cad", "get"),
-    ("component", "put"),
-    ("component", "get"),
-    ("quest", "get"),
-    ("paper", "get"),
-    ("paper", "edit"),
-    ("structure", "put"),
-    ("structure", "edit"),
-    ("structure", "get"),
-    ("random", "get"),
-    ("time", "get"),
-    ("paper", "put"),
-    ("paper", "delete"),
-    ("datasheet", "put"),
-    ("datasheet", "edit"),
-    ("youtube", "put"),
-    ("pres", "edit"),
-    # handle.get's spoken-name resolve door reads args{'kind'} (gr634708).
-    ("handle", "get"),
-    # llm.put's owner account door reads args{'account'} (0280, td568204)
-    ("llm", "put"),
-    # Plugin handlers (entry point group ``precis.handlers``).
-    ("estimate", "get"),
-    ("pathway", "get"),
-    ("pathway", "put"),
-    # pathway.search's meta filters (candidate/engine/status/tier) ride
-    # args= (gr592660).
-    ("pathway", "search"),
-    ("se", "get"),
-    ("se", "put"),
-    ("se", "edit"),
-]
-
 
 def _handler_class(runtime: PrecisRuntime, kind: str) -> type[Handler]:
     return type(runtime.hub.handlers[kind])
@@ -730,6 +681,36 @@ def test_get_extent_refuses_stray_args(runtime_with_store: PrecisRuntime) -> Non
     assert "extent='fisheye'" in out, out
 
 
+def _load_kind_classes() -> dict[str, type[Handler]]:
+    out: dict[str, type[Handler]] = {}
+    for mod in pkgutil.iter_modules(handlers_pkg.__path__):
+        m = importlib.import_module(f"precis.handlers.{mod.name}")
+        for _, cls in inspect.getmembers(m, inspect.isclass):
+            spec = cls.__dict__.get("spec")
+            if issubclass(cls, Handler) and spec is not None:
+                out[spec.kind] = cls
+    # Plugin packages register through the ``precis.handlers`` entry point.
+    for ep in entry_points(group="precis.handlers"):
+        cls = ep.load()
+        if inspect.isclass(cls) and issubclass(cls, Handler):
+            out[cls.spec.kind] = cls
+    return out
+
+
+_KIND_CLASS = _load_kind_classes()
+
+
+# Share discovery across the declaration check and parametrized tests so
+# every passthrough verb receives coverage as soon as it is added.
+PASSTHROUGH = sorted(
+    (kind, verb)
+    for kind, cls in _KIND_CLASS.items()
+    for verb in ("get", "put", "edit", "search", "delete")
+    if (fn := cls.__dict__.get(verb)) is not None
+    and "args" in inspect.signature(fn).parameters
+)
+
+
 @pytest.mark.parametrize(("kind", "verb"), PASSTHROUGH)
 def test_junk_args_key_rejected_naming_accepted_keys(
     runtime_with_store: PrecisRuntime, kind: str, verb: str
@@ -751,27 +732,8 @@ def _declared_cases() -> list[tuple[str, str, str]]:
     cases: list[tuple[str, str, str]] = []
     for kind, verb in PASSTHROUGH:
         cls = _KIND_CLASS[kind]
-        cases.extend((kind, verb, k) for k in sorted(cls.ARGS_KEYS[verb]))
+        cases.extend((kind, verb, k) for k in sorted(cls.ARGS_KEYS.get(verb, ())))
     return cases
-
-
-def _load_kind_classes() -> dict[str, type[Handler]]:
-    out: dict[str, type[Handler]] = {}
-    for mod in pkgutil.iter_modules(handlers_pkg.__path__):
-        m = importlib.import_module(f"precis.handlers.{mod.name}")
-        for _, cls in inspect.getmembers(m, inspect.isclass):
-            spec = cls.__dict__.get("spec")
-            if issubclass(cls, Handler) and spec is not None:
-                out[spec.kind] = cls
-    # Plugin packages register through the ``precis.handlers`` entry point.
-    for ep in entry_points(group="precis.handlers"):
-        cls = ep.load()
-        if inspect.isclass(cls) and issubclass(cls, Handler):
-            out[cls.spec.kind] = cls
-    return out
-
-
-_KIND_CLASS = _load_kind_classes()
 
 
 @pytest.mark.parametrize(("kind", "verb", "key"), _declared_cases())
@@ -790,17 +752,11 @@ def test_declared_args_key_not_rejected(
 
 def test_every_args_passthrough_verb_declares_its_keys() -> None:
     """A new ``args: dict`` verb without ``ARGS_KEYS`` fails here, loudly."""
-    found = []
-    for kind, cls in _KIND_CLASS.items():
-        for verb in ("get", "put", "edit", "search", "delete"):
-            fn = cls.__dict__.get(verb)
-            if fn is None or "args" not in inspect.signature(fn).parameters:
-                continue
-            found.append((kind, verb))
-            assert verb in cls.ARGS_KEYS, (
-                f"{cls.__name__}.{verb} declares args but ARGS_KEYS lacks it"
-            )
-    assert sorted(found) == sorted(PASSTHROUGH)
+    for kind, verb in PASSTHROUGH:
+        cls = _KIND_CLASS[kind]
+        assert verb in cls.ARGS_KEYS, (
+            f"{cls.__name__}.{verb} declares args but ARGS_KEYS lacks it"
+        )
 
 
 def test_plugin_handlers_are_discovered() -> None:
