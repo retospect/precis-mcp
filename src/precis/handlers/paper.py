@@ -1139,7 +1139,8 @@ class PaperHandler(Handler):
         ``put(kind='paper', id=<stub>, args={'pdf_url': 'https://…'})`` is
         the door for a known-legal PDF the OA fetcher cannot find: it queues
         a ``paper_pull`` job that drops the PDF into the ingest inbox for
-        that body-less stub (:meth:`_queue_pdf_pull`).
+        that stub or short held article preview
+        (:meth:`_queue_pdf_pull`).
 
         ``put(kind='paper', id=<slug>, mode='fetch-si')`` is the one other
         door: it queues a supplementary-information fetch for an existing
@@ -1455,7 +1456,7 @@ class PaperHandler(Handler):
 
     def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:
         """Queue a ``paper_pull`` job feeding an agent-supplied PDF URL to a
-        body-less stub. Refuses a non-paper and a bodied stub up front; the job fetches (``safe_stream``) and drops PDF + sidecar
+        stub or short held article preview. Refuses other complete refs; the job fetches (``safe_stream``) and drops PDF + sidecar
         in the ingest inbox — the MCP server fetches nothing."""
         from urllib.parse import urlsplit
 
@@ -1475,7 +1476,7 @@ class PaperHandler(Handler):
                 next="use a publisher, repository or author-hosted open copy",
             )
         slug, ref_id = self._resolve_paper_slug(id)
-        problem = paper_pull.target_problem(self.store, ref_id)
+        problem = paper_pull.target_problem(self.store, ref_id, allow_preview=True)
         if problem is not None:
             raise BadInput(
                 f"{slug} {problem}",

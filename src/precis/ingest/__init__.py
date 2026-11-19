@@ -18,6 +18,11 @@ body. A matching source and quote enter ordinary citation chase; retained
 verifier metadata never establishes trust. Bodyless papers safely leave staged
 findings untouched (``finding_drafts.py``).
 
+Short held article previews can take a longer agent-supplied PDF through
+``paper_pull``. Hash-pinned ingest replaces the body only on growth, keeping
+the old PDF alias and journaling both hashes and the source URL. Failed
+downloads or extractions leave the old body available.
+
 Identifier trust (td730803): a prefixed ``arxiv:``/``doi:`` S2 single-id
 lookup must echo the requested id, so its record always carries it. An
 S2-attributed DOI on a stub put is kept only if the DOI registries

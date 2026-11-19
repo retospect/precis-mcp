@@ -238,7 +238,8 @@ stays unfindable repairs in place (`title=`, `authors=`, `doi=`, `year=`,
 See [[precis-paper-ref-help]] — identifier repair, `merge_into`,
 `redirect_to`, `retire`, the body doors (`drop_body`/`move_body_to`/
 `split_body`/`clear_abstract`), `clear_stamp`, and `put` with
-`args={'pdf_url': …}` to attach a legal open copy to a body-less stub.
+`args={'pdf_url': …}` to attach a legal open copy to a body-less stub or
+replace a short held preview with the full paper.
 No fetchable copy? A person can also hand-drop the PDF into the papers
 inbox — named `pa<id>.pdf` it folds into a body-less stub
 ([[precis-paper-ref-help]] covers the drop mechanics).
