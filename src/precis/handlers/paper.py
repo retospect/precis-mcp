@@ -2587,12 +2587,16 @@ class PaperHandler(Handler):
                 next=(f"get(id='{_pa(ref)}', view='comments', args={{'comments': 5}})"),
             )
 
-        # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
-        # Only ``view='toc'`` is valid with a chunk_spec; other views
-        # don't have a sensible "this range only" meaning yet.
+        # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down;
+        # ``slug~A..B`` + ``view='summaries'`` → the per-chunk summary
+        # list scoped to that range (gr714541: the summary list is the
+        # cheap way to survey a long body section, and the store read
+        # already accepts ``pos_range``). Other views stay ref-level.
         if chunk_spec is not None and effective_view is not None:
             if effective_view == "toc":
                 return self._render_toc(ref, scope=chunk_spec)
+            if effective_view == "summaries":
+                return self._render_summaries(ref, scope=chunk_spec)
             # Build the full id string first, then repr() it whole — the
             # MCP critic flagged ``id={slug!r}~{lo}..{hi}/toc`` as
             # producing ``id='slug'~38..38/toc`` (slug repr'd, suffix
@@ -11453,8 +11457,12 @@ class PaperHandler(Handler):
             embedder=self.embedder,
         )
 
-    def _render_summaries(self, ref: Ref) -> Response:
-        """``view='summaries'`` — per-chunk summary list for the whole body.
+    def _render_summaries(
+        self, ref: Ref, *, scope: tuple[int, int] | None = None
+    ) -> Response:
+        """``view='summaries'`` — per-chunk summary list for the whole body,
+        or for one chunk range when ``get`` carries a ``~A..B`` selector
+        (gr714541).
 
         One row per body chunk: its ``ord`` handle, the ``llm-v1`` summary
         (``chunk_summaries``), and the KeyBERT keyword string. This is the
@@ -11466,8 +11474,12 @@ class PaperHandler(Handler):
         fallback the reader falls back to. For a clustered overview use
         ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
         """
-        summaries = self.store.chunks.chunk_llm_summaries_for_ref(ref.id)
+        summaries = self.store.chunks.chunk_llm_summaries_for_ref(
+            ref.id, pos_range=scope
+        )
         if not summaries:
+            if scope is not None:
+                raise _blocks_range_not_found(self.store, ref, scope[0], scope[1])
             return Response(
                 body=(
                     f"# {_pa(ref)} — no body chunks to summarise\n\n"
@@ -11497,6 +11509,8 @@ class PaperHandler(Handler):
         head = (
             f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm summary"
         )
+        if scope is not None:
+            head += f" (range ~{scope[0]}..{scope[1]})"
         table = render_agent_table(
             rows, schema=["handle", "summary", "keywords", "size"]
         )

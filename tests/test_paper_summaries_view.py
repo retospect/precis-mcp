@@ -65,6 +65,32 @@ def test_summaries_view_lists_every_chunk_with_summary_and_keywords(
     assert "alpha" in out
 
 
+def test_summaries_view_scoped_to_chunk_range(store: Store) -> None:
+    """gr714541: ``id='pa<N>~lo..hi', view='summaries'`` narrows the
+    per-chunk summary list to the range instead of refusing the
+    combination; an out-of-range selector is a NotFound naming the valid
+    range, same as a plain chunk read."""
+    import pytest
+
+    from precis.errors import NotFound
+
+    hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
+    handler = PaperHandler(hub=hub)
+    ref_id = _seed_paper(store, slug="ranged07", n=6)
+    pa = handle_registry.format_handle("paper", ref_id)
+
+    out = handler.get(id=f"{pa}~2..4", view="summaries").body
+    assert out.startswith(f"# {pa} summaries")
+    assert "(range ~2..4)" in out
+    for i in (2, 3, 4):
+        assert f"{pa}~{i}" in out
+    for i in (0, 1, 5):
+        assert f"{pa}~{i}" not in out
+
+    with pytest.raises(NotFound, match="valid: ~0..5"):
+        handler.get(id=f"{pa}~40..49", view="summaries")
+
+
 def test_summaries_view_in_supported_views(store: Store) -> None:
     """The view is advertised, so an ``Unsupported`` on a typo lists it."""
     hub = Hub(store=store, embedder=MockEmbedder(dim=1024))
