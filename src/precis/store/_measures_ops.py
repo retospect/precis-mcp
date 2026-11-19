@@ -1003,7 +1003,8 @@ class MeasuresMixin:
         ``(value_num, value_low, value_high)``). Both are needs-review, never
         a refusal or a drop: ``implausible_value`` when a reading sits
         ``_OUTLIER_DECADES`` or more orders of magnitude from the measurand's
-        live median, and ``glyph_suspected`` when the source paper carries the
+        live median (unitless measurands are exempt: no unit, no stripped µ),
+        and ``glyph_suspected`` when the source paper carries the
         ingest glyph-health flag. The median is computed per effective
         ``(currency, price_year)`` group — a NULL year is its own group;
         ``currency``/``price_year`` are the new row's, a stored/legacy row's
@@ -1013,6 +1014,11 @@ class MeasuresMixin:
         in the one group and no unit is parsed."""
         out: list[dict[str, Any]] = []
         nums = [float(v) for v in values if v is not None and v != 0]
+        # A stripped µ needs a unit to strip: a unitless count (dataset size,
+        # number of conformations) has no prefix to lose, and its spread across
+        # unrelated uses is real, not an extraction artefact (gr722340).
+        if canonical_unit in (None, "", "1"):
+            nums = []
         if nums:
             if currency is None and not currency_taxon:
                 mags = sorted(

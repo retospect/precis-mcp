@@ -1120,6 +1120,20 @@ def test_an_order_of_magnitude_outlier_escalates_for_review(
     assert _row(store, clean.output_id)["meta"].get("escalation") is None
 
 
+def test_a_unitless_count_is_not_an_outlier(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr722340: a dataset size has no unit prefix to strip, so a total far
+    # above the median of unrelated counts is not flagged.
+    count = _taxon(store, "Count")
+    for v in ("100", "150", "170", "200"):
+        store.insert_measure(MeasureSpec(count, v, world["paper"]), actor="reader")
+    big = store.insert_measure(
+        MeasureSpec(count, "1132808", world["paper"]), actor="reader"
+    )
+    assert _row(store, big.output_id)["meta"].get("escalation") is None
+
+
 def test_a_thin_distribution_flags_nothing(store: Store, world: dict[str, Any]) -> None:
     store.insert_measure(
         MeasureSpec(world["energy"], "1", world["paper"], reported_unit="eV"),
