@@ -363,7 +363,7 @@ edit(kind="measure", id="mx12", text="95 is printed in the anchor sentence",
   not proof.
 - The answer is the review id, the verdict and the sha. `get(kind='measure',
   id=12)` lists it under `reviews:`.
-- **No other edit exists.** `edit(kind='measure')` without `review=` is
+- **No other edit exists.** `edit(kind='measure')` without `args={'review': ...}` is
   refused: rows are append-only. Correct a number with a new `put` carrying
   `meta.supersedes=<mx id>` (same measurand, subject, label).
 
