@@ -39,7 +39,10 @@ whole call as `ops[i]` (`precis-memory-help`). `finding` takes `replace`
 kinds either ignore `mode=` (metadata-patch edits on `paper`/`structure`)
 or don't support `edit` at all. A wrong `mode=` raises `BadInput`
 naming that kind's actual accepted set. Draft uses `replace-content` to
-rewrite a block's own content while keeping its children.
+rewrite a block's own content while keeping its children, and `insert`
+(needs `find=`, `text=`, `where=`; refused without `find=`) to splice text
+next to an anchor inside a chunk — to add a new paragraph use
+`put(kind='draft', ..., args={'at': {'before': 'dc<id>'}})`.
 
 Address the chunk by the **handle** get/search hands you — `mc<id>` for a
 markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
