@@ -1514,46 +1514,35 @@ class TestTryZenodo:
         )
         assert outcome is not None and outcome.event == "api_error"
 
-    def test_lookup_follows_redirects(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A concept DOI (``10.5281/zenodo.<concept-id>``) is answered by
-        Zenodo with a 302 to the latest record — the API client must
-        follow redirects or ``resp.json()`` raises on the redirect HTML
-        (gr713820)."""
-        captured: dict[str, Any] = {}
+    def test_lookup_uses_safe_get(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Let safe_get validate redirects from concept DOIs to the latest record."""
+        api = "https://zenodo.org/api/records/22897659"
+        client = httpx.Client()
+        requested: list[str] = []
 
-        class _Resp:
-            def raise_for_status(self) -> None:
-                return None
+        def _fake_http_client(**kwargs: Any) -> httpx.Client:
+            assert not kwargs.get("follow_redirects")
+            return client
 
-            def json(self) -> dict[str, Any]:
-                return {"files": [{"key": "paper.pdf"}, {"key": "data.csv"}]}
-
-        class _Client:
-            def __enter__(self) -> Any:
-                return self
-
-            def __exit__(self, *a: Any) -> None:
-                return None
-
-            def get(self, url: str) -> _Resp:
-                captured["url"] = url
-                return _Resp()
-
-        def _fake_http_client(**kw: Any) -> _Client:
-            captured.update(kw)
-            return _Client()
+        def _fake_safe_get(request_client: httpx.Client, url: str) -> httpx.Response:
+            assert request_client is client
+            requested.append(url)
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={"files": [{"key": "paper.pdf"}, {"key": "data.csv"}]},
+            )
 
         # call_with_backoff's provider-row resolution is DB-backed; the
         # retry shape is covered in tests.test_http, so call through once.
         monkeypatch.setattr(fetch_oa, "call_with_backoff", lambda fn, **_: fn())
         monkeypatch.setattr(fetch_oa, "http_client", _fake_http_client)
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_safe_get)
 
         urls = fetch_oa._zenodo_pdf_urls("22897659")
 
-        assert captured["follow_redirects"] is True
-        assert urls == [
-            "https://zenodo.org/api/records/22897659/files/paper.pdf/content"
-        ]
+        assert requested == [api]
+        assert urls == [f"{api}/files/paper.pdf/content"]
 
 
 class TestTryPublisher:
