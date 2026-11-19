@@ -1026,6 +1026,14 @@ Known limits:
   without an answer. While the gate holds a deploy, the tick writes the
   refusal as a comment on the `release_deploy` node, once per distinct
   text (gr702442).
+- The file-overlap hold is bounded. A started, unlanded build keeps
+  other builds that touch its files out of the claim (td603849), but
+  only for `factory.overlap_hold_max_runs` ended `run_slice` runs
+  (default 3; cancelled runs and attempt-free failures are no turn).
+  After that it holds only while its `land_slice` is live, and a real
+  conflict with the work that went ahead rebuilds at its land. `0`
+  restores the unbounded hold. The hold writes nothing on the held job:
+  the tick's `file-overlap hold — waits on td<N>` note names the holder.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude

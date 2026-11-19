@@ -563,6 +563,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "immediately, a negative value reads as 0.",
         ),
         SettingSpec(
+            key="factory.overlap_hold_max_runs",
+            type="int",
+            env_var="PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS",
+            default=3,
+            doc="Ended run_slice runs after which a build that has not "
+            "landed stops holding the file-overlap lock (td603849) while "
+            "it rebuilds or waits for its pre-land review; it still holds "
+            "while its land_slice is live. Builds that did not converge "
+            "with their reviewers held 30 queued builds for up to 23 h "
+            "(2026-11-19). 0 never lifts the hold, a negative value reads "
+            "as 0.",
+        ),
+        SettingSpec(
             key="factory.deny_relaxed",
             type="bool",
             env_var=None,

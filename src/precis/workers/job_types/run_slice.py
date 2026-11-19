@@ -4973,13 +4973,27 @@ def submit(ctx: Any, spec: Any) -> Any:
         if until is not None:
             # Per-todo jitter (≤5 min) so a fleet of jobs parked on the
             # same refusal does not probe the lane in one burst.
-            wake = until + timedelta(seconds=int(todo_id) * 37 % 300)
+            jitter = timedelta(seconds=int(todo_id) * 37 % 300)
+            recheck = datetime.now(UTC) + _lanes.HOST_REFUSAL_BACKOFF
+            if until > recheck:
+                # A breaker-held lane reports a far deadline that means
+                # "until its ask closes" (lanes.BREAKER_HOLD), not a time.
+                # Parking to it slept four jobs a year past an ask that
+                # closed the same day: re-check on the refusal cadence.
+                _park_lane_full(
+                    ctx,
+                    f"run_slice: lane {lane.name!r} pinned by params.lane is "
+                    "held out by an open lane-breaker ask; re-checked at "
+                    f"{recheck.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                    until=recheck + jitter,
+                )
+                return None
             _park_lane_full(
                 ctx,
                 f"run_slice: lane {lane.name!r} pinned by params.lane is "
                 f"backed off until {until.strftime('%Y-%m-%dT%H:%M:%SZ')} "
                 "after a host refusal",
-                until=wake,
+                until=until + jitter,
             )
             return None
         if lane.adapter in ADAPTERS and not _adapter_ready(lane.adapter):

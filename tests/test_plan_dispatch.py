@@ -9700,6 +9700,42 @@ def test_dead_land_releases_the_file_overlap_hold(store: Store, dead: str) -> No
     assert pd._started_slices(store)[build].state == "landing"
 
 
+def test_a_build_out_of_turns_holds_only_while_landing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overlap hold is bounded: a build whose ``run_slice`` runs ended
+    ``factory.overlap_hold_max_runs`` times without a land stops holding
+    while it rebuilds or waits for review (three such builds held 30
+    queued ones for up to 23 h), and holds again only while it lands. A
+    cancelled run and an attempt-free failure (a lane wait, a refused
+    launch) are no turn; ``0`` never lifts the hold."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    for _ in range(pd.OVERLAP_HOLD_MAX_RUNS - 1):
+        _slice_job(store, build, "run_slice", "succeeded")
+    _slice_job(store, build, "run_slice", "cancelled")
+    _slice_job(
+        store, build, "run_slice", "failed", meta={pd.ATTEMPT_FREE_KEY: "lane-wait"}
+    )
+    assert pd._started_slices(store)[build].state == "in pre-land review"
+    _slice_job(store, build, "run_slice", "failed")
+    assert build not in pd._started_slices(store)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+    # Its next rebuild runs without the lock too.
+    _slice_job(store, build, "run_slice", "running")
+    assert build not in pd._started_slices(store)
+    with monkeypatch.context() as m:
+        m.setattr(pd, "_overlap_hold_max_runs", lambda store: 0)
+        assert build in pd._started_slices(store)
+    # The land itself always holds: two lands on one file must not race.
+    _slice_job(store, build, "land_slice", "running")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
 def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
     store: Store,
 ) -> None:

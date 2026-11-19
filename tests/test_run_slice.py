@@ -2310,6 +2310,41 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+def test_submit_rechecks_a_breaker_held_pinned_lane(seams: dict[str, Any]) -> None:
+    """A breaker-held lane reports ``now + lanes.BREAKER_HOLD`` — "until
+    its ask closes", not a time. A job pinned to it re-checks on the
+    refusal cadence instead of sleeping the year: four jobs did, past an
+    ask that closed the same day. A real refusal window still parks to
+    its end."""
+    store = _Store()
+    store.add_todo(42, "t")
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    now = datetime.now(UTC)
+    seams["backoff"] = {"claude-sub": now + lanes.BREAKER_HOLD}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "lane-breaker ask" in note and "after a host refusal" not in note
+    assert wake - now < lanes.HOST_REFUSAL_BACKOFF + timedelta(minutes=6)
+    assert ctx.failure is None and seams["launch"] == []
+
+    deferred.clear()
+    end = now + timedelta(minutes=20)
+    seams["backoff"] = {"claude-sub": end}
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    wake, note = deferred[0]
+    assert "after a host refusal" in note
+    assert end <= wake <= end + timedelta(minutes=5)
+
+
 @pytest.mark.parametrize("missing", ["binary", "login"])
 def test_submit_parks_a_pinned_lane_whose_bin_is_absent(
     seams: dict[str, Any],

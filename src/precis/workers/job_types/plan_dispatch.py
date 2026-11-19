@@ -6353,6 +6353,26 @@ class _Started:
     repo: str
 
 
+#: ``factory.overlap_hold_max_runs`` when unset or unreadable.
+OVERLAP_HOLD_MAX_RUNS = 3
+
+
+def _overlap_hold_max_runs(store: Any) -> int:
+    """How many ended ``run_slice`` runs a build may have and still hold
+    the file-overlap lock while it builds or waits for its pre-land
+    review — ``factory.overlap_hold_max_runs``, default
+    :data:`OVERLAP_HOLD_MAX_RUNS`; ``0`` never lifts the hold. Unreadable
+    reads as the default: the claim transaction calls this, and a
+    settings blip must not change who holds whom."""
+    from precis import settings
+
+    try:
+        runs = settings.get_int("factory.overlap_hold_max_runs", store=store)
+    except Exception:
+        return OVERLAP_HOLD_MAX_RUNS
+    return OVERLAP_HOLD_MAX_RUNS if runs is None else max(0, runs)
+
+
 def _started_slices(store: Any) -> dict[int, _Started]:
     """Every build with started, unlanded work, factory-wide (td603849,
     widened 2026-11-15 from in-flight lands): a live ``land_slice`` or
@@ -6391,7 +6411,16 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     A build still in its pre-land review (no land job yet) counts as
     before. Only a ``STATUS:running`` ``run_slice`` job or a
     ``land_slice`` job holds; a merely queued job holds nothing, so
-    queued builds never block each other."""
+    queued builds never block each other.
+
+    The hold is bounded (:func:`_overlap_hold_max_runs`): a build whose
+    ``run_slice`` runs ended that many times without a land has had its
+    turns and holds only while it is ``landing``. A cancelled run and an
+    attempt-free failure (a lane wait, a refused launch —
+    :data:`ATTEMPT_FREE_KEY`) are no turn. Three builds that did
+    not converge with their pre-land reviewers (seven runs on one) held
+    30 queued builds, the oldest for 23 hours, on 2026-11-19; a real
+    conflict with the work that went ahead rebuilds at their land."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -6432,7 +6461,17 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                     AND NOT (COALESCE(land_dead.dead, FALSE)
                              AND land_dead.job_head IS NOT DISTINCT FROM
                                  (r.meta->%s->>'head'))),
-                   r.meta->%s
+                   r.meta->%s,
+                   (SELECT count(*) FROM refs j
+                     WHERE j.kind = 'job' AND j.retired_at IS NULL
+                       AND j.parent_id = r.ref_id
+                       AND j.meta->>'job_type' = %s
+                       AND NOT COALESCE(j.meta ? %s, FALSE)
+                       AND EXISTS (
+                             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                              WHERE rt.ref_id = j.ref_id
+                                AND t.namespace = 'STATUS'
+                                AND t.value = ANY(%s)))
               FROM refs r
               LEFT JOIN live ON live.parent_id = r.ref_id
               LEFT JOIN land_dead ON land_dead.parent_id = r.ref_id
@@ -6456,13 +6495,21 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                 _templates.PENDING_LAND_KEY,
                 _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
+                DEFAULT_OP,
+                ATTEMPT_FREE_KEY,
+                sorted(_JOB_TERMINAL - {"cancelled"}),
                 _templates.PENDING_LAND_KEY,
                 _templates.PENDING_LAND_KEY,
                 sorted(_RULING_STATUSES),
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
-    for rid, landing, pending, files in rows:
+    # Read only with a holder to judge: the claim transaction runs this
+    # on every pass, mostly over no started build at all.
+    max_runs = _overlap_hold_max_runs(store) if rows else 0
+    for rid, landing, pending, files, runs in rows:
+        if max_runs and not landing and int(runs or 0) >= max_runs:
+            continue
         state = (
             "landing" if landing else "in pre-land review" if pending else "building"
         )
