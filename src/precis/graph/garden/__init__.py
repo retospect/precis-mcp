@@ -143,6 +143,8 @@ trust acts retain the original model string.
 SHA-pinned grounding audits verify passages and inference warrants.
 Exact quotes bind local premises. Each premise needs its own support
 judgment. See :mod:`precis.graph.garden.grounding` for budgets and repairs.
+Unresolved checks get one bounded handoff todo; returned candidate
+evidence only reopens re-audit.
 
 **Memory reconciliation.** Memory candidates (including ``dup_pair``)
 and interactive ``precis-make-memory`` share packaged memory-help

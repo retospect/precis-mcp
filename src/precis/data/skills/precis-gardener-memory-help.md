@@ -102,7 +102,7 @@ links. A router pause defers the tick with its audit window available for retry.
 Failed or incomplete classifier replies leave the same SHA eligible on a later scan.
 
 The review ledger stores a `proposed` row per audited memory revision with
-actor `garden-grounding`, version `grounding.v5`, content SHA and a
+actor `garden-grounding`, version `grounding.v6`, content SHA and a
 `grounding_audit` note. The
 row is audit-only and outside the pending action queue —
 `get(kind='job', id='/garden/proposals')` intentionally excludes it. Read
@@ -173,6 +173,22 @@ the shared garden ledger with no apply door registered. They stay pending
 for a human or reviewer; a rollup of `supported` is withheld (capped
 `partial`) when the pipeline itself supplied or certified the evidence
 (audit or garden-ledger actor on the evidence ref's reviews or revisions).
+
+An `unresolved` claim carries `missing_check`. The coordinator can
+commission three handoffs per tick and resumes deferred or failed writes
+from the saved audit. It reuses a research todo when its claim, source
+and check pins match. A new `grounding-handoff` todo records the exact
+question, pins, stopping condition and return destination. Three
+cumulative audit attempts exhaust the research handoff. Ambiguous terms,
+identity or authority questions, and substantive decisions go to an
+`ask-user` todo.
+
+Return research through an ordinary todo comment starting with
+`candidate-evidence:`. Report each completed check on a line starting
+with `Checks performed:`. Close the research todo when work ends,
+including when evidence is unavailable or disputed. A return prompts
+re-audit of the same memory SHA as candidate input. The audit can remain
+unresolved and every suggested finding stays provisional.
 
 ## Notation flags
 

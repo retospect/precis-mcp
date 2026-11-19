@@ -163,8 +163,10 @@ claims before writing; the gardener evaluates existing maintenance candidates
 through its reviewed apply paths. The opt-in gardener grounding pass records
 claim classifications, evidence judgments and premise lineage in SHA-pinned
 review rows outside the apply queue. The pass sends repair proposals through
-the existing garden ledger. Labelled memory search batches reuse ordinary
-search dispatch and preserve each query's results and errors separately.
+the existing garden ledger. It tracks unresolved checks in bounded research
+or human-review todos and reads pinned returns as candidate input on
+re-audit. Labelled memory search batches reuse ordinary search dispatch
+and preserve each query's results and errors separately.
 
 Skill discovery fuses up to five phrasings into attributed section matches.
 Planner and quest prompts use the same ranking and table after matching task
