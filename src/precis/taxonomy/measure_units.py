@@ -167,6 +167,9 @@ def _registry() -> pint.UnitRegistry:
         # one stand-in currency unit: make_converter's currency branch swaps
         # the ISO token for `money` so pint scales only the unit's remainder
         _UREG.define(MONEY_DEFINITION)
+        # Printed atomic energies use Ha; retain that spelling on the row
+        # while letting pint supply the hartree definition and dimensions.
+        _UREG.define("@alias hartree = Ha")
     return _UREG
 
 

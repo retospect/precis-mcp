@@ -110,6 +110,20 @@ class TestDisplay:
             to_canonical(1, "m", None)
 
 
+class TestHartreeSpelling:
+    def test_ha_converts_energy_and_uncertainty(self) -> None:
+        conv = make_converter("Ha", "eV")
+        assert conv.value(-2.0) == pytest.approx(-54.42277249)
+        assert conv.scale == pytest.approx(27.211386245)
+        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, abs=0)
+        assert format_value(1.0, canonical_unit="hartree", unit="Ha") == "1 Ha"
+
+    def test_ha_keeps_energy_dimensions_and_case(self) -> None:
+        with pytest.raises(BadInput, match="cannot be converted"):
+            make_converter("Ha", "m²")
+        assert to_canonical(1.0, "ha", "m²") == pytest.approx(10000.0)
+
+
 class TestMolarBridge:
     """gr506762 subset-5d: the Avogadro bridge is the ``molar_bridge``
     opt-in, never ``make_converter``'s default — and even then only an

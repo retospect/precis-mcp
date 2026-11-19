@@ -652,6 +652,21 @@ class TestElectrodeReference:
 
 
 class TestRoundTrips:
+    def test_hartree_spelling_is_retained(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"], "-2 ± 0.1", world["paper"], reported_unit="Ha"
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reported_unit"] == "Ha"
+        assert row["literal"] == "-2 ± 0.1"
+        assert row["value_num"] == pytest.approx(-54.42277249)
+        assert row["value_err"] == pytest.approx(2.7211386245)
+
     @pytest.mark.parametrize(
         ("literal", "form", "num", "low", "high", "err"),
         [
