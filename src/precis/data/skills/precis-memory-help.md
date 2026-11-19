@@ -57,8 +57,13 @@ q='<topic>')` first, then use the integer id from the hit.
 
 A node over 24 kB returns a head plus a section outline —
 `get(kind='memory', id='me<N>~<section>')` reads one `##`-headed part,
-`id='me<N>~body'` the whole body (`view='body'` is the same read;
-`view='meta'` prints the meta JSON). Batch reads take `id=[...]`,
+`id='me<N>~body'` the body prose (`view='body'` is the same read;
+`view='meta'` prints the meta JSON). A body over the result cap pages
+instead of truncating to a dead end: the cut footer names
+`get(kind='memory', id='me<N>~body', args={'offset': <chars shown>})`,
+and following those calls reassembles the whole body. Offsets count
+characters of the displayed body; an offset at the end refuses with
+the body's character count. Batch reads take `id=[...]`,
 `~<section>` ids included. `view='links'` narrows with
 `args={'rel': 'part-of'}`, `args={'of_kind': 'todo'}` or
 `args={'direction': 'out'}`.
