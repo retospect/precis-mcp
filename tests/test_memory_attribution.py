@@ -365,6 +365,20 @@ def test_decade_is_not_seconds(world):
     assert [m.token for m in _check("ran for 2010 s [pa12]")] == ["2010 s"]
 
 
+def test_s_orbital_labels_are_not_seconds(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    world[(995663, 4)] = "Four indium s-shell projectors and a 2 eV gap."
+    assert _check("The In 5s orbitals sit below a 2 eV gap [pc995663].") == []
+    assert _check("The In 5s projectors accompany a 2 eV gap [pc995663].") == []
+    world[(995663, 4)] = "Four In 5s projectors and a 2 eV gap."
+    assert [m.token for m in _check("The scan took 5s [pc995663].")] == ["5 s"]
+    assert [m.token for m in _check("The scan took 5 s [pc995663].")] == ["5 s"]
+    assert [m.token for m in _check("A 5s orbital period [pc995663].")] == ["5 s"]
+    world[(995663, 4)] += " The scan took 5s."
+    assert _check("The scan took 5s [pc995663].") == []
+
+
 def test_chunk_cite_falls_back_to_the_document(world):
     world[(995663, 4)] = "film thickness 7 nm"
     world[(995663, None)] = "the abstract gives 8 nm"
