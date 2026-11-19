@@ -906,7 +906,7 @@ class TaxonHandler(NumericRefHandler):
         if under is not None:
             raise BadInput(
                 "under= applies to get(kind='taxon', view='meta') only",
-                next="get(kind='taxon', under='tn42', view='meta')",
+                next="get(kind='taxon', view='meta', args={'under': 'tn42'})",
             )
         if isinstance(id, str) and id == "/coverage":
             # gr572708: this branch returns ahead of the base dispatch,
@@ -1094,7 +1094,7 @@ class TaxonHandler(NumericRefHandler):
                 "view='meta' needs id= or under=",
                 next=(
                     "get(kind='taxon', id=[<tn…>, …], view='meta') or "
-                    "get(kind='taxon', under='measurand', view='meta')"
+                    "get(kind='taxon', view='meta', args={'under': 'measurand'})"
                 ),
             )
         # Axis on the specialises edge to the node's first parent — the

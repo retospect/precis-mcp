@@ -16,6 +16,10 @@ tool ledger retains the caller's reference envelope, never expanded content.
 Table refusals select table help from explicit arguments or a best-effort chunk
 lookup for ambiguous edits, so prose and table edits retain specific recovery.
 
+An id-less taxon metadata get with a subtree selector goes to the taxon
+handler, where the subtree selects individual rows. An unscoped get still
+aliases the kind-wide metadata key inventory.
+
 Licensed live responses opt out of pagination caching while retaining the
 frame limit. The tool ledger already stores only call metadata, not content.
 

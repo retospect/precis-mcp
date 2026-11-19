@@ -3422,14 +3422,11 @@ class DispatchMixin(RuntimeShape):
         # An id-less ``get(kind=K, view='meta'|'tags')`` is the same
         # question asked on the wrong verb (gr492452) — serve it here
         # instead of each numeric-ref handler rejecting the view.
-        if (verb == "search" or (verb == "get" and args.get("id") is None)) and str(
-            args.get("view") or ""
-        ).strip() in (
-            "meta",
-            "tags",
-            "flow",
+        view_name = str(args.get("view") or "").strip()
+        if view_name in ("meta", "tags", "flow") and (
+            verb == "search"
+            or (verb == "get" and self._is_idless_introspection_get(kind, args))
         ):
-            view_name = str(args.get("view") or "").strip()
             # ``folder=`` folds into the include_ref_ids channel the
             # flow view reads — same trick as view='count' above,
             # otherwise it would route to the cross-kind fan-out.
@@ -3602,6 +3599,22 @@ class DispatchMixin(RuntimeShape):
             exc.next = [exc.next, hint]
         elif hint not in exc.next:
             exc.next.append(hint)
+
+    def _is_idless_introspection_get(
+        self, kind: str | None, args: dict[str, Any]
+    ) -> bool:
+        if args.get("id") is not None:
+            return False
+        # A taxon subtree selects rows for the handler's metadata table.
+        extras = args.get(_EXTRAS_KEY)
+        return not (
+            args.get("view") == "meta"
+            and self._expand_kind_code(kind or "") == "taxon"
+            and (
+                args.get("under") is not None
+                or (isinstance(extras, dict) and extras.get("under") is not None)
+            )
+        )
 
     def _resolve_kind(
         self,
